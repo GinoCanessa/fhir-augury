@@ -117,4 +117,65 @@ public static class FtsSetup
         cmd.CommandText = "INSERT INTO jira_comments_fts(jira_comments_fts) VALUES ('rebuild');";
         cmd.ExecuteNonQuery();
     }
+
+    /// <summary>Creates FTS5 tables and triggers for Zulip messages.</summary>
+    public static void CreateZulipFts(SqliteConnection connection)
+    {
+        CreateZulipMessagesFts(connection);
+    }
+
+    private static void CreateZulipMessagesFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            CREATE VIRTUAL TABLE IF NOT EXISTS zulip_messages_fts USING fts5(
+                StreamName,
+                Topic,
+                SenderName,
+                ContentPlain,
+                content='zulip_messages',
+                content_rowid='Id'
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // INSERT trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS zulip_messages_ai AFTER INSERT ON zulip_messages BEGIN
+                INSERT INTO zulip_messages_fts(rowid, StreamName, Topic, SenderName, ContentPlain)
+                VALUES (new.Id, new.StreamName, new.Topic, new.SenderName, new.ContentPlain);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // DELETE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS zulip_messages_ad AFTER DELETE ON zulip_messages BEGIN
+                INSERT INTO zulip_messages_fts(zulip_messages_fts, rowid, StreamName, Topic, SenderName, ContentPlain)
+                VALUES ('delete', old.Id, old.StreamName, old.Topic, old.SenderName, old.ContentPlain);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // UPDATE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS zulip_messages_au AFTER UPDATE ON zulip_messages BEGIN
+                INSERT INTO zulip_messages_fts(zulip_messages_fts, rowid, StreamName, Topic, SenderName, ContentPlain)
+                VALUES ('delete', old.Id, old.StreamName, old.Topic, old.SenderName, old.ContentPlain);
+                INSERT INTO zulip_messages_fts(rowid, StreamName, Topic, SenderName, ContentPlain)
+                VALUES (new.Id, new.StreamName, new.Topic, new.SenderName, new.ContentPlain);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Rebuilds all Zulip FTS5 tables from content tables.</summary>
+    public static void RebuildZulipFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = "INSERT INTO zulip_messages_fts(zulip_messages_fts) VALUES ('rebuild');";
+        cmd.ExecuteNonQuery();
+    }
 }

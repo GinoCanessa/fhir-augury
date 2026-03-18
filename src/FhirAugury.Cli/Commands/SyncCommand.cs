@@ -3,6 +3,7 @@ using FhirAugury.Database;
 using FhirAugury.Database.Records;
 using FhirAugury.Models;
 using FhirAugury.Sources.Jira;
+using FhirAugury.Sources.Zulip;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -12,17 +13,23 @@ public static class SyncCommand
     {
         var command = new Command("sync", "Incremental update since last sync");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip, all", Arity = ArgumentArity.ExactlyOne };
         var sinceOption = new Option<DateTimeOffset?>("--since") { Description = "Override: sync from specific date" };
         var cookieOption = new Option<string?>("--jira-cookie") { Description = "Jira session cookie" };
         var apiTokenOption = new Option<string?>("--jira-api-token") { Description = "Jira API token" };
         var emailOption = new Option<string?>("--jira-email") { Description = "Jira email for API token auth" };
+        var zulipEmailOption = new Option<string?>("--zulip-email") { Description = "Zulip email" };
+        var zulipApiKeyOption = new Option<string?>("--zulip-api-key") { Description = "Zulip API key" };
+        var zulipRcOption = new Option<string?>("--zulip-rc") { Description = "Path to .zuliprc file" };
 
         command.Add(sourceOption);
         command.Add(sinceOption);
         command.Add(cookieOption);
         command.Add(apiTokenOption);
         command.Add(emailOption);
+        command.Add(zulipEmailOption);
+        command.Add(zulipApiKeyOption);
+        command.Add(zulipRcOption);
 
         command.SetAction(async (parseResult, ct) =>
         {
@@ -30,73 +37,93 @@ public static class SyncCommand
             var dbPath = parseResult.GetValue(dbOption)!;
             var verbose = parseResult.GetValue(verboseOption);
             var sinceOverride = parseResult.GetValue(sinceOption);
-
-            if (source != "jira")
-            {
-                Console.Error.WriteLine($"Source '{source}' is not supported in Phase 1.");
-                return;
-            }
+            var json = parseResult.GetValue(jsonOption);
 
             var dbService = new DatabaseService(dbPath);
             dbService.InitializeDatabase();
 
-            // Determine sync-since time
-            DateTimeOffset since;
-            if (sinceOverride.HasValue)
-            {
-                since = sinceOverride.Value;
-            }
-            else
-            {
-                using var conn = dbService.OpenConnection();
-                var syncState = SyncStateRecord.SelectSingle(conn, SourceName: source);
-                since = syncState?.LastSyncAt ?? DateTimeOffset.MinValue;
-            }
+            var sourcesToSync = source == "all" ? new[] { "jira", "zulip" } : new[] { source };
 
-            var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
-            using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
-            var jiraSource = new JiraSource(jiraOptions, httpClient);
-
-            var options = new IngestionOptions
+            foreach (var src in sourcesToSync)
             {
-                DatabasePath = dbPath,
-                Verbose = verbose,
-            };
-
-            Console.WriteLine($"Syncing {source} since {since:yyyy-MM-dd HH:mm}...");
-            var result = await jiraSource.DownloadIncrementalAsync(since, options, ct);
-
-            // Update sync state
-            using var updateConn = dbService.OpenConnection();
-            var existingState = SyncStateRecord.SelectSingle(updateConn, SourceName: source);
-            if (existingState is not null)
-            {
-                existingState.LastSyncAt = result.CompletedAt;
-                existingState.ItemsIngested += result.ItemsProcessed;
-                existingState.Status = "completed";
-                existingState.LastError = result.Errors.Count > 0 ? result.Errors[0].Message : null;
-                SyncStateRecord.Update(updateConn, existingState);
-            }
-            else
-            {
-                SyncStateRecord.Insert(updateConn, new SyncStateRecord
+                switch (src)
                 {
-                    Id = SyncStateRecord.GetIndex(),
-                    SourceName = source,
-                    SubSource = null,
-                    LastSyncAt = result.CompletedAt,
-                    LastCursor = null,
-                    ItemsIngested = result.ItemsProcessed,
-                    SyncSchedule = null,
-                    NextScheduledAt = null,
-                    Status = "completed",
-                    LastError = result.Errors.Count > 0 ? result.Errors[0].Message : null,
-                });
-            }
+                    case "jira":
+                    {
+                        var since = ResolveSinceTime(dbService, sinceOverride, "jira");
+                        var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
+                        using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
+                        var jiraSource = new JiraSource(jiraOptions, httpClient);
 
-            DownloadCommand.PrintResult(result, parseResult.GetValue(jsonOption));
+                        var options = new IngestionOptions { DatabasePath = dbPath, Verbose = verbose };
+                        Console.WriteLine($"Syncing jira since {since:yyyy-MM-dd HH:mm}...");
+                        var result = await jiraSource.DownloadIncrementalAsync(since, options, ct);
+                        UpdateSyncState(dbService, "jira", result);
+                        DownloadCommand.PrintResult(result, json);
+                        break;
+                    }
+
+                    case "zulip":
+                    {
+                        var since = ResolveSinceTime(dbService, sinceOverride, "zulip");
+                        var zulipOptions = DownloadCommand.BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption);
+                        using var httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
+                        var zulipSource = new ZulipSource(zulipOptions, httpClient);
+
+                        var options = new IngestionOptions { DatabasePath = dbPath, Verbose = verbose };
+                        Console.WriteLine($"Syncing zulip since {since:yyyy-MM-dd HH:mm}...");
+                        var result = await zulipSource.DownloadIncrementalAsync(since, options, ct);
+                        UpdateSyncState(dbService, "zulip", result);
+                        DownloadCommand.PrintResult(result, json);
+                        break;
+                    }
+
+                    default:
+                        Console.Error.WriteLine($"Source '{src}' is not supported. Available: jira, zulip, all");
+                        break;
+                }
+            }
         });
 
         return command;
+    }
+
+    private static DateTimeOffset ResolveSinceTime(DatabaseService dbService, DateTimeOffset? sinceOverride, string source)
+    {
+        if (sinceOverride.HasValue) return sinceOverride.Value;
+
+        using var conn = dbService.OpenConnection();
+        var syncState = SyncStateRecord.SelectSingle(conn, SourceName: source);
+        return syncState?.LastSyncAt ?? DateTimeOffset.MinValue;
+    }
+
+    private static void UpdateSyncState(DatabaseService dbService, string source, IngestionResult result)
+    {
+        using var conn = dbService.OpenConnection();
+        var existing = SyncStateRecord.SelectSingle(conn, SourceName: source);
+        if (existing is not null)
+        {
+            existing.LastSyncAt = result.CompletedAt;
+            existing.ItemsIngested += result.ItemsProcessed;
+            existing.Status = "completed";
+            existing.LastError = result.Errors.Count > 0 ? result.Errors[0].Message : null;
+            SyncStateRecord.Update(conn, existing);
+        }
+        else
+        {
+            SyncStateRecord.Insert(conn, new SyncStateRecord
+            {
+                Id = SyncStateRecord.GetIndex(),
+                SourceName = source,
+                SubSource = null,
+                LastSyncAt = result.CompletedAt,
+                LastCursor = null,
+                ItemsIngested = result.ItemsProcessed,
+                SyncSchedule = null,
+                NextScheduledAt = null,
+                Status = "completed",
+                LastError = result.Errors.Count > 0 ? result.Errors[0].Message : null,
+            });
+        }
     }
 }

@@ -1,0 +1,77 @@
+{
+  "result": "success",
+  "messages": [
+    {
+      "id": 100001,
+      "sender_id": 42,
+      "content": "<p>Has anyone looked at the new <strong>FHIRPath</strong> aggregate functions?</p>",
+      "recipient_id": 10,
+      "timestamp": 1710000000,
+      "subject": "FHIRPath aggregates",
+      "type": "stream",
+      "display_recipient": "implementers",
+      "sender_full_name": "Alice Smith",
+      "sender_email": "alice@example.com",
+      "stream_id": 10,
+      "reactions": [
+        {
+          "emoji_name": "+1",
+          "emoji_code": "1f44d",
+          "reaction_type": "unicode_emoji",
+          "user_id": 43
+        }
+      ]
+    },
+    {
+      "id": 100002,
+      "sender_id": 43,
+      "content": "<p>Yes! The <code>aggregate()</code> function is particularly useful for complex calculations.</p>",
+      "recipient_id": 10,
+      "timestamp": 1710003600,
+      "subject": "FHIRPath aggregates",
+      "type": "stream",
+      "display_recipient": "implementers",
+      "sender_full_name": "Bob Jones",
+      "sender_email": "bob@example.com",
+      "stream_id": 10,
+      "reactions": []
+    },
+    {
+      "id": 100003,
+      "sender_id": 44,
+      "content": "<p>I wrote a <a href=\"https://example.com/guide\">tutorial</a> on this topic.</p>",
+      "recipient_id": 10,
+      "timestamp": 1710007200,
+      "subject": "FHIRPath aggregates",
+      "type": "stream",
+      "display_recipient": "implementers",
+      "sender_full_name": "Carol White",
+      "sender_email": null,
+      "stream_id": 10,
+      "reactions": []
+    }
+  ],
+  "streams": [
+    {
+      "stream_id": 10,
+      "name": "implementers",
+      "description": "Discussion of FHIR implementation topics",
+      "is_web_public": true,
+      "date_created": 1600000000
+    },
+    {
+      "stream_id": 20,
+      "name": "terminology",
+      "description": "Terminology binding discussions",
+      "is_web_public": true,
+      "date_created": 1600000000
+    },
+    {
+      "stream_id": 30,
+      "name": "private-stream",
+      "description": "A private stream",
+      "is_web_public": false,
+      "date_created": 1600000000
+    }
+  ]
+}

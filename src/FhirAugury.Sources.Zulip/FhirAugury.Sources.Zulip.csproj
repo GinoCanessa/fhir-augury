@@ -1,19 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <RootNamespace>FhirAugury.Cli</RootNamespace>
+    <RootNamespace>FhirAugury.Sources.Zulip</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.CommandLine" Version="2.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Models\FhirAugury.Models.csproj" />
     <ProjectReference Include="..\FhirAugury.Database\FhirAugury.Database.csproj" />
-    <ProjectReference Include="..\FhirAugury.Sources.Jira\FhirAugury.Sources.Jira.csproj" />
-    <ProjectReference Include="..\FhirAugury.Sources.Zulip\FhirAugury.Sources.Zulip.csproj" />
     <ProjectReference Include="..\FhirAugury.Indexing\FhirAugury.Indexing.csproj" />
   </ItemGroup>
 

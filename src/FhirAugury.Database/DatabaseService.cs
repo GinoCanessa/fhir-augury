@@ -61,8 +61,15 @@ public class DatabaseService : IDisposable
         JiraCommentRecord.CreateTable(connection);
         JiraCommentRecord.LoadMaxKey(connection);
 
+        ZulipStreamRecord.CreateTable(connection);
+        ZulipStreamRecord.LoadMaxKey(connection);
+
+        ZulipMessageRecord.CreateTable(connection);
+        ZulipMessageRecord.LoadMaxKey(connection);
+
         // Create FTS5 virtual tables and triggers
         FtsSetup.CreateJiraFts(connection);
+        FtsSetup.CreateZulipFts(connection);
     }
 
     public void Dispose()

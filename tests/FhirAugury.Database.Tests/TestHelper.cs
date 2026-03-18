@@ -19,7 +19,12 @@ internal static class TestHelper
         JiraIssueRecord.LoadMaxKey(conn);
         JiraCommentRecord.CreateTable(conn);
         JiraCommentRecord.LoadMaxKey(conn);
+        ZulipStreamRecord.CreateTable(conn);
+        ZulipStreamRecord.LoadMaxKey(conn);
+        ZulipMessageRecord.CreateTable(conn);
+        ZulipMessageRecord.LoadMaxKey(conn);
         FtsSetup.CreateJiraFts(conn);
+        FtsSetup.CreateZulipFts(conn);
 
         return conn;
     }
@@ -63,6 +68,49 @@ internal static class TestHelper
             Vote = null,
             Labels = null,
             CommentCount = 0,
+        };
+    }
+
+    public static ZulipStreamRecord CreateSampleStream(
+        int zulipStreamId,
+        string name,
+        bool isWebPublic = true)
+    {
+        return new ZulipStreamRecord
+        {
+            Id = ZulipStreamRecord.GetIndex(),
+            ZulipStreamId = zulipStreamId,
+            Name = name,
+            Description = $"Description for {name}",
+            IsWebPublic = isWebPublic,
+            MessageCount = 0,
+            LastFetchedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    public static ZulipMessageRecord CreateSampleMessage(
+        int zulipMessageId,
+        int streamDbId,
+        string streamName,
+        string topic,
+        string senderName = "Test User",
+        string content = "Test message content")
+    {
+        return new ZulipMessageRecord
+        {
+            Id = ZulipMessageRecord.GetIndex(),
+            ZulipMessageId = zulipMessageId,
+            StreamId = streamDbId,
+            StreamName = streamName,
+            Topic = topic,
+            SenderId = 1000 + zulipMessageId,
+            SenderName = senderName,
+            SenderEmail = $"{senderName.ToLower().Replace(' ', '.')}@example.com",
+            ContentHtml = $"<p>{content}</p>",
+            ContentPlain = content,
+            Timestamp = DateTimeOffset.UtcNow,
+            CreatedAt = DateTimeOffset.UtcNow,
+            Reactions = null,
         };
     }
 }

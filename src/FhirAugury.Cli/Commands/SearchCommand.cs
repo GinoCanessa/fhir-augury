@@ -13,7 +13,7 @@ public static class SearchCommand
         var command = new Command("search", "Search the knowledge base");
 
         var queryOption = new Option<string>("--query", "-q") { Description = "Search query text", Arity = ArgumentArity.ExactlyOne };
-        var sourceFilterOption = new Option<string?>("--source", "-s") { Description = "Filter to source(s): jira" };
+        var sourceFilterOption = new Option<string?>("--source", "-s") { Description = "Filter to source(s): jira, zulip, jira-comment" };
         var limitOption = new Option<int>("--limit", "-n") { Description = "Max results", DefaultValueFactory = _ => 20 };
         var formatOption = new Option<string>("--format", "-f") { Description = "Output format: table | json | markdown", DefaultValueFactory = _ => "table" };
 

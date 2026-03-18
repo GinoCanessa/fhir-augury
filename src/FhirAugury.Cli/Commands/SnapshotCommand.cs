@@ -10,8 +10,8 @@ public static class SnapshotCommand
     {
         var command = new Command("snapshot", "Render a detailed view of an item");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira", Arity = ArgumentArity.ExactlyOne };
-        var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499)", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
+        var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499 or stream:topic)", Arity = ArgumentArity.ExactlyOne };
 
         command.Add(sourceOption);
         command.Add(idOption);
@@ -22,33 +22,59 @@ public static class SnapshotCommand
             var id = parseResult.GetValue(idOption)!;
             var dbPath = parseResult.GetValue(dbOption)!;
 
-            if (source != "jira")
-            {
-                Console.Error.WriteLine($"Source '{source}' is not supported in Phase 1.");
-                return Task.CompletedTask;
-            }
-
             var dbService = new DatabaseService(dbPath);
             dbService.InitializeDatabase();
 
             using var conn = dbService.OpenConnection();
-            var issue = JiraIssueRecord.SelectSingle(conn, Key: id);
 
-            if (issue is null)
+            switch (source)
             {
-                Console.Error.WriteLine($"Issue '{id}' not found.");
-                return Task.CompletedTask;
+                case "jira":
+                {
+                    var issue = JiraIssueRecord.SelectSingle(conn, Key: id);
+                    if (issue is null)
+                    {
+                        Console.Error.WriteLine($"Issue '{id}' not found.");
+                        return Task.CompletedTask;
+                    }
+                    var comments = JiraCommentRecord.SelectList(conn, IssueKey: id);
+                    RenderJiraSnapshot(issue, comments);
+                    break;
+                }
+
+                case "zulip":
+                {
+                    var sepIdx = id.IndexOf(':');
+                    if (sepIdx < 0)
+                    {
+                        Console.Error.WriteLine("Zulip identifier must be in 'stream:topic' format.");
+                        return Task.CompletedTask;
+                    }
+                    var streamName = id[..sepIdx];
+                    var topic = id[(sepIdx + 1)..];
+
+                    var messages = ZulipMessageRecord.SelectList(conn, StreamName: streamName, Topic: topic);
+                    if (messages.Count == 0)
+                    {
+                        Console.Error.WriteLine($"No messages found for '{id}'.");
+                        return Task.CompletedTask;
+                    }
+                    RenderZulipSnapshot(streamName, topic, messages);
+                    break;
+                }
+
+                default:
+                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip");
+                    break;
             }
 
-            var comments = JiraCommentRecord.SelectList(conn, IssueKey: id);
-            RenderSnapshot(issue, comments);
             return Task.CompletedTask;
         });
 
         return command;
     }
 
-    private static void RenderSnapshot(JiraIssueRecord issue, List<JiraCommentRecord> comments)
+    private static void RenderJiraSnapshot(JiraIssueRecord issue, List<JiraCommentRecord> comments)
     {
         Console.WriteLine($"# {issue.Key}: {issue.Title}");
         Console.WriteLine();
@@ -129,5 +155,36 @@ public static class SnapshotCommand
 
         Console.WriteLine($"---");
         Console.WriteLine($"*URL: https://jira.hl7.org/browse/{issue.Key}*");
+    }
+
+    private static void RenderZulipSnapshot(string streamName, string topic, List<ZulipMessageRecord> messages)
+    {
+        Console.WriteLine($"# {streamName} > {topic}");
+        Console.WriteLine();
+        Console.WriteLine($"**Messages:** {messages.Count}");
+
+        var ordered = messages.OrderBy(m => m.Timestamp).ToList();
+        if (ordered.Count > 0)
+        {
+            Console.WriteLine($"**First message:** {ordered[0].Timestamp:yyyy-MM-dd HH:mm}");
+            Console.WriteLine($"**Last message:** {ordered[^1].Timestamp:yyyy-MM-dd HH:mm}");
+        }
+
+        var uniqueSenders = messages.Select(m => m.SenderName).Distinct().ToList();
+        Console.WriteLine($"**Participants:** {string.Join(", ", uniqueSenders)}");
+        Console.WriteLine();
+
+        Console.WriteLine("## Messages");
+        Console.WriteLine();
+
+        foreach (var msg in ordered)
+        {
+            Console.WriteLine($"### {msg.SenderName} — {msg.Timestamp:yyyy-MM-dd HH:mm}");
+            Console.WriteLine(msg.ContentPlain);
+            Console.WriteLine();
+        }
+
+        Console.WriteLine($"---");
+        Console.WriteLine($"*URL: https://chat.fhir.org/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}*");
     }
 }

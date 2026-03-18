@@ -5,6 +5,8 @@ cross-source search.
 
 **Depends on:** Phase 1 (Foundation)
 
+**Status:** ✅ Complete (2026-03-18)
+
 ---
 
 ## 2.1 — Zulip Database Tables
@@ -39,10 +41,10 @@ Add Zulip table creation to the initialization sequence.
 
 ### Acceptance Criteria
 
-- [ ] Source generator compiles Zulip records
-- [ ] CRUD operations work on both Zulip tables
-- [ ] FTS5 triggers fire on insert/update/delete
-- [ ] Existing Jira tables/tests still work
+- [x] Source generator compiles Zulip records
+- [x] CRUD operations work on both Zulip tables
+- [x] FTS5 triggers fire on insert/update/delete
+- [x] Existing Jira tables/tests still work
 
 ---
 
@@ -105,12 +107,12 @@ Maps `zulip-cs-lib` message objects to `ZulipMessageRecord`:
 
 ### Acceptance Criteria
 
-- [ ] Can authenticate with Zulip API using `.zuliprc` file
-- [ ] Full download iterates all public streams and paginates messages
-- [ ] Incremental download uses last-seen message ID as anchor
-- [ ] On-demand download fetches a single topic thread
-- [ ] HTML content is stripped for `ContentPlain`
-- [ ] Messages are correctly upserted (no duplicates on re-download)
+- [x] Can authenticate with Zulip API using `.zuliprc` file
+- [x] Full download iterates all public streams and paginates messages
+- [x] Incremental download uses last-seen message ID as anchor
+- [x] On-demand download fetches a single topic thread
+- [x] HTML content is stripped for `ContentPlain`
+- [x] Messages are correctly upserted (no duplicates on re-download)
 
 ---
 
@@ -151,10 +153,10 @@ Add Zulip statistics: stream count, message count, last sync time.
 
 ### Acceptance Criteria
 
-- [ ] `fhir-augury download --source zulip` downloads messages
-- [ ] `fhir-augury search -q "test" -s zulip` searches Zulip only
-- [ ] `fhir-augury snapshot --source zulip --id "implementers:FHIRPath"` shows thread
-- [ ] `fhir-augury stats` shows both Jira and Zulip counts
+- [x] `fhir-augury download --source zulip` downloads messages
+- [x] `fhir-augury search -q "test" -s zulip` searches Zulip only
+- [x] `fhir-augury snapshot --source zulip --id "implementers:FHIRPath"` shows thread
+- [x] `fhir-augury stats` shows both Jira and Zulip counts
 
 ---
 
@@ -188,10 +190,10 @@ Implements min-max normalization for cross-source score comparability:
 
 ### Acceptance Criteria
 
-- [ ] Unified search returns results from both Jira and Zulip
-- [ ] Results are interleaved by relevance, not grouped by source
-- [ ] Score normalization makes cross-source ranking reasonable
-- [ ] Source filter (`-s jira`) correctly limits search scope
+- [x] Unified search returns results from both Jira and Zulip
+- [x] Results are interleaved by relevance, not grouped by source
+- [x] Score normalization makes cross-source ranking reasonable
+- [x] Source filter (`-s jira`) correctly limits search scope
 
 ---
 
@@ -221,6 +223,6 @@ Implements min-max normalization for cross-source score comparability:
 
 ### Acceptance Criteria
 
-- [ ] All new tests pass
-- [ ] All Phase 1 tests still pass
-- [ ] Unified search tested with data from both sources simultaneously
+- [x] All new tests pass
+- [x] All Phase 1 tests still pass
+- [x] Unified search tested with data from both sources simultaneously

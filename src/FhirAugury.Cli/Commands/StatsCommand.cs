@@ -42,6 +42,18 @@ public static class StatsCommand
                 stats["jira_sync_status"] = syncState?.Status ?? "none";
             }
 
+            if (source is null or "zulip")
+            {
+                var streamCount = ZulipStreamRecord.SelectCount(conn);
+                var messageCount = ZulipMessageRecord.SelectCount(conn);
+                var syncState = SyncStateRecord.SelectSingle(conn, SourceName: "zulip");
+
+                stats["zulip_streams"] = streamCount;
+                stats["zulip_messages"] = messageCount;
+                stats["zulip_last_sync"] = syncState?.LastSyncAt.ToString("yyyy-MM-dd HH:mm") ?? "never";
+                stats["zulip_sync_status"] = syncState?.Status ?? "none";
+            }
+
             var fileInfo = new System.IO.FileInfo(dbPath);
             stats["database_size_mb"] = Math.Round(fileInfo.Length / 1024.0 / 1024.0, 2);
 

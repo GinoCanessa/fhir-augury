@@ -42,6 +42,23 @@ public static class OutputFormatter
         }
     }
 
+    public static void FormatZulipThread(string streamName, string topic, List<ZulipMessageRecord> messages, string format)
+    {
+        switch (format.ToLowerInvariant())
+        {
+            case "json":
+                Console.WriteLine(JsonSerializer.Serialize(new { stream = streamName, topic, messages }, JsonOptions));
+                break;
+            case "markdown":
+            case "md":
+                FormatZulipThreadMarkdown(streamName, topic, messages);
+                break;
+            default:
+                FormatZulipThreadTable(streamName, topic, messages);
+                break;
+        }
+    }
+
     private static void FormatTable(List<SearchResult> results)
     {
         Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-45} {"Score",8} {"Updated",-12}");
@@ -133,6 +150,34 @@ public static class OutputFormatter
             {
                 Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
             }
+        }
+    }
+
+    private static void FormatZulipThreadTable(string streamName, string topic, List<ZulipMessageRecord> messages)
+    {
+        Console.WriteLine($"Stream:   {streamName}");
+        Console.WriteLine($"Topic:    {topic}");
+        Console.WriteLine($"Messages: {messages.Count}");
+        Console.WriteLine();
+
+        foreach (var msg in messages.OrderBy(m => m.Timestamp))
+        {
+            Console.WriteLine($"  [{msg.Timestamp:yyyy-MM-dd HH:mm}] {msg.SenderName}: {Truncate(msg.ContentPlain, 120)}");
+        }
+    }
+
+    private static void FormatZulipThreadMarkdown(string streamName, string topic, List<ZulipMessageRecord> messages)
+    {
+        Console.WriteLine($"## {streamName} > {topic}");
+        Console.WriteLine();
+        Console.WriteLine($"**Messages:** {messages.Count}");
+        Console.WriteLine();
+
+        foreach (var msg in messages.OrderBy(m => m.Timestamp))
+        {
+            Console.WriteLine($"**{msg.SenderName}** ({msg.Timestamp:yyyy-MM-dd HH:mm}):");
+            Console.WriteLine(msg.ContentPlain);
+            Console.WriteLine();
         }
     }
 

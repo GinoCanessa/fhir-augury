@@ -8,7 +8,7 @@ Derived from the [Proposal v1](../proposal/v1/README.md).
 | Phase | Document | Goal | Dependencies | Status |
 |-------|----------|------|--------------|--------|
 | 1 | [Foundation](phase-1-foundation.md) | Project scaffolding, database layer, Jira source, CLI basics | — | ✅ Complete |
-| 2 | [Zulip Integration](phase-2-zulip.md) | Zulip source, unified search across two sources | Phase 1 | Pending |
+| 2 | [Zulip Integration](phase-2-zulip.md) | Zulip source, unified search across two sources | Phase 1 | ✅ Complete |
 | 3 | [Cross-Referencing & BM25](phase-3-cross-ref-bm25.md) | Cross-source linking, BM25 keyword scoring, "find related" | Phase 2 | Pending |
 | 4 | [Service Layer](phase-4-service.md) | Background service, ingestion queue, HTTP API | Phase 3 | Pending |
 | 5 | [Confluence & GitHub Sources](phase-5-confluence-github.md) | Complete four-source coverage | Phase 4 | Pending |

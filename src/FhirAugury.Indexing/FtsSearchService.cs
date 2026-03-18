@@ -149,6 +149,75 @@ public static class FtsSearchService
     }
 
     /// <summary>
+    /// Searches the zulip_messages_fts table for matching messages.
+    /// </summary>
+    /// <param name="connection">An open SQLite connection.</param>
+    /// <param name="query">The search query text.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="streamFilter">Optional filter to restrict results to a specific stream.</param>
+    /// <returns>A list of search results from matching Zulip messages.</returns>
+    public static List<SearchResult> SearchZulipMessages(
+        SqliteConnection connection,
+        string query,
+        int limit = 20,
+        string? streamFilter = null)
+    {
+        var ftsQuery = SanitizeFtsQuery(query);
+        if (string.IsNullOrEmpty(ftsQuery))
+        {
+            return [];
+        }
+
+        var sql = """
+            SELECT zm.StreamName, zm.Topic,
+                   snippet(zulip_messages_fts, 3, '<b>', '</b>', '...', 20) as Snippet,
+                   zulip_messages_fts.rank,
+                   zm.SenderName, zm.Timestamp, zm.Id
+            FROM zulip_messages_fts
+            JOIN zulip_messages zm ON zm.Id = zulip_messages_fts.rowid
+            WHERE zulip_messages_fts MATCH @query
+            """;
+
+        if (!string.IsNullOrEmpty(streamFilter))
+        {
+            sql += " AND zm.StreamName = @stream";
+        }
+
+        sql += " ORDER BY zulip_messages_fts.rank LIMIT @limit";
+
+        using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("@query", ftsQuery);
+        command.Parameters.AddWithValue("@limit", limit);
+
+        if (!string.IsNullOrEmpty(streamFilter))
+        {
+            command.Parameters.AddWithValue("@stream", streamFilter);
+        }
+
+        var results = new List<SearchResult>();
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            var streamName = reader.GetString(0);
+            var topic = reader.GetString(1);
+
+            results.Add(new SearchResult
+            {
+                Source = "zulip",
+                Id = $"{streamName}:{topic}",
+                Title = $"{streamName} > {topic}",
+                Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
+                Score = -reader.GetDouble(3),
+                Url = $"https://chat.fhir.org/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}",
+                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+            });
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Searches all available FTS tables and returns normalized, sorted results.
     /// </summary>
     /// <param name="connection">An open SQLite connection.</param>
@@ -172,6 +241,11 @@ public static class FtsSearchService
         if (sources is null || sources.Contains("jira-comment"))
         {
             results.AddRange(SearchJiraComments(connection, query, limit));
+        }
+
+        if (sources is null || sources.Contains("zulip"))
+        {
+            results.AddRange(SearchZulipMessages(connection, query, limit));
         }
 
         NormalizeScores(results);

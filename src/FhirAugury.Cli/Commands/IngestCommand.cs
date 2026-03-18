@@ -2,6 +2,7 @@ using System.CommandLine;
 using FhirAugury.Database;
 using FhirAugury.Models;
 using FhirAugury.Sources.Jira;
+using FhirAugury.Sources.Zulip;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -11,17 +12,23 @@ public static class IngestCommand
     {
         var command = new Command("ingest", "Ingest a single item by identifier");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira", Arity = ArgumentArity.ExactlyOne };
-        var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499)", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
+        var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499 or stream:topic)", Arity = ArgumentArity.ExactlyOne };
         var cookieOption = new Option<string?>("--jira-cookie") { Description = "Jira session cookie" };
         var apiTokenOption = new Option<string?>("--jira-api-token") { Description = "Jira API token" };
         var emailOption = new Option<string?>("--jira-email") { Description = "Jira email for API token auth" };
+        var zulipEmailOption = new Option<string?>("--zulip-email") { Description = "Zulip email" };
+        var zulipApiKeyOption = new Option<string?>("--zulip-api-key") { Description = "Zulip API key" };
+        var zulipRcOption = new Option<string?>("--zulip-rc") { Description = "Path to .zuliprc file" };
 
         command.Add(sourceOption);
         command.Add(idOption);
         command.Add(cookieOption);
         command.Add(apiTokenOption);
         command.Add(emailOption);
+        command.Add(zulipEmailOption);
+        command.Add(zulipApiKeyOption);
+        command.Add(zulipRcOption);
 
         command.SetAction(async (parseResult, ct) =>
         {
@@ -30,18 +37,8 @@ public static class IngestCommand
             var dbPath = parseResult.GetValue(dbOption)!;
             var verbose = parseResult.GetValue(verboseOption);
 
-            if (source != "jira")
-            {
-                Console.Error.WriteLine($"Source '{source}' is not supported in Phase 1.");
-                return;
-            }
-
             var dbService = new DatabaseService(dbPath);
             dbService.InitializeDatabase();
-
-            var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
-            using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
-            var jiraSource = new JiraSource(jiraOptions, httpClient);
 
             var options = new IngestionOptions
             {
@@ -49,8 +46,33 @@ public static class IngestCommand
                 Verbose = verbose,
             };
 
+            IDataSource dataSource;
+
+            switch (source)
+            {
+                case "jira":
+                {
+                    var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
+                    using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
+                    dataSource = new JiraSource(jiraOptions, httpClient);
+                    break;
+                }
+
+                case "zulip":
+                {
+                    var zulipOptions = DownloadCommand.BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption);
+                    using var httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
+                    dataSource = new ZulipSource(zulipOptions, httpClient);
+                    break;
+                }
+
+                default:
+                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip");
+                    return;
+            }
+
             Console.WriteLine($"Ingesting {source} item: {id}...");
-            var result = await jiraSource.IngestItemAsync(id, options, ct);
+            var result = await dataSource.IngestItemAsync(id, options, ct);
             DownloadCommand.PrintResult(result, parseResult.GetValue(jsonOption));
         });
 

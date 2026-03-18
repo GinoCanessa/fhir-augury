@@ -3,12 +3,14 @@
     <Project Path="src/FhirAugury.Models/FhirAugury.Models.csproj" />
     <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />
     <Project Path="src/FhirAugury.Sources.Jira/FhirAugury.Sources.Jira.csproj" />
+    <Project Path="src/FhirAugury.Sources.Zulip/FhirAugury.Sources.Zulip.csproj" />
     <Project Path="src/FhirAugury.Indexing/FhirAugury.Indexing.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Database.Tests/FhirAugury.Database.Tests.csproj" />
     <Project Path="tests/FhirAugury.Sources.Tests/FhirAugury.Sources.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Indexing.Tests/FhirAugury.Indexing.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />

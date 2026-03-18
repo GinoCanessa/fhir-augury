@@ -42,6 +42,9 @@ public static class IndexCommand
         if (verbose) Console.WriteLine("Rebuilding Jira FTS5 indexes...");
         FtsSetup.RebuildJiraFts(conn);
 
+        if (verbose) Console.WriteLine("Rebuilding Zulip FTS5 indexes...");
+        FtsSetup.RebuildZulipFts(conn);
+
         Console.WriteLine("FTS5 indexes rebuilt successfully.");
     }
 }
