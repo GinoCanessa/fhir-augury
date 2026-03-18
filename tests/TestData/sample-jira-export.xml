@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="0.92">
+  <channel>
+    <title>FHIR Specification Feedback</title>
+    <link>https://jira.hl7.org</link>
+    <description>JIRA XML Export</description>
+    <language>en</language>
+    <issue start="0" end="2" total="2" />
+    <build-info>
+      <version>8.20.0</version>
+      <build-number>820000</build-number>
+      <build-date>2025-01-01</build-date>
+    </build-info>
+    <item>
+      <title>[FHIR-43499] FHIRPath normative readiness review</title>
+      <link>https://jira.hl7.org/browse/FHIR-43499</link>
+      <description>Review FHIRPath specification for normative ballot readiness.</description>
+      <summary>FHIRPath normative readiness review</summary>
+      <project id="10000" key="FHIR">FHIR Specification Feedback</project>
+      <key id="43499">FHIR-43499</key>
+      <type id="10600" iconUrl="https://jira.hl7.org/images/icons/issuetypes/task.png">Change Request</type>
+      <priority id="3" iconUrl="https://jira.hl7.org/images/icons/priorities/medium.svg">Medium</priority>
+      <status id="10102" iconUrl="https://jira.hl7.org/images/icons/statuses/generic.png" description="Triaged">Triaged
+        <statusCategory id="4" key="indeterminate" colorName="yellow" />
+      </status>
+      <resolution id="-1">Unresolved</resolution>
+      <assignee username="bporter">Bryn Rhodes</assignee>
+      <reporter username="gcanessa">Gino Canessa</reporter>
+      <created>Sat, 15 Nov 2025 10:30:00 -0500</created>
+      <updated>Sun, 15 Feb 2026 14:22:00 -0500</updated>
+      <watches>3</watches>
+      <comments>
+        <comment id="89001" author="bporter" created="Mon, 01 Dec 2025 09:15:00 -0500">Initial review completed. Several areas need attention.</comment>
+        <comment id="89002" author="gcanessa" created="Fri, 05 Dec 2025 11:30:00 -0500">Agreed on the aggregate function definitions.</comment>
+      </comments>
+      <customfields>
+        <customfield id="customfield_11302" key="com.valiantys.jira.plugins.SQLFeed:nfeed-standard-customfield-type">
+          <customfieldname>Specification</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>FHIRPath</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+        <customfield id="customfield_11400" key="com.valiantys.jira.plugins.SQLFeed:nfeed-standard-customfield-type">
+          <customfieldname>Work Group</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>FHIR Infrastructure</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+        <customfield id="customfield_10618" key="com.atlassian.jira.plugin.system.customfieldtypes:textarea">
+          <customfieldname>Resolution Description</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>Pending review of FHIRPath normative package content.</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+        <customfield id="customfield_11300" key="com.valiantys.jira.plugins.SQLFeed:nfeed-standard-customfield-type">
+          <customfieldname>Related Artifact(s)</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>http://hl7.org/fhirpath/N1</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+        <customfield id="customfield_10510" key="com.atlassian.jira.plugin.system.customfieldtypes:select">
+          <customfieldname>Resolution Vote</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>Affirmative</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+      </customfields>
+    </item>
+    <item>
+      <title>[FHIR-42100] Type system clarification for FHIRPath</title>
+      <link>https://jira.hl7.org/browse/FHIR-42100</link>
+      <description>&lt;p&gt;Clarify the type promotion rules in FHIRPath expressions.&lt;/p&gt;</description>
+      <summary>Type system clarification for FHIRPath</summary>
+      <project id="10000" key="FHIR">FHIR Specification Feedback</project>
+      <key id="42100">FHIR-42100</key>
+      <type id="10600" iconUrl="https://jira.hl7.org/images/icons/issuetypes/task.png">Change Request</type>
+      <priority id="2" iconUrl="https://jira.hl7.org/images/icons/priorities/high.svg">High</priority>
+      <status id="10105" iconUrl="https://jira.hl7.org/images/icons/statuses/resolved.png" description="Resolved">Resolved - Change Required
+        <statusCategory id="3" key="done" colorName="green" />
+      </status>
+      <resolution id="10205">Persuasive</resolution>
+      <assignee username="bporter">Bryn Rhodes</assignee>
+      <reporter username="jmandel">Josh Mandel</reporter>
+      <created>Mon, 01 Sep 2025 08:00:00 -0400</created>
+      <updated>Wed, 15 Jan 2026 16:45:00 -0500</updated>
+      <resolved>Wed, 15 Jan 2026 16:45:00 -0500</resolved>
+      <watches>5</watches>
+      <comments>
+        <comment id="88501" author="bporter" created="Tue, 15 Sep 2025 14:00:00 -0400">Applied changes to the FHIRPath specification.</comment>
+      </comments>
+      <customfields>
+        <customfield id="customfield_11302" key="com.valiantys.jira.plugins.SQLFeed:nfeed-standard-customfield-type">
+          <customfieldname>Specification</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>FHIRPath</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+        <customfield id="customfield_11400" key="com.valiantys.jira.plugins.SQLFeed:nfeed-standard-customfield-type">
+          <customfieldname>Work Group</customfieldname>
+          <customfieldvalues>
+            <customfieldvalue>FHIR Infrastructure</customfieldvalue>
+          </customfieldvalues>
+        </customfield>
+      </customfields>
+    </item>
+  </channel>
+</rss>

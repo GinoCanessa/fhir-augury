@@ -3,6 +3,8 @@
 **Goal:** Project scaffolding, database layer, first data source (Jira), and
 end-to-end proof of the download → load → index → search pipeline.
 
+**Status:** ✅ Complete (2026-03-18)
+
 ---
 
 ## 1.1 — Solution & Project Scaffolding
@@ -66,10 +68,10 @@ with zero warnings.
 
 ### Acceptance Criteria
 
-- [ ] All projects compile with `dotnet build`
-- [ ] `dotnet test` runs (empty test suite, but the infrastructure works)
-- [ ] Source generator reference is configured in `FhirAugury.Database`
-- [ ] Solution file lists all projects
+- [x] All projects compile with `dotnet build`
+- [x] `dotnet test` runs (empty test suite, but the infrastructure works)
+- [x] Source generator reference is configured in `FhirAugury.Database`
+- [x] Solution file lists all projects
 
 ---
 
@@ -140,9 +142,9 @@ Unified search result record:
 
 ### Acceptance Criteria
 
-- [ ] All interfaces and models compile
-- [ ] No dependencies on concrete implementations
-- [ ] XML doc comments on all public members
+- [x] All interfaces and models compile
+- [x] No dependencies on concrete implementations
+- [x] XML doc comments on all public members
 
 ---
 
@@ -213,11 +215,11 @@ Phase 1 implements Jira FTS5 only:
 
 ### Acceptance Criteria
 
-- [ ] `dotnet build` succeeds — source generator produces CRUD code
-- [ ] Unit test creates in-memory SQLite DB, calls `InitializeDatabase()`,
+- [x] `dotnet build` succeeds — source generator produces CRUD code
+- [x] Unit test creates in-memory SQLite DB, calls `InitializeDatabase()`,
       inserts/selects/updates/deletes `JiraIssueRecord`
-- [ ] FTS5 tables are created and triggers fire on insert
-- [ ] FTS5 search returns matching rows
+- [x] FTS5 tables are created and triggers fire on insert
+- [x] FTS5 search returns matching rows
 
 ---
 
@@ -294,12 +296,12 @@ Returns `IEnumerable<JiraCommentRecord>`.
 
 ### Acceptance Criteria
 
-- [ ] Can parse sample Jira JSON response into `JiraIssueRecord`
-- [ ] Custom field mapping correctly extracts all 16+ custom fields
-- [ ] XML parser handles the HL7 Jira export format
-- [ ] `DownloadAllAsync` paginates correctly (test with mock HTTP)
-- [ ] `DownloadIncrementalAsync` uses `since` date in JQL
-- [ ] `IngestItemAsync` fetches and stores a single issue
+- [x] Can parse sample Jira JSON response into `JiraIssueRecord`
+- [x] Custom field mapping correctly extracts all 16+ custom fields
+- [x] XML parser handles the HL7 Jira export format
+- [x] `DownloadAllAsync` paginates correctly (test with mock HTTP)
+- [x] `DownloadIncrementalAsync` uses `since` date in JQL
+- [x] `IngestItemAsync` fetches and stores a single issue
 
 ---
 
@@ -334,10 +336,10 @@ Returns `SearchResult` records with snippet extraction via `snippet()`.
 
 ### Acceptance Criteria
 
-- [ ] Inserting a `JiraIssueRecord` automatically populates FTS5 via triggers
-- [ ] FTS5 search for a keyword returns matching issues with scores
-- [ ] HTML content is stripped before indexing (via `ContentPlain` field)
-- [ ] Snippet extraction works for search result display
+- [x] Inserting a `JiraIssueRecord` automatically populates FTS5 via triggers
+- [x] FTS5 search for a keyword returns matching issues with scores
+- [x] HTML content is stripped before indexing (via `ContentPlain` field)
+- [x] Snippet extraction works for search result display
 
 ---
 
@@ -441,13 +443,13 @@ Renders output as markdown.
 
 ### Acceptance Criteria
 
-- [ ] `fhir-augury download --source jira` downloads issues (or errors with auth)
-- [ ] `fhir-augury search -q "test"` returns FTS5 results in table format
-- [ ] `fhir-augury get --source jira --id FHIR-12345` shows full issue
-- [ ] `fhir-augury snapshot --source jira --id FHIR-12345` renders rich view
-- [ ] `fhir-augury stats` shows database counts
-- [ ] `--json` flag works on all output commands
-- [ ] `--help` works on all commands
+- [x] `fhir-augury download --source jira` downloads issues (or errors with auth)
+- [x] `fhir-augury search -q "test"` returns FTS5 results in table format
+- [x] `fhir-augury get --source jira --id FHIR-12345` shows full issue
+- [x] `fhir-augury snapshot --source jira --id FHIR-12345` renders rich view
+- [x] `fhir-augury stats` shows database counts
+- [x] `--json` flag works on all output commands
+- [x] `--help` works on all commands
 
 ---
 
@@ -481,6 +483,6 @@ Create `tests/TestData/` with:
 
 ### Acceptance Criteria
 
-- [ ] All tests pass with `dotnet test`
-- [ ] Database tests use in-memory SQLite (`:memory:`)
-- [ ] Source tests use static sample data, no network calls
+- [x] All tests pass with `dotnet test`
+- [x] Database tests use in-memory SQLite (`:memory:`)
+- [x] Source tests use static sample data, no network calls

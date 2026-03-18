@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Indexing</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Models\FhirAugury.Models.csproj" />
+    <ProjectReference Include="..\FhirAugury.Database\FhirAugury.Database.csproj" />
+  </ItemGroup>
+
+</Project>

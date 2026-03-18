@@ -5,15 +5,15 @@ Derived from the [Proposal v1](../proposal/v1/README.md).
 
 ## Plan Documents
 
-| Phase | Document | Goal | Dependencies |
-|-------|----------|------|--------------|
-| 1 | [Foundation](phase-1-foundation.md) | Project scaffolding, database layer, Jira source, CLI basics | — |
-| 2 | [Zulip Integration](phase-2-zulip.md) | Zulip source, unified search across two sources | Phase 1 |
-| 3 | [Cross-Referencing & BM25](phase-3-cross-ref-bm25.md) | Cross-source linking, BM25 keyword scoring, "find related" | Phase 2 |
-| 4 | [Service Layer](phase-4-service.md) | Background service, ingestion queue, HTTP API | Phase 3 |
-| 5 | [Confluence & GitHub Sources](phase-5-confluence-github.md) | Complete four-source coverage | Phase 4 |
-| 6 | [MCP Server](phase-6-mcp.md) | MCP server for LLM agent integration | Phase 5 |
-| 7 | [Polish & Optimization](phase-7-polish.md) | Performance, error handling, packaging, docs | Phase 6 |
+| Phase | Document | Goal | Dependencies | Status |
+|-------|----------|------|--------------|--------|
+| 1 | [Foundation](phase-1-foundation.md) | Project scaffolding, database layer, Jira source, CLI basics | — | ✅ Complete |
+| 2 | [Zulip Integration](phase-2-zulip.md) | Zulip source, unified search across two sources | Phase 1 | Pending |
+| 3 | [Cross-Referencing & BM25](phase-3-cross-ref-bm25.md) | Cross-source linking, BM25 keyword scoring, "find related" | Phase 2 | Pending |
+| 4 | [Service Layer](phase-4-service.md) | Background service, ingestion queue, HTTP API | Phase 3 | Pending |
+| 5 | [Confluence & GitHub Sources](phase-5-confluence-github.md) | Complete four-source coverage | Phase 4 | Pending |
+| 6 | [MCP Server](phase-6-mcp.md) | MCP server for LLM agent integration | Phase 5 | Pending |
+| 7 | [Polish & Optimization](phase-7-polish.md) | Performance, error handling, packaging, docs | Phase 6 | Pending |
 
 ## Architecture Summary
 
