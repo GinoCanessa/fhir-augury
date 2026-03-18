@@ -14,9 +14,34 @@ public class JiraAuthHandler(JiraSourceOptions options) : DelegatingHandler
         {
             Timeout = TimeSpan.FromMinutes(5),
         };
+        ConfigureHttpClient(client, options);
+        return client;
+    }
+
+    /// <summary>Configures an existing HttpClient with Jira default headers and auth.</summary>
+    public static void ConfigureHttpClient(HttpClient client, JiraSourceOptions options)
+    {
+        client.Timeout = TimeSpan.FromMinutes(5);
         client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
         client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/1.0");
-        return client;
+
+        switch (options.AuthMode)
+        {
+            case JiraAuthMode.Cookie:
+                if (!string.IsNullOrEmpty(options.Cookie))
+                {
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("cookie", options.Cookie);
+                }
+                break;
+
+            case JiraAuthMode.ApiToken:
+                if (!string.IsNullOrEmpty(options.Email) && !string.IsNullOrEmpty(options.ApiToken))
+                {
+                    var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{options.Email}:{options.ApiToken}"));
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+                }
+                break;
+        }
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

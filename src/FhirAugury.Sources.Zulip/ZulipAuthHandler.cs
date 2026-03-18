@@ -15,9 +15,23 @@ public class ZulipAuthHandler(ZulipSourceOptions options) : DelegatingHandler
         {
             Timeout = TimeSpan.FromMinutes(10),
         };
+        ConfigureHttpClient(client, resolved);
+        return client;
+    }
+
+    /// <summary>Configures an existing HttpClient with Zulip default headers and auth.</summary>
+    public static void ConfigureHttpClient(HttpClient client, ZulipSourceOptions options)
+    {
+        var resolved = ResolveCredentials(options);
+        client.Timeout = TimeSpan.FromMinutes(10);
         client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
         client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/1.0");
-        return client;
+
+        if (!string.IsNullOrEmpty(resolved.Email) && !string.IsNullOrEmpty(resolved.ApiKey))
+        {
+            var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{resolved.Email}:{resolved.ApiKey}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+        }
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

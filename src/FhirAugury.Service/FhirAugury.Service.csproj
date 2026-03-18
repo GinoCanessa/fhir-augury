@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Service</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- These are already included by Microsoft.NET.Sdk.Web but listed per Phase 4 plan -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Models\FhirAugury.Models.csproj" />
+    <ProjectReference Include="..\FhirAugury.Database\FhirAugury.Database.csproj" />
+    <ProjectReference Include="..\FhirAugury.Sources.Jira\FhirAugury.Sources.Jira.csproj" />
+    <ProjectReference Include="..\FhirAugury.Sources.Zulip\FhirAugury.Sources.Zulip.csproj" />
+    <ProjectReference Include="..\FhirAugury.Indexing\FhirAugury.Indexing.csproj" />
+  </ItemGroup>
+
+</Project>

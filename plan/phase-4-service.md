@@ -71,9 +71,9 @@ Update `fhir-augury.slnx`.
 
 ### Acceptance Criteria
 
-- [ ] `dotnet run --project src/FhirAugury.Service` starts and listens on configured port
-- [ ] Configuration loads from `appsettings.json` and environment variables
-- [ ] All services resolve correctly from DI
+- [x] `dotnet run --project src/FhirAugury.Service` starts and listens on configured port
+- [x] Configuration loads from `appsettings.json` and environment variables
+- [x] All services resolve correctly from DI
 
 ---
 
@@ -99,9 +99,9 @@ Record: `SourceName`, `IngestionType Type`, `string? Identifier`,
 
 ### Acceptance Criteria
 
-- [ ] Enqueue/dequeue works correctly
-- [ ] Bounded capacity blocks writers when full
-- [ ] Multiple concurrent readers can process items
+- [x] Enqueue/dequeue works correctly
+- [x] Bounded capacity blocks writers when full
+- [x] Multiple concurrent readers can process items
 
 ---
 
@@ -139,11 +139,11 @@ Implement the ingestion worker and scheduled sync service.
 
 ### Acceptance Criteria
 
-- [ ] Worker processes queued requests sequentially
-- [ ] Scheduler enqueues incremental syncs at configured intervals
-- [ ] Failed ingestion is logged and doesn't crash the service
-- [ ] Schedule can be updated at runtime
-- [ ] Graceful shutdown on cancellation
+- [x] Worker processes queued requests sequentially
+- [x] Scheduler enqueues incremental syncs at configured intervals
+- [x] Failed ingestion is logged and doesn't crash the service
+- [x] Schedule can be updated at runtime
+- [x] Graceful shutdown on cancellation
 
 ---
 
@@ -210,12 +210,12 @@ all endpoint groups.
 
 ### Acceptance Criteria
 
-- [ ] All endpoints return correct HTTP status codes
-- [ ] `POST /ingest/{source}` enqueues a request and returns request ID
-- [ ] `POST /ingest/sync` enqueues sync for all enabled sources
-- [ ] `GET /search?q=test` returns ranked results from available sources
-- [ ] `GET /stats` returns correct counts
-- [ ] Error responses use consistent format (problem details)
+- [x] All endpoints return correct HTTP status codes
+- [x] `POST /ingest/{source}` enqueues a request and returns request ID
+- [x] `POST /ingest/sync` enqueues sync for all enabled sources
+- [x] `GET /search?q=test` returns ranked results from available sources
+- [x] `GET /stats` returns correct counts
+- [x] Error responses use consistent format (problem details)
 
 ---
 
@@ -260,10 +260,10 @@ New command group:
 
 ### Acceptance Criteria
 
-- [ ] CLI works in both direct and client mode
-- [ ] `--service` flag routes requests through HTTP API
-- [ ] `fhir-augury service status` shows running service info
-- [ ] `fhir-augury service schedule` shows per-source schedule
+- [x] CLI works in both direct and client mode
+- [x] `--service` flag routes requests through HTTP API
+- [x] `fhir-augury service status` shows running service info
+- [x] `fhir-augury service schedule` shows per-source schedule
 
 ---
 
@@ -285,7 +285,7 @@ Create project with xUnit dependencies plus:
 
 ### Acceptance Criteria
 
-- [ ] All tests pass
-- [ ] Integration tests use `WebApplicationFactory` for in-process API testing
-- [ ] Queue tests verify thread safety
-- [ ] No tests require external services (Jira, Zulip, etc.)
+- [x] All tests pass
+- [x] Integration tests use `WebApplicationFactory` for in-process API testing
+- [x] Queue tests verify thread safety
+- [x] No tests require external services (Jira, Zulip, etc.)
