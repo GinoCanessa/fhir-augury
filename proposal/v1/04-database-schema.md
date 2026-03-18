@@ -21,7 +21,9 @@
 ### Ingestion Metadata
 
 ```csharp
-/// Tracks sync state per source. Used by incremental downloads.
+/// Tracks sync state and schedule per source (or sub-source like a stream/repo).
+/// The scheduler reads this to decide when to trigger incremental syncs.
+/// On-demand API calls also read LastSyncAt to know what "since" value to use.
 [LdgSQLiteTable("sync_state")]
 public partial record class SyncStateRecord
 {
@@ -32,7 +34,10 @@ public partial record class SyncStateRecord
     public required DateTimeOffset LastSyncAt { get; set; }
     public required string? LastCursor { get; set; }    // pagination cursor / last ID
     public required int ItemsIngested { get; set; }
+    public required string? SyncSchedule { get; set; }  // TimeSpan string, e.g. "01:00:00"
+    public required DateTimeOffset? NextScheduledAt { get; set; }
     public required string? Status { get; set; }        // "completed", "in_progress", "failed"
+    public required string? LastError { get; set; }
 }
 
 /// Log of every ingestion run.

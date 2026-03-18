@@ -127,7 +127,10 @@ public interface IDataSource
         IngestionOptions options,
         CancellationToken ct);
 
-    /// Incremental update since a given timestamp.
+    /// Incremental update — fetches everything changed since the given
+    /// timestamp. Called by both the scheduler (on each source's interval)
+    /// and by clients requesting on-demand refresh. The 'since' value
+    /// typically comes from sync_state.LastSyncAt for this source.
     Task<IngestionResult> DownloadIncrementalAsync(
         DateTimeOffset since,
         IngestionOptions options,
@@ -146,13 +149,20 @@ public interface IDataSource
 The `FhirAugury.Service` project runs as a .NET `BackgroundService` hosted in
 an ASP.NET Minimal API application. It provides:
 
-- **Scheduled ingestion** — configurable polling intervals per source
+- **Per-source scheduled ingestion** — each source has its own configurable sync
+  interval (e.g., hourly Jira, daily Confluence). The scheduler tracks each
+  source's last sync time and triggers incremental downloads when due.
+- **On-demand refresh** — clients can call `POST /ingest/{source}` or
+  `POST /ingest/sync` (all sources) to trigger immediate incremental updates.
+  The incremental download fetches everything changed since the source's last
+  successful sync.
 - **HTTP API** — endpoints to trigger ingestion, submit individual items,
-  query ingestion status, and search
+  view/modify sync schedules, query ingestion status, and search.
 - **Queue-based processing** — ingestion requests are queued via
-  `System.Threading.Channels` and processed by background workers
+  `System.Threading.Channels` and processed by background workers. Both
+  scheduled and on-demand requests flow through the same queue.
 - **Live index updates** — FTS5 and BM25 indexes are updated incrementally
-  as new data arrives
+  as new data arrives.
 
 ### 5. MCP Server as a Separate Host
 

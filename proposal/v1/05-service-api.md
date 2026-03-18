@@ -95,22 +95,61 @@ public class IngestionWorker : BackgroundService
 
 ### ScheduledIngestionService
 
-Periodically enqueues incremental sync requests per source:
+Manages per-source sync schedules. Each source has its own configurable
+interval (e.g., hourly for Jira, daily for Confluence). The scheduler tracks
+when each source last ran and only enqueues an incremental sync when the
+source's interval has elapsed. This avoids a single global poll loop and
+ensures high-frequency sources don't block low-frequency ones.
 
 ```csharp
 public class ScheduledIngestionService : BackgroundService
 {
+    private readonly record struct ScheduleEntry(
+        string SourceName,
+        TimeSpan Interval,
+        DateTimeOffset NextRunAt);
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        // Build the initial schedule from per-source config
+        var schedule = _config.Sources
+            .Where(s => s.Enabled && s.SyncSchedule is not null)
+            .Select(s => new ScheduleEntry(
+                s.Name,
+                s.SyncSchedule!.Value,
+                DateTimeOffset.UtcNow))   // run immediately on startup
+            .ToList();
+
         while (!ct.IsCancellationRequested)
         {
-            foreach (var source in _config.Sources.Where(s => s.AutoSync))
+            var now = DateTimeOffset.UtcNow;
+
+            for (int i = 0; i < schedule.Count; i++)
             {
+                var entry = schedule[i];
+                if (now < entry.NextRunAt)
+                    continue;
+
+                // Enqueue an incremental sync for this source
                 await _queue.EnqueueAsync(new IngestionRequest(
-                    source.Name,
+                    entry.SourceName,
                     IngestionType.Incremental), ct);
+
+                // Advance to next scheduled run
+                schedule[i] = entry with
+                {
+                    NextRunAt = now + entry.Interval
+                };
             }
-            await Task.Delay(_config.SyncInterval, ct);
+
+            // Sleep until the next source is due (or 30s max to stay responsive)
+            var nextDue = schedule.Min(e => e.NextRunAt);
+            var delay = nextDue - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(
+                    delay > TimeSpan.FromSeconds(30)
+                        ? TimeSpan.FromSeconds(30) : delay,
+                    ct);
         }
     }
 }
@@ -126,8 +165,11 @@ public static void MapAuguryApi(this WebApplication app)
     // ── Ingestion Control ────────────────────────────────────
     api.MapPost("/ingest/{source}",         IngestEndpoints.TriggerIngestion);
     api.MapPost("/ingest/{source}/item",    IngestEndpoints.SubmitItem);
+    api.MapPost("/ingest/sync",             IngestEndpoints.TriggerSyncAll);
     api.MapGet("/ingest/status",            IngestEndpoints.GetStatus);
     api.MapGet("/ingest/history",           IngestEndpoints.GetHistory);
+    api.MapGet("/ingest/schedule",          IngestEndpoints.GetSchedule);
+    api.MapPut("/ingest/{source}/schedule", IngestEndpoints.UpdateSchedule);
 
     // ── Search ───────────────────────────────────────────────
     api.MapGet("/search",                   SearchEndpoints.UnifiedSearch);
@@ -161,9 +203,11 @@ public static void MapAuguryApi(this WebApplication app)
 
 #### `POST /api/v1/ingest/{source}`
 
-Trigger an ingestion run for a source.
+Trigger an ingestion run for a source. Defaults to `incremental` — fetches
+all data updated since the source's last successful sync.
 
 ```
+POST /api/v1/ingest/zulip
 POST /api/v1/ingest/zulip?type=incremental
 POST /api/v1/ingest/jira?type=full&filter=specification="FHIR Core"
 ```
@@ -175,8 +219,69 @@ POST /api/v1/ingest/jira?type=full&filter=specification="FHIR Core"
   "source": "zulip",
   "type": "incremental",
   "status": "queued",
-  "queuePosition": 3
+  "queuePosition": 3,
+  "lastSyncAt": "2026-03-18T12:00:00Z"
 }
+```
+
+#### `POST /api/v1/ingest/sync`
+
+Trigger an incremental sync for **all enabled sources** at once. This is the
+primary "update everything" endpoint — a client can call this to ensure all
+sources are refreshed with data since their last poll.
+
+```
+POST /api/v1/ingest/sync
+POST /api/v1/ingest/sync?sources=jira,zulip    # optional: limit to specific sources
+```
+
+**Response:**
+```json
+{
+  "requests": [
+    { "requestId": "abc-124", "source": "jira",       "lastSyncAt": "2026-03-18T14:00:00Z" },
+    { "requestId": "abc-125", "source": "zulip",      "lastSyncAt": "2026-03-18T14:30:00Z" },
+    { "requestId": "abc-126", "source": "confluence",  "lastSyncAt": "2026-03-17T08:00:00Z" },
+    { "requestId": "abc-127", "source": "github",      "lastSyncAt": "2026-03-18T13:00:00Z" }
+  ],
+  "status": "queued"
+}
+```
+
+#### `GET /api/v1/ingest/schedule`
+
+View the current sync schedule for all sources — intervals, next run times,
+and last successful sync timestamps.
+
+**Response:**
+```json
+{
+  "sources": [
+    {
+      "source": "jira",
+      "syncInterval": "01:00:00",
+      "lastSyncAt": "2026-03-18T14:00:00Z",
+      "nextScheduledAt": "2026-03-18T15:00:00Z",
+      "itemsSinceLastSync": null
+    },
+    {
+      "source": "confluence",
+      "syncInterval": "1.00:00:00",
+      "lastSyncAt": "2026-03-17T08:00:00Z",
+      "nextScheduledAt": "2026-03-18T08:00:00Z",
+      "itemsSinceLastSync": null
+    }
+  ]
+}
+```
+
+#### `PUT /api/v1/ingest/{source}/schedule`
+
+Update a source's sync interval at runtime (persisted to config).
+
+```
+PUT /api/v1/ingest/jira/schedule
+Body: { "syncInterval": "00:30:00" }
 ```
 
 #### `POST /api/v1/ingest/{source}/item`
@@ -233,30 +338,29 @@ GET /api/v1/search?q=FHIRPath+normative&sources=zulip,jira&limit=20
 {
   "FhirAugury": {
     "DatabasePath": "fhir-augury.db",
-    "SyncIntervalMinutes": 60,
     "Sources": {
       "Zulip": {
         "Enabled": true,
-        "AutoSync": true,
+        "SyncSchedule": "04:00:00",
         "BaseUrl": "https://chat.fhir.org",
         "CredentialFile": "~/.zuliprc"
       },
       "Jira": {
         "Enabled": true,
-        "AutoSync": true,
+        "SyncSchedule": "01:00:00",
         "BaseUrl": "https://jira.hl7.org",
         "AuthMode": "cookie"
       },
       "Confluence": {
         "Enabled": true,
-        "AutoSync": true,
+        "SyncSchedule": "1.00:00:00",
         "BaseUrl": "https://confluence.hl7.org",
         "Spaces": ["FHIR", "FHIRI"],
         "AuthMode": "basic"
       },
       "GitHub": {
         "Enabled": true,
-        "AutoSync": true,
+        "SyncSchedule": "02:00:00",
         "Repositories": ["HL7/fhir", "HL7/fhir-ig-publisher"]
       }
     },
@@ -271,3 +375,18 @@ GET /api/v1/search?q=FHIRPath+normative&sources=zulip,jira&limit=20
   }
 }
 ```
+
+### Configuration Notes
+
+- **`SyncSchedule`** — `TimeSpan`-format string per source. Controls how often
+  the scheduler triggers an incremental sync. Set to `null` or omit to disable
+  automatic sync (the source can still be synced on-demand via API/CLI).
+  Recommended defaults:
+  - **Jira:** `01:00:00` (hourly) — issues change frequently during ballot/WGM
+  - **Zulip:** `04:00:00` (every 4 hours) — high volume but messages are append-only
+  - **Confluence:** `1.00:00:00` (daily) — pages change infrequently
+  - **GitHub:** `02:00:00` (every 2 hours) — moderate activity on core repos
+- **`Enabled`** — master switch per source. When `false`, the source is
+  excluded from scheduled sync and API-triggered sync-all requests.
+- Intervals can be changed at runtime via `PUT /api/v1/ingest/{source}/schedule`
+  and are persisted back to the config file.

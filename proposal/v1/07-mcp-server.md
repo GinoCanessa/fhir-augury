@@ -81,7 +81,8 @@ mapped at `/mcp`) for remote access.
 | Tool | Description | Key Arguments |
 |------|-------------|---------------|
 | `get_stats` | Database statistics overview | `source` (optional) |
-| `get_sync_status` | Last sync times per source | (none) |
+| `get_sync_status` | Last sync times and schedule per source | (none) |
+| `trigger_sync` | Trigger incremental sync for a source (or all) | `source` (optional, defaults to all) |
 
 ## Tool Implementation Pattern
 

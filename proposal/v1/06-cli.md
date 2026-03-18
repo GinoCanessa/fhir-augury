@@ -20,10 +20,11 @@ fhir-augury
 │   ├── --filter      # Source-specific filter (JQL, CQL, repo list)
 │   └── (source-specific auth options)
 │
-├── sync              # Incremental update from a source
+├── sync              # Incremental update since last sync
 │   ├── --source      # zulip | jira | confluence | github | all
-│   ├── --db          # Database file path
-│   └── --since       # Override: sync from specific date
+│   ├── --db          # Database file path (direct mode)
+│   ├── --service     # Service URL (client mode — triggers via API)
+│   └── --since       # Override: sync from specific date instead of last sync
 │
 ├── ingest            # Submit a single item for ingestion
 │   ├── --source      # zulip | jira | confluence | github
@@ -70,7 +71,8 @@ fhir-augury
 │
 ├── service           # Service management (client mode)
 │   ├── status        # Check service health
-│   ├── trigger       # Trigger ingestion via API
+│   ├── trigger       # Trigger sync via API (single source or all)
+│   ├── schedule      # View / update per-source sync schedules
 │   └── --service     # Service URL
 │
 └── (global options)
@@ -110,8 +112,24 @@ fhir-augury index rebuild-all --db fhir-augury.db
 ### Daily Use
 
 ```bash
-# Incremental sync of all sources
+# Incremental sync of all sources (direct — reads last sync from DB)
 fhir-augury sync --source all --db fhir-augury.db
+
+# Incremental sync via the running service (on-demand refresh)
+fhir-augury sync --source all --service http://localhost:5150
+
+# Sync just Jira since last update
+fhir-augury sync --source jira --service http://localhost:5150
+
+# Override: sync Jira from a specific date (ignores last-sync timestamp)
+fhir-augury sync --source jira --since 2026-03-01 --db fhir-augury.db
+
+# View current sync schedules and last-sync times
+fhir-augury service schedule --service http://localhost:5150
+
+# Change Jira sync interval to every 30 minutes
+fhir-augury service schedule --source jira --interval 00:30:00 \
+  --service http://localhost:5150
 
 # Search across all sources
 fhir-augury search -q "FHIRPath normative ballot" -n 10
