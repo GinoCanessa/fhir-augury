@@ -389,3 +389,5 @@ msbuild.wrn
 /scratch
 
 *.local.json
+sandbox.dockerfile
+dockerfile

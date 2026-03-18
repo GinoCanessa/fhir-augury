@@ -24,6 +24,9 @@ var auguryConfig = builder.Configuration
     .GetSection(AuguryConfiguration.SectionName)
     .Get<AuguryConfiguration>() ?? new AuguryConfiguration();
 
+// Apply configured listen port
+builder.WebHost.UseUrls($"http://*:{auguryConfig.Api.Port}");
+
 // Database — registered via factory so tests can override
 builder.Services.AddSingleton(sp =>
 {
@@ -49,8 +52,17 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(auguryConfig.Api.CorsOrigins)
-              .AllowAnyMethod()
+        var origins = auguryConfig.Api.CorsOrigins;
+        if (origins.Length == 0 || origins.Contains("*"))
+        {
+            policy.AllowAnyOrigin();
+        }
+        else
+        {
+            policy.WithOrigins(origins);
+        }
+
+        policy.AllowAnyMethod()
               .AllowAnyHeader();
     });
 });

@@ -49,5 +49,5 @@ public class Bm25Configuration
 public class ApiConfiguration
 {
     public int Port { get; set; } = 5100;
-    public string[] CorsOrigins { get; set; } = ["*"];
+    public string[] CorsOrigins { get; set; } = [];
 }
