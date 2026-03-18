@@ -35,7 +35,7 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
             JsonDocument doc;
             try
             {
-                var response = await httpClient.GetAsync(url, ct);
+                var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "jira");
                 response.EnsureSuccessStatusCode();
                 var json = await response.Content.ReadAsStringAsync(ct);
                 doc = JsonDocument.Parse(json);
@@ -60,6 +60,9 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
                     var result = ProcessIssue(issueJson, connection, ingestionOptions.Verbose);
                     itemsProcessed++;
 
+                    if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                        logger?.LogInformation("Jira download progress: {Count} issues processed", itemsProcessed);
+
                     switch (result.Outcome)
                     {
                         case ProcessOutcome.New:
@@ -81,6 +84,9 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
                 hasMore = startAt < total;
             }
         }
+
+        logger?.LogInformation("Jira full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return new IngestionResult
         {
@@ -121,7 +127,7 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
             JsonDocument doc;
             try
             {
-                var response = await httpClient.GetAsync(url, ct);
+                var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "jira");
                 response.EnsureSuccessStatusCode();
                 var json = await response.Content.ReadAsStringAsync(ct);
                 doc = JsonDocument.Parse(json);
@@ -146,6 +152,9 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
                     var result = ProcessIssue(issueJson, connection, ingestionOptions.Verbose);
                     itemsProcessed++;
 
+                    if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                        logger?.LogInformation("Jira incremental progress: {Count} issues processed", itemsProcessed);
+
                     switch (result.Outcome)
                     {
                         case ProcessOutcome.New:
@@ -167,6 +176,9 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
                 hasMore = startAt < total;
             }
         }
+
+        logger?.LogInformation("Jira incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return new IngestionResult
         {
@@ -197,7 +209,7 @@ public class JiraSource(JiraSourceOptions options, HttpClient httpClient, ILogge
 
         try
         {
-            var response = await httpClient.GetAsync(url, ct);
+            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "jira");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 

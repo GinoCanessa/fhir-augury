@@ -82,6 +82,9 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
                     var result = ProcessMessage(msgJson, stream.Name, stream.Id, connection, ingestionOptions.Verbose);
                     itemsProcessed++;
 
+                    if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                        logger?.LogInformation("Zulip download progress: {Count} messages processed", itemsProcessed);
+
                     switch (result.Outcome)
                     {
                         case ProcessOutcome.New:
@@ -115,12 +118,17 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
             stream.LastFetchedAt = DateTimeOffset.UtcNow;
             ZulipStreamRecord.Update(connection, stream);
 
+            logger?.LogInformation("Zulip stream '{StreamName}': {Count} messages downloaded", stream.Name, streamMessageCount);
+
             // Track highest message ID per stream in sync_state
             if (anchor > 0)
             {
                 UpdateSyncCursor(connection, stream.Name, (anchor - 1).ToString());
             }
         }
+
+        logger?.LogInformation("Zulip full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
@@ -184,6 +192,9 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
                     var result = ProcessMessage(msgJson, stream.Name, stream.Id, connection, ingestionOptions.Verbose);
                     itemsProcessed++;
 
+                    if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                        logger?.LogInformation("Zulip incremental progress: {Count} messages processed", itemsProcessed);
+
                     switch (result.Outcome)
                     {
                         case ProcessOutcome.New:
@@ -218,6 +229,9 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
             }
         }
 
+        logger?.LogInformation("Zulip incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+
         return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
 
@@ -247,7 +261,7 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
             var narrow = $"[{{\"operator\":\"stream\",\"operand\":\"{EscapeJsonString(streamName)}\"}},{{\"operator\":\"topic\",\"operand\":\"{EscapeJsonString(topic)}\"}}]";
             var url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}&anchor=oldest&num_before=0&num_after={options.BatchSize}";
 
-            var response = await httpClient.GetAsync(url, ct);
+            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "zulip");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
@@ -289,7 +303,7 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
     private async Task<List<ZulipStreamRecord>> FetchStreamsAsync(CancellationToken ct)
     {
         var url = $"{options.BaseUrl}/api/v1/streams";
-        var response = await httpClient.GetAsync(url, ct);
+        var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "zulip");
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct);
@@ -317,7 +331,7 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
         var url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}" +
                   $"&anchor={anchor}&num_before=0&num_after={batchSize}";
 
-        var response = await httpClient.GetAsync(url, ct);
+        var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "zulip");
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct);

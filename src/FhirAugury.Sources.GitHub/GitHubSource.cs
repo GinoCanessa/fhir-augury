@@ -39,7 +39,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
             try
             {
                 var repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
-                var repoResponse = await httpClient.GetAsync(repoUrl, ct);
+                var repoResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, repoUrl, ct, sourceName: "github");
                 repoResponse.EnsureSuccessStatusCode();
                 var repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
                 using var repoDoc = JsonDocument.Parse(repoJson);
@@ -63,7 +63,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 JsonDocument doc;
                 try
                 {
-                    var response = await httpClient.GetAsync(url, ct);
+                    var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -88,6 +88,9 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                     {
                         var result = ProcessIssue(issueJson, repoFullName, connection, ingestionOptions.Verbose);
                         itemsProcessed++;
+
+                        if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                            logger?.LogInformation("GitHub download progress: {Count} issues processed", itemsProcessed);
 
                         switch (result.Outcome)
                         {
@@ -120,6 +123,9 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 }
             }
         }
+
+        logger?.LogInformation("GitHub full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
@@ -157,7 +163,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 JsonDocument doc;
                 try
                 {
-                    var response = await httpClient.GetAsync(url, ct);
+                    var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -182,6 +188,9 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                     {
                         var result = ProcessIssue(issueJson, repoFullName, connection, ingestionOptions.Verbose);
                         itemsProcessed++;
+
+                        if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                            logger?.LogInformation("GitHub incremental progress: {Count} issues processed", itemsProcessed);
 
                         switch (result.Outcome)
                         {
@@ -213,6 +222,9 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 }
             }
         }
+
+        logger?.LogInformation("GitHub incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
@@ -246,7 +258,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
         try
         {
             var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{number}";
-            var response = await httpClient.GetAsync(url, ct);
+            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
@@ -363,7 +375,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
         try
         {
             var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{issueNumber}/comments?per_page={options.PageSize}";
-            var response = await httpClient.GetAsync(url, ct);
+            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 

@@ -3,6 +3,8 @@ using FhirAugury.Database.Records;
 using FhirAugury.Indexing;
 using FhirAugury.Indexing.Bm25;
 using FhirAugury.Models;
+using FhirAugury.Sources.Confluence;
+using FhirAugury.Sources.GitHub;
 using FhirAugury.Sources.Jira;
 using FhirAugury.Sources.Zulip;
 using Microsoft.Extensions.Options;
@@ -36,6 +38,7 @@ public class IngestionWorker(
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+                logger.LogInformation("Ingestion worker stopping — finishing request {RequestId}", request.RequestId);
                 break;
             }
             catch (Exception ex)
@@ -47,9 +50,16 @@ public class IngestionWorker(
             {
                 ActiveRequest = null;
             }
+
+            // Check for cancellation between requests (graceful drain)
+            if (stoppingToken.IsCancellationRequested)
+            {
+                logger.LogInformation("Ingestion worker draining — no more requests will be processed");
+                break;
+            }
         }
 
-        logger.LogInformation("Ingestion worker stopped");
+        logger.LogInformation("Ingestion worker stopped (queue depth: {Depth})", queue.Count);
     }
 
     private async Task ProcessRequestAsync(IngestionRequest request, CancellationToken ct)
@@ -160,6 +170,38 @@ public class IngestionWorker(
                 var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
                 ZulipAuthHandler.ConfigureHttpClient(httpClient, zulipOptions);
                 return new ZulipSource(zulipOptions, httpClient);
+            }
+
+            case "confluence":
+            {
+                var confluenceOptions = new ConfluenceSourceOptions
+                {
+                    BaseUrl = sourceCfg.BaseUrl.Length > 0 ? sourceCfg.BaseUrl : "https://confluence.hl7.org",
+                    AuthMode = sourceCfg.AuthMode?.Equals("Basic", StringComparison.OrdinalIgnoreCase) == true
+                        ? ConfluenceAuthMode.Basic : ConfluenceAuthMode.Cookie,
+                    Username = sourceCfg.Username,
+                    ApiToken = sourceCfg.ApiToken,
+                    Cookie = sourceCfg.Cookie,
+                    Spaces = sourceCfg.Spaces,
+                    PageSize = sourceCfg.PageSize > 0 ? sourceCfg.PageSize : 25,
+                };
+                var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
+                ConfluenceAuthHandler.ConfigureHttpClient(httpClient, confluenceOptions);
+                return new ConfluenceSource(confluenceOptions, httpClient);
+            }
+
+            case "github":
+            {
+                var githubOptions = new GitHubSourceOptions
+                {
+                    PersonalAccessToken = sourceCfg.PersonalAccessToken,
+                    Repositories = sourceCfg.Repositories,
+                    PageSize = sourceCfg.PageSize > 0 ? sourceCfg.PageSize : 100,
+                    RateLimitBuffer = sourceCfg.RateLimitBuffer > 0 ? sourceCfg.RateLimitBuffer : 100,
+                };
+                var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
+                GitHubRateLimiter.ConfigureHttpClient(httpClient, githubOptions);
+                return new GitHubSource(githubOptions, httpClient);
             }
 
             default:

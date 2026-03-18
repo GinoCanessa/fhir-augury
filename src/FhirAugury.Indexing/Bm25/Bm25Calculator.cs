@@ -1,3 +1,4 @@
+using FhirAugury.Database;
 using FhirAugury.Database.Records;
 using Microsoft.Data.Sqlite;
 
@@ -52,23 +53,18 @@ public static class Bm25Calculator
             DeleteKeywordsForItem(connection, sourceType, sourceId);
         }
 
-        // Tokenize and insert new keyword records
-        var docLengths = new List<int>();
-        var docKeywords = new List<(string SourceType, string SourceId, Dictionary<string, (int Count, string KeywordType)> Keywords)>();
+        // Tokenize and prepare all keyword records
+        var allRecords = new List<KeywordRecord>();
 
         foreach (var (sourceType, sourceId, text) in items)
         {
             ct.ThrowIfCancellationRequested();
-
             var tokens = Tokenizer.Tokenize(text);
             var keywords = CountAndClassifyTokens(tokens);
-            docLengths.Add(tokens.Count);
-            docKeywords.Add((sourceType, sourceId, keywords));
 
-            // Insert keyword records (BM25 score will be updated after IDF computation)
             foreach (var (keyword, (count, keywordType)) in keywords)
             {
-                var record = new KeywordRecord
+                allRecords.Add(new KeywordRecord
                 {
                     Id = KeywordRecord.GetIndex(),
                     SourceType = sourceType,
@@ -77,12 +73,17 @@ public static class Bm25Calculator
                     Count = count,
                     KeywordType = keywordType,
                     Bm25Score = 0,
-                };
-                KeywordRecord.Insert(connection, record);
+                });
             }
         }
 
-        // Recompute corpus-level stats and BM25 scores for all documents
+        // Insert all keyword records
+        foreach (var record in allRecords)
+        {
+            KeywordRecord.Insert(connection, record);
+        }
+
+        // Recompute corpus-level stats and BM25 scores
         RecomputeCorpusStats(connection, k1, b);
     }
 
@@ -97,8 +98,8 @@ public static class Bm25Calculator
     {
         if (documents.Count == 0) return;
 
-        // Step 1-3: Tokenize, classify, count per-document term frequency
-        var allDocKeywords = new List<(string SourceType, string SourceId, Dictionary<string, (int Count, string KeywordType)> Keywords, int DocLength)>();
+        // Tokenize, classify, count per-document term frequency
+        var allRecords = new List<KeywordRecord>();
 
         foreach (var (sourceType, sourceId, text) in documents)
         {
@@ -106,17 +107,10 @@ public static class Bm25Calculator
 
             var tokens = Tokenizer.Tokenize(text);
             var keywords = CountAndClassifyTokens(tokens);
-            allDocKeywords.Add((sourceType, sourceId, keywords, tokens.Count));
-        }
-
-        // Step 4: Store per-doc keyword records
-        foreach (var (sourceType, sourceId, keywords, _) in allDocKeywords)
-        {
-            ct.ThrowIfCancellationRequested();
 
             foreach (var (keyword, (count, keywordType)) in keywords)
             {
-                var record = new KeywordRecord
+                allRecords.Add(new KeywordRecord
                 {
                     Id = KeywordRecord.GetIndex(),
                     SourceType = sourceType,
@@ -125,29 +119,30 @@ public static class Bm25Calculator
                     Count = count,
                     KeywordType = keywordType,
                     Bm25Score = 0,
-                };
-                KeywordRecord.Insert(connection, record);
+                });
             }
         }
 
-        // Steps 5-10: Compute corpus stats and BM25 scores
+        // Batch insert all keyword records
+        foreach (var record in allRecords)
+        {
+            KeywordRecord.Insert(connection, record);
+        }
+
+        // Compute corpus stats and BM25 scores
         RecomputeCorpusStats(connection, k1, b);
     }
 
     /// <summary>
     /// Recomputes all corpus-level statistics and BM25 scores from keyword records.
+    /// Uses SQL-based bulk UPDATE for performance instead of loading all records into memory.
     /// </summary>
     private static void RecomputeCorpusStats(SqliteConnection connection, double k1, double b)
     {
         // Clear existing corpus stats
         using (var cmd = connection.CreateCommand())
         {
-            cmd.CommandText = "DELETE FROM index_corpus;";
-            cmd.ExecuteNonQuery();
-        }
-        using (var cmd = connection.CreateCommand())
-        {
-            cmd.CommandText = "DELETE FROM index_doc_stats;";
+            cmd.CommandText = "DELETE FROM index_corpus; DELETE FROM index_doc_stats;";
             cmd.ExecuteNonQuery();
         }
 
@@ -164,31 +159,26 @@ public static class Bm25Calculator
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var sourceType = reader.GetString(0);
-                var totalDocs = reader.GetInt32(1);
-                var avgDocLen = reader.GetDouble(2);
-                docStats[sourceType] = (totalDocs, avgDocLen);
+                docStats[reader.GetString(0)] = (reader.GetInt32(1), reader.GetDouble(2));
             }
         }
 
         // Store doc stats
         foreach (var (sourceType, (totalDocs, avgDocLen)) in docStats)
         {
-            var statsRecord = new DocStatsRecord
+            DocStatsRecord.Insert(connection, new DocStatsRecord
             {
                 Id = DocStatsRecord.GetIndex(),
                 SourceType = sourceType,
                 TotalDocuments = totalDocs,
                 AverageDocLength = avgDocLen,
-            };
-            DocStatsRecord.Insert(connection, statsRecord);
+            });
         }
 
-        // Get total document count across all sources
         var totalDocCount = docStats.Values.Sum(ds => ds.TotalDocs);
         if (totalDocCount == 0) return;
 
-        // Compute document frequency per keyword
+        // Compute and store corpus keyword records (IDF)
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
@@ -202,68 +192,54 @@ public static class Bm25Calculator
                 var keyword = reader.GetString(0);
                 var keywordType = reader.GetString(1);
                 var df = reader.GetInt32(2);
-
-                // IDF (BM25+ variant, always non-negative): log(1 + (N - df + 0.5) / (df + 0.5))
                 var idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
-                var corpusRecord = new CorpusKeywordRecord
+                CorpusKeywordRecord.Insert(connection, new CorpusKeywordRecord
                 {
                     Id = CorpusKeywordRecord.GetIndex(),
                     Keyword = keyword,
                     KeywordType = keywordType,
                     DocumentFrequency = df,
                     Idf = idf,
-                };
-                CorpusKeywordRecord.Insert(connection, corpusRecord);
+                });
             }
         }
 
-        // Compute per-document lengths (sum of keyword counts)
-        var docLengths = new Dictionary<string, int>(); // "sourceType:sourceId" -> total tokens
+        // Compute BM25 scores in bulk using SQL UPDATE with subqueries
         using (var cmd = connection.CreateCommand())
         {
+            // Compute overall average doc length
+            double overallAvgDocLen;
+            using (var avgCmd = connection.CreateCommand())
+            {
+                avgCmd.CommandText = """
+                    SELECT CAST(SUM(DocLen) AS REAL) / COUNT(*) FROM (
+                        SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
+                    )
+                    """;
+                overallAvgDocLen = Convert.ToDouble(avgCmd.ExecuteScalar() ?? 1.0);
+            }
+
             cmd.CommandText = """
-                SELECT SourceType, SourceId, SUM(Count) as DocLen
-                FROM index_keywords
-                GROUP BY SourceType, SourceId
+                UPDATE index_keywords
+                SET Bm25Score = (
+                    SELECT
+                        c.Idf * (CAST(index_keywords.Count AS REAL) * (@k1 + 1.0))
+                        / (CAST(index_keywords.Count AS REAL) + @k1 * (1.0 - @b + @b * dl.DocLen / @avgDocLen))
+                    FROM index_corpus c
+                    JOIN (
+                        SELECT SourceType, SourceId, SUM(Count) as DocLen
+                        FROM index_keywords
+                        GROUP BY SourceType, SourceId
+                    ) dl ON dl.SourceType = index_keywords.SourceType AND dl.SourceId = index_keywords.SourceId
+                    WHERE c.Keyword = index_keywords.Keyword
+                    LIMIT 1
+                )
                 """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var compositeKey = reader.GetString(0) + ":" + reader.GetString(1);
-                docLengths[compositeKey] = reader.GetInt32(2);
-            }
-        }
-
-        // Compute overall average doc length
-        var overallAvgDocLen = totalDocCount > 0 ? (double)docLengths.Values.Sum() / totalDocCount : 1.0;
-
-        // Load IDF values into a lookup
-        var idfLookup = new Dictionary<string, double>();
-        using (var cmd = connection.CreateCommand())
-        {
-            cmd.CommandText = "SELECT Keyword, Idf FROM index_corpus";
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                idfLookup[reader.GetString(0)] = reader.GetDouble(1);
-            }
-        }
-
-        // Update BM25 scores for all keyword records
-        var keywordRecords = KeywordRecord.SelectList(connection);
-        foreach (var record in keywordRecords)
-        {
-            var compositeKey = record.SourceType + ":" + record.SourceId;
-            var docLen = docLengths.GetValueOrDefault(compositeKey, 1);
-            var idf = idfLookup.GetValueOrDefault(record.Keyword, 0.0);
-
-            // BM25: idf × (tf × (k1 + 1)) / (tf + k1 × (1 - b + b × docLen / avgDocLen))
-            var tf = (double)record.Count;
-            var bm25 = idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * docLen / overallAvgDocLen));
-
-            record.Bm25Score = bm25;
-            KeywordRecord.Update(connection, record);
+            cmd.Parameters.AddWithValue("@k1", k1);
+            cmd.Parameters.AddWithValue("@b", b);
+            cmd.Parameters.AddWithValue("@avgDocLen", overallAvgDocLen > 0 ? overallAvgDocLen : 1.0);
+            cmd.ExecuteNonQuery();
         }
     }
 

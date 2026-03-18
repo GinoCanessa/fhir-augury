@@ -3,6 +3,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>FhirAugury.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>fhir-augury</ToolCommandName>
+    <PackageId>FhirAugury.Cli</PackageId>
+    <Description>FHIR Augury — unified knowledge platform CLI for searching HL7 FHIR community data sources.</Description>
   </PropertyGroup>
 
   <ItemGroup>

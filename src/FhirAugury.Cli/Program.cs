@@ -25,10 +25,16 @@ public static class Program
             Description = "Force JSON output format",
             DefaultValueFactory = _ => false,
         };
+        var quietOption = new Option<bool>("--quiet")
+        {
+            Description = "Suppress all output except errors",
+            DefaultValueFactory = _ => false,
+        };
 
         rootCommand.Add(dbOption);
         rootCommand.Add(verboseOption);
         rootCommand.Add(jsonOption);
+        rootCommand.Add(quietOption);
 
         // Register commands
         rootCommand.Add(DownloadCommand.Create(dbOption, verboseOption, jsonOption));
