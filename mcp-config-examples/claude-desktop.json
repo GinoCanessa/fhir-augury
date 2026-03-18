@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "fhir-augury": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/fhir-augury/src/FhirAugury.Mcp",
+        "--",
+        "--db",
+        "/path/to/fhir-augury.db"
+      ]
+    }
+  }
+}

@@ -5,6 +5,8 @@ access, supporting search, retrieval, relationship, and listing tools.
 
 **Depends on:** Phase 5 (Confluence & GitHub Sources)
 
+**Status:** ✅ Complete
+
 ---
 
 ## 6.1 — MCP Project Setup
@@ -45,9 +47,9 @@ Add to `fhir-augury.slnx`.
 
 ### Acceptance Criteria
 
-- [ ] MCP server starts and responds to tool discovery via stdio
-- [ ] Database opens in read-only mode
-- [ ] Logging goes to stderr, not stdout (which is the MCP transport)
+- [x] MCP server starts and responds to tool discovery via stdio
+- [x] Database opens in read-only mode
+- [x] Logging goes to stderr, not stdout (which is the MCP transport)
 
 ---
 
@@ -108,9 +110,9 @@ public static class SearchTools
 
 ### Acceptance Criteria
 
-- [ ] `search` returns results from all sources, ranked by relevance
-- [ ] Source-specific tools apply correct filters
-- [ ] Results include source, ID, title, snippet, score, URL, date
+- [x] `search` returns results from all sources, ranked by relevance
+- [x] Source-specific tools apply correct filters
+- [x] Results include source, ID, title, snippet, score, URL, date
 
 ---
 
@@ -158,9 +160,9 @@ public static class RetrievalTools
 
 ### Acceptance Criteria
 
-- [ ] Each retrieval tool returns formatted item details
-- [ ] Missing items return helpful "not found" messages
-- [ ] Confluence page can be found by ID or by title+space
+- [x] Each retrieval tool returns formatted item details
+- [x] Missing items return helpful "not found" messages
+- [x] Confluence page can be found by ID or by title+space
 
 ---
 
@@ -207,9 +209,9 @@ Snapshot format includes:
 
 ### Acceptance Criteria
 
-- [ ] Snapshots are well-formatted markdown
-- [ ] Cross-reference section shows related items from other sources
-- [ ] Content is readable by LLM agents (no excessive HTML/formatting)
+- [x] Snapshots are well-formatted markdown
+- [x] Cross-reference section shows related items from other sources
+- [x] Content is readable by LLM agents (no excessive HTML/formatting)
 
 ---
 
@@ -240,9 +242,9 @@ public static class RelationshipTools
 
 ### Acceptance Criteria
 
-- [ ] `FindRelated` combines BM25 similarity + cross-references
-- [ ] `GetCrossReferences` shows both inbound and outbound references
-- [ ] Results span all four sources
+- [x] `FindRelated` combines BM25 similarity + cross-references
+- [x] `GetCrossReferences` shows both inbound and outbound references
+- [x] Results span all four sources
 
 ---
 
@@ -288,9 +290,9 @@ public static class ListingTools
 
 ### Acceptance Criteria
 
-- [ ] Listing tools return paginated, filterable results
-- [ ] Empty results return helpful messages
-- [ ] Sort and filter parameters work correctly
+- [x] Listing tools return paginated, filterable results
+- [x] Empty results return helpful messages
+- [x] Sort and filter parameters work correctly
 
 ---
 
@@ -326,8 +328,8 @@ Note: `TriggerSync` needs a way to communicate with the service. Options:
 
 ### Acceptance Criteria
 
-- [ ] Stats tool returns accurate counts and sizes
-- [ ] Sync status shows per-source last sync and schedule
+- [x] Stats tool returns accurate counts and sizes
+- [x] Sync status shows per-source last sync and schedule
 - [ ] Trigger sync communicates with service or provides clear instructions
 
 ---
@@ -348,6 +350,8 @@ Add optional HTTP transport alongside stdio:
 - [ ] MCP server can run via stdio (default) or HTTP transport
 - [ ] HTTP transport accessible at configured URL
 
+> **Note:** HTTP transport deferred to Phase 7 as optional enhancement.
+
 ---
 
 ## 6.9 — MCP Client Configuration
@@ -364,7 +368,7 @@ Example configuration for HTTP transport clients.
 
 ### Acceptance Criteria
 
-- [ ] Example configs are valid and include all required fields
+- [x] Example configs are valid and include all required fields
 - [ ] README references the example configs
 
 ---
@@ -389,6 +393,6 @@ Each test:
 
 ### Acceptance Criteria
 
-- [ ] All MCP tool tests pass
-- [ ] Tools handle missing data gracefully (no crashes)
-- [ ] Output format is suitable for LLM consumption
+- [x] All MCP tool tests pass
+- [x] Tools handle missing data gracefully (no crashes)
+- [x] Output format is suitable for LLM consumption
