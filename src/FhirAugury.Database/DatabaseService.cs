@@ -67,6 +67,19 @@ public class DatabaseService : IDisposable
         ZulipMessageRecord.CreateTable(connection);
         ZulipMessageRecord.LoadMaxKey(connection);
 
+        // Phase 3: Cross-reference and BM25 tables
+        CrossRefLinkRecord.CreateTable(connection);
+        CrossRefLinkRecord.LoadMaxKey(connection);
+
+        KeywordRecord.CreateTable(connection);
+        KeywordRecord.LoadMaxKey(connection);
+
+        CorpusKeywordRecord.CreateTable(connection);
+        CorpusKeywordRecord.LoadMaxKey(connection);
+
+        DocStatsRecord.CreateTable(connection);
+        DocStatsRecord.LoadMaxKey(connection);
+
         // Create FTS5 virtual tables and triggers
         FtsSetup.CreateJiraFts(connection);
         FtsSetup.CreateZulipFts(connection);

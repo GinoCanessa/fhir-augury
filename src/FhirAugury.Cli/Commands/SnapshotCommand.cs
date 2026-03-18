@@ -1,6 +1,7 @@
 using System.CommandLine;
 using FhirAugury.Database;
 using FhirAugury.Database.Records;
+using FhirAugury.Indexing;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -12,15 +13,18 @@ public static class SnapshotCommand
 
         var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
         var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499 or stream:topic)", Arity = ArgumentArity.ExactlyOne };
+        var includeXrefOption = new Option<bool>("--include-xref") { Description = "Include related items from cross-references", DefaultValueFactory = _ => false };
 
         command.Add(sourceOption);
         command.Add(idOption);
+        command.Add(includeXrefOption);
 
         command.SetAction((parseResult, _) =>
         {
             var source = parseResult.GetValue(sourceOption)!;
             var id = parseResult.GetValue(idOption)!;
             var dbPath = parseResult.GetValue(dbOption)!;
+            var includeXref = parseResult.GetValue(includeXrefOption);
 
             var dbService = new DatabaseService(dbPath);
             dbService.InitializeDatabase();
@@ -39,6 +43,11 @@ public static class SnapshotCommand
                     }
                     var comments = JiraCommentRecord.SelectList(conn, IssueKey: id);
                     RenderJiraSnapshot(issue, comments);
+
+                    if (includeXref)
+                    {
+                        RenderRelatedItems(conn, source, id);
+                    }
                     break;
                 }
 
@@ -60,6 +69,11 @@ public static class SnapshotCommand
                         return Task.CompletedTask;
                     }
                     RenderZulipSnapshot(streamName, topic, messages);
+
+                    if (includeXref)
+                    {
+                        RenderRelatedItems(conn, source, id);
+                    }
                     break;
                 }
 
@@ -72,6 +86,32 @@ public static class SnapshotCommand
         });
 
         return command;
+    }
+
+    private static void RenderRelatedItems(Microsoft.Data.Sqlite.SqliteConnection conn, string sourceType, string sourceId)
+    {
+        var xrefLinks = CrossRefQueryService.GetRelatedItems(conn, sourceType, sourceId);
+        if (xrefLinks.Count == 0)
+        {
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("## Related Items (Cross-References)");
+        Console.WriteLine();
+
+        foreach (var link in xrefLinks)
+        {
+            var direction = link.SourceType == sourceType && link.SourceId == sourceId ? "→" : "←";
+            var otherType = direction == "→" ? link.TargetType : link.SourceType;
+            var otherId = direction == "→" ? link.TargetId : link.SourceId;
+
+            Console.WriteLine($"- {direction} [{otherType}] {otherId}");
+            if (!string.IsNullOrEmpty(link.Context))
+            {
+                Console.WriteLine($"  Context: {link.Context}");
+            }
+        }
     }
 
     private static void RenderJiraSnapshot(JiraIssueRecord issue, List<JiraCommentRecord> comments)

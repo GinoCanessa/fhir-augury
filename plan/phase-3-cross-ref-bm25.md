@@ -27,8 +27,8 @@ Add `xref_links` table creation.
 
 ### Acceptance Criteria
 
-- [ ] CRUD on `xref_links` works
-- [ ] Can query by source or target
+- [x] CRUD on `xref_links` works
+- [x] Can query by source or target
 
 ---
 
@@ -75,12 +75,12 @@ Query methods for cross-references:
 
 ### Acceptance Criteria
 
-- [ ] Jira key pattern matches `FHIR-12345` in text
-- [ ] Jira URL pattern matches full URLs
-- [ ] Zulip URL pattern extracts stream and topic
-- [ ] Deduplication works (same link not inserted twice)
-- [ ] Context extraction provides meaningful surrounding text
-- [ ] Full rebuild scans all text fields in all source tables
+- [x] Jira key pattern matches `FHIR-12345` in text
+- [x] Jira URL pattern matches full URLs
+- [x] Zulip URL pattern extracts stream and topic
+- [x] Deduplication works (same link not inserted twice)
+- [x] Context extraction provides meaningful surrounding text
+- [x] Full rebuild scans all text fields in all source tables
 
 ---
 
@@ -165,11 +165,11 @@ Can be loaded from embedded resource or static list.
 
 ### Acceptance Criteria
 
-- [ ] Tokenizer correctly splits text, preserves FHIR paths
-- [ ] Stop words are filtered from keyword index
-- [ ] BM25 scores are computed correctly (verify against known examples)
-- [ ] Full index build processes all Jira + Zulip documents
-- [ ] Incremental update handles new documents without full rebuild
+- [x] Tokenizer correctly splits text, preserves FHIR paths
+- [x] Stop words are filtered from keyword index
+- [x] BM25 scores are computed correctly (verify against known examples)
+- [x] Full index build processes all Jira + Zulip documents
+- [x] Incremental update handles new documents without full rebuild
 
 ---
 
@@ -196,10 +196,10 @@ related items across sources.
 
 ### Acceptance Criteria
 
-- [ ] Given a Jira issue, returns related Zulip messages and vice versa
-- [ ] Explicit cross-references rank higher than keyword-only matches
-- [ ] Results span multiple sources
-- [ ] Performance acceptable for interactive use (<2s for a typical query)
+- [x] Given a Jira issue, returns related Zulip messages and vice versa
+- [x] Explicit cross-references rank higher than keyword-only matches
+- [x] Results span multiple sources
+- [x] Performance acceptable for interactive use (<2s for a typical query)
 
 ---
 
@@ -229,10 +229,10 @@ Add `--include-xref` flag to snapshot commands. When set, appends a
 
 ### Acceptance Criteria
 
-- [ ] `fhir-augury related --source jira --id FHIR-12345` returns related items
-- [ ] `fhir-augury index build-bm25` builds keyword index with progress
-- [ ] `fhir-augury index build-xref` scans all text and builds links
-- [ ] `fhir-augury snapshot --source jira --id FHIR-12345 --include-xref` shows related
+- [x] `fhir-augury related --source jira --id FHIR-12345` returns related items
+- [x] `fhir-augury index build-bm25` builds keyword index with progress
+- [x] `fhir-augury index build-xref` scans all text and builds links
+- [x] `fhir-augury snapshot --source jira --id FHIR-12345 --include-xref` shows related
 
 ---
 
@@ -251,6 +251,6 @@ Add `--include-xref` flag to snapshot commands. When set, appends a
 
 ### Acceptance Criteria
 
-- [ ] All new tests pass
-- [ ] BM25 computation matches expected values for a small test corpus
-- [ ] Cross-reference patterns tested with positive and negative cases
+- [x] All new tests pass
+- [x] BM25 computation matches expected values for a small test corpus
+- [x] Cross-reference patterns tested with positive and negative cases
