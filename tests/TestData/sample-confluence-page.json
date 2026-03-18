@@ -1,0 +1,44 @@
+{
+  "id": "12345678",
+  "type": "page",
+  "title": "FHIR R5 Resource Patient",
+  "space": {
+    "key": "FHIR",
+    "name": "FHIR Specification"
+  },
+  "body": {
+    "storage": {
+      "value": "<p>The Patient resource covers data about patients and animals involved in healthcare.</p><ac:structured-macro ac:name=\"info\"><ac:rich-text-body><p>This is normative content.</p></ac:rich-text-body></ac:structured-macro><table><tr><td>Name</td><td>Description</td></tr><tr><td>identifier</td><td>An identifier for this patient</td></tr></table><ac:image><ri:attachment ri:filename=\"patient.png\" /></ac:image>",
+      "representation": "storage"
+    }
+  },
+  "version": {
+    "number": 42,
+    "when": "2025-12-01T10:30:00.000Z",
+    "by": {
+      "displayName": "Grahame Grieve"
+    }
+  },
+  "ancestors": [
+    {
+      "id": "11111111",
+      "title": "Resources"
+    },
+    {
+      "id": "22222222",
+      "title": "Clinical"
+    }
+  ],
+  "metadata": {
+    "labels": {
+      "results": [
+        {"name": "normative"},
+        {"name": "r5"}
+      ]
+    }
+  },
+  "_links": {
+    "webui": "/display/FHIR/Patient",
+    "self": "https://confluence.hl7.org/rest/api/content/12345678"
+  }
+}

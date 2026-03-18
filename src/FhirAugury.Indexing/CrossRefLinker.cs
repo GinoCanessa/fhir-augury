@@ -221,6 +221,44 @@ public static partial class CrossRefLinker
 
             LinkItem(connection, "zulip", $"{msg.StreamName}:{msg.Topic}", textFields);
         }
+
+        // Scan Confluence pages
+        var pages = ConfluencePageRecord.SelectList(connection);
+        foreach (var page in pages)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var textFields = new List<string>();
+            if (!string.IsNullOrEmpty(page.Title)) textFields.Add(page.Title);
+            if (!string.IsNullOrEmpty(page.BodyPlain)) textFields.Add(page.BodyPlain);
+
+            LinkItem(connection, "confluence", page.ConfluenceId, textFields);
+        }
+
+        // Scan GitHub issues
+        var ghIssues = GitHubIssueRecord.SelectList(connection);
+        foreach (var ghIssue in ghIssues)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var textFields = new List<string>();
+            if (!string.IsNullOrEmpty(ghIssue.Title)) textFields.Add(ghIssue.Title);
+            if (!string.IsNullOrEmpty(ghIssue.Body)) textFields.Add(ghIssue.Body);
+
+            LinkItem(connection, "github", ghIssue.UniqueKey, textFields);
+        }
+
+        // Scan GitHub comments
+        var ghComments = GitHubCommentRecord.SelectList(connection);
+        foreach (var ghComment in ghComments)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var textFields = new List<string>();
+            if (!string.IsNullOrEmpty(ghComment.Body)) textFields.Add(ghComment.Body);
+
+            LinkItem(connection, "github-comment", $"{ghComment.RepoFullName}#{ghComment.IssueNumber}:{ghComment.Id}", textFields);
+        }
     }
 
     private static void DeleteLinksForSource(SqliteConnection connection, string sourceType, string sourceId)

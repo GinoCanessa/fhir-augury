@@ -1,6 +1,8 @@
 using System.CommandLine;
 using FhirAugury.Database;
 using FhirAugury.Models;
+using FhirAugury.Sources.Confluence;
+using FhirAugury.Sources.GitHub;
 using FhirAugury.Sources.Jira;
 using FhirAugury.Sources.Zulip;
 
@@ -12,7 +14,7 @@ public static class DownloadCommand
     {
         var command = new Command("download", "Full download from a data source");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip, confluence, github", Arity = ArgumentArity.ExactlyOne };
         var filterOption = new Option<string?>("--filter") { Description = "Source-specific filter (e.g., JQL for Jira)" };
         var cookieOption = new Option<string?>("--jira-cookie") { Description = "Jira session cookie for authentication" };
         var apiTokenOption = new Option<string?>("--jira-api-token") { Description = "Jira API token" };
@@ -20,6 +22,10 @@ public static class DownloadCommand
         var zulipEmailOption = new Option<string?>("--zulip-email") { Description = "Zulip email for API authentication" };
         var zulipApiKeyOption = new Option<string?>("--zulip-api-key") { Description = "Zulip API key" };
         var zulipRcOption = new Option<string?>("--zulip-rc") { Description = "Path to .zuliprc file" };
+        var confluenceCookieOption = new Option<string?>("--confluence-cookie") { Description = "Confluence session cookie" };
+        var confluenceUserOption = new Option<string?>("--confluence-user") { Description = "Confluence username for Basic auth" };
+        var confluenceTokenOption = new Option<string?>("--confluence-token") { Description = "Confluence API token" };
+        var githubPatOption = new Option<string?>("--github-pat") { Description = "GitHub personal access token" };
 
         command.Add(sourceOption);
         command.Add(filterOption);
@@ -29,6 +35,10 @@ public static class DownloadCommand
         command.Add(zulipEmailOption);
         command.Add(zulipApiKeyOption);
         command.Add(zulipRcOption);
+        command.Add(confluenceCookieOption);
+        command.Add(confluenceUserOption);
+        command.Add(confluenceTokenOption);
+        command.Add(githubPatOption);
 
         command.SetAction(async (parseResult, ct) =>
         {
@@ -67,8 +77,24 @@ public static class DownloadCommand
                     break;
                 }
 
+                case "confluence":
+                {
+                    var confluenceOptions = BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption);
+                    using var httpClient = ConfluenceAuthHandler.CreateHttpClient(confluenceOptions);
+                    dataSource = new ConfluenceSource(confluenceOptions, httpClient);
+                    break;
+                }
+
+                case "github":
+                {
+                    var githubOptions = BuildGitHubOptions(parseResult, githubPatOption);
+                    using var httpClient = GitHubRateLimiter.CreateHttpClient(githubOptions);
+                    dataSource = new GitHubSource(githubOptions, httpClient);
+                    break;
+                }
+
                 default:
-                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip");
+                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip, confluence, github");
                     return;
             }
 
@@ -118,6 +144,43 @@ public static class DownloadCommand
             Email = parseResult.GetValue(zulipEmailOption),
             ApiKey = parseResult.GetValue(zulipApiKeyOption),
             CredentialFile = parseResult.GetValue(zulipRcOption),
+        };
+    }
+
+    internal static ConfluenceSourceOptions BuildConfluenceOptions(
+        System.CommandLine.ParseResult parseResult,
+        Option<string?> cookieOption,
+        Option<string?> userOption,
+        Option<string?> tokenOption)
+    {
+        var username = parseResult.GetValue(userOption);
+        var token = parseResult.GetValue(tokenOption);
+        var cookie = parseResult.GetValue(cookieOption);
+
+        if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(token))
+        {
+            return new ConfluenceSourceOptions
+            {
+                AuthMode = ConfluenceAuthMode.Basic,
+                Username = username,
+                ApiToken = token,
+            };
+        }
+
+        return new ConfluenceSourceOptions
+        {
+            AuthMode = ConfluenceAuthMode.Cookie,
+            Cookie = cookie,
+        };
+    }
+
+    internal static GitHubSourceOptions BuildGitHubOptions(
+        System.CommandLine.ParseResult parseResult,
+        Option<string?> patOption)
+    {
+        return new GitHubSourceOptions
+        {
+            PersonalAccessToken = parseResult.GetValue(patOption),
         };
     }
 

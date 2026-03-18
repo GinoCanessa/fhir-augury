@@ -11,6 +11,8 @@ public static class AuguryApiExtensions
         SearchEndpoints.Map(api);
         JiraEndpoints.Map(api);
         ZulipEndpoints.Map(api);
+        ConfluenceEndpoints.Map(api);
+        GitHubEndpoints.Map(api);
         XRefEndpoints.Map(api);
         StatsEndpoints.Map(api);
 

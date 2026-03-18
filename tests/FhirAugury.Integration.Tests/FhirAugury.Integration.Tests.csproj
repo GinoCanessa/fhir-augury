@@ -20,6 +20,8 @@
     <ProjectReference Include="..\..\src\FhirAugury.Service\FhirAugury.Service.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Database\FhirAugury.Database.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Indexing\FhirAugury.Indexing.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Sources.Confluence\FhirAugury.Sources.Confluence.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Sources.GitHub\FhirAugury.Sources.GitHub.csproj" />
   </ItemGroup>
 
 </Project>

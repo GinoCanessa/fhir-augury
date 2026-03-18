@@ -178,4 +178,168 @@ public static class FtsSetup
         cmd.CommandText = "INSERT INTO zulip_messages_fts(zulip_messages_fts) VALUES ('rebuild');";
         cmd.ExecuteNonQuery();
     }
+
+    /// <summary>Creates FTS5 tables and triggers for Confluence pages.</summary>
+    public static void CreateConfluenceFts(SqliteConnection connection)
+    {
+        CreateConfluencePagesFts(connection);
+    }
+
+    private static void CreateConfluencePagesFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            CREATE VIRTUAL TABLE IF NOT EXISTS confluence_pages_fts USING fts5(
+                Title,
+                BodyPlain,
+                Labels,
+                content='confluence_pages',
+                content_rowid='Id'
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // INSERT trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS confluence_pages_ai AFTER INSERT ON confluence_pages BEGIN
+                INSERT INTO confluence_pages_fts(rowid, Title, BodyPlain, Labels)
+                VALUES (new.Id, new.Title, new.BodyPlain, new.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // DELETE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS confluence_pages_ad AFTER DELETE ON confluence_pages BEGIN
+                INSERT INTO confluence_pages_fts(confluence_pages_fts, rowid, Title, BodyPlain, Labels)
+                VALUES ('delete', old.Id, old.Title, old.BodyPlain, old.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // UPDATE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS confluence_pages_au AFTER UPDATE ON confluence_pages BEGIN
+                INSERT INTO confluence_pages_fts(confluence_pages_fts, rowid, Title, BodyPlain, Labels)
+                VALUES ('delete', old.Id, old.Title, old.BodyPlain, old.Labels);
+                INSERT INTO confluence_pages_fts(rowid, Title, BodyPlain, Labels)
+                VALUES (new.Id, new.Title, new.BodyPlain, new.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Rebuilds all Confluence FTS5 tables from content tables.</summary>
+    public static void RebuildConfluenceFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = "INSERT INTO confluence_pages_fts(confluence_pages_fts) VALUES ('rebuild');";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Creates FTS5 tables and triggers for GitHub issues and comments.</summary>
+    public static void CreateGitHubFts(SqliteConnection connection)
+    {
+        CreateGitHubIssuesFts(connection);
+        CreateGitHubCommentsFts(connection);
+    }
+
+    private static void CreateGitHubIssuesFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            CREATE VIRTUAL TABLE IF NOT EXISTS github_issues_fts USING fts5(
+                Title,
+                Body,
+                Labels,
+                content='github_issues',
+                content_rowid='Id'
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        // INSERT trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_issues_ai AFTER INSERT ON github_issues BEGIN
+                INSERT INTO github_issues_fts(rowid, Title, Body, Labels)
+                VALUES (new.Id, new.Title, new.Body, new.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // DELETE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_issues_ad AFTER DELETE ON github_issues BEGIN
+                INSERT INTO github_issues_fts(github_issues_fts, rowid, Title, Body, Labels)
+                VALUES ('delete', old.Id, old.Title, old.Body, old.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        // UPDATE trigger
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_issues_au AFTER UPDATE ON github_issues BEGIN
+                INSERT INTO github_issues_fts(github_issues_fts, rowid, Title, Body, Labels)
+                VALUES ('delete', old.Id, old.Title, old.Body, old.Labels);
+                INSERT INTO github_issues_fts(rowid, Title, Body, Labels)
+                VALUES (new.Id, new.Title, new.Body, new.Labels);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    private static void CreateGitHubCommentsFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = """
+            CREATE VIRTUAL TABLE IF NOT EXISTS github_comments_fts USING fts5(
+                Body,
+                content='github_comments',
+                content_rowid='Id'
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_comments_ai AFTER INSERT ON github_comments BEGIN
+                INSERT INTO github_comments_fts(rowid, Body)
+                VALUES (new.Id, new.Body);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_comments_ad AFTER DELETE ON github_comments BEGIN
+                INSERT INTO github_comments_fts(github_comments_fts, rowid, Body)
+                VALUES ('delete', old.Id, old.Body);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            CREATE TRIGGER IF NOT EXISTS github_comments_au AFTER UPDATE ON github_comments BEGIN
+                INSERT INTO github_comments_fts(github_comments_fts, rowid, Body)
+                VALUES ('delete', old.Id, old.Body);
+                INSERT INTO github_comments_fts(rowid, Body)
+                VALUES (new.Id, new.Body);
+            END;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Rebuilds all GitHub FTS5 tables from content tables.</summary>
+    public static void RebuildGitHubFts(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+
+        cmd.CommandText = "INSERT INTO github_issues_fts(github_issues_fts) VALUES ('rebuild');";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "INSERT INTO github_comments_fts(github_comments_fts) VALUES ('rebuild');";
+        cmd.ExecuteNonQuery();
+    }
 }

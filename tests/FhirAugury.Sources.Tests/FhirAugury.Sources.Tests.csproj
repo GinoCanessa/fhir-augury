@@ -18,6 +18,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Sources.Jira\FhirAugury.Sources.Jira.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Sources.Zulip\FhirAugury.Sources.Zulip.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Sources.Confluence\FhirAugury.Sources.Confluence.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Sources.GitHub\FhirAugury.Sources.GitHub.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Indexing\FhirAugury.Indexing.csproj" />
   </ItemGroup>
 

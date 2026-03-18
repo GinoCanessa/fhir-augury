@@ -340,6 +340,47 @@ public static class Bm25Calculator
             }
         }
 
+        // Confluence pages
+        var pages = ConfluencePageRecord.SelectList(connection);
+        foreach (var page in pages)
+        {
+            ct.ThrowIfCancellationRequested();
+            var text = string.Join(" ",
+                new[] { page.Title, page.BodyPlain, page.Labels }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(("confluence", page.ConfluenceId, text));
+            }
+        }
+
+        // GitHub issues
+        var ghIssues = GitHubIssueRecord.SelectList(connection);
+        foreach (var ghIssue in ghIssues)
+        {
+            ct.ThrowIfCancellationRequested();
+            var text = string.Join(" ",
+                new[] { ghIssue.Title, ghIssue.Body, ghIssue.Labels }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(("github", ghIssue.UniqueKey, text));
+            }
+        }
+
+        // GitHub comments
+        var ghComments = GitHubCommentRecord.SelectList(connection);
+        foreach (var ghComment in ghComments)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!string.IsNullOrWhiteSpace(ghComment.Body))
+            {
+                documents.Add(("github-comment", $"{ghComment.RepoFullName}#{ghComment.IssueNumber}:{ghComment.Id}", ghComment.Body));
+            }
+        }
+
         return documents;
     }
 

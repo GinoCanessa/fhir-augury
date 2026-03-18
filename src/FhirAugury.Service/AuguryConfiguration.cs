@@ -28,6 +28,16 @@ public class SourceConfiguration
     public string? ApiKey { get; set; }
     public string? CredentialFile { get; set; }
     public bool OnlyWebPublic { get; set; } = true;
+
+    // Confluence-specific
+    public string? Username { get; set; }
+    public List<string> Spaces { get; set; } = [];
+    public int PageSize { get; set; } = 25;
+
+    // GitHub-specific
+    public string? PersonalAccessToken { get; set; }
+    public List<string> Repositories { get; set; } = [];
+    public int RateLimitBuffer { get; set; } = 100;
 }
 
 public class Bm25Configuration

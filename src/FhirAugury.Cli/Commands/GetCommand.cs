@@ -11,7 +11,7 @@ public static class GetCommand
     {
         var command = new Command("get", "Retrieve a specific item by identifier");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip, confluence, github", Arity = ArgumentArity.ExactlyOne };
         var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499 or stream:topic)", Arity = ArgumentArity.ExactlyOne };
         var formatOption = new Option<string>("--format", "-f") { Description = "Output format: table | json | markdown", DefaultValueFactory = _ => "table" };
 
@@ -69,7 +69,7 @@ public static class GetCommand
                 }
 
                 default:
-                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip");
+                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip, confluence, github");
                     break;
             }
 

@@ -67,6 +67,26 @@ public class DatabaseService : IDisposable
         ZulipMessageRecord.CreateTable(connection);
         ZulipMessageRecord.LoadMaxKey(connection);
 
+        // Phase 5: Confluence tables
+        ConfluenceSpaceRecord.CreateTable(connection);
+        ConfluenceSpaceRecord.LoadMaxKey(connection);
+
+        ConfluencePageRecord.CreateTable(connection);
+        ConfluencePageRecord.LoadMaxKey(connection);
+
+        ConfluenceCommentRecord.CreateTable(connection);
+        ConfluenceCommentRecord.LoadMaxKey(connection);
+
+        // Phase 5: GitHub tables
+        GitHubRepoRecord.CreateTable(connection);
+        GitHubRepoRecord.LoadMaxKey(connection);
+
+        GitHubIssueRecord.CreateTable(connection);
+        GitHubIssueRecord.LoadMaxKey(connection);
+
+        GitHubCommentRecord.CreateTable(connection);
+        GitHubCommentRecord.LoadMaxKey(connection);
+
         // Phase 3: Cross-reference and BM25 tables
         CrossRefLinkRecord.CreateTable(connection);
         CrossRefLinkRecord.LoadMaxKey(connection);
@@ -83,6 +103,8 @@ public class DatabaseService : IDisposable
         // Create FTS5 virtual tables and triggers
         FtsSetup.CreateJiraFts(connection);
         FtsSetup.CreateZulipFts(connection);
+        FtsSetup.CreateConfluenceFts(connection);
+        FtsSetup.CreateGitHubFts(connection);
     }
 
     public void Dispose()

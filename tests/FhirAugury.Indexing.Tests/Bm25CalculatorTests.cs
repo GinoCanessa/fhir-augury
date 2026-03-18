@@ -35,6 +35,14 @@ public class Bm25CalculatorTests
         DocStatsRecord.LoadMaxKey(conn);
         FtsSetup.CreateJiraFts(conn);
         FtsSetup.CreateZulipFts(conn);
+        ConfluenceSpaceRecord.CreateTable(conn); ConfluenceSpaceRecord.LoadMaxKey(conn);
+        ConfluencePageRecord.CreateTable(conn); ConfluencePageRecord.LoadMaxKey(conn);
+        ConfluenceCommentRecord.CreateTable(conn); ConfluenceCommentRecord.LoadMaxKey(conn);
+        GitHubRepoRecord.CreateTable(conn); GitHubRepoRecord.LoadMaxKey(conn);
+        GitHubIssueRecord.CreateTable(conn); GitHubIssueRecord.LoadMaxKey(conn);
+        GitHubCommentRecord.CreateTable(conn); GitHubCommentRecord.LoadMaxKey(conn);
+        FtsSetup.CreateConfluenceFts(conn);
+        FtsSetup.CreateGitHubFts(conn);
 
         return conn;
     }

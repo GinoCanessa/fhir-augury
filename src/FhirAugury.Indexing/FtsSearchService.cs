@@ -218,6 +218,155 @@ public static class FtsSearchService
     }
 
     /// <summary>
+    /// Searches the confluence_pages_fts table for matching pages.
+    /// </summary>
+    /// <param name="connection">An open SQLite connection.</param>
+    /// <param name="query">The search query text.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="spaceFilter">Optional filter to restrict results to a specific space.</param>
+    /// <returns>A list of search results from matching Confluence pages.</returns>
+    public static List<SearchResult> SearchConfluencePages(
+        SqliteConnection connection,
+        string query,
+        int limit = 20,
+        string? spaceFilter = null)
+    {
+        var ftsQuery = SanitizeFtsQuery(query);
+        if (string.IsNullOrEmpty(ftsQuery))
+        {
+            return [];
+        }
+
+        var sql = """
+            SELECT cp.ConfluenceId, cp.Title,
+                   snippet(confluence_pages_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
+                   confluence_pages_fts.rank,
+                   cp.SpaceKey, cp.LastModifiedAt, cp.Url
+            FROM confluence_pages_fts
+            JOIN confluence_pages cp ON cp.Id = confluence_pages_fts.rowid
+            WHERE confluence_pages_fts MATCH @query
+            """;
+
+        if (!string.IsNullOrEmpty(spaceFilter))
+        {
+            sql += " AND cp.SpaceKey = @space";
+        }
+
+        sql += " ORDER BY confluence_pages_fts.rank LIMIT @limit";
+
+        using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("@query", ftsQuery);
+        command.Parameters.AddWithValue("@limit", limit);
+
+        if (!string.IsNullOrEmpty(spaceFilter))
+        {
+            command.Parameters.AddWithValue("@space", spaceFilter);
+        }
+
+        var results = new List<SearchResult>();
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            results.Add(new SearchResult
+            {
+                Source = "confluence",
+                Id = reader.GetString(0),
+                Title = reader.GetString(1),
+                Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
+                Score = -reader.GetDouble(3),
+                Url = reader.IsDBNull(6) ? null : reader.GetString(6),
+                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+            });
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Searches the github_issues_fts table for matching issues and pull requests.
+    /// </summary>
+    /// <param name="connection">An open SQLite connection.</param>
+    /// <param name="query">The search query text.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="repoFilter">Optional filter to restrict results to a specific repository.</param>
+    /// <param name="stateFilter">Optional filter to restrict results to a specific state.</param>
+    /// <returns>A list of search results from matching GitHub issues/PRs.</returns>
+    public static List<SearchResult> SearchGitHubIssues(
+        SqliteConnection connection,
+        string query,
+        int limit = 20,
+        string? repoFilter = null,
+        string? stateFilter = null)
+    {
+        var ftsQuery = SanitizeFtsQuery(query);
+        if (string.IsNullOrEmpty(ftsQuery))
+        {
+            return [];
+        }
+
+        var sql = """
+            SELECT gi.UniqueKey, gi.Title,
+                   snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
+                   github_issues_fts.rank,
+                   gi.RepoFullName, gi.State, gi.Number, gi.IsPullRequest, gi.UpdatedAt
+            FROM github_issues_fts
+            JOIN github_issues gi ON gi.Id = github_issues_fts.rowid
+            WHERE github_issues_fts MATCH @query
+            """;
+
+        if (!string.IsNullOrEmpty(repoFilter))
+        {
+            sql += " AND gi.RepoFullName = @repo";
+        }
+
+        if (!string.IsNullOrEmpty(stateFilter))
+        {
+            sql += " AND gi.State = @state";
+        }
+
+        sql += " ORDER BY github_issues_fts.rank LIMIT @limit";
+
+        using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("@query", ftsQuery);
+        command.Parameters.AddWithValue("@limit", limit);
+
+        if (!string.IsNullOrEmpty(repoFilter))
+        {
+            command.Parameters.AddWithValue("@repo", repoFilter);
+        }
+
+        if (!string.IsNullOrEmpty(stateFilter))
+        {
+            command.Parameters.AddWithValue("@state", stateFilter);
+        }
+
+        var results = new List<SearchResult>();
+        using var reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            var repoFullName = reader.GetString(4);
+            var number = reader.GetInt32(6);
+            var isPr = reader.GetBoolean(7);
+            var type = isPr ? "pull" : "issues";
+
+            results.Add(new SearchResult
+            {
+                Source = "github",
+                Id = reader.GetString(0),
+                Title = reader.GetString(1),
+                Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
+                Score = -reader.GetDouble(3),
+                Url = $"https://github.com/{repoFullName}/{type}/{number}",
+                UpdatedAt = reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)),
+            });
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Searches all available FTS tables and returns normalized, sorted results.
     /// </summary>
     /// <param name="connection">An open SQLite connection.</param>
@@ -246,6 +395,16 @@ public static class FtsSearchService
         if (sources is null || sources.Contains("zulip"))
         {
             results.AddRange(SearchZulipMessages(connection, query, limit));
+        }
+
+        if (sources is null || sources.Contains("confluence"))
+        {
+            results.AddRange(SearchConfluencePages(connection, query, limit));
+        }
+
+        if (sources is null || sources.Contains("github"))
+        {
+            results.AddRange(SearchGitHubIssues(connection, query, limit));
         }
 
         NormalizeScores(results);

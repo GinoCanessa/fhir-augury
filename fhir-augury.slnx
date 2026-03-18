@@ -4,6 +4,8 @@
     <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />
     <Project Path="src/FhirAugury.Sources.Jira/FhirAugury.Sources.Jira.csproj" />
     <Project Path="src/FhirAugury.Sources.Zulip/FhirAugury.Sources.Zulip.csproj" />
+    <Project Path="src/FhirAugury.Sources.Confluence/FhirAugury.Sources.Confluence.csproj" />
+    <Project Path="src/FhirAugury.Sources.GitHub/FhirAugury.Sources.GitHub.csproj" />
     <Project Path="src/FhirAugury.Indexing/FhirAugury.Indexing.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
     <Project Path="src/FhirAugury.Service/FhirAugury.Service.csproj" />

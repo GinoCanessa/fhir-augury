@@ -22,6 +22,10 @@ public static class StatsEndpoints
         var jiraComments = JiraCommentRecord.SelectCount(conn);
         var zulipStreams = ZulipStreamRecord.SelectCount(conn);
         var zulipMessages = ZulipMessageRecord.SelectCount(conn);
+        var confluenceSpaces = ConfluenceSpaceRecord.SelectCount(conn);
+        var confluencePages = ConfluencePageRecord.SelectCount(conn);
+        var githubRepos = GitHubRepoRecord.SelectCount(conn);
+        var githubIssues = GitHubIssueRecord.SelectCount(conn);
         var xrefLinks = CrossRefLinkRecord.SelectCount(conn);
         var keywords = KeywordRecord.SelectCount(conn);
 
@@ -31,9 +35,13 @@ public static class StatsEndpoints
             JiraComments = jiraComments,
             ZulipStreams = zulipStreams,
             ZulipMessages = zulipMessages,
+            ConfluenceSpaces = confluenceSpaces,
+            ConfluencePages = confluencePages,
+            GitHubRepos = githubRepos,
+            GitHubIssues = githubIssues,
             CrossRefLinks = xrefLinks,
             Keywords = keywords,
-            TotalItems = jiraIssues + jiraComments + zulipStreams + zulipMessages,
+            TotalItems = jiraIssues + jiraComments + zulipStreams + zulipMessages + confluencePages + githubIssues,
         });
     }
 
@@ -56,6 +64,19 @@ public static class StatsEndpoints
                 Streams = ZulipStreamRecord.SelectCount(conn),
                 Messages = ZulipMessageRecord.SelectCount(conn),
                 SyncState = GetSyncInfo(conn, "zulip"),
+            },
+            "confluence" => new
+            {
+                Spaces = ConfluenceSpaceRecord.SelectCount(conn),
+                Pages = ConfluencePageRecord.SelectCount(conn),
+                SyncState = GetSyncInfo(conn, "confluence"),
+            },
+            "github" => new
+            {
+                Repos = GitHubRepoRecord.SelectCount(conn),
+                Issues = GitHubIssueRecord.SelectCount(conn),
+                Comments = GitHubCommentRecord.SelectCount(conn),
+                SyncState = GetSyncInfo(conn, "github"),
             },
             _ => null,
         };

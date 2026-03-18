@@ -11,7 +11,7 @@ public static class SnapshotCommand
     {
         var command = new Command("snapshot", "Render a detailed view of an item");
 
-        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip", Arity = ArgumentArity.ExactlyOne };
+        var sourceOption = new Option<string>("--source") { Description = "Data source: jira, zulip, confluence, github", Arity = ArgumentArity.ExactlyOne };
         var idOption = new Option<string>("--id") { Description = "Item identifier (e.g., FHIR-43499 or stream:topic)", Arity = ArgumentArity.ExactlyOne };
         var includeXrefOption = new Option<bool>("--include-xref") { Description = "Include related items from cross-references", DefaultValueFactory = _ => false };
 
@@ -77,8 +77,44 @@ public static class SnapshotCommand
                     break;
                 }
 
+                case "confluence":
+                {
+                    var page = ConfluencePageRecord.SelectSingle(conn, ConfluenceId: id);
+                    if (page is null)
+                    {
+                        Console.Error.WriteLine($"Confluence page '{id}' not found.");
+                        return Task.CompletedTask;
+                    }
+                    var comments = ConfluenceCommentRecord.SelectList(conn, ConfluencePageId: id);
+                    RenderConfluenceSnapshot(page, comments);
+
+                    if (includeXref)
+                    {
+                        RenderRelatedItems(conn, source, id);
+                    }
+                    break;
+                }
+
+                case "github":
+                {
+                    var ghIssue = GitHubIssueRecord.SelectSingle(conn, UniqueKey: id);
+                    if (ghIssue is null)
+                    {
+                        Console.Error.WriteLine($"GitHub issue '{id}' not found.");
+                        return Task.CompletedTask;
+                    }
+                    var ghComments = GitHubCommentRecord.SelectList(conn, RepoFullName: ghIssue.RepoFullName, IssueNumber: ghIssue.Number);
+                    RenderGitHubSnapshot(ghIssue, ghComments);
+
+                    if (includeXref)
+                    {
+                        RenderRelatedItems(conn, source, id);
+                    }
+                    break;
+                }
+
                 default:
-                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip");
+                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip, confluence, github");
                     break;
             }
 
@@ -226,5 +262,96 @@ public static class SnapshotCommand
 
         Console.WriteLine($"---");
         Console.WriteLine($"*URL: https://chat.fhir.org/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}*");
+    }
+
+    private static void RenderConfluenceSnapshot(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments)
+    {
+        Console.WriteLine($"# {page.Title}");
+        Console.WriteLine();
+        Console.WriteLine($"**Space:** {page.SpaceKey}  |  **Version:** {page.VersionNumber}");
+        Console.WriteLine($"**Last Modified By:** {page.LastModifiedBy ?? "Unknown"}  |  **Last Modified:** {page.LastModifiedAt:yyyy-MM-dd}");
+
+        if (!string.IsNullOrEmpty(page.Labels))
+            Console.WriteLine($"**Labels:** {page.Labels}");
+
+        Console.WriteLine();
+
+        if (!string.IsNullOrEmpty(page.BodyPlain))
+        {
+            Console.WriteLine("## Content");
+            Console.WriteLine(page.BodyPlain.Length > 2000 ? page.BodyPlain[..2000] + "..." : page.BodyPlain);
+            Console.WriteLine();
+        }
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine($"## Comments ({comments.Count})");
+            Console.WriteLine();
+            foreach (var comment in comments.OrderBy(c => c.CreatedAt))
+            {
+                Console.WriteLine($"### {comment.Author} — {comment.CreatedAt:yyyy-MM-dd HH:mm}");
+                Console.WriteLine(comment.Body);
+                Console.WriteLine();
+            }
+        }
+
+        Console.WriteLine($"---");
+        Console.WriteLine($"*URL: {page.Url}*");
+    }
+
+    private static void RenderGitHubSnapshot(GitHubIssueRecord issue, List<GitHubCommentRecord> comments)
+    {
+        var typeLabel = issue.IsPullRequest ? "Pull Request" : "Issue";
+        Console.WriteLine($"# {issue.RepoFullName}#{issue.Number}: {issue.Title}");
+        Console.WriteLine();
+        Console.WriteLine($"**Type:** {typeLabel}  |  **State:** {issue.State}");
+        Console.WriteLine($"**Author:** {issue.Author ?? "Unknown"}");
+        Console.WriteLine($"**Created:** {issue.CreatedAt:yyyy-MM-dd}  |  **Updated:** {issue.UpdatedAt:yyyy-MM-dd}");
+
+        if (issue.ClosedAt.HasValue)
+            Console.WriteLine($"**Closed:** {issue.ClosedAt.Value:yyyy-MM-dd}");
+
+        if (!string.IsNullOrEmpty(issue.Labels))
+            Console.WriteLine($"**Labels:** {issue.Labels}");
+
+        if (!string.IsNullOrEmpty(issue.Assignees))
+            Console.WriteLine($"**Assignees:** {issue.Assignees}");
+
+        if (!string.IsNullOrEmpty(issue.Milestone))
+            Console.WriteLine($"**Milestone:** {issue.Milestone}");
+
+        if (issue.IsPullRequest)
+        {
+            if (!string.IsNullOrEmpty(issue.HeadBranch))
+                Console.WriteLine($"**Branch:** {issue.HeadBranch} → {issue.BaseBranch}");
+            if (!string.IsNullOrEmpty(issue.MergeState))
+                Console.WriteLine($"**Merge State:** {issue.MergeState}");
+        }
+
+        Console.WriteLine();
+
+        if (!string.IsNullOrEmpty(issue.Body))
+        {
+            Console.WriteLine("## Description");
+            Console.WriteLine(issue.Body);
+            Console.WriteLine();
+        }
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine($"## Comments ({comments.Count})");
+            Console.WriteLine();
+            foreach (var comment in comments.OrderBy(c => c.CreatedAt))
+            {
+                var reviewTag = comment.IsReviewComment ? " (review)" : "";
+                Console.WriteLine($"### {comment.Author}{reviewTag} — {comment.CreatedAt:yyyy-MM-dd HH:mm}");
+                Console.WriteLine(comment.Body);
+                Console.WriteLine();
+            }
+        }
+
+        var type = issue.IsPullRequest ? "pull" : "issues";
+        Console.WriteLine($"---");
+        Console.WriteLine($"*URL: https://github.com/{issue.RepoFullName}/{type}/{issue.Number}*");
     }
 }

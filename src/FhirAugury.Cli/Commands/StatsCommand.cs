@@ -54,6 +54,32 @@ public static class StatsCommand
                 stats["zulip_sync_status"] = syncState?.Status ?? "none";
             }
 
+            if (source is null or "confluence")
+            {
+                var spaceCount = ConfluenceSpaceRecord.SelectCount(conn);
+                var pageCount = ConfluencePageRecord.SelectCount(conn);
+                var syncState = SyncStateRecord.SelectSingle(conn, SourceName: "confluence");
+
+                stats["confluence_spaces"] = spaceCount;
+                stats["confluence_pages"] = pageCount;
+                stats["confluence_last_sync"] = syncState?.LastSyncAt.ToString("yyyy-MM-dd HH:mm") ?? "never";
+                stats["confluence_sync_status"] = syncState?.Status ?? "none";
+            }
+
+            if (source is null or "github")
+            {
+                var repoCount = GitHubRepoRecord.SelectCount(conn);
+                var issueCount = GitHubIssueRecord.SelectCount(conn);
+                var commentCount = GitHubCommentRecord.SelectCount(conn);
+                var syncState = SyncStateRecord.SelectSingle(conn, SourceName: "github");
+
+                stats["github_repos"] = repoCount;
+                stats["github_issues"] = issueCount;
+                stats["github_comments"] = commentCount;
+                stats["github_last_sync"] = syncState?.LastSyncAt.ToString("yyyy-MM-dd HH:mm") ?? "never";
+                stats["github_sync_status"] = syncState?.Status ?? "none";
+            }
+
             var fileInfo = new System.IO.FileInfo(dbPath);
             stats["database_size_mb"] = Math.Round(fileInfo.Length / 1024.0 / 1024.0, 2);
 

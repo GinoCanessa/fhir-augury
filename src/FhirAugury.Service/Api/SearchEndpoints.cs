@@ -62,6 +62,8 @@ public static class SearchEndpoints
             "jira" => FtsSearchService.SearchJiraIssues(conn, query, limit, filter),
             "jira-comment" => FtsSearchService.SearchJiraComments(conn, query, limit),
             "zulip" => FtsSearchService.SearchZulipMessages(conn, query, limit, filter),
+            "confluence" => FtsSearchService.SearchConfluencePages(conn, query, limit, filter),
+            "github" => FtsSearchService.SearchGitHubIssues(conn, query, limit, filter),
             _ => null,
         };
 

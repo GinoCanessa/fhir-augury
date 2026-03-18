@@ -1,0 +1,14 @@
+<p>The Patient resource covers data about patients involved in healthcare.</p>
+<ac:structured-macro ac:name="info" xmlns:ac="http://atlassian.com/content">
+  <ac:rich-text-body>
+    <p>This is normative content for R5.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+<table>
+  <tr><td>Name</td><td>Description</td></tr>
+  <tr><td>identifier</td><td>An identifier for this patient</td></tr>
+</table>
+<ac:image xmlns:ac="http://atlassian.com/content" alt="Patient diagram">
+  <ri:attachment ri:filename="patient.png" xmlns:ri="http://atlassian.com/resource" />
+</ac:image>
+<p>See also <a href="https://jira.hl7.org/browse/FHIR-12345">FHIR-12345</a> for related tracker items.</p>

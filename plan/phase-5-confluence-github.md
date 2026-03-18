@@ -39,8 +39,8 @@ Add Confluence table creation.
 
 ### Acceptance Criteria
 
-- [ ] All Confluence CRUD operations work
-- [ ] FTS5 triggers fire correctly
+- [x] All Confluence CRUD operations work
+- [x] FTS5 triggers fire correctly
 
 ---
 
@@ -103,11 +103,11 @@ HTTP message handler for Confluence authentication:
 
 ### Acceptance Criteria
 
-- [ ] Can authenticate with Confluence API
-- [ ] Full download enumerates spaces → pages → comments
-- [ ] Incremental download uses CQL lastModified filter
-- [ ] Confluence storage format is correctly stripped to plain text
-- [ ] Page hierarchy (ancestors) is preserved
+- [x] Can authenticate with Confluence API
+- [x] Full download enumerates spaces → pages → comments
+- [x] Incremental download uses CQL lastModified filter
+- [x] Confluence storage format is correctly stripped to plain text
+- [x] Page hierarchy (ancestors) is preserved
 
 ---
 
@@ -147,9 +147,9 @@ Add GitHub table creation.
 
 ### Acceptance Criteria
 
-- [ ] All GitHub CRUD operations work
-- [ ] FTS5 triggers fire correctly
-- [ ] Issues and PRs coexist in the same table (distinguished by `IsPullRequest`)
+- [x] All GitHub CRUD operations work
+- [x] FTS5 triggers fire correctly
+- [x] Issues and PRs coexist in the same table (distinguished by `IsPullRequest`)
 
 ---
 
@@ -211,11 +211,11 @@ Maps GitHub API JSON to `GitHubIssueRecord`:
 
 ### Acceptance Criteria
 
-- [ ] Can authenticate with GitHub API using PAT
-- [ ] Full download paginates through all issues and PRs
-- [ ] Rate limiting prevents 403 errors
-- [ ] Incremental download uses `since` parameter
-- [ ] PRs are stored with `IsPullRequest = true` and PR-specific fields
+- [x] Can authenticate with GitHub API using PAT
+- [x] Full download paginates through all issues and PRs
+- [x] Rate limiting prevents 403 errors
+- [x] Incremental download uses `since` parameter
+- [x] PRs are stored with `IsPullRequest = true` and PR-specific fields
 
 ---
 
@@ -235,9 +235,9 @@ Update `RebuildAllLinksAsync` to scan all four source tables.
 
 ### Acceptance Criteria
 
-- [ ] Confluence and GitHub URL patterns work
-- [ ] GitHub `#number` references are linked within the same repo context
-- [ ] Full cross-reference rebuild covers all four sources
+- [x] Confluence and GitHub URL patterns work
+- [x] GitHub `#number` references are linked within the same repo context
+- [x] Full cross-reference rebuild covers all four sources
 
 ---
 
@@ -259,9 +259,9 @@ Update `BuildFullIndexAsync` to process Confluence and GitHub documents.
 
 ### Acceptance Criteria
 
-- [ ] Unified search spans all four sources
-- [ ] BM25 index includes Confluence and GitHub content
-- [ ] Source-specific search filters work for new sources
+- [x] Unified search spans all four sources
+- [x] BM25 index includes Confluence and GitHub content
+- [x] Source-specific search filters work for new sources
 
 ---
 
@@ -300,9 +300,9 @@ Add `ConfluenceSource` and `GitHubSource` to DI.
 
 ### Acceptance Criteria
 
-- [ ] CLI supports all four sources for download, sync, search, snapshot
-- [ ] Service API includes Confluence and GitHub endpoints
-- [ ] `fhir-augury search` returns results from all four sources
+- [x] CLI supports all four sources for download, sync, search, snapshot
+- [x] Service API includes Confluence and GitHub endpoints
+- [x] `fhir-augury search` returns results from all four sources
 
 ---
 
@@ -342,6 +342,6 @@ Add `ConfluenceSource` and `GitHubSource` to DI.
 
 ### Acceptance Criteria
 
-- [ ] All new tests pass
-- [ ] All existing tests still pass
-- [ ] Integration test verifies four-source unified search
+- [x] All new tests pass
+- [x] All existing tests still pass
+- [x] Integration test verifies four-source unified search

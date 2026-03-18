@@ -25,8 +25,75 @@ internal static class TestHelper
         ZulipMessageRecord.LoadMaxKey(conn);
         FtsSetup.CreateJiraFts(conn);
         FtsSetup.CreateZulipFts(conn);
+        ConfluenceSpaceRecord.CreateTable(conn);
+        ConfluenceSpaceRecord.LoadMaxKey(conn);
+        ConfluencePageRecord.CreateTable(conn);
+        ConfluencePageRecord.LoadMaxKey(conn);
+        ConfluenceCommentRecord.CreateTable(conn);
+        ConfluenceCommentRecord.LoadMaxKey(conn);
+        GitHubRepoRecord.CreateTable(conn);
+        GitHubRepoRecord.LoadMaxKey(conn);
+        GitHubIssueRecord.CreateTable(conn);
+        GitHubIssueRecord.LoadMaxKey(conn);
+        GitHubCommentRecord.CreateTable(conn);
+        GitHubCommentRecord.LoadMaxKey(conn);
+        FtsSetup.CreateConfluenceFts(conn);
+        FtsSetup.CreateGitHubFts(conn);
 
         return conn;
+    }
+
+    public static ConfluencePageRecord CreateSamplePage(
+        string confluenceId,
+        string title,
+        string spaceKey = "FHIR",
+        string? bodyPlain = null)
+    {
+        return new ConfluencePageRecord
+        {
+            Id = ConfluencePageRecord.GetIndex(),
+            ConfluenceId = confluenceId,
+            SpaceKey = spaceKey,
+            Title = title,
+            ParentId = null,
+            BodyStorage = null,
+            BodyPlain = bodyPlain ?? $"Content for {title}",
+            Labels = null,
+            VersionNumber = 1,
+            LastModifiedBy = "tester",
+            LastModifiedAt = DateTimeOffset.UtcNow,
+            Url = $"https://confluence.hl7.org/pages/{confluenceId}",
+        };
+    }
+
+    public static GitHubIssueRecord CreateSampleGitHubIssue(
+        string repoFullName,
+        int number,
+        string title,
+        bool isPullRequest = false,
+        string state = "open")
+    {
+        return new GitHubIssueRecord
+        {
+            Id = GitHubIssueRecord.GetIndex(),
+            UniqueKey = $"{repoFullName}#{number}",
+            RepoFullName = repoFullName,
+            Number = number,
+            IsPullRequest = isPullRequest,
+            Title = title,
+            Body = $"Body for {title}",
+            State = state,
+            Author = "tester",
+            Labels = null,
+            Assignees = null,
+            Milestone = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            ClosedAt = null,
+            MergeState = null,
+            HeadBranch = null,
+            BaseBranch = null,
+        };
     }
 
     public static JiraIssueRecord CreateSampleIssue(
