@@ -24,7 +24,9 @@
 ### HttpRetryHelper.cs
 
 #### [Medium] `new Random()` per call — use `Random.Shared`
-**Line 61.** In .NET 6+, `Random.Shared` is thread-safe and produces better distribution.
+**Line 61.** | ✅ **FIXED**
+
+**Resolution:** Removed per-call `new Random()` allocation and switched to `Random.Shared` in the `DelayWithJitter` method.In .NET 6+, `Random.Shared` is thread-safe and produces better distribution.
 
 ```csharp
 var random = new Random();
@@ -33,7 +35,9 @@ var random = new Random();
 ---
 
 #### [Medium] Unnecessary async wrapper causes extra state machine allocation
-**Lines 46-48.**
+**Lines 46-48.** | ✅ **FIXED**
+
+**Resolution:** Removed the `async/await` wrapper lambda and the `async/await` on the method itself, directly returning the task.
 
 ```csharp
 return await ExecuteWithRetryAsync(
@@ -46,7 +50,9 @@ return await ExecuteWithRetryAsync(
 ---
 
 #### [Low] HttpResponseMessage leaks on auth failure path
-**Lines 87-93.** The `response` is not disposed before throwing.
+**Lines 87-93.** | ✅ **FIXED**
+
+**Resolution:** Added `response.Dispose()` before throwing `HttpRequestException` on auth failure.The `response` is not disposed before throwing.
 
 ```csharp
 if (AuthFailureCodes.Contains(response.StatusCode))
@@ -111,7 +117,9 @@ if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
 ---
 
 #### [Medium] Temp-file cleanup in catch block can mask original exception
-**Lines 38-52.** `File.Delete(tempPath)` in `catch` could throw and mask the original exception.
+**Lines 38-52.** | ✅ **FIXED**
+
+**Resolution:** Wrapped `File.Delete(tempPath)` in a nested `try/catch` to prevent cleanup failures from masking the original exception.`File.Delete(tempPath)` in `catch` could throw and mask the original exception.
 
 **Fix:** Wrap cleanup in a nested `try/catch`:
 ```csharp
@@ -142,7 +150,9 @@ catch
 ---
 
 #### [Low] Temp file cleanup can mask original exception (same pattern)
-**Lines 42-43.** Same issue as `FileSystemResponseCache`.
+**Lines 42-43.** | ✅ **FIXED**
+
+**Resolution:** Same fix as FileSystemResponseCache — nested try/catch around File.Delete.Same issue as `FileSystemResponseCache`.
 
 ---
 

@@ -36,15 +36,15 @@ public static class HttpRetryHelper
     /// Sends an HTTP GET request with retry logic for transient failures.
     /// Throws <see cref="HttpRequestException"/> with clear messaging for auth failures.
     /// </summary>
-    public static async Task<HttpResponseMessage> GetWithRetryAsync(
+    public static Task<HttpResponseMessage> GetWithRetryAsync(
         HttpClient httpClient,
         string url,
         CancellationToken ct,
         int maxRetries = DefaultMaxRetries,
         string? sourceName = null)
     {
-        return await ExecuteWithRetryAsync(
-            async token => await httpClient.GetAsync(url, token),
+        return ExecuteWithRetryAsync(
+            token => httpClient.GetAsync(url, token),
             ct, maxRetries, sourceName);
     }
 
@@ -58,7 +58,6 @@ public static class HttpRetryHelper
         string? sourceName = null)
     {
         var backoff = DefaultInitialBackoff;
-        var random = new Random();
 
         for (int attempt = 0; ; attempt++)
         {
@@ -71,14 +70,14 @@ public static class HttpRetryHelper
             }
             catch (HttpRequestException) when (attempt < maxRetries)
             {
-                await DelayWithJitter(backoff, random, ct);
+                await DelayWithJitter(backoff, ct);
                 backoff = NextBackoff(backoff);
                 continue;
             }
             catch (TaskCanceledException) when (!ct.IsCancellationRequested && attempt < maxRetries)
             {
                 // Timeout, not user cancellation
-                await DelayWithJitter(backoff, random, ct);
+                await DelayWithJitter(backoff, ct);
                 backoff = NextBackoff(backoff);
                 continue;
             }
@@ -90,6 +89,7 @@ public static class HttpRetryHelper
                 var msg = response.StatusCode == HttpStatusCode.Unauthorized
                     ? $"Authentication failed for {source} (HTTP 401). Check your credentials — API tokens, cookies, or passwords may be expired or invalid."
                     : $"Access forbidden for {source} (HTTP 403). Check your credentials and permissions. For GitHub, verify your PAT has the required scopes.";
+                response.Dispose();
                 throw new HttpRequestException(msg, null, response.StatusCode);
             }
 
@@ -98,7 +98,7 @@ public static class HttpRetryHelper
             {
                 var retryAfter = GetRetryAfter(response);
                 var delay = retryAfter ?? backoff;
-                await DelayWithJitter(delay, random, ct);
+                await DelayWithJitter(delay, ct);
                 backoff = NextBackoff(backoff);
                 response.Dispose();
                 continue;
@@ -128,10 +128,10 @@ public static class HttpRetryHelper
         return null;
     }
 
-    private static async Task DelayWithJitter(TimeSpan baseDelay, Random random, CancellationToken ct)
+    private static async Task DelayWithJitter(TimeSpan baseDelay, CancellationToken ct)
     {
         // ±20% jitter
-        var jitter = 1.0 + (random.NextDouble() * 0.4 - 0.2);
+        var jitter = 1.0 + (Random.Shared.NextDouble() * 0.4 - 0.2);
         var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * jitter);
         if (delay > DefaultMaxBackoff)
             delay = DefaultMaxBackoff;

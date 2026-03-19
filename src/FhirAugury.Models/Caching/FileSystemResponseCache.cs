@@ -46,8 +46,7 @@ public class FileSystemResponseCache : IResponseCache
         }
         catch
         {
-            if (File.Exists(tempPath))
-                File.Delete(tempPath);
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
             throw;
         }
     }
