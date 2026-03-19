@@ -10,7 +10,7 @@ public class ZulipMessageMapperTests
     private JsonElement LoadTestData()
     {
         var json = File.ReadAllText(TestDataPath);
-        return JsonDocument.Parse(json).RootElement;
+        return JsonDocument.Parse(json).RootElement.Clone();
     }
 
     [Fact]

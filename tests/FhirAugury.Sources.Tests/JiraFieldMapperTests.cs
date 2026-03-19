@@ -8,7 +8,7 @@ public class JiraFieldMapperTests
     private static JsonElement LoadSampleIssue()
     {
         var json = File.ReadAllText(Path.Combine("TestData", "sample-jira-issue.json"));
-        return JsonDocument.Parse(json).RootElement;
+        return JsonDocument.Parse(json).RootElement.Clone();
     }
 
     [Fact]
