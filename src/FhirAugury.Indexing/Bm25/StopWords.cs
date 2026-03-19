@@ -32,7 +32,7 @@ public static class StopWords
         // Additional common words often filtered in technical text
         "also", "just", "like", "may", "might", "much", "need", "new", "now",
         "old", "one", "see", "still", "take", "thing", "think", "two", "use",
-        "used", "using", "want", "way", "well", "would",
+        "used", "using", "want", "way", "well",
     ];
 
     /// <summary>Returns true if the word is a stop word.</summary>

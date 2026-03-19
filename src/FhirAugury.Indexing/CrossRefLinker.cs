@@ -17,7 +17,7 @@ public static partial class CrossRefLinker
     [GeneratedRegex(@"https?://jira\.hl7\.org/browse/(FHIR-\d+)")]
     private static partial Regex JiraUrlRegex();
 
-    [GeneratedRegex(@"https?://chat\.fhir\.org/#narrow/stream/(\d+)[^/]*/topic/(.+?)(?:\s|$)")]
+    [GeneratedRegex(@"https?://chat\.fhir\.org/#narrow/stream/(\d+)[^/]*/topic/([^\s?#]+)")]
     private static partial Regex ZulipUrlRegex();
 
     [GeneratedRegex(@"https?://github\.com/(HL7/[^/]+)/issues/(\d+)")]
@@ -181,6 +181,9 @@ public static partial class CrossRefLinker
             cmd.CommandText = "DELETE FROM xref_links;";
             cmd.ExecuteNonQuery();
         }
+
+        // Collect all items to link, then batch-insert
+        var allLinkItems = new List<(string SourceType, string SourceId, List<string> TextFields)>();
 
         // Scan Jira issues
         var issues = JiraIssueRecord.SelectList(connection);

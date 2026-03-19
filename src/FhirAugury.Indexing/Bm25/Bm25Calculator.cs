@@ -217,7 +217,8 @@ public static class Bm25Calculator
                         SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
                     )
                     """;
-                overallAvgDocLen = Convert.ToDouble(avgCmd.ExecuteScalar() ?? 1.0);
+                var scalar = avgCmd.ExecuteScalar();
+                overallAvgDocLen = scalar is null or DBNull ? 1.0 : Convert.ToDouble(scalar);
             }
 
             cmd.CommandText = """

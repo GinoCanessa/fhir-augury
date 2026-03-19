@@ -159,13 +159,38 @@ public static class SimilaritySearchService
                 var issue = JiraIssueRecord.SelectSingle(connection, Key: sourceId);
                 return issue?.Title;
             }
-            case "zulip":
+            case "jira-comment":
             {
                 var sepIdx = sourceId.IndexOf(':');
                 if (sepIdx < 0) return sourceId;
+                var issueKey = sourceId[..sepIdx];
+                var issue = JiraIssueRecord.SelectSingle(connection, Key: issueKey);
+                return issue is not null ? $"Comment on {issueKey}: {issue.Title}" : sourceId;
+            }
+            case "zulip":
+            {
+                var sepIdx = sourceId.LastIndexOf(':');
+                if (sepIdx <= 0) return sourceId;
                 var stream = sourceId[..sepIdx];
                 var topic = sourceId[(sepIdx + 1)..];
                 return $"{stream} > {topic}";
+            }
+            case "confluence":
+            {
+                var page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: sourceId);
+                return page?.Title;
+            }
+            case "github":
+            {
+                var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: sourceId);
+                return issue?.Title;
+            }
+            case "github-comment":
+            {
+                var sepIdx = sourceId.IndexOf(':');
+                if (sepIdx < 0) return sourceId;
+                var issueRef = sourceId[..sepIdx];
+                return $"Comment on {issueRef}";
             }
             default:
                 return sourceId;
