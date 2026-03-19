@@ -30,7 +30,7 @@ public static class ServiceCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var client = CreateClient(parseResult, serviceOption);
+            using var client = CreateClient(parseResult, serviceOption);
 
             try
             {
@@ -63,7 +63,7 @@ public static class ServiceCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var client = CreateClient(parseResult, serviceOption);
+            using var client = CreateClient(parseResult, serviceOption);
             var source = parseResult.GetValue(sourceOption);
             var type = parseResult.GetValue(typeOption)!;
 
@@ -102,7 +102,7 @@ public static class ServiceCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var client = CreateClient(parseResult, serviceOption);
+            using var client = CreateClient(parseResult, serviceOption);
             var source = parseResult.GetValue(sourceOption);
             var interval = parseResult.GetValue(intervalOption);
 
@@ -141,7 +141,7 @@ public static class ServiceCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var client = CreateClient(parseResult, serviceOption);
+            using var client = CreateClient(parseResult, serviceOption);
             var query = parseResult.GetValue(queryOption)!;
             var limit = parseResult.GetValue(limitOption);
 
@@ -168,7 +168,7 @@ public static class ServiceCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var client = CreateClient(parseResult, serviceOption);
+            using var client = CreateClient(parseResult, serviceOption);
             var source = parseResult.GetValue(sourceOption);
 
             try

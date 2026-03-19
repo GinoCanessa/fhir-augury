@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace FhirAugury.Cli;
 
 /// <summary>HTTP client wrapper for the FHIR Augury service API.</summary>
-public class ServiceClient(HttpClient httpClient)
+public class ServiceClient(HttpClient httpClient) : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -85,5 +85,11 @@ public class ServiceClient(HttpClient httpClient)
     public static void PrintJson(JsonElement json)
     {
         Console.WriteLine(JsonSerializer.Serialize(json, JsonOptions));
+    }
+
+    public void Dispose()
+    {
+        httpClient.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

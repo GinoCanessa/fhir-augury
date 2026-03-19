@@ -43,7 +43,9 @@ public IReadOnlyDictionary<string, DateTimeOffset> NextRunTimes => _nextRunTimes
 ---
 
 ### 3. HttpClient not disposed in `ServiceCommand.CreateClient`
-**File:** `ServiceCommand.cs:188-193` | **Severity:** Critical
+**File:** `ServiceCommand.cs:188-193` | **Severity:** Critical | ✅ **FIXED**
+
+**Resolution:** Made `ServiceClient` implement `IDisposable` (disposing the inner `HttpClient`) and added `using var` to all call sites in `ServiceCommand`.
 
 Every command invocation creates a new `HttpClient` that is never disposed. Over repeated calls this leaks socket handles (socket exhaustion). `ServiceClient` doesn't implement `IDisposable`.
 
