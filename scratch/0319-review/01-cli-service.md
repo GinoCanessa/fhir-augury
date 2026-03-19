@@ -84,7 +84,9 @@ var result = await dataSource.IngestItemAsync(id, options, ct);  // uses dispose
 ---
 
 ### 5. URL parameters not encoded in `ServiceClient`
-**File:** `ServiceClient.cs:13` | **Severity:** High
+**File:** `ServiceClient.cs:13` | **Severity:** High | ✅ **FIXED**
+
+**Resolution:** Applied `Uri.EscapeDataString()` to all `source` and `type` parameters interpolated into URLs across `TriggerIngestionAsync`, `SubmitItemAsync`, `GetStatsAsync`, and `UpdateScheduleAsync`.
 
 `source` path segment and `type` query parameter are injected directly without encoding. The `source` could contain path traversal characters.
 

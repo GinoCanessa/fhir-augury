@@ -10,7 +10,7 @@ public class ServiceClient(HttpClient httpClient) : IDisposable
 
     public async Task<JsonElement> TriggerIngestionAsync(string source, string type = "Incremental", string? filter = null, CancellationToken ct = default)
     {
-        var url = $"/api/v1/ingest/{source}?type={type}";
+        var url = $"/api/v1/ingest/{Uri.EscapeDataString(source)}?type={Uri.EscapeDataString(type)}";
         if (!string.IsNullOrEmpty(filter)) url += $"&filter={Uri.EscapeDataString(filter)}";
 
         var response = await httpClient.PostAsync(url, null, ct);
@@ -20,7 +20,7 @@ public class ServiceClient(HttpClient httpClient) : IDisposable
 
     public async Task<JsonElement> SubmitItemAsync(string source, string identifier, CancellationToken ct = default)
     {
-        var response = await httpClient.PostAsJsonAsync($"/api/v1/ingest/{source}/item", new { identifier }, ct);
+        var response = await httpClient.PostAsJsonAsync($"/api/v1/ingest/{Uri.EscapeDataString(source)}/item", new { identifier }, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
     }
@@ -54,7 +54,7 @@ public class ServiceClient(HttpClient httpClient) : IDisposable
 
     public async Task<JsonElement> GetStatsAsync(string? source = null, CancellationToken ct = default)
     {
-        var url = source is null ? "/api/v1/stats" : $"/api/v1/stats/{source}";
+        var url = source is null ? "/api/v1/stats" : $"/api/v1/stats/{Uri.EscapeDataString(source)}";
         var response = await httpClient.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
@@ -69,7 +69,7 @@ public class ServiceClient(HttpClient httpClient) : IDisposable
 
     public async Task<JsonElement> UpdateScheduleAsync(string source, string interval, CancellationToken ct = default)
     {
-        var response = await httpClient.PutAsJsonAsync($"/api/v1/ingest/{source}/schedule", new { syncInterval = interval }, ct);
+        var response = await httpClient.PutAsJsonAsync($"/api/v1/ingest/{Uri.EscapeDataString(source)}/schedule", new { syncInterval = interval }, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
     }
