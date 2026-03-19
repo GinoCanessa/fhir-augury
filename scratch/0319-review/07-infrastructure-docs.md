@@ -16,7 +16,10 @@ No `USER` directive. Container security best practice violation.
 
 ---
 
-### [Critical] No HEALTHCHECK instruction
+### [Critical] No HEALTHCHECK instruction — ✅ **FIXED**
+
+**Resolution:** Added `HEALTHCHECK` using `wget` against the `/health` endpoint with 30s interval, 5s timeout, and 3 retries.
+
 No `HEALTHCHECK` directive. Docker/orchestrators can't monitor container health.
 
 **Fix:** Add `HEALTHCHECK CMD curl -f http://localhost:5100/health || exit 1` or dotnet-based check.
