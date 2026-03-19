@@ -39,7 +39,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
             try
             {
                 var repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
-                var repoResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, repoUrl, ct, sourceName: "github");
+                using var repoResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, repoUrl, ct, sourceName: "github");
                 repoResponse.EnsureSuccessStatusCode();
                 var repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
                 using var repoDoc = JsonDocument.Parse(repoJson);
@@ -63,7 +63,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 JsonDocument doc;
                 try
                 {
-                    var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
+                    using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -163,7 +163,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
                 JsonDocument doc;
                 try
                 {
-                    var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
+                    using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -258,7 +258,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
         try
         {
             var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{number}";
-            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
+            using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
@@ -375,7 +375,7 @@ public class GitHubSource(GitHubSourceOptions options, HttpClient httpClient, IL
         try
         {
             var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{issueNumber}/comments?per_page={options.PageSize}";
-            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
+            using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "github");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 

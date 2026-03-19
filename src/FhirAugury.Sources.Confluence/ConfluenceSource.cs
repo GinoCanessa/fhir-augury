@@ -45,7 +45,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
             try
             {
                 var spaceUrl = $"{options.BaseUrl}/rest/api/space/{Uri.EscapeDataString(spaceKey)}";
-                var spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: "confluence");
+                using var spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: "confluence");
                 spaceResponse.EnsureSuccessStatusCode();
                 var spaceJson = await spaceResponse.Content.ReadAsStringAsync(ct);
                 using var spaceDoc = JsonDocument.Parse(spaceJson);
@@ -59,6 +59,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
             // Paginate pages in this space
             int start = 0;
             bool hasMore = true;
+            var processedPages = new List<ConfluencePageRecord>();
 
             while (hasMore && !ct.IsCancellationRequested)
             {
@@ -71,7 +72,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
                 JsonDocument doc;
                 try
                 {
-                    var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
+                    using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -110,6 +111,14 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
                         var result = ProcessPage(pageJson, spaceKey, connection, ingestionOptions.Verbose);
                         itemsProcessed++;
 
+                        // Track page for comment fetching
+                        if (result.Outcome is ProcessOutcome.New or ProcessOutcome.Updated)
+                        {
+                            var processedPage = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageJson.GetProperty("id").GetString()!);
+                            if (processedPage is not null)
+                                processedPages.Add(processedPage);
+                        }
+
                         if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
                             logger?.LogInformation("Confluence download progress: {Count} pages processed", itemsProcessed);
 
@@ -137,8 +146,13 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
                               links.TryGetProperty("next", out _);
                 }
 
-                // Fetch comments for processed pages
-                await FetchCommentsForPagesAsync(connection, spaceKey, start - options.PageSize, start, ct, errors);
+                // Fetch comments for processed pages in this batch
+                foreach (var page in processedPages)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    await FetchPageCommentsAsync(connection, page.ConfluenceId, page.Id, ct, errors);
+                }
+                processedPages.Clear();
             }
         }
 
@@ -201,7 +215,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
             JsonDocument doc;
             try
             {
-                var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
+                using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
                 response.EnsureSuccessStatusCode();
                 var json = await response.Content.ReadAsStringAsync(ct);
                 doc = JsonDocument.Parse(json);
@@ -290,7 +304,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
 
         try
         {
-            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
+            using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
@@ -536,19 +550,6 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         }
     }
 
-    private async Task FetchCommentsForPagesAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        string spaceKey, int startOffset, int endOffset,
-        CancellationToken ct, List<IngestionError> errors)
-    {
-        var pages = ConfluencePageRecord.SelectList(connection, SpaceKey: spaceKey);
-        foreach (var page in pages.Skip(startOffset).Take(endOffset - startOffset))
-        {
-            if (ct.IsCancellationRequested) break;
-            await FetchPageCommentsAsync(connection, page.ConfluenceId, page.Id, ct, errors);
-        }
-    }
-
     private async Task FetchPageCommentsAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         string confluencePageId, int pageDbId,
@@ -557,7 +558,7 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         try
         {
             var url = $"{options.BaseUrl}/rest/api/content/{Uri.EscapeDataString(confluencePageId)}/child/comment?expand=body.storage";
-            var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
+            using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: "confluence");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
