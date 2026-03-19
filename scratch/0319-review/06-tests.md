@@ -8,7 +8,9 @@
 ## Critical Findings
 
 ### 1. SearchEndpointTests never cleans up temp database files
-**File:** `SearchEndpointTests.cs`
+**File:** `SearchEndpointTests.cs` | ✅ **FIXED**
+
+**Resolution:** Added `Dispose(bool)` override to `SearchTestFactory` that calls `Cleanup()`. xUnit now automatically cleans up temp DB files when the class fixture is disposed.
 
 Implements `IClassFixture<SearchTestFactory>` but never implements `IDisposable`, so temp database files accumulate on disk indefinitely.
 

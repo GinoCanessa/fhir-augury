@@ -164,5 +164,11 @@ public class SearchEndpointTests : IClassFixture<SearchEndpointTests.SearchTestF
             try { if (File.Exists(_dbPath + "-wal")) File.Delete(_dbPath + "-wal"); } catch { }
             try { if (File.Exists(_dbPath + "-shm")) File.Delete(_dbPath + "-shm"); } catch { }
         }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing) Cleanup();
+        }
     }
 }
