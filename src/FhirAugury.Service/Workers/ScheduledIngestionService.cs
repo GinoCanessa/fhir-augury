@@ -105,8 +105,9 @@ public class ScheduledIngestionService(
             var syncState = SyncStateRecord.SelectSingle(conn, SourceName: sourceName);
             return syncState?.NextScheduledAt;
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogWarning(ex, "Failed to read persisted next run time for {Source}", sourceName);
             return null;
         }
     }
@@ -123,9 +124,9 @@ public class ScheduledIngestionService(
                 return overridden;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Fall through to config default
+            logger.LogWarning(ex, "Failed to read sync interval override for {Source}", sourceName);
         }
 
         return sourceCfg.SyncSchedule ?? TimeSpan.FromHours(1);

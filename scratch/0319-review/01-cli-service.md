@@ -178,7 +178,9 @@ The `--quiet` option is added to the root command but never consumed by any comm
 ---
 
 ### 14. Empty catch blocks swallow exceptions
-**File:** `ScheduledIngestionService.cs:107-109, 125-128` | **Severity:** Medium
+**File:** `ScheduledIngestionService.cs:107-109, 125-128` | **Severity:** Medium | ✅ **FIXED**
+
+**Resolution:** Added `Exception ex` to both catch blocks and log via `logger.LogWarning()` with the exception and source name for diagnostics.
 
 Bare `catch` blocks with no logging. If the database is corrupt or inaccessible, this silently returns null, masking the root cause.
 
