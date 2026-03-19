@@ -1,3 +1,5 @@
+using FhirAugury.Models.Caching;
+
 namespace FhirAugury.Sources.Zulip;
 
 /// <summary>Configuration options for the Zulip data source.</summary>
@@ -20,4 +22,10 @@ public record ZulipSourceOptions
 
     /// <summary>Only fetch web-public streams.</summary>
     public bool OnlyWebPublic { get; init; } = true;
+
+    /// <summary>Cache mode for this source.</summary>
+    public CacheMode CacheMode { get; init; } = CacheMode.Disabled;
+
+    /// <summary>Cache instance for this source.</summary>
+    public IResponseCache? Cache { get; init; }
 }

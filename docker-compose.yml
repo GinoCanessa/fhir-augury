@@ -1,0 +1,22 @@
+services:
+  fhir-augury:
+    build: .
+    ports:
+      - "5100:5100"
+    volumes:
+      - ./local-cache:/data/cache     # Cache survives rebuilds
+      - fhir-augury-db:/data/db       # Database persistence
+    environment:
+      - FHIR_AUGURY_Cache__RootPath=/data/cache
+      - FHIR_AUGURY_Cache__DefaultMode=WriteThrough
+      - FHIR_AUGURY_DatabasePath=/data/db/fhir-augury.db
+      - FHIR_AUGURY_Api__Port=5100
+      # Uncomment and set credentials:
+      # - FHIR_AUGURY_Sources__jira__Cookie=JSESSIONID=...
+      # - FHIR_AUGURY_Sources__zulip__Email=bot@example.com
+      # - FHIR_AUGURY_Sources__zulip__ApiKey=...
+      # - FHIR_AUGURY_Sources__confluence__Cookie=...
+      # - FHIR_AUGURY_Sources__github__PersonalAccessToken=ghp_...
+
+volumes:
+  fhir-augury-db:

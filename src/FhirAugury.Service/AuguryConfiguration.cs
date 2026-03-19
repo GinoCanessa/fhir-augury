@@ -1,3 +1,5 @@
+using FhirAugury.Models.Caching;
+
 namespace FhirAugury.Service;
 
 /// <summary>Strongly-typed configuration binding to the FhirAugury config section.</summary>
@@ -9,6 +11,7 @@ public class AuguryConfiguration
     public Dictionary<string, SourceConfiguration> Sources { get; set; } = [];
     public Bm25Configuration Bm25 { get; set; } = new();
     public ApiConfiguration Api { get; set; } = new();
+    public CacheConfiguration Cache { get; set; } = new();
 }
 
 public class SourceConfiguration
@@ -38,6 +41,9 @@ public class SourceConfiguration
     public string? PersonalAccessToken { get; set; }
     public List<string> Repositories { get; set; } = [];
     public int RateLimitBuffer { get; set; } = 100;
+
+    // Cache override
+    public SourceCacheConfiguration Cache { get; set; } = new();
 }
 
 public class Bm25Configuration

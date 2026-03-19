@@ -2,6 +2,7 @@ using System.Text.Json;
 using FhirAugury.Database;
 using FhirAugury.Database.Records;
 using FhirAugury.Models;
+using FhirAugury.Models.Caching;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Sources.Confluence;
@@ -13,6 +14,9 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
 
     public async Task<IngestionResult> DownloadAllAsync(IngestionOptions ingestionOptions, CancellationToken ct)
     {
+        if (options.CacheMode == CacheMode.CacheOnly)
+            return await LoadFromCacheAsync(ingestionOptions, ct);
+
         var startedAt = DateTimeOffset.UtcNow;
         var errors = new List<IngestionError>();
         var newAndUpdated = new List<IngestedItem>();
@@ -24,6 +28,10 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         var spaces = ingestionOptions.Filter is not null
             ? [ingestionOptions.Filter]
             : options.Spaces;
+
+        var cache = options.Cache;
+        var shouldCache = cache is not null && options.CacheMode is CacheMode.WriteThrough or CacheMode.WriteOnly;
+        int cachedFileCount = 0;
 
         using var connection = db.OpenConnection();
 
@@ -82,6 +90,23 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
 
                     foreach (var pageJson in results.EnumerateArray())
                     {
+                        // Cache individual page JSON
+                        if (shouldCache)
+                        {
+                            var pageId = pageJson.GetProperty("id").GetString()!;
+                            var cacheKey = $"pages/{pageId}.json";
+                            var pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
+                            using var cacheStream = new MemoryStream(pageBytes);
+                            await cache!.PutAsync("confluence", cacheKey, cacheStream, ct);
+                            cachedFileCount++;
+                        }
+
+                        if (options.CacheMode == CacheMode.WriteOnly)
+                        {
+                            itemsProcessed++;
+                            continue;
+                        }
+
                         var result = ProcessPage(pageJson, spaceKey, connection, ingestionOptions.Verbose);
                         itemsProcessed++;
 
@@ -120,11 +145,27 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         logger?.LogInformation("Confluence full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
+        if (shouldCache)
+        {
+            await CacheMetadataService.WriteMetadataAsync(
+                cache!.RootPath, "_meta_confluence.json",
+                new ConfluenceCacheMetadata
+                {
+                    LastSyncDate = DateOnly.FromDateTime(DateTime.UtcNow).ToString("yyyy-MM-dd"),
+                    LastSyncTimestamp = DateTimeOffset.UtcNow,
+                    TotalFiles = cachedFileCount,
+                    Format = "json",
+                }, ct);
+        }
+
         return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
 
     public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, IngestionOptions ingestionOptions, CancellationToken ct)
     {
+        if (options.CacheMode == CacheMode.CacheOnly)
+            return await LoadFromCacheAsync(ingestionOptions, ct);
+
         var startedAt = DateTimeOffset.UtcNow;
         var errors = new List<IngestionError>();
         var newAndUpdated = new List<IngestedItem>();
@@ -136,6 +177,9 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         var spaces = ingestionOptions.Filter is not null
             ? [ingestionOptions.Filter]
             : options.Spaces;
+
+        var cache = options.Cache;
+        var shouldCache = cache is not null && options.CacheMode is CacheMode.WriteThrough or CacheMode.WriteOnly;
 
         using var connection = db.OpenConnection();
 
@@ -176,6 +220,22 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
 
                 foreach (var pageJson in results.EnumerateArray())
                 {
+                    // Cache individual page JSON
+                    if (shouldCache)
+                    {
+                        var pageId = pageJson.GetProperty("id").GetString()!;
+                        var cacheKey = $"pages/{pageId}.json";
+                        var pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
+                        using var cacheStream = new MemoryStream(pageBytes);
+                        await cache!.PutAsync("confluence", cacheKey, cacheStream, ct);
+                    }
+
+                    if (options.CacheMode == CacheMode.WriteOnly)
+                    {
+                        itemsProcessed++;
+                        continue;
+                    }
+
                     var spaceKey = GetNestedString(pageJson, "space", "key") ?? spaces.FirstOrDefault() ?? "FHIR";
                     var result = ProcessPage(pageJson, spaceKey, connection, ingestionOptions.Verbose);
                     itemsProcessed++;
@@ -267,6 +327,78 @@ public class ConfluenceSource(ConfluenceSourceOptions options, HttpClient httpCl
         }
 
         return BuildResult(startedAt, itemsNew + itemsUpdated + itemsFailed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
+    }
+
+    private async Task<IngestionResult> LoadFromCacheAsync(IngestionOptions ingestionOptions, CancellationToken ct)
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        var errors = new List<IngestionError>();
+        var newAndUpdated = new List<IngestedItem>();
+        int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
+
+        var cache = options.Cache ?? throw new InvalidOperationException("Cache is required for CacheOnly mode.");
+
+        using var db = new DatabaseService(ingestionOptions.DatabasePath);
+        db.InitializeDatabase();
+        using var connection = db.OpenConnection();
+
+        var keys = cache.EnumerateKeys("confluence");
+
+        foreach (var key in keys)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            if (!cache.TryGet("confluence", key, out var stream))
+                continue;
+
+            using (stream)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(stream);
+                    var spaceKey = GetNestedString(doc.RootElement, "space", "key") ?? "FHIR";
+
+                    // Upsert space record from page content
+                    if (doc.RootElement.TryGetProperty("space", out var spaceJson))
+                    {
+                        UpsertSpace(connection, spaceJson, spaceKey);
+                    }
+
+                    var result = ProcessPage(doc.RootElement, spaceKey, connection, false);
+                    itemsProcessed++;
+
+                    switch (result.Outcome)
+                    {
+                        case ProcessOutcome.New:
+                            itemsNew++;
+                            newAndUpdated.Add(result.Item!);
+                            break;
+                        case ProcessOutcome.Updated:
+                            itemsUpdated++;
+                            newAndUpdated.Add(result.Item!);
+                            break;
+                        case ProcessOutcome.Failed:
+                            itemsFailed++;
+                            errors.Add(result.Error!);
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Failed to process cached file {Key}", key);
+                    itemsFailed++;
+                    errors.Add(new IngestionError(key, $"Failed to process cached file: {ex.Message}", ex));
+                }
+            }
+
+            if (itemsProcessed % 1000 == 0 && itemsProcessed > 0)
+                logger?.LogInformation("Confluence cache ingestion progress: {Count} pages processed", itemsProcessed);
+        }
+
+        logger?.LogInformation("Confluence cache-only ingestion complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+
+        return BuildResult(startedAt, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, newAndUpdated);
     }
 
     private ProcessResult ProcessPage(JsonElement pageJson, string spaceKey, Microsoft.Data.Sqlite.SqliteConnection connection, bool verbose)

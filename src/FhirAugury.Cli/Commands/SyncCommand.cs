@@ -2,6 +2,7 @@ using System.CommandLine;
 using FhirAugury.Database;
 using FhirAugury.Database.Records;
 using FhirAugury.Models;
+using FhirAugury.Models.Caching;
 using FhirAugury.Sources.Confluence;
 using FhirAugury.Sources.GitHub;
 using FhirAugury.Sources.Jira;
@@ -27,6 +28,8 @@ public static class SyncCommand
         var confluenceUserOption = new Option<string?>("--confluence-user") { Description = "Confluence username" };
         var confluenceTokenOption = new Option<string?>("--confluence-token") { Description = "Confluence API token" };
         var githubPatOption = new Option<string?>("--github-pat") { Description = "GitHub personal access token" };
+        var cachePathOption = new Option<string?>("--cache-path") { Description = "Override the cache root directory (default: ./cache)" };
+        var cacheModeOption = new Option<CacheMode>("--cache-mode") { Description = "Cache mode: Disabled, WriteThrough, CacheOnly, WriteOnly", DefaultValueFactory = _ => CacheMode.WriteThrough };
 
         command.Add(sourceOption);
         command.Add(sinceOption);
@@ -40,6 +43,8 @@ public static class SyncCommand
         command.Add(confluenceUserOption);
         command.Add(confluenceTokenOption);
         command.Add(githubPatOption);
+        command.Add(cachePathOption);
+        command.Add(cacheModeOption);
 
         command.SetAction(async (parseResult, ct) =>
         {
@@ -48,6 +53,12 @@ public static class SyncCommand
             var verbose = parseResult.GetValue(verboseOption);
             var sinceOverride = parseResult.GetValue(sinceOption);
             var json = parseResult.GetValue(jsonOption);
+            var cacheMode = parseResult.GetValue(cacheModeOption);
+            var cachePath = parseResult.GetValue(cachePathOption) ?? "./cache";
+
+            IResponseCache cache = cacheMode == CacheMode.Disabled
+                ? NullResponseCache.Instance
+                : new FileSystemResponseCache(Path.GetFullPath(cachePath));
 
             var dbService = new DatabaseService(dbPath);
             dbService.InitializeDatabase();
@@ -61,12 +72,12 @@ public static class SyncCommand
                     case "jira":
                     {
                         var since = ResolveSinceTime(dbService, sinceOverride, "jira");
-                        var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
+                        var jiraOptions = DownloadCommand.BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption, cacheMode, cache);
                         using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
                         var jiraSource = new JiraSource(jiraOptions, httpClient);
 
                         var options = new IngestionOptions { DatabasePath = dbPath, Verbose = verbose };
-                        Console.WriteLine($"Syncing jira since {since:yyyy-MM-dd HH:mm}...");
+                        Console.WriteLine($"Syncing jira since {since:yyyy-MM-dd HH:mm} (cache: {cacheMode})...");
                         var result = await jiraSource.DownloadIncrementalAsync(since, options, ct);
                         UpdateSyncState(dbService, "jira", result);
                         DownloadCommand.PrintResult(result, json);
@@ -76,12 +87,12 @@ public static class SyncCommand
                     case "zulip":
                     {
                         var since = ResolveSinceTime(dbService, sinceOverride, "zulip");
-                        var zulipOptions = DownloadCommand.BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption);
+                        var zulipOptions = DownloadCommand.BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption, cacheMode, cache);
                         using var httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
                         var zulipSource = new ZulipSource(zulipOptions, httpClient);
 
                         var options = new IngestionOptions { DatabasePath = dbPath, Verbose = verbose };
-                        Console.WriteLine($"Syncing zulip since {since:yyyy-MM-dd HH:mm}...");
+                        Console.WriteLine($"Syncing zulip since {since:yyyy-MM-dd HH:mm} (cache: {cacheMode})...");
                         var result = await zulipSource.DownloadIncrementalAsync(since, options, ct);
                         UpdateSyncState(dbService, "zulip", result);
                         DownloadCommand.PrintResult(result, json);
@@ -95,12 +106,12 @@ public static class SyncCommand
                     case "confluence":
                     {
                         var since = ResolveSinceTime(dbService, sinceOverride, "confluence");
-                        var confluenceOptions = DownloadCommand.BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption);
+                        var confluenceOptions = DownloadCommand.BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption, cacheMode, cache);
                         using var httpClient = ConfluenceAuthHandler.CreateHttpClient(confluenceOptions);
                         var confluenceSource = new ConfluenceSource(confluenceOptions, httpClient);
 
                         var options = new IngestionOptions { DatabasePath = dbPath, Verbose = verbose };
-                        Console.WriteLine($"Syncing confluence since {since:yyyy-MM-dd HH:mm}...");
+                        Console.WriteLine($"Syncing confluence since {since:yyyy-MM-dd HH:mm} (cache: {cacheMode})...");
                         var result = await confluenceSource.DownloadIncrementalAsync(since, options, ct);
                         UpdateSyncState(dbService, "confluence", result);
                         DownloadCommand.PrintResult(result, json);

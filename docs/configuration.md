@@ -33,6 +33,10 @@ All settings live under the `FhirAugury` section.
 {
   "FhirAugury": {
     "DatabasePath": "fhir-augury.db",
+    "Cache": {
+      "RootPath": "./cache",
+      "DefaultMode": "WriteThrough"
+    },
     "Sources": {
       "jira": { },
       "zulip": { },
@@ -56,9 +60,66 @@ All settings live under the `FhirAugury` section.
 | Property | Type | Default | Description |
 |---|---|---|---|
 | `DatabasePath` | `string` | `"fhir-augury.db"` | Path to the SQLite database |
+| `Cache` | `CacheConfiguration` | — | Cache settings (see below) |
 | `Sources` | `Dictionary<string, SourceConfiguration>` | — | Per-source configuration (see below) |
 | `Bm25` | `Bm25Configuration` | — | BM25 scoring parameters |
 | `Api` | `ApiConfiguration` | — | HTTP API settings |
+
+## Cache Configuration
+
+The cache layer persists raw API responses to the local file system. This
+enables offline ingestion, faster re-runs, and pre-populated directory support.
+
+### Top-Level Cache Settings
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Cache.RootPath` | `string` | `"./cache"` | Root directory for all source caches |
+| `Cache.DefaultMode` | `CacheMode` | `WriteThrough` | Default cache mode for all sources |
+
+### Per-Source Cache Override
+
+Each source can override the default cache mode:
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `Sources.{name}.Cache.Mode` | `CacheMode?` | `null` (inherit) | Per-source cache mode override |
+| `Sources.{name}.Cache.Path` | `string?` | `null` | Override cache subdirectory for this source |
+
+### CacheMode Values
+
+| Value | Behaviour |
+|---|---|
+| `Disabled` | No caching — always fetch from API |
+| `WriteThrough` | Fetch from API → write to cache (default) |
+| `CacheOnly` | Read from cache only — no network calls, no credentials required |
+| `WriteOnly` | Always fetch from API → write to cache (populate cache without processing) |
+
+### Example: Cache-Only for Jira (Offline Development)
+
+```json
+{
+  "FhirAugury": {
+    "Cache": {
+      "RootPath": "/data/fhir-cache",
+      "DefaultMode": "WriteThrough"
+    },
+    "Sources": {
+      "jira": {
+        "Cache": { "Mode": "CacheOnly" }
+      }
+    }
+  }
+}
+```
+
+### Environment Variable Overrides for Cache
+
+```bash
+export FHIR_AUGURY_Cache__RootPath=/data/cache
+export FHIR_AUGURY_Cache__DefaultMode=WriteThrough
+export FHIR_AUGURY_Sources__jira__Cache__Mode=CacheOnly
+```
 
 ## Source Configuration
 
@@ -174,8 +235,11 @@ separator maps to nested JSON keys.
 | Variable | Maps To |
 |---|---|
 | `FHIR_AUGURY_DatabasePath` | `FhirAugury:DatabasePath` |
+| `FHIR_AUGURY_Cache__RootPath` | `FhirAugury:Cache:RootPath` |
+| `FHIR_AUGURY_Cache__DefaultMode` | `FhirAugury:Cache:DefaultMode` |
 | `FHIR_AUGURY_Sources__jira__Cookie` | `FhirAugury:Sources:jira:Cookie` |
 | `FHIR_AUGURY_Sources__jira__ApiToken` | `FhirAugury:Sources:jira:ApiToken` |
+| `FHIR_AUGURY_Sources__jira__Cache__Mode` | `FhirAugury:Sources:jira:Cache:Mode` |
 | `FHIR_AUGURY_Sources__zulip__ApiKey` | `FhirAugury:Sources:zulip:ApiKey` |
 | `FHIR_AUGURY_Sources__github__PersonalAccessToken` | `FhirAugury:Sources:github:PersonalAccessToken` |
 | `FHIR_AUGURY_Api__Port` | `FhirAugury:Api:Port` |

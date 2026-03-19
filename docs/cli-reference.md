@@ -23,30 +23,37 @@ Downloads all available data from a source into the database. Use this for
 initial population.
 
 ```bash
-fhir-augury download --source <jira|zulip|confluence|github> [auth-options]
+fhir-augury download --source <jira|zulip|confluence|github> [auth-options] [cache-options]
 ```
 
 | Option | Description |
 |---|---|
 | `--source` | **Required.** Source to download: `jira`, `zulip`, `confluence`, `github` |
 | `--filter` | Source-specific filter (e.g., JQL query for Jira) |
+| `--cache-path` | Override the cache root directory (default: `./cache`) |
+| `--cache-mode` | Cache mode: `Disabled`, `WriteThrough`, `CacheOnly`, `WriteOnly` (default: `WriteThrough`) |
 
 **Source-specific auth options:** See [Authentication Options](#authentication-options).
 
 **Examples:**
 
 ```bash
-# Download all Jira issues
+# Download all Jira issues (with caching enabled by default)
 fhir-augury download --source jira --jira-cookie "JSESSIONID=..."
 
-# Download Jira with a custom JQL filter
-fhir-augury download --source jira --filter "project = FHIR AND status = Open" \
-  --jira-api-token "token" --jira-email "you@example.com"
+# Download and write to cache only (no database processing)
+fhir-augury download --source jira --jira-cookie "..." --cache-mode WriteOnly
+
+# Ingest from pre-downloaded Jira XML files (no network needed)
+fhir-augury download --source jira --cache-mode CacheOnly --cache-path /data/jira-exports
+
+# Ingest from pre-downloaded Zulip archives
+fhir-augury download --source zulip --cache-mode CacheOnly --cache-path /data/zulip-archives
 
 # Download Zulip using a .zuliprc file
 fhir-augury download --source zulip --zulip-rc ~/.zuliprc
 
-# Download GitHub issues
+# Download GitHub issues (GitHub doesn't use cache)
 fhir-augury download --source github --github-pat "ghp_..."
 ```
 
@@ -58,13 +65,15 @@ Fetches only new and updated items since the last successful sync. Much faster
 than a full download for ongoing use.
 
 ```bash
-fhir-augury sync --source <jira|zulip|confluence|github|all> [auth-options]
+fhir-augury sync --source <jira|zulip|confluence|github|all> [auth-options] [cache-options]
 ```
 
 | Option | Description |
 |---|---|
 | `--source` | **Required.** Source to sync, or `all` for all sources |
 | `--since` | Override the sync-from date (`DateTimeOffset`). If omitted, uses the last recorded sync time. |
+| `--cache-path` | Override the cache root directory (default: `./cache`) |
+| `--cache-mode` | Cache mode: `Disabled`, `WriteThrough`, `CacheOnly`, `WriteOnly` (default: `WriteThrough`) |
 
 **Examples:**
 
@@ -273,6 +282,64 @@ fhir-augury related --source <source> --id <identifier> [options]
 
 ```bash
 fhir-augury related --source jira --id FHIR-43499 --limit 10
+```
+
+---
+
+### `cache` — Manage the response cache
+
+Commands for inspecting and clearing the file-system response cache.
+
+#### `cache stats`
+
+Show cache size per source (files, bytes, sub-paths).
+
+```bash
+fhir-augury cache stats [--cache-path <path>]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--cache-path` | `./cache` | Cache root directory |
+
+Supports `--json` global option for JSON output.
+
+**Example output:**
+
+```
+Source           Files          Size  Sub-paths
+────────────────────────────────────────────────────────────
+jira               542       128.5 MB  (root)
+zulip            3,847       456.2 MB  s270, s412, s501, ...
+confluence       1,203        89.1 MB  pages
+────────────────────────────────────────────────────────────
+Total            5,592       673.8 MB
+```
+
+#### `cache clear`
+
+Clear cached responses.
+
+```bash
+fhir-augury cache clear [--source <name>] [--cache-path <path>]
+```
+
+| Option | Description |
+|---|---|
+| `--source` | Clear only this source's cache (`jira`, `zulip`, `confluence`) |
+| `--cache-path` | Cache root directory (default: `./cache`) |
+
+**Examples:**
+
+```bash
+# Check cache usage
+fhir-augury cache stats
+
+# Clear only Jira cache
+fhir-augury cache clear --source jira
+
+# Clear all caches
+fhir-augury cache clear
 ```
 
 ---

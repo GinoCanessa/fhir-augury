@@ -1,3 +1,5 @@
+using FhirAugury.Models.Caching;
+
 namespace FhirAugury.Sources.Confluence;
 
 public enum ConfluenceAuthMode { Basic, Cookie }
@@ -25,4 +27,10 @@ public record ConfluenceSourceOptions
 
     /// <summary>Number of results per page for API requests.</summary>
     public int PageSize { get; init; } = 25;
+
+    /// <summary>Cache mode for this source.</summary>
+    public CacheMode CacheMode { get; init; } = CacheMode.Disabled;
+
+    /// <summary>Cache instance for this source.</summary>
+    public IResponseCache? Cache { get; init; }
 }

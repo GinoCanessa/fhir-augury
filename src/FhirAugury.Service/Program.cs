@@ -1,4 +1,5 @@
 using FhirAugury.Database;
+using FhirAugury.Models.Caching;
 using FhirAugury.Service;
 using FhirAugury.Service.Api;
 using FhirAugury.Service.Workers;
@@ -46,6 +47,17 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ScheduledIngestion
 
 // HTTP client factory for sources
 builder.Services.AddHttpClient();
+
+// Cache
+builder.Services.AddSingleton<IResponseCache>(sp =>
+{
+    var cacheConfig = auguryConfig.Cache;
+    if (cacheConfig.DefaultMode == CacheMode.Disabled)
+        return NullResponseCache.Instance;
+
+    var rootPath = Path.GetFullPath(cacheConfig.RootPath);
+    return new FileSystemResponseCache(rootPath);
+});
 
 // CORS
 builder.Services.AddCors(options =>

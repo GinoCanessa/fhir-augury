@@ -1,3 +1,5 @@
+using FhirAugury.Models.Caching;
+
 namespace FhirAugury.Sources.Jira;
 
 public enum JiraAuthMode { Cookie, ApiToken }
@@ -11,4 +13,6 @@ public record JiraSourceOptions
     public string? Email { get; init; }
     public string DefaultJql { get; init; } = "project = \"FHIR Specification Feedback\"";
     public int PageSize { get; init; } = 100;
+    public CacheMode CacheMode { get; init; } = CacheMode.Disabled;
+    public IResponseCache? Cache { get; init; }
 }

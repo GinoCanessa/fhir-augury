@@ -1,6 +1,7 @@
 using System.CommandLine;
 using FhirAugury.Database;
 using FhirAugury.Models;
+using FhirAugury.Models.Caching;
 using FhirAugury.Sources.Confluence;
 using FhirAugury.Sources.GitHub;
 using FhirAugury.Sources.Jira;
@@ -26,6 +27,8 @@ public static class DownloadCommand
         var confluenceUserOption = new Option<string?>("--confluence-user") { Description = "Confluence username for Basic auth" };
         var confluenceTokenOption = new Option<string?>("--confluence-token") { Description = "Confluence API token" };
         var githubPatOption = new Option<string?>("--github-pat") { Description = "GitHub personal access token" };
+        var cachePathOption = new Option<string?>("--cache-path") { Description = "Override the cache root directory (default: ./cache)" };
+        var cacheModeOption = new Option<CacheMode>("--cache-mode") { Description = "Cache mode: Disabled, WriteThrough, CacheOnly, WriteOnly", DefaultValueFactory = _ => CacheMode.WriteThrough };
 
         command.Add(sourceOption);
         command.Add(filterOption);
@@ -39,6 +42,8 @@ public static class DownloadCommand
         command.Add(confluenceUserOption);
         command.Add(confluenceTokenOption);
         command.Add(githubPatOption);
+        command.Add(cachePathOption);
+        command.Add(cacheModeOption);
 
         command.SetAction(async (parseResult, ct) =>
         {
@@ -46,6 +51,12 @@ public static class DownloadCommand
             var dbPath = parseResult.GetValue(dbOption)!;
             var verbose = parseResult.GetValue(verboseOption);
             var filter = parseResult.GetValue(filterOption);
+            var cacheMode = parseResult.GetValue(cacheModeOption);
+            var cachePath = parseResult.GetValue(cachePathOption) ?? "./cache";
+
+            IResponseCache cache = cacheMode == CacheMode.Disabled
+                ? NullResponseCache.Instance
+                : new FileSystemResponseCache(Path.GetFullPath(cachePath));
 
             var ingestionOptions = new IngestionOptions
             {
@@ -63,7 +74,7 @@ public static class DownloadCommand
             {
                 case "jira":
                 {
-                    var jiraOptions = BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption);
+                    var jiraOptions = BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption, cacheMode, cache);
                     using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
                     dataSource = new JiraSource(jiraOptions, httpClient);
                     break;
@@ -71,7 +82,7 @@ public static class DownloadCommand
 
                 case "zulip":
                 {
-                    var zulipOptions = BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption);
+                    var zulipOptions = BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption, cacheMode, cache);
                     using var httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
                     dataSource = new ZulipSource(zulipOptions, httpClient);
                     break;
@@ -79,7 +90,7 @@ public static class DownloadCommand
 
                 case "confluence":
                 {
-                    var confluenceOptions = BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption);
+                    var confluenceOptions = BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption, cacheMode, cache);
                     using var httpClient = ConfluenceAuthHandler.CreateHttpClient(confluenceOptions);
                     dataSource = new ConfluenceSource(confluenceOptions, httpClient);
                     break;
@@ -98,7 +109,7 @@ public static class DownloadCommand
                     return;
             }
 
-            Console.WriteLine($"Starting full download from {source}...");
+            Console.WriteLine($"Starting full download from {source} (cache: {cacheMode})...");
             var result = await dataSource.DownloadAllAsync(ingestionOptions, ct);
             PrintResult(result, parseResult.GetValue(jsonOption));
         });
@@ -110,7 +121,9 @@ public static class DownloadCommand
         System.CommandLine.ParseResult parseResult,
         Option<string?> cookieOption,
         Option<string?> apiTokenOption,
-        Option<string?> emailOption)
+        Option<string?> emailOption,
+        CacheMode cacheMode = CacheMode.Disabled,
+        IResponseCache? cache = null)
     {
         var cookie = parseResult.GetValue(cookieOption);
         var apiToken = parseResult.GetValue(apiTokenOption);
@@ -123,6 +136,8 @@ public static class DownloadCommand
                 AuthMode = JiraAuthMode.ApiToken,
                 ApiToken = apiToken,
                 Email = email,
+                CacheMode = cacheMode,
+                Cache = cache,
             };
         }
 
@@ -130,6 +145,8 @@ public static class DownloadCommand
         {
             AuthMode = JiraAuthMode.Cookie,
             Cookie = cookie,
+            CacheMode = cacheMode,
+            Cache = cache,
         };
     }
 
@@ -137,13 +154,17 @@ public static class DownloadCommand
         System.CommandLine.ParseResult parseResult,
         Option<string?> zulipEmailOption,
         Option<string?> zulipApiKeyOption,
-        Option<string?> zulipRcOption)
+        Option<string?> zulipRcOption,
+        CacheMode cacheMode = CacheMode.Disabled,
+        IResponseCache? cache = null)
     {
         return new ZulipSourceOptions
         {
             Email = parseResult.GetValue(zulipEmailOption),
             ApiKey = parseResult.GetValue(zulipApiKeyOption),
             CredentialFile = parseResult.GetValue(zulipRcOption),
+            CacheMode = cacheMode,
+            Cache = cache,
         };
     }
 
@@ -151,7 +172,9 @@ public static class DownloadCommand
         System.CommandLine.ParseResult parseResult,
         Option<string?> cookieOption,
         Option<string?> userOption,
-        Option<string?> tokenOption)
+        Option<string?> tokenOption,
+        CacheMode cacheMode = CacheMode.Disabled,
+        IResponseCache? cache = null)
     {
         var username = parseResult.GetValue(userOption);
         var token = parseResult.GetValue(tokenOption);
@@ -164,6 +187,8 @@ public static class DownloadCommand
                 AuthMode = ConfluenceAuthMode.Basic,
                 Username = username,
                 ApiToken = token,
+                CacheMode = cacheMode,
+                Cache = cache,
             };
         }
 
@@ -171,6 +196,8 @@ public static class DownloadCommand
         {
             AuthMode = ConfluenceAuthMode.Cookie,
             Cookie = cookie,
+            CacheMode = cacheMode,
+            Cache = cache,
         };
     }
 

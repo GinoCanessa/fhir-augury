@@ -47,6 +47,7 @@ public static class Program
         rootCommand.Add(StatsCommand.Create(dbOption, jsonOption));
         rootCommand.Add(RelatedCommand.Create(dbOption, verboseOption, jsonOption));
         rootCommand.Add(ServiceCommand.Create());
+        rootCommand.Add(CacheCommand.Create(jsonOption));
 
         var parseResult = rootCommand.Parse(args);
         return await parseResult.InvokeAsync();
