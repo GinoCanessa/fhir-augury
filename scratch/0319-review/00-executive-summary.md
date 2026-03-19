@@ -48,7 +48,7 @@ This review identified **180 findings** across all components, with actionable r
 | 10 | ~~**HttpClient use-after-dispose** in CLI switch blocks~~ | `IngestCommand.cs`, `DownloadCommand.cs`, `SyncCommand.cs` | ✅ Fixed |
 | 11 | **No authentication** on any API endpoint | `FhirAugury.Service` | Security |
 | 12 | ~~**HttpResponseMessage leaks** across all source classes~~ | All `*Source.cs` files | ✅ Fixed |
-| 13 | **Thread-safety** in `GitHubRateLimiter` | `GitHubRateLimiter.cs` | Concurrency |
+| 13 | ~~**Thread-safety** in `GitHubRateLimiter`~~ | `GitHubRateLimiter.cs` | ✅ Fixed |
 | 14 | ~~**Broken comment offset** arithmetic~~ | `ConfluenceSource.cs` | ✅ Fixed |
 | 15 | **No limit bounds checking** on API endpoints (DoS) | Multiple endpoints | Security |
 | 16 | **Full-table memory loads** in BM25/CrossRef builders | `Bm25Calculator.cs`, `CrossRefLinker.cs` | Performance |

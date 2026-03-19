@@ -7,7 +7,7 @@ public record GitHubSourceOptions
     public string? PersonalAccessToken { get; init; }
 
     /// <summary>GitHub repositories to ingest (owner/repo format).</summary>
-    public List<string> Repositories { get; init; } = ["HL7/fhir", "HL7/fhir-ig-publisher"];
+    public IReadOnlyList<string> Repositories { get; init; } = ["HL7/fhir", "HL7/fhir-ig-publisher"];
 
     /// <summary>Number of results per page for API requests.</summary>
     public int PageSize { get; init; } = 100;

@@ -9,6 +9,7 @@ namespace FhirAugury.Sources.GitHub;
 /// </summary>
 public class GitHubRateLimiter(GitHubSourceOptions options, ILogger? logger = null) : DelegatingHandler
 {
+    private readonly Lock _lock = new();
     private int _remaining = int.MaxValue;
     private DateTimeOffset _resetTime = DateTimeOffset.MinValue;
 
@@ -41,9 +42,21 @@ public class GitHubRateLimiter(GitHubSourceOptions options, ILogger? logger = nu
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         // Check if we should wait for rate limit reset
-        if (_remaining <= options.RateLimitBuffer && _resetTime > DateTimeOffset.UtcNow)
+        TimeSpan delay;
+        lock (_lock)
         {
-            var delay = _resetTime - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+            if (_remaining <= options.RateLimitBuffer && _resetTime > DateTimeOffset.UtcNow)
+            {
+                delay = _resetTime - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+            }
+            else
+            {
+                delay = TimeSpan.Zero;
+            }
+        }
+
+        if (delay > TimeSpan.Zero)
+        {
             logger?.LogWarning("Rate limit approaching ({Remaining} remaining). Waiting {Delay:F0}s until reset.", _remaining, delay.TotalSeconds);
             await Task.Delay(delay, cancellationToken);
         }
@@ -57,16 +70,19 @@ public class GitHubRateLimiter(GitHubSourceOptions options, ILogger? logger = nu
         var response = await base.SendAsync(request, cancellationToken);
 
         // Update rate limit tracking
-        if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingValues) &&
-            int.TryParse(remainingValues.FirstOrDefault(), out var remaining))
+        lock (_lock)
         {
-            _remaining = remaining;
-        }
+            if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingValues) &&
+                int.TryParse(remainingValues.FirstOrDefault(), out var remaining))
+            {
+                _remaining = remaining;
+            }
 
-        if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues) &&
-            long.TryParse(resetValues.FirstOrDefault(), out var resetUnix))
-        {
-            _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
+            if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues) &&
+                long.TryParse(resetValues.FirstOrDefault(), out var resetUnix))
+            {
+                _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
+            }
         }
 
         logger?.LogDebug("GitHub API: {Status}, Rate limit remaining: {Remaining}", response.StatusCode, _remaining);

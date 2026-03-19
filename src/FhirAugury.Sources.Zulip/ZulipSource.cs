@@ -664,8 +664,12 @@ public class ZulipSource(ZulipSourceOptions options, HttpClient httpClient, ILog
         NewAndUpdatedItems = newAndUpdated,
     };
 
-    private static string EscapeJsonString(string value) =>
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    private static string EscapeJsonString(string value)
+    {
+        // JsonSerializer.Serialize wraps in quotes; strip them for embedding inside JSON
+        var serialized = JsonSerializer.Serialize(value);
+        return serialized[1..^1];
+    }
 
     private enum ProcessOutcome { New, Updated, Failed }
 

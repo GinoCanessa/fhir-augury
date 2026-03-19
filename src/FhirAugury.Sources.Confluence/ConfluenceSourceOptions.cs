@@ -23,7 +23,7 @@ public record ConfluenceSourceOptions
     public string? Cookie { get; init; }
 
     /// <summary>Confluence spaces to ingest.</summary>
-    public List<string> Spaces { get; init; } = ["FHIR", "FHIRI"];
+    public IReadOnlyList<string> Spaces { get; init; } = ["FHIR", "FHIRI"];
 
     /// <summary>Number of results per page for API requests.</summary>
     public int PageSize { get; init; } = 25;
