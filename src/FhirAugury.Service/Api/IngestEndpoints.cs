@@ -202,12 +202,12 @@ public static class IngestEndpoints
         return Results.Ok(schedules);
     }
 
-    private static IResult UpdateSchedule(
+    private static async Task<IResult> UpdateSchedule(
         string source,
         ScheduledIngestionService scheduler,
         HttpContext context)
     {
-        var body = context.Request.ReadFromJsonAsync<UpdateScheduleRequest>().GetAwaiter().GetResult();
+        var body = await context.Request.ReadFromJsonAsync<UpdateScheduleRequest>();
         if (body is null || string.IsNullOrEmpty(body.SyncInterval))
         {
             return Results.BadRequest(new ProblemResponse("Missing interval", "Body must include 'syncInterval' (e.g., '00:30:00')."));
