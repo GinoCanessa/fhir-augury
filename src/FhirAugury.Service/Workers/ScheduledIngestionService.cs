@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using FhirAugury.Database;
 using FhirAugury.Database.Records;
 using FhirAugury.Models;
@@ -12,7 +13,7 @@ public class ScheduledIngestionService(
     IOptions<AuguryConfiguration> config,
     ILogger<ScheduledIngestionService> logger) : BackgroundService
 {
-    private readonly Dictionary<string, DateTimeOffset> _nextRunTimes = [];
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _nextRunTimes = [];
 
     /// <summary>Gets the next scheduled run time for each source.</summary>
     public IReadOnlyDictionary<string, DateTimeOffset> NextRunTimes => _nextRunTimes;

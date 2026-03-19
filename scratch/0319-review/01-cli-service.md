@@ -27,7 +27,9 @@ private static async Task<IResult> UpdateSchedule(...) {
 ---
 
 ### 2. Race condition on `_nextRunTimes` dictionary
-**File:** `ScheduledIngestionService.cs:15-16, 31, 57, 172` | **Severity:** Critical
+**File:** `ScheduledIngestionService.cs:15-16, 31, 57, 172` | **Severity:** Critical | ✅ **FIXED**
+
+**Resolution:** Replaced `Dictionary<string, DateTimeOffset>` with `ConcurrentDictionary<string, DateTimeOffset>`.
 
 `_nextRunTimes` is mutated by `ExecuteAsync` (background thread) and simultaneously by `UpdateSchedule` (HTTP request thread) and read by `GetSchedule`. `Dictionary<K,V>` is **not thread-safe**; concurrent read+write can corrupt the data structure.
 
