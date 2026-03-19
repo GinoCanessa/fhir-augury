@@ -3,6 +3,7 @@ using FhirAugury.Database.Records;
 using FhirAugury.Indexing;
 using FhirAugury.Indexing.Bm25;
 using FhirAugury.Models;
+using FhirAugury.Models.Caching;
 using FhirAugury.Sources.Confluence;
 using FhirAugury.Sources.GitHub;
 using FhirAugury.Sources.Jira;
@@ -17,6 +18,7 @@ public class IngestionWorker(
     DatabaseService dbService,
     IOptions<AuguryConfiguration> config,
     IHttpClientFactory httpClientFactory,
+    IResponseCache responseCache,
     ILogger<IngestionWorker> logger) : BackgroundService
 {
     /// <summary>The request currently being processed, if any.</summary>
@@ -138,6 +140,9 @@ public class IngestionWorker(
         if (!cfg.Sources.TryGetValue(sourceName, out var sourceCfg))
             return null;
 
+        // Resolve per-source cache mode: source override → global default
+        var effectiveCacheMode = sourceCfg.Cache.Mode ?? cfg.Cache.DefaultMode;
+
         switch (sourceName)
         {
             case "jira":
@@ -151,6 +156,8 @@ public class IngestionWorker(
                     ApiToken = sourceCfg.ApiToken,
                     Email = sourceCfg.Email,
                     DefaultJql = sourceCfg.DefaultJql ?? "project = \"FHIR Specification Feedback\"",
+                    CacheMode = effectiveCacheMode,
+                    Cache = responseCache,
                 };
                 var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
                 JiraAuthHandler.ConfigureHttpClient(httpClient, jiraOptions);
@@ -166,6 +173,8 @@ public class IngestionWorker(
                     ApiKey = sourceCfg.ApiKey,
                     CredentialFile = sourceCfg.CredentialFile,
                     OnlyWebPublic = sourceCfg.OnlyWebPublic,
+                    CacheMode = effectiveCacheMode,
+                    Cache = responseCache,
                 };
                 var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
                 ZulipAuthHandler.ConfigureHttpClient(httpClient, zulipOptions);
@@ -184,6 +193,8 @@ public class IngestionWorker(
                     Cookie = sourceCfg.Cookie,
                     Spaces = sourceCfg.Spaces,
                     PageSize = sourceCfg.PageSize > 0 ? sourceCfg.PageSize : 25,
+                    CacheMode = effectiveCacheMode,
+                    Cache = responseCache,
                 };
                 var httpClient = httpClientFactory.CreateClient($"source-{sourceName}");
                 ConfluenceAuthHandler.ConfigureHttpClient(httpClient, confluenceOptions);
