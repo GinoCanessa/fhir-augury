@@ -106,17 +106,17 @@ Every build produces a unique version. Two builds of the same commit produce dif
 
 ## .gitignore
 
-### [Medium] `.env` files not ignored
+### [Medium] `.env` files not ignored — ✅ **FIXED**
 Docker docs recommend `.env` for credentials, but `.env` is not in `.gitignore`. Accidental credential commits possible.
 
-**Fix:** Add `.env`, `.env.*`, `!.env.example`.
+**Resolution:** Added `.env` and `.env.*` patterns to `.gitignore`.
 
 ---
 
-### [Medium] SQLite database files not explicitly ignored
+### [Medium] SQLite database files not explicitly ignored — ✅ **FIXED**
 `*.db` files not ignored. A `fhir-augury.db` (hundreds of MB) could be accidentally committed.
 
-**Fix:** Add `*.db`, `*.db-shm`, `*.db-wal`.
+**Resolution:** Added `*.db`, `*.db-shm`, `*.db-wal` patterns to `.gitignore`.
 
 ---
 

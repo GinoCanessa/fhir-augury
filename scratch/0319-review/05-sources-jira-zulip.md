@@ -93,16 +93,9 @@ The only difference is the filter construction. Extract a shared `FetchAndProces
 ---
 
 ### 11. Incomplete JSON string escaping
-**ZulipSource.cs:667–668**
+**ZulipSource.cs:667–668** | ✅ **FIXED**
 
-```csharp
-private static string EscapeJsonString(string value) =>
-    value.Replace("\\", "\\\\").Replace("\"", "\\\"");
-```
-
-Doesn't escape control characters (`\n`, `\r`, `\t`, `\0`).
-
-**Fix:** Use `JsonSerializer.Serialize(value)` for proper escaping.
+**Resolution:** Replaced manual `Replace` calls with `JsonSerializer.Serialize(value)` (trimming surrounding quotes) which properly escapes all control characters, backslashes, quotes, and Unicode.
 
 ---
 
