@@ -1,3 +1,4 @@
+using System.Globalization;
 using FhirAugury.Models;
 using Microsoft.Data.Sqlite;
 
@@ -87,7 +88,7 @@ public static class FtsSearchService
                 Title = reader.GetString(1),
                 Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Score = -reader.GetDouble(3),
-                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
             });
         }
 
@@ -141,7 +142,7 @@ public static class FtsSearchService
                 Title = reader.GetString(1),
                 Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Score = -reader.GetDouble(3),
-                UpdatedAt = reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4)),
+                UpdatedAt = reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
             });
         }
 
@@ -210,7 +211,7 @@ public static class FtsSearchService
                 Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Score = -reader.GetDouble(3),
                 Url = $"https://chat.fhir.org/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}",
-                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
             });
         }
 
@@ -276,7 +277,7 @@ public static class FtsSearchService
                 Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Score = -reader.GetDouble(3),
                 Url = reader.IsDBNull(6) ? null : reader.GetString(6),
-                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5)),
+                UpdatedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
             });
         }
 
@@ -359,7 +360,7 @@ public static class FtsSearchService
                 Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Score = -reader.GetDouble(3),
                 Url = $"https://github.com/{repoFullName}/{type}/{number}",
-                UpdatedAt = reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)),
+                UpdatedAt = reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8), CultureInfo.InvariantCulture),
             });
         }
 

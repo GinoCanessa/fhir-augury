@@ -53,7 +53,7 @@ This review identified **180 findings** across all components, with actionable r
 | 15 | **No limit bounds checking** on API endpoints (DoS) | Multiple endpoints | Security |
 | 16 | **Full-table memory loads** in BM25/CrossRef builders | `Bm25Calculator.cs`, `CrossRefLinker.cs` | Performance |
 | 17 | **No transactions** for bulk BM25 inserts (10-100× slower) | `Bm25Calculator.cs` | Performance |
-| 18 | **DateTimeOffset.Parse** without `InvariantCulture` | `FtsSearchService.cs` (5 locations) | Bug |
+| 18 | ~~**DateTimeOffset.Parse** without `InvariantCulture`~~ | `FtsSearchService.cs` (5 locations) | ✅ Fixed |
 | 19 | **Credential file path traversal** | `ZulipAuthHandler.cs` | Security |
 | 20 | **N+1 query** in `SimilaritySearchService.FindRelated` | `SimilaritySearchService.cs` | Performance |
 
