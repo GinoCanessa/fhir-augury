@@ -79,13 +79,27 @@ dotnet run --project src/FhirAugury.Cli -- search "FHIR R5 changes" --db fhir-au
 
 ## Documentation
 
+### User Guides
+
 | Document | Description |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Setup guide — build, configure, download, and search |
-| [Configuration](docs/configuration.md) | Full configuration reference for CLI, service, and MCP |
-| [CLI Reference](docs/cli-reference.md) | Complete command-line interface documentation |
-| [API Reference](docs/api-reference.md) | HTTP API endpoints for the background service |
-| [MCP Tools](docs/mcp-tools.md) | MCP tool reference for LLM agent integration |
+| [Getting Started](docs/user/getting-started.md) | Setup guide — build, configure, download, and search |
+| [CLI Reference](docs/user/cli-reference.md) | Complete command-line interface documentation |
+| [Configuration](docs/user/configuration.md) | Full configuration reference for CLI, service, and MCP |
+| [API Reference](docs/user/api-reference.md) | HTTP API endpoints for the background service |
+| [MCP Tools](docs/user/mcp-tools.md) | MCP tool reference for LLM agent integration |
+| [Docker Deployment](docs/user/docker.md) | Running FHIR Augury as a containerized service |
+
+### Technical Documentation
+
+| Document | Description |
+|---|---|
+| [Architecture](docs/technical/architecture.md) | System architecture, components, and design decisions |
+| [Database Schema](docs/technical/database-schema.md) | SQLite schema, FTS5, triggers, and source-generated CRUD |
+| [Indexing & Search](docs/technical/indexing-and-search.md) | FTS5, BM25 scoring, cross-references, and FHIR-aware tokenization |
+| [Data Sources](docs/technical/data-sources.md) | Source connector architecture and guide for adding new sources |
+| [Development Guide](docs/technical/development-guide.md) | Dev environment setup, building, testing, and contributing |
+| [Project Structure](docs/technical/project-structure.md) | Code organization and project dependencies |
 
 ## Tech Stack
 
