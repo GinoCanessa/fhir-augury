@@ -48,23 +48,43 @@ public static class GetCommand
 
                 case "zulip":
                 {
-                    // Parse "stream:topic" identifier
-                    var sepIdx = id.IndexOf(':');
-                    if (sepIdx < 0)
-                    {
-                        Console.Error.WriteLine("Zulip identifier must be in 'stream:topic' format.");
+                    var (streamName, topic) = ParseZulipIdentifier(id);
+                    if (streamName is null)
                         return Task.CompletedTask;
-                    }
-                    var streamName = id[..sepIdx];
-                    var topic = id[(sepIdx + 1)..];
 
-                    var messages = ZulipMessageRecord.SelectList(conn, StreamName: streamName, Topic: topic);
+                    var messages = ZulipMessageRecord.SelectList(conn, StreamName: streamName, Topic: topic!);
                     if (messages.Count == 0)
                     {
                         Console.Error.WriteLine($"No messages found for '{id}'.");
                         return Task.CompletedTask;
                     }
-                    OutputFormatter.FormatZulipThread(streamName, topic, messages, format);
+                    OutputFormatter.FormatZulipThread(streamName, topic!, messages, format);
+                    break;
+                }
+
+                case "confluence":
+                {
+                    var page = ConfluencePageRecord.SelectSingle(conn, ConfluenceId: id);
+                    if (page is null)
+                    {
+                        Console.Error.WriteLine($"Confluence page '{id}' not found.");
+                        return Task.CompletedTask;
+                    }
+                    var comments = ConfluenceCommentRecord.SelectList(conn, ConfluencePageId: id);
+                    OutputFormatter.FormatConfluencePage(page, comments, format);
+                    break;
+                }
+
+                case "github":
+                {
+                    var ghIssue = GitHubIssueRecord.SelectSingle(conn, UniqueKey: id);
+                    if (ghIssue is null)
+                    {
+                        Console.Error.WriteLine($"GitHub issue '{id}' not found.");
+                        return Task.CompletedTask;
+                    }
+                    var ghComments = GitHubCommentRecord.SelectList(conn, RepoFullName: ghIssue.RepoFullName, IssueNumber: ghIssue.Number);
+                    OutputFormatter.FormatGitHubIssue(ghIssue, ghComments, format);
                     break;
                 }
 
@@ -77,5 +97,18 @@ public static class GetCommand
         });
 
         return command;
+    }
+
+    /// <summary>Parses a "stream:topic" identifier using the last colon as separator,
+    /// since stream names may contain colons.</summary>
+    internal static (string? StreamName, string? Topic) ParseZulipIdentifier(string id)
+    {
+        var sepIdx = id.LastIndexOf(':');
+        if (sepIdx <= 0)
+        {
+            Console.Error.WriteLine("Zulip identifier must be in 'stream:topic' format.");
+            return (null, null);
+        }
+        return (id[..sepIdx], id[(sepIdx + 1)..]);
     }
 }

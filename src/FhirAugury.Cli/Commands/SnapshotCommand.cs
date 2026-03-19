@@ -53,22 +53,17 @@ public static class SnapshotCommand
 
                 case "zulip":
                 {
-                    var sepIdx = id.IndexOf(':');
-                    if (sepIdx < 0)
-                    {
-                        Console.Error.WriteLine("Zulip identifier must be in 'stream:topic' format.");
+                    var (streamName, topic) = GetCommand.ParseZulipIdentifier(id);
+                    if (streamName is null)
                         return Task.CompletedTask;
-                    }
-                    var streamName = id[..sepIdx];
-                    var topic = id[(sepIdx + 1)..];
 
-                    var messages = ZulipMessageRecord.SelectList(conn, StreamName: streamName, Topic: topic);
+                    var messages = ZulipMessageRecord.SelectList(conn, StreamName: streamName, Topic: topic!);
                     if (messages.Count == 0)
                     {
                         Console.Error.WriteLine($"No messages found for '{id}'.");
                         return Task.CompletedTask;
                     }
-                    RenderZulipSnapshot(streamName, topic, messages);
+                    RenderZulipSnapshot(streamName, topic!, messages);
 
                     if (includeXref)
                     {

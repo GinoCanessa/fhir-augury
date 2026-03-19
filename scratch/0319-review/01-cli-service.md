@@ -205,16 +205,16 @@ Combined with no authentication, any website can make API requests to the servic
 ---
 
 ### 17. `GetCommand` only supports `jira` and `zulip`, not `confluence`/`github`
-**File:** `GetCommand.cs:71-73` | **Severity:** Medium
+**File:** `GetCommand.cs:71-73` | **Severity:** Medium | ✅ **FIXED**
 
-The error message claims `confluence` and `github` are available, but the switch has no cases for them.
+**Resolution:** Added `confluence` and `github` cases to the switch, with corresponding `FormatConfluencePage` and `FormatGitHubIssue` methods added to `OutputFormatter`.
 
 ---
 
 ### 18. Zulip identifier parsing is fragile
-**File:** `GetCommand.cs:52-53`, `SnapshotCommand.cs:56-57` | **Severity:** Medium
+**File:** `GetCommand.cs:52-53`, `SnapshotCommand.cs:56-57` | **Severity:** Medium | ✅ **FIXED**
 
-Uses first `:` as separator. If a stream name contains `:` (valid), the parsing is incorrect.
+**Resolution:** Changed `IndexOf(':')` to `LastIndexOf(':')` and extracted a shared `GetCommand.ParseZulipIdentifier()` method reused by both GetCommand and SnapshotCommand. Using last colon correctly handles stream names containing colons.
 
 ---
 

@@ -59,6 +59,40 @@ public static class OutputFormatter
         }
     }
 
+    public static void FormatConfluencePage(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments, string format)
+    {
+        switch (format.ToLowerInvariant())
+        {
+            case "json":
+                Console.WriteLine(JsonSerializer.Serialize(new { page, comments }, JsonOptions));
+                break;
+            case "markdown":
+            case "md":
+                FormatConfluencePageMarkdown(page, comments);
+                break;
+            default:
+                FormatConfluencePageTable(page, comments);
+                break;
+        }
+    }
+
+    public static void FormatGitHubIssue(GitHubIssueRecord issue, List<GitHubCommentRecord> comments, string format)
+    {
+        switch (format.ToLowerInvariant())
+        {
+            case "json":
+                Console.WriteLine(JsonSerializer.Serialize(new { issue, comments }, JsonOptions));
+                break;
+            case "markdown":
+            case "md":
+                FormatGitHubIssueMarkdown(issue, comments);
+                break;
+            default:
+                FormatGitHubIssueTable(issue, comments);
+                break;
+        }
+    }
+
     private static void FormatTable(List<SearchResult> results)
     {
         Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-45} {"Score",8} {"Updated",-12}");
@@ -178,6 +212,122 @@ public static class OutputFormatter
             Console.WriteLine($"**{msg.SenderName}** ({msg.Timestamp:yyyy-MM-dd HH:mm}):");
             Console.WriteLine(msg.ContentPlain);
             Console.WriteLine();
+        }
+    }
+
+    private static void FormatConfluencePageTable(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments)
+    {
+        Console.WriteLine($"Page ID:      {page.ConfluenceId}");
+        Console.WriteLine($"Title:        {page.Title}");
+        Console.WriteLine($"Space:        {page.SpaceKey}");
+        Console.WriteLine($"Version:      {page.VersionNumber}");
+        Console.WriteLine($"Modified By:  {page.LastModifiedBy ?? "Unknown"}");
+        Console.WriteLine($"Modified:     {page.LastModifiedAt:yyyy-MM-dd}");
+
+        if (!string.IsNullOrEmpty(page.Labels))
+            Console.WriteLine($"Labels:       {page.Labels}");
+
+        if (!string.IsNullOrEmpty(page.BodyPlain))
+        {
+            Console.WriteLine();
+            Console.WriteLine(Truncate(page.BodyPlain, 500));
+        }
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine($"\nComments ({comments.Count}):");
+            foreach (var c in comments.OrderBy(c => c.CreatedAt))
+            {
+                Console.WriteLine($"  [{c.CreatedAt:yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
+            }
+        }
+    }
+
+    private static void FormatConfluencePageMarkdown(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments)
+    {
+        Console.WriteLine($"## {page.Title}");
+        Console.WriteLine();
+        Console.WriteLine($"| Field | Value |");
+        Console.WriteLine($"|-------|-------|");
+        Console.WriteLine($"| Space | {page.SpaceKey} |");
+        Console.WriteLine($"| Version | {page.VersionNumber} |");
+        Console.WriteLine($"| Modified By | {page.LastModifiedBy ?? "Unknown"} |");
+        Console.WriteLine($"| Modified | {page.LastModifiedAt:yyyy-MM-dd} |");
+
+        if (!string.IsNullOrEmpty(page.BodyPlain))
+        {
+            Console.WriteLine();
+            Console.WriteLine("### Content");
+            Console.WriteLine(page.BodyPlain.Length > 2000 ? page.BodyPlain[..2000] + "..." : page.BodyPlain);
+        }
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"### Comments ({comments.Count})");
+            foreach (var c in comments.OrderBy(c => c.CreatedAt))
+            {
+                Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
+            }
+        }
+    }
+
+    private static void FormatGitHubIssueTable(GitHubIssueRecord issue, List<GitHubCommentRecord> comments)
+    {
+        var typeLabel = issue.IsPullRequest ? "Pull Request" : "Issue";
+        Console.WriteLine($"Repo:         {issue.RepoFullName}");
+        Console.WriteLine($"Number:       #{issue.Number}");
+        Console.WriteLine($"Title:        {issue.Title}");
+        Console.WriteLine($"Type:         {typeLabel}");
+        Console.WriteLine($"State:        {issue.State}");
+        Console.WriteLine($"Author:       {issue.Author ?? "Unknown"}");
+        Console.WriteLine($"Created:      {issue.CreatedAt:yyyy-MM-dd}");
+        Console.WriteLine($"Updated:      {issue.UpdatedAt:yyyy-MM-dd}");
+
+        if (!string.IsNullOrEmpty(issue.Labels))
+            Console.WriteLine($"Labels:       {issue.Labels}");
+        if (!string.IsNullOrEmpty(issue.Assignees))
+            Console.WriteLine($"Assignees:    {issue.Assignees}");
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine($"\nComments ({comments.Count}):");
+            foreach (var c in comments.OrderBy(c => c.CreatedAt))
+            {
+                Console.WriteLine($"  [{c.CreatedAt:yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
+            }
+        }
+    }
+
+    private static void FormatGitHubIssueMarkdown(GitHubIssueRecord issue, List<GitHubCommentRecord> comments)
+    {
+        var typeLabel = issue.IsPullRequest ? "Pull Request" : "Issue";
+        Console.WriteLine($"## {issue.RepoFullName}#{issue.Number}: {issue.Title}");
+        Console.WriteLine();
+        Console.WriteLine($"| Field | Value |");
+        Console.WriteLine($"|-------|-------|");
+        Console.WriteLine($"| Type | {typeLabel} |");
+        Console.WriteLine($"| State | {issue.State} |");
+        Console.WriteLine($"| Author | {issue.Author ?? "Unknown"} |");
+        Console.WriteLine($"| Created | {issue.CreatedAt:yyyy-MM-dd} |");
+        Console.WriteLine($"| Updated | {issue.UpdatedAt:yyyy-MM-dd} |");
+
+        if (!string.IsNullOrEmpty(issue.Body))
+        {
+            Console.WriteLine();
+            Console.WriteLine("### Description");
+            Console.WriteLine(issue.Body);
+        }
+
+        if (comments.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"### Comments ({comments.Count})");
+            foreach (var c in comments.OrderBy(c => c.CreatedAt))
+            {
+                var reviewTag = c.IsReviewComment ? " (review)" : "";
+                Console.WriteLine($"\n**{c.Author}{reviewTag}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
+            }
         }
     }
 
