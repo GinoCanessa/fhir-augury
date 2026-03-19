@@ -61,17 +61,19 @@ public class FileSystemResponseCache : IResponseCache
 
     public IEnumerable<string> EnumerateKeys(string source)
     {
-        return EnumerateKeysInternal(Path.Combine(_rootPath, source), source);
+        var sourceDir = ResolveSourcePath(source);
+        return EnumerateKeysInternal(sourceDir, source);
     }
 
     public IEnumerable<string> EnumerateKeys(string source, string subPath)
     {
-        return EnumerateKeysInternal(Path.Combine(_rootPath, source, subPath), source);
+        var sourceDir = ResolveSourcePath(source);
+        return EnumerateKeysInternal(Path.Combine(sourceDir, subPath), source);
     }
 
     public void Clear(string source)
     {
-        var sourceDir = Path.Combine(_rootPath, source);
+        var sourceDir = ResolveSourcePath(source);
         if (Directory.Exists(sourceDir))
             Directory.Delete(sourceDir, recursive: true);
 
@@ -158,13 +160,36 @@ public class FileSystemResponseCache : IResponseCache
         return sortedBatch.Concat(nonBatchKeys);
     }
 
+    private string ResolveSourcePath(string source)
+    {
+        var combined = Path.Combine(_rootPath, source);
+        var resolved = Path.GetFullPath(combined);
+
+        var rootWithSep = _rootPath.EndsWith(Path.DirectorySeparatorChar)
+            ? _rootPath
+            : _rootPath + Path.DirectorySeparatorChar;
+
+        if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(resolved, _rootPath, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"Source '{source}' resolves outside the cache root.", nameof(source));
+
+        return resolved;
+    }
+
     private string ResolvePath(string source, string key)
     {
         // Path traversal protection
         var combined = Path.Combine(_rootPath, source, key.Replace('/', Path.DirectorySeparatorChar));
         var resolved = Path.GetFullPath(combined);
 
-        if (!resolved.StartsWith(_rootPath, StringComparison.OrdinalIgnoreCase))
+        // Ensure _rootPath ends with separator to prevent prefix collisions
+        // (e.g., /data/cache matching /data/cache-evil/...)
+        var rootWithSep = _rootPath.EndsWith(Path.DirectorySeparatorChar)
+            ? _rootPath
+            : _rootPath + Path.DirectorySeparatorChar;
+
+        if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(resolved, _rootPath, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException($"Key '{key}' resolves outside the cache root.", nameof(key));
 
         return resolved;
