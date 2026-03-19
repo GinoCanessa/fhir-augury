@@ -1,3 +1,4 @@
+using System.Xml;
 using System.Xml.Serialization;
 using FhirAugury.Database.Records;
 
@@ -26,7 +27,9 @@ public static class JiraXmlParser
 
     public static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseExport(Stream stream)
     {
-        var rss = (JiraRss?)Serializer.Deserialize(stream)
+        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
+        using var reader = XmlReader.Create(stream, settings);
+        var rss = (JiraRss?)Serializer.Deserialize(reader)
                   ?? throw new InvalidOperationException("Failed to deserialize Jira XML export.");
 
         if (rss.Channel?.Items is null)
