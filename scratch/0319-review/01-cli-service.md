@@ -64,7 +64,9 @@ private static ServiceClient CreateClient(...) {
 ## High Findings
 
 ### 4. HttpClient disposed prematurely via `using` inside `switch`
-**File:** `IngestCommand.cs:66-93`, `DownloadCommand.cs:76-105`, `SyncCommand.cs:72-134` | **Severity:** High
+**File:** `IngestCommand.cs:66-93`, `DownloadCommand.cs:76-105`, `SyncCommand.cs:72-134` | **Severity:** High | ✅ **FIXED**
+
+**Resolution:** In `IngestCommand.cs` and `DownloadCommand.cs`, replaced `using var httpClient` inside case blocks with a `try/finally` pattern — `HttpClient?` declared before the switch, assigned in each case, disposed in `finally` after usage. In `SyncCommand.cs`, moved the `default` case to the end of the switch (after `github`) to fix the misleading ordering; the `using var` scoping in SyncCommand was already correct since each case does its work within the block.
 
 The `using var httpClient` is scoped to the `case` block. When execution leaves the `switch`, the `HttpClient` has been disposed, but `dataSource` still holds a reference and tries to use it.
 
@@ -156,7 +158,9 @@ Three separate `new JsonSerializerOptions { WriteIndented = true }` instances. S
 ---
 
 ### 12. `switch` case ordering issue
-**File:** `SyncCommand.cs:70-135` | **Severity:** Medium
+**File:** `SyncCommand.cs:70-135` | **Severity:** Medium | ✅ **FIXED**
+
+**Resolution:** Moved `default` case to the end of the switch, after the `github` case.
 
 `default` case appears before `confluence` and `github` cases. While C# handles this correctly, it's highly misleading.
 

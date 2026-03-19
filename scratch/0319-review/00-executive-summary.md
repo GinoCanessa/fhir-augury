@@ -45,7 +45,7 @@ This review identified **180 findings** across all components, with actionable r
 
 | # | Finding | Location | Category |
 |---|---------|----------|----------|
-| 10 | **HttpClient use-after-dispose** in CLI switch blocks | `IngestCommand.cs`, `DownloadCommand.cs`, `SyncCommand.cs` | Bug |
+| 10 | ~~**HttpClient use-after-dispose** in CLI switch blocks~~ | `IngestCommand.cs`, `DownloadCommand.cs`, `SyncCommand.cs` | ✅ Fixed |
 | 11 | **No authentication** on any API endpoint | `FhirAugury.Service` | Security |
 | 12 | **HttpResponseMessage leaks** across all source classes | All `*Source.cs` files | Resource leak |
 | 13 | **Thread-safety** in `GitHubRateLimiter` | `GitHubRateLimiter.cs` | Concurrency |

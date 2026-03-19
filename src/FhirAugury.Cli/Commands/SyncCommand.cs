@@ -99,10 +99,6 @@ public static class SyncCommand
                         break;
                     }
 
-                    default:
-                        Console.Error.WriteLine($"Source '{src}' is not supported. Available: jira, zulip, confluence, github, all");
-                        break;
-
                     case "confluence":
                     {
                         var since = ResolveSinceTime(dbService, sinceOverride, "confluence");
@@ -132,6 +128,10 @@ public static class SyncCommand
                         DownloadCommand.PrintResult(result, json);
                         break;
                     }
+
+                    default:
+                        Console.Error.WriteLine($"Source '{src}' is not supported. Available: jira, zulip, confluence, github, all");
+                        break;
                 }
             }
         });

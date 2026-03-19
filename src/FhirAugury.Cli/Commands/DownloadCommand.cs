@@ -69,49 +69,57 @@ public static class DownloadCommand
             dbService.InitializeDatabase();
 
             IDataSource dataSource;
+            HttpClient? httpClient = null;
 
-            switch (source)
+            try
             {
-                case "jira":
+                switch (source)
                 {
-                    var jiraOptions = BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption, cacheMode, cache);
-                    using var httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
-                    dataSource = new JiraSource(jiraOptions, httpClient);
-                    break;
+                    case "jira":
+                    {
+                        var jiraOptions = BuildJiraOptions(parseResult, cookieOption, apiTokenOption, emailOption, cacheMode, cache);
+                        httpClient = JiraAuthHandler.CreateHttpClient(jiraOptions);
+                        dataSource = new JiraSource(jiraOptions, httpClient);
+                        break;
+                    }
+
+                    case "zulip":
+                    {
+                        var zulipOptions = BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption, cacheMode, cache);
+                        httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
+                        dataSource = new ZulipSource(zulipOptions, httpClient);
+                        break;
+                    }
+
+                    case "confluence":
+                    {
+                        var confluenceOptions = BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption, cacheMode, cache);
+                        httpClient = ConfluenceAuthHandler.CreateHttpClient(confluenceOptions);
+                        dataSource = new ConfluenceSource(confluenceOptions, httpClient);
+                        break;
+                    }
+
+                    case "github":
+                    {
+                        var githubOptions = BuildGitHubOptions(parseResult, githubPatOption);
+                        httpClient = GitHubRateLimiter.CreateHttpClient(githubOptions);
+                        dataSource = new GitHubSource(githubOptions, httpClient);
+                        break;
+                    }
+
+                    default:
+                        Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip, confluence, github");
+                        return;
                 }
 
-                case "zulip":
-                {
-                    var zulipOptions = BuildZulipOptions(parseResult, zulipEmailOption, zulipApiKeyOption, zulipRcOption, cacheMode, cache);
-                    using var httpClient = ZulipAuthHandler.CreateHttpClient(zulipOptions);
-                    dataSource = new ZulipSource(zulipOptions, httpClient);
-                    break;
-                }
-
-                case "confluence":
-                {
-                    var confluenceOptions = BuildConfluenceOptions(parseResult, confluenceCookieOption, confluenceUserOption, confluenceTokenOption, cacheMode, cache);
-                    using var httpClient = ConfluenceAuthHandler.CreateHttpClient(confluenceOptions);
-                    dataSource = new ConfluenceSource(confluenceOptions, httpClient);
-                    break;
-                }
-
-                case "github":
-                {
-                    var githubOptions = BuildGitHubOptions(parseResult, githubPatOption);
-                    using var httpClient = GitHubRateLimiter.CreateHttpClient(githubOptions);
-                    dataSource = new GitHubSource(githubOptions, httpClient);
-                    break;
-                }
-
-                default:
-                    Console.Error.WriteLine($"Source '{source}' is not supported. Available: jira, zulip, confluence, github");
-                    return;
+                Console.WriteLine($"Starting full download from {source} (cache: {cacheMode})...");
+                var result = await dataSource.DownloadAllAsync(ingestionOptions, ct);
+                PrintResult(result, parseResult.GetValue(jsonOption));
             }
-
-            Console.WriteLine($"Starting full download from {source} (cache: {cacheMode})...");
-            var result = await dataSource.DownloadAllAsync(ingestionOptions, ct);
-            PrintResult(result, parseResult.GetValue(jsonOption));
+            finally
+            {
+                httpClient?.Dispose();
+            }
         });
 
         return command;
