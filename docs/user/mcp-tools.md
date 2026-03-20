@@ -3,7 +3,8 @@
 FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
-others. The MCP server provides 20 tools across 6 categories.
+others. The MCP server connects via gRPC to the orchestrator and source
+services, providing 17 tools across 3 categories.
 
 ## Setup
 
@@ -12,6 +13,20 @@ others. The MCP server provides 20 tools across 6 categories.
 ```bash
 dotnet build src/FhirAugury.Mcp
 ```
+
+The MCP server can also be installed as a dotnet tool (`fhir-augury-mcp`).
+
+### Configuration
+
+The MCP server is configured entirely through environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
+| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
+| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
+
+The MCP server uses stdio transport and sends all logging to stderr.
 
 ### Connecting Claude Desktop
 
@@ -25,9 +40,13 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
     "fhir-augury": {
       "command": "dotnet",
       "args": [
-        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp",
-        "--", "--db", "/path/to/fhir-augury.db"
-      ]
+        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp"
+      ],
+      "env": {
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
+        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
+        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+      }
     }
   }
 }
@@ -35,51 +54,126 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ### Connecting via HTTP (VS Code, Copilot, etc.)
 
-For MCP clients that support HTTP-based transport:
+For MCP clients that support HTTP-based transport, connect to the
+orchestrator's MCP endpoint directly:
 
 ```json
 {
   "mcpServers": {
     "fhir-augury": {
-      "url": "http://localhost:5200/mcp"
+      "url": "http://localhost:5150/mcp"
     }
   }
 }
 ```
 
-### Database Path
+### Direct Mode (Single Source)
 
-The MCP server resolves the database path in this order:
+To connect directly to a single source service, bypassing the orchestrator:
 
-1. `--db <path>` command-line argument
-2. `FHIR_AUGURY_DB` environment variable
-3. Default: `fhir-augury.db` in the current directory
+```json
+{
+  "mcpServers": {
+    "fhir-augury-jira": {
+      "command": "dotnet",
+      "args": [
+        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp",
+        "--", "--mode", "direct", "--source", "jira"
+      ],
+      "env": {
+        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
+      }
+    }
+  }
+}
+```
 
-> **Note:** The MCP server opens the database in **read-only** mode. It can run
-> alongside the background service (which handles writes) thanks to SQLite's
-> WAL mode supporting concurrent readers.
+> **Tip:** See `mcp-config-examples/` in the repository for ready-to-use
+> configuration files.
 
 ---
 
-## Tool Categories
+## Unified Tools
 
-### Search Tools
+Cross-source tools provided through the orchestrator.
 
-Tools for full-text search across FHIR community data.
+### `Search`
 
-#### `Search`
-
-Search across all FHIR community sources using full-text search.
+Unified cross-source search using full-text search.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `query` | string | Yes | | Search query |
-| `sources` | string | No | all | Comma-separated source filter |
+| `sources` | string | No | all | Comma-separated source filter (e.g., `jira,zulip`) |
 | `limit` | int | No | `20` | Maximum results |
 
-#### `SearchJira`
+**Example:** Search for patient matching across Jira and Zulip:
+```
+Search(query: "patient matching", sources: "jira,zulip", limit: 10)
+```
 
-Search Jira issues.
+### `FindRelated`
+
+Find items related to a given item using keyword similarity and cross-reference
+boosting.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | string | Yes | | Source type (e.g., `jira`) |
+| `id` | string | Yes | | Item identifier (e.g., `FHIR-43499`) |
+| `targetSources` | string | No | all | Comma-separated target sources to search |
+| `limit` | int | No | `20` | Maximum results |
+
+**Example:** Find Zulip discussions related to a Jira issue:
+```
+FindRelated(source: "jira", id: "FHIR-43499", targetSources: "zulip", limit: 5)
+```
+
+### `GetCrossReferences`
+
+Get explicit cross-references (mentions and links) for an item.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | string | Yes | | Source type |
+| `id` | string | Yes | | Item identifier |
+| `direction` | string | No | `both` | `outgoing`, `incoming`, or `both` |
+
+**Example:** Get all references pointing to a Jira issue:
+```
+GetCrossReferences(source: "jira", id: "FHIR-43499", direction: "incoming")
+```
+
+### `GetStats`
+
+Get service status and statistics — item counts, sync times, and service
+health.
+
+No required parameters.
+
+### `TriggerSync`
+
+Trigger a data sync for one or more sources.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | string | No | all | Comma-separated sources to sync |
+| `type` | string | No | `incremental` | `full` or `incremental` |
+
+**Example:** Trigger a full re-sync of Jira data:
+```
+TriggerSync(sources: "jira", type: "full")
+```
+
+---
+
+## Jira Tools
+
+Source-specific tools for Jira issue tracking data.
+
+### `SearchJira`
+
+Full-text search across Jira issues.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -87,9 +181,70 @@ Search Jira issues.
 | `status` | string | No | | Filter by status |
 | `limit` | int | No | `20` | Maximum results |
 
-#### `SearchZulip`
+### `GetJiraIssue`
 
-Search Zulip chat messages.
+Get full details of a Jira issue including metadata, description, and comments.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `key` | string | Yes | Issue key (e.g., `FHIR-43499`) |
+
+### `GetJiraComments`
+
+Get streaming comments on a Jira issue.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `key` | string | Yes | | Issue key |
+| `limit` | int | No | `50` | Maximum comments |
+
+### `QueryJiraIssues`
+
+Query Jira issues with structured filters.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `statuses` | string | No | | Comma-separated status filter |
+| `workGroups` | string | No | | Comma-separated work group filter |
+| `specs` | string | No | | Comma-separated specification filter |
+| `types` | string | No | | Comma-separated issue type filter |
+| `priorities` | string | No | | Comma-separated priority filter |
+| `sort` | string | No | `updated` | Sort field |
+| `limit` | int | No | `50` | Maximum results |
+
+### `SnapshotJiraIssue`
+
+Generate a rich markdown snapshot of a Jira issue with metadata, description,
+comments, and cross-references.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `key` | string | Yes | | Issue key |
+| `includeComments` | bool | No | `true` | Include issue comments |
+| `includeXrefs` | bool | No | `true` | Include cross-references |
+
+### `ListJiraIssues`
+
+List Jira issues with sorting and filters.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `workGroup` | string | No | | Filter by work group |
+| `status` | string | No | | Filter by status |
+| `specification` | string | No | | Filter by specification |
+| `sort` | string | No | `updated` | Sort field |
+| `limit` | int | No | `50` | Maximum results |
+| `offset` | int | No | `0` | Pagination offset |
+
+---
+
+## Zulip Tools
+
+Source-specific tools for Zulip chat data.
+
+### `SearchZulip`
+
+Full-text search across Zulip messages.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -97,109 +252,33 @@ Search Zulip chat messages.
 | `stream` | string | No | | Filter to a specific stream |
 | `limit` | int | No | `20` | Maximum results |
 
-#### `SearchConfluence`
+### `GetZulipThread`
 
-Search Confluence wiki pages.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | Yes | | Search query |
-| `space` | string | No | | Filter by space key |
-| `limit` | int | No | `20` | Maximum results |
-
-#### `SearchGithub`
-
-Search GitHub issues and pull requests.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | Yes | | Search query |
-| `repo` | string | No | | Filter by repository |
-| `state` | string | No | | Filter by state |
-| `limit` | int | No | `20` | Maximum results |
-
----
-
-### Retrieval Tools
-
-Tools for fetching full details of individual items.
-
-#### `GetJiraIssue`
-
-Get full details of a Jira issue.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `key` | string | Yes | Issue key (e.g., `FHIR-43499`) |
-
-Returns metadata, description, resolution, URL, and custom fields.
-
-#### `GetJiraComments`
-
-Get comments on a Jira issue.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `key` | string | Yes | | Issue key |
-| `limit` | int | No | `50` | Maximum comments |
-
-#### `GetZulipThread`
-
-Get a full Zulip topic thread.
+Get a full Zulip topic thread with participants and timestamps.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `stream` | string | Yes | Stream name |
 | `topic` | string | Yes | Topic name |
 
-Returns all messages with participants and URL.
+### `QueryZulipMessages`
 
-#### `GetConfluencePage`
-
-Get a Confluence page by ID or title.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pageId` | string | No | Confluence page ID |
-| `title` | string | No | Page title (alternative lookup) |
-| `space` | string | No | Space key (used with title) |
-
-#### `GetGithubIssue`
-
-Get a GitHub issue or pull request.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `repo` | string | Yes | Repository (e.g., `HL7/fhir`) |
-| `number` | int | Yes | Issue or PR number |
-
-Returns body, comments, labels, and PR-specific branch info.
-
----
-
-### Listing Tools
-
-Tools for browsing and discovering content.
-
-#### `ListJiraIssues`
-
-List Jira issues with filters and sorting.
+Query Zulip messages with structured filters.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workGroup` | string | No | | Filter by work group |
-| `status` | string | No | | Filter by status |
-| `resolution` | string | No | | Filter by resolution |
-| `specification` | string | No | | Filter by specification |
-| `sort` | string | No | `updated` | Sort field |
+| `streams` | string | No | | Comma-separated stream filter |
+| `topic` | string | No | | Topic name filter |
+| `senders` | string | No | | Comma-separated sender filter |
+| `startDate` | string | No | | Start date (ISO 8601) |
+| `endDate` | string | No | | End date (ISO 8601) |
 | `limit` | int | No | `50` | Maximum results |
-| `offset` | int | No | `0` | Pagination offset |
 
-#### `ListZulipStreams`
+### `ListZulipStreams`
 
 List all available Zulip streams. No parameters.
 
-#### `ListZulipTopics`
+### `ListZulipTopics`
 
 List topics in a Zulip stream.
 
@@ -209,66 +288,9 @@ List topics in a Zulip stream.
 
 Returns topic names with message counts and last activity.
 
-#### `ListConfluenceSpaces`
+### `SnapshotZulipThread`
 
-List indexed Confluence spaces. No parameters.
-
-#### `ListGithubRepos`
-
-List tracked GitHub repositories. No parameters.
-
----
-
-### Relationship Tools
-
-Tools for discovering connections between items.
-
-#### `FindRelated`
-
-Find items related to a given item using keyword similarity and cross-reference
-boosting.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | string | Yes | | Source type |
-| `id` | string | Yes | | Item identifier |
-| `limit` | int | No | `20` | Maximum results |
-
-Returns related items ranked by combined BM25 similarity + cross-reference
-scores.
-
-#### `GetCrossReferences`
-
-Get explicit cross-references (mentions and links) for an item.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `source` | string | Yes | Source type |
-| `id` | string | Yes | Item identifier |
-
-Returns inbound and outbound references with context snippets.
-
----
-
-### Snapshot Tools
-
-Tools for generating rich, detailed views of items. Designed for the
-**Search → Snapshot → Explore** workflow.
-
-#### `SnapshotJiraIssue`
-
-Detailed snapshot of a Jira issue including metadata, description, comments,
-and cross-references.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `key` | string | Yes | | Issue key |
-| `includeComments` | bool | No | `true` | Include issue comments |
-| `includeXrefs` | bool | No | `true` | Include cross-references |
-
-#### `SnapshotZulipThread`
-
-Detailed snapshot of a Zulip topic thread.
+Generate a rich markdown snapshot of a Zulip topic thread with cross-references.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -276,49 +298,22 @@ Detailed snapshot of a Zulip topic thread.
 | `topic` | string | Yes | | Topic name |
 | `includeXrefs` | bool | No | `true` | Include cross-references |
 
-#### `SnapshotConfluencePage`
-
-Detailed snapshot of a Confluence page with comments.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `pageId` | string | Yes | | Confluence page ID |
-| `includeXrefs` | bool | No | `true` | Include cross-references |
-
----
-
-### Admin Tools
-
-Tools for monitoring the knowledge base.
-
-#### `GetStats`
-
-Get database statistics: item counts and sync times.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `source` | string | No | Filter to a specific source |
-
-#### `GetSyncStatus`
-
-Get sync status and schedule for all sources. No parameters.
-
-Returns a table with source name, status, last sync time, items ingested,
-schedule interval, and next run time.
-
 ---
 
 ## Recommended Workflow for LLM Agents
 
 The tools are designed for a progressive discovery pattern:
 
-1. **Search** — Use `Search` or source-specific search tools to find relevant
-   items
-2. **Snapshot** — Use snapshot tools to get detailed views of interesting items
+1. **Search** — Use `Search` for broad cross-source queries, or
+   `SearchJira`/`SearchZulip` for source-specific full-text search
+2. **Snapshot** — Use `SnapshotJiraIssue` or `SnapshotZulipThread` to get rich
+   markdown views of interesting items
 3. **Explore** — Use `FindRelated` and `GetCrossReferences` to discover
    connected items across sources
-4. **List** — Use listing tools to browse available streams, spaces, and
-   repositories
+4. **Deep dive** — Use `GetJiraIssue`, `GetJiraComments`, `GetZulipThread` for
+   full item details
+5. **Browse** — Use `ListZulipStreams`, `ListZulipTopics`, `ListJiraIssues`,
+   and `QueryJiraIssues`/`QueryZulipMessages` for structured browsing
 
 This pattern lets agents efficiently navigate the FHIR community knowledge base
 without needing to understand the underlying data structure.
