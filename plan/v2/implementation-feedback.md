@@ -6,22 +6,26 @@ Tracking feedback, questions, and issues discovered during implementation.
 
 ## Phase 1: Foundation & Common Infrastructure
 
-### Status: In Progress
+### Status: ✅ Complete (commit 294c582)
 
 ### Decisions Made
-- (none yet)
+- Kept v1 Models/Database/Indexing namespaces intact — Common duplicates types with new namespaces
+- CrossRefPatterns extracted as regex-only utility (no DB deps) — DB linking stays in orchestrator
+- SourceDatabase is abstract base class — each service overrides InitializeSchema()
+- GrpcClientExtensions uses GrpcChannel.ForAddress directly (no HttpClientFactory for gRPC)
+- Text/ namespace contains all tokenization + classification (was Bm25/ in v1)
 
 ### Questions / Ambiguities
-- (none yet)
+- (none)
 
 ### Issues Found
-- (none yet)
+- (none)
 
 ---
 
 ## Phase 2: Jira Source Service
 
-### Status: Not Started
+### Status: ✅ Complete
 
 ---
 

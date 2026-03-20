@@ -272,9 +272,9 @@ Create test utilities for gRPC service testing:
 
 ## Phase 1 Verification
 
-- [ ] `FhirAugury.Common` project builds with proto compilation
-- [ ] All proto files compile without errors
-- [ ] Generated gRPC stubs are usable from test code
-- [ ] `ResponseCache` and `SourceDatabase` base classes compile with tests
-- [ ] Solution structure matches the target layout
-- [ ] All existing v1 tests still pass (no regressions during restructure)
+- [x] `FhirAugury.Common` project builds with proto compilation
+- [x] All proto files compile without errors
+- [x] Generated gRPC stubs are usable from test code
+- [x] `ResponseCache` and `SourceDatabase` base classes compile with tests
+- [x] Solution structure matches the target layout
+- [x] All existing v1 tests still pass (no regressions during restructure)
