@@ -2,17 +2,15 @@
 
 ## Problem Statement
 
-The v1 architecture of FHIR Augury is a monolithic application where all four
-data sources (Jira, Zulip, Confluence, GitHub), the indexing pipeline, the
-cross-referencing engine, and the serving layer are tightly coupled through a
-single SQLite database and a shared process boundary.
-
-This creates several problems as the system matures:
+A monolithic architecture where all four data sources (Jira, Zulip,
+Confluence, GitHub), the indexing pipeline, the cross-referencing engine, and
+the serving layer are tightly coupled through a single SQLite database and a
+shared process boundary creates several problems as the system matures:
 
 ### 1. Monolithic Coupling
 
 All source ingestion logic, schema definitions, FTS5 indexes, and BM25 scoring
-live in a single database file. A schema change to one source's tables requires
+in a single database file means a schema change to one source's tables requires
 rebuilding the entire database. Adding a new field to Jira records means
 re-running ingestion for all sources if the schema migration touches shared
 infrastructure.

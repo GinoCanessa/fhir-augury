@@ -92,7 +92,9 @@ plus source-specific extensions:
 | **GetItem** | Retrieve complete details of a single item by its identifier. |
 | **ListItems** | Paginated listing with filters (status, date range, labels, etc.). |
 | **GetRelated** | Find items within this source that are related to a given item (internal cross-refs, BM25 similarity). |
-| **GetContent** | Retrieve the full content/body of an item (for rendering or LLM consumption). |
+| **GetContent** | Retrieve the full content/body of an item (for rendering or LLM consumption). Content path uses a source-specific identifier format (e.g., `Jira/{key}`, `Confluence/{pageId}`, `GitHub/{org}/{repo}/{path}`). |
+| **GetSnapshot** | Retrieve a rich markdown-rendered snapshot of an item, including optional comments and internal references. |
+| **StreamSearchableText** | Stream all searchable text fields for cross-reference scanning. Returns items added/updated since a given timestamp. Used by the orchestrator for cross-reference extraction. |
 | **TriggerIngestion** | Start a full or incremental ingestion run. |
 | **GetIngestionStatus** | Report current ingestion state (running, last sync time, items count). |
 | **RebuildFromCache** | Rebuild the database entirely from cached API responses. |
@@ -306,7 +308,12 @@ this data is essential rather than relying on naming conventions.
     "DatabasePath": "./data/jira.db",
     "SyncSchedule": "01:00:00",
     "DefaultProject": "FHIR",
-    "Ports": { "Http": 5160, "Grpc": 5161 }
+    "Ports": { "Http": 5160, "Grpc": 5161 },
+    "RateLimiting": {
+      "MaxRequestsPerSecond": 10,
+      "BackoffBaseSeconds": 2,
+      "MaxRetries": 3
+    }
   }
 }
 ```
@@ -332,6 +339,15 @@ this data is essential rather than relying on naming conventions.
   activity or message count.
 - **BM25 similarity:** Find messages/threads similar to a given message.
 - **Sender indexing:** Find all messages by a specific sender.
+
+### Content Processing
+
+The Zulip API provides message content in HTML format. During ingestion, the
+service processes the HTML content to extract plain text for FTS5 indexing,
+using the same approach as the Jira service's HTML/markup processing. The
+original HTML is preserved in cache and stored in the `content_html` database
+field; the derived plain text is stored in the `content` field and used for
+full-text search indexing.
 
 ### Source-Specific gRPC Extensions
 
@@ -422,7 +438,12 @@ cache/zulip/
     "CachePath": "./cache/zulip",
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
-    "Ports": { "Http": 5170, "Grpc": 5171 }
+    "Ports": { "Http": 5170, "Grpc": 5171 },
+    "RateLimiting": {
+      "MaxRequestsPerSecond": 5,
+      "BackoffBaseSeconds": 2,
+      "MaxRetries": 3
+    }
   }
 }
 ```
@@ -450,6 +471,19 @@ cache/zulip/
   storage-format content (Confluence macros, page links, etc.)
 - **Label browsing:** Find pages by label, list all labels in a space.
 - **BM25 similarity:** Find pages similar to a given page.
+
+### Content Processing
+
+Confluence pages use a proprietary storage format that is a derivative of
+HTML, including Confluence-specific macros, tables, and embedded content.
+Cached data is persisted in the original storage format (the `body_storage`
+field) to preserve fidelity. During ingestion, the storage-format content
+is converted to plain text (the `body_plain` field) for FTS5 indexing.
+
+This two-step approach ensures that the ingestion processing pipeline can
+be updated (e.g., to improve macro parsing or table extraction) without
+re-downloading content from Confluence — the cached storage-format data
+is simply re-processed.
 
 ### Source-Specific gRPC Extensions
 
@@ -497,7 +531,12 @@ cache/confluence/
     "CachePath": "./cache/confluence",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
-    "Ports": { "Http": 5180, "Grpc": 5181 }
+    "Ports": { "Http": 5180, "Grpc": 5181 },
+    "RateLimiting": {
+      "MaxRequestsPerSecond": 5,
+      "BackoffBaseSeconds": 2,
+      "MaxRetries": 3
+    }
   }
 }
 ```
@@ -514,6 +553,10 @@ cache/confluence/
 - `github_issues` — Issues and PRs (with `is_pull_request` flag)
 - `github_comments` — Issue and PR comments
 - `github_commits` — Commit metadata (SHA, message, author, date)
+- `github_commit_files` — Changed files per commit (file path, change type).
+  Populated from the local repository clone via `git log --name-status` or
+  equivalent commands. Enables artifact-scoped queries that filter commits
+  by which files they modified.
 - `github_commit_pr_links` — Bidirectional mapping between commits and PRs
   (merge commits, squash-merge SHAs, and commits referenced in PR bodies/timelines)
 - `github_jira_refs` — References from GitHub artifacts (commits, PRs, issues,
@@ -591,7 +634,7 @@ cache/confluence/
 ### Source-Specific gRPC Extensions
 
 ```protobuf
-service GitHubSourceService {
+service GitHubService {
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc GetItem(GetItemRequest) returns (GitHubIssue);
   rpc ListItems(ListItemsRequest) returns (stream GitHubIssueSummary);
@@ -744,6 +787,19 @@ cache/github/
 │       └── ...
 ```
 
+### Repository Cloning
+
+The GitHub service clones tracked repositories locally under the cache
+directory. The local clone serves as both the cache for repository content
+and the source for commit changed-file data. During ingestion, the service
+runs `git log --name-status` (or equivalent) against the local clone to
+discover which files each commit modified, populating the
+`github_commit_files` table. This approach avoids the need for per-commit
+API calls and provides complete file-change history.
+
+Local clones are updated via `git fetch` + `git merge` during each
+incremental sync.
+
 ### Configuration
 
 The GitHub service supports three modes for selecting which repositories to
@@ -774,13 +830,36 @@ needs to be overridden.
     "ManualLinks": [
       { "JiraProject": "FHIR", "JiraSpec": "custom-ig", "GitHubRepo": "HL7/custom-ig" }
     ],
+    "Auth": {
+      "Token": null,
+      "TokenEnvVar": "GITHUB_TOKEN"
+    },
     "CachePath": "./cache/github",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
-    "Ports": { "Http": 5190, "Grpc": 5191 }
+    "Ports": { "Http": 5190, "Grpc": 5191 },
+    "RateLimiting": {
+      "MaxRequestsPerSecond": 10,
+      "BackoffBaseSeconds": 5,
+      "MaxRetries": 5,
+      "RespectRateLimitHeaders": true
+    }
   }
 }
 ```
+
+**Authentication:** GitHub API authentication is optional. All repositories
+used by FHIR Augury are public, so unauthenticated access works but is
+subject to lower rate limits (60 requests/hour). When a token is configured
+(via the `Token` field or the environment variable specified in `TokenEnvVar`),
+the service uses authenticated requests (5,000 requests/hour). A token is
+recommended for `all` repo mode, where ingesting dozens of repositories
+requires higher rate limits.
+
+**Rate limiting:** The service respects GitHub's `X-RateLimit-*` response
+headers. When the remaining quota is low, the service automatically backs
+off until the rate limit resets. The `RespectRateLimitHeaders` setting
+(default: `true`) enables this behavior.
 
 **Examples:**
 

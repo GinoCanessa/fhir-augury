@@ -67,20 +67,18 @@ fhir-augury.slnx
     └── FhirAugury.Integration.Tests/
 ```
 
-### Key Structural Changes from v1
+### Project Summary
 
-| v1 Project | v2 Equivalent | Notes |
-|------------|---------------|-------|
-| `FhirAugury.Models` | `FhirAugury.Common` | Shared types + gRPC protos |
-| `FhirAugury.Database` | Per-service `Database/` | Each service owns its schema |
-| `FhirAugury.Sources.Jira` | `FhirAugury.Source.Jira` | Full service, not just a library |
-| `FhirAugury.Sources.Zulip` | `FhirAugury.Source.Zulip` | Full service, not just a library |
-| `FhirAugury.Sources.Confluence` | `FhirAugury.Source.Confluence` | Full service, not just a library |
-| `FhirAugury.Sources.GitHub` | `FhirAugury.Source.GitHub` | Full service, not just a library |
-| `FhirAugury.Indexing` | Per-service `Indexing/` | Each service indexes its own data |
-| `FhirAugury.Service` | `FhirAugury.Orchestrator` | No longer handles ingestion directly |
-| `FhirAugury.Mcp` | `FhirAugury.Mcp` | Now talks to orchestrator via gRPC |
-| `FhirAugury.Cli` | `FhirAugury.Cli` | Now talks to orchestrator and/or services |
+| Project | Purpose |
+|---------|---------|
+| `FhirAugury.Common` | Shared types, gRPC proto definitions, utilities |
+| `FhirAugury.Source.Jira` | Jira source service (self-contained) |
+| `FhirAugury.Source.Zulip` | Zulip source service (self-contained) |
+| `FhirAugury.Source.Confluence` | Confluence source service (self-contained) |
+| `FhirAugury.Source.GitHub` | GitHub source service (self-contained) |
+| `FhirAugury.Orchestrator` | Cross-referencing & query orchestrator |
+| `FhirAugury.Mcp` | MCP server (connects to orchestrator + sources via gRPC) |
+| `FhirAugury.Cli` | CLI (connects to orchestrator + sources via gRPC/HTTP) |
 
 ---
 
@@ -247,12 +245,38 @@ services:
 
 For development, all services can be hosted in a single process using the
 .NET hosting abstractions. Each service registers its gRPC services and
-endpoints on different port prefixes, but shares the same process for
-simplified debugging.
+Kestrel endpoints on different ports, sharing the same process for simplified
+debugging. Multiple Kestrel endpoints are configured so each service listens
+on its own port pair (HTTP + gRPC), matching the production port layout.
 
 ```csharp
 // Development host that runs all services in-process
+// Each service gets its own Kestrel endpoint pair (HTTP + gRPC)
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(kestrel =>
+{
+    // Orchestrator
+    kestrel.ListenLocalhost(5150); // HTTP
+    kestrel.ListenLocalhost(5151, o => o.Protocols = HttpProtocols.Http2); // gRPC
+
+    // Jira
+    kestrel.ListenLocalhost(5160); // HTTP
+    kestrel.ListenLocalhost(5161, o => o.Protocols = HttpProtocols.Http2); // gRPC
+
+    // Zulip
+    kestrel.ListenLocalhost(5170); // HTTP
+    kestrel.ListenLocalhost(5171, o => o.Protocols = HttpProtocols.Http2); // gRPC
+
+    // Confluence
+    kestrel.ListenLocalhost(5180); // HTTP
+    kestrel.ListenLocalhost(5181, o => o.Protocols = HttpProtocols.Http2); // gRPC
+
+    // GitHub
+    kestrel.ListenLocalhost(5190); // HTTP
+    kestrel.ListenLocalhost(5191, o => o.Protocols = HttpProtocols.Http2); // gRPC
+});
+
 builder.Services.AddJiraSource(config);
 builder.Services.AddZulipSource(config);
 builder.Services.AddConfluenceSource(config);

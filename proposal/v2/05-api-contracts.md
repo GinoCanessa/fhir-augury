@@ -33,6 +33,11 @@ service SourceService {
   // Retrieve the full rendered content of an item (markdown snapshot).
   rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotResponse);
 
+  // Retrieve the full content/body of an item for rendering or LLM consumption.
+  // Uses a source-specific identifier path (e.g., "Jira/FHIR-43499",
+  // "Confluence/12345", "GitHub/HL7/fhir/source/patient").
+  rpc GetContent(GetContentRequest) returns (ContentResponse);
+
   // Stream searchable text for cross-reference scanning.
   // Returns items added/updated since the given timestamp.
   rpc StreamSearchableText(StreamTextRequest) returns (stream SearchableTextItem);
@@ -66,6 +71,7 @@ message SearchResponse {
   string query = 1;
   int32 total_results = 2;
   repeated SearchResultItem results = 3;
+  repeated string warnings = 4;              // Warnings about partial results (e.g., source unavailable)
 }
 
 message SearchResultItem {
@@ -137,6 +143,20 @@ message SnapshotResponse {
   string source = 2;
   string markdown = 3;                       // Full rendered snapshot in markdown
   string url = 4;                            // Link to original item in source system
+}
+
+message GetContentRequest {
+  string id = 1;                             // Source-specific content path
+  string format = 2;                         // "plain", "html", "markdown" (default: "plain")
+}
+
+message ContentResponse {
+  string id = 1;
+  string source = 2;
+  string content = 3;                        // Full body content in requested format
+  string format = 4;                         // Format of the returned content
+  string url = 5;                            // Link to original item in source system
+  map<string, string> metadata = 6;          // Additional metadata (e.g., title, author)
 }
 
 message StreamTextRequest {
@@ -226,7 +246,13 @@ service OrchestratorService {
   // Get cross-references for a specific item.
   rpc GetCrossReferences(GetXRefRequest) returns (GetXRefResponse);
 
+  // Proxied common operations (routed to the appropriate source service).
+  rpc GetItem(GetItemRequest) returns (ItemResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotResponse);
+  rpc GetContent(GetContentRequest) returns (ContentResponse);
+
   // Trigger ingestion across one or all source services.
+  // type: "incremental" (default), "full", "rebuild", "xref-scan"
   rpc TriggerSync(TriggerSyncRequest) returns (TriggerSyncResponse);
 
   // Get aggregate status of all source services.
@@ -234,6 +260,9 @@ service OrchestratorService {
 
   // Force a cross-reference scan of recent items.
   rpc TriggerXRefScan(TriggerXRefScanRequest) returns (TriggerXRefScanResponse);
+
+  // Callback from source services when ingestion completes.
+  rpc NotifyIngestionComplete(IngestionCompleteNotification) returns (IngestionCompleteAck);
 }
 
 message UnifiedSearchRequest {
@@ -290,7 +319,7 @@ message CrossReference {
 
 message TriggerSyncRequest {
   repeated string sources = 1;              // Sources to sync; empty = all enabled
-  string type = 2;                          // "incremental" (default) or "full"
+  string type = 2;                          // "incremental" (default), "full", "rebuild", "xref-scan"
 }
 
 message TriggerSyncResponse {
@@ -329,6 +358,18 @@ message TriggerXRefScanResponse {
   string status = 1;
   int32 items_to_scan = 2;
 }
+
+message IngestionCompleteNotification {
+  string source = 1;                         // Source that completed ingestion
+  string type = 2;                           // "incremental", "full", "rebuild"
+  int32 items_ingested = 3;
+  google.protobuf.Timestamp completed_at = 4;
+  string error = 5;                          // Non-empty if ingestion failed
+}
+
+message IngestionCompleteAck {
+  bool xref_scan_triggered = 1;             // Whether a cross-ref scan was started
+}
 ```
 
 ---
@@ -342,11 +383,14 @@ message types. These are defined in separate proto files.
 
 ```protobuf
 service JiraService {
-  rpc GetIssueComments(JiraGetCommentsRequest) returns (stream Comment);
+  rpc GetIssueComments(JiraGetCommentsRequest) returns (stream JiraComment);
   rpc GetIssueLinks(JiraGetLinksRequest) returns (JiraIssueLinksResponse);
-  rpc ListByWorkGroup(JiraWorkGroupRequest) returns (stream ItemSummary);
-  rpc ListBySpecification(JiraSpecificationRequest) returns (stream ItemSummary);
-  rpc QueryIssues(JiraQueryRequest) returns (stream ItemSummary);
+  rpc ListByWorkGroup(JiraWorkGroupRequest) returns (stream JiraIssueSummary);
+  rpc ListBySpecification(JiraSpecificationRequest) returns (stream JiraIssueSummary);
+  rpc QueryIssues(JiraQueryRequest) returns (stream JiraIssueSummary);
+  rpc ListSpecArtifacts(JiraListSpecArtifactsRequest) returns (stream SpecArtifactEntry);
+  rpc GetIssueNumbers(JiraGetIssueNumbersRequest) returns (JiraIssueNumbersResponse);
+  rpc GetIssueSnapshot(JiraSnapshotRequest) returns (SnapshotResponse);
 }
 
 // Structured query for building work-lists.
@@ -401,17 +445,59 @@ message JiraIssue {
   int32 comment_count = 22;
   string url = 23;
 }
+
+message JiraIssueSummary {
+  string key = 1;
+  string project_key = 2;
+  string title = 3;
+  string type = 4;
+  string status = 5;
+  string priority = 6;
+  string work_group = 7;
+  string specification = 8;
+  string url = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message JiraComment {
+  string id = 1;
+  string issue_key = 2;
+  string author = 3;
+  string body = 4;
+  google.protobuf.Timestamp created_at = 5;
+  string url = 6;
+}
+
+message SpecArtifactEntry {
+  string family = 1;
+  string spec_key = 2;
+  string spec_name = 3;
+  string git_url = 4;
+  string published_url = 5;
+  string default_workgroup = 6;
+}
+
+message JiraIssueNumbersResponse {
+  repeated int32 issue_numbers = 1;
+}
+
+message JiraSnapshotRequest {
+  string key = 1;
+  bool include_comments = 2;
+  bool include_internal_refs = 3;
+}
 ```
 
 ### `zulip.proto` (extends SourceService)
 
 ```protobuf
-service ZulipSourceService {
+service ZulipService {
   rpc GetThread(ZulipGetThreadRequest) returns (ZulipThread);
   rpc ListStreams(ZulipListStreamsRequest) returns (stream ZulipStream);
   rpc ListTopics(ZulipListTopicsRequest) returns (stream ZulipTopic);
-  rpc GetMessagesByUser(ZulipUserMessagesRequest) returns (stream ItemSummary);
-  rpc QueryMessages(ZulipQueryRequest) returns (stream ItemSummary);
+  rpc GetMessagesByUser(ZulipUserMessagesRequest) returns (stream ZulipMessageSummary);
+  rpc QueryMessages(ZulipQueryRequest) returns (stream ZulipMessageSummary);
+  rpc GetThreadSnapshot(ZulipSnapshotRequest) returns (SnapshotResponse);
 }
 
 // Structured query for filtering Zulip messages.
@@ -467,18 +553,35 @@ message ZulipTopic {
   google.protobuf.Timestamp last_message_at = 4;
   string url = 5;                           // Link to topic in Zulip
 }
+
+message ZulipMessageSummary {
+  int32 id = 1;
+  string stream_name = 2;
+  string topic = 3;
+  string sender_name = 4;
+  string snippet = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  string url = 7;
+}
+
+message ZulipSnapshotRequest {
+  string stream_name = 1;
+  string topic = 2;
+  bool include_internal_refs = 3;
+}
 ```
 
 ### `confluence.proto` (extends SourceService)
 
 ```protobuf
-service ConfluenceSourceService {
-  rpc GetPageComments(ConfluenceGetCommentsRequest) returns (stream Comment);
-  rpc GetPageChildren(ConfluenceGetChildrenRequest) returns (stream ItemSummary);
-  rpc GetPageAncestors(ConfluenceGetAncestorsRequest) returns (stream ItemSummary);
+service ConfluenceService {
+  rpc GetPageComments(ConfluenceGetCommentsRequest) returns (stream ConfluenceComment);
+  rpc GetPageChildren(ConfluenceGetChildrenRequest) returns (stream ConfluencePageSummary);
+  rpc GetPageAncestors(ConfluenceGetAncestorsRequest) returns (stream ConfluencePageSummary);
   rpc ListSpaces(ConfluenceListSpacesRequest) returns (stream ConfluenceSpace);
-  rpc GetLinkedPages(ConfluenceLinkedPagesRequest) returns (stream ItemSummary);
-  rpc GetPagesByLabel(ConfluenceLabelRequest) returns (stream ItemSummary);
+  rpc GetLinkedPages(ConfluenceLinkedPagesRequest) returns (stream ConfluencePageSummary);
+  rpc GetPagesByLabel(ConfluenceLabelRequest) returns (stream ConfluencePageSummary);
+  rpc GetPageSnapshot(ConfluenceSnapshotRequest) returns (SnapshotResponse);
 }
 
 message ConfluencePage {
@@ -502,19 +605,48 @@ message ConfluenceSpace {
   string url = 4;
   int32 page_count = 5;
 }
+
+message ConfluencePageSummary {
+  int32 id = 1;
+  string space_key = 2;
+  string title = 3;
+  string url = 4;
+  google.protobuf.Timestamp last_modified_at = 5;
+}
+
+message ConfluenceComment {
+  string id = 1;
+  int32 page_id = 2;
+  string author = 3;
+  string body = 4;
+  google.protobuf.Timestamp created_at = 5;
+  string url = 6;
+}
+
+message ConfluenceSnapshotRequest {
+  int32 page_id = 1;
+  bool include_comments = 2;
+  bool include_internal_refs = 3;
+}
 ```
 
 ### `github.proto` (extends SourceService)
 
 ```protobuf
-service GitHubSourceService {
-  rpc GetIssueComments(GitHubGetCommentsRequest) returns (stream Comment);
+service GitHubService {
+  rpc GetIssueComments(GitHubGetCommentsRequest) returns (stream GitHubComment);
   rpc GetPullRequestDetails(GitHubGetPRRequest) returns (GitHubPullRequest);
   rpc GetRelatedCommits(GitHubGetCommitsRequest) returns (stream GitHubCommit);
+  rpc GetPullRequestForCommit(GitHubGetPRForCommitRequest) returns (GitHubPullRequest);
+  rpc GetCommitsForPullRequest(GitHubGetCommitsForPRRequest) returns (stream GitHubCommit);
+  rpc SearchCommits(SearchRequest) returns (SearchResponse);
+  rpc GetJiraReferences(GitHubGetJiraRefsRequest) returns (stream GitHubJiraRef);
   rpc ListRepositories(GitHubListReposRequest) returns (stream GitHubRepo);
-  rpc ListByLabel(GitHubLabelRequest) returns (stream ItemSummary);
-  rpc ListByMilestone(GitHubMilestoneRequest) returns (stream ItemSummary);
+  rpc ListByLabel(GitHubLabelRequest) returns (stream GitHubIssueSummary);
+  rpc ListByMilestone(GitHubMilestoneRequest) returns (stream GitHubIssueSummary);
   rpc QueryByArtifact(GitHubArtifactQueryRequest) returns (stream GitHubCommit);
+  rpc GetIssueSnapshot(GitHubSnapshotRequest) returns (SnapshotResponse);
+}
 }
 
 // Query commits/PRs scoped to a FHIR artifact, page, or element.
@@ -568,6 +700,7 @@ message GitHubCommit {
   string author = 3;
   google.protobuf.Timestamp date = 4;
   string url = 5;
+  repeated string changed_files = 6;         // File paths modified by this commit
 }
 
 message GitHubRepo {
@@ -576,6 +709,42 @@ message GitHubRepo {
   int32 issue_count = 3;
   int32 pr_count = 4;
   string url = 5;                           // Link to repository on GitHub
+  bool has_issues = 6;                      // Whether GitHub Issues is enabled (for #NNN disambiguation)
+}
+
+message GitHubIssueSummary {
+  string repo_full_name = 1;
+  int32 number = 2;
+  bool is_pull_request = 3;
+  string title = 4;
+  string state = 5;
+  string url = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message GitHubComment {
+  string id = 1;
+  string repo_full_name = 2;
+  int32 issue_number = 3;
+  string author = 4;
+  string body = 5;
+  google.protobuf.Timestamp created_at = 6;
+  string url = 7;
+}
+
+message GitHubJiraRef {
+  string source_type = 1;                    // "commit", "issue", "pr", "comment"
+  string source_id = 2;                      // SHA, issue number, etc.
+  string repo_full_name = 3;
+  string jira_key = 4;                       // e.g., "FHIR-43499"
+  string context = 5;                        // Surrounding text snippet
+}
+
+message GitHubSnapshotRequest {
+  string repo_full_name = 1;
+  int32 number = 2;
+  bool include_comments = 3;
+  bool include_internal_refs = 4;
 }
 ```
 
@@ -593,9 +762,11 @@ the HTTP API is one of three equivalent external interfaces.
 | `GET` | `/api/v1/search?q={query}&sources={csv}&limit={n}` | Unified search |
 | `GET` | `/api/v1/related/{source}/{id}?limit={n}` | Find related items |
 | `GET` | `/api/v1/xref/{source}/{id}?direction={dir}` | Cross-references |
+| `GET` | `/api/v1/items/{source}/{id}` | Get item details (proxied to source service) |
+| `GET` | `/api/v1/items/{source}/{id}/snapshot` | Rendered snapshot (proxied to source service) |
+| `GET` | `/api/v1/items/{source}/{id}/content?format={fmt}` | Full content (proxied to source service) |
 | `POST` | `/api/v1/ingest/trigger` | Trigger sync (body: sources, type) |
 | `GET` | `/api/v1/services` | Service health/status |
-| `POST` | `/api/v1/xref/scan` | Trigger cross-reference scan |
 | `GET` | `/api/v1/stats` | Aggregate statistics |
 | `POST` | `/api/v1/jira/query` | Jira structured query (body: `JiraQueryRequest` filters) |
 | `POST` | `/api/v1/zulip/query` | Zulip structured query (body: `ZulipQueryRequest` filters) |
@@ -612,6 +783,7 @@ Each source service also exposes a lightweight HTTP API for direct access:
 | `GET` | `/api/v1/items?limit={n}&offset={n}` | List items |
 | `GET` | `/api/v1/items/{id}/related` | Related items within this source |
 | `GET` | `/api/v1/items/{id}/snapshot` | Rendered markdown snapshot |
+| `GET` | `/api/v1/items/{id}/content?format={fmt}` | Full content/body |
 | `POST` | `/api/v1/ingest` | Trigger ingestion |
 | `GET` | `/api/v1/status` | Ingestion status |
 | `POST` | `/api/v1/rebuild` | Rebuild from cache |

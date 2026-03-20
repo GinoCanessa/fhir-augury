@@ -1,5 +1,9 @@
 # FHIR Augury v2 Proposal — Review
 
+> **Status:** All decisions below have been applied to the proposal documents
+> (01–08). This document is retained as a record of the review process and
+> decisions made.
+
 Cross-document review of the v2 proposal (01–08) for internal consistency,
 completeness, and open design questions.
 

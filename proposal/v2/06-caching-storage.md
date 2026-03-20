@@ -102,6 +102,7 @@ cache/jira/
 └── jira-spec-artifacts/                 # Local clone of HL7/JIRA-Spec-Artifacts
     ├── xml/
     │   ├── _families.xml                # Jira project prefixes
+    │   ├── _workgroups.xml              # HL7 work group definitions
     │   ├── SPECS-FHIR.xml               # Spec listings per family
     │   ├── FHIR-core.xml                # Per-spec detail (gitUrl, artifacts, etc.)
     │   └── ...
@@ -304,6 +305,39 @@ derived and can be regenerated. This means:
 - To force a database rebuild: delete only the data volume, keep the cache
   volume, and restart the service.
 - To share data: copy the cache directory from one machine to another.
+
+---
+
+## Schema Versioning
+
+Each source service owns its own SQLite database, and the schema structure is
+expected to be stable once deployed. Because each service can rebuild its
+database from the local cache in minutes (no network required), schema
+migration tooling is intentionally omitted.
+
+**Strategy:** When a service's schema changes, the SQLite database file is
+deleted as part of deployment. On startup, the service detects the missing
+database, creates fresh tables with the new schema, and rebuilds from cache.
+
+This approach is viable because:
+
+1. **Cache is the ground truth** — the database is a derived projection of the
+   cached data and can be regenerated at any time.
+2. **Rebuild is fast** — reading from local cache is orders of magnitude faster
+   than re-downloading from remote APIs.
+3. **Schema changes are infrequent** — the data model stabilizes early and
+   rarely changes after initial development.
+
+For Docker deployments, deleting the data volume while preserving the cache
+volume achieves the same effect:
+
+```bash
+# Delete the Jira database volume (triggers rebuild on next start)
+docker volume rm fhir-augury_jira-data
+
+# Cache volume is preserved — rebuild reads from it
+docker compose up source-jira
+```
 
 ---
 

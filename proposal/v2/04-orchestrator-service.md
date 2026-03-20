@@ -83,6 +83,31 @@ The orchestrator handles:
 
 ---
 
+## Routing Model
+
+The orchestrator uses a **hybrid routing model** for client access:
+
+1. **Cross-source operations** — The orchestrator handles directly:
+   `UnifiedSearch`, `FindRelated`, `GetCrossReferences`, `TriggerSync`,
+   `GetServicesStatus`, `TriggerXRefScan`.
+
+2. **Common proxied operations** — The orchestrator proxies `GetItem`,
+   `GetSnapshot`, and `GetContent` to the appropriate source service based
+   on the `source` field in the request. This gives clients a single endpoint
+   for item retrieval without needing to know source service addresses.
+
+3. **Source-specific queries** — Clients connect directly to individual
+   source services for source-specific operations (e.g., `QueryIssues` on
+   Jira, `GetThread` on Zulip, `QueryByArtifact` on GitHub). This keeps the
+   orchestrator focused on cross-source intelligence while allowing source
+   services to expose their full, specialized APIs.
+
+The MCP server and CLI use both the orchestrator (for cross-source and
+proxied operations) and direct source service connections (for
+source-specific queries). Service addresses are configured centrally.
+
+---
+
 ## Cross-Reference Linking
 
 ### Structural Links (JIRA-Spec-Artifacts)
@@ -222,6 +247,18 @@ public async Task<UnifiedSearchResponse> SearchAsync(
 }
 ```
 
+### Partial Results on Source Failure
+
+When fanning out a search to all source services, some sources may be
+unavailable or may time out. The orchestrator returns **partial results**
+from the healthy sources, along with a warning indicating which sources
+failed and why. This ensures users always get the best available results
+rather than an all-or-nothing failure.
+
+The `SearchResponse` includes a `warnings` field listing any sources that
+could not be queried, with error details. Clients (HTTP, MCP, CLI) surface
+these warnings so the user knows the results may be incomplete.
+
 ### Cross-Reference Boost
 
 Items that appear in cross-references get a configurable score boost:
@@ -343,12 +380,21 @@ The orchestrator calls each source service's `TriggerIngestion` gRPC method,
 which initiates an incremental sync within that service. The orchestrator
 tracks the status of each sync and can report aggregate progress.
 
-### Post-Ingestion Cross-Reference Scan
+### Post-Ingestion Notification
 
-After a source service completes an ingestion run (notified via gRPC
-streaming or polling), the orchestrator triggers a cross-reference scan
-for the newly ingested items. This ensures cross-references are kept
-up-to-date as new data arrives.
+Source services notify the orchestrator when an ingestion run completes
+by calling the orchestrator's `NotifyIngestionComplete` gRPC method. This
+callback includes the source name, items ingested, and the sync timestamp.
+
+While an ingestion run is in progress, the orchestrator also periodically
+polls the source service's `GetIngestionStatus` RPC (configurable interval,
+default: every 30 seconds) to ensure the task has not errored. If the
+orchestrator detects a failed status, it logs the error and updates the
+service health accordingly.
+
+Upon receiving a successful completion callback, the orchestrator
+triggers a cross-reference scan for the newly ingested items, ensuring
+cross-references are kept up-to-date as new data arrives.
 
 ---
 

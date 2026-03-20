@@ -29,17 +29,15 @@ gRPC services:
 When a new capability is added to the orchestrator or a source service, it
 must be exposed through all three interfaces before it is considered complete.
 
-## Architecture Impact
+## Architecture
 
-In v1, the MCP server and CLI accessed the SQLite database directly. In v2,
-they communicate with the orchestrator and/or source services via gRPC/HTTP.
-This decouples the consumer interfaces from the data storage layer.
+The MCP server and CLI communicate with the orchestrator and source services
+via gRPC/HTTP, decoupling the consumer interfaces from the data storage layer.
 
 ```
-v1:  CLI/MCP ──► SQLite (direct file access)
-v2:  CLI/MCP ──► Orchestrator ──gRPC──► Source Services
-                     │
-                     └──► Orchestrator's own DB (xrefs)
+CLI/MCP ──► Orchestrator ──gRPC──► Source Services
+                 │
+                 └──► Orchestrator's own DB (xrefs)
 ```
 
 ---
@@ -110,6 +108,10 @@ and source services' capabilities:
 | `query_github_artifact` | Find commits/PRs affecting a FHIR artifact, page, or element | GitHub `QueryByArtifact` |
 | `list_github_repos` | List tracked GitHub repos | GitHub `ListRepositories` |
 | `snapshot_github_issue` | Rich markdown snapshot of a GitHub issue | GitHub `GetSnapshot` |
+| `get_pr_for_commit` | Get the PR that introduced a given commit | GitHub `GetPullRequestForCommit` |
+| `get_commits_for_pr` | List commits in a pull request | GitHub `GetCommitsForPullRequest` |
+| `search_commits` | Full-text search across commit messages | GitHub `SearchCommits` |
+| `get_jira_references` | Find Jira issue references in GitHub content | GitHub `GetJiraReferences` |
 
 #### Tool Implementation Pattern
 
@@ -205,9 +207,7 @@ single-source search and retrieval. Cross-source tools are disabled.
 
 ### Architecture
 
-The CLI (`FhirAugury.Cli`) communicates with services via gRPC or HTTP. It
-no longer accesses the database directly (except for a legacy `--direct` mode
-for backward compatibility during migration).
+The CLI (`FhirAugury.Cli`) communicates with services via gRPC or HTTP.
 
 ### Command Structure
 
@@ -252,6 +252,39 @@ fhir-augury
 │   ├── --filter              # Source-specific filters (key=value pairs)
 │   ├── -n, --limit           # Max results
 │   └── --sort                # Sort field
+│
+├── query-jira                # Jira structured query (via Jira service)
+│   ├── --status              # Filter by status (csv)
+│   ├── --resolution          # Filter by resolution (csv)
+│   ├── --workgroup           # Filter by workgroup (csv)
+│   ├── --specification       # Filter by specification (csv)
+│   ├── --project             # Include projects (csv)
+│   ├── --exclude-project     # Exclude projects (csv)
+│   ├── --type                # Issue type (csv)
+│   ├── -q, --query           # Full-text search within results
+│   ├── -n, --limit           # Max results
+│   └── -f, --format          # Output format
+│
+├── query-zulip               # Zulip structured query (via Zulip service)
+│   ├── --stream              # Filter by stream name (csv)
+│   ├── --topic               # Exact topic match
+│   ├── --topic-keyword       # Topic keyword/substring match
+│   ├── --sender              # Filter by sender (csv)
+│   ├── --after               # Messages after date
+│   ├── --before              # Messages before date
+│   ├── -q, --query           # Full-text search within results
+│   ├── -n, --limit           # Max results
+│   └── -f, --format          # Output format
+│
+├── query-github-artifact     # GitHub artifact query (via GitHub service)
+│   ├── --repo                # Repository (e.g., HL7/fhir)
+│   ├── --artifact            # Artifact key (e.g., Patient)
+│   ├── --artifact-id         # Artifact ID (e.g., StructureDefinition/Patient)
+│   ├── --page                # Page key (e.g., subscriptions)
+│   ├── --element             # Element path (e.g., Patient.name)
+│   ├── --include-prs         # Include associated PRs
+│   ├── -n, --limit           # Max results
+│   └── -f, --format          # Output format
 │
 ├── services                  # Service management
 │   ├── status                # Health of all services
@@ -300,7 +333,7 @@ fhir-augury services stats
 
 ### Output Formats
 
-Same as v1 — table (default), JSON, and markdown formats are supported for
+Table (default), JSON, and markdown formats are supported for
 all commands that return data.
 
 ---
@@ -321,10 +354,10 @@ and ensure all three columns are filled.
 | List items | `GET /api/v1/items` (source) | `list_jira_issues`, `list_github_repos`, … | `fhir-augury list` |
 | Trigger ingestion | `POST /api/v1/ingest/trigger` | `trigger_sync` | `fhir-augury ingest trigger` |
 | Ingestion status | `GET /api/v1/status` (source) | `get_stats` | `fhir-augury ingest status` |
-| Rebuild from cache | `POST /api/v1/rebuild` (source) | `trigger_sync` (type=rebuild) | `fhir-augury ingest rebuild` |
-| Service health | `GET /api/v1/services` | `get_stats` | `fhir-augury services status` |
-| Aggregate stats | `GET /api/v1/stats` | `get_stats` | `fhir-augury services stats` |
-| Cross-ref scan | `POST /api/v1/xref/scan` | `trigger_sync` (type=xref-scan) | `fhir-augury services xref-scan` |
+| Rebuild from cache | `POST /api/v1/ingest/trigger` (type=rebuild) | `trigger_sync` (type=rebuild) | `fhir-augury ingest rebuild` |
+| Service health | `GET /api/v1/services` | `get_service_status` | `fhir-augury services status` |
+| Aggregate stats | `GET /api/v1/stats` | `get_service_status` | `fhir-augury services stats` |
+| Cross-ref scan | `POST /api/v1/ingest/trigger` (type=xref-scan) | `trigger_sync` (type=xref-scan) | `fhir-augury services xref-scan` |
 | Source-specific search | `GET /api/v1/search` (source) | `search_jira`, `search_zulip`, … | `fhir-augury search -s {source}` |
 | Jira structured query | `POST /api/v1/jira/query` | `query_jira_issues` | `fhir-augury query-jira` |
 | Zulip structured query | `POST /api/v1/zulip/query` | `query_zulip_messages` | `fhir-augury query-zulip` |
