@@ -1,22 +1,35 @@
 # Database Schema
 
-This document describes the SQLite database schema used by FHIR Augury,
-including all tables, FTS5 virtual tables, indexes, and the source-generated
-CRUD layer.
+This document describes the SQLite database schema used by FHIR Augury v2,
+including the per-service database architecture, all tables, FTS5 virtual
+tables, indexes, and the source-generated CRUD layer.
 
 ## Overview
 
-FHIR Augury stores all data in a single SQLite database file with:
+In the v2 microservices architecture, each service maintains its **own SQLite
+database file**. There is no single shared database — data is distributed
+across services:
 
-- **15 content tables** — Data from all four sources plus infrastructure
-- **6 FTS5 virtual tables** — Full-text search indexes with content-sync triggers
+| Service | Database File | Contents |
+|---------|---------------|----------|
+| **Source.Jira** | `jira.db` | Issues, comments, FTS5, BM25 index, sync state |
+| **Source.Zulip** | `zulip.db` | Streams, messages, FTS5, BM25 index, sync state |
+| **Source.Confluence** | `confluence.db` | Spaces, pages, comments, FTS5, BM25 index, sync state |
+| **Source.GitHub** | `github.db` | Repos, issues/PRs, comments, FTS5, BM25 index, sync state |
+| **Orchestrator** | `orchestrator.db` | Cross-reference links, cross-ref scan state |
+
+Each database uses:
+
 - **WAL mode** — Concurrent readers alongside a single writer
 - **Source-generated CRUD** — All database operations generated at compile time
+  via `cslightdbgen.sqlitegen`
+- **Content-synced FTS5** — Auto-generated triggers keep FTS5 indexes in sync
 
 ## Database Initialization
 
-On startup, `DatabaseService.InitializeDatabase()` sets these SQLite PRAGMAs
-(write mode only):
+Each source service extends the `SourceDatabase` abstract base class from
+`FhirAugury.Common`. On startup, `SourceDatabase` configures these SQLite
+PRAGMAs:
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -26,12 +39,26 @@ PRAGMA cache_size = -64000;   -- 64 MB page cache
 PRAGMA temp_store = MEMORY;
 ```
 
+`SourceDatabase` provides these methods:
+
+| Method | Description |
+|--------|-------------|
+| `InitializeSchema()` | Creates all tables, indexes, and FTS5 virtual tables |
+| `ExecuteInBatches()` | Batch operations using savepoints for partial rollback |
+| `ExecuteInTransaction()` | Full transaction wrapper |
+| `CreateFts5Table()` | Creates FTS5 virtual table with auto-generated INSERT/DELETE/UPDATE triggers |
+| `RebuildFts5()` | Rebuilds FTS5 index from content table |
+| `GetDatabaseSizeBytes()` | Returns database file size |
+| `CheckIntegrity()` | Runs SQLite integrity check |
+
 All tables use `CREATE TABLE IF NOT EXISTS` — the schema is forward-only
 additive with no migration system.
 
-## Tables
+---
 
-### Infrastructure
+## Per-Source Tables
+
+### Common Tables (present in every source database)
 
 #### `sync_state` — Per-source sync tracking
 
@@ -66,9 +93,46 @@ Index: `(SourceName, SubSource)`
 
 Index: `(SourceName, StartedAt)`
 
+#### `index_keywords` — BM25 keyword index (per-service)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `SourceType` | TEXT | Document source type |
+| `SourceId` | TEXT | Document identifier |
+| `Keyword` | TEXT | Indexed keyword |
+| `Count` | INTEGER | Term frequency in document |
+| `KeywordType` | TEXT | Classification: word, fhir_path, fhir_operation |
+| `Bm25Score` | REAL | Pre-computed BM25 score |
+
+Indexes: `(SourceType, SourceId)`, `(Keyword)`, `(Keyword, KeywordType)`
+
+#### `index_corpus` — Corpus statistics (per-service)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `Keyword` | TEXT | Keyword |
+| `KeywordType` | TEXT | Keyword classification |
+| `DocumentFrequency` | INTEGER | Number of documents containing this keyword |
+| `Idf` | REAL | Inverse document frequency |
+
+Index: `(Keyword, KeywordType)`
+
+#### `index_doc_stats` — Document statistics (per-service)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `SourceType` | TEXT UNIQUE | Source type identifier |
+| `TotalDocuments` | INTEGER | Total documents for this source |
+| `AverageDocLength` | REAL | Average document length (tokens) |
+
+Index: `(SourceType)`
+
 ---
 
-### Jira
+### Jira (`jira.db`)
 
 #### `jira_issues`
 
@@ -120,9 +184,11 @@ Indexes: `(Key)`, `(ProjectKey, Key)`, `(Status)`, `(WorkGroup)`,
 
 Indexes: `(IssueKey)`, `(CreatedAt)`
 
+#### FTS5 tables: `jira_issues_fts`, `jira_comments_fts`
+
 ---
 
-### Zulip
+### Zulip (`zulip.db`)
 
 #### `zulip_streams`
 
@@ -159,9 +225,11 @@ Index: `(Name)`
 Indexes: `(StreamId)`, `(StreamId, Topic)`, `(SenderId)`, `(Timestamp)`,
 `(StreamName, Topic)`
 
+#### FTS5 table: `zulip_messages_fts`
+
 ---
 
-### Confluence
+### Confluence (`confluence.db`)
 
 #### `confluence_spaces`
 
@@ -206,9 +274,11 @@ Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
 
 Index: `(PageId)`
 
+#### FTS5 table: `confluence_pages_fts`
+
 ---
 
-### GitHub
+### GitHub (`github.db`)
 
 #### `github_repos`
 
@@ -261,11 +331,15 @@ Indexes: `(RepoFullName)`, `(State)`, `(UpdatedAt)`, `(RepoFullName, Number)`
 
 Indexes: `(IssueId)`, `(RepoFullName)`
 
+#### FTS5 tables: `github_issues_fts`, `github_comments_fts`
+
 ---
 
-### Cross-References and BM25
+## Orchestrator Database (`orchestrator.db`)
 
-#### `xref_links` — Cross-reference links
+The Orchestrator maintains its own database for cross-service concerns.
+
+#### `cross_ref_links` — Cross-reference links between sources
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -279,66 +353,38 @@ Indexes: `(IssueId)`, `(RepoFullName)`
 
 Indexes: `(SourceType, SourceId)`, `(TargetType, TargetId)`, `(LinkType)`
 
-#### `index_keywords` — BM25 keyword index
+#### `xref_scan_state` — Incremental cross-reference scanning state
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `SourceType` | TEXT | Document source type |
-| `SourceId` | TEXT | Document identifier |
-| `Keyword` | TEXT | Indexed keyword |
-| `Count` | INTEGER | Term frequency in document |
-| `KeywordType` | TEXT | Classification: word, fhir_path, fhir_operation |
-| `Bm25Score` | REAL | Pre-computed BM25 score |
-
-Indexes: `(SourceType, SourceId)`, `(Keyword)`, `(Keyword, KeywordType)`
-
-#### `index_corpus` — Corpus statistics
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `Keyword` | TEXT | Keyword |
-| `KeywordType` | TEXT | Keyword classification |
-| `DocumentFrequency` | INTEGER | Number of documents containing this keyword |
-| `Idf` | REAL | Inverse document frequency |
-
-Index: `(Keyword, KeywordType)`
-
-#### `index_doc_stats` — Document statistics
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `SourceType` | TEXT UNIQUE | Source type identifier |
-| `TotalDocuments` | INTEGER | Total documents for this source |
-| `AverageDocLength` | REAL | Average document length (tokens) |
-
-Index: `(SourceType)`
+Tracks cursor/timestamp-based incremental scanning so the Orchestrator only
+processes new or updated content when building cross-reference links.
 
 ---
 
 ## FTS5 Virtual Tables
 
-All FTS5 tables use the content-sync pattern with automatic triggers:
+Each source service creates its FTS5 virtual tables using
+`SourceDatabase.CreateFts5Table()`, which auto-generates content-sync triggers
+(INSERT, DELETE, UPDATE) to keep the FTS5 index in sync with the content table.
 
-| FTS5 Table | Content Table | Indexed Columns |
-|------------|--------------|----------------|
-| `jira_issues_fts` | `jira_issues` | Key, Title, Description, Summary, ResolutionDescription, Labels, Specification, WorkGroup, RelatedArtifacts |
-| `jira_comments_fts` | `jira_comments` | IssueKey, Author, Body |
-| `zulip_messages_fts` | `zulip_messages` | StreamName, Topic, SenderName, ContentPlain |
-| `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
-| `github_issues_fts` | `github_issues` | Title, Body, Labels |
-| `github_comments_fts` | `github_comments` | Body |
+| Service | FTS5 Table | Content Table | Indexed Columns |
+|---------|------------|--------------|----------------|
+| Jira | `jira_issues_fts` | `jira_issues` | Key, Title, Description, Summary, ResolutionDescription, Labels, Specification, WorkGroup, RelatedArtifacts |
+| Jira | `jira_comments_fts` | `jira_comments` | IssueKey, Author, Body |
+| Zulip | `zulip_messages_fts` | `zulip_messages` | StreamName, Topic, SenderName, ContentPlain |
+| Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
+| GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
+| GitHub | `github_comments_fts` | `github_comments` | Body |
 
 See [Indexing and Search](indexing-and-search.md) for details on how FTS5
-triggers work and how queries are processed.
+triggers work, how queries are processed, and how the Orchestrator aggregates
+results across services.
 
 ## Source-Generated CRUD
 
 Database records use `cslightdbgen.sqlitegen` (a Roslyn source generator) to
 produce all CRUD operations at compile time. Each table is defined as a
-`partial record class` with attributes:
+`partial record class` with `[LdgSQLiteTable]` attributes within its source
+service project:
 
 ```csharp
 [LdgSQLiteTable("jira_issues")]
@@ -378,3 +424,35 @@ All methods are available as both static methods and extension methods on
 | `bool` | `INTEGER` (0/1) |
 | `DateTimeOffset` | `TEXT` (ISO 8601) |
 | `string?` | `TEXT` (nullable) |
+
+## Database Architecture Summary
+
+```
+Source.Jira (jira.db)
+├── jira_issues, jira_comments          — Content tables
+├── jira_issues_fts, jira_comments_fts  — FTS5 virtual tables (content-synced)
+├── index_keywords, index_corpus, index_doc_stats — BM25 index
+└── sync_state, ingestion_log           — Sync infrastructure
+
+Source.Zulip (zulip.db)
+├── zulip_streams, zulip_messages       — Content tables
+├── zulip_messages_fts                  — FTS5 virtual table (content-synced)
+├── index_keywords, index_corpus, index_doc_stats — BM25 index
+└── sync_state, ingestion_log           — Sync infrastructure
+
+Source.Confluence (confluence.db)
+├── confluence_spaces, confluence_pages, confluence_comments — Content tables
+├── confluence_pages_fts                — FTS5 virtual table (content-synced)
+├── index_keywords, index_corpus, index_doc_stats — BM25 index
+└── sync_state, ingestion_log           — Sync infrastructure
+
+Source.GitHub (github.db)
+├── github_repos, github_issues, github_comments — Content tables
+├── github_issues_fts, github_comments_fts       — FTS5 virtual tables (content-synced)
+├── index_keywords, index_corpus, index_doc_stats — BM25 index
+└── sync_state, ingestion_log           — Sync infrastructure
+
+Orchestrator (orchestrator.db)
+├── cross_ref_links                     — Cross-source reference links
+└── xref_scan_state                     — Incremental scan cursors
+```

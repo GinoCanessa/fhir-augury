@@ -170,10 +170,10 @@ docker compose --profile jira-only up -d   # Single source
 |----------|-------------|
 | [Getting Started](docs/user/getting-started.md) | Setup, configure, download, search |
 | [CLI Reference](docs/user/cli-reference.md) | Command-line interface documentation |
-| [Configuration (v1)](docs/user/configuration.md) | V1 configuration reference |
-| [API Reference](docs/user/api-reference.md) | HTTP API endpoints |
+| [Configuration](docs/user/configuration.md) | User configuration guide |
+| [API Reference](docs/user/api-reference.md) | gRPC and HTTP API endpoints |
 | [MCP Tools](docs/user/mcp-tools.md) | MCP tool reference for LLM agents |
-| [Docker (v1)](docs/user/docker.md) | V1 Docker deployment |
+| [Docker](docs/user/docker.md) | Docker Compose deployment |
 
 ### Technical Documentation
 

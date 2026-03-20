@@ -1,11 +1,26 @@
 # Getting Started
 
-This guide walks you through building FHIR Augury, configuring data source
-credentials, downloading your first data, and running your first search.
+This guide walks you through setting up FHIR Augury v2, configuring data source
+credentials, starting the microservices, and running your first search.
+
+## Architecture Overview
+
+FHIR Augury v2 uses a microservices architecture:
+
+- **Orchestrator** — central hub (HTTP :5150 / gRPC :5151) that coordinates
+  queries across sources
+- **Jira source** — (HTTP :5160 / gRPC :5161) indexes jira.hl7.org
+- **Zulip source** — (HTTP :5170 / gRPC :5171) indexes chat.fhir.org
+- **Confluence source** — (HTTP :5180 / gRPC :5181) indexes confluence.hl7.org
+- **GitHub source** — (HTTP :5190 / gRPC :5191) indexes HL7 GitHub repos
+
+Each source service maintains its own SQLite database, FTS5 indexes, and
+response cache. The CLI and MCP tools connect to the orchestrator via gRPC.
 
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
+- [Docker](https://www.docker.com/) (recommended, optional for running from source)
 
 Verify your installation:
 
@@ -14,9 +29,53 @@ dotnet --version
 # Should output 10.0.x or later
 ```
 
-## Build
+## Option A: Docker Compose (Recommended)
 
-Clone the repository and build:
+The fastest way to get started is with Docker Compose.
+
+### 1. Clone and start services
+
+```bash
+git clone https://github.com/GinoCanessa/fhir-augury.git
+cd fhir-augury
+
+# Start all services (orchestrator + all 4 sources)
+docker compose --profile full up -d
+```
+
+Other available profiles:
+
+| Profile | Services |
+|---------|----------|
+| `full` | Orchestrator + Jira + Zulip + Confluence + GitHub |
+| `jira-zulip` | Orchestrator + Jira + Zulip |
+| `jira-only` | Jira (standalone, no orchestrator) |
+
+### 2. Check health
+
+```bash
+# Verify the orchestrator is running
+curl http://localhost:5150/health
+# → { "status": "healthy", "service": "orchestrator", "version": "2.0.0" }
+```
+
+### 3. Configure credentials
+
+Each source service requires credentials to access its upstream platform. You
+only need to configure credentials for the sources you want to use.
+
+See [Configure Credentials](#configure-credentials) below for details on each
+source.
+
+### 4. Run your first search
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- search "patient"
+```
+
+## Option B: Run from Source
+
+### 1. Clone and build
 
 ```bash
 git clone https://github.com/GinoCanessa/fhir-augury.git
@@ -24,39 +83,84 @@ cd fhir-augury
 dotnet build fhir-augury.slnx
 ```
 
+### 2. Configure credentials
+
+Create an `appsettings.local.json` file in each source service project
+directory with the appropriate credentials. See
+[Configure Credentials](#configure-credentials) below.
+
+### 3. Start the services
+
+Start each service in a separate terminal:
+
+```bash
+# Start source services
+dotnet run --project src/FhirAugury.Source.Jira
+dotnet run --project src/FhirAugury.Source.Zulip
+dotnet run --project src/FhirAugury.Source.Confluence
+dotnet run --project src/FhirAugury.Source.GitHub
+
+# Start the orchestrator
+dotnet run --project src/FhirAugury.Orchestrator
+```
+
+> **Note:** You only need to start the sources you want to use. The orchestrator
+> will work with whatever sources are available.
+
+### 4. Verify health
+
+```bash
+curl http://localhost:5150/health
+# → { "status": "healthy", "service": "orchestrator", "version": "2.0.0" }
+```
+
+Services auto-download and index data on startup via their built-in
+`ScheduledIngestionWorker`. No manual download or index-build step is required.
+
+### 5. Run your first search
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- search "patient"
+```
+
 ## Configure Credentials
 
-FHIR Augury connects to four HL7 community platforms. Each requires
-authentication. You only need credentials for the sources you want to use.
+Each source service reads credentials from its `appsettings.local.json` file.
+You only need credentials for the sources you want to use.
 
 ### Jira (jira.hl7.org)
 
-Two authentication methods are supported:
+Create `src/FhirAugury.Source.Jira/appsettings.local.json`:
 
 **Session cookie** (quickest to set up):
 
 1. Log in to [jira.hl7.org](https://jira.hl7.org) in your browser
 2. Open Developer Tools → Application → Cookies
-3. Copy the full cookie string (e.g., `JSESSIONID=...`)
+3. Copy the `JSESSIONID` value
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source jira --db fhir-augury.db \
-  --jira-cookie "JSESSIONID=ABC123..."
+```json
+{
+  "Jira": {
+    "Cookie": "JSESSIONID=ABC123..."
+  }
+}
 ```
 
 **API token** (recommended for long-term use):
 
-1. Generate a token at your Atlassian account settings
-2. Use your email and the token:
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source jira --db fhir-augury.db \
-  --jira-email "you@example.com" --jira-api-token "your-token"
+```json
+{
+  "Jira": {
+    "AuthMode": "apitoken",
+    "Email": "you@example.com",
+    "ApiToken": "your-token"
+  }
+}
 ```
 
 ### Zulip (chat.fhir.org)
+
+Create `src/FhirAugury.Source.Zulip/appsettings.local.json`:
 
 **Email + API key:**
 
@@ -64,146 +168,132 @@ dotnet run --project src/FhirAugury.Cli -- \
 2. Go to Settings → Your bots → Add a new bot (or use your personal API key
    from Settings → Account & privacy)
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source zulip --db fhir-augury.db \
-  --zulip-email "bot@example.com" --zulip-api-key "your-api-key"
+```json
+{
+  "Zulip": {
+    "Email": "bot@example.com",
+    "ApiKey": "your-api-key"
+  }
+}
 ```
 
-**Or use a `.zuliprc` file:**
+**Or reference a `.zuliprc` file:**
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source zulip --db fhir-augury.db \
-  --zulip-rc ~/.zuliprc
-```
-
-The `.zuliprc` file format (standard Zulip bot credential file):
-
-```ini
-[api]
-email=bot@example.com
-key=your-api-key
-site=https://chat.fhir.org
+```json
+{
+  "Zulip": {
+    "CredentialFile": "~/.zuliprc"
+  }
+}
 ```
 
 ### Confluence (confluence.hl7.org)
 
+Create `src/FhirAugury.Source.Confluence/appsettings.local.json`:
+
 **Session cookie:**
 
-1. Log in to [confluence.hl7.org](https://confluence.hl7.org) in your browser
-2. Copy the cookie string from Developer Tools
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source confluence --db fhir-augury.db \
-  --confluence-cookie "JSESSIONID=..."
+```json
+{
+  "Confluence": {
+    "Cookie": "JSESSIONID=..."
+  }
+}
 ```
 
 **Basic auth (username + API token):**
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source confluence --db fhir-augury.db \
-  --confluence-user "username" --confluence-token "your-token"
+```json
+{
+  "Confluence": {
+    "AuthMode": "basic",
+    "Username": "your-username",
+    "ApiToken": "your-token"
+  }
+}
 ```
 
 ### GitHub (github.com)
 
-A personal access token (PAT) is recommended. Without one, GitHub limits you to
-60 API requests per hour (vs. 5,000 with a token).
+Set the `GITHUB_TOKEN` environment variable, or create
+`src/FhirAugury.Source.GitHub/appsettings.local.json`:
 
-1. Go to [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
-2. Generate a token with `repo` scope (or `public_repo` for public repos only)
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source github --db fhir-augury.db \
-  --github-pat "ghp_..."
+```json
+{
+  "GitHub": {
+    "Auth": {
+      "Token": "ghp_..."
+    }
+  }
+}
 ```
 
-## Download Data
+A personal access token is recommended. Without one, GitHub limits you to 60 API
+requests per hour (vs. 5,000 with a token).
 
-Download data from one or more sources:
+## Example Workflows
 
-```bash
-# Download Jira issues
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source jira --db fhir-augury.db --jira-cookie "..."
-
-# Download Zulip messages
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source zulip --db fhir-augury.db --zulip-rc ~/.zuliprc
-
-# Download Confluence pages
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source confluence --db fhir-augury.db --confluence-cookie "..."
-
-# Download GitHub issues and PRs
-dotnet run --project src/FhirAugury.Cli -- \
-  download --source github --db fhir-augury.db --github-pat "ghp_..."
-```
-
-> **Note:** Initial downloads can take significant time depending on the data
-> volume. Jira has 48K+ issues, Zulip has 1M+ messages. Use `--verbose` to see
-> progress.
-
-## Build Search Indexes
-
-After downloading, build the search indexes:
+### Search across all sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  index rebuild-all --db fhir-augury.db
+dotnet run --project src/FhirAugury.Cli -- search "FHIR R5 patient resource"
 ```
 
-This builds three indexes:
-- **FTS5** — full-text search across all content
-- **BM25** — keyword scoring for similarity search
-- **Cross-references** — links between items across sources
-
-## Search
-
-Run your first search:
+### Filter search to specific sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  search -q "FHIR R5 patient resource" --db fhir-augury.db
+dotnet run --project src/FhirAugury.Cli -- search "subscription" --sources jira,zulip
 ```
 
-Filter by source:
+### Get full details of an item
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  search -q "subscription" -s jira --db fhir-augury.db
+dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499
+dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499 --comments
 ```
 
-Output as JSON or Markdown:
+### Find related items
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- \
-  search -q "terminology" -f json --db fhir-augury.db
+dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499
+dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499 --target-sources zulip
 ```
 
-## Incremental Sync
-
-After the initial download, use `sync` to fetch only new and updated items:
+### View cross-references
 
 ```bash
-# Sync a specific source
-dotnet run --project src/FhirAugury.Cli -- \
-  sync --source jira --db fhir-augury.db --jira-cookie "..."
-
-# Sync all configured sources
-dotnet run --project src/FhirAugury.Cli -- \
-  sync --source all --db fhir-augury.db \
-  --jira-cookie "..." --zulip-rc ~/.zuliprc
+dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499
+dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499 --direction both
 ```
+
+### Generate a Markdown snapshot
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- snapshot jira FHIR-43499 --comments
+```
+
+### Check service health
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- services status
+```
+
+### Output as JSON
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- search "terminology" --format json
+```
+
+## MCP Integration
+
+FHIR Augury can be used as an MCP (Model Context Protocol) server, enabling LLM
+agents to search and browse HL7 community data. See [MCP Tools](mcp-tools.md)
+for setup instructions and available tools.
 
 ## Next Steps
 
 - [CLI Reference](cli-reference.md) — all commands and options
-- [Configuration](configuration.md) — full configuration reference
-- [API Reference](api-reference.md) — HTTP API for the background service
+- [API Reference](api-reference.md) — HTTP and gRPC API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
-- [Docker Deployment](docker.md) — run as a containerized service
+- [Configuration](configuration.md) — full configuration reference
+- [Docker Deployment](docker.md) — advanced Docker Compose options

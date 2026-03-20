@@ -1,61 +1,155 @@
 # Data Sources
 
-This document describes the source connector architecture, each connector's
-implementation details, and guidance for adding new data sources.
+This document describes the v2 microservices source architecture, each source
+service's implementation details, and guidance for adding new data sources.
 
-## IDataSource Interface
+## Architecture Overview
 
-Every source connector implements the `IDataSource` interface from
-`FhirAugury.Models`:
-
-```csharp
-public interface IDataSource
-{
-    Task<IngestionResult> DownloadAllAsync(
-        DatabaseService db, ISourceOptions options, CancellationToken ct);
-
-    Task<IngestionResult> DownloadIncrementalAsync(
-        DatabaseService db, ISourceOptions options, DateTimeOffset since, CancellationToken ct);
-
-    Task<IngestionResult> IngestItemAsync(
-        string id, ISourceOptions options, CancellationToken ct);
-}
-```
-
-This consistent interface allows the ingestion worker, scheduler, CLI, and API
-to treat all sources uniformly.
-
-## Source Connector Architecture
-
-Each source connector follows the same internal pattern:
+In v2, each data source is an **independent microservice** with its own gRPC
+server, SQLite database, FTS5 indexes, file-system cache, ingestion pipeline,
+and scheduled sync worker. The Orchestrator (`:5150/5151`) coordinates all
+source services, aggregating search results and managing cross-references.
 
 ```
-Source (IDataSource)
-├── SourceOptions      — Configuration (URLs, credentials, page sizes)
-├── AuthHandler        — DelegatingHandler adding auth headers to HttpClient
-├── Mapper/Parser      — Converts API responses to database record types
-└── (optional) RateLimiter — Source-specific rate limiting
+Orchestrator (:5150 HTTP / :5151 gRPC)
+├── Source.Jira       (:5160 HTTP / :5161 gRPC)
+├── Source.Zulip      (:5170 HTTP / :5171 gRPC)
+├── Source.Confluence  (:5180 HTTP / :5181 gRPC)
+└── Source.GitHub     (:5190 HTTP / :5191 gRPC)
 ```
 
-### Shared Infrastructure
+> **Legacy v1** (`FhirAugury.Service`, `FhirAugury.Models`,
+> `FhirAugury.Database`, `FhirAugury.Indexing`, `FhirAugury.Sources.*`) remains
+> in the codebase but is no longer the primary architecture.
 
-- **`HttpRetryHelper`** — Retries on transient failures (HTTP 429/500/502/503/504)
-  with exponential backoff + jitter. Max 3 retries. Respects `Retry-After`
-  headers. Fails immediately on 401/403 with clear error messages.
-- **`IResponseCache`** — Optional file-system cache for raw API responses.
-  Supports `WriteThrough`, `CacheOnly`, `WriteOnly`, and `Disabled` modes.
-- **`TextSanitizer`** — Strips HTML tags, Markdown syntax, normalizes Unicode
-  (NFC), extracts plain text from various formats.
+## Common gRPC Contract — `SourceService`
 
-## Connector Details
+Every source service implements the `SourceService` gRPC service defined in
+`protos/`. This provides a uniform contract for the Orchestrator:
 
-### Jira (`FhirAugury.Sources.Jira`)
+| RPC | Description |
+|-----|-------------|
+| `Search` | FTS5 full-text search within the source, returns scored results with snippets |
+| `GetItem` | Retrieve a single item by ID |
+| `ListItems` | List items with optional filters and pagination |
+| `GetRelated` | Find related items within the source |
+| `GetSnapshot` | Point-in-time snapshot of an item |
+| `GetContent` | Retrieve full content for an item |
+| `StreamSearchableText` | Server-streaming RPC — streams all searchable text for cross-reference scanning |
+| `TriggerIngestion` | Trigger a full or incremental ingestion run |
+| `GetIngestionStatus` | Get current ingestion status |
+| `GetStats` | Return service statistics (item counts, DB size, last sync) |
+| `RebuildFromCache` | Rebuild the database from the file-system cache |
+| `HealthCheck` | Liveness/readiness probe |
+
+## Source-Specific gRPC Services
+
+Each source also exposes a source-specific gRPC service for domain queries:
+
+### `JiraService`
+
+| RPC | Description |
+|-----|-------------|
+| `GetIssueComments` | Comments for a specific issue |
+| `GetIssueLinks` | Cross-reference links for an issue |
+| `ListByWorkGroup` | Issues filtered by HL7 work group |
+| `ListBySpecification` | Issues filtered by specification |
+| `QueryIssues` | Arbitrary JQL-like query |
+| `ListSpecArtifacts` | Specification artifact listing |
+| `GetIssueNumbers` | Bulk issue number lookup |
+| `GetIssueSnapshot` | Detailed issue snapshot |
+
+### `ZulipService`
+
+| RPC | Description |
+|-----|-------------|
+| `GetThread` | Full message thread for a topic |
+| `ListStreams` | Available streams |
+| `ListTopics` | Topics within a stream |
+| `GetMessagesByUser` | Messages filtered by sender |
+| `QueryMessages` | Arbitrary message query |
+| `GetThreadSnapshot` | Thread snapshot with context |
+
+### `ConfluenceService`
+
+| RPC | Description |
+|-----|-------------|
+| `GetPageComments` | Comments on a page |
+| `GetPageChildren` | Child pages in the hierarchy |
+| `GetPageAncestors` | Ancestor pages up to root |
+| `ListSpaces` | Available spaces |
+| `GetLinkedPages` | Pages linked from a given page |
+| `GetPagesByLabel` | Pages filtered by label |
+| `GetPageSnapshot` | Full page snapshot |
+
+### `GitHubService`
+
+| RPC | Description |
+|-----|-------------|
+| `GetIssueComments` | Comments on an issue/PR |
+| `GetPullRequestDetails` | PR-specific details (branches, merge state) |
+| `GetRelatedCommits` | Commits referencing an issue |
+| `GetPullRequestForCommit` | Find the PR associated with a commit |
+| `GetCommitsForPullRequest` | List commits in a PR |
+| `SearchCommits` | Search commit messages |
+| `GetJiraReferences` | Jira keys found in issues/PRs |
+| `ListRepositories` | Tracked repositories |
+| `ListByLabel` | Issues/PRs by label |
+| `ListByMilestone` | Issues/PRs by milestone |
+| `QueryByArtifact` | Issues/PRs referencing a FHIR artifact |
+| `GetIssueSnapshot` | Issue/PR snapshot |
+
+## Per-Source Service Architecture
+
+Each source service follows the same internal pattern:
+
+```
+Source Service (gRPC server)
+├── Database            — Source-specific SourceDatabase subclass (own SQLite file)
+├── Ingestion Pipeline  — Fetches from upstream API, upserts into DB
+├── FTS5 Index          — Content-synced FTS5 virtual tables with auto-triggers
+├── BM25 Index          — Pre-computed keyword index (index_keywords, index_corpus, index_doc_stats)
+├── Sync State          — sync_state + ingestion_log tables for scheduling
+├── Cache               — FileSystemResponseCache for raw API responses
+├── gRPC Services       — SourceService + source-specific service implementations
+└── Scheduled Worker    — Background worker for periodic sync
+```
+
+### Shared Infrastructure (FhirAugury.Common)
+
+The `FhirAugury.Common` shared library compiles the proto definitions and
+provides:
+
+- **`Database/SourceDatabase`** — Abstract base class for per-source SQLite
+  databases. Opens with WAL mode + performance pragmas. Provides
+  `InitializeSchema()`, `ExecuteInBatches()` (savepoints),
+  `ExecuteInTransaction()`, `CreateFts5Table()` (auto-generates content-sync
+  triggers), `RebuildFts5()`, `GetDatabaseSizeBytes()`, `CheckIntegrity()`.
+- **`Caching/`** — `IResponseCache`, `FileSystemResponseCache` (atomic writes
+  via temp + move), `CacheMode` enum (`Disabled`, `WriteThrough`, `CacheOnly`,
+  `WriteOnly`), `CacheFileNaming` (`_WeekOf_`/`DayOf_` batch naming).
+- **`Text/`** — `CrossRefPatterns` (regex patterns for Jira keys, Jira/Zulip/
+  GitHub/Confluence URLs, GitHub short refs `HL7/repo#123`),
+  `FhirVocabulary` (100+ FHIR resource names, 30+ operations),
+  `KeywordClassifier` (word/stop_word/fhir_path/fhir_operation),
+  `StopWords` (200+ English), `TextSanitizer` (strip HTML/Markdown, NFC
+  Unicode normalization), `Tokenizer` (FHIR paths/operations first, then
+  strip URLs/emails/code blocks, then words).
+- **`Grpc/`** — `GrpcClientExtensions`, `GrpcErrorMapper`.
+- **`HttpRetryHelper`** — Exponential backoff ±20% jitter, max 30s delay,
+  respects `Retry-After` headers. Fails immediately on 401/403.
+
+## Source Service Details
+
+### Jira (`Source.Jira` — `:5160/5161`)
 
 | Property | Value |
 |----------|-------|
 | **Default target** | `https://jira.hl7.org` |
 | **Auth methods** | Session cookie or API token (HTTP Basic) |
 | **Data types** | Issues + comments |
+| **Database** | `jira.db` |
+| **gRPC services** | `SourceService`, `JiraService` |
 | **Page size** | 100 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
@@ -70,12 +164,17 @@ mode is used; otherwise Cookie mode.
 
 **Data model:**
 
-- `JiraIssueRecord` — Issue key, title, description, status, priority, custom
-  fields
-- `JiraCommentRecord` — Comment author, body, timestamps
+- `JiraIssueRecord` — Issue key, title, description, status, priority, 25+
+  fields including HL7 custom fields
+- `JiraCommentRecord` — Comment author, body, timestamps (IssueKey FK)
 
 16 HL7-specific custom fields are mapped to domain properties (e.g.,
 `customfield_11302` → Specification, `customfield_11400` → WorkGroup).
+
+**Database tables:** `jira_issues` (Key unique, 25+ columns),
+`jira_comments` (IssueKey FK), `jira_issues_fts` (FTS5), `jira_comments_fts`
+(FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
+`ingestion_log`.
 
 **Incremental sync:** Appends `AND updated >= '{since}'` to the JQL query.
 
@@ -83,25 +182,17 @@ mode is used; otherwise Cookie mode.
 
 **Special feature:** Also supports XML RSS export parsing via `JiraXmlParser`.
 
-**Key classes:**
-
-| Class | Responsibility |
-|-------|---------------|
-| `JiraSource` | Main `IDataSource` implementation |
-| `JiraSourceOptions` | Configuration: BaseUrl, AuthMode, Cookie, ApiToken, Email, DefaultJql, PageSize |
-| `JiraAuthHandler` | `DelegatingHandler` for cookie or Basic auth |
-| `JiraFieldMapper` | Maps JSON API responses to record types, handles custom fields |
-| `JiraXmlParser` | Parses Jira XML RSS export format |
-
 ---
 
-### Zulip (`FhirAugury.Sources.Zulip`)
+### Zulip (`Source.Zulip` — `:5170/5171`)
 
 | Property | Value |
 |----------|-------|
 | **Default target** | `https://chat.fhir.org` |
 | **Auth methods** | HTTP Basic (email + API key), `.zuliprc` file |
 | **Data types** | Streams + messages |
+| **Database** | `zulip.db` |
+| **gRPC services** | `SourceService`, `ZulipService` |
 | **Batch size** | 1000 |
 | **HTTP timeout** | 10 minutes |
 | **Cache support** | Yes |
@@ -112,40 +203,38 @@ HTTP Basic Auth with `email:apikey`. Credentials can come from:
 1. Direct `Email` and `ApiKey` options
 2. A `.zuliprc` file (standard Zulip bot credential format)
 
+The `OnlyWebPublic` flag restricts ingestion to web-public streams.
+
 **Data model:**
 
 - `ZulipStreamRecord` — Stream ID, name, description, web-public flag
 - `ZulipMessageRecord` — Message ID, stream, topic, sender, plain text content,
   timestamp, reactions
 
-HTML content is stripped to plain text via `TextSanitizer.StripHtml`. Only
-web-public streams are downloaded by default (`OnlyWebPublic = true`).
+HTML content is stripped to plain text via `TextSanitizer.StripHtml`.
 
-**Incremental sync:** Cursor-based using `SyncStateRecord` — stores the last
-synced message ID per stream. Sets `anchor = lastId + 1` and fetches forward.
-This is the most sophisticated incremental mechanism of the four connectors.
+**Database tables:** `zulip_streams` (ZulipStreamId unique),
+`zulip_messages` (ZulipMessageId unique, StreamId FK), `zulip_messages_fts`
+(FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
+`ingestion_log`.
+
+**Incremental sync:** Cursor-based using `sync_state` — stores the last synced
+message ID per stream. Sets `anchor = lastId + 1` and fetches forward.
 
 **Pagination:** Anchor-based (`anchor`, `num_before=0`, `num_after=batchSize`).
 Continues until `found_newest` is true.
 
-**Key classes:**
-
-| Class | Responsibility |
-|-------|---------------|
-| `ZulipSource` | Main `IDataSource` implementation |
-| `ZulipSourceOptions` | Configuration: BaseUrl, CredentialFile, Email, ApiKey, BatchSize, OnlyWebPublic |
-| `ZulipAuthHandler` | `DelegatingHandler` for Basic auth; parses `.zuliprc` files |
-| `ZulipMessageMapper` | Maps JSON to stream/message records, strips HTML |
-
 ---
 
-### Confluence (`FhirAugury.Sources.Confluence`)
+### Confluence (`Source.Confluence` — `:5180/5181`)
 
 | Property | Value |
 |----------|-------|
 | **Default target** | `https://confluence.hl7.org` |
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
 | **Data types** | Spaces + pages + comments |
+| **Database** | `confluence.db` |
+| **gRPC services** | `SourceService`, `ConfluenceService` |
 | **Page size** | 25 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
@@ -160,145 +249,150 @@ Continues until `found_newest` is true.
 - `ConfluenceSpaceRecord` — Space key, name, description, URL
 - `ConfluencePageRecord` — Page ID, space key, title, parent ID, body
   (storage format + plain text), labels, version, URL
-- `ConfluenceCommentRecord` — Author, date, body as plain text
+- `ConfluenceCommentRecord` — Author, date, body as plain text (PageId FK)
 
 Body content is converted from Confluence storage format (XHTML) to plain text
 by `ConfluenceContentParser`, which handles macros, images, and attachments.
 
+**Database tables:** `confluence_spaces` (Key unique), `confluence_pages`
+(ConfluenceId unique, SpaceKey), `confluence_comments` (PageId FK),
+`confluence_pages_fts` (FTS5), `index_keywords`, `index_corpus`,
+`index_doc_stats`, `sync_state`, `ingestion_log`.
+
 **Incremental sync:** Uses Confluence CQL:
-`lastModified >= "{since}" AND space in ("FHIR","FHIRI") AND type = page`
+`lastModified >= "{since}" AND space in ("FHIR","FHIRI","SOA") AND type = page`
 
 **Pagination:** Offset-based. Continues while `_links.next` exists.
 
-**Default spaces:** `["FHIR", "FHIRI"]`
-
-**Key classes:**
-
-| Class | Responsibility |
-|-------|---------------|
-| `ConfluenceSource` | Main `IDataSource` implementation |
-| `ConfluenceSourceOptions` | Configuration: BaseUrl, AuthMode, Cookie, Username, ApiToken, Spaces, PageSize |
-| `ConfluenceAuthHandler` | `DelegatingHandler` for cookie or Basic auth |
-| `ConfluenceContentParser` | Converts Confluence storage format XHTML to plain text |
+**Default spaces:** `["FHIR", "FHIRI", "SOA"]`
 
 ---
 
-### GitHub (`FhirAugury.Sources.GitHub`)
+### GitHub (`Source.GitHub` — `:5190/5191`)
 
 | Property | Value |
 |----------|-------|
 | **Default target** | `https://api.github.com` |
 | **Auth methods** | Bearer token (Personal Access Token) |
 | **Data types** | Repositories + issues/PRs + comments |
+| **Database** | `github.db` |
+| **gRPC services** | `SourceService`, `GitHubService` |
 | **Page size** | 100 |
 | **HTTP timeout** | 5 minutes |
-| **Cache support** | No |
+| **Cache support** | Yes |
 
 **Authentication:**
 
 Bearer token via PAT. Without a token, requests are unauthenticated (60 req/hr
-vs 5,000 with a token).
+vs 5,000 with a token). The service includes rate limiting that monitors
+`X-RateLimit-Remaining` and `X-RateLimit-Reset` headers.
 
 **Data model:**
 
 - `GitHubRepoRecord` — Full name, owner, name, description
-- `GitHubIssueRecord` — Key (`owner/repo#number`), number, isPullRequest flag,
-  title, body, state, author, labels, assignees, milestone, merge state
-- `GitHubCommentRecord` — Author, date, body
+- `GitHubIssueRecord` — UniqueKey (`owner/repo#number`), number, isPullRequest
+  flag, title, body, state, author, labels, assignees, milestone, merge state
+- `GitHubCommentRecord` — Author, date, body, IsReviewComment flag (IssueId FK)
 
 The GitHub Issues API returns both issues and PRs; the mapper detects PRs via
 the `pull_request` field.
 
-**Incremental sync:** Uses GitHub's `since` query parameter.
+**Database tables:** `github_repos` (FullName unique), `github_issues`
+(UniqueKey unique, IsPullRequest, RepoFullName), `github_comments` (IssueId FK,
+IsReviewComment), `github_issues_fts` (FTS5), `github_comments_fts` (FTS5),
+`index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
+`ingestion_log`.
 
-**Rate limiting:** Dedicated `GitHubRateLimiter` (`DelegatingHandler`) monitors
-`X-RateLimit-Remaining` and `X-RateLimit-Reset` headers. Pauses all requests
-when remaining calls drop below `RateLimitBuffer` (default: 100).
+**Incremental sync:** Uses GitHub's `since` query parameter.
 
 **Pagination:** Page-based. Continues while returned array length ≥ PageSize.
 
-**Default repositories:** `["HL7/fhir", "HL7/fhir-ig-publisher"]`
-
-**Key classes:**
-
-| Class | Responsibility |
-|-------|---------------|
-| `GitHubSource` | Main `IDataSource` implementation |
-| `GitHubSourceOptions` | Configuration: PersonalAccessToken, Repositories, PageSize, RateLimitBuffer |
-| `GitHubIssueMapper` | Maps JSON to repo/issue/comment records; detects PRs |
-| `GitHubRateLimiter` | `DelegatingHandler` for Bearer auth + rate limit monitoring |
+**Default repositories:** `["HL7/fhir"]`
 
 ---
 
 ## Adding a New Data Source
 
-To add a new data source, follow these steps:
+To add a new data source in the v2 architecture, follow these steps:
 
-### 1. Define the Database Records
+### 1. Create the Source Service Project
 
-In `FhirAugury.Database`, create record classes decorated with source-generator
-attributes:
+Create a new project `Source.NewSource` as an independent microservice. The
+project should reference `FhirAugury.Common` for shared infrastructure.
+
+### 2. Define Proto Definitions
+
+In `protos/`, add the gRPC service definitions:
+
+- Implement the common `SourceService` RPCs (Search, GetItem, ListItems, etc.)
+- Define a source-specific service (e.g., `NewSourceService`) with
+  domain-specific RPCs
+
+### 3. Define the Database Schema
+
+Create record classes decorated with `cslightdbgen.sqlitegen` attributes:
 
 ```csharp
-[SqliteTable("new_source_items")]
+[LdgSQLiteTable("new_source_items")]
 public partial record class NewSourceItemRecord
 {
-    [SqliteColumn("id", isPrimaryKey: true)]
+    [LdgSQLiteKey]
     public long Id { get; set; }
 
-    [SqliteColumn("title")]
+    [LdgSQLiteUnique]
+    public string UniqueId { get; set; } = string.Empty;
+
     public string Title { get; set; } = string.Empty;
-
     // Add fields as needed...
-
-    [SqliteColumn("searchable_text", isVirtual: true)]
-    public string SearchableTextField => $"{Title} {Body}";
 }
 ```
 
-### 2. Create the FTS5 Setup
+Extend `SourceDatabase` to create a source-specific database class that calls
+`CreateFts5Table()` for content-synced FTS5 virtual tables.
 
-In `FtsSetup.cs`, add a method to create the FTS5 virtual table with triggers:
+### 4. Implement the Ingestion Pipeline
 
-```csharp
-public static void CreateNewSourceFts(SqliteConnection conn) { ... }
-public static void RebuildNewSourceFts(SqliteConnection conn) { ... }
-```
+Build the ingestion pipeline within the source service:
 
-### 3. Create the Source Connector
+- API client with `HttpRetryHelper` for transient failure handling
+- Auth handler (`DelegatingHandler`) for source-specific authentication
+- Mapper/parser to convert API responses to record types
+- `FileSystemResponseCache` for caching raw responses
+- Scheduled worker for periodic sync using `sync_state` and `ingestion_log`
 
-Create a new project `FhirAugury.Sources.NewSource` with:
+### 5. Implement the gRPC Services
 
-- `NewSourceOptions` implementing `ISourceOptions`
-- `NewSourceAuthHandler` extending `DelegatingHandler`
-- `NewSourceMapper` to convert API responses to records
-- `NewSource` implementing `IDataSource`
+Implement both the common `SourceService` and the source-specific gRPC service:
 
-### 4. Register in the CLI and Service
+- `Search`: FTS5 MATCH query with BM25 scoring and snippet extraction
+- `StreamSearchableText`: Stream all content for cross-reference scanning
+- `TriggerIngestion`: Full and incremental ingestion support
+- Source-specific RPCs for domain queries
 
-- Add authentication options to `DownloadCommand`, `SyncCommand`, `IngestCommand`
-- Register the source in `IngestionWorker` for the background service
-- Add API endpoints in a new `NewSourceEndpoints.cs`
+### 6. Register in Docker and Orchestrator
 
-### 5. Add to the Indexing Pipeline
+- Add the service to `docker-compose.yml` with appropriate ports
+- Register the source in the Orchestrator so it is included in fan-out search,
+  cross-reference scanning, and aggregated results
+- Add cross-reference patterns to `CrossRefPatterns` in `FhirAugury.Common`
+  if the new source has identifiable link patterns
 
-- Update `CrossRefLinker` with regex patterns for the new source's identifiers
-- Update `Bm25Calculator` to include the new source's text fields
-- Update `FtsSearchService` to query the new FTS table
-
-### 6. Add MCP Tools
+### 7. Add MCP Tools
 
 Add tool methods in the appropriate MCP tool classes (Search, Retrieval,
-Listing, Snapshot).
+Listing, Snapshot) to expose the new source through the MCP interface.
 
 ## Comparison Matrix
 
 | Feature | Jira | Zulip | Confluence | GitHub |
 |---------|------|-------|------------|--------|
+| **Ports** | 5160/5161 | 5170/5171 | 5180/5181 | 5190/5191 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
 | **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
 | **Pagination** | Offset | Anchor | Offset | Page number |
 | **Rate limiting** | Retry only | Retry only | Retry only | Dedicated limiter |
-| **Cache support** | ✅ | ✅ | ✅ | ❌ |
+| **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |
 | **HTTP timeout** | 5 min | 10 min | 5 min | 5 min |
+| **FTS5 tables** | issues + comments | messages | pages | issues + comments |
+| **Own database** | `jira.db` | `zulip.db` | `confluence.db` | `github.db` |

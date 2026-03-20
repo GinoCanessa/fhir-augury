@@ -206,11 +206,13 @@ Query Jira issues with structured filters.
 |-----------|------|----------|---------|-------------|
 | `statuses` | string | No | | Comma-separated status filter |
 | `workGroups` | string | No | | Comma-separated work group filter |
-| `specs` | string | No | | Comma-separated specification filter |
+| `specifications` | string | No | | Comma-separated specification filter |
 | `types` | string | No | | Comma-separated issue type filter |
 | `priorities` | string | No | | Comma-separated priority filter |
-| `sort` | string | No | `updated` | Sort field |
-| `limit` | int | No | `50` | Maximum results |
+| `query` | string | No | | Text query for additional filtering |
+| `sortBy` | string | No | `updated_at` | Sort by field |
+| `sortOrder` | string | No | `desc` | Sort order: asc or desc |
+| `limit` | int | No | `20` | Maximum results |
 
 ### `SnapshotJiraIssue`
 
@@ -221,7 +223,6 @@ comments, and cross-references.
 |-----------|------|----------|---------|-------------|
 | `key` | string | Yes | | Issue key |
 | `includeComments` | bool | No | `true` | Include issue comments |
-| `includeXrefs` | bool | No | `true` | Include cross-references |
 
 ### `ListJiraIssues`
 
@@ -229,12 +230,11 @@ List Jira issues with sorting and filters.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workGroup` | string | No | | Filter by work group |
+| `sortBy` | string | No | `updated_at` | Sort by field |
+| `sortOrder` | string | No | `desc` | Sort order: asc or desc |
+| `limit` | int | No | `20` | Maximum results |
 | `status` | string | No | | Filter by status |
-| `specification` | string | No | | Filter by specification |
-| `sort` | string | No | `updated` | Sort field |
-| `limit` | int | No | `50` | Maximum results |
-| `offset` | int | No | `0` | Pagination offset |
+| `workGroup` | string | No | | Filter by work group |
 
 ---
 
@@ -256,10 +256,11 @@ Full-text search across Zulip messages.
 
 Get a full Zulip topic thread with participants and timestamps.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `stream` | string | Yes | Stream name |
-| `topic` | string | Yes | Topic name |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `stream` | string | Yes | | Stream name |
+| `topic` | string | Yes | | Topic name |
+| `limit` | int | No | `100` | Maximum messages |
 
 ### `QueryZulipMessages`
 
@@ -269,10 +270,12 @@ Query Zulip messages with structured filters.
 |-----------|------|----------|---------|-------------|
 | `streams` | string | No | | Comma-separated stream filter |
 | `topic` | string | No | | Topic name filter |
+| `topicKeyword` | string | No | | Topic keyword (partial match) |
 | `senders` | string | No | | Comma-separated sender filter |
-| `startDate` | string | No | | Start date (ISO 8601) |
-| `endDate` | string | No | | End date (ISO 8601) |
-| `limit` | int | No | `50` | Maximum results |
+| `query` | string | No | | Text query |
+| `sortBy` | string | No | `timestamp` | Sort by field |
+| `sortOrder` | string | No | `desc` | Sort order: asc or desc |
+| `limit` | int | No | `20` | Maximum results |
 
 ### `ListZulipStreams`
 
@@ -282,9 +285,10 @@ List all available Zulip streams. No parameters.
 
 List topics in a Zulip stream.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `stream` | string | Yes | Stream name |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `stream` | string | Yes | | Stream name |
+| `limit` | int | No | `50` | Maximum topics |
 
 Returns topic names with message counts and last activity.
 
@@ -296,7 +300,6 @@ Generate a rich markdown snapshot of a Zulip topic thread with cross-references.
 |-----------|------|----------|---------|-------------|
 | `stream` | string | Yes | | Stream name |
 | `topic` | string | Yes | | Topic name |
-| `includeXrefs` | bool | No | `true` | Include cross-references |
 
 ---
 
