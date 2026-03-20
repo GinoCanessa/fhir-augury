@@ -10,232 +10,222 @@ fhir-augury/
 ├── README.md                      # Project overview
 ├── LICENSE                        # MIT license
 ├── Dockerfile                     # Multi-stage Docker build
-├── docker-compose.yml             # Docker Compose service definition
+├── docker-compose.yml             # Docker Compose (5 services, 3 profiles, 9 volumes)
 ├── cache/                         # Response cache directory (gitignored)
 ├── docs/                          # Documentation
 │   ├── user/                      # User-facing documentation
 │   └── technical/                 # Developer documentation
 ├── mcp-config-examples/           # Example MCP client configurations
-│   ├── claude-desktop.json
-│   └── http-client.json
 ├── plan/                          # Implementation plans
-│   ├── v1/                        # V1 phase plans (phases 1-7)
-│   └── feature/                   # Feature-specific plans
 ├── proposal/                      # Design proposals
-│   ├── v1/                        # V1 architecture proposals
-│   └── feature/                   # Feature proposals
+├── protos/                        # Protocol Buffer definitions (6 files)
+│   ├── source_service.proto       # SourceService — common contract for all sources
+│   ├── orchestrator.proto         # OrchestratorService — unified API
+│   ├── jira.proto                 # JiraService — Jira-specific operations
+│   ├── zulip.proto                # ZulipService — Zulip-specific operations
+│   ├── confluence.proto           # ConfluenceService — Confluence-specific operations
+│   └── github.proto               # GitHubService — GitHub-specific operations
 ├── src/                           # Source code
-│   ├── common.props               # Shared MSBuild properties
+│   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (10 projects)
+│   └── (8 v2 projects + 8 legacy v1 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
     ├── TestData/                   # Shared test fixtures
-    └── (5 test projects)
+    └── (8 v2 test projects + 3 legacy v1 test projects)
 ```
 
-## Source Projects
+## Proto Files
 
-### `FhirAugury.Models`
+Six Protocol Buffer files define the gRPC service contracts:
 
-Shared interfaces, enums, and configuration types with no dependencies on other
-projects.
+### `source_service.proto`
 
-```
-FhirAugury.Models/
-├── IDataSource.cs            # Core interface for all source connectors
-├── ISourceOptions.cs         # Configuration interface for sources
-├── IResponseCache.cs         # Cache interface
-├── IngestionResult.cs        # Result type for ingestion operations
-├── AuguryConfiguration.cs    # Root configuration model
-├── SourceConfiguration.cs    # Per-source configuration
-├── Bm25Configuration.cs      # BM25 tuning parameters
-├── CacheMode.cs              # Disabled/WriteThrough/CacheOnly/WriteOnly
-└── Caching/
-    ├── FileSystemResponseCache.cs  # File-system cache implementation
-    └── NullResponseCache.cs        # No-op cache for disabled mode
-```
+Common contract implemented by all source services:
 
-### `FhirAugury.Database`
+- `Search`, `GetItem`, `ListItems`, `GetRelated` — query operations
+- `GetSnapshot`, `GetContent` — content retrieval
+- `StreamSearchableText` — streams text for cross-reference scanning
+- `TriggerIngestion`, `GetIngestionStatus`, `RebuildFromCache` — ingestion control
+- `GetStats`, `HealthCheck` — monitoring
 
-SQLite schema, FTS5 setup, and source-generated CRUD operations.
+### `orchestrator.proto`
 
-```
-FhirAugury.Database/
-├── DatabaseService.cs        # Singleton: init, connection management, WAL mode
-├── FtsSetup.cs               # Creates FTS5 virtual tables and triggers
-├── Records/
-│   ├── JiraIssueRecord.cs    # Jira issue table (16+ custom fields)
-│   ├── JiraCommentRecord.cs  # Jira comment table
-│   ├── ZulipStreamRecord.cs  # Zulip stream table
-│   ├── ZulipMessageRecord.cs # Zulip message table
-│   ├── ConfluenceSpaceRecord.cs    # Confluence space table
-│   ├── ConfluencePageRecord.cs     # Confluence page table
-│   ├── ConfluenceCommentRecord.cs  # Confluence comment table
-│   ├── GitHubRepoRecord.cs        # GitHub repository table
-│   ├── GitHubIssueRecord.cs       # GitHub issue/PR table
-│   ├── GitHubCommentRecord.cs     # GitHub comment table
-│   ├── CrossRefLinkRecord.cs      # Cross-reference links
-│   ├── KeywordRecord.cs           # BM25 keyword index
-│   ├── CorpusRecord.cs            # BM25 corpus stats
-│   ├── DocStatsRecord.cs          # BM25 document stats
-│   ├── SyncStateRecord.cs         # Per-source sync tracking
-│   └── IngestionLogRecord.cs      # Ingestion run history
-└── (source-generated CRUD code at build time)
-```
+Orchestrator's unified API:
 
-### `FhirAugury.Sources.Jira`
+- `UnifiedSearch`, `FindRelated`, `GetCrossReferences` — aggregated queries
+- `GetItem`, `GetSnapshot`, `GetContent` — proxied to appropriate source
+- `TriggerSync`, `GetServicesStatus` — service management
+- `TriggerXRefScan`, `NotifyIngestionComplete` — cross-reference system
+
+### Source-Specific Protos
+
+- **`jira.proto`** (`JiraService`) — `GetIssueComments`, `GetIssueLinks`,
+  `ListByWorkGroup`, `ListBySpecification`, `QueryIssues`, `ListSpecArtifacts`,
+  `GetIssueNumbers`, `GetIssueSnapshot`
+- **`zulip.proto`** (`ZulipService`) — `GetThread`, `ListStreams`, `ListTopics`,
+  `GetMessagesByUser`, `QueryMessages`, `GetThreadSnapshot`
+- **`confluence.proto`** (`ConfluenceService`) — `GetPageComments`,
+  `GetPageChildren`, `GetPageAncestors`, `ListSpaces`, `GetLinkedPages`,
+  `GetPagesByLabel`, `GetPageSnapshot`
+- **`github.proto`** (`GitHubService`) — `GetIssueComments`,
+  `GetPullRequestDetails`, `GetRelatedCommits`, `GetPullRequestForCommit`,
+  `GetCommitsForPullRequest`, `SearchCommits`, `GetJiraReferences`,
+  `ListRepositories`, `ListByLabel`, `ListByMilestone`, `QueryByArtifact`,
+  `GetIssueSnapshot`
+
+## Source Projects (v2)
+
+### `FhirAugury.Common`
+
+Shared library compiled by all other projects. Compiles the proto files and
+provides reusable infrastructure.
 
 ```
-FhirAugury.Sources.Jira/
-├── JiraSource.cs             # IDataSource: full/incremental/single-item download
-├── JiraSourceOptions.cs      # Config: BaseUrl, AuthMode, Cookie, ApiToken, etc.
-├── JiraAuthHandler.cs        # DelegatingHandler: cookie or Basic auth
-├── JiraFieldMapper.cs        # Maps JSON → JiraIssueRecord/JiraCommentRecord
-├── JiraCommentParser.cs      # Comment extraction facade
-└── JiraXmlParser.cs          # Parses Jira XML RSS export format
+FhirAugury.Common/
+├── Caching/                  # IResponseCache, FileSystemResponseCache, CacheMode
+├── Configuration/            # Shared configuration types
+├── Database/                 # SourceDatabase abstract: SQLite WAL, FTS5 helpers
+├── Grpc/                     # gRPC client helpers, GrpcErrorMapper
+├── Text/                     # CrossRefPatterns, FhirVocabulary (100+ resources,
+│                             #   30+ operations), Tokenizer, StopWords,
+│                             #   TextSanitizer, KeywordClassifier
+└── HttpRetryHelper.cs        # Retry with exponential backoff
 ```
 
-### `FhirAugury.Sources.Zulip`
+### `FhirAugury.Source.Jira`
+
+Jira source service (HTTP :5160, gRPC :5161).
 
 ```
-FhirAugury.Sources.Zulip/
-├── ZulipSource.cs            # IDataSource: streams + message pagination
-├── ZulipSourceOptions.cs     # Config: BaseUrl, Email, ApiKey, .zuliprc path
-├── ZulipAuthHandler.cs       # DelegatingHandler: Basic auth, .zuliprc parsing
-└── ZulipMessageMapper.cs     # Maps JSON → ZulipStreamRecord/ZulipMessageRecord
+FhirAugury.Source.Jira/
+├── Api/                      # JiraGrpcService (SourceService + JiraService impl)
+├── Cache/                    # Jira-specific cache configuration
+├── Configuration/            # JiraSourceOptions, auth settings
+├── Database/                 # SQLite schema, record types, source-generated CRUD
+├── Indexing/                 # FTS5 search and indexing
+├── Ingestion/                # Download pipeline: fetch → cache → parse → store
+├── Workers/                  # ScheduledIngestionWorker
+├── Program.cs                # Dual-port Kestrel (HTTP + gRPC), DI registration
+├── appsettings.json          # Default configuration
+└── Dockerfile                # Service container image
 ```
 
-### `FhirAugury.Sources.Confluence`
+### `FhirAugury.Source.Zulip`
+
+Zulip source service (HTTP :5170, gRPC :5171). Same internal structure as
+Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
+`Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
+
+### `FhirAugury.Source.Confluence`
+
+Confluence source service (HTTP :5180, gRPC :5181). Same internal structure as
+Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
+`Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
+
+### `FhirAugury.Source.GitHub`
+
+GitHub source service (HTTP :5190, gRPC :5191). Same internal structure as
+Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
+`Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
+
+### `FhirAugury.Orchestrator`
+
+Central coordinator (HTTP :5150, gRPC :5151).
 
 ```
-FhirAugury.Sources.Confluence/
-├── ConfluenceSource.cs       # IDataSource: spaces + pages + comments
-├── ConfluenceSourceOptions.cs # Config: BaseUrl, AuthMode, Spaces, etc.
-├── ConfluenceAuthHandler.cs  # DelegatingHandler: cookie or Basic auth
-└── ConfluenceContentParser.cs # Confluence storage XHTML → plain text
-```
-
-### `FhirAugury.Sources.GitHub`
-
-```
-FhirAugury.Sources.GitHub/
-├── GitHubSource.cs           # IDataSource: repos + issues/PRs + comments
-├── GitHubSourceOptions.cs    # Config: PAT, Repositories, RateLimitBuffer
-├── GitHubIssueMapper.cs      # Maps JSON → records, detects PRs
-└── GitHubRateLimiter.cs      # DelegatingHandler: Bearer auth + rate limiting
-```
-
-### `FhirAugury.Indexing`
-
-```
-FhirAugury.Indexing/
-├── FtsSearchService.cs       # FTS5 MATCH queries across all sources
-├── SimilaritySearchService.cs # Find related items (BM25 + xref boost)
-├── CrossRefLinker.cs         # Regex-based cross-reference extraction
-├── CrossRefQueryService.cs   # Bidirectional xref queries, graph traversal
-├── ScoreNormalizer.cs        # Min-max normalization for cross-source ranking
-├── TextSanitizer.cs          # HTML/Markdown stripping, Unicode normalization
-└── Bm25/
-    ├── Bm25Calculator.cs     # Full/incremental BM25 index builds
-    ├── Tokenizer.cs          # FHIR-aware tokenization
-    ├── KeywordClassifier.cs  # Token type classification
-    ├── FhirVocabulary.cs     # 120+ FHIR resource names, 30+ operations
-    └── StopWords.cs          # ~170 English stop words
-```
-
-### `FhirAugury.Cli`
-
-```
-FhirAugury.Cli/
-├── Program.cs                # Entry point: RootCommand with 11 commands
-├── ServiceClient.cs          # HTTP client wrapper for the service API
-├── Commands/
-│   ├── DownloadCommand.cs    # Full download + shared auth builder methods
-│   ├── SyncCommand.cs        # Incremental sync with SyncStateRecord tracking
-│   ├── IngestCommand.cs      # Single-item ingestion
-│   ├── IndexCommand.cs       # FTS5/BM25/xref index management
-│   ├── SearchCommand.cs      # FTS search
-│   ├── GetCommand.cs         # Direct DB item retrieval
-│   ├── SnapshotCommand.cs    # Rich item rendering
-│   ├── RelatedCommand.cs     # Similarity-based related items
-│   ├── StatsCommand.cs       # DB statistics
-│   ├── ServiceCommand.cs     # HTTP client for remote service
-│   └── CacheCommand.cs       # File-system cache management
-└── OutputFormatters/
-    └── OutputFormatter.cs    # Table/JSON/Markdown formatting
-```
-
-### `FhirAugury.Service`
-
-```
-FhirAugury.Service/
-├── Program.cs                # Entry point: config, DI, endpoint mapping
-├── IngestionQueue.cs         # Bounded channel (capacity 100)
-├── Workers/
-│   ├── IngestionWorker.cs    # BackgroundService: dequeues and runs ingestions
-│   └── ScheduledIngestionService.cs  # BackgroundService: per-source timers
-└── Endpoints/
-    ├── AuguryApiExtensions.cs # Maps /api/v1 route group
-    ├── SearchEndpoints.cs     # GET /api/v1/search
-    ├── IngestEndpoints.cs     # POST/GET ingestion control
-    ├── JiraEndpoints.cs       # Jira-specific endpoints
-    ├── ZulipEndpoints.cs      # Zulip-specific endpoints
-    ├── ConfluenceEndpoints.cs # Confluence-specific endpoints
-    ├── GitHubEndpoints.cs     # GitHub-specific endpoints
-    ├── XRefEndpoints.cs       # Cross-reference endpoints
-    └── StatsEndpoints.cs      # Statistics endpoints
+FhirAugury.Orchestrator/
+├── Api/                      # OrchestratorGrpcService, OrchestratorHttpApi
+├── Configuration/            # Orchestrator settings, source endpoints
+├── CrossRef/                 # CrossRefLinker — streams text, extracts xrefs via regex
+├── Database/                 # Orchestrator SQLite DB (cross-references)
+├── Health/                   # ServiceHealthMonitor (polls every 60s), HealthCheckWorker
+├── Related/                  # RelatedItemFinder (4-signal ranking)
+├── Routing/                  # SourceRouter — creates gRPC channels to sources
+├── Search/                   # UnifiedSearchService (fan-out → normalize → boost → sort)
+├── Workers/                  # XRefScanWorker (every 30 min), StructuralLinker
+├── Program.cs                # Dual-port Kestrel, DI registration
+├── appsettings.json          # Default configuration
+└── Dockerfile                # Service container image
 ```
 
 ### `FhirAugury.Mcp`
 
+MCP server for LLM agents (stdio transport, 17 tools via gRPC to orchestrator).
+
 ```
 FhirAugury.Mcp/
+├── Tools/                    # MCP tool implementations (search, retrieval, etc.)
 ├── Program.cs                # Entry point: DI, stdio transport, tool discovery
-└── Tools/
-    ├── SearchTools.cs        # 5 search tools (unified + per-source)
-    ├── RetrievalTools.cs     # 5 retrieval tools (get individual items)
-    ├── ListingTools.cs       # 6 listing tools (browse collections)
-    ├── RelationshipTools.cs  # 2 relationship tools (related, xrefs)
-    ├── SnapshotTools.cs      # 3 snapshot tools (rich composite views)
-    └── AdminTools.cs         # 2 admin tools (stats, sync status)
+└── FhirAugury.Mcp.csproj
+```
+
+### `FhirAugury.Cli`
+
+Command-line interface (10+ commands via gRPC to orchestrator).
+
+```
+FhirAugury.Cli/
+├── Commands/                 # Command implementations
+├── OutputFormatters/         # Table/JSON/Markdown formatting
+├── GrpcClientFactory.cs      # Creates gRPC channel to orchestrator
+├── Program.cs                # Entry point: RootCommand with subcommands
+└── FhirAugury.Cli.csproj
 ```
 
 ## Test Projects
 
-### `FhirAugury.Database.Tests`
+### v2 Test Projects
 
-~56 tests covering SQLite CRUD operations, table creation, and FTS5 trigger
-behavior for all four sources. Uses in-memory SQLite.
+| Project | Description |
+|---------|-------------|
+| `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
+| `FhirAugury.Source.Jira.Tests` | Jira source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Zulip.Tests` | Zulip source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Confluence.Tests` | Confluence source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
+| `FhirAugury.Mcp.Tests` | MCP server tool functions |
+| `FhirAugury.Integration.Tests` | End-to-end integration tests |
 
-### `FhirAugury.Indexing.Tests`
+### Legacy v1 Test Projects
 
-~45 tests covering BM25 scoring, tokenization, cross-reference detection,
-score normalization, and unified cross-source search.
-
-### `FhirAugury.Sources.Tests`
-
-~85 tests covering source parsers/mappers (Jira XML/JSON, Zulip, Confluence
-XHTML, GitHub), text sanitization, and the file-system caching layer.
-
-### `FhirAugury.Integration.Tests`
-
-~22 tests covering HTTP API endpoints via `WebApplicationFactory<Program>`.
-Tests ingestion control, search, and statistics endpoints.
-
-### `FhirAugury.Mcp.Tests`
-
-~44 tests covering all MCP tool functions: search, retrieval, listing,
-relationships, snapshots, and admin tools.
+| Project | Description |
+|---------|-------------|
+| `FhirAugury.Database.Tests` | Legacy v1 database CRUD and FTS5 tests |
+| `FhirAugury.Indexing.Tests` | Legacy v1 BM25, tokenization, cross-reference tests |
+| `FhirAugury.Sources.Tests` | Legacy v1 source parser/mapper tests |
 
 ### Test Data (`tests/TestData/`)
 
-| File | Description |
-|------|-------------|
-| `sample-jira-export.xml` | Jira RSS/XML export with 2 issues and comments |
-| `sample-jira-issue.json` | Single Jira issue in JSON format |
-| `sample-github-issue.json` | GitHub issue with labels, assignees, milestone |
-| `sample-github-pr.json` | GitHub PR with merge state and branches |
-| `sample-confluence-page.json` | Confluence page in JSON format |
-| `sample-confluence-storage.xml` | Confluence XHTML storage format |
-| `sample-zulip-messages.json` | Zulip messages in JSON format |
+Shared test fixtures used by both v2 and legacy test projects (Jira XML/JSON,
+GitHub issue/PR JSON, Confluence page/storage XML, Zulip messages JSON).
+
+## Legacy v1 Projects
+
+The following v1 monolith projects remain in the solution but are **not** the
+primary architecture. They may still be referenced by legacy tests or used for
+migration purposes.
+
+| Project | Role (v1) |
+|---------|-----------|
+| `FhirAugury.Models` | Shared interfaces, enums, configuration types |
+| `FhirAugury.Database` | Centralized SQLite schema, FTS5, source-generated CRUD |
+| `FhirAugury.Indexing` | FTS5 search, BM25 scoring, cross-reference linking |
+| `FhirAugury.Sources.Jira` | Jira source connector |
+| `FhirAugury.Sources.Zulip` | Zulip source connector |
+| `FhirAugury.Sources.Confluence` | Confluence source connector |
+| `FhirAugury.Sources.GitHub` | GitHub source connector |
+| `FhirAugury.Service` | Monolithic ASP.NET Core service (HTTP :5100) |
+
+**Naming convention:** v1 uses plural `Sources.*`, v2 uses singular `Source.*`.
+
+## Build Configuration
+
+- **`src/common.props`** — Shared by all source projects: targets `net10.0`,
+  C# 14, nullable enabled, implicit usings, timestamp-based versioning
+  (`yyyy.MMdd.HHmm`)
+- **`src/Directory.Build.props`** — Imports `common.props` for all source
+  projects
+- **`tests/Directory.Build.props`** — Configures test projects: `net10.0`,
+  C# 14, `IsPackable=false`

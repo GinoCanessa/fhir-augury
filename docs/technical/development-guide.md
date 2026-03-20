@@ -1,13 +1,15 @@
 # Development Guide
 
 This guide covers everything you need to set up a development environment,
-build, test, and contribute to FHIR Augury.
+build, test, and contribute to FHIR Augury. It complements the
+[quickstart guide](../development.md) with deeper technical details.
 
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
 - A text editor or IDE (Visual Studio, VS Code with C# Dev Kit, Rider)
 - Git
+- Docker (optional, for running the full stack)
 
 ## Getting Started
 
@@ -24,7 +26,7 @@ dotnet build fhir-augury.slnx
 dotnet build fhir-augury.slnx
 
 # Build a specific project
-dotnet build src/FhirAugury.Cli
+dotnet build src/FhirAugury.Source.Jira
 
 # Build in Release mode
 dotnet build fhir-augury.slnx -c Release
@@ -35,7 +37,8 @@ dotnet build fhir-augury.slnx -c Release
 The solution uses shared build properties:
 
 - **`src/common.props`** — Shared by all source projects: targets `net10.0`,
-  C# 14, nullable enabled, timestamp-based versioning (`yyyy.MMdd.HHmm`)
+  C# 14, nullable enabled, implicit usings, timestamp-based versioning
+  (`yyyy.MMdd.HHmm`)
 - **`src/Directory.Build.props`** — Imports `common.props` for all source
   projects
 - **`tests/Directory.Build.props`** — Configures test projects: `net10.0`,
@@ -43,10 +46,25 @@ The solution uses shared build properties:
 
 ### Source Generation
 
-The `FhirAugury.Database` project uses `cslightdbgen.sqlitegen`, a Roslyn
-source generator that produces CRUD code at compile time from decorated record
-classes. When you add or modify a database record class, the generated code
-updates automatically on the next build. No manual code generation step is needed.
+Database record types across all v2 projects use `cslightdbgen.sqlitegen`, a
+Roslyn source generator that produces CRUD code at compile time. The pattern is:
+
+```csharp
+[Table("my_items")]
+public partial record class MyItemRecord
+{
+    [Column("id"), PrimaryKey]
+    public string Id { get; set; } = string.Empty;
+
+    [Column("title")]
+    public string Title { get; set; } = string.Empty;
+
+    // ... source generator emits Insert, Update, Delete, SelectAll, etc.
+}
+```
+
+The `partial` keyword is required. Generated code updates automatically on the
+next build — no manual code generation step is needed.
 
 ## Running Tests
 
@@ -55,7 +73,7 @@ updates automatically on the next build. No manual code generation step is neede
 dotnet test fhir-augury.slnx
 
 # Run a specific test project
-dotnet test tests/FhirAugury.Database.Tests
+dotnet test tests/FhirAugury.Source.Jira.Tests
 
 # Run with verbose output
 dotnet test fhir-augury.slnx --verbosity normal
@@ -66,118 +84,140 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 
 ### Test Projects
 
-| Project | Tests | What It Tests |
-|---------|-------|---------------|
-| `FhirAugury.Database.Tests` | ~56 | SQLite CRUD, table creation, FTS5 triggers |
-| `FhirAugury.Indexing.Tests` | ~45 | BM25 scoring, tokenization, cross-references, unified search |
-| `FhirAugury.Sources.Tests` | ~85 | Source parsers/mappers, text sanitization, caching |
-| `FhirAugury.Integration.Tests` | ~22 | HTTP API endpoints via `WebApplicationFactory` |
-| `FhirAugury.Mcp.Tests` | ~44 | MCP tool functions (search, retrieval, listing, snapshots) |
+#### v2 Test Projects
 
-**Total: ~252 tests**
+| Project | What It Tests |
+|---------|---------------|
+| `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
+| `FhirAugury.Source.Jira.Tests` | Jira source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Zulip.Tests` | Zulip source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Confluence.Tests` | Confluence source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, gRPC API |
+| `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
+| `FhirAugury.Mcp.Tests` | MCP server tool functions |
+| `FhirAugury.Integration.Tests` | End-to-end integration tests |
+
+#### Legacy v1 Test Projects
+
+| Project | What It Tests |
+|---------|---------------|
+| `FhirAugury.Database.Tests` | Legacy database CRUD, FTS5 triggers |
+| `FhirAugury.Indexing.Tests` | Legacy BM25, tokenization, cross-references |
+| `FhirAugury.Sources.Tests` | Legacy source parsers/mappers |
 
 ### Test Infrastructure
 
-- **Framework:** xUnit 2.9.3 with `xunit.runner.visualstudio`
-- **Coverage:** coverlet.collector 6.0.4
+- **Framework:** xUnit with `xunit.runner.visualstudio`
+- **Coverage:** coverlet.collector
 - **Database strategy:**
   - **Unit tests** use in-memory SQLite (`Data Source=:memory:`) for speed
-  - **Integration/MCP tests** use temporary file-backed SQLite with cleanup
-- **Test fixtures:** 7 sample files in `tests/TestData/` (Jira XML/JSON, GitHub
+  - **Integration tests** use temporary file-backed SQLite with cleanup
+- **Test fixtures:** Sample files in `tests/TestData/` (Jira XML/JSON, GitHub
   issue/PR JSON, Confluence page/storage XML, Zulip messages JSON)
-- **Helpers:**
-  - `TestHelper` — Creates in-memory DB with full schema; factory methods for
-    sample records
-  - `McpTestHelper` — Creates temp file-backed `DatabaseService` with cleanup
 
-### Writing Tests
+## Running Services
 
-Follow the existing patterns:
+### Individual Source Services
 
-```csharp
-public class MyFeatureTests : IDisposable
-{
-    private readonly SqliteConnection _conn;
-
-    public MyFeatureTests()
-    {
-        _conn = TestHelper.CreateInMemoryDatabase();
-    }
-
-    [Fact]
-    public void Should_do_something()
-    {
-        // Arrange
-        var record = TestHelper.CreateSampleJiraIssue("TEST-1");
-        record.Insert(_conn);
-
-        // Act
-        var result = MyFeature.Process(_conn, "TEST-1");
-
-        // Assert
-        Assert.NotNull(result);
-    }
-
-    public void Dispose() => _conn.Dispose();
-}
-```
-
-## Running the CLI
+Each source service runs independently with its own SQLite database:
 
 ```bash
-# Run via dotnet run
+# Run a single source service
+dotnet run --project src/FhirAugury.Source.Jira
+# Starts on HTTP :5160, gRPC :5161
+
+dotnet run --project src/FhirAugury.Source.Zulip
+# Starts on HTTP :5170, gRPC :5171
+
+dotnet run --project src/FhirAugury.Source.Confluence
+# Starts on HTTP :5180, gRPC :5181
+
+dotnet run --project src/FhirAugury.Source.GitHub
+# Starts on HTTP :5190, gRPC :5191
+```
+
+### Orchestrator
+
+The orchestrator requires source services to be running. It connects to them
+via gRPC:
+
+```bash
+dotnet run --project src/FhirAugury.Orchestrator
+# Starts on HTTP :5150, gRPC :5151
+```
+
+### MCP Server
+
+The MCP server connects to the orchestrator via gRPC. Configure the
+orchestrator endpoint via environment variables:
+
+```bash
+dotnet run --project src/FhirAugury.Mcp
+```
+
+The MCP server communicates with LLM clients via stdin/stdout using JSON-RPC.
+All logging goes to stderr to avoid interfering with the transport. See
+`mcp-config-examples/` for client configuration examples.
+
+### CLI
+
+The CLI connects to the orchestrator via gRPC:
+
+```bash
 dotnet run --project src/FhirAugury.Cli -- [command] [options]
 
-# Example: search
-dotnet run --project src/FhirAugury.Cli -- search -q "patient" --db fhir-augury.db
+# Specify orchestrator endpoint
+dotnet run --project src/FhirAugury.Cli -- --orchestrator http://localhost:5151 search -q "patient"
 ```
 
-## Running the Service
+## Local Configuration
 
-```bash
-# Run the HTTP service
-dotnet run --project src/FhirAugury.Service
+Each service reads `appsettings.local.json` (gitignored) for local overrides.
+Environment variables are also supported with source-specific prefixes:
 
-# Service starts on http://localhost:5100 by default
-curl http://localhost:5100/health
-```
+| Source | Env Var Prefix |
+|--------|----------------|
+| Jira | `FHIR_AUGURY_JIRA_` |
+| Zulip | `FHIR_AUGURY_ZULIP_` |
+| Confluence | `FHIR_AUGURY_CONFLUENCE_` |
+| GitHub | `FHIR_AUGURY_GITHUB_` |
 
-Configure via `src/FhirAugury.Service/appsettings.local.json` (gitignored):
+Example `appsettings.local.json` for a source service:
 
 ```json
 {
-  "FhirAugury": {
-    "Sources": {
-      "jira": {
-        "Cookie": "JSESSIONID=..."
-      }
-    }
+  "Jira": {
+    "BaseUrl": "https://jira.hl7.org",
+    "Cookie": "JSESSIONID=..."
   }
 }
 ```
 
-## Running the MCP Server
-
-```bash
-# Run the MCP server (stdio transport)
-dotnet run --project src/FhirAugury.Mcp -- --db fhir-augury.db
-```
-
-The MCP server communicates via stdin/stdout using JSON-RPC. All logging goes
-to stderr to avoid interfering with the transport.
-
 ## Docker
 
 ```bash
-# Build and run
-docker compose up -d
+# Run all services (full stack)
+docker compose --profile full up -d --build
+
+# Run Jira + Zulip + Orchestrator only
+docker compose --profile jira-zulip up -d --build
+
+# Run Jira standalone (no orchestrator)
+docker compose --profile jira-only up -d --build
 
 # View logs
-docker compose logs -f fhir-augury
+docker compose logs -f orchestrator
+docker compose logs -f source-jira
 
 # Rebuild after code changes
-docker compose up -d --build
+docker compose --profile full up -d --build
 ```
+
+Docker Compose defines 9 volumes: 4 cache volumes (`jira-cache`, `zulip-cache`,
+`confluence-cache`, `github-cache`) for raw API responses, and 5 data volumes
+(`jira-data`, `zulip-data`, `confluence-data`, `github-data`,
+`orchestrator-data`) for SQLite databases. Cache volumes should be preserved
+across upgrades; data volumes can be deleted to force a rebuild from cache.
 
 ## Code Conventions
 
@@ -202,32 +242,63 @@ attributes. The `partial` keyword is required for the source generator.
 
 ### Dependency Injection
 
-The service project uses standard ASP.NET Core DI:
-- `DatabaseService` — singleton
-- `IngestionQueue` — singleton (bounded channel)
-- `IngestionWorker`, `ScheduledIngestionService` — hosted services
-- `IResponseCache` — singleton
-- `IHttpClientFactory` — for source connector HTTP clients
+Each v2 service registers its own components via standard ASP.NET Core DI in
+`Program.cs`. The typical registration pattern for a source service:
+
+- Source-specific database (SQLite connection, schema init)
+- Indexer (FTS5 setup and search)
+- Ingestion pipeline (downloader, mapper, cache)
+- gRPC services (`SourceService` + source-specific service)
+- Hosted workers (`ScheduledIngestionWorker`)
+- `IResponseCache` (file-system cache)
+- `IHttpClientFactory` (for source API HTTP clients)
+
+The orchestrator registers:
+
+- Orchestrator database (cross-references)
+- `SourceRouter` (gRPC channels to sources)
+- `UnifiedSearchService`, `CrossRefLinker`, `RelatedItemFinder`
+- `ServiceHealthMonitor`, `HealthCheckWorker`, `XRefScanWorker`
+- gRPC service (`OrchestratorService`)
 
 ### Error Handling
 
-- Use `HttpRetryHelper` for HTTP calls (handles transient errors)
-- Return `IngestionResult` from source operations (includes success/failure
-  status, item counts, error messages)
-- API endpoints return `ProblemResponse` on errors
-- Log errors with structured logging (`ILogger`)
+- **gRPC:** `GrpcErrorMapper` in `FhirAugury.Common` maps exceptions to gRPC
+  status codes (NotFound, Unavailable, Internal, etc.)
+- **HTTP:** `HttpRetryHelper` retries transient failures (429/5xx) with
+  exponential backoff + jitter. Respects `Retry-After` headers.
+- **Logging:** Structured logging via `ILogger` throughout
 
 ### Configuration
 
 - Use `IOptions<T>` pattern for configuration binding
-- Environment variables prefixed with `FHIR_AUGURY_`
+- Environment variables with source-specific prefixes (see above)
 - `appsettings.local.json` for local development (gitignored)
+
+## Adding a New Source
+
+To add a new data source (e.g., `Source.Slack`):
+
+1. **Create proto** — Add `slack.proto` to `protos/` defining `SlackService`
+   with source-specific RPCs
+2. **Create project** — Add `src/FhirAugury.Source.Slack/` following the
+   standard structure: `Api/`, `Cache/`, `Configuration/`, `Database/`,
+   `Indexing/`, `Ingestion/`, `Workers/`, `Program.cs`
+3. **Implement SourceService** — Implement the common `SourceService` gRPC
+   contract (Search, GetItem, ListItems, etc.)
+4. **Implement SlackService** — Implement source-specific RPCs
+5. **Add Dockerfile** — Copy from an existing source and adjust
+6. **Add to docker-compose.yml** — Define the service with HTTP/gRPC ports,
+   cache and data volumes, health check
+7. **Register in orchestrator** — Add the source endpoint to the orchestrator's
+   configuration so `SourceRouter` can create a gRPC channel to it
+8. **Add tests** — Create `tests/FhirAugury.Source.Slack.Tests/`
 
 ## Versioning
 
 Version numbers are generated automatically at build time using the timestamp
-format `yyyy.MMdd.HHmm`. This means every build produces a unique version
-number without manual version bumping.
+format `yyyy.MMdd.HHmm` (defined in `src/common.props`). Every build produces
+a unique version number without manual version bumping.
 
 ## Solution Structure
 
