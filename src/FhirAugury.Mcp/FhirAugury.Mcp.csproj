@@ -5,19 +5,18 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fhir-augury-mcp</ToolCommandName>
     <PackageId>FhirAugury.Mcp</PackageId>
-    <Description>FHIR Augury MCP server — provides search tools for LLM agents over HL7 FHIR community data.</Description>
+    <Description>FHIR Augury MCP server — provides search tools for LLM agents over HL7 FHIR community data via gRPC.</Description>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Grpc.Net.Client" Version="2.*" />
     <PackageReference Include="ModelContextProtocol" Version="1.0.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\FhirAugury.Models\FhirAugury.Models.csproj" />
-    <ProjectReference Include="..\FhirAugury.Database\FhirAugury.Database.csproj" />
-    <ProjectReference Include="..\FhirAugury.Indexing\FhirAugury.Indexing.csproj" />
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
   </ItemGroup>
 
 </Project>

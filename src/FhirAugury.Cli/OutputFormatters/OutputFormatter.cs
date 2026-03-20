@@ -1,6 +1,6 @@
+using System.Text;
 using System.Text.Json;
-using FhirAugury.Database.Records;
-using FhirAugury.Models;
+using Fhiraugury;
 
 namespace FhirAugury.Cli.OutputFormatters;
 
@@ -8,332 +8,283 @@ public static class OutputFormatter
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    public static void Format(List<SearchResult> results, string format)
+    public static void FormatSearchResults(SearchResponse response, string format)
     {
         switch (format.ToLowerInvariant())
         {
             case "json":
-                FormatJson(results);
+                PrintJson(response.Results.Select(r => new
+                {
+                    r.Source, r.Id, r.Title, r.Score,
+                    Updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd"),
+                    r.Url, r.Snippet,
+                }));
                 break;
             case "markdown":
             case "md":
-                FormatMarkdown(results);
+                Console.WriteLine("| Source | ID | Title | Score | Updated |");
+                Console.WriteLine("|--------|-----|-------|-------|---------|");
+                foreach (var r in response.Results)
+                {
+                    var updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                    Console.WriteLine($"| {r.Source} | {r.Id} | {r.Title} | {r.Score:F2} | {updated} |");
+                }
                 break;
             default:
-                FormatTable(results);
+                Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-45} {"Score",8} {"Updated",-12}");
+                Console.WriteLine($"{"─────────",-12} {"──────────────",-16} {"───────────────────────────────────────────",-45} {"──────",8} {"──────────",-12}");
+                foreach (var r in response.Results)
+                {
+                    var title = r.Title.Length > 43 ? r.Title[..40] + "..." : r.Title;
+                    var updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                    Console.WriteLine($"{r.Source,-12} {r.Id,-16} {title,-45} {r.Score,8:F2} {updated,-12}");
+                }
+                Console.WriteLine();
+                Console.WriteLine($"{response.TotalResults} result(s)");
                 break;
+        }
+
+        if (response.Warnings.Count > 0)
+        {
+            Console.Error.WriteLine();
+            foreach (var w in response.Warnings)
+                Console.Error.WriteLine($"Warning: {w}");
         }
     }
 
-    public static void FormatJiraIssue(JiraIssueRecord issue, List<JiraCommentRecord> comments, string format)
+    public static void FormatItem(ItemResponse item, string format)
     {
         switch (format.ToLowerInvariant())
         {
             case "json":
-                Console.WriteLine(JsonSerializer.Serialize(new { issue, comments }, JsonOptions));
+                PrintJson(new
+                {
+                    item.Source, item.Id, item.Title, item.Content, item.Url,
+                    Created = item.CreatedAt?.ToDateTimeOffset(),
+                    Updated = item.UpdatedAt?.ToDateTimeOffset(),
+                    item.Metadata,
+                    Comments = item.Comments.Select(c => new { c.Id, c.Author, c.Body, Created = c.CreatedAt?.ToDateTimeOffset() }),
+                });
                 break;
             case "markdown":
             case "md":
-                FormatJiraIssueMarkdown(issue, comments);
+                Console.WriteLine($"## {item.Id}: {item.Title}");
+                Console.WriteLine();
+                Console.WriteLine("| Field | Value |");
+                Console.WriteLine("|-------|-------|");
+                foreach (var (k, v) in item.Metadata)
+                    Console.WriteLine($"| {FormatKey(k)} | {v} |");
+                if (item.CreatedAt is not null)
+                    Console.WriteLine($"| Created | {item.CreatedAt.ToDateTimeOffset():yyyy-MM-dd} |");
+                if (item.UpdatedAt is not null)
+                    Console.WriteLine($"| Updated | {item.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd} |");
+                if (!string.IsNullOrEmpty(item.Content))
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("### Description");
+                    Console.WriteLine(item.Content);
+                }
+                if (item.Comments.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine($"### Comments ({item.Comments.Count})");
+                    foreach (var c in item.Comments)
+                        Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd}):\n{c.Body}");
+                }
                 break;
             default:
-                FormatJiraIssueTable(issue, comments);
+                Console.WriteLine($"ID:       {item.Id}");
+                Console.WriteLine($"Source:   {item.Source}");
+                Console.WriteLine($"Title:    {item.Title}");
+                foreach (var (k, v) in item.Metadata)
+                    Console.WriteLine($"{FormatKey(k) + ":",-14}{v}");
+                if (item.CreatedAt is not null)
+                    Console.WriteLine($"Created:  {item.CreatedAt.ToDateTimeOffset():yyyy-MM-dd}");
+                if (item.UpdatedAt is not null)
+                    Console.WriteLine($"Updated:  {item.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd}");
+                if (!string.IsNullOrEmpty(item.Url))
+                    Console.WriteLine($"URL:      {item.Url}");
+                if (!string.IsNullOrEmpty(item.Content))
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(Truncate(item.Content, 500));
+                }
+                if (item.Comments.Count > 0)
+                {
+                    Console.WriteLine($"\nComments ({item.Comments.Count}):");
+                    foreach (var c in item.Comments)
+                        Console.WriteLine($"  [{c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
+                }
                 break;
         }
     }
 
-    public static void FormatZulipThread(string streamName, string topic, List<ZulipMessageRecord> messages, string format)
+    public static void FormatRelated(FindRelatedResponse response, string format)
     {
         switch (format.ToLowerInvariant())
         {
             case "json":
-                Console.WriteLine(JsonSerializer.Serialize(new { stream = streamName, topic, messages }, JsonOptions));
+                PrintJson(response.Items.Select(i => new
+                {
+                    i.Source, i.Id, i.Title, i.RelevanceScore, i.Relationship, i.Url, i.Snippet,
+                }));
                 break;
             case "markdown":
             case "md":
-                FormatZulipThreadMarkdown(streamName, topic, messages);
+                Console.WriteLine($"## Related to [{response.SeedSource}] {response.SeedId}: {response.SeedTitle}");
+                Console.WriteLine();
+                Console.WriteLine("| Source | ID | Title | Relevance | Relationship |");
+                Console.WriteLine("|--------|-----|-------|-----------|-------------|");
+                foreach (var i in response.Items)
+                    Console.WriteLine($"| {i.Source} | {i.Id} | {i.Title} | {i.RelevanceScore:F2} | {i.Relationship} |");
                 break;
             default:
-                FormatZulipThreadTable(streamName, topic, messages);
+                Console.WriteLine($"Related to [{response.SeedSource}] {response.SeedId}: {response.SeedTitle}");
+                Console.WriteLine();
+                Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-40} {"Score",8} {"Relationship",-15}");
+                Console.WriteLine($"{"─────────",-12} {"──────────────",-16} {"──────────────────────────────────────",-40} {"──────",8} {"────────────",-15}");
+                foreach (var i in response.Items)
+                {
+                    var title = i.Title.Length > 38 ? i.Title[..35] + "..." : i.Title;
+                    Console.WriteLine($"{i.Source,-12} {i.Id,-16} {title,-40} {i.RelevanceScore,8:F2} {i.Relationship,-15}");
+                }
+                Console.WriteLine();
+                Console.WriteLine($"{response.Items.Count} related item(s)");
                 break;
         }
     }
 
-    public static void FormatConfluencePage(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments, string format)
+    public static void FormatCrossReferences(GetXRefResponse response, string sourceType, string sourceId, string format)
     {
         switch (format.ToLowerInvariant())
         {
             case "json":
-                Console.WriteLine(JsonSerializer.Serialize(new { page, comments }, JsonOptions));
+                PrintJson(response.References.Select(x => new
+                {
+                    x.SourceType, x.SourceId, x.TargetType, x.TargetId, x.LinkType, x.Context, x.TargetTitle,
+                }));
                 break;
             case "markdown":
             case "md":
-                FormatConfluencePageMarkdown(page, comments);
+                Console.WriteLine($"## Cross-References for [{sourceType}] {sourceId}");
+                Console.WriteLine();
+                Console.WriteLine("| Direction | Type | ID | Link Type | Title |");
+                Console.WriteLine("|-----------|------|-----|-----------|-------|");
+                foreach (var x in response.References)
+                {
+                    var (arrow, otherType, otherId) = GetDirection(x, sourceType, sourceId);
+                    Console.WriteLine($"| {arrow} | {otherType} | {otherId} | {x.LinkType} | {x.TargetTitle} |");
+                }
                 break;
             default:
-                FormatConfluencePageTable(page, comments);
+                Console.WriteLine($"Cross-references for [{sourceType}] {sourceId} ({response.References.Count}):");
+                Console.WriteLine();
+                foreach (var x in response.References)
+                {
+                    var (arrow, otherType, otherId) = GetDirection(x, sourceType, sourceId);
+                    Console.WriteLine($"  {arrow} [{otherType}] {otherId}  ({x.LinkType})");
+                    if (!string.IsNullOrEmpty(x.TargetTitle))
+                        Console.WriteLine($"    Title: {x.TargetTitle}");
+                    if (!string.IsNullOrEmpty(x.Context))
+                        Console.WriteLine($"    Context: {x.Context}");
+                }
                 break;
         }
     }
 
-    public static void FormatGitHubIssue(GitHubIssueRecord issue, List<GitHubCommentRecord> comments, string format)
+    public static void FormatServicesStatus(ServicesStatusResponse response, string format)
     {
         switch (format.ToLowerInvariant())
         {
             case "json":
-                Console.WriteLine(JsonSerializer.Serialize(new { issue, comments }, JsonOptions));
+                PrintJson(new
+                {
+                    response.CrossRefLinks,
+                    LastXrefScan = response.LastXrefScanAt?.ToDateTimeOffset(),
+                    Services = response.Services.Select(s => new
+                    {
+                        s.Name, s.Status, s.GrpcAddress, s.ItemCount, s.DbSizeBytes,
+                        LastSync = s.LastSyncAt?.ToDateTimeOffset(), s.LastError,
+                    }),
+                });
                 break;
             case "markdown":
             case "md":
-                FormatGitHubIssueMarkdown(issue, comments);
+                Console.WriteLine("## Services Status");
+                Console.WriteLine();
+                Console.WriteLine($"**Cross-Ref Links:** {response.CrossRefLinks}");
+                Console.WriteLine();
+                Console.WriteLine("| Service | Status | Items | DB Size | Last Sync |");
+                Console.WriteLine("|---------|--------|-------|---------|-----------|");
+                foreach (var s in response.Services)
+                {
+                    var dbSize = FormatBytes(s.DbSizeBytes);
+                    var lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    Console.WriteLine($"| {s.Name} | {s.Status} | {s.ItemCount} | {dbSize} | {lastSync} |");
+                }
                 break;
             default:
-                FormatGitHubIssueTable(issue, comments);
+                Console.WriteLine($"Cross-Reference Links: {response.CrossRefLinks}");
+                if (response.LastXrefScanAt is not null)
+                    Console.WriteLine($"Last XRef Scan:        {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+                Console.WriteLine();
+                Console.WriteLine($"{"Service",-12} {"Status",-10} {"Items",8} {"DB Size",10} {"Last Sync",-20} {"Error",-30}");
+                Console.WriteLine($"{"─────────",-12} {"────────",-10} {"──────",8} {"────────",10} {"──────────────────",-20} {"────────────────────────────",-30}");
+                foreach (var s in response.Services)
+                {
+                    var dbSize = FormatBytes(s.DbSizeBytes);
+                    var lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    var error = string.IsNullOrEmpty(s.LastError) ? "" : Truncate(s.LastError, 28);
+                    Console.WriteLine($"{s.Name,-12} {s.Status,-10} {s.ItemCount,8} {dbSize,10} {lastSync,-20} {error,-30}");
+                }
                 break;
         }
     }
 
-    private static void FormatTable(List<SearchResult> results)
+    public static void FormatSyncStatus(TriggerSyncResponse response, string format)
     {
-        Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-45} {"Score",8} {"Updated",-12}");
-        Console.WriteLine($"{"─────────",-12} {"──────────────",-16} {"───────────────────────────────────────────",-45} {"──────",8} {"──────────",-12}");
-
-        foreach (var r in results)
+        switch (format.ToLowerInvariant())
         {
-            var title = r.Title.Length > 43 ? r.Title[..40] + "..." : r.Title;
-            var updated = r.UpdatedAt?.ToString("yyyy-MM-dd") ?? "";
-            var score = r.NormalizedScore?.ToString("F2") ?? r.Score.ToString("F1");
-            Console.WriteLine($"{r.Source,-12} {r.Id,-16} {title,-45} {score,8} {updated,-12}");
-        }
-
-        Console.WriteLine();
-        Console.WriteLine($"{results.Count} result(s)");
-    }
-
-    private static void FormatJson(List<SearchResult> results)
-    {
-        Console.WriteLine(JsonSerializer.Serialize(results, JsonOptions));
-    }
-
-    private static void FormatMarkdown(List<SearchResult> results)
-    {
-        Console.WriteLine("| Source | ID | Title | Score | Updated |");
-        Console.WriteLine("|--------|-----|-------|-------|---------|");
-        foreach (var r in results)
-        {
-            var score = r.NormalizedScore?.ToString("F2") ?? r.Score.ToString("F1");
-            var updated = r.UpdatedAt?.ToString("yyyy-MM-dd") ?? "";
-            Console.WriteLine($"| {r.Source} | {r.Id} | {r.Title} | {score} | {updated} |");
+            case "json":
+                PrintJson(response.Statuses.Select(s => new { s.Source, s.Status, s.Message }));
+                break;
+            default:
+                Console.WriteLine("Sync triggered:");
+                foreach (var s in response.Statuses)
+                {
+                    Console.WriteLine($"  {s.Source}: {s.Status}");
+                    if (!string.IsNullOrEmpty(s.Message))
+                        Console.WriteLine($"    {s.Message}");
+                }
+                break;
         }
     }
 
-    private static void FormatJiraIssueTable(JiraIssueRecord issue, List<JiraCommentRecord> comments)
+    private static (string Arrow, string OtherType, string OtherId) GetDirection(
+        CrossReference xref, string sourceType, string sourceId) =>
+        xref.SourceType == sourceType && xref.SourceId == sourceId
+            ? ("→", xref.TargetType, xref.TargetId)
+            : ("←", xref.SourceType, xref.SourceId);
+
+    private static string FormatKey(string key) =>
+        string.Concat(key.Select((c, i) => i > 0 && char.IsUpper(c) ? $" {c}" : $"{c}"))
+              .Replace('_', ' ')
+              .Trim();
+
+    private static string FormatBytes(long bytes) => bytes switch
     {
-        Console.WriteLine($"Key:          {issue.Key}");
-        Console.WriteLine($"Title:        {issue.Title}");
-        Console.WriteLine($"Type:         {issue.Type}");
-        Console.WriteLine($"Priority:     {issue.Priority}");
-        Console.WriteLine($"Status:       {issue.Status}");
-        Console.WriteLine($"Resolution:   {issue.Resolution ?? "Unresolved"}");
-        Console.WriteLine($"Assignee:     {issue.Assignee ?? "Unassigned"}");
-        Console.WriteLine($"Reporter:     {issue.Reporter ?? "Unknown"}");
-        Console.WriteLine($"Created:      {issue.CreatedAt:yyyy-MM-dd}");
-        Console.WriteLine($"Updated:      {issue.UpdatedAt:yyyy-MM-dd}");
-
-        if (!string.IsNullOrEmpty(issue.Specification))
-            Console.WriteLine($"Specification:{issue.Specification}");
-        if (!string.IsNullOrEmpty(issue.WorkGroup))
-            Console.WriteLine($"Work Group:   {issue.WorkGroup}");
-        if (!string.IsNullOrEmpty(issue.Labels))
-            Console.WriteLine($"Labels:       {issue.Labels}");
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine($"\nComments ({comments.Count}):");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                Console.WriteLine($"  [{c.CreatedAt:yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
-            }
-        }
-    }
-
-    private static void FormatJiraIssueMarkdown(JiraIssueRecord issue, List<JiraCommentRecord> comments)
-    {
-        Console.WriteLine($"## {issue.Key}: {issue.Title}");
-        Console.WriteLine();
-        Console.WriteLine($"| Field | Value |");
-        Console.WriteLine($"|-------|-------|");
-        Console.WriteLine($"| Type | {issue.Type} |");
-        Console.WriteLine($"| Priority | {issue.Priority} |");
-        Console.WriteLine($"| Status | {issue.Status} |");
-        Console.WriteLine($"| Assignee | {issue.Assignee ?? "Unassigned"} |");
-        Console.WriteLine($"| Reporter | {issue.Reporter ?? "Unknown"} |");
-
-        if (!string.IsNullOrEmpty(issue.Description))
-        {
-            Console.WriteLine();
-            Console.WriteLine("### Description");
-            Console.WriteLine(issue.Description);
-        }
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"### Comments ({comments.Count})");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
-            }
-        }
-    }
-
-    private static void FormatZulipThreadTable(string streamName, string topic, List<ZulipMessageRecord> messages)
-    {
-        Console.WriteLine($"Stream:   {streamName}");
-        Console.WriteLine($"Topic:    {topic}");
-        Console.WriteLine($"Messages: {messages.Count}");
-        Console.WriteLine();
-
-        foreach (var msg in messages.OrderBy(m => m.Timestamp))
-        {
-            Console.WriteLine($"  [{msg.Timestamp:yyyy-MM-dd HH:mm}] {msg.SenderName}: {Truncate(msg.ContentPlain, 120)}");
-        }
-    }
-
-    private static void FormatZulipThreadMarkdown(string streamName, string topic, List<ZulipMessageRecord> messages)
-    {
-        Console.WriteLine($"## {streamName} > {topic}");
-        Console.WriteLine();
-        Console.WriteLine($"**Messages:** {messages.Count}");
-        Console.WriteLine();
-
-        foreach (var msg in messages.OrderBy(m => m.Timestamp))
-        {
-            Console.WriteLine($"**{msg.SenderName}** ({msg.Timestamp:yyyy-MM-dd HH:mm}):");
-            Console.WriteLine(msg.ContentPlain);
-            Console.WriteLine();
-        }
-    }
-
-    private static void FormatConfluencePageTable(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments)
-    {
-        Console.WriteLine($"Page ID:      {page.ConfluenceId}");
-        Console.WriteLine($"Title:        {page.Title}");
-        Console.WriteLine($"Space:        {page.SpaceKey}");
-        Console.WriteLine($"Version:      {page.VersionNumber}");
-        Console.WriteLine($"Modified By:  {page.LastModifiedBy ?? "Unknown"}");
-        Console.WriteLine($"Modified:     {page.LastModifiedAt:yyyy-MM-dd}");
-
-        if (!string.IsNullOrEmpty(page.Labels))
-            Console.WriteLine($"Labels:       {page.Labels}");
-
-        if (!string.IsNullOrEmpty(page.BodyPlain))
-        {
-            Console.WriteLine();
-            Console.WriteLine(Truncate(page.BodyPlain, 500));
-        }
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine($"\nComments ({comments.Count}):");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                Console.WriteLine($"  [{c.CreatedAt:yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
-            }
-        }
-    }
-
-    private static void FormatConfluencePageMarkdown(ConfluencePageRecord page, List<ConfluenceCommentRecord> comments)
-    {
-        Console.WriteLine($"## {page.Title}");
-        Console.WriteLine();
-        Console.WriteLine($"| Field | Value |");
-        Console.WriteLine($"|-------|-------|");
-        Console.WriteLine($"| Space | {page.SpaceKey} |");
-        Console.WriteLine($"| Version | {page.VersionNumber} |");
-        Console.WriteLine($"| Modified By | {page.LastModifiedBy ?? "Unknown"} |");
-        Console.WriteLine($"| Modified | {page.LastModifiedAt:yyyy-MM-dd} |");
-
-        if (!string.IsNullOrEmpty(page.BodyPlain))
-        {
-            Console.WriteLine();
-            Console.WriteLine("### Content");
-            Console.WriteLine(page.BodyPlain.Length > 2000 ? page.BodyPlain[..2000] + "..." : page.BodyPlain);
-        }
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"### Comments ({comments.Count})");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
-            }
-        }
-    }
-
-    private static void FormatGitHubIssueTable(GitHubIssueRecord issue, List<GitHubCommentRecord> comments)
-    {
-        var typeLabel = issue.IsPullRequest ? "Pull Request" : "Issue";
-        Console.WriteLine($"Repo:         {issue.RepoFullName}");
-        Console.WriteLine($"Number:       #{issue.Number}");
-        Console.WriteLine($"Title:        {issue.Title}");
-        Console.WriteLine($"Type:         {typeLabel}");
-        Console.WriteLine($"State:        {issue.State}");
-        Console.WriteLine($"Author:       {issue.Author ?? "Unknown"}");
-        Console.WriteLine($"Created:      {issue.CreatedAt:yyyy-MM-dd}");
-        Console.WriteLine($"Updated:      {issue.UpdatedAt:yyyy-MM-dd}");
-
-        if (!string.IsNullOrEmpty(issue.Labels))
-            Console.WriteLine($"Labels:       {issue.Labels}");
-        if (!string.IsNullOrEmpty(issue.Assignees))
-            Console.WriteLine($"Assignees:    {issue.Assignees}");
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine($"\nComments ({comments.Count}):");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                Console.WriteLine($"  [{c.CreatedAt:yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
-            }
-        }
-    }
-
-    private static void FormatGitHubIssueMarkdown(GitHubIssueRecord issue, List<GitHubCommentRecord> comments)
-    {
-        var typeLabel = issue.IsPullRequest ? "Pull Request" : "Issue";
-        Console.WriteLine($"## {issue.RepoFullName}#{issue.Number}: {issue.Title}");
-        Console.WriteLine();
-        Console.WriteLine($"| Field | Value |");
-        Console.WriteLine($"|-------|-------|");
-        Console.WriteLine($"| Type | {typeLabel} |");
-        Console.WriteLine($"| State | {issue.State} |");
-        Console.WriteLine($"| Author | {issue.Author ?? "Unknown"} |");
-        Console.WriteLine($"| Created | {issue.CreatedAt:yyyy-MM-dd} |");
-        Console.WriteLine($"| Updated | {issue.UpdatedAt:yyyy-MM-dd} |");
-
-        if (!string.IsNullOrEmpty(issue.Body))
-        {
-            Console.WriteLine();
-            Console.WriteLine("### Description");
-            Console.WriteLine(issue.Body);
-        }
-
-        if (comments.Count > 0)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"### Comments ({comments.Count})");
-            foreach (var c in comments.OrderBy(c => c.CreatedAt))
-            {
-                var reviewTag = c.IsReviewComment ? " (review)" : "";
-                Console.WriteLine($"\n**{c.Author}{reviewTag}** ({c.CreatedAt:yyyy-MM-dd}):\n{c.Body}");
-            }
-        }
-    }
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+        < 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F1} MB",
+        _ => $"{bytes / (1024.0 * 1024 * 1024):F2} GB",
+    };
 
     private static string Truncate(string text, int maxLength)
     {
         var singleLine = text.ReplaceLineEndings(" ");
         return singleLine.Length > maxLength ? singleLine[..(maxLength - 3)] + "..." : singleLine;
     }
+
+    private static void PrintJson<T>(T obj) =>
+        Console.WriteLine(JsonSerializer.Serialize(obj, JsonOptions));
 }

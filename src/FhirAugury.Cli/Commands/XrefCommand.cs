@@ -4,7 +4,7 @@ using FhirAugury.Cli.OutputFormatters;
 
 namespace FhirAugury.Cli.Commands;
 
-public static class GetCommand
+public static class XrefCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
@@ -16,31 +16,32 @@ public static class GetCommand
         {
             Description = "Item identifier",
         };
-        var includeCommentsOption = new Option<bool>("--comments")
+        var directionOption = new Option<string>("--direction")
         {
-            Description = "Include comments",
-            DefaultValueFactory = _ => true,
+            Description = "Direction: outgoing, incoming, or both",
+            DefaultValueFactory = _ => "both",
         };
 
-        var command = new Command("get", "Get full details of an item")
+        var command = new Command("xref", "Get cross-references for a specific item")
         {
             sourceArg,
             idArg,
-            includeCommentsOption,
+            directionOption,
         };
 
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
             var format = parseResult.GetValue(formatOption)!;
+            var source = parseResult.GetValue(sourceArg)!;
             var id = parseResult.GetValue(idArg)!;
-            var includeComments = parseResult.GetValue(includeCommentsOption);
+            var direction = parseResult.GetValue(directionOption)!;
 
             using var clients = new GrpcClientFactory(addr);
-            var response = await clients.Orchestrator.GetItemAsync(
-                new GetItemRequest { Id = id, IncludeContent = true, IncludeComments = includeComments },
+            var response = await clients.Orchestrator.GetCrossReferencesAsync(
+                new GetXRefRequest { Source = source, Id = id, Direction = direction },
                 cancellationToken: ct);
-            OutputFormatter.FormatItem(response, format);
+            OutputFormatter.FormatCrossReferences(response, source, id, format);
         });
 
         return command;

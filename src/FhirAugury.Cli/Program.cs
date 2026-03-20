@@ -10,44 +10,38 @@ public static class Program
         var rootCommand = new RootCommand("FHIR Augury — unified knowledge platform CLI");
 
         // Global options
-        var dbOption = new Option<string>("--db")
+        var orchestratorOption = new Option<string>("--orchestrator")
         {
-            Description = "Database file path",
-            DefaultValueFactory = _ => "fhir-augury.db",
+            Description = "Orchestrator gRPC address",
+            DefaultValueFactory = _ =>
+                Environment.GetEnvironmentVariable("FHIR_AUGURY_ORCHESTRATOR") ?? "http://localhost:5151",
+        };
+        var formatOption = new Option<string>("--format")
+        {
+            Description = "Output format: table, json, or markdown",
+            DefaultValueFactory = _ => "table",
         };
         var verboseOption = new Option<bool>("--verbose")
         {
             Description = "Verbose output",
             DefaultValueFactory = _ => false,
         };
-        var jsonOption = new Option<bool>("--json")
-        {
-            Description = "Force JSON output format",
-            DefaultValueFactory = _ => false,
-        };
-        var quietOption = new Option<bool>("--quiet")
-        {
-            Description = "Suppress all output except errors",
-            DefaultValueFactory = _ => false,
-        };
 
-        rootCommand.Add(dbOption);
+        rootCommand.Add(orchestratorOption);
+        rootCommand.Add(formatOption);
         rootCommand.Add(verboseOption);
-        rootCommand.Add(jsonOption);
-        rootCommand.Add(quietOption);
 
         // Register commands
-        rootCommand.Add(DownloadCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(SyncCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(IngestCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(IndexCommand.Create(dbOption, verboseOption));
-        rootCommand.Add(SearchCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(GetCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(SnapshotCommand.Create(dbOption, verboseOption));
-        rootCommand.Add(StatsCommand.Create(dbOption, jsonOption));
-        rootCommand.Add(RelatedCommand.Create(dbOption, verboseOption, jsonOption));
-        rootCommand.Add(ServiceCommand.Create());
-        rootCommand.Add(CacheCommand.Create(jsonOption));
+        rootCommand.Add(SearchCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(RelatedCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(GetCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(SnapshotCommand.Create(orchestratorOption, verboseOption));
+        rootCommand.Add(XrefCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(IngestCommand.Create(orchestratorOption, verboseOption));
+        rootCommand.Add(ServicesCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(QueryJiraCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(QueryZulipCommand.Create(orchestratorOption, formatOption, verboseOption));
+        rootCommand.Add(ListCommand.Create(orchestratorOption, formatOption, verboseOption));
 
         var parseResult = rootCommand.Parse(args);
         return await parseResult.InvokeAsync();

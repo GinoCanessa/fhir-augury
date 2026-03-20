@@ -1,249 +1,137 @@
-using Microsoft.Data.Sqlite;
-using FhirAugury.Database;
-using FhirAugury.Database.Records;
-
-#pragma warning disable xUnit1013 // Public method on test class should be marked as a Test
+using Fhiraugury;
+using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
+using Grpc.Core.Testing;
 
 namespace FhirAugury.Mcp.Tests;
 
-/// <summary>Shared helpers for MCP tool tests.</summary>
+/// <summary>
+/// Helper for creating mock gRPC responses for MCP tool testing.
+/// </summary>
 internal static class McpTestHelper
 {
-    public static SqliteConnection CreateInMemoryDb()
+    internal static SearchResponse CreateSearchResponse(params (string Source, string Id, string Title, double Score)[] items)
     {
-        var conn = new SqliteConnection("Data Source=:memory:");
-        conn.Open();
-
-        SyncStateRecord.CreateTable(conn);
-        SyncStateRecord.LoadMaxKey(conn);
-        IngestionLogRecord.CreateTable(conn);
-        IngestionLogRecord.LoadMaxKey(conn);
-        JiraIssueRecord.CreateTable(conn);
-        JiraIssueRecord.LoadMaxKey(conn);
-        JiraCommentRecord.CreateTable(conn);
-        JiraCommentRecord.LoadMaxKey(conn);
-        ZulipStreamRecord.CreateTable(conn);
-        ZulipStreamRecord.LoadMaxKey(conn);
-        ZulipMessageRecord.CreateTable(conn);
-        ZulipMessageRecord.LoadMaxKey(conn);
-        ConfluenceSpaceRecord.CreateTable(conn);
-        ConfluenceSpaceRecord.LoadMaxKey(conn);
-        ConfluencePageRecord.CreateTable(conn);
-        ConfluencePageRecord.LoadMaxKey(conn);
-        ConfluenceCommentRecord.CreateTable(conn);
-        ConfluenceCommentRecord.LoadMaxKey(conn);
-        GitHubRepoRecord.CreateTable(conn);
-        GitHubRepoRecord.LoadMaxKey(conn);
-        GitHubIssueRecord.CreateTable(conn);
-        GitHubIssueRecord.LoadMaxKey(conn);
-        GitHubCommentRecord.CreateTable(conn);
-        GitHubCommentRecord.LoadMaxKey(conn);
-        CrossRefLinkRecord.CreateTable(conn);
-        CrossRefLinkRecord.LoadMaxKey(conn);
-        KeywordRecord.CreateTable(conn);
-        KeywordRecord.LoadMaxKey(conn);
-        CorpusKeywordRecord.CreateTable(conn);
-        CorpusKeywordRecord.LoadMaxKey(conn);
-        DocStatsRecord.CreateTable(conn);
-        DocStatsRecord.LoadMaxKey(conn);
-
-        FtsSetup.CreateJiraFts(conn);
-        FtsSetup.CreateZulipFts(conn);
-        FtsSetup.CreateConfluenceFts(conn);
-        FtsSetup.CreateGitHubFts(conn);
-
-        return conn;
-    }
-
-    /// <summary>Creates a DatabaseService backed by a temp file with the given connection's data.</summary>
-    /// <remarks>
-    /// The MCP tools accept DatabaseService (not raw connections), so we need a file-backed
-    /// service. The caller should dispose the returned service and delete the temp file.
-    /// </remarks>
-    public static (DatabaseService Service, string DbPath) CreateTempDatabaseService()
-    {
-        var dbPath = Path.Combine(Path.GetTempPath(), $"fhir-augury-mcp-test-{Guid.NewGuid():N}.db");
-        var service = new DatabaseService(dbPath);
-        service.InitializeDatabase();
-        return (service, dbPath);
-    }
-
-    public static void CleanupTempDb(DatabaseService service, string dbPath)
-    {
-        service.Dispose();
-        // Clear the SQLite connection pool to release file locks
-        SqliteConnection.ClearAllPools();
-        foreach (var ext in new[] { "", "-wal", "-shm" })
+        var response = new SearchResponse { TotalResults = items.Length };
+        foreach (var (source, id, title, score) in items)
         {
-            var path = dbPath + ext;
-            if (File.Exists(path))
+            response.Results.Add(new SearchResultItem
             {
-                try { File.Delete(path); }
-                catch { /* best effort cleanup */ }
-            }
+                Source = source,
+                Id = id,
+                Title = title,
+                Score = score,
+                Url = $"https://example.com/{source}/{id}",
+                UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
+            });
         }
+        return response;
     }
 
-    public static JiraIssueRecord CreateSampleIssue(
-        string key, string title,
-        string status = "Triaged", string? workGroup = null, string? specification = null,
-        string? description = null)
+    internal static FindRelatedResponse CreateRelatedResponse(
+        string seedSource, string seedId, string seedTitle,
+        params (string Source, string Id, string Title, double Score, string Relationship)[] items)
     {
-        return new JiraIssueRecord
+        var response = new FindRelatedResponse
         {
-            Id = JiraIssueRecord.GetIndex(),
-            Key = key,
-            ProjectKey = "FHIR",
+            SeedSource = seedSource,
+            SeedId = seedId,
+            SeedTitle = seedTitle,
+        };
+        foreach (var (source, id, title, score, rel) in items)
+        {
+            response.Items.Add(new RelatedItem
+            {
+                Source = source,
+                Id = id,
+                Title = title,
+                RelevanceScore = score,
+                Relationship = rel,
+                Url = $"https://example.com/{source}/{id}",
+            });
+        }
+        return response;
+    }
+
+    internal static GetXRefResponse CreateXRefResponse(
+        params (string SourceType, string SourceId, string TargetType, string TargetId, string LinkType)[] refs)
+    {
+        var response = new GetXRefResponse();
+        foreach (var (st, si, tt, ti, lt) in refs)
+        {
+            response.References.Add(new CrossReference
+            {
+                SourceType = st,
+                SourceId = si,
+                TargetType = tt,
+                TargetId = ti,
+                LinkType = lt,
+            });
+        }
+        return response;
+    }
+
+    internal static ServicesStatusResponse CreateServicesStatus()
+    {
+        var response = new ServicesStatusResponse { CrossRefLinks = 42 };
+        response.Services.Add(new ServiceHealth
+        {
+            Name = "jira",
+            Status = "healthy",
+            GrpcAddress = "http://localhost:5161",
+            ItemCount = 1000,
+            DbSizeBytes = 10_000_000,
+        });
+        response.Services.Add(new ServiceHealth
+        {
+            Name = "zulip",
+            Status = "healthy",
+            GrpcAddress = "http://localhost:5171",
+            ItemCount = 5000,
+            DbSizeBytes = 50_000_000,
+        });
+        return response;
+    }
+
+    internal static ItemResponse CreateItemResponse(string source, string id, string title)
+    {
+        var response = new ItemResponse
+        {
+            Source = source,
+            Id = id,
             Title = title,
-            Description = description,
-            Summary = title,
-            Type = "Change Request",
-            Priority = "Medium",
-            Status = status,
-            Resolution = null,
-            ResolutionDescription = null,
-            Assignee = null,
-            Reporter = "tester",
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-            ResolvedAt = null,
-            WorkGroup = workGroup,
-            Specification = specification,
-            RaisedInVersion = null,
-            SelectedBallot = null,
-            RelatedArtifacts = null,
-            RelatedIssues = null,
-            DuplicateOf = null,
-            AppliedVersions = null,
-            ChangeType = null,
-            Impact = null,
-            Vote = null,
-            Labels = null,
-            CommentCount = 0,
+            Content = "Test content",
+            Url = $"https://example.com/{source}/{id}",
+            CreatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow.AddDays(-30)),
+            UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
         };
+        response.Metadata.Add("status", "Open");
+        response.Metadata.Add("type", "Bug");
+        return response;
     }
 
-    public static JiraCommentRecord CreateSampleComment(
-        int issueId, string issueKey, string author, string body)
+    internal static AsyncServerStreamingCall<T> CreateStreamingCall<T>(params T[] items)
+        where T : class
     {
-        return new JiraCommentRecord
-        {
-            Id = JiraCommentRecord.GetIndex(),
-            IssueId = issueId,
-            IssueKey = issueKey,
-            Author = author,
-            CreatedAt = DateTimeOffset.UtcNow,
-            Body = body,
-        };
+        var reader = new TestAsyncStreamReader<T>(items);
+        return new AsyncServerStreamingCall<T>(
+            reader,
+            Task.FromResult(new Metadata()),
+            () => Status.DefaultSuccess,
+            () => [],
+            () => { });
     }
+}
 
-    public static ZulipStreamRecord CreateSampleStream(int zulipStreamId, string name)
-    {
-        return new ZulipStreamRecord
-        {
-            Id = ZulipStreamRecord.GetIndex(),
-            ZulipStreamId = zulipStreamId,
-            Name = name,
-            Description = $"Description for {name}",
-            IsWebPublic = true,
-            MessageCount = 0,
-            LastFetchedAt = DateTimeOffset.UtcNow,
-        };
-    }
+internal class TestAsyncStreamReader<T> : IAsyncStreamReader<T>
+{
+    private readonly IEnumerator<T> _enumerator;
 
-    public static ZulipMessageRecord CreateSampleMessage(
-        int zulipMessageId, int streamDbId, string streamName, string topic,
-        string senderName = "Test User", string content = "Test message content")
-    {
-        return new ZulipMessageRecord
-        {
-            Id = ZulipMessageRecord.GetIndex(),
-            ZulipMessageId = zulipMessageId,
-            StreamId = streamDbId,
-            StreamName = streamName,
-            Topic = topic,
-            SenderId = 1000 + zulipMessageId,
-            SenderName = senderName,
-            SenderEmail = $"{senderName.ToLower().Replace(' ', '.')}@example.com",
-            ContentHtml = $"<p>{content}</p>",
-            ContentPlain = content,
-            Timestamp = DateTimeOffset.UtcNow,
-            CreatedAt = DateTimeOffset.UtcNow,
-            Reactions = null,
-        };
-    }
+    public TestAsyncStreamReader(IEnumerable<T> items) =>
+        _enumerator = items.GetEnumerator();
 
-    public static ConfluenceSpaceRecord CreateSampleSpace(string key, string name)
-    {
-        return new ConfluenceSpaceRecord
-        {
-            Id = ConfluenceSpaceRecord.GetIndex(),
-            Key = key,
-            Name = name,
-            Description = $"Description for {name}",
-            Url = $"https://confluence.hl7.org/display/{key}",
-            LastFetchedAt = DateTimeOffset.UtcNow,
-        };
-    }
+    public T Current => _enumerator.Current;
 
-    public static ConfluencePageRecord CreateSamplePage(
-        string confluenceId, string title, string spaceKey = "FHIR", string? bodyPlain = null)
-    {
-        return new ConfluencePageRecord
-        {
-            Id = ConfluencePageRecord.GetIndex(),
-            ConfluenceId = confluenceId,
-            SpaceKey = spaceKey,
-            Title = title,
-            ParentId = null,
-            BodyStorage = null,
-            BodyPlain = bodyPlain ?? $"Content for {title}",
-            Labels = null,
-            VersionNumber = 1,
-            LastModifiedBy = "tester",
-            LastModifiedAt = DateTimeOffset.UtcNow,
-            Url = $"https://confluence.hl7.org/pages/{confluenceId}",
-        };
-    }
-
-    public static GitHubRepoRecord CreateSampleRepo(string fullName)
-    {
-        var parts = fullName.Split('/');
-        return new GitHubRepoRecord
-        {
-            Id = GitHubRepoRecord.GetIndex(),
-            FullName = fullName,
-            Owner = parts[0],
-            Name = parts[1],
-            Description = $"Description for {fullName}",
-            LastFetchedAt = DateTimeOffset.UtcNow,
-        };
-    }
-
-    public static GitHubIssueRecord CreateSampleGitHubIssue(
-        string repoFullName, int number, string title,
-        bool isPullRequest = false, string state = "open", string? body = null)
-    {
-        return new GitHubIssueRecord
-        {
-            Id = GitHubIssueRecord.GetIndex(),
-            UniqueKey = $"{repoFullName}#{number}",
-            RepoFullName = repoFullName,
-            Number = number,
-            IsPullRequest = isPullRequest,
-            Title = title,
-            Body = body ?? $"Body for {title}",
-            State = state,
-            Author = "tester",
-            Labels = null,
-            Assignees = null,
-            Milestone = null,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-            ClosedAt = null,
-            MergeState = null,
-            HeadBranch = null,
-            BaseBranch = null,
-        };
-    }
+    public Task<bool> MoveNext(CancellationToken cancellationToken) =>
+        Task.FromResult(_enumerator.MoveNext());
 }
