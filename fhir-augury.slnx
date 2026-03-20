@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/FhirAugury.Common/FhirAugury.Common.csproj" />
     <Project Path="src/FhirAugury.Source.Jira/FhirAugury.Source.Jira.csproj" />
+    <Project Path="src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj" />
     <Project Path="src/FhirAugury.Models/FhirAugury.Models.csproj" />
     <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />
     <Project Path="src/FhirAugury.Sources.Jira/FhirAugury.Sources.Jira.csproj" />
