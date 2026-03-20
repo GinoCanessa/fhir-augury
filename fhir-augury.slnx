@@ -3,6 +3,8 @@
     <Project Path="src/FhirAugury.Common/FhirAugury.Common.csproj" />
     <Project Path="src/FhirAugury.Source.Jira/FhirAugury.Source.Jira.csproj" />
     <Project Path="src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj" />
+    <Project Path="src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj" />
+    <Project Path="src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj" />
     <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
     <Project Path="src/FhirAugury.Models/FhirAugury.Models.csproj" />
     <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />

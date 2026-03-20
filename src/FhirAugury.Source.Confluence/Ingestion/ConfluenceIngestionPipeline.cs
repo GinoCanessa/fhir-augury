@@ -1,0 +1,166 @@
+using FhirAugury.Source.Confluence.Configuration;
+using FhirAugury.Source.Confluence.Database;
+using FhirAugury.Source.Confluence.Database.Records;
+using FhirAugury.Source.Confluence.Indexing;
+using Microsoft.Extensions.Logging;
+
+namespace FhirAugury.Source.Confluence.Ingestion;
+
+/// <summary>
+/// Orchestrates the full ingestion flow: fetch → cache → parse → upsert → FTS5 → BM25 → sync state.
+/// </summary>
+public class ConfluenceIngestionPipeline(
+    ConfluenceSource source,
+    ConfluenceDatabase database,
+    ConfluenceIndexer indexer,
+    ConfluenceServiceOptions options,
+    ILogger<ConfluenceIngestionPipeline> logger)
+{
+    private volatile bool _isRunning;
+    private string _currentStatus = "idle";
+
+    public bool IsRunning => _isRunning;
+    public string CurrentStatus => _currentStatus;
+
+    /// <summary>Runs a full ingestion from the Confluence API.</summary>
+    public async Task<IngestionResult> RunFullIngestionAsync(CancellationToken ct = default)
+    {
+        if (_isRunning)
+            throw new InvalidOperationException("An ingestion is already in progress.");
+
+        _isRunning = true;
+        _currentStatus = "running_full";
+
+        try
+        {
+            logger.LogInformation("Starting full ingestion");
+
+            var result = await source.DownloadAllAsync(ct);
+            PostIngestion(result, "full", ct);
+
+            _currentStatus = "idle";
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _currentStatus = $"error: {ex.Message}";
+            logger.LogError(ex, "Full ingestion failed");
+            throw;
+        }
+        finally
+        {
+            _isRunning = false;
+        }
+    }
+
+    /// <summary>Runs an incremental ingestion from the Confluence API.</summary>
+    public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
+    {
+        if (_isRunning)
+            throw new InvalidOperationException("An ingestion is already in progress.");
+
+        _isRunning = true;
+        _currentStatus = "running_incremental";
+
+        try
+        {
+            var since = GetLastSyncTime();
+            logger.LogInformation("Starting incremental ingestion since {Since}", since);
+
+            var result = await source.DownloadIncrementalAsync(since, ct);
+            PostIngestion(result, "incremental", ct);
+
+            _currentStatus = "idle";
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _currentStatus = $"error: {ex.Message}";
+            logger.LogError(ex, "Incremental ingestion failed");
+            throw;
+        }
+        finally
+        {
+            _isRunning = false;
+        }
+    }
+
+    /// <summary>Rebuilds the database entirely from cached responses.</summary>
+    public async Task<IngestionResult> RebuildFromCacheAsync(CancellationToken ct = default)
+    {
+        if (_isRunning)
+            throw new InvalidOperationException("An ingestion is already in progress.");
+
+        _isRunning = true;
+        _currentStatus = "rebuilding";
+
+        try
+        {
+            logger.LogInformation("Rebuilding database from cache");
+            database.ResetDatabase();
+
+            var result = await source.LoadFromCacheAsync(ct);
+            PostIngestion(result, "rebuild", ct);
+
+            _currentStatus = "idle";
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _currentStatus = $"error: {ex.Message}";
+            logger.LogError(ex, "Rebuild from cache failed");
+            throw;
+        }
+        finally
+        {
+            _isRunning = false;
+        }
+    }
+
+    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        logger.LogInformation("Rebuilding BM25 index");
+        indexer.RebuildFullIndex(ct);
+
+        UpdateSyncState(result, runType);
+
+        logger.LogInformation(
+            "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
+            result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
+    }
+
+    private void UpdateSyncState(IngestionResult result, string runType)
+    {
+        using var connection = database.OpenConnection();
+
+        var existing = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName, SubSource: runType);
+
+        var syncState = new ConfluenceSyncStateRecord
+        {
+            Id = existing?.Id ?? ConfluenceSyncStateRecord.GetIndex(),
+            SourceName = ConfluenceSource.SourceName,
+            SubSource = runType,
+            LastSyncAt = result.CompletedAt,
+            LastCursor = null,
+            ItemsIngested = result.ItemsProcessed,
+            SyncSchedule = options.SyncSchedule,
+            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(options.SyncSchedule)),
+            Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
+            LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
+        };
+
+        if (existing is not null)
+            ConfluenceSyncStateRecord.Update(connection, syncState);
+        else
+            ConfluenceSyncStateRecord.Insert(connection, syncState);
+    }
+
+    private DateTimeOffset GetLastSyncTime()
+    {
+        using var connection = database.OpenConnection();
+        var state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+        return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
+    }
+}

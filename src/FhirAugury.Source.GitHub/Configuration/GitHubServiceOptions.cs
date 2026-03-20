@@ -1,0 +1,65 @@
+namespace FhirAugury.Source.GitHub.Configuration;
+
+/// <summary>
+/// Strongly-typed configuration for the GitHub source service.
+/// </summary>
+public class GitHubServiceOptions
+{
+    public const string SectionName = "GitHub";
+
+    /// <summary>Repository discovery mode: core, explicit, or all.</summary>
+    public string RepoMode { get; set; } = "core";
+
+    /// <summary>Explicit repositories to track (owner/repo format).</summary>
+    public List<string> Repositories { get; set; } = ["HL7/fhir"];
+
+    /// <summary>Additional repositories beyond the mode-selected set.</summary>
+    public List<string> AdditionalRepositories { get; set; } = [];
+
+    /// <summary>Manual cross-reference links.</summary>
+    public List<string> ManualLinks { get; set; } = [];
+
+    /// <summary>Authentication configuration.</summary>
+    public AuthConfiguration Auth { get; set; } = new();
+
+    public string CachePath { get; set; } = "./cache/github";
+    public string DatabasePath { get; set; } = "./data/github.db";
+    public string SyncSchedule { get; set; } = "02:00:00";
+    public PortConfiguration Ports { get; set; } = new();
+    public RateLimitConfiguration RateLimiting { get; set; } = new();
+}
+
+public class AuthConfiguration
+{
+    /// <summary>GitHub personal access token (direct value).</summary>
+    public string? Token { get; set; }
+
+    /// <summary>Environment variable name containing the GitHub PAT.</summary>
+    public string? TokenEnvVar { get; set; } = "GITHUB_TOKEN";
+
+    /// <summary>Resolves the effective token from direct value or environment variable.</summary>
+    public string? ResolveToken()
+    {
+        if (!string.IsNullOrEmpty(Token))
+            return Token;
+
+        if (!string.IsNullOrEmpty(TokenEnvVar))
+            return Environment.GetEnvironmentVariable(TokenEnvVar);
+
+        return null;
+    }
+}
+
+public class PortConfiguration
+{
+    public int Http { get; set; } = 5190;
+    public int Grpc { get; set; } = 5191;
+}
+
+public class RateLimitConfiguration
+{
+    public int MaxRequestsPerSecond { get; set; } = 10;
+    public int BackoffBaseSeconds { get; set; } = 5;
+    public int MaxRetries { get; set; } = 5;
+    public bool RespectRateLimitHeaders { get; set; } = true;
+}
