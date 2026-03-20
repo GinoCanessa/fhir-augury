@@ -85,7 +85,21 @@ The orchestrator handles:
 
 ## Cross-Reference Linking
 
-### How It Works
+### Structural Links (JIRA-Spec-Artifacts)
+
+The Jira service maintains a parsed copy of the
+[HL7/JIRA-Spec-Artifacts](https://github.com/HL7/JIRA-Spec-Artifacts)
+repository, which provides authoritative mappings between Jira specifications
+and GitHub repositories (see [03-source-services](03-source-services.md),
+*JIRA-Spec-Artifacts Integration*). The orchestrator uses this data to
+establish structural cross-reference links between Jira projects and GitHub
+repos without needing text-based scanning.
+
+These links can also be supplemented or overridden via the GitHub service's
+`ManualLinks` configuration for cases where JIRA-Spec-Artifacts is
+incomplete or incorrect.
+
+### Text-Based Cross-References
 
 The orchestrator periodically (or on demand) scans text content from each
 source service looking for identifiers belonging to other sources.
@@ -196,11 +210,14 @@ public async Task<UnifiedSearchResponse> SearchAsync(
     // Boost items with cross-references
     var boosted = ApplyCrossRefBoost(merged);
 
+    // Apply per-source freshness decay
+    var decayed = ApplyFreshnessDecay(boosted);
+
     return new UnifiedSearchResponse
     {
         Query = query,
-        TotalResults = boosted.Count,
-        Results = boosted.Take(limit).ToList()
+        TotalResults = decayed.Count,
+        Results = decayed.Take(limit).ToList()
     };
 }
 ```
@@ -215,6 +232,59 @@ boosted_score = normalized_score × (1 + xref_boost × log(1 + xref_count))
 
 Where `xref_count` is how many items from other sources reference this item.
 This naturally surfaces "hub" items that are heavily discussed across platforms.
+
+### Freshness Decay
+
+FHIR community data spans 10+ years. A Zulip discussion from yesterday about
+a topic is almost always more relevant than one from five years ago, but a
+Confluence specification page may remain relevant regardless of age. The
+orchestrator applies a configurable per-source **freshness decay** multiplier
+to search scores at query time.
+
+**Decay formula:**
+
+```
+age_days = (now - item.updated_at).TotalDays
+decay = 1 / (1 + freshness_weight × (age_days / 365.0)²)
+final_score = boosted_score × decay
+```
+
+When `freshness_weight` is `0`, decay is disabled (all items scored equally
+regardless of age). Higher values increasingly penalize older content. The
+quadratic term ensures that very recent content is barely affected while
+content from several years ago is significantly down-ranked.
+
+**Per-source configuration:**
+
+Each source gets its own `FreshnessWeight` because freshness relevance varies
+significantly by content type:
+
+| Source | Default `FreshnessWeight` | Rationale |
+|--------|:---:|---|
+| Zulip | `2.0` | Chat discussions are highly temporal — recent conversations are far more relevant than old ones |
+| GitHub | `1.0` | Commits and PRs have moderate temporal relevance — recent activity matters but historical changes remain useful |
+| Jira | `0.5` | Issue discussions have long shelf life, but resolved ancient tickets are less useful than active ones |
+| Confluence | `0.1` | Specification pages are reference material — a page last edited 3 years ago may still be the authoritative source |
+
+**Why runtime, not indexing:**
+
+Freshness decay is applied at query time in the orchestrator rather than
+pre-computed during indexing for several reasons:
+
+1. **Decay is relative to "now"** — a pre-computed decay value baked into the
+   index at ingestion time would become stale immediately. An item indexed
+   yesterday with a "1 day old" score would still carry that score a year
+   later, producing incorrect rankings without continuous re-indexing.
+2. **Tunability without re-ingestion** — the weights can be adjusted in
+   configuration and take effect on the next query. Re-indexing 10+ years of
+   data across four sources to change a scoring parameter is impractical.
+3. **Negligible cost** — the decay calculation is a single floating-point
+   multiply per result, applied after the already-expensive FTS5/BM25 search
+   and cross-reference boost. It adds no measurable latency.
+4. **Per-query override potential** — future API extensions could allow callers
+   to pass a freshness bias per query (e.g., "show me only recent
+   discussions" vs. "search all history equally"), which is only possible with
+   runtime application.
 
 ---
 
@@ -366,7 +436,13 @@ GET /api/v1/services
       "DefaultLimit": 20,
       "MaxLimit": 100,
       "CrossRefBoostFactor": 0.5,
-      "ScoreNormalization": "min-max"
+      "ScoreNormalization": "min-max",
+      "FreshnessWeights": {
+        "jira": 0.5,
+        "zulip": 2.0,
+        "confluence": 0.1,
+        "github": 1.0
+      }
     },
 
     "Related": {

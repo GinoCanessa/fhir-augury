@@ -151,11 +151,21 @@ Orchestrator ──gRPC──► Jira Service
 - Built-in deadline/cancellation propagation
 - Generated client/server code in C#
 
-### External: HTTP/JSON
+### External: HTTP/JSON, MCP, and CLI
 
-The orchestrator exposes an HTTP/JSON API for external consumers (CLI, MCP,
-browser, scripts). Source services optionally expose HTTP endpoints for
-direct access during development or standalone use.
+Every external-facing capability is available through all three consumer
+interfaces to allow flexibility in deployment:
+
+| Interface | Transport | Primary Consumers |
+|-----------|-----------|-------------------|
+| **HTTP/JSON API** | REST over HTTP | Scripts, browser, external integrations |
+| **MCP Server** | stdio (Model Context Protocol) | LLM agents (e.g., Copilot, Claude) |
+| **CLI** | gRPC or HTTP to orchestrator | Human operators, shell scripts |
+
+All three interfaces delegate to the same underlying gRPC services, ensuring
+feature parity. Any capability exposed through one interface must be exposed
+through all three. Source services also expose HTTP endpoints for direct
+access during development or standalone use.
 
 ### Service Discovery
 

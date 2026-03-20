@@ -168,20 +168,37 @@ Inter-service communication uses gRPC for type safety, performance, and
 streaming support. HTTP/JSON is available as a fallback for external
 consumers and debugging, but services talk to each other over gRPC.
 
-### 4. Source-Generated Data Access
+### 4. Triple Interface
+
+Every external-facing capability must be available through **all three**
+consumer interfaces — HTTP API, MCP, and CLI. This ensures flexibility in
+deployment: scripts and integrations use HTTP, LLM agents use MCP, and
+human operators use the CLI. No capability should be exclusive to a single
+interface. The three interfaces are thin layers over the same underlying
+gRPC services, so feature parity is maintained by design.
+
+### 5. Source-Generated Data Access
 
 Continue using `cslightdbgen.sqlitegen` for zero-reflection, AOT-compatible
 database access in each service. Each service has its own database schema
 defined by its own model types.
 
-### 5. Fail Independently
+### 6. Fail Independently
 
 If the Zulip service crashes, the Jira service continues operating. If the
 orchestrator is down, source services still serve their own data. The system
 degrades gracefully.
 
-### 6. Rebuild from Cache
+### 7. Rebuild from Cache
 
 A database rebuild for any service reads from the local cache directory. This
 means schema changes, index rebuilds, and fresh container starts are fast
 (minutes, not hours) and don't require network access or API credentials.
+
+### 8. Link to Source Material
+
+Every item returned to callers — whether via HTTP, MCP, or CLI — must include
+a `url` field containing a direct link to the original content in the source
+system (e.g., the Jira issue page, the Zulip message, the Confluence page,
+the GitHub commit or PR). This lets consumers navigate from search results
+or cross-references directly to the authoritative source when needed.

@@ -1,5 +1,34 @@
 # FHIR Augury v2 — MCP & CLI
 
+## Design Principle: Triple Interface
+
+Per the *Triple Interface* principle (see [01-overview](01-overview.md)),
+every external-facing capability is available through all three consumer
+interfaces — HTTP API, MCP, and CLI. No capability is exclusive to a single
+interface. The three interfaces are thin layers over the same underlying
+gRPC services:
+
+```
+                     ┌─────────────────────────────┐
+                     │    Orchestrator (gRPC)       │
+                     │    Source Services (gRPC)     │
+                     └──────────┬──────────────────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              ▼                 ▼                 ▼
+     ┌────────────────┐ ┌─────────────┐ ┌────────────────┐
+     │   HTTP/JSON    │ │  MCP Server │ │      CLI       │
+     │   REST API     │ │   (stdio)   │ │  (terminal)    │
+     │                │ │             │ │                │
+     │ Scripts,       │ │ LLM agents  │ │ Human          │
+     │ integrations,  │ │ (Copilot,   │ │ operators,     │
+     │ browser        │ │  Claude)    │ │ shell scripts  │
+     └────────────────┘ └─────────────┘ └────────────────┘
+```
+
+When a new capability is added to the orchestrator or a source service, it
+must be exposed through all three interfaces before it is considered complete.
+
 ## Architecture Impact
 
 In v1, the MCP server and CLI accessed the SQLite database directly. In v2,
@@ -63,10 +92,12 @@ and source services' capabilities:
 | `search_jira` | Search Jira issues | Jira `Search` |
 | `get_jira_issue` | Get full Jira issue details | Jira `GetItem` |
 | `get_jira_comments` | Get comments on a Jira issue | Jira `GetIssueComments` |
+| `query_jira_issues` | Structured query for building work-lists (filter by status, workgroup, project, etc.) | Jira `QueryIssues` |
 | `snapshot_jira_issue` | Rich markdown snapshot of a Jira issue | Jira `GetSnapshot` |
 | `list_jira_issues` | List/filter Jira issues | Jira `ListItems` |
 | `search_zulip` | Search Zulip messages | Zulip `Search` |
 | `get_zulip_thread` | Get a complete Zulip thread | Zulip `GetThread` |
+| `query_zulip_messages` | Structured query for filtering messages (by stream, topic, sender, etc.) | Zulip `QueryMessages` |
 | `list_zulip_streams` | List Zulip streams | Zulip `ListStreams` |
 | `list_zulip_topics` | List topics in a stream | Zulip `ListTopics` |
 | `snapshot_zulip_thread` | Rich markdown snapshot of a Zulip thread | Zulip `GetSnapshot` |
@@ -76,6 +107,7 @@ and source services' capabilities:
 | `snapshot_confluence_page` | Rich markdown snapshot of a Confluence page | Confluence `GetSnapshot` |
 | `search_github` | Search GitHub issues/PRs | GitHub `Search` |
 | `get_github_issue` | Get full GitHub issue/PR details | GitHub `GetItem` |
+| `query_github_artifact` | Find commits/PRs affecting a FHIR artifact, page, or element | GitHub `QueryByArtifact` |
 | `list_github_repos` | List tracked GitHub repos | GitHub `ListRepositories` |
 | `snapshot_github_issue` | Rich markdown snapshot of a GitHub issue | GitHub `GetSnapshot` |
 
@@ -270,3 +302,30 @@ fhir-augury services stats
 
 Same as v1 — table (default), JSON, and markdown formats are supported for
 all commands that return data.
+
+---
+
+## Interface Parity Matrix
+
+The following table confirms that every external capability is available
+through all three interfaces. When adding a new capability, add a row here
+and ensure all three columns are filled.
+
+| Capability | HTTP API | MCP Tool | CLI Command |
+|------------|----------|----------|-------------|
+| Unified search | `GET /api/v1/search` | `search` | `fhir-augury search` |
+| Find related items | `GET /api/v1/related/{source}/{id}` | `find_related` | `fhir-augury related` |
+| Get item details | `GET /api/v1/items/{id}` (source) | `get_jira_issue`, `get_github_issue`, … | `fhir-augury get` |
+| Rich snapshot | `GET /api/v1/items/{id}/snapshot` (source) | `snapshot_jira_issue`, `snapshot_github_issue`, … | `fhir-augury snapshot` |
+| Cross-references | `GET /api/v1/xref/{source}/{id}` | `get_cross_references` | `fhir-augury xref` |
+| List items | `GET /api/v1/items` (source) | `list_jira_issues`, `list_github_repos`, … | `fhir-augury list` |
+| Trigger ingestion | `POST /api/v1/ingest/trigger` | `trigger_sync` | `fhir-augury ingest trigger` |
+| Ingestion status | `GET /api/v1/status` (source) | `get_stats` | `fhir-augury ingest status` |
+| Rebuild from cache | `POST /api/v1/rebuild` (source) | `trigger_sync` (type=rebuild) | `fhir-augury ingest rebuild` |
+| Service health | `GET /api/v1/services` | `get_stats` | `fhir-augury services status` |
+| Aggregate stats | `GET /api/v1/stats` | `get_stats` | `fhir-augury services stats` |
+| Cross-ref scan | `POST /api/v1/xref/scan` | `trigger_sync` (type=xref-scan) | `fhir-augury services xref-scan` |
+| Source-specific search | `GET /api/v1/search` (source) | `search_jira`, `search_zulip`, … | `fhir-augury search -s {source}` |
+| Jira structured query | `POST /api/v1/jira/query` | `query_jira_issues` | `fhir-augury query-jira` |
+| Zulip structured query | `POST /api/v1/zulip/query` | `query_zulip_messages` | `fhir-augury query-zulip` |
+| GitHub artifact query | `POST /api/v1/github/artifact-query` | `query_github_artifact` | `fhir-augury query-github-artifact` |

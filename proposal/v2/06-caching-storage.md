@@ -98,13 +98,24 @@ cache/jira/
 ├── DayOf_2026-03-18-000.xml             # Date-based batch files
 ├── DayOf_2026-03-18-001.xml             # Sequence number for multiple batches/day
 ├── DayOf_2026-03-17-000.xml
-└── ...
+├── ...
+└── jira-spec-artifacts/                 # Local clone of HL7/JIRA-Spec-Artifacts
+    ├── xml/
+    │   ├── _families.xml                # Jira project prefixes
+    │   ├── SPECS-FHIR.xml               # Spec listings per family
+    │   ├── FHIR-core.xml                # Per-spec detail (gitUrl, artifacts, etc.)
+    │   └── ...
+    └── ...
 ```
 
 Jira data is downloaded in date-range batches (all issues updated in a given
 day/week). Each batch file contains multiple issues. The date-based naming
 enables incremental cache population — only fetch batches for days not already
-cached.
+cached. The `jira-spec-artifacts/` directory is a local git clone of
+[HL7/JIRA-Spec-Artifacts](https://github.com/HL7/JIRA-Spec-Artifacts),
+updated via `git pull` during each ingestion run (see
+[03-source-services](03-source-services.md), *JIRA-Spec-Artifacts
+Integration*).
 
 #### Zulip Cache
 
@@ -128,14 +139,19 @@ cache/confluence/
 ├── _meta.json                           # Global sync cursor
 ├── spaces/
 │   ├── FHIR.json                        # Space metadata
-│   └── FHIRI.json
-├── pages/
-│   ├── {pageId}.json                    # One file per page (complete content)
-│   └── ...
+│   ├── FHIR/                            # Pages in this space
+│   │   ├── {pageId}.json                # One file per page (complete content)
+│   │   └── ...
+│   ├── FHIRI.json
+│   └── FHIRI/
+│       ├── {pageId}.json
+│       └── ...
 ```
 
 Confluence uses per-page caching because pages are large, individually
-addressable, and updated independently.
+addressable, and updated independently. Pages are organized under their
+parent space directory, keeping each space's metadata file (`FHIR.json`)
+alongside its pages directory (`FHIR/`).
 
 #### GitHub Cache
 

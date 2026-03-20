@@ -102,6 +102,7 @@ message Comment {
   string author = 2;
   string body = 3;
   google.protobuf.Timestamp created_at = 4;
+  string url = 5;                            // Link to comment in source system
 }
 
 message ItemSummary {
@@ -135,6 +136,7 @@ message SnapshotResponse {
   string id = 1;
   string source = 2;
   string markdown = 3;                       // Full rendered snapshot in markdown
+  string url = 4;                            // Link to original item in source system
 }
 
 message StreamTextRequest {
@@ -344,6 +346,33 @@ service JiraService {
   rpc GetIssueLinks(JiraGetLinksRequest) returns (JiraIssueLinksResponse);
   rpc ListByWorkGroup(JiraWorkGroupRequest) returns (stream ItemSummary);
   rpc ListBySpecification(JiraSpecificationRequest) returns (stream ItemSummary);
+  rpc QueryIssues(JiraQueryRequest) returns (stream ItemSummary);
+}
+
+// Structured query for building work-lists.
+// All fields are optional; combine for composable filtering.
+// Repeated values within a field use OR; fields combine with AND.
+message JiraQueryRequest {
+  repeated string statuses = 1;              // e.g. ["Open", "Triaged"]
+  repeated string resolutions = 2;           // e.g. ["Unresolved"]
+  repeated string work_groups = 3;           // e.g. ["fhir-i", "pa"]
+  repeated string specifications = 4;        // e.g. ["core", "us-core"]
+  repeated string projects = 5;              // Include only these Jira projects
+  repeated string exclude_projects = 6;      // Exclude these Jira projects
+  repeated string types = 7;                 // e.g. ["Bug", "Enhancement"]
+  repeated string priorities = 8;            // e.g. ["Critical", "Major"]
+  repeated string labels = 9;               // All must be present (AND)
+  repeated string assignees = 10;
+  repeated string reporters = 11;
+  google.protobuf.Timestamp created_after = 12;
+  google.protobuf.Timestamp created_before = 13;
+  google.protobuf.Timestamp updated_after = 14;
+  google.protobuf.Timestamp updated_before = 15;
+  string query = 16;                         // Optional FTS within filtered results
+  string sort_by = 17;                       // "updated_at", "created_at", "priority", "status"
+  string sort_order = 18;                    // "asc" or "desc"
+  int32 limit = 19;
+  int32 offset = 20;
 }
 
 message JiraIssue {
@@ -382,6 +411,26 @@ service ZulipSourceService {
   rpc ListStreams(ZulipListStreamsRequest) returns (stream ZulipStream);
   rpc ListTopics(ZulipListTopicsRequest) returns (stream ZulipTopic);
   rpc GetMessagesByUser(ZulipUserMessagesRequest) returns (stream ItemSummary);
+  rpc QueryMessages(ZulipQueryRequest) returns (stream ItemSummary);
+}
+
+// Structured query for filtering Zulip messages.
+// All fields are optional; combine for composable filtering.
+// Repeated values within a field use OR; fields combine with AND.
+message ZulipQueryRequest {
+  repeated string stream_names = 1;          // Filter by stream name
+  repeated int32 stream_ids = 2;             // Filter by stream ID (OR with stream_names)
+  string topic = 3;                          // Exact topic match
+  string topic_keyword = 4;                  // Topic substring/keyword match
+  repeated string sender_names = 5;          // Filter by sender display name
+  repeated int32 sender_ids = 6;             // Filter by sender ID (OR with sender_names)
+  google.protobuf.Timestamp after = 7;       // Only messages after this date
+  google.protobuf.Timestamp before = 8;      // Only messages before this date
+  string query = 9;                          // Optional FTS within filtered results
+  string sort_by = 10;                       // "timestamp", "stream", "topic"
+  string sort_order = 11;                    // "asc" or "desc"
+  int32 limit = 12;
+  int32 offset = 13;
 }
 
 message ZulipThread {
@@ -400,6 +449,7 @@ message ZulipMessage {
   string content = 6;                       // Plain text content
   string content_html = 7;                  // Original HTML
   google.protobuf.Timestamp timestamp = 8;
+  string url = 9;                           // Link to message in Zulip (near link)
 }
 
 message ZulipStream {
@@ -407,6 +457,7 @@ message ZulipStream {
   string name = 2;
   string description = 3;
   int32 message_count = 4;
+  string url = 5;                           // Link to stream in Zulip
 }
 
 message ZulipTopic {
@@ -414,6 +465,7 @@ message ZulipTopic {
   string topic = 2;
   int32 message_count = 3;
   google.protobuf.Timestamp last_message_at = 4;
+  string url = 5;                           // Link to topic in Zulip
 }
 ```
 
@@ -462,6 +514,21 @@ service GitHubSourceService {
   rpc ListRepositories(GitHubListReposRequest) returns (stream GitHubRepo);
   rpc ListByLabel(GitHubLabelRequest) returns (stream ItemSummary);
   rpc ListByMilestone(GitHubMilestoneRequest) returns (stream ItemSummary);
+  rpc QueryByArtifact(GitHubArtifactQueryRequest) returns (stream GitHubCommit);
+}
+
+// Query commits/PRs scoped to a FHIR artifact, page, or element.
+// Provide exactly one of artifact_key, artifact_id, page_key, or element_path.
+message GitHubArtifactQueryRequest {
+  string repo = 1;                           // e.g. "HL7/fhir" (required)
+  string artifact_key = 2;                   // e.g. "Patient", "Bundle" (broad match)
+  string artifact_id = 3;                    // e.g. "StructureDefinition/Patient" (specific file)
+  string page_key = 4;                       // e.g. "subscriptions", "workflow"
+  string element_path = 5;                   // e.g. "Patient.name", "Attachment.url"
+  bool include_prs = 6;                      // Also return associated PRs
+  google.protobuf.Timestamp after = 7;
+  google.protobuf.Timestamp before = 8;
+  int32 limit = 9;
 }
 
 message GitHubIssue {
@@ -508,6 +575,7 @@ message GitHubRepo {
   string description = 2;
   int32 issue_count = 3;
   int32 pr_count = 4;
+  string url = 5;                           // Link to repository on GitHub
 }
 ```
 
@@ -515,8 +583,10 @@ message GitHubRepo {
 
 ## HTTP API (Orchestrator)
 
-The orchestrator also exposes an HTTP/JSON API that mirrors the gRPC contract
-for external consumers:
+The orchestrator exposes an HTTP/JSON API that mirrors the gRPC contract.
+Per the *Triple Interface* principle (see [01-overview](01-overview.md)),
+every capability below is also available through the MCP server and CLI —
+the HTTP API is one of three equivalent external interfaces.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -527,6 +597,9 @@ for external consumers:
 | `GET` | `/api/v1/services` | Service health/status |
 | `POST` | `/api/v1/xref/scan` | Trigger cross-reference scan |
 | `GET` | `/api/v1/stats` | Aggregate statistics |
+| `POST` | `/api/v1/jira/query` | Jira structured query (body: `JiraQueryRequest` filters) |
+| `POST` | `/api/v1/zulip/query` | Zulip structured query (body: `ZulipQueryRequest` filters) |
+| `POST` | `/api/v1/github/artifact-query` | GitHub artifact/page/element query (body: `GitHubArtifactQueryRequest`) |
 
 ### Source Service HTTP APIs (Standalone Use)
 
