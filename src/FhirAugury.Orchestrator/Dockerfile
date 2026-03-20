@@ -1,6 +1,3 @@
-# Root Dockerfile — builds the Orchestrator service (main entry point)
-# For individual service Dockerfiles, see src/FhirAugury.*/Dockerfile
-
 # Build stage
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src

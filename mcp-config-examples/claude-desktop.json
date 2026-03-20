@@ -5,11 +5,13 @@
       "args": [
         "run",
         "--project",
-        "/path/to/fhir-augury/src/FhirAugury.Mcp",
-        "--",
-        "--db",
-        "/path/to/fhir-augury.db"
-      ]
+        "/path/to/fhir-augury/src/FhirAugury.Mcp"
+      ],
+      "env": {
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
+        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
+        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+      }
     }
   }
 }

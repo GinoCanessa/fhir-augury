@@ -1,6 +1,3 @@
-# Root Dockerfile — builds the Orchestrator service (main entry point)
-# For individual service Dockerfiles, see src/FhirAugury.*/Dockerfile
-
 # Build stage
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
@@ -11,31 +8,34 @@ COPY src/Directory.Build.props src/Directory.Build.props
 
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
-COPY src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj src/FhirAugury.Orchestrator/
+COPY src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj src/FhirAugury.Source.GitHub/
 COPY protos/ protos/
 
-RUN dotnet restore src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj
+RUN dotnet restore src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj
 
 # Copy source and build
 COPY src/FhirAugury.Common/ src/FhirAugury.Common/
-COPY src/FhirAugury.Orchestrator/ src/FhirAugury.Orchestrator/
+COPY src/FhirAugury.Source.GitHub/ src/FhirAugury.Source.GitHub/
 
-RUN dotnet publish src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj \
+RUN dotnet publish src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj \
     -c Release -o /app --no-restore
 
-# Runtime stage
+# Runtime stage — needs git for repository cloning
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=build /app .
 
 RUN adduser --disabled-password --no-create-home appuser \
-    && mkdir -p /app/data \
+    && mkdir -p /app/cache /app/data \
     && chown -R appuser:appuser /app
 
-EXPOSE 5150 5151
+EXPOSE 5190 5191
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD wget --spider -q http://localhost:5150/health || exit 1
+    CMD wget --spider -q http://localhost:5190/health || exit 1
 
 USER appuser
-ENTRYPOINT ["dotnet", "FhirAugury.Orchestrator.dll"]
+ENTRYPOINT ["dotnet", "FhirAugury.Source.GitHub.dll"]

@@ -390,7 +390,6 @@ msbuild.wrn
 
 *.local.json
 sandbox.dockerfile
-dockerfile
 /cache
 
 # Environment files (may contain secrets)

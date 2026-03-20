@@ -368,15 +368,15 @@ Remove all v1 project references from `fhir-augury.slnx`.
 
 ## Phase 6 Verification
 
-- [ ] All five services build as Docker images
-- [ ] `docker compose up` starts the full stack
-- [ ] Health checks pass for all services
-- [ ] Services communicate via container names (Docker networking)
-- [ ] Volumes persist data across container restarts
-- [ ] Subset deployment profiles work (e.g., Jira + Zulip only)
+- [x] All five services build as Docker images
+- [x] `docker compose up` starts the full stack
+- [x] Health checks pass for all services
+- [x] Services communicate via container names (Docker networking)
+- [x] Volumes persist data across container restarts
+- [x] Subset deployment profiles work (e.g., Jira + Zulip only)
 - [ ] In-process development host runs all services on correct ports
-- [ ] MCP configuration templates work with the running stack
-- [ ] Documentation is accurate and complete
+- [x] MCP configuration templates work with the running stack
+- [x] Documentation is accurate and complete
 - [ ] v1 projects are fully removed
-- [ ] All v2 tests pass
+- [x] All v2 tests pass
 - [ ] End-to-end: download → cache → index → search → xref works
