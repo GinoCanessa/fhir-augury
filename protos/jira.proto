@@ -1,0 +1,144 @@
+syntax = "proto3";
+package fhiraugury;
+
+import "google/protobuf/timestamp.proto";
+import "source_service.proto";
+
+service JiraService {
+  rpc GetIssueComments(JiraGetCommentsRequest) returns (stream JiraComment);
+  rpc GetIssueLinks(JiraGetLinksRequest) returns (JiraIssueLinksResponse);
+  rpc ListByWorkGroup(JiraWorkGroupRequest) returns (stream JiraIssueSummary);
+  rpc ListBySpecification(JiraSpecificationRequest) returns (stream JiraIssueSummary);
+  rpc QueryIssues(JiraQueryRequest) returns (stream JiraIssueSummary);
+  rpc ListSpecArtifacts(JiraListSpecArtifactsRequest) returns (stream SpecArtifactEntry);
+  rpc GetIssueNumbers(JiraGetIssueNumbersRequest) returns (JiraIssueNumbersResponse);
+  rpc GetIssueSnapshot(JiraSnapshotRequest) returns (SnapshotResponse);
+}
+
+message JiraQueryRequest {
+  repeated string statuses = 1;
+  repeated string resolutions = 2;
+  repeated string work_groups = 3;
+  repeated string specifications = 4;
+  repeated string projects = 5;
+  repeated string exclude_projects = 6;
+  repeated string types = 7;
+  repeated string priorities = 8;
+  repeated string labels = 9;
+  repeated string assignees = 10;
+  repeated string reporters = 11;
+  google.protobuf.Timestamp created_after = 12;
+  google.protobuf.Timestamp created_before = 13;
+  google.protobuf.Timestamp updated_after = 14;
+  google.protobuf.Timestamp updated_before = 15;
+  string query = 16;
+  string sort_by = 17;
+  string sort_order = 18;
+  int32 limit = 19;
+  int32 offset = 20;
+}
+
+message JiraIssue {
+  string key = 1;
+  string project_key = 2;
+  string title = 3;
+  string description = 4;
+  string type = 5;
+  string priority = 6;
+  string status = 7;
+  string resolution = 8;
+  string resolution_description = 9;
+  string assignee = 10;
+  string reporter = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp resolved_at = 14;
+  string work_group = 15;
+  string specification = 16;
+  string raised_in_version = 17;
+  string selected_ballot = 18;
+  string related_artifacts = 19;
+  string change_type = 20;
+  string labels = 21;
+  int32 comment_count = 22;
+  string url = 23;
+}
+
+message JiraIssueSummary {
+  string key = 1;
+  string project_key = 2;
+  string title = 3;
+  string type = 4;
+  string status = 5;
+  string priority = 6;
+  string work_group = 7;
+  string specification = 8;
+  string url = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message JiraComment {
+  string id = 1;
+  string issue_key = 2;
+  string author = 3;
+  string body = 4;
+  google.protobuf.Timestamp created_at = 5;
+  string url = 6;
+}
+
+message JiraIssueLink {
+  string source_key = 1;
+  string target_key = 2;
+  string link_type = 3;
+}
+
+message JiraIssueLinksResponse {
+  repeated JiraIssueLink links = 1;
+}
+
+message SpecArtifactEntry {
+  string family = 1;
+  string spec_key = 2;
+  string spec_name = 3;
+  string git_url = 4;
+  string published_url = 5;
+  string default_workgroup = 6;
+}
+
+message JiraIssueNumbersResponse {
+  repeated int32 issue_numbers = 1;
+}
+
+message JiraGetCommentsRequest {
+  string issue_key = 1;
+}
+
+message JiraGetLinksRequest {
+  string issue_key = 1;
+}
+
+message JiraWorkGroupRequest {
+  string work_group = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message JiraSpecificationRequest {
+  string specification = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message JiraListSpecArtifactsRequest {
+  string family_filter = 1;
+}
+
+message JiraGetIssueNumbersRequest {
+  string project_filter = 1;
+}
+
+message JiraSnapshotRequest {
+  string key = 1;
+  bool include_comments = 2;
+  bool include_internal_refs = 3;
+}

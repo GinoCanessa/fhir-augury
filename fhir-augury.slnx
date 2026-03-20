@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/FhirAugury.Common/FhirAugury.Common.csproj" />
     <Project Path="src/FhirAugury.Models/FhirAugury.Models.csproj" />
     <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />
     <Project Path="src/FhirAugury.Sources.Jira/FhirAugury.Sources.Jira.csproj" />
@@ -12,11 +13,17 @@
     <Project Path="src/FhirAugury.Mcp/FhirAugury.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Database.Tests/FhirAugury.Database.Tests.csproj" />
     <Project Path="tests/FhirAugury.Sources.Tests/FhirAugury.Sources.Tests.csproj" />
     <Project Path="tests/FhirAugury.Indexing.Tests/FhirAugury.Indexing.Tests.csproj" />
     <Project Path="tests/FhirAugury.Integration.Tests/FhirAugury.Integration.Tests.csproj" />
     <Project Path="tests/FhirAugury.Mcp.Tests/FhirAugury.Mcp.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Jira.Tests/FhirAugury.Source.Jira.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Confluence.Tests/FhirAugury.Source.Confluence.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.GitHub.Tests/FhirAugury.Source.GitHub.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Orchestrator.Tests/FhirAugury.Orchestrator.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />

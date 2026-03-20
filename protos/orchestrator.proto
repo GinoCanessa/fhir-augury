@@ -1,0 +1,139 @@
+syntax = "proto3";
+package fhiraugury;
+
+import "google/protobuf/timestamp.proto";
+import "source_service.proto";
+
+service OrchestratorService {
+  // Unified search across all source services.
+  rpc UnifiedSearch(UnifiedSearchRequest) returns (SearchResponse);
+
+  // Find items across all sources related to a given item.
+  rpc FindRelated(FindRelatedRequest) returns (FindRelatedResponse);
+
+  // Get cross-references for a specific item.
+  rpc GetCrossReferences(GetXRefRequest) returns (GetXRefResponse);
+
+  // Proxied common operations (routed to the appropriate source service).
+  rpc GetItem(GetItemRequest) returns (ItemResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotResponse);
+  rpc GetContent(GetContentRequest) returns (ContentResponse);
+
+  // Trigger ingestion across one or all source services.
+  rpc TriggerSync(TriggerSyncRequest) returns (TriggerSyncResponse);
+
+  // Get aggregate status of all source services.
+  rpc GetServicesStatus(ServicesStatusRequest) returns (ServicesStatusResponse);
+
+  // Force a cross-reference scan of recent items.
+  rpc TriggerXRefScan(TriggerXRefScanRequest) returns (TriggerXRefScanResponse);
+
+  // Callback from source services when ingestion completes.
+  rpc NotifyIngestionComplete(IngestionCompleteNotification) returns (IngestionCompleteAck);
+}
+
+message UnifiedSearchRequest {
+  string query = 1;
+  repeated string sources = 2;
+  int32 limit = 3;
+}
+
+message FindRelatedRequest {
+  string source = 1;
+  string id = 2;
+  int32 limit = 3;
+  repeated string target_sources = 4;
+}
+
+message FindRelatedResponse {
+  string seed_source = 1;
+  string seed_id = 2;
+  string seed_title = 3;
+  repeated RelatedItem items = 4;
+}
+
+message RelatedItem {
+  string source = 1;
+  string id = 2;
+  string title = 3;
+  string snippet = 4;
+  string url = 5;
+  double relevance_score = 6;
+  string relationship = 7;
+  string context = 8;
+}
+
+message GetXRefRequest {
+  string source = 1;
+  string id = 2;
+  string direction = 3;
+}
+
+message GetXRefResponse {
+  repeated CrossReference references = 1;
+}
+
+message CrossReference {
+  string source_type = 1;
+  string source_id = 2;
+  string target_type = 3;
+  string target_id = 4;
+  string link_type = 5;
+  string context = 6;
+  string target_title = 7;
+  string target_url = 8;
+}
+
+message TriggerSyncRequest {
+  repeated string sources = 1;
+  string type = 2;
+}
+
+message TriggerSyncResponse {
+  repeated SourceSyncStatus statuses = 1;
+}
+
+message SourceSyncStatus {
+  string source = 1;
+  string status = 2;
+  string message = 3;
+}
+
+message ServicesStatusRequest {}
+
+message ServicesStatusResponse {
+  repeated ServiceHealth services = 1;
+  int32 cross_ref_links = 2;
+  google.protobuf.Timestamp last_xref_scan_at = 3;
+}
+
+message ServiceHealth {
+  string name = 1;
+  string status = 2;
+  string grpc_address = 3;
+  google.protobuf.Timestamp last_sync_at = 4;
+  int32 item_count = 5;
+  int64 db_size_bytes = 6;
+  string last_error = 7;
+}
+
+message TriggerXRefScanRequest {
+  bool full_rescan = 1;
+}
+
+message TriggerXRefScanResponse {
+  string status = 1;
+  int32 items_to_scan = 2;
+}
+
+message IngestionCompleteNotification {
+  string source = 1;
+  string type = 2;
+  int32 items_ingested = 3;
+  google.protobuf.Timestamp completed_at = 4;
+  string error = 5;
+}
+
+message IngestionCompleteAck {
+  bool xref_scan_triggered = 1;
+}

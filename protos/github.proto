@@ -1,0 +1,161 @@
+syntax = "proto3";
+package fhiraugury;
+
+import "google/protobuf/timestamp.proto";
+import "source_service.proto";
+
+service GitHubService {
+  rpc GetIssueComments(GitHubGetCommentsRequest) returns (stream GitHubComment);
+  rpc GetPullRequestDetails(GitHubGetPRRequest) returns (GitHubPullRequest);
+  rpc GetRelatedCommits(GitHubGetCommitsRequest) returns (stream GitHubCommit);
+  rpc GetPullRequestForCommit(GitHubGetPRForCommitRequest) returns (GitHubPullRequest);
+  rpc GetCommitsForPullRequest(GitHubGetCommitsForPRRequest) returns (stream GitHubCommit);
+  rpc SearchCommits(SearchRequest) returns (SearchResponse);
+  rpc GetJiraReferences(GitHubGetJiraRefsRequest) returns (stream GitHubJiraRef);
+  rpc ListRepositories(GitHubListReposRequest) returns (stream GitHubRepo);
+  rpc ListByLabel(GitHubLabelRequest) returns (stream GitHubIssueSummary);
+  rpc ListByMilestone(GitHubMilestoneRequest) returns (stream GitHubIssueSummary);
+  rpc QueryByArtifact(GitHubArtifactQueryRequest) returns (stream GitHubCommit);
+  rpc GetIssueSnapshot(GitHubSnapshotRequest) returns (SnapshotResponse);
+}
+
+message GitHubArtifactQueryRequest {
+  string repo = 1;
+  string artifact_key = 2;
+  string artifact_id = 3;
+  string page_key = 4;
+  string element_path = 5;
+  bool include_prs = 6;
+  google.protobuf.Timestamp after = 7;
+  google.protobuf.Timestamp before = 8;
+  int32 limit = 9;
+}
+
+message GitHubIssue {
+  int32 id = 1;
+  string repo_full_name = 2;
+  int32 number = 3;
+  bool is_pull_request = 4;
+  string title = 5;
+  string body = 6;
+  string state = 7;
+  string author = 8;
+  string labels = 9;
+  string assignees = 10;
+  string milestone = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp closed_at = 14;
+  string url = 15;
+  string merge_state = 16;
+  string head_branch = 17;
+  string base_branch = 18;
+}
+
+message GitHubPullRequest {
+  GitHubIssue issue = 1;
+  int32 additions = 2;
+  int32 deletions = 3;
+  int32 changed_files = 4;
+  bool merged = 5;
+  string merge_commit_sha = 6;
+}
+
+message GitHubCommit {
+  string sha = 1;
+  string message = 2;
+  string author = 3;
+  google.protobuf.Timestamp date = 4;
+  string url = 5;
+  repeated string changed_files = 6;
+}
+
+message GitHubRepo {
+  string full_name = 1;
+  string description = 2;
+  int32 issue_count = 3;
+  int32 pr_count = 4;
+  string url = 5;
+  bool has_issues = 6;
+}
+
+message GitHubIssueSummary {
+  string repo_full_name = 1;
+  int32 number = 2;
+  bool is_pull_request = 3;
+  string title = 4;
+  string state = 5;
+  string url = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message GitHubComment {
+  string id = 1;
+  string repo_full_name = 2;
+  int32 issue_number = 3;
+  string author = 4;
+  string body = 5;
+  google.protobuf.Timestamp created_at = 6;
+  string url = 7;
+}
+
+message GitHubJiraRef {
+  string source_type = 1;
+  string source_id = 2;
+  string repo_full_name = 3;
+  string jira_key = 4;
+  string context = 5;
+}
+
+message GitHubGetCommentsRequest {
+  string repo_full_name = 1;
+  int32 issue_number = 2;
+}
+
+message GitHubGetPRRequest {
+  string repo_full_name = 1;
+  int32 number = 2;
+}
+
+message GitHubGetCommitsRequest {
+  string repo_full_name = 1;
+  int32 issue_number = 2;
+}
+
+message GitHubGetPRForCommitRequest {
+  string repo_full_name = 1;
+  string sha = 2;
+}
+
+message GitHubGetCommitsForPRRequest {
+  string repo_full_name = 1;
+  int32 pr_number = 2;
+}
+
+message GitHubGetJiraRefsRequest {
+  string repo_full_name = 1;
+  string jira_key_filter = 2;
+}
+
+message GitHubListReposRequest {}
+
+message GitHubLabelRequest {
+  string repo_full_name = 1;
+  string label = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message GitHubMilestoneRequest {
+  string repo_full_name = 1;
+  string milestone = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message GitHubSnapshotRequest {
+  string repo_full_name = 1;
+  int32 number = 2;
+  bool include_comments = 3;
+  bool include_internal_refs = 4;
+}

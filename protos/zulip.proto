@@ -1,0 +1,102 @@
+syntax = "proto3";
+package fhiraugury;
+
+import "google/protobuf/timestamp.proto";
+import "source_service.proto";
+
+service ZulipService {
+  rpc GetThread(ZulipGetThreadRequest) returns (ZulipThread);
+  rpc ListStreams(ZulipListStreamsRequest) returns (stream ZulipStream);
+  rpc ListTopics(ZulipListTopicsRequest) returns (stream ZulipTopic);
+  rpc GetMessagesByUser(ZulipUserMessagesRequest) returns (stream ZulipMessageSummary);
+  rpc QueryMessages(ZulipQueryRequest) returns (stream ZulipMessageSummary);
+  rpc GetThreadSnapshot(ZulipSnapshotRequest) returns (SnapshotResponse);
+}
+
+message ZulipQueryRequest {
+  repeated string stream_names = 1;
+  repeated int32 stream_ids = 2;
+  string topic = 3;
+  string topic_keyword = 4;
+  repeated string sender_names = 5;
+  repeated int32 sender_ids = 6;
+  google.protobuf.Timestamp after = 7;
+  google.protobuf.Timestamp before = 8;
+  string query = 9;
+  string sort_by = 10;
+  string sort_order = 11;
+  int32 limit = 12;
+  int32 offset = 13;
+}
+
+message ZulipThread {
+  string stream_name = 1;
+  string topic = 2;
+  repeated ZulipMessage messages = 3;
+  string url = 4;
+}
+
+message ZulipMessage {
+  int32 id = 1;
+  int32 stream_id = 2;
+  string stream_name = 3;
+  string topic = 4;
+  string sender_name = 5;
+  string content = 6;
+  string content_html = 7;
+  google.protobuf.Timestamp timestamp = 8;
+  string url = 9;
+}
+
+message ZulipStream {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  int32 message_count = 4;
+  string url = 5;
+}
+
+message ZulipTopic {
+  string stream_name = 1;
+  string topic = 2;
+  int32 message_count = 3;
+  google.protobuf.Timestamp last_message_at = 4;
+  string url = 5;
+}
+
+message ZulipMessageSummary {
+  int32 id = 1;
+  string stream_name = 2;
+  string topic = 3;
+  string sender_name = 4;
+  string snippet = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  string url = 7;
+}
+
+message ZulipGetThreadRequest {
+  string stream_name = 1;
+  string topic = 2;
+  int32 limit = 3;
+}
+
+message ZulipListStreamsRequest {}
+
+message ZulipListTopicsRequest {
+  string stream_name = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ZulipUserMessagesRequest {
+  string sender_name = 1;
+  int32 sender_id = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ZulipSnapshotRequest {
+  string stream_name = 1;
+  string topic = 2;
+  bool include_internal_refs = 3;
+}
