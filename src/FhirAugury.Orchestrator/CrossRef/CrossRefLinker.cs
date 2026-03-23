@@ -1,10 +1,12 @@
 using Fhiraugury;
+using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
 using Google.Protobuf.WellKnownTypes;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.CrossRef;
 
@@ -15,9 +17,10 @@ namespace FhirAugury.Orchestrator.CrossRef;
 public class CrossRefLinker(
     OrchestratorDatabase database,
     SourceRouter router,
-    OrchestratorOptions options,
+    IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<CrossRefLinker> logger)
 {
+    private readonly OrchestratorOptions options = optionsAccessor.Value;
     /// <summary>
     /// Performs a cross-reference scan across all enabled sources.
     /// Returns the number of new links discovered.
@@ -77,17 +80,19 @@ public class CrossRefLinker(
 
             // Extract links from all text fields
             var combinedText = string.Join("\n", new[] { item.Title }.Concat(item.TextFields));
-            var extractedLinks = CrossRefPatternHelper.ExtractLinks(combinedText);
+            var extractedLinks = CrossRefPatterns.ExtractLinks(combinedText);
 
-            foreach (var (targetType, targetId, context) in extractedLinks)
+            // Query existing links once per item to avoid repeated DB reads in the inner loop
+            var existingLinks = CrossRefLinkRecord.SelectList(connection,
+                SourceType: sourceName, SourceId: item.Id);
+
+            foreach(var (targetType, targetId, context) in extractedLinks)
             {
                 // Skip self-references
                 if (targetType == sourceName && targetId == item.Id)
                     continue;
 
-                // Check for existing link
-                var existingLinks = CrossRefLinkRecord.SelectList(connection,
-                    SourceType: sourceName, SourceId: item.Id);
+                // Check for existing link (queried once per item above)
                 var exists = existingLinks.Any(l =>
                     l.TargetType == targetType && l.TargetId == targetId);
 

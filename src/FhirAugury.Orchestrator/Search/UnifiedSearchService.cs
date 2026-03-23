@@ -2,6 +2,7 @@ using Fhiraugury;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Search;
 
@@ -13,9 +14,10 @@ public class UnifiedSearchService(
     SourceRouter router,
     CrossRefBooster booster,
     FreshnessDecay freshnessDecay,
-    OrchestratorOptions options,
+    IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<UnifiedSearchService> logger)
 {
+    private readonly OrchestratorOptions options = optionsAccessor.Value;
     /// <summary>
     /// Executes a unified search across all enabled source services.
     /// </summary>

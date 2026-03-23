@@ -2,6 +2,7 @@ using Fhiraugury;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Health;
 
@@ -11,9 +12,10 @@ namespace FhirAugury.Orchestrator.Health;
 /// </summary>
 public class ServiceHealthMonitor(
     SourceRouter router,
-    OrchestratorOptions options,
+    IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<ServiceHealthMonitor> logger)
 {
+    private readonly OrchestratorOptions options = optionsAccessor.Value;
     private readonly Dictionary<string, ServiceHealthInfo> _healthStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 

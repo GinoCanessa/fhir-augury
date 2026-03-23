@@ -15,14 +15,26 @@ public static class ZulipTools
         [FromKeyedServices("zulip")] SourceService.SourceServiceClient zulipSource,
         [Description("Search query")] string query,
         [Description("Filter to specific stream name")] string? stream = null,
-        [Description("Maximum results (default 20)")] int limit = 20)
+        [Description("Maximum results (default 20)")] int limit = 20,
+        CancellationToken cancellationToken = default)
     {
-        var request = new SearchRequest { Query = query, Limit = limit };
-        if (!string.IsNullOrEmpty(stream))
-            request.Filters.Add("stream", stream);
+        try
+        {
+            var request = new SearchRequest { Query = query, Limit = limit };
+            if (!string.IsNullOrEmpty(stream))
+                request.Filters.Add("stream", stream);
 
-        var response = await zulipSource.SearchAsync(request);
-        return UnifiedTools.FormatSearchResults(response, query);
+            var response = await zulipSource.SearchAsync(request, cancellationToken: cancellationToken);
+            return UnifiedTools.FormatSearchResults(response, query);
+        }
+        catch (RpcException ex)
+        {
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Get a full Zulip topic thread with all messages.")]
@@ -30,44 +42,57 @@ public static class ZulipTools
         ZulipService.ZulipServiceClient zulip,
         [Description("Stream name")] string stream,
         [Description("Topic name")] string topic,
-        [Description("Maximum messages (default 100)")] int limit = 100)
+        [Description("Maximum messages (default 100)")] int limit = 100,
+        CancellationToken cancellationToken = default)
     {
-        var response = await zulip.GetThreadAsync(
-            new ZulipGetThreadRequest { StreamName = stream, Topic = topic, Limit = limit });
-
-        if (response.Messages.Count == 0)
-            return $"No messages found in stream '{stream}', topic '{topic}'.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# {response.StreamName} > {response.Topic}");
-        sb.AppendLine();
-        sb.AppendLine($"**Messages:** {response.Messages.Count}");
-
-        var first = response.Messages[0];
-        var last = response.Messages[^1];
-        sb.AppendLine($"**First message:** {first.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-        sb.AppendLine($"**Last message:** {last.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-
-        var participants = response.Messages.Select(m => m.SenderName).Distinct().ToList();
-        sb.AppendLine($"**Participants:** {string.Join(", ", participants)}");
-        sb.AppendLine();
-
-        sb.AppendLine("## Messages");
-        sb.AppendLine();
-        foreach (var msg in response.Messages)
+        try
         {
-            sb.AppendLine($"### {msg.SenderName} — {msg.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-            sb.AppendLine(msg.Content);
+            var response = await zulip.GetThreadAsync(
+                new ZulipGetThreadRequest { StreamName = stream, Topic = topic, Limit = limit },
+                cancellationToken: cancellationToken);
+
+            if (response.Messages.Count == 0)
+                return $"No messages found in stream '{stream}', topic '{topic}'.";
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"# {response.StreamName} > {response.Topic}");
             sb.AppendLine();
-        }
+            sb.AppendLine($"**Messages:** {response.Messages.Count}");
 
-        if (!string.IsNullOrEmpty(response.Url))
+            var first = response.Messages[0];
+            var last = response.Messages[^1];
+            sb.AppendLine($"**First message:** {first.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+            sb.AppendLine($"**Last message:** {last.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+
+            var participants = response.Messages.Select(m => m.SenderName).Distinct().ToList();
+            sb.AppendLine($"**Participants:** {string.Join(", ", participants)}");
+            sb.AppendLine();
+
+            sb.AppendLine("## Messages");
+            sb.AppendLine();
+            foreach (var msg in response.Messages)
+            {
+                sb.AppendLine($"### {msg.SenderName} — {msg.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+                sb.AppendLine(msg.Content);
+                sb.AppendLine();
+            }
+
+            if (!string.IsNullOrEmpty(response.Url))
+            {
+                sb.AppendLine("---");
+                sb.AppendLine($"*URL: {response.Url}*");
+            }
+
+            return sb.ToString();
+        }
+        catch (RpcException ex)
         {
-            sb.AppendLine("---");
-            sb.AppendLine($"*URL: {response.Url}*");
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
-
-        return sb.ToString();
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Query Zulip messages with structured filters (streams, topics, senders, dates).")]
@@ -80,114 +105,165 @@ public static class ZulipTools
         [Description("Text query")] string? query = null,
         [Description("Sort by field (default timestamp)")] string sortBy = "timestamp",
         [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
-        [Description("Maximum results (default 20)")] int limit = 20)
+        [Description("Maximum results (default 20)")] int limit = 20,
+        CancellationToken cancellationToken = default)
     {
-        var request = new ZulipQueryRequest
+        try
         {
-            Topic = topic ?? "",
-            TopicKeyword = topicKeyword ?? "",
-            Query = query ?? "",
-            SortBy = sortBy,
-            SortOrder = sortOrder,
-            Limit = limit,
-        };
+            var request = new ZulipQueryRequest
+            {
+                Topic = topic ?? "",
+                TopicKeyword = topicKeyword ?? "",
+                Query = query ?? "",
+                SortBy = sortBy,
+                SortOrder = sortOrder,
+                Limit = limit,
+            };
 
-        if (!string.IsNullOrWhiteSpace(streams))
-        {
-            foreach (var s in streams.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                request.StreamNames.Add(s);
+            if (!string.IsNullOrWhiteSpace(streams))
+            {
+                foreach (var s in streams.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    request.StreamNames.Add(s);
+            }
+
+            if (!string.IsNullOrWhiteSpace(senders))
+            {
+                foreach (var s in senders.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    request.SenderNames.Add(s);
+            }
+
+            using var call = zulip.QueryMessages(request, cancellationToken: cancellationToken);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("## Zulip Query Results");
+            sb.AppendLine();
+
+            var count = 0;
+            await foreach (var msg in call.ResponseStream.ReadAllAsync(cancellationToken))
+            {
+                sb.AppendLine($"- **{msg.StreamName} > {msg.Topic}** [{msg.SenderName}]");
+                if (!string.IsNullOrEmpty(msg.Snippet))
+                    sb.AppendLine($"  {msg.Snippet}");
+                if (msg.Timestamp is not null)
+                    sb.AppendLine($"  {msg.Timestamp.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+                count++;
+            }
+
+            if (count == 0)
+                return "No Zulip messages matched the query.";
+
+            return sb.ToString();
         }
-
-        if (!string.IsNullOrWhiteSpace(senders))
+        catch (RpcException ex)
         {
-            foreach (var s in senders.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                request.SenderNames.Add(s);
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
-
-        using var call = zulip.QueryMessages(request);
-
-        var sb = new StringBuilder();
-        sb.AppendLine("## Zulip Query Results");
-        sb.AppendLine();
-
-        var count = 0;
-        await foreach (var msg in call.ResponseStream.ReadAllAsync())
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            sb.AppendLine($"- **{msg.StreamName} > {msg.Topic}** [{msg.SenderName}]");
-            if (!string.IsNullOrEmpty(msg.Snippet))
-                sb.AppendLine($"  {msg.Snippet}");
-            if (msg.Timestamp is not null)
-                sb.AppendLine($"  {msg.Timestamp.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-            count++;
+            return $"Error: {ex.Message}";
         }
-
-        if (count == 0)
-            return "No Zulip messages matched the query.";
-
-        return sb.ToString();
     }
 
     [McpServerTool, Description("List available Zulip streams.")]
     public static async Task<string> ListZulipStreams(
-        ZulipService.ZulipServiceClient zulip)
+        ZulipService.ZulipServiceClient zulip,
+        CancellationToken cancellationToken = default)
     {
-        using var call = zulip.ListStreams(new ZulipListStreamsRequest());
-
-        var sb = new StringBuilder();
-        sb.AppendLine("## Zulip Streams");
-        sb.AppendLine();
-
-        var count = 0;
-        await foreach (var stream in call.ResponseStream.ReadAllAsync())
+        try
         {
-            sb.AppendLine($"- **{stream.Name}** ({stream.MessageCount} messages)");
-            if (!string.IsNullOrEmpty(stream.Description))
-                sb.AppendLine($"  {stream.Description}");
-            count++;
+            using var call = zulip.ListStreams(new ZulipListStreamsRequest(),
+                cancellationToken: cancellationToken);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("## Zulip Streams");
+            sb.AppendLine();
+
+            var count = 0;
+            await foreach (var stream in call.ResponseStream.ReadAllAsync(cancellationToken))
+            {
+                sb.AppendLine($"- **{stream.Name}** ({stream.MessageCount} messages)");
+                if (!string.IsNullOrEmpty(stream.Description))
+                    sb.AppendLine($"  {stream.Description}");
+                count++;
+            }
+
+            if (count == 0)
+                return "No Zulip streams found.";
+
+            return sb.ToString();
         }
-
-        if (count == 0)
-            return "No Zulip streams found.";
-
-        return sb.ToString();
+        catch (RpcException ex)
+        {
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("List topics in a Zulip stream.")]
     public static async Task<string> ListZulipTopics(
         ZulipService.ZulipServiceClient zulip,
         [Description("Stream name")] string stream,
-        [Description("Maximum topics (default 50)")] int limit = 50)
+        [Description("Maximum topics (default 50)")] int limit = 50,
+        CancellationToken cancellationToken = default)
     {
-        using var call = zulip.ListTopics(
-            new ZulipListTopicsRequest { StreamName = stream, Limit = limit });
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"## Topics in {stream}");
-        sb.AppendLine();
-
-        var count = 0;
-        await foreach (var topic in call.ResponseStream.ReadAllAsync())
+        try
         {
-            sb.AppendLine($"- **{topic.Topic}** ({topic.MessageCount} messages)");
-            if (topic.LastMessageAt is not null)
-                sb.AppendLine($"  Last message: {topic.LastMessageAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-            count++;
+            using var call = zulip.ListTopics(
+                new ZulipListTopicsRequest { StreamName = stream, Limit = limit },
+                cancellationToken: cancellationToken);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Topics in {stream}");
+            sb.AppendLine();
+
+            var count = 0;
+            await foreach (var topic in call.ResponseStream.ReadAllAsync(cancellationToken))
+            {
+                sb.AppendLine($"- **{topic.Topic}** ({topic.MessageCount} messages)");
+                if (topic.LastMessageAt is not null)
+                    sb.AppendLine($"  Last message: {topic.LastMessageAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+                count++;
+            }
+
+            if (count == 0)
+                return $"No topics found in stream '{stream}'.";
+
+            return sb.ToString();
         }
-
-        if (count == 0)
-            return $"No topics found in stream '{stream}'.";
-
-        return sb.ToString();
+        catch (RpcException ex)
+        {
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Get a detailed markdown snapshot of a Zulip topic thread.")]
     public static async Task<string> SnapshotZulipThread(
         ZulipService.ZulipServiceClient zulip,
         [Description("Stream name")] string stream,
-        [Description("Topic name")] string topic)
+        [Description("Topic name")] string topic,
+        CancellationToken cancellationToken = default)
     {
-        var response = await zulip.GetThreadSnapshotAsync(
-            new ZulipSnapshotRequest { StreamName = stream, Topic = topic, IncludeInternalRefs = true });
-        return response.Markdown;
+        try
+        {
+            var response = await zulip.GetThreadSnapshotAsync(
+                new ZulipSnapshotRequest { StreamName = stream, Topic = topic, IncludeInternalRefs = true },
+                cancellationToken: cancellationToken);
+            return response.Markdown;
+        }
+        catch (RpcException ex)
+        {
+            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
     }
 }

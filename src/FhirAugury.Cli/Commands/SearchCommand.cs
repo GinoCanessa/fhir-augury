@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -32,22 +33,33 @@ public static class SearchCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var format = parseResult.GetValue(formatOption)!;
-            var query = parseResult.GetValue(queryArg)!;
-            var sources = parseResult.GetValue(sourcesOption);
-            var limit = parseResult.GetValue(limitOption);
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new UnifiedSearchRequest { Query = query, Limit = limit };
-
-            if (!string.IsNullOrWhiteSpace(sources))
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.Sources.Add(s.ToLowerInvariant());
-            }
+                var format = parseResult.GetValue(formatOption)!;
+                var query = parseResult.GetValue(queryArg)!;
+                var sources = parseResult.GetValue(sourcesOption);
+                var limit = parseResult.GetValue(limitOption);
 
-            var response = await clients.Orchestrator.UnifiedSearchAsync(request, cancellationToken: ct);
-            OutputFormatter.FormatSearchResults(response, format);
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new UnifiedSearchRequest { Query = query, Limit = limit };
+
+                if (!string.IsNullOrWhiteSpace(sources))
+                {
+                    foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        request.Sources.Add(s.ToLowerInvariant());
+                }
+
+                var response = await clients.Orchestrator.UnifiedSearchAsync(request, cancellationToken: ct);
+                OutputFormatter.FormatSearchResults(response, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;

@@ -1,6 +1,7 @@
 using Fhiraugury;
 using FhirAugury.Orchestrator.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Routing;
 
@@ -17,12 +18,12 @@ public class SourceRouter : IDisposable
 
     private JiraService.JiraServiceClient? _jiraClient;
 
-    public SourceRouter(OrchestratorOptions options, ILogger<SourceRouter> logger)
+    public SourceRouter(IOptions<OrchestratorOptions> options, ILogger<SourceRouter> logger)
     {
-        _options = options;
+        _options = options.Value;
         _logger = logger;
 
-        foreach (var (name, config) in options.Services)
+        foreach (var (name, config) in _options.Services)
         {
             if (!config.Enabled || string.IsNullOrEmpty(config.GrpcAddress))
                 continue;

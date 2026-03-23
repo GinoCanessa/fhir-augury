@@ -14,6 +14,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,6 +23,10 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_ORCHESTRATOR_");
 
+builder.Services.Configure<OrchestratorOptions>(
+    builder.Configuration.GetSection(OrchestratorOptions.SectionName));
+
+// Resolve options early for Kestrel configuration
 var orchestratorOptions = new OrchestratorOptions();
 builder.Configuration.GetSection(OrchestratorOptions.SectionName).Bind(orchestratorOptions);
 
@@ -34,17 +39,16 @@ builder.WebHost.ConfigureKestrel(k =>
 
 // ── Services ─────────────────────────────────────────────────────
 builder.Services.AddGrpc();
-builder.Services.AddSingleton(orchestratorOptions);
 
 // Database
-builder.Services.AddSingleton(sp =>
+builder.Services.AddSingleton<OrchestratorDatabase>(sp =>
 {
-    var dbPath = Path.GetFullPath(orchestratorOptions.DatabasePath);
+    var opts = sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value;
+    var dbPath = Path.GetFullPath(opts.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    var db = new OrchestratorDatabase(dbPath, sp.GetRequiredService<ILogger<OrchestratorDatabase>>());
-    db.Initialize();
-    return db;
+    return new OrchestratorDatabase(dbPath, sp.GetRequiredService<ILogger<OrchestratorDatabase>>());
 });
+builder.Services.AddHostedService<DatabaseInitializer>();
 
 // Routing
 builder.Services.AddSingleton<SourceRouter>();
@@ -64,6 +68,9 @@ builder.Services.AddSingleton<UnifiedSearchService>();
 // Related
 builder.Services.AddSingleton<RelatedItemFinder>();
 
+// gRPC service aggregate
+builder.Services.AddSingleton<OrchestratorServices>();
+
 // Background workers
 builder.Services.AddSingleton<XRefScanWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<XRefScanWorker>());
@@ -81,3 +88,17 @@ app.MapGrpcService<OrchestratorGrpcService>();
 app.MapOrchestratorHttpApi();
 
 app.Run();
+
+/// <summary>
+/// Initializes the orchestrator database during application startup.
+/// </summary>
+internal sealed class DatabaseInitializer(OrchestratorDatabase database) : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        database.Initialize();
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}

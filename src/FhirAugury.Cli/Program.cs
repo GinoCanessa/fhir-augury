@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Reflection;
 using FhirAugury.Cli.Commands;
 
 namespace FhirAugury.Cli;
@@ -26,10 +27,31 @@ public static class Program
             Description = "Verbose output",
             DefaultValueFactory = _ => false,
         };
+        var versionOption = new Option<bool>("--version")
+        {
+            Description = "Show version information",
+            DefaultValueFactory = _ => false,
+        };
 
         rootCommand.Add(orchestratorOption);
         rootCommand.Add(formatOption);
         rootCommand.Add(verboseOption);
+        rootCommand.Add(versionOption);
+
+        rootCommand.SetAction((parseResult, _) =>
+        {
+            if (parseResult.GetValue(versionOption))
+            {
+                var version = Assembly.GetExecutingAssembly()
+                    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                    ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+                    ?? "0.0.0";
+                Console.WriteLine($"fhir-augury {version}");
+                return Task.CompletedTask;
+            }
+            Console.WriteLine("Use --help for usage information.");
+            return Task.CompletedTask;
+        });
 
         // Register commands
         rootCommand.Add(SearchCommand.Create(orchestratorOption, formatOption, verboseOption));
@@ -37,7 +59,7 @@ public static class Program
         rootCommand.Add(GetCommand.Create(orchestratorOption, formatOption, verboseOption));
         rootCommand.Add(SnapshotCommand.Create(orchestratorOption, verboseOption));
         rootCommand.Add(XrefCommand.Create(orchestratorOption, formatOption, verboseOption));
-        rootCommand.Add(IngestCommand.Create(orchestratorOption, verboseOption));
+        rootCommand.Add(IngestCommand.Create(orchestratorOption, formatOption, verboseOption));
         rootCommand.Add(ServicesCommand.Create(orchestratorOption, formatOption, verboseOption));
         rootCommand.Add(QueryJiraCommand.Create(orchestratorOption, formatOption, verboseOption));
         rootCommand.Add(QueryZulipCommand.Create(orchestratorOption, formatOption, verboseOption));

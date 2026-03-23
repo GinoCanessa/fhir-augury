@@ -1,11 +1,12 @@
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Search;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Tests;
 
 public class FreshnessDecayTests
 {
-    private static OrchestratorOptions CreateOptions(Dictionary<string, double>? weights = null) => new()
+    private static IOptions<OrchestratorOptions> CreateOptions(Dictionary<string, double>? weights = null) => Options.Create(new OrchestratorOptions
     {
         Search = new SearchOptions
         {
@@ -15,7 +16,7 @@ public class FreshnessDecayTests
                 ["zulip"] = 2.0,
             },
         },
-    };
+    });
 
     [Fact]
     public void Apply_RecentItem_MinimalDecay()

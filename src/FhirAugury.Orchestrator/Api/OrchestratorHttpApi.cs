@@ -11,6 +11,7 @@ using Google.Protobuf.WellKnownTypes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Orchestrator.Api;
 
@@ -261,8 +262,10 @@ public static class OrchestratorHttpApi
         api.MapGet("/stats", async (
             SourceRouter router,
             OrchestratorDatabase database,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            var logger = loggerFactory.CreateLogger("OrchestratorHttpApi");
             using var connection = database.OpenConnection();
             var linkCount = CrossRefLinkRecord.SelectCount(connection);
             var dbSize = database.GetDatabaseSizeBytes();
@@ -285,8 +288,9 @@ public static class OrchestratorHttpApi
                         cacheSizeBytes = stats.CacheSizeBytes,
                     });
                 }
-                catch
+                catch (Exception ex)
                 {
+                    logger.LogWarning(ex, "Failed to get stats for source {Source}", sourceName);
                     sourceStats.Add(new
                     {
                         source = sourceName,

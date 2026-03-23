@@ -15,11 +15,16 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
-// Register gRPC channels and clients
+// Register gRPC channels as singletons so they are disposed on shutdown
 var orchestratorChannel = GrpcChannel.ForAddress(orchestratorAddr);
 var jiraChannel = GrpcChannel.ForAddress(jiraAddr);
 var zulipChannel = GrpcChannel.ForAddress(zulipAddr);
 
+builder.Services.AddSingleton(orchestratorChannel);
+builder.Services.AddSingleton(jiraChannel);
+builder.Services.AddSingleton(zulipChannel);
+
+// Register gRPC clients
 builder.Services.AddSingleton(new OrchestratorService.OrchestratorServiceClient(orchestratorChannel));
 builder.Services.AddSingleton(new SourceService.SourceServiceClient(orchestratorChannel));
 builder.Services.AddKeyedSingleton("jira", new SourceService.SourceServiceClient(jiraChannel));

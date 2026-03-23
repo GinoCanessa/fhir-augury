@@ -1,23 +1,24 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
 
 public static class IngestCommand
 {
-    public static Command Create(Option<string> orchestratorOption, Option<bool> verboseOption)
+    public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
         var command = new Command("ingest", "Ingestion and sync management");
 
-        command.Add(CreateTriggerCommand(orchestratorOption, verboseOption));
+        command.Add(CreateTriggerCommand(orchestratorOption, formatOption, verboseOption));
         command.Add(CreateStatusCommand(orchestratorOption));
-        command.Add(CreateRebuildCommand(orchestratorOption, verboseOption));
+        command.Add(CreateRebuildCommand(orchestratorOption, formatOption, verboseOption));
 
         return command;
     }
 
-    private static Command CreateTriggerCommand(Option<string> orchestratorOption, Option<bool> verboseOption)
+    private static Command CreateTriggerCommand(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
         var sourcesOption = new Option<string?>("--sources")
         {
@@ -38,20 +39,32 @@ public static class IngestCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var sources = parseResult.GetValue(sourcesOption);
-            var type = parseResult.GetValue(typeOption)!;
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new TriggerSyncRequest { Type = type };
-
-            if (!string.IsNullOrWhiteSpace(sources))
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.Sources.Add(s.ToLowerInvariant());
-            }
+                var format = parseResult.GetValue(formatOption)!;
+                var sources = parseResult.GetValue(sourcesOption);
+                var type = parseResult.GetValue(typeOption)!;
 
-            var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
-            OutputFormatter.FormatSyncStatus(response, "table");
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new TriggerSyncRequest { Type = type };
+
+                if (!string.IsNullOrWhiteSpace(sources))
+                {
+                    foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        request.Sources.Add(s.ToLowerInvariant());
+                }
+
+                var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
+                OutputFormatter.FormatSyncStatus(response, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;
@@ -64,21 +77,28 @@ public static class IngestCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            using var clients = new GrpcClientFactory(addr);
-            var response = await clients.Orchestrator.GetServicesStatusAsync(
-                new ServicesStatusRequest(), cancellationToken: ct);
-
-            foreach (var svc in response.Services)
+            try
             {
-                var lastSync = svc.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
-                Console.WriteLine($"{svc.Name}: {svc.Status} (last sync: {lastSync}, items: {svc.ItemCount})");
+                using var clients = new GrpcClientFactory(addr);
+                var response = await clients.Orchestrator.GetServicesStatusAsync(
+                    new ServicesStatusRequest(), cancellationToken: ct);
+
+                foreach (var svc in response.Services)
+                {
+                    var lastSync = svc.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    Console.WriteLine($"{svc.Name}: {svc.Status} (last sync: {lastSync}, items: {svc.ItemCount})");
+                }
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
             }
         });
 
         return command;
     }
 
-    private static Command CreateRebuildCommand(Option<string> orchestratorOption, Option<bool> verboseOption)
+    private static Command CreateRebuildCommand(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
         var sourcesOption = new Option<string?>("--sources")
         {
@@ -93,19 +113,31 @@ public static class IngestCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var sources = parseResult.GetValue(sourcesOption);
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new TriggerSyncRequest { Type = "rebuild" };
-
-            if (!string.IsNullOrWhiteSpace(sources))
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.Sources.Add(s.ToLowerInvariant());
-            }
+                var format = parseResult.GetValue(formatOption)!;
+                var sources = parseResult.GetValue(sourcesOption);
 
-            var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
-            OutputFormatter.FormatSyncStatus(response, "table");
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new TriggerSyncRequest { Type = "rebuild" };
+
+                if (!string.IsNullOrWhiteSpace(sources))
+                {
+                    foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        request.Sources.Add(s.ToLowerInvariant());
+                }
+
+                var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
+                OutputFormatter.FormatSyncStatus(response, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;

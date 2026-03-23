@@ -80,72 +80,83 @@ public static class QueryJiraCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var format = parseResult.GetValue(formatOption)!;
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new JiraQueryRequest
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                Query = parseResult.GetValue(queryOption) ?? "",
-                SortBy = parseResult.GetValue(sortByOption)!,
-                SortOrder = parseResult.GetValue(sortOrderOption)!,
-                Limit = parseResult.GetValue(limitOption),
-            };
+                var format = parseResult.GetValue(formatOption)!;
 
-            AddItems(request.Statuses, parseResult.GetValue(statusesOption));
-            AddItems(request.WorkGroups, parseResult.GetValue(workGroupsOption));
-            AddItems(request.Specifications, parseResult.GetValue(specificationsOption));
-            AddItems(request.Types_, parseResult.GetValue(typesOption));
-            AddItems(request.Priorities, parseResult.GetValue(prioritiesOption));
-            AddItems(request.Labels, parseResult.GetValue(labelsOption));
-            AddItems(request.Assignees, parseResult.GetValue(assigneesOption));
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new JiraQueryRequest
+                {
+                    Query = parseResult.GetValue(queryOption) ?? "",
+                    SortBy = parseResult.GetValue(sortByOption)!,
+                    SortOrder = parseResult.GetValue(sortOrderOption)!,
+                    Limit = parseResult.GetValue(limitOption),
+                };
 
-            var updatedAfter = parseResult.GetValue(updatedAfterOption);
-            if (updatedAfter.HasValue)
-                request.UpdatedAfter = Timestamp.FromDateTimeOffset(updatedAfter.Value);
+                AddItems(request.Statuses, parseResult.GetValue(statusesOption));
+                AddItems(request.WorkGroups, parseResult.GetValue(workGroupsOption));
+                AddItems(request.Specifications, parseResult.GetValue(specificationsOption));
+                AddItems(request.Types_, parseResult.GetValue(typesOption));
+                AddItems(request.Priorities, parseResult.GetValue(prioritiesOption));
+                AddItems(request.Labels, parseResult.GetValue(labelsOption));
+                AddItems(request.Assignees, parseResult.GetValue(assigneesOption));
 
-            using var call = clients.Jira.QueryIssues(request, cancellationToken: ct);
+                var updatedAfter = parseResult.GetValue(updatedAfterOption);
+                if (updatedAfter.HasValue)
+                    request.UpdatedAfter = Timestamp.FromDateTimeOffset(updatedAfter.Value);
 
-            switch (format.ToLowerInvariant())
-            {
-                case "json":
-                    var items = new List<object>();
-                    await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        items.Add(new
+                using var call = clients.Jira.QueryIssues(request, cancellationToken: ct);
+
+                switch (format.ToLowerInvariant())
+                {
+                    case "json":
+                        var items = new List<object>();
+                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            issue.Key, issue.ProjectKey, issue.Title, issue.Type,
-                            issue.Status, issue.Priority, issue.WorkGroup, issue.Specification,
-                            Updated = issue.UpdatedAt?.ToDateTimeOffset(),
-                        });
-                    }
-                    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(items, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-                    break;
+                            items.Add(new
+                            {
+                                issue.Key, issue.ProjectKey, issue.Title, issue.Type,
+                                issue.Status, issue.Priority, issue.WorkGroup, issue.Specification,
+                                Updated = issue.UpdatedAt?.ToDateTimeOffset(),
+                            });
+                        }
+                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(items, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                        break;
 
-                case "markdown":
-                case "md":
-                    Console.WriteLine("| Key | Status | Type | Title | Work Group | Updated |");
-                    Console.WriteLine("|-----|--------|------|-------|------------|---------|");
-                    await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
-                        Console.WriteLine($"| {issue.Key} | {issue.Status} | {issue.Type} | {issue.Title} | {issue.WorkGroup} | {updated} |");
-                    }
-                    break;
+                    case "markdown":
+                    case "md":
+                        Console.WriteLine("| Key | Status | Type | Title | Work Group | Updated |");
+                        Console.WriteLine("|-----|--------|------|-------|------------|---------|");
+                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
+                        {
+                            var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            Console.WriteLine($"| {issue.Key} | {issue.Status} | {issue.Type} | {issue.Title} | {issue.WorkGroup} | {updated} |");
+                        }
+                        break;
 
-                default:
-                    Console.WriteLine($"{"Key",-14} {"Status",-12} {"Type",-12} {"Title",-40} {"Work Group",-20} {"Updated",-12}");
-                    Console.WriteLine($"{"────────────",-14} {"──────────",-12} {"──────────",-12} {"──────────────────────────────────────",-40} {"──────────────────",-20} {"──────────",-12}");
-                    var count = 0;
-                    await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        var title = issue.Title.Length > 38 ? issue.Title[..35] + "..." : issue.Title;
-                        var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
-                        Console.WriteLine($"{issue.Key,-14} {issue.Status,-12} {issue.Type,-12} {title,-40} {issue.WorkGroup,-20} {updated,-12}");
-                        count++;
-                    }
-                    Console.WriteLine();
-                    Console.WriteLine($"{count} result(s)");
-                    break;
+                    default:
+                        Console.WriteLine($"{"Key",-14} {"Status",-12} {"Type",-12} {"Title",-40} {"Work Group",-20} {"Updated",-12}");
+                        Console.WriteLine($"{"────────────",-14} {"──────────",-12} {"──────────",-12} {"──────────────────────────────────────",-40} {"──────────────────",-20} {"──────────",-12}");
+                        var count = 0;
+                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
+                        {
+                            var title = issue.Title.Length > 38 ? issue.Title[..35] + "..." : issue.Title;
+                            var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            Console.WriteLine($"{issue.Key,-14} {issue.Status,-12} {issue.Type,-12} {title,-40} {issue.WorkGroup,-20} {updated,-12}");
+                            count++;
+                        }
+                        Console.WriteLine();
+                        Console.WriteLine($"{count} result(s)");
+                        break;
+                }
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
             }
         });
 

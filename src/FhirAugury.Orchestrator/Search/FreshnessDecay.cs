@@ -1,4 +1,5 @@
 using FhirAugury.Orchestrator.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Search;
 
@@ -7,8 +8,9 @@ namespace FhirAugury.Orchestrator.Search;
 /// Formula: decay = 1 / (1 + weight × (age_days / 365.0)²)
 ///          final = boosted × decay
 /// </summary>
-public class FreshnessDecay(OrchestratorOptions options)
+public class FreshnessDecay(IOptions<OrchestratorOptions> optionsAccessor)
 {
+    private readonly OrchestratorOptions options = optionsAccessor.Value;
     /// <summary>
     /// Applies freshness decay to a list of scored items.
     /// Items from sources with higher freshness weights decay faster.

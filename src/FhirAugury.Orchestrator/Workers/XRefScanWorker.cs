@@ -2,6 +2,7 @@ using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.CrossRef;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Workers;
 
@@ -11,12 +12,12 @@ namespace FhirAugury.Orchestrator.Workers;
 public class XRefScanWorker(
     CrossRefLinker linker,
     StructuralLinker structuralLinker,
-    OrchestratorOptions options,
+    IOptions<OrchestratorOptions> options,
     ILogger<XRefScanWorker> logger)
     : BackgroundService
 {
     private readonly SemaphoreSlim _scanLock = new(1, 1);
-    private bool _scanRequested;
+    private volatile bool _scanRequested;
 
     /// <summary>
     /// Requests an immediate cross-reference scan (triggered by ingestion callbacks).
@@ -28,7 +29,7 @@ public class XRefScanWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var interval = TimeSpan.FromMinutes(options.CrossRef.ScanIntervalMinutes);
+        var interval = TimeSpan.FromMinutes(options.Value.CrossRef.ScanIntervalMinutes);
         if (interval <= TimeSpan.Zero)
         {
             logger.LogWarning("Cross-reference scanning disabled (interval <= 0)");

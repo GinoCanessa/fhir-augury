@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Fhiraugury;
+using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -31,14 +32,28 @@ public static class SnapshotCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var id = parseResult.GetValue(idArg)!;
-            var includeComments = parseResult.GetValue(includeCommentsOption);
+            var verbose = parseResult.GetValue(verboseOption);
+            try
+            {
+                var source = parseResult.GetValue(sourceArg)!;
+                var id = parseResult.GetValue(idArg)!;
+                var includeComments = parseResult.GetValue(includeCommentsOption);
 
-            using var clients = new GrpcClientFactory(addr);
-            var response = await clients.Orchestrator.GetSnapshotAsync(
-                new GetSnapshotRequest { Id = id, IncludeComments = includeComments, IncludeInternalRefs = true },
-                cancellationToken: ct);
-            Console.WriteLine(response.Markdown);
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var headers = new Metadata { { "x-source", source } };
+                var response = await clients.Orchestrator.GetSnapshotAsync(
+                    new GetSnapshotRequest { Id = id, IncludeComments = includeComments, IncludeInternalRefs = true, SourceName = source },
+                    headers: headers,
+                    cancellationToken: ct);
+                Console.WriteLine(response.Markdown);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;

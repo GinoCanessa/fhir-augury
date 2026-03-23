@@ -266,12 +266,27 @@ public static class OutputFormatter
             ? ("→", xref.TargetType, xref.TargetId)
             : ("←", xref.SourceType, xref.SourceId);
 
-    private static string FormatKey(string key) =>
-        string.Concat(key.Select((c, i) => i > 0 && char.IsUpper(c) ? $" {c}" : $"{c}"))
-              .Replace('_', ' ')
-              .Trim();
+    internal static string FormatKey(string key)
+    {
+        var sb = new StringBuilder(key.Length + 4);
+        for (var i = 0; i < key.Length; i++)
+        {
+            var c = key[i];
+            if (c == '_')
+            {
+                sb.Append(' ');
+            }
+            else
+            {
+                if (i > 0 && char.IsUpper(c))
+                    sb.Append(' ');
+                sb.Append(c);
+            }
+        }
+        return sb.ToString().Trim();
+    }
 
-    private static string FormatBytes(long bytes) => bytes switch
+    internal static string FormatBytes(long bytes) => bytes switch
     {
         < 1024 => $"{bytes} B",
         < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",

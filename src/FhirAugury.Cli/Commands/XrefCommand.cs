@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -32,16 +33,27 @@ public static class XrefCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var format = parseResult.GetValue(formatOption)!;
-            var source = parseResult.GetValue(sourceArg)!;
-            var id = parseResult.GetValue(idArg)!;
-            var direction = parseResult.GetValue(directionOption)!;
+            var verbose = parseResult.GetValue(verboseOption);
+            try
+            {
+                var format = parseResult.GetValue(formatOption)!;
+                var source = parseResult.GetValue(sourceArg)!;
+                var id = parseResult.GetValue(idArg)!;
+                var direction = parseResult.GetValue(directionOption)!;
 
-            using var clients = new GrpcClientFactory(addr);
-            var response = await clients.Orchestrator.GetCrossReferencesAsync(
-                new GetXRefRequest { Source = source, Id = id, Direction = direction },
-                cancellationToken: ct);
-            OutputFormatter.FormatCrossReferences(response, source, id, format);
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var response = await clients.Orchestrator.GetCrossReferencesAsync(
+                    new GetXRefRequest { Source = source, Id = id, Direction = direction },
+                    cancellationToken: ct);
+                OutputFormatter.FormatCrossReferences(response, source, id, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;

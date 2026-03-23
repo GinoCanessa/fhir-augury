@@ -17,16 +17,17 @@ namespace FhirAugury.Orchestrator.Api;
 /// Implements the OrchestratorService gRPC contract.
 /// </summary>
 public class OrchestratorGrpcService(
-    UnifiedSearchService searchService,
-    RelatedItemFinder relatedFinder,
-    OrchestratorDatabase database,
-    SourceRouter router,
-    ServiceHealthMonitor healthMonitor,
-    CrossRefLinker crossRefLinker,
-    XRefScanWorker xrefScanWorker,
+    OrchestratorServices services,
     ILogger<OrchestratorGrpcService> logger)
     : OrchestratorService.OrchestratorServiceBase
 {
+    private readonly UnifiedSearchService searchService = services.SearchService;
+    private readonly RelatedItemFinder relatedFinder = services.RelatedFinder;
+    private readonly OrchestratorDatabase database = services.Database;
+    private readonly SourceRouter router = services.Router;
+    private readonly ServiceHealthMonitor healthMonitor = services.HealthMonitor;
+    private readonly CrossRefLinker crossRefLinker = services.CrossRefLinker;
+    private readonly XRefScanWorker xrefScanWorker = services.XRefScanWorker;
     public override async Task<SearchResponse> UnifiedSearch(UnifiedSearchRequest request, ServerCallContext context)
     {
         var (results, warnings) = await searchService.SearchAsync(
@@ -119,8 +120,9 @@ public class OrchestratorGrpcService(
 
     public override async Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
     {
-        // The request must include a source in metadata or we need to determine it
-        var source = context.RequestHeaders.GetValue("x-source") ?? "";
+        var source = !string.IsNullOrEmpty(request.SourceName)
+            ? request.SourceName
+            : context.RequestHeaders.GetValue("x-source") ?? "";
         var client = router.GetSourceClient(source);
         if (client is null)
             throw new RpcException(new Status(StatusCode.NotFound, $"Source '{source}' not found or disabled"));
@@ -130,7 +132,9 @@ public class OrchestratorGrpcService(
 
     public override async Task<SnapshotResponse> GetSnapshot(GetSnapshotRequest request, ServerCallContext context)
     {
-        var source = context.RequestHeaders.GetValue("x-source") ?? "";
+        var source = !string.IsNullOrEmpty(request.SourceName)
+            ? request.SourceName
+            : context.RequestHeaders.GetValue("x-source") ?? "";
         var client = router.GetSourceClient(source);
         if (client is null)
             throw new RpcException(new Status(StatusCode.NotFound, $"Source '{source}' not found or disabled"));
@@ -140,7 +144,9 @@ public class OrchestratorGrpcService(
 
     public override async Task<ContentResponse> GetContent(GetContentRequest request, ServerCallContext context)
     {
-        var source = context.RequestHeaders.GetValue("x-source") ?? "";
+        var source = !string.IsNullOrEmpty(request.SourceName)
+            ? request.SourceName
+            : context.RequestHeaders.GetValue("x-source") ?? "";
         var client = router.GetSourceClient(source);
         if (client is null)
             throw new RpcException(new Status(StatusCode.NotFound, $"Source '{source}' not found or disabled"));

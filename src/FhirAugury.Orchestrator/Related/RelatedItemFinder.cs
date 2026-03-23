@@ -6,6 +6,7 @@ using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Orchestrator.Search;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Related;
 
@@ -16,9 +17,10 @@ namespace FhirAugury.Orchestrator.Related;
 public class RelatedItemFinder(
     OrchestratorDatabase database,
     SourceRouter router,
-    OrchestratorOptions options,
+    IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<RelatedItemFinder> logger)
 {
+    private readonly OrchestratorOptions options = optionsAccessor.Value;
     /// <summary>
     /// Finds items related to a seed item identified by source and id.
     /// </summary>
@@ -112,8 +114,9 @@ public class RelatedItemFinder(
                                 new SearchRequest { Query = searchTerms, Limit = effectiveLimit },
                                 cancellationToken: ct);
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
                             return new SearchResponse();
                         }
                     }, ct));
@@ -204,9 +207,9 @@ public class RelatedItemFinder(
                 candidate.Title = item.Title;
                 candidate.Url = item.Url;
             }
-            catch
+            catch (Exception ex)
             {
-                // Item may not exist or service may be down
+                logger.LogWarning(ex, "Failed to enrich related item {Source}/{Id}", candidate.Source, candidate.Id);
             }
         }
 

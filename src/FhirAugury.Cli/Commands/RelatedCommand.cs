@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
 
@@ -37,23 +38,34 @@ public static class RelatedCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var format = parseResult.GetValue(formatOption)!;
-            var source = parseResult.GetValue(sourceArg)!;
-            var id = parseResult.GetValue(idArg)!;
-            var limit = parseResult.GetValue(limitOption);
-            var targetSources = parseResult.GetValue(targetSourcesOption);
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
-
-            if (!string.IsNullOrWhiteSpace(targetSources))
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                foreach (var s in targetSources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.TargetSources.Add(s.ToLowerInvariant());
-            }
+                var format = parseResult.GetValue(formatOption)!;
+                var source = parseResult.GetValue(sourceArg)!;
+                var id = parseResult.GetValue(idArg)!;
+                var limit = parseResult.GetValue(limitOption);
+                var targetSources = parseResult.GetValue(targetSourcesOption);
 
-            var response = await clients.Orchestrator.FindRelatedAsync(request, cancellationToken: ct);
-            OutputFormatter.FormatRelated(response, format);
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
+
+                if (!string.IsNullOrWhiteSpace(targetSources))
+                {
+                    foreach (var s in targetSources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        request.TargetSources.Add(s.ToLowerInvariant());
+                }
+
+                var response = await clients.Orchestrator.FindRelatedAsync(request, cancellationToken: ct);
+                OutputFormatter.FormatRelated(response, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
         });
 
         return command;

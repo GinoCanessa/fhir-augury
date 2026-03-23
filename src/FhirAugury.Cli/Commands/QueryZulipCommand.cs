@@ -70,72 +70,83 @@ public static class QueryZulipCommand
         command.SetAction(async (parseResult, ct) =>
         {
             var addr = parseResult.GetValue(orchestratorOption)!;
-            var format = parseResult.GetValue(formatOption)!;
-
-            using var clients = new GrpcClientFactory(addr);
-            var request = new ZulipQueryRequest
+            var verbose = parseResult.GetValue(verboseOption);
+            try
             {
-                Topic = parseResult.GetValue(topicOption) ?? "",
-                TopicKeyword = parseResult.GetValue(topicKeywordOption) ?? "",
-                Query = parseResult.GetValue(queryOption) ?? "",
-                SortBy = parseResult.GetValue(sortByOption)!,
-                SortOrder = parseResult.GetValue(sortOrderOption)!,
-                Limit = parseResult.GetValue(limitOption),
-            };
+                var format = parseResult.GetValue(formatOption)!;
 
-            AddItems(request.StreamNames, parseResult.GetValue(streamsOption));
-            AddItems(request.SenderNames, parseResult.GetValue(sendersOption));
+                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using var clients = new GrpcClientFactory(addr);
+                var request = new ZulipQueryRequest
+                {
+                    Topic = parseResult.GetValue(topicOption) ?? "",
+                    TopicKeyword = parseResult.GetValue(topicKeywordOption) ?? "",
+                    Query = parseResult.GetValue(queryOption) ?? "",
+                    SortBy = parseResult.GetValue(sortByOption)!,
+                    SortOrder = parseResult.GetValue(sortOrderOption)!,
+                    Limit = parseResult.GetValue(limitOption),
+                };
 
-            var after = parseResult.GetValue(afterOption);
-            if (after.HasValue)
-                request.After = Timestamp.FromDateTimeOffset(after.Value);
-            var before = parseResult.GetValue(beforeOption);
-            if (before.HasValue)
-                request.Before = Timestamp.FromDateTimeOffset(before.Value);
+                AddItems(request.StreamNames, parseResult.GetValue(streamsOption));
+                AddItems(request.SenderNames, parseResult.GetValue(sendersOption));
 
-            using var call = clients.Zulip.QueryMessages(request, cancellationToken: ct);
+                var after = parseResult.GetValue(afterOption);
+                if (after.HasValue)
+                    request.After = Timestamp.FromDateTimeOffset(after.Value);
+                var before = parseResult.GetValue(beforeOption);
+                if (before.HasValue)
+                    request.Before = Timestamp.FromDateTimeOffset(before.Value);
 
-            switch (format.ToLowerInvariant())
-            {
-                case "json":
-                    var items = new List<object>();
-                    await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        items.Add(new
+                using var call = clients.Zulip.QueryMessages(request, cancellationToken: ct);
+
+                switch (format.ToLowerInvariant())
+                {
+                    case "json":
+                        var items = new List<object>();
+                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            msg.Id, msg.StreamName, msg.Topic, msg.SenderName,
-                            msg.Snippet, Timestamp = msg.Timestamp?.ToDateTimeOffset(),
-                        });
-                    }
-                    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(items, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-                    break;
+                            items.Add(new
+                            {
+                                msg.Id, msg.StreamName, msg.Topic, msg.SenderName,
+                                msg.Snippet, Timestamp = msg.Timestamp?.ToDateTimeOffset(),
+                            });
+                        }
+                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(items, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                        break;
 
-                case "markdown":
-                case "md":
-                    Console.WriteLine("| Stream | Topic | Sender | Snippet | Timestamp |");
-                    Console.WriteLine("|--------|-------|--------|---------|-----------|");
-                    await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
-                        var snippet = msg.Snippet.Length > 50 ? msg.Snippet[..47] + "..." : msg.Snippet;
-                        Console.WriteLine($"| {msg.StreamName} | {msg.Topic} | {msg.SenderName} | {snippet} | {ts} |");
-                    }
-                    break;
+                    case "markdown":
+                    case "md":
+                        Console.WriteLine("| Stream | Topic | Sender | Snippet | Timestamp |");
+                        Console.WriteLine("|--------|-------|--------|---------|-----------|");
+                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
+                        {
+                            var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
+                            var snippet = msg.Snippet.Length > 50 ? msg.Snippet[..47] + "..." : msg.Snippet;
+                            Console.WriteLine($"| {msg.StreamName} | {msg.Topic} | {msg.SenderName} | {snippet} | {ts} |");
+                        }
+                        break;
 
-                default:
-                    Console.WriteLine($"{"Stream",-20} {"Topic",-25} {"Sender",-16} {"Snippet",-40} {"Timestamp",-18}");
-                    Console.WriteLine($"{"──────────────────",-20} {"───────────────────────",-25} {"──────────────",-16} {"──────────────────────────────────────",-40} {"────────────────",-18}");
-                    var count = 0;
-                    await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
-                    {
-                        var snippet = msg.Snippet.Length > 38 ? msg.Snippet[..35] + "..." : msg.Snippet;
-                        var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
-                        Console.WriteLine($"{msg.StreamName,-20} {msg.Topic,-25} {msg.SenderName,-16} {snippet,-40} {ts,-18}");
-                        count++;
-                    }
-                    Console.WriteLine();
-                    Console.WriteLine($"{count} result(s)");
-                    break;
+                    default:
+                        Console.WriteLine($"{"Stream",-20} {"Topic",-25} {"Sender",-16} {"Snippet",-40} {"Timestamp",-18}");
+                        Console.WriteLine($"{"──────────────────",-20} {"───────────────────────",-25} {"──────────────",-16} {"──────────────────────────────────────",-40} {"────────────────",-18}");
+                        var count = 0;
+                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
+                        {
+                            var snippet = msg.Snippet.Length > 38 ? msg.Snippet[..35] + "..." : msg.Snippet;
+                            var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
+                            Console.WriteLine($"{msg.StreamName,-20} {msg.Topic,-25} {msg.SenderName,-16} {snippet,-40} {ts,-18}");
+                            count++;
+                        }
+                        Console.WriteLine();
+                        Console.WriteLine($"{count} result(s)");
+                        break;
+                }
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
             }
         });
 

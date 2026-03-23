@@ -42,7 +42,7 @@ public record ScoredItem
     public required string Id { get; init; }
     public required string Title { get; init; }
     public required string Snippet { get; init; }
-    public required double Score { get; set; }
+    public required double Score { get; init; }
     public required string Url { get; init; }
     public required DateTimeOffset? UpdatedAt { get; init; }
     public Dictionary<string, string> Metadata { get; init; } = new();

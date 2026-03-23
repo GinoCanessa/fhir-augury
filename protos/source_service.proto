@@ -73,6 +73,7 @@ message GetItemRequest {
   string id = 1;
   bool include_content = 2;
   bool include_comments = 3;
+  string source_name = 4;
 }
 
 message ItemResponse {
@@ -120,6 +121,7 @@ message GetSnapshotRequest {
   string id = 1;
   bool include_comments = 2;
   bool include_internal_refs = 3;
+  string source_name = 4;
 }
 
 message SnapshotResponse {
@@ -132,6 +134,7 @@ message SnapshotResponse {
 message GetContentRequest {
   string id = 1;
   string format = 2;
+  string source_name = 3;
 }
 
 message ContentResponse {

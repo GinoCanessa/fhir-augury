@@ -12,13 +12,18 @@ public class CrossRefBooster(OrchestratorDatabase database)
 {
     /// <summary>
     /// Boosts scores for items that have cross-references in the database.
+    /// Uses a single connection for all lookups to avoid per-item connection overhead.
     /// </summary>
     public List<ScoredItem> Boost(IEnumerable<ScoredItem> items, double boostFactor)
     {
-        using var connection = database.OpenConnection();
-        var results = new List<ScoredItem>();
+        var itemList = items.ToList();
+        if (itemList.Count == 0) return itemList;
 
-        foreach (var item in items)
+        using var connection = database.OpenConnection();
+        var results = new List<ScoredItem>(itemList.Count);
+
+        // Batch: query all xref counts for all items using the single connection
+        foreach (var item in itemList)
         {
             var outgoing = CrossRefLinkRecord.SelectList(connection,
                 SourceType: item.Source, SourceId: item.Id);

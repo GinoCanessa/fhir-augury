@@ -12,6 +12,12 @@ public sealed class GrpcClientFactory : IDisposable
     private readonly Lazy<GrpcChannel> _jiraChannel;
     private readonly Lazy<GrpcChannel> _zulipChannel;
 
+    private OrchestratorService.OrchestratorServiceClient? _orchestratorClient;
+    private JiraService.JiraServiceClient? _jiraClient;
+    private ZulipService.ZulipServiceClient? _zulipClient;
+    private SourceService.SourceServiceClient? _jiraSourceClient;
+    private SourceService.SourceServiceClient? _zulipSourceClient;
+
     public GrpcClientFactory(string orchestratorAddr, string? jiraAddr = null, string? zulipAddr = null)
     {
         _orchestratorChannel = GrpcChannel.ForAddress(orchestratorAddr);
@@ -22,13 +28,19 @@ public sealed class GrpcClientFactory : IDisposable
     }
 
     public OrchestratorService.OrchestratorServiceClient Orchestrator =>
-        new(_orchestratorChannel);
+        _orchestratorClient ??= new(_orchestratorChannel);
 
-    public JiraService.JiraServiceClient Jira => new(_jiraChannel.Value);
-    public ZulipService.ZulipServiceClient Zulip => new(_zulipChannel.Value);
+    public JiraService.JiraServiceClient Jira =>
+        _jiraClient ??= new(_jiraChannel.Value);
 
-    public SourceService.SourceServiceClient JiraSource => new(_jiraChannel.Value);
-    public SourceService.SourceServiceClient ZulipSource => new(_zulipChannel.Value);
+    public ZulipService.ZulipServiceClient Zulip =>
+        _zulipClient ??= new(_zulipChannel.Value);
+
+    public SourceService.SourceServiceClient JiraSource =>
+        _jiraSourceClient ??= new(_jiraChannel.Value);
+
+    public SourceService.SourceServiceClient ZulipSource =>
+        _zulipSourceClient ??= new(_zulipChannel.Value);
 
     public void Dispose()
     {
