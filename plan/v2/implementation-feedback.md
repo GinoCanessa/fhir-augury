@@ -52,15 +52,15 @@ Tracking feedback, questions, and issues discovered during implementation.
 ### Status: ✅ Complete
 
 ### Decisions Made
-- v1 projects intentionally kept — v1 tests still validate shared code (Models, Database, Indexing); cleanup deferred
-- In-process development host (6.4) deferred — individual `dotnet run` per service is sufficient for development
 - Root Dockerfile builds the Orchestrator (the main entry point); per-service Dockerfiles in each service directory
 - Docker Compose profiles: "full" (all 5), "jira-zulip" (3), "jira-only" (1 standalone)
 - Orchestrator depends_on uses `required: false` for Confluence/GitHub so jira-zulip profile works
 - Each service uses its own env var prefix (FHIR_AUGURY_JIRA_, FHIR_AUGURY_ZULIP_, etc.)
 - MCP config examples updated for v2 gRPC-based architecture
 - New docs at docs/deployment.md, docs/development.md, docs/configuration.md
+- v1 projects removed after v2 test coverage established (124 v2 tests replace 247 v1 tests)
+- v2 test project references fixed (each references its source project, not Common)
+- `InternalsVisibleTo` added to GitHub project for testing `JiraRefExtractor.ExtractReferences`
 
 ### Items Not Implemented
 - 6.4 In-process DevHost — deferred; each service can be run individually via `dotnet run`
-- 6.7 v1 project removal — intentionally deferred; v1 tests validate shared library code

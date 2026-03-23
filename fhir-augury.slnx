@@ -6,23 +6,11 @@
     <Project Path="src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj" />
     <Project Path="src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj" />
     <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
-    <Project Path="src/FhirAugury.Models/FhirAugury.Models.csproj" />
-    <Project Path="src/FhirAugury.Database/FhirAugury.Database.csproj" />
-    <Project Path="src/FhirAugury.Sources.Jira/FhirAugury.Sources.Jira.csproj" />
-    <Project Path="src/FhirAugury.Sources.Zulip/FhirAugury.Sources.Zulip.csproj" />
-    <Project Path="src/FhirAugury.Sources.Confluence/FhirAugury.Sources.Confluence.csproj" />
-    <Project Path="src/FhirAugury.Sources.GitHub/FhirAugury.Sources.GitHub.csproj" />
-    <Project Path="src/FhirAugury.Indexing/FhirAugury.Indexing.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
-    <Project Path="src/FhirAugury.Service/FhirAugury.Service.csproj" />
     <Project Path="src/FhirAugury.Mcp/FhirAugury.Mcp.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
-    <Project Path="tests/FhirAugury.Database.Tests/FhirAugury.Database.Tests.csproj" />
-    <Project Path="tests/FhirAugury.Sources.Tests/FhirAugury.Sources.Tests.csproj" />
-    <Project Path="tests/FhirAugury.Indexing.Tests/FhirAugury.Indexing.Tests.csproj" />
-    <Project Path="tests/FhirAugury.Integration.Tests/FhirAugury.Integration.Tests.csproj" />
     <Project Path="tests/FhirAugury.Mcp.Tests/FhirAugury.Mcp.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Jira.Tests/FhirAugury.Source.Jira.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />

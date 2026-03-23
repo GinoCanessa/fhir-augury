@@ -337,10 +337,12 @@ Update the root README with:
 
 ## 6.7 — v1 Cleanup
 
-### 6.7.1 — Remove v1 projects
+### 6.7.1 — Remove v1 projects ✅
 
-Once all v2 services are operational, remove the v1 monolith projects:
+v1 monolith projects have been removed from the solution and their
+directories deleted:
 
+**Source projects removed:**
 - `src/FhirAugury.Models/` (replaced by `FhirAugury.Common`)
 - `src/FhirAugury.Database/` (absorbed into per-service databases)
 - `src/FhirAugury.Indexing/` (absorbed into per-service indexing +
@@ -354,15 +356,24 @@ Once all v2 services are operational, remove the v1 monolith projects:
 - `src/FhirAugury.Sources.GitHub/` (replaced by
   `FhirAugury.Source.GitHub`)
 
-Also remove v1 test projects:
+**Test projects removed:**
 - `tests/FhirAugury.Database.Tests/`
 - `tests/FhirAugury.Sources.Tests/`
 - `tests/FhirAugury.Indexing.Tests/`
-- `tests/FhirAugury.Integration.Tests/` (replaced by v2 integration tests)
+- `tests/FhirAugury.Integration.Tests/`
+- `tests/TestData/` (orphaned after v1 test removal)
 
-### 6.7.2 — Update solution file
+**v2 test coverage replaces v1 tests:**
+- 124 v2 tests across 7 test projects
+- Database schema, CRUD, and FTS5 tests for all 4 source services
+- Query builder tests for Jira and Zulip structured queries
+- Jira reference extraction tests for GitHub service
+- Score normalization, freshness decay, and cross-ref boost tests
+- Existing Common and MCP tool tests
 
-Remove all v1 project references from `fhir-augury.slnx`.
+### 6.7.2 — Update solution file ✅
+
+All v1 project references removed from `fhir-augury.slnx`.
 
 ---
 
@@ -377,6 +388,6 @@ Remove all v1 project references from `fhir-augury.slnx`.
 - [ ] In-process development host runs all services on correct ports
 - [x] MCP configuration templates work with the running stack
 - [x] Documentation is accurate and complete
-- [ ] v1 projects are fully removed
+- [x] v1 projects are fully removed
 - [x] All v2 tests pass
 - [ ] End-to-end: download → cache → index → search → xref works

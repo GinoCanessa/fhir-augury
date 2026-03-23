@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />
   </ItemGroup>
 
 </Project>

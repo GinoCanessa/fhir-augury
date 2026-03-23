@@ -90,9 +90,8 @@ tests/
 ```
 
 Note: v1 projects (`FhirAugury.Models`, `FhirAugury.Database`,
-`FhirAugury.Indexing`, `FhirAugury.Service`, `FhirAugury.Sources.*`) remain
-in the solution during migration and are removed as their code is absorbed
-into v2 projects.
+`FhirAugury.Indexing`, `FhirAugury.Service`, `FhirAugury.Sources.*`) have
+been removed. Their functionality has been absorbed into v2 projects.
 
 ---
 
