@@ -84,8 +84,6 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 
 ### Test Projects
 
-#### v2 Test Projects
-
 | Project | What It Tests |
 |---------|---------------|
 | `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
@@ -95,25 +93,13 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 | `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, gRPC API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
 | `FhirAugury.Mcp.Tests` | MCP server tool functions |
-| `FhirAugury.Integration.Tests` | End-to-end integration tests |
-
-#### Legacy v1 Test Projects
-
-| Project | What It Tests |
-|---------|---------------|
-| `FhirAugury.Database.Tests` | Legacy database CRUD, FTS5 triggers |
-| `FhirAugury.Indexing.Tests` | Legacy BM25, tokenization, cross-references |
-| `FhirAugury.Sources.Tests` | Legacy source parsers/mappers |
 
 ### Test Infrastructure
 
 - **Framework:** xUnit with `xunit.runner.visualstudio`
 - **Coverage:** coverlet.collector
-- **Database strategy:**
-  - **Unit tests** use in-memory SQLite (`Data Source=:memory:`) for speed
-  - **Integration tests** use temporary file-backed SQLite with cleanup
-- **Test fixtures:** Sample files in `tests/TestData/` (Jira XML/JSON, GitHub
-  issue/PR JSON, Confluence page/storage XML, Zulip messages JSON)
+- **Database strategy:** Unit tests use in-memory SQLite
+  (`Data Source=:memory:`) for speed
 
 ## Running Services
 

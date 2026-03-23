@@ -25,6 +25,8 @@ The MCP server is configured entirely through environment variables:
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
+| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
 
 The MCP server uses stdio transport and sends all logging to stderr.
 
@@ -45,7 +47,9 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
       "env": {
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
-        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
+        "FHIR_AUGURY_CONFLUENCE_GRPC": "http://localhost:5181",
+        "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
       }
     }
   }

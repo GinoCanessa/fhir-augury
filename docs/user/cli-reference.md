@@ -286,7 +286,7 @@ dotnet run --project src/FhirAugury.Cli -- list <source> [options]
 
 | Argument | Description |
 |----------|-------------|
-| `source` | Source to list: `jira`, `zulip` |
+| `source` | Source to list: `jira`, `zulip`, `confluence`, `github` |
 
 **Examples:**
 
