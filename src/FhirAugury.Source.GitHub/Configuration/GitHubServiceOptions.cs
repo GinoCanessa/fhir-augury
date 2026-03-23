@@ -1,3 +1,5 @@
+using FhirAugury.Common.Configuration;
+
 namespace FhirAugury.Source.GitHub.Configuration;
 
 /// <summary>
@@ -25,8 +27,8 @@ public class GitHubServiceOptions
     public string CachePath { get; set; } = "./cache/github";
     public string DatabasePath { get; set; } = "./data/github.db";
     public string SyncSchedule { get; set; } = "02:00:00";
-    public PortConfiguration Ports { get; set; } = new();
-    public RateLimitConfiguration RateLimiting { get; set; } = new();
+    public PortConfiguration Ports { get; set; } = new() { Http = 5190, Grpc = 5191 };
+    public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
 }
 
 public class AuthConfiguration
@@ -50,16 +52,7 @@ public class AuthConfiguration
     }
 }
 
-public class PortConfiguration
+public class GitHubRateLimitConfiguration : RateLimitConfiguration
 {
-    public int Http { get; set; } = 5190;
-    public int Grpc { get; set; } = 5191;
-}
-
-public class RateLimitConfiguration
-{
-    public int MaxRequestsPerSecond { get; set; } = 10;
-    public int BackoffBaseSeconds { get; set; } = 5;
-    public int MaxRetries { get; set; } = 5;
     public bool RespectRateLimitHeaders { get; set; } = true;
 }

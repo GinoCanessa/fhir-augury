@@ -1,8 +1,10 @@
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using FhirAugury.Source.Confluence.Indexing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Confluence.Ingestion;
 
@@ -13,22 +15,22 @@ public class ConfluenceIngestionPipeline(
     ConfluenceSource source,
     ConfluenceDatabase database,
     ConfluenceIndexer indexer,
-    ConfluenceServiceOptions options,
+    IOptions<ConfluenceServiceOptions> optionsAccessor,
     ILogger<ConfluenceIngestionPipeline> logger)
+    : IIngestionPipeline
 {
-    private volatile bool _isRunning;
-    private string _currentStatus = "idle";
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+    private volatile string _currentStatus = "idle";
 
-    public bool IsRunning => _isRunning;
+    public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
 
     /// <summary>Runs a full ingestion from the Confluence API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_full";
 
         try
@@ -49,17 +51,16 @@ public class ConfluenceIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Runs an incremental ingestion from the Confluence API.</summary>
     public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_incremental";
 
         try
@@ -81,17 +82,16 @@ public class ConfluenceIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Rebuilds the database entirely from cached responses.</summary>
     public async Task<IngestionResult> RebuildFromCacheAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "rebuilding";
 
         try
@@ -113,7 +113,7 @@ public class ConfluenceIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
@@ -124,14 +124,14 @@ public class ConfluenceIngestionPipeline(
         logger.LogInformation("Rebuilding BM25 index");
         indexer.RebuildFullIndex(ct);
 
-        UpdateSyncState(result, runType);
+        UpdateSyncState(result, runType, ct);
 
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
     }
 
-    private void UpdateSyncState(IngestionResult result, string runType)
+    private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
         using var connection = database.OpenConnection();
 
@@ -145,8 +145,8 @@ public class ConfluenceIngestionPipeline(
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
-            SyncSchedule = options.SyncSchedule,
-            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(options.SyncSchedule)),
+            SyncSchedule = optionsAccessor.Value.SyncSchedule,
+            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(optionsAccessor.Value.SyncSchedule)),
             Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
             LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
         };
@@ -163,4 +163,7 @@ public class ConfluenceIngestionPipeline(
         var state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
+
+    async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
+        => await RunIncrementalIngestionAsync(ct);
 }

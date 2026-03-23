@@ -7,18 +7,16 @@
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.*" />
     <PackageReference Include="Grpc.Net.Client" Version="2.*" />
-    <PackageReference Include="Grpc.Tools" Version="2.*"
-                      PrivateAssets="All" />
+    <PackageReference Include="Grpc.Tools" Version="2.*" PrivateAssets="All" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
-    <Protobuf Include="..\..\protos\*.proto"
-              GrpcServices="Both"
-              ProtoRoot="..\..\protos" />
+    <Protobuf Include="..\..\protos\*.proto" GrpcServices="Both" ProtoRoot="..\..\protos" />
   </ItemGroup>
 
 </Project>

@@ -144,7 +144,8 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
             CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi)!;
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git process.");
         var stdout = await process.StandardOutput.ReadToEndAsync(ct);
         await process.WaitForExitAsync(ct);
 

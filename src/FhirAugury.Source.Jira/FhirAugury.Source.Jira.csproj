@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Source.Jira.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.306.1728"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />

@@ -47,16 +47,18 @@ public class JiraDatabase : SourceDatabase
     }
 
     /// <summary>Rebuilds both FTS5 indexes from their content tables.</summary>
-    public void RebuildFtsIndexes()
+    public void RebuildFtsIndexes(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         using var connection = OpenConnection();
         RebuildFts5(connection, "jira_issues_fts");
         RebuildFts5(connection, "jira_comments_fts");
     }
 
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
-    public void ResetDatabase()
+    public void ResetDatabase(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         using var connection = OpenConnection();
 
         using var cmd = connection.CreateCommand();

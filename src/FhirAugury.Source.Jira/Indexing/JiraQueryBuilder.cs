@@ -1,4 +1,5 @@
 using System.Text;
+using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Source.Jira.Indexing;
@@ -78,7 +79,7 @@ public static class JiraQueryBuilder
         {
             var name = $"@q{paramIdx++}";
             sb.Append($" AND Key IN (SELECT Key FROM jira_issues ji2 WHERE ji2.Id IN (SELECT rowid FROM jira_issues_fts WHERE jira_issues_fts MATCH {name}))");
-            parameters.Add(new SqliteParameter(name, SanitizeFtsQuery(request.Query)));
+            parameters.Add(new SqliteParameter(name, FtsQueryHelper.SanitizeFtsQuery(request.Query)));
         }
 
         // Sorting
@@ -147,13 +148,4 @@ public static class JiraQueryBuilder
             "reporter" => "Reporter",
             _ => "UpdatedAt",
         };
-
-    private static string SanitizeFtsQuery(string query)
-    {
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var sanitized = terms
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .Select(t => $"\"{t.Replace("\"", "\"\"")}\"");
-        return string.Join(" ", sanitized);
-    }
 }

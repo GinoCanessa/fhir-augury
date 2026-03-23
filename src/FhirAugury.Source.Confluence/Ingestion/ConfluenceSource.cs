@@ -7,6 +7,8 @@ using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using static FhirAugury.Common.DateTimeHelper;
+using static FhirAugury.Common.JsonElementHelper;
 
 namespace FhirAugury.Source.Confluence.Ingestion;
 
@@ -15,7 +17,7 @@ namespace FhirAugury.Source.Confluence.Ingestion;
 /// </summary>
 public class ConfluenceSource(
     ConfluenceServiceOptions options,
-    HttpClient httpClient,
+    IHttpClientFactory httpClientFactory,
     ConfluenceDatabase database,
     IResponseCache cache,
     ILogger<ConfluenceSource> logger)
@@ -29,6 +31,7 @@ public class ConfluenceSource(
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         var errors = new List<string>();
 
+        var httpClient = httpClientFactory.CreateClient("confluence");
         using var connection = database.OpenConnection();
 
         foreach (var spaceKey in options.Spaces)
@@ -115,7 +118,10 @@ public class ConfluenceSource(
             "Confluence full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
-        return new IngestionResult(startedAt, DateTimeOffset.UtcNow, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            CompletedAt = DateTimeOffset.UtcNow
+        };
     }
 
     /// <summary>Performs an incremental download of pages updated since the given timestamp.</summary>
@@ -125,6 +131,7 @@ public class ConfluenceSource(
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         var errors = new List<string>();
 
+        var httpClient = httpClientFactory.CreateClient("confluence");
         using var connection = database.OpenConnection();
 
         var sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
@@ -194,7 +201,10 @@ public class ConfluenceSource(
             "Confluence incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
-        return new IngestionResult(startedAt, DateTimeOffset.UtcNow, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            CompletedAt = DateTimeOffset.UtcNow
+        };
     }
 
     /// <summary>Rebuilds the database from cached page JSON files.</summary>
@@ -221,7 +231,7 @@ public class ConfluenceSource(
                     var spaceKey = GetNestedString(doc.RootElement, "space", "key") ?? "FHIR";
 
                     if (doc.RootElement.TryGetProperty("space", out var spaceJson))
-                        UpsertSpaceFromJson(connection, spaceJson, spaceKey);
+                        UpsertSpaceFromJson(connection, spaceJson, spaceKey, ct);
 
                     var result = ProcessPage(doc.RootElement, spaceKey, connection);
                     itemsProcessed++;
@@ -249,7 +259,10 @@ public class ConfluenceSource(
             "Confluence cache-only ingestion complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
-        return new IngestionResult(startedAt, DateTimeOffset.UtcNow, itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            CompletedAt = DateTimeOffset.UtcNow
+        };
     }
 
     private PageResult ProcessPage(JsonElement pageJson, string spaceKey, SqliteConnection connection)
@@ -360,12 +373,13 @@ public class ConfluenceSource(
     {
         try
         {
+            var httpClient = httpClientFactory.CreateClient("confluence");
             var spaceUrl = $"{options.BaseUrl}/rest/api/space/{Uri.EscapeDataString(spaceKey)}";
             using var spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: SourceName);
             spaceResponse.EnsureSuccessStatusCode();
             var spaceJson = await spaceResponse.Content.ReadAsStringAsync(ct);
             using var spaceDoc = JsonDocument.Parse(spaceJson);
-            UpsertSpaceFromJson(connection, spaceDoc.RootElement, spaceKey);
+            UpsertSpaceFromJson(connection, spaceDoc.RootElement, spaceKey, ct);
         }
         catch (Exception ex)
         {
@@ -374,7 +388,7 @@ public class ConfluenceSource(
         }
     }
 
-    private void UpsertSpaceFromJson(SqliteConnection connection, JsonElement spaceJson, string spaceKey)
+    private void UpsertSpaceFromJson(SqliteConnection connection, JsonElement spaceJson, string spaceKey, CancellationToken ct = default)
     {
         var record = new ConfluenceSpaceRecord
         {
@@ -398,34 +412,17 @@ public class ConfluenceSource(
         }
     }
 
-    private static string? GetString(JsonElement parent, string propertyName)
-    {
-        if (!parent.TryGetProperty(propertyName, out var prop))
-            return null;
-        return prop.ValueKind == JsonValueKind.Null ? null : prop.ToString();
-    }
-
-    private static string? GetNestedString(JsonElement parent, string prop1, string prop2, string? prop3 = null)
-    {
-        if (!parent.TryGetProperty(prop1, out var p1) || p1.ValueKind == JsonValueKind.Null) return null;
-        if (!p1.TryGetProperty(prop2, out var p2) || p2.ValueKind == JsonValueKind.Null) return null;
-        if (prop3 is null) return p2.ToString();
-        if (!p2.TryGetProperty(prop3, out var p3) || p3.ValueKind == JsonValueKind.Null) return null;
-        return p3.ToString();
-    }
-
-    private static DateTimeOffset ParseDate(string? value) =>
-        string.IsNullOrEmpty(value) ? DateTimeOffset.MinValue : DateTimeOffset.TryParse(value, out var dt) ? dt : DateTimeOffset.MinValue;
-
     private enum PageResult { New, Updated, Failed }
 }
 
 /// <summary>Represents the outcome of an ingestion run.</summary>
 public record IngestionResult(
-    DateTimeOffset StartedAt,
-    DateTimeOffset CompletedAt,
     int ItemsProcessed,
     int ItemsNew,
     int ItemsUpdated,
     int ItemsFailed,
-    List<string> Errors);
+    List<string> Errors,
+    DateTimeOffset StartedAt)
+{
+    public DateTimeOffset CompletedAt { get; init; } = DateTimeOffset.UtcNow;
+}

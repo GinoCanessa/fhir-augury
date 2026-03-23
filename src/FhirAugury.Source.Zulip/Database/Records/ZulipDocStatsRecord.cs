@@ -1,11 +1,12 @@
 using CsLightDbGen.SQLiteGenerator;
+using FhirAugury.Common.Database;
 
 namespace FhirAugury.Source.Zulip.Database.Records;
 
 /// <summary>Per-source-type document statistics for BM25 normalization.</summary>
 [LdgSQLiteTable("index_doc_stats")]
 [LdgSQLiteIndex(nameof(SourceType))]
-public partial record class ZulipDocStatsRecord
+public partial record class ZulipDocStatsRecord : IDocStatsRecord
 {
     [LdgSQLiteKey]
     public required int Id { get; set; }

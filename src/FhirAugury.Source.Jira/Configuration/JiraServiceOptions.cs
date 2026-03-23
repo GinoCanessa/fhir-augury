@@ -1,3 +1,5 @@
+using FhirAugury.Common.Configuration;
+
 namespace FhirAugury.Source.Jira.Configuration;
 
 /// <summary>
@@ -18,19 +20,6 @@ public class JiraServiceOptions
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }
     public int PageSize { get; set; } = 100;
-    public PortConfiguration Ports { get; set; } = new();
+    public PortConfiguration Ports { get; set; } = new() { Http = 5160, Grpc = 5161 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
-}
-
-public class PortConfiguration
-{
-    public int Http { get; set; } = 5160;
-    public int Grpc { get; set; } = 5161;
-}
-
-public class RateLimitConfiguration
-{
-    public int MaxRequestsPerSecond { get; set; } = 10;
-    public int BackoffBaseSeconds { get; set; } = 2;
-    public int MaxRetries { get; set; } = 3;
 }

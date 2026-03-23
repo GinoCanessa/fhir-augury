@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Zulip.Api;
 
@@ -17,13 +19,14 @@ public static class ZulipHttpApi
     {
         var api = app.MapGroup("/api/v1");
 
-        api.MapGet("/search", (string? q, int? limit, ZulipDatabase db, ZulipServiceOptions options) =>
+        api.MapGet("/search", (string? q, int? limit, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
+            var options = optsAccessor.Value;
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
             using var connection = db.OpenConnection();
-            var ftsQuery = SanitizeFtsQuery(q);
+            var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
             if (string.IsNullOrEmpty(ftsQuery))
                 return Results.Ok(new { query = q, results = Array.Empty<object>() });
 
@@ -66,8 +69,9 @@ public static class ZulipHttpApi
             return Results.Ok(new { query = q, total = results.Count, results });
         });
 
-        api.MapGet("/messages/{id:int}", (int id, ZulipDatabase db, ZulipServiceOptions options) =>
+        api.MapGet("/messages/{id:int}", (int id, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
+            var options = optsAccessor.Value;
             using var connection = db.OpenConnection();
             var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
             if (message is null)
@@ -87,8 +91,9 @@ public static class ZulipHttpApi
             });
         });
 
-        api.MapGet("/streams", (ZulipDatabase db, ZulipServiceOptions options) =>
+        api.MapGet("/streams", (ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
+            var options = optsAccessor.Value;
             using var connection = db.OpenConnection();
             var streams = ZulipStreamRecord.SelectList(connection);
 
@@ -107,8 +112,9 @@ public static class ZulipHttpApi
             });
         });
 
-        api.MapGet("/streams/{streamName}/topics", (string streamName, int? limit, int? offset, ZulipDatabase db, ZulipServiceOptions options) =>
+        api.MapGet("/streams/{streamName}/topics", (string streamName, int? limit, int? offset, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
+            var options = optsAccessor.Value;
             using var connection = db.OpenConnection();
             var maxResults = Math.Min(limit ?? 50, 500);
             var skip = Math.Max(offset ?? 0, 0);
@@ -144,8 +150,9 @@ public static class ZulipHttpApi
             return Results.Ok(new { stream = streamName, total = topics.Count, topics });
         });
 
-        api.MapGet("/threads/{streamName}/{topic}", (string streamName, string topic, int? limit, ZulipDatabase db, ZulipServiceOptions options) =>
+        api.MapGet("/threads/{streamName}/{topic}", (string streamName, string topic, int? limit, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
+            var options = optsAccessor.Value;
             using var connection = db.OpenConnection();
             var maxResults = Math.Min(limit ?? 200, 1000);
 
@@ -255,12 +262,5 @@ public static class ZulipHttpApi
         });
 
         return app;
-    }
-
-    private static string SanitizeFtsQuery(string query)
-    {
-        if (string.IsNullOrWhiteSpace(query)) return string.Empty;
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return string.Join(" ", terms.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
     }
 }

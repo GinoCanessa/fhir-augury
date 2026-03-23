@@ -12,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,23 +21,26 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_JIRA_");
 
-var jiraOptions = new JiraServiceOptions();
-builder.Configuration.GetSection(JiraServiceOptions.SectionName).Bind(jiraOptions);
+builder.Services.Configure<JiraServiceOptions>(builder.Configuration.GetSection(JiraServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
+var portsSection = builder.Configuration.GetSection($"{JiraServiceOptions.SectionName}:Ports");
+var httpPort = portsSection.GetValue<int>("Http", 5160);
+var grpcPort = portsSection.GetValue<int>("Grpc", 5161);
+
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(jiraOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(jiraOptions.Ports.Grpc, o => o.Protocols = HttpProtocols.Http2);
+    k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
 builder.Services.AddGrpc();
-builder.Services.AddSingleton(jiraOptions);
 
 // Database
 builder.Services.AddSingleton(sp =>
 {
+    var jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
     var dbPath = Path.GetFullPath(jiraOptions.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     var db = new JiraDatabase(dbPath, sp.GetRequiredService<ILogger<JiraDatabase>>());
@@ -47,30 +51,23 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
+    var jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
     var cachePath = Path.GetFullPath(jiraOptions.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
 
 // HTTP client with auth
+builder.Services.AddTransient<JiraAuthHandler>();
 builder.Services.AddHttpClient("jira", client =>
 {
-    JiraAuthHandler.ConfigureHttpClient(client, jiraOptions);
-});
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+}).AddHttpMessageHandler<JiraAuthHandler>();
 
 // Ingestion
-builder.Services.AddSingleton(sp =>
-{
-    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpFactory.CreateClient("jira");
-    return new JiraSource(
-        jiraOptions,
-        httpClient,
-        sp.GetRequiredService<JiraDatabase>(),
-        sp.GetRequiredService<IResponseCache>(),
-        sp.GetRequiredService<ILogger<JiraSource>>());
-});
-
+builder.Services.AddSingleton<JiraSource>();
 builder.Services.AddSingleton<JiraIndexer>();
 builder.Services.AddSingleton<JiraIngestionPipeline>();
 

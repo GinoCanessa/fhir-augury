@@ -15,7 +15,7 @@ namespace FhirAugury.Source.Jira.Ingestion;
 /// </summary>
 public class JiraSource(
     JiraServiceOptions options,
-    HttpClient httpClient,
+    IHttpClientFactory httpClientFactory,
     JiraDatabase database,
     IResponseCache cache,
     ILogger<JiraSource> logger)
@@ -60,6 +60,7 @@ public class JiraSource(
             string json;
             try
             {
+                var httpClient = httpClientFactory.CreateClient("jira");
                 var response = await HttpRetryHelper.GetWithRetryAsync(
                     httpClient, url, ct, options.RateLimiting.MaxRetries, "jira");
                 response.EnsureSuccessStatusCode();

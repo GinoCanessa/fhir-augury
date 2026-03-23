@@ -1,4 +1,5 @@
 using CsLightDbGen.SQLiteGenerator;
+using FhirAugury.Common.Database;
 
 namespace FhirAugury.Source.Jira.Database.Records;
 
@@ -7,7 +8,7 @@ namespace FhirAugury.Source.Jira.Database.Records;
 [LdgSQLiteIndex(nameof(SourceType), nameof(SourceId))]
 [LdgSQLiteIndex(nameof(Keyword))]
 [LdgSQLiteIndex(nameof(Keyword), nameof(KeywordType))]
-public partial record class JiraKeywordRecord
+public partial record class JiraKeywordRecord : IKeywordRecord
 {
     [LdgSQLiteKey]
     public required int Id { get; set; }

@@ -1,3 +1,5 @@
+using FhirAugury.Common.Configuration;
+
 namespace FhirAugury.Source.Confluence.Configuration;
 
 /// <summary>
@@ -17,19 +19,6 @@ public class ConfluenceServiceOptions
     public string DatabasePath { get; set; } = "./data/confluence.db";
     public string SyncSchedule { get; set; } = "1.00:00:00";
     public int PageSize { get; set; } = 25;
-    public PortConfiguration Ports { get; set; } = new();
+    public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
-}
-
-public class PortConfiguration
-{
-    public int Http { get; set; } = 5180;
-    public int Grpc { get; set; } = 5181;
-}
-
-public class RateLimitConfiguration
-{
-    public int MaxRequestsPerSecond { get; set; } = 5;
-    public int BackoffBaseSeconds { get; set; } = 2;
-    public int MaxRetries { get; set; } = 3;
 }

@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
@@ -24,7 +25,7 @@ public static class ConfluenceHttpApi
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
             using var connection = db.OpenConnection();
-            var ftsQuery = SanitizeFtsQuery(q);
+            var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
             if (string.IsNullOrEmpty(ftsQuery))
                 return Results.Ok(new { query = q, results = Array.Empty<object>() });
 
@@ -214,12 +215,5 @@ public static class ConfluenceHttpApi
         });
 
         return app;
-    }
-
-    private static string SanitizeFtsQuery(string query)
-    {
-        if (string.IsNullOrWhiteSpace(query)) return string.Empty;
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return string.Join(" ", terms.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
     }
 }

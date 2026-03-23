@@ -1,8 +1,10 @@
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -13,22 +15,22 @@ public class JiraIngestionPipeline(
     JiraSource source,
     JiraDatabase database,
     JiraIndexer indexer,
-    JiraServiceOptions options,
-    ILogger<JiraIngestionPipeline> logger)
+    IOptions<JiraServiceOptions> optionsAccessor,
+    ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
-    private volatile bool _isRunning;
-    private string _currentStatus = "idle";
+    private readonly JiraServiceOptions _options = optionsAccessor.Value;
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+    private volatile string _currentStatus = "idle";
 
-    public bool IsRunning => _isRunning;
+    public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
 
     /// <summary>Runs a full ingestion from the Jira API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(string? jqlOverride = null, CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_full";
 
         try
@@ -36,7 +38,7 @@ public class JiraIngestionPipeline(
             logger.LogInformation("Starting full ingestion");
 
             var result = await source.DownloadAllAsync(jqlOverride, ct);
-            await PostIngestionAsync(result, "full", ct);
+            PostIngestion(result, "full", ct);
 
             _currentStatus = "idle";
             return result;
@@ -49,17 +51,16 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Runs an incremental ingestion from the Jira API.</summary>
     public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_incremental";
 
         try
@@ -68,7 +69,7 @@ public class JiraIngestionPipeline(
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
             var result = await source.DownloadIncrementalAsync(since, ct);
-            await PostIngestionAsync(result, "incremental", ct);
+            PostIngestion(result, "incremental", ct);
 
             _currentStatus = "idle";
             return result;
@@ -81,26 +82,31 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
+    }
+
+    // Explicit interface implementation for IIngestionPipeline
+    async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
+    {
+        await RunIncrementalIngestionAsync(ct);
     }
 
     /// <summary>Rebuilds the database entirely from cached responses.</summary>
     public async Task<IngestionResult> RebuildFromCacheAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "rebuilding";
 
         try
         {
             logger.LogInformation("Rebuilding database from cache");
-            database.ResetDatabase();
+            database.ResetDatabase(ct);
 
             var result = await source.LoadFromCacheAsync(ct);
-            await PostIngestionAsync(result, "rebuild", ct);
+            PostIngestion(result, "rebuild", ct);
 
             _currentStatus = "idle";
             return result;
@@ -113,11 +119,11 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
-    private Task PostIngestionAsync(IngestionResult result, string runType, CancellationToken ct)
+    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -126,17 +132,17 @@ public class JiraIngestionPipeline(
         indexer.RebuildFullIndex(ct);
 
         // Update sync state
-        UpdateSyncState(result, runType);
+        UpdateSyncState(result, runType, ct);
 
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
-
-        return Task.CompletedTask;
     }
 
-    private void UpdateSyncState(IngestionResult result, string runType)
+    private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         using var connection = database.OpenConnection();
 
         var existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: runType);
@@ -149,8 +155,8 @@ public class JiraIngestionPipeline(
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
-            SyncSchedule = options.SyncSchedule,
-            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(options.SyncSchedule)),
+            SyncSchedule = _options.SyncSchedule,
+            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(_options.SyncSchedule)),
             Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
             LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
         };

@@ -12,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,24 +21,27 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_GITHUB_");
 
-var githubOptions = new GitHubServiceOptions();
-builder.Configuration.GetSection(GitHubServiceOptions.SectionName).Bind(githubOptions);
+builder.Services.Configure<GitHubServiceOptions>(builder.Configuration.GetSection(GitHubServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
+var portsSection = builder.Configuration.GetSection($"{GitHubServiceOptions.SectionName}:Ports");
+var httpPort = portsSection.GetValue<int>("Http", 5190);
+var grpcPort = portsSection.GetValue<int>("Grpc", 5191);
+
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(githubOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(githubOptions.Ports.Grpc, o => o.Protocols = HttpProtocols.Http2);
+    k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
 builder.Services.AddGrpc();
-builder.Services.AddSingleton(githubOptions);
 
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var dbPath = Path.GetFullPath(githubOptions.DatabasePath);
+    var options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    var dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     var db = new GitHubDatabase(dbPath, sp.GetRequiredService<ILogger<GitHubDatabase>>());
     db.Initialize();
@@ -47,29 +51,24 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var cachePath = Path.GetFullPath(githubOptions.CachePath);
+    var options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    var cachePath = Path.GetFullPath(options.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
 
 // HTTP client with auth and rate limiting
+builder.Services.AddTransient<GitHubRateLimiter>();
 builder.Services.AddHttpClient("github", client =>
 {
-    GitHubRateLimiter.ConfigureHttpClient(client, githubOptions);
-});
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/vnd.github+json");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+}).AddHttpMessageHandler<GitHubRateLimiter>();
 
 // Ingestion
-builder.Services.AddSingleton(sp =>
-{
-    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpFactory.CreateClient("github");
-    return new GitHubSource(
-        githubOptions,
-        httpClient,
-        sp.GetRequiredService<GitHubDatabase>(),
-        sp.GetRequiredService<IResponseCache>(),
-        sp.GetRequiredService<ILogger<GitHubSource>>());
-});
+builder.Services.AddSingleton<GitHubSource>();
 
 builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();

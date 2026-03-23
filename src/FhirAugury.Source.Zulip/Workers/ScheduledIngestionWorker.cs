@@ -1,6 +1,8 @@
+using FhirAugury.Common.Ingestion;
+using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Ingestion;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Zulip.Workers;
 
@@ -9,50 +11,7 @@ namespace FhirAugury.Source.Zulip.Workers;
 /// </summary>
 public class ScheduledIngestionWorker(
     ZulipIngestionPipeline pipeline,
-    Configuration.ZulipServiceOptions options,
+    IOptions<ZulipServiceOptions> options,
     ILogger<ScheduledIngestionWorker> logger)
-    : BackgroundService
-{
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        if (!TimeSpan.TryParse(options.SyncSchedule, out var interval) || interval <= TimeSpan.Zero)
-        {
-            logger.LogWarning("Invalid or disabled sync schedule: {Schedule}", options.SyncSchedule);
-            return;
-        }
-
-        logger.LogInformation("Scheduled ingestion worker started. Interval: {Interval}", interval);
-
-        // Wait for initial startup to complete
-        await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                logger.LogInformation("Starting scheduled incremental ingestion");
-                await pipeline.RunIncrementalIngestionAsync(stoppingToken);
-                logger.LogInformation("Scheduled ingestion completed successfully");
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Scheduled ingestion failed");
-            }
-
-            try
-            {
-                await Task.Delay(interval, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-        }
-
-        logger.LogInformation("Scheduled ingestion worker stopped");
-    }
-}
+    : ScheduledIngestionWorker<ZulipIngestionPipeline>(
+        pipeline, () => options.Value.SyncSchedule, logger);

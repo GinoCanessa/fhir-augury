@@ -1,5 +1,7 @@
 using System.Text.Json;
+using FhirAugury.Common;
 using FhirAugury.Source.Jira.Database.Records;
+using static FhirAugury.Common.DateTimeHelper;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -31,19 +33,19 @@ public static class JiraFieldMapper
         {
             Id = JiraIssueRecord.GetIndex(),
             Key = key,
-            ProjectKey = GetNestedString(fields, "project", "key") ?? key.Split('-')[0],
-            Title = GetString(fields, "summary") ?? string.Empty,
-            Description = GetString(fields, "description"),
-            Summary = GetString(fields, "summary"),
-            Type = GetNestedString(fields, "issuetype", "name") ?? "Unknown",
-            Priority = GetNestedString(fields, "priority", "name") ?? "Unknown",
-            Status = GetNestedString(fields, "status", "name") ?? "Unknown",
-            Resolution = GetNestedString(fields, "resolution", "name"),
-            Assignee = GetNestedString(fields, "assignee", "displayName"),
-            Reporter = GetNestedString(fields, "reporter", "displayName"),
-            CreatedAt = ParseDate(GetString(fields, "created")),
-            UpdatedAt = ParseDate(GetString(fields, "updated")),
-            ResolvedAt = ParseNullableDate(GetString(fields, "resolutiondate")),
+            ProjectKey = JsonElementHelper.GetNestedString(fields, "project", "key") ?? key.Split('-')[0],
+            Title = JsonElementHelper.GetString(fields, "summary") ?? string.Empty,
+            Description = JsonElementHelper.GetString(fields, "description"),
+            Summary = JsonElementHelper.GetString(fields, "summary"),
+            Type = JsonElementHelper.GetNestedString(fields, "issuetype", "name") ?? "Unknown",
+            Priority = JsonElementHelper.GetNestedString(fields, "priority", "name") ?? "Unknown",
+            Status = JsonElementHelper.GetNestedString(fields, "status", "name") ?? "Unknown",
+            Resolution = JsonElementHelper.GetNestedString(fields, "resolution", "name"),
+            Assignee = JsonElementHelper.GetNestedString(fields, "assignee", "displayName"),
+            Reporter = JsonElementHelper.GetNestedString(fields, "reporter", "displayName"),
+            CreatedAt = ParseDate(JsonElementHelper.GetString(fields, "created")),
+            UpdatedAt = ParseDate(JsonElementHelper.GetString(fields, "updated")),
+            ResolvedAt = ParseNullableDate(JsonElementHelper.GetString(fields, "resolutiondate")),
             Labels = GetLabels(fields),
             CommentCount = GetCommentCount(fields),
             Specification = null,
@@ -104,11 +106,11 @@ public static class JiraFieldMapper
                 Id = JiraCommentRecord.GetIndex(),
                 IssueId = issueId,
                 IssueKey = issueKey,
-                Author = GetNestedString(comment, "author", "displayName")
-                         ?? GetNestedString(comment, "author", "name")
+                Author = JsonElementHelper.GetNestedString(comment, "author", "displayName")
+                         ?? JsonElementHelper.GetNestedString(comment, "author", "name")
                          ?? "Unknown",
-                CreatedAt = ParseDate(GetString(comment, "created")),
-                Body = GetString(comment, "body") ?? string.Empty,
+                CreatedAt = ParseDate(JsonElementHelper.GetString(comment, "created")),
+                Body = JsonElementHelper.GetString(comment, "body") ?? string.Empty,
             });
         }
 
@@ -126,11 +128,11 @@ public static class JiraFieldMapper
 
         foreach (var link in linkArray.EnumerateArray())
         {
-            var linkType = GetNestedString(link, "type", "name") ?? "relates to";
+            var linkType = JsonElementHelper.GetNestedString(link, "type", "name") ?? "relates to";
 
             if (link.TryGetProperty("outwardIssue", out var outward))
             {
-                var targetKey = GetString(outward, "key");
+                var targetKey = JsonElementHelper.GetString(outward, "key");
                 if (!string.IsNullOrEmpty(targetKey))
                 {
                     links.Add(new JiraIssueLinkRecord
@@ -145,7 +147,7 @@ public static class JiraFieldMapper
 
             if (link.TryGetProperty("inwardIssue", out var inward))
             {
-                var sourceKey = GetString(inward, "key");
+                var sourceKey = JsonElementHelper.GetString(inward, "key");
                 if (!string.IsNullOrEmpty(sourceKey))
                 {
                     links.Add(new JiraIssueLinkRecord
@@ -160,25 +162,6 @@ public static class JiraFieldMapper
         }
 
         return links;
-    }
-
-    internal static string? GetString(JsonElement parent, string propertyName)
-    {
-        if (!parent.TryGetProperty(propertyName, out var prop))
-            return null;
-
-        return prop.ValueKind == JsonValueKind.Null ? null : prop.ToString();
-    }
-
-    internal static string? GetNestedString(JsonElement parent, string propertyName, string childPropertyName)
-    {
-        if (!parent.TryGetProperty(propertyName, out var prop) || prop.ValueKind == JsonValueKind.Null)
-            return null;
-
-        if (!prop.TryGetProperty(childPropertyName, out var child) || child.ValueKind == JsonValueKind.Null)
-            return null;
-
-        return child.ToString();
     }
 
     private static string? ExtractCustomFieldValue(JsonElement fields, string fieldId)
@@ -259,10 +242,4 @@ public static class JiraFieldMapper
 
         return 0;
     }
-
-    internal static DateTimeOffset ParseDate(string? value) =>
-        string.IsNullOrEmpty(value) ? DateTimeOffset.MinValue : DateTimeOffset.TryParse(value, out var dt) ? dt : DateTimeOffset.MinValue;
-
-    internal static DateTimeOffset? ParseNullableDate(string? value) =>
-        string.IsNullOrEmpty(value) ? null : DateTimeOffset.TryParse(value, out var dt) ? dt : null;
 }

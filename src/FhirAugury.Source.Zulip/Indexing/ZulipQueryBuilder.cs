@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using System.Text;
 using Microsoft.Data.Sqlite;
 
@@ -92,7 +93,7 @@ public static class ZulipQueryBuilder
         {
             var name = $"@q{paramIdx++}";
             sb.Append($" AND Id IN (SELECT rowid FROM zulip_messages_fts WHERE zulip_messages_fts MATCH {name})");
-            parameters.Add(new SqliteParameter(name, SanitizeFtsQuery(request.Query)));
+            parameters.Add(new SqliteParameter(name, FtsQueryHelper.SanitizeFtsQuery(request.Query)));
         }
 
         // Sorting
@@ -137,13 +138,4 @@ public static class ZulipQueryBuilder
             "zulip_message_id" => "ZulipMessageId",
             _ => "Timestamp",
         };
-
-    private static string SanitizeFtsQuery(string query)
-    {
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var sanitized = terms
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .Select(t => $"\"{t.Replace("\"", "\"\"")}\"");
-        return string.Join(" ", sanitized);
-    }
 }

@@ -1,5 +1,7 @@
 using System.Text.Json;
 using FhirAugury.Source.GitHub.Database.Records;
+using static FhirAugury.Common.DateTimeHelper;
+using static FhirAugury.Common.JsonElementHelper;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -20,15 +22,15 @@ public static class GitHubIssueMapper
             Number = number,
             IsPullRequest = isPullRequest,
             Title = issueJson.GetProperty("title").GetString() ?? string.Empty,
-            Body = GetStringOrNull(issueJson, "body"),
+            Body = GetString(issueJson, "body"),
             State = issueJson.GetProperty("state").GetString() ?? "open",
             Author = GetNestedString(issueJson, "user", "login"),
             Labels = ExtractLabels(issueJson),
             Assignees = ExtractAssignees(issueJson),
             Milestone = GetNestedString(issueJson, "milestone", "title"),
-            CreatedAt = ParseDate(GetStringOrNull(issueJson, "created_at")),
-            UpdatedAt = ParseDate(GetStringOrNull(issueJson, "updated_at")),
-            ClosedAt = ParseNullableDate(GetStringOrNull(issueJson, "closed_at")),
+            CreatedAt = ParseDate(GetString(issueJson, "created_at")),
+            UpdatedAt = ParseDate(GetString(issueJson, "updated_at")),
+            ClosedAt = ParseNullableDate(GetString(issueJson, "closed_at")),
             MergeState = isPullRequest ? GetPullRequestMergeState(issueJson) : null,
             HeadBranch = isPullRequest ? GetNestedString(issueJson, "head", "ref") : null,
             BaseBranch = isPullRequest ? GetNestedString(issueJson, "base", "ref") : null,
@@ -45,7 +47,7 @@ public static class GitHubIssueMapper
             RepoFullName = repoFullName,
             IssueNumber = issueNumber,
             Author = GetNestedString(commentJson, "user", "login") ?? "Unknown",
-            CreatedAt = ParseDate(GetStringOrNull(commentJson, "created_at")),
+            CreatedAt = ParseDate(GetString(commentJson, "created_at")),
             Body = commentJson.GetProperty("body").GetString() ?? string.Empty,
             IsReviewComment = isReviewComment,
         };
@@ -60,7 +62,7 @@ public static class GitHubIssueMapper
             FullName = repoJson.GetProperty("full_name").GetString()!,
             Owner = GetNestedString(repoJson, "owner", "login") ?? string.Empty,
             Name = repoJson.GetProperty("name").GetString() ?? string.Empty,
-            Description = GetStringOrNull(repoJson, "description"),
+            Description = GetString(repoJson, "description"),
             HasIssues = repoJson.TryGetProperty("has_issues", out var hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
@@ -76,14 +78,14 @@ public static class GitHubIssueMapper
             Id = GitHubCommitRecord.GetIndex(),
             Sha = commitJson.GetProperty("sha").GetString() ?? string.Empty,
             RepoFullName = repoFullName,
-            Message = GetStringOrNull(commitData, "message") ?? string.Empty,
+            Message = GetString(commitData, "message") ?? string.Empty,
             Author = GetNestedString(commitData, "author", "name")
                      ?? GetNestedString(commitJson, "author", "login")
                      ?? "Unknown",
             Date = ParseDate(
                 GetNestedString(commitData, "author", "date")
                 ?? GetNestedString(commitData, "committer", "date")),
-            Url = GetStringOrNull(commitJson, "html_url") ?? string.Empty,
+            Url = GetString(commitJson, "html_url") ?? string.Empty,
         };
     }
 
@@ -127,26 +129,4 @@ public static class GitHubIssueMapper
 
         return null;
     }
-
-    internal static string? GetStringOrNull(JsonElement element, string property)
-    {
-        if (!element.TryGetProperty(property, out var prop) || prop.ValueKind == JsonValueKind.Null)
-            return null;
-        return prop.GetString();
-    }
-
-    internal static string? GetNestedString(JsonElement parent, string propertyName, string childPropertyName)
-    {
-        if (!parent.TryGetProperty(propertyName, out var prop) || prop.ValueKind == JsonValueKind.Null)
-            return null;
-        if (!prop.TryGetProperty(childPropertyName, out var child) || child.ValueKind == JsonValueKind.Null)
-            return null;
-        return child.GetString();
-    }
-
-    private static DateTimeOffset ParseDate(string? value) =>
-        string.IsNullOrEmpty(value) ? DateTimeOffset.MinValue : DateTimeOffset.TryParse(value, out var dt) ? dt : DateTimeOffset.MinValue;
-
-    private static DateTimeOffset? ParseNullableDate(string? value) =>
-        string.IsNullOrEmpty(value) ? null : DateTimeOffset.TryParse(value, out var dt) ? dt : null;
 }

@@ -1,3 +1,5 @@
+using FhirAugury.Common.Configuration;
+
 namespace FhirAugury.Source.Zulip.Configuration;
 
 /// <summary>
@@ -16,19 +18,6 @@ public class ZulipServiceOptions
     public string SyncSchedule { get; set; } = "04:00:00";
     public bool OnlyWebPublic { get; set; } = true;
     public int BatchSize { get; set; } = 1000;
-    public PortConfiguration Ports { get; set; } = new();
+    public PortConfiguration Ports { get; set; } = new() { Http = 5170, Grpc = 5171 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
-}
-
-public class PortConfiguration
-{
-    public int Http { get; set; } = 5170;
-    public int Grpc { get; set; } = 5171;
-}
-
-public class RateLimitConfiguration
-{
-    public int MaxRequestsPerSecond { get; set; } = 5;
-    public int BackoffBaseSeconds { get; set; } = 2;
-    public int MaxRetries { get; set; } = 3;
 }

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
@@ -31,7 +32,7 @@ public class ConfluenceGrpcService(
     public override Task<SearchResponse> Search(SearchRequest request, ServerCallContext context)
     {
         using var connection = database.OpenConnection();
-        var ftsQuery = SanitizeFtsQuery(request.Query);
+        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
@@ -433,13 +434,6 @@ public class ConfluenceGrpcService(
         return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
-    }
-
-    private static string SanitizeFtsQuery(string query)
-    {
-        if (string.IsNullOrWhiteSpace(query)) return string.Empty;
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return string.Join(" ", terms.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
     }
 }
 

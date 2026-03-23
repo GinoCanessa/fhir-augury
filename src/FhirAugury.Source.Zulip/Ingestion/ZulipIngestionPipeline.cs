@@ -1,8 +1,10 @@
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Zulip.Ingestion;
 
@@ -13,22 +15,21 @@ public class ZulipIngestionPipeline(
     ZulipSource source,
     ZulipDatabase database,
     ZulipIndexer indexer,
-    ZulipServiceOptions options,
-    ILogger<ZulipIngestionPipeline> logger)
+    IOptions<ZulipServiceOptions> optionsAccessor,
+    ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
-    private volatile bool _isRunning;
-    private string _currentStatus = "idle";
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+    private volatile string _currentStatus = "idle";
 
-    public bool IsRunning => _isRunning;
+    public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
 
     /// <summary>Runs a full ingestion from the Zulip API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_full";
 
         try
@@ -49,17 +50,16 @@ public class ZulipIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Runs an incremental ingestion from the Zulip API.</summary>
     public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_incremental";
 
         try
@@ -80,17 +80,20 @@ public class ZulipIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
+
+    /// <summary>Runs an incremental ingestion from the Zulip API.</summary>
+    async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
+        => await RunIncrementalIngestionAsync(ct);
 
     /// <summary>Rebuilds the database entirely from cached responses.</summary>
     public async Task<IngestionResult> RebuildFromCacheAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "rebuilding";
 
         try
@@ -112,7 +115,7 @@ public class ZulipIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
@@ -125,19 +128,20 @@ public class ZulipIngestionPipeline(
         indexer.RebuildFullIndex(ct);
 
         // Update sync state
-        UpdateSyncState(result, runType);
+        UpdateSyncState(result, runType, ct);
 
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
     }
 
-    private void UpdateSyncState(IngestionResult result, string runType)
+    private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
         using var connection = database.OpenConnection();
 
         var existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName, SubSource: runType);
 
+        var options = optionsAccessor.Value;
         var syncState = new ZulipSyncStateRecord
         {
             Id = existing?.Id ?? ZulipSyncStateRecord.GetIndex(),

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FhirAugury.Source.Jira.Database.Records;
+using static FhirAugury.Common.DateTimeHelper;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -33,7 +34,4 @@ public static class JiraCommentParser
 
         return comments;
     }
-
-    private static DateTimeOffset ParseDate(string? value) =>
-        string.IsNullOrEmpty(value) ? DateTimeOffset.MinValue : DateTimeOffset.TryParse(value, out var dt) ? dt : DateTimeOffset.MinValue;
 }

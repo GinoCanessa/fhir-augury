@@ -1,8 +1,10 @@
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -17,22 +19,22 @@ public class GitHubIngestionPipeline(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     JiraRefExtractor jiraRefExtractor,
-    GitHubServiceOptions options,
-    ILogger<GitHubIngestionPipeline> logger)
+    IOptions<GitHubServiceOptions> optionsAccessor,
+    ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
 {
-    private volatile bool _isRunning;
-    private string _currentStatus = "idle";
+    private readonly SemaphoreSlim _runLock = new(1, 1);
+    private volatile string _currentStatus = "idle";
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
 
-    public bool IsRunning => _isRunning;
+    public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
 
     /// <summary>Runs a full ingestion from the GitHub API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(string? repoFilter = null, CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_full";
 
         try
@@ -53,17 +55,16 @@ public class GitHubIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Runs an incremental ingestion from the GitHub API.</summary>
     public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "running_incremental";
 
         try
@@ -85,17 +86,16 @@ public class GitHubIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
     /// <summary>Rebuilds the database entirely from cached responses.</summary>
     public async Task<IngestionResult> RebuildFromCacheAsync(CancellationToken ct = default)
     {
-        if (_isRunning)
+        if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
-        _isRunning = true;
         _currentStatus = "rebuilding";
 
         try
@@ -117,7 +117,7 @@ public class GitHubIngestionPipeline(
         }
         finally
         {
-            _isRunning = false;
+            _runLock.Release();
         }
     }
 
@@ -126,8 +126,8 @@ public class GitHubIngestionPipeline(
         ct.ThrowIfCancellationRequested();
 
         // Clone repos and extract commit data
-        var repos = new List<string>(options.Repositories);
-        repos.AddRange(options.AdditionalRepositories);
+        var repos = new List<string>(_options.Repositories);
+        repos.AddRange(_options.AdditionalRepositories);
 
         foreach (var repo in repos)
         {
@@ -161,14 +161,14 @@ public class GitHubIngestionPipeline(
         indexer.RebuildFullIndex(ct);
 
         // Update sync state
-        UpdateSyncState(result, runType);
+        UpdateSyncState(result, runType, ct);
 
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
     }
 
-    private void UpdateSyncState(IngestionResult result, string runType)
+    private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
         using var connection = database.OpenConnection();
 
@@ -182,8 +182,8 @@ public class GitHubIngestionPipeline(
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
-            SyncSchedule = options.SyncSchedule,
-            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(options.SyncSchedule)),
+            SyncSchedule = _options.SyncSchedule,
+            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(_options.SyncSchedule)),
             Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
             LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
         };
@@ -200,4 +200,7 @@ public class GitHubIngestionPipeline(
         var state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
+
+    async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
+        => await RunIncrementalIngestionAsync(ct);
 }

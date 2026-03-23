@@ -15,7 +15,7 @@ namespace FhirAugury.Source.Zulip.Ingestion;
 /// </summary>
 public class ZulipSource(
     ZulipServiceOptions options,
-    HttpClient httpClient,
+    IHttpClientFactory httpClientFactory,
     ZulipDatabase database,
     IResponseCache cache,
     ILogger<ZulipSource> logger)
@@ -84,7 +84,7 @@ public class ZulipSource(
                               $"&anchor={anchor}&num_before=0&num_after={options.BatchSize}";
 
                     var response = await HttpRetryHelper.GetWithRetryAsync(
-                        httpClient, url, ct, options.RateLimiting.MaxRetries, "zulip");
+                        httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
                     response.EnsureSuccessStatusCode();
                     rawJson = await response.Content.ReadAsStringAsync(ct);
 
@@ -215,7 +215,7 @@ public class ZulipSource(
                               $"&anchor={anchor}&num_before=0&num_after={options.BatchSize}";
 
                     var response = await HttpRetryHelper.GetWithRetryAsync(
-                        httpClient, url, ct, options.RateLimiting.MaxRetries, "zulip");
+                        httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
                     response.EnsureSuccessStatusCode();
                     rawJson = await response.Content.ReadAsStringAsync(ct);
 
@@ -297,15 +297,15 @@ public class ZulipSource(
 
         var streamDirs = Directory.GetDirectories(zulipDir)
             .Select(d => Path.GetFileName(d))
-            .Where(n => n.StartsWith('s') && int.TryParse(n[1..], out _))
-            .OrderBy(n => int.Parse(n[1..]))
+            .Where(n => n.StartsWith('s') && int.TryParse(n.AsSpan(1), out _))
+            .OrderBy(n => int.Parse(n.AsSpan(1)))
             .ToList();
 
         foreach (var streamDirName in streamDirs)
         {
             if (ct.IsCancellationRequested) break;
 
-            var streamId = int.Parse(streamDirName[1..]);
+            var streamId = int.Parse(streamDirName.AsSpan(1));
 
             // Upsert a stream record from metadata or defaults
             var existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: streamId);
@@ -378,7 +378,7 @@ public class ZulipSource(
     {
         var url = $"{options.BaseUrl}/api/v1/streams";
         var response = await HttpRetryHelper.GetWithRetryAsync(
-            httpClient, url, ct, options.RateLimiting.MaxRetries, "zulip");
+            httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct);

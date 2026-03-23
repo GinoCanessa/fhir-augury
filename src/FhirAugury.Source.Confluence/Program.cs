@@ -12,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,24 +21,27 @@ builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_CONFLUENCE_");
 
-var confluenceOptions = new ConfluenceServiceOptions();
-builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName).Bind(confluenceOptions);
+builder.Services.Configure<ConfluenceServiceOptions>(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
+var portsSection = builder.Configuration.GetSection($"{ConfluenceServiceOptions.SectionName}:Ports");
+var httpPort = portsSection.GetValue<int>("Http", 5180);
+var grpcPort = portsSection.GetValue<int>("Grpc", 5181);
+
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(confluenceOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(confluenceOptions.Ports.Grpc, o => o.Protocols = HttpProtocols.Http2);
+    k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
 builder.Services.AddGrpc();
-builder.Services.AddSingleton(confluenceOptions);
 
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var dbPath = Path.GetFullPath(confluenceOptions.DatabasePath);
+    var options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    var dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     var db = new ConfluenceDatabase(dbPath, sp.GetRequiredService<ILogger<ConfluenceDatabase>>());
     db.Initialize();
@@ -47,30 +51,23 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var cachePath = Path.GetFullPath(confluenceOptions.CachePath);
+    var options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    var cachePath = Path.GetFullPath(options.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
 
 // HTTP client with auth
+builder.Services.AddTransient<ConfluenceAuthHandler>();
 builder.Services.AddHttpClient("confluence", client =>
 {
-    ConfluenceAuthHandler.ConfigureHttpClient(client, confluenceOptions);
-});
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+}).AddHttpMessageHandler<ConfluenceAuthHandler>();
 
 // Ingestion
-builder.Services.AddSingleton(sp =>
-{
-    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpFactory.CreateClient("confluence");
-    return new ConfluenceSource(
-        confluenceOptions,
-        httpClient,
-        sp.GetRequiredService<ConfluenceDatabase>(),
-        sp.GetRequiredService<IResponseCache>(),
-        sp.GetRequiredService<ILogger<ConfluenceSource>>());
-});
-
+builder.Services.AddSingleton<ConfluenceSource>();
 builder.Services.AddSingleton<ConfluenceIndexer>();
 builder.Services.AddSingleton<ConfluenceIngestionPipeline>();
 

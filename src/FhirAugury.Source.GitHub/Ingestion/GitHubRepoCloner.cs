@@ -2,6 +2,7 @@ using System.Diagnostics;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -9,8 +10,9 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Manages local git clones of tracked repositories under the cache directory.
 /// Clones on first run, fetches and merges for incremental updates.
 /// </summary>
-public class GitHubRepoCloner(GitHubServiceOptions options, ILogger<GitHubRepoCloner> logger)
+public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, ILogger<GitHubRepoCloner> logger)
 {
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     /// <summary>
     /// Ensures a local clone exists for the given repository, creating or updating as needed.
     /// Returns the path to the local clone directory.
@@ -19,7 +21,7 @@ public class GitHubRepoCloner(GitHubServiceOptions options, ILogger<GitHubRepoCl
     {
         var safeName = repoFullName.Replace('/', '_');
         var cloneDir = Path.GetFullPath(
-            Path.Combine(options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
+            Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
 
         if (Directory.Exists(Path.Combine(cloneDir, ".git")))
         {
@@ -45,12 +47,12 @@ public class GitHubRepoCloner(GitHubServiceOptions options, ILogger<GitHubRepoCl
     {
         var safeName = repoFullName.Replace('/', '_');
         return Path.GetFullPath(
-            Path.Combine(options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
+            Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
     }
 
     private string BuildCloneUrl(string repoFullName)
     {
-        var token = options.Auth.ResolveToken();
+        var token = _options.Auth.ResolveToken();
         if (!string.IsNullOrEmpty(token))
             return $"https://x-access-token:{token}@github.com/{repoFullName}.git";
 
@@ -70,7 +72,8 @@ public class GitHubRepoCloner(GitHubServiceOptions options, ILogger<GitHubRepoCl
             CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi)!;
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git process.");
         var stdout = await process.StandardOutput.ReadToEndAsync(ct);
         var stderr = await process.StandardError.ReadToEndAsync(ct);
         await process.WaitForExitAsync(ct);

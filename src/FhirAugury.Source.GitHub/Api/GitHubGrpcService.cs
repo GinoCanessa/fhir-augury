@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
@@ -11,6 +12,7 @@ using FhirAugury.Source.GitHub.Ingestion;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Api;
 
@@ -21,9 +23,10 @@ public class GitHubGrpcService(
     GitHubDatabase database,
     GitHubIngestionPipeline pipeline,
     IResponseCache cache,
-    GitHubServiceOptions options)
+    IOptions<GitHubServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
 
     // ── SourceService RPCs ────────────────────────────────────────
@@ -31,7 +34,7 @@ public class GitHubGrpcService(
     public override Task<SearchResponse> Search(SearchRequest request, ServerCallContext context)
     {
         using var connection = database.OpenConnection();
-        var ftsQuery = SanitizeFtsQuery(request.Query);
+        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
@@ -376,7 +379,7 @@ public class GitHubGrpcService(
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
             LastError = syncState?.LastError ?? "",
-            SyncSchedule = options.SyncSchedule,
+            SyncSchedule = _options.SyncSchedule,
         };
     }
 
@@ -476,11 +479,12 @@ public class GitHubGrpcService(
 public class GitHubSpecificGrpcService(
     GitHubDatabase database,
     GitHubIngestionPipeline pipeline,
-    GitHubServiceOptions options,
+    IOptions<GitHubServiceOptions> optionsAccessor,
     ArtifactFileMapper artifactMapper)
     : GitHubService.GitHubServiceBase
 #pragma warning restore CS9113
 {
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     public override async Task GetIssueComments(GitHubGetCommentsRequest request, IServerStreamWriter<GitHubComment> responseStream, ServerCallContext context)
     {
         using var connection = database.OpenConnection();
@@ -594,7 +598,7 @@ public class GitHubSpecificGrpcService(
     public override Task<SearchResponse> SearchCommits(SearchRequest request, ServerCallContext context)
     {
         using var connection = database.OpenConnection();
-        var ftsQuery = GitHubGrpcService.SanitizeFtsQuery(request.Query);
+        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });

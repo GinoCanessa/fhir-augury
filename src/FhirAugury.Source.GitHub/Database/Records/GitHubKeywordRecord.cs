@@ -1,4 +1,5 @@
 using CsLightDbGen.SQLiteGenerator;
+using FhirAugury.Common.Database;
 
 namespace FhirAugury.Source.GitHub.Database.Records;
 
@@ -7,7 +8,7 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 [LdgSQLiteIndex(nameof(SourceType), nameof(SourceId))]
 [LdgSQLiteIndex(nameof(Keyword))]
 [LdgSQLiteIndex(nameof(Keyword), nameof(KeywordType))]
-public partial record class GitHubKeywordRecord
+public partial record class GitHubKeywordRecord : IKeywordRecord
 {
     [LdgSQLiteKey]
     public required int Id { get; set; }

@@ -6,6 +6,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -14,12 +15,13 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Supports full and incremental downloads.
 /// </summary>
 public class GitHubSource(
-    GitHubServiceOptions options,
-    HttpClient httpClient,
+    IOptions<GitHubServiceOptions> optionsAccessor,
+    IHttpClientFactory httpClientFactory,
     GitHubDatabase database,
     IResponseCache cache,
     ILogger<GitHubSource> logger)
 {
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     public const string SourceName = "github";
     private const string GitHubApiBase = "https://api.github.com";
 
@@ -118,7 +120,7 @@ public class GitHubSource(
             {
                 var repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
                 using var repoResponse = await HttpRetryHelper.GetWithRetryAsync(
-                    httpClient, repoUrl, ct, options.RateLimiting.MaxRetries, "github");
+                    httpClientFactory.CreateClient("github"), repoUrl, ct, _options.RateLimiting.MaxRetries, "github");
                 repoResponse.EnsureSuccessStatusCode();
                 var repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
                 using var repoDoc = JsonDocument.Parse(repoJson);
@@ -146,7 +148,7 @@ public class GitHubSource(
                 try
                 {
                     using var response = await HttpRetryHelper.GetWithRetryAsync(
-                        httpClient, url, ct, options.RateLimiting.MaxRetries, "github");
+                        httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
                     response.EnsureSuccessStatusCode();
                     var json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
@@ -260,7 +262,7 @@ public class GitHubSource(
         {
             var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{issueNumber}/comments?per_page=100";
             using var response = await HttpRetryHelper.GetWithRetryAsync(
-                httpClient, url, ct, options.RateLimiting.MaxRetries, "github");
+                httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(ct);
 
@@ -285,8 +287,8 @@ public class GitHubSource(
 
     private List<string> GetEffectiveRepositories()
     {
-        var repos = new List<string>(options.Repositories);
-        repos.AddRange(options.AdditionalRepositories);
+        var repos = new List<string>(_options.Repositories);
+        repos.AddRange(_options.AdditionalRepositories);
         return repos;
     }
 

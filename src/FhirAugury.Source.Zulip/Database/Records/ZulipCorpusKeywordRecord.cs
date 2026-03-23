@@ -1,11 +1,12 @@
 using CsLightDbGen.SQLiteGenerator;
+using FhirAugury.Common.Database;
 
 namespace FhirAugury.Source.Zulip.Database.Records;
 
 /// <summary>Corpus-level keyword statistics for IDF computation.</summary>
 [LdgSQLiteTable("index_corpus")]
 [LdgSQLiteIndex(nameof(Keyword), nameof(KeywordType))]
-public partial record class ZulipCorpusKeywordRecord
+public partial record class ZulipCorpusKeywordRecord : ICorpusKeywordRecord
 {
     [LdgSQLiteKey]
     public required int Id { get; set; }

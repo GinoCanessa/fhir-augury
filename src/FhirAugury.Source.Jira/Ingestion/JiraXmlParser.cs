@@ -1,6 +1,7 @@
 using System.Xml;
 using System.Xml.Serialization;
 using FhirAugury.Source.Jira.Database.Records;
+using static FhirAugury.Common.DateTimeHelper;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -109,12 +110,6 @@ public static class JiraXmlParser
             yield return (record, comments);
         }
     }
-
-    private static DateTimeOffset ParseDate(string? value) =>
-        string.IsNullOrEmpty(value) ? DateTimeOffset.MinValue : DateTimeOffset.TryParse(value, out var dt) ? dt : DateTimeOffset.MinValue;
-
-    private static DateTimeOffset? ParseNullableDate(string? value) =>
-        string.IsNullOrEmpty(value) ? null : DateTimeOffset.TryParse(value, out var dt) ? dt : null;
 
     #region XML Serialization Classes
 
