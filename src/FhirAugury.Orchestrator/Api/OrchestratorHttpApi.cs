@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
@@ -33,9 +34,7 @@ public static class OrchestratorHttpApi
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
-            var sourceList = string.IsNullOrEmpty(sources)
-                ? null
-                : sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            var sourceList = CsvParser.ParseSourceList(sources);
 
             var (results, warnings) = await searchService.SearchAsync(q, sourceList, limit ?? 0, ct);
 
@@ -56,10 +55,12 @@ public static class OrchestratorHttpApi
             string source,
             string id,
             int? limit,
+            string? targetSources,
             RelatedItemFinder finder,
             CancellationToken ct) =>
         {
-            var response = await finder.FindRelatedAsync(source, id, limit ?? 0, null, ct);
+            var targetSourceList = CsvParser.ParseSourceList(targetSources);
+            var response = await finder.FindRelatedAsync(source, id, limit ?? 0, targetSourceList, ct);
 
             return Results.Ok(new
             {
@@ -208,7 +209,7 @@ public static class OrchestratorHttpApi
             var sourceCsv = req.Query["sources"].FirstOrDefault();
             var targetSources = string.IsNullOrEmpty(sourceCsv)
                 ? router.GetEnabledSources().ToList()
-                : sourceCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                : CsvParser.ParseSourceList(sourceCsv) ?? [];
 
             var statuses = new List<object>();
             foreach (var sourceName in targetSources)
@@ -271,6 +272,7 @@ public static class OrchestratorHttpApi
             var dbSize = database.GetDatabaseSizeBytes();
 
             var sourceStats = new List<object>();
+            var warnings = new List<string>();
             foreach (var sourceName in router.GetEnabledSources())
             {
                 var client = router.GetSourceClient(sourceName);
@@ -286,11 +288,13 @@ public static class OrchestratorHttpApi
                         totalComments = stats.TotalComments,
                         databaseSizeBytes = stats.DatabaseSizeBytes,
                         cacheSizeBytes = stats.CacheSizeBytes,
+                        status = "ok",
                     });
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Failed to get stats for source {Source}", sourceName);
+                    warnings.Add($"Stats unavailable for '{sourceName}': {ex.Message}");
                     sourceStats.Add(new
                     {
                         source = sourceName,
@@ -298,6 +302,7 @@ public static class OrchestratorHttpApi
                         totalComments = 0,
                         databaseSizeBytes = 0L,
                         cacheSizeBytes = 0L,
+                        status = "unavailable",
                     });
                 }
             }
@@ -306,6 +311,7 @@ public static class OrchestratorHttpApi
             {
                 orchestrator = new { crossRefLinks = linkCount, databaseSizeBytes = dbSize },
                 sources = sourceStats,
+                warnings,
             });
         });
 

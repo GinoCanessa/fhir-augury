@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
@@ -72,8 +73,9 @@ public class OrchestratorGrpcService(
             context.CancellationToken);
     }
 
-    public override Task<GetXRefResponse> GetCrossReferences(GetXRefRequest request, ServerCallContext context)
+    public override async Task<GetXRefResponse> GetCrossReferences(GetXRefRequest request, ServerCallContext context)
     {
+        var ct = context.CancellationToken;
         using var connection = database.OpenConnection();
         var response = new GetXRefResponse();
 
@@ -115,7 +117,40 @@ public class OrchestratorGrpcService(
             }
         }
 
-        return Task.FromResult(response);
+        // Enrich references with target title and URL from source services
+        var targets = response.References
+            .Select(r => (r.TargetType, r.TargetId))
+            .Distinct()
+            .ToList();
+
+        var lookupCache = new Dictionary<(string, string), (string Title, string Url)>();
+        foreach (var (targetType, targetId) in targets)
+        {
+            var client = router.GetSourceClient(targetType);
+            if (client is null) continue;
+
+            try
+            {
+                var item = await client.GetItemAsync(
+                    new GetItemRequest { Id = targetId }, cancellationToken: ct);
+                lookupCache[(targetType, targetId)] = (item.Title, item.Url);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to enrich xref target {TargetType}/{TargetId}", targetType, targetId);
+            }
+        }
+
+        foreach (var reference in response.References)
+        {
+            if (lookupCache.TryGetValue((reference.TargetType, reference.TargetId), out var info))
+            {
+                reference.TargetTitle = info.Title;
+                reference.TargetUrl = info.Url;
+            }
+        }
+
+        return response;
     }
 
     public override async Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
@@ -268,5 +303,27 @@ public class OrchestratorGrpcService(
         {
             XrefScanTriggered = true,
         });
+    }
+
+    public override Task<ServiceEndpointsResponse> GetServiceEndpoints(
+        ServiceEndpointsRequest request, ServerCallContext context)
+    {
+        var response = new ServiceEndpointsResponse();
+
+        foreach (var sourceName in router.GetEnabledSources())
+        {
+            var config = router.GetSourceConfig(sourceName);
+            if (config is null)
+                continue;
+
+            response.Endpoints.Add(new ServiceEndpoint
+            {
+                Name = sourceName,
+                GrpcAddress = config.GrpcAddress,
+                Enabled = config.Enabled,
+            });
+        }
+
+        return Task.FromResult(response);
     }
 }
