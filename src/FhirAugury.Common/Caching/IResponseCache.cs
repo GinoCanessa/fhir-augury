@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace FhirAugury.Common.Caching;
 
 /// <summary>
@@ -10,9 +12,9 @@ public interface IResponseCache
 
     /// <summary>
     /// Check whether a cached entry exists. If so, returns a readable stream
-    /// positioned at the start of the cached content.
+    /// positioned at the start of the cached content. Caller must dispose the stream when true.
     /// </summary>
-    bool TryGet(string source, string key, out Stream content);
+    bool TryGet(string source, string key, [NotNullWhen(true)] out Stream? content);
 
     /// <summary>
     /// Write a response to the cache. Creates intermediate directories as needed.
@@ -44,4 +46,16 @@ public interface IResponseCache
     /// Get cache statistics: total files and total bytes per source.
     /// </summary>
     CacheStats GetStats(string source);
+
+    /// <summary>Async version of <see cref="TryGet"/>. Returns null on cache miss.</summary>
+    Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default);
+
+    /// <summary>Async version of <see cref="Remove"/>.</summary>
+    Task RemoveAsync(string source, string key, CancellationToken ct = default);
+
+    /// <summary>Async version of <see cref="Clear"/>.</summary>
+    Task ClearAsync(string source, CancellationToken ct = default);
+
+    /// <summary>Async version of <see cref="ClearAll"/>.</summary>
+    Task ClearAllAsync(CancellationToken ct = default);
 }

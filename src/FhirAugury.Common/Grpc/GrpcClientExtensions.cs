@@ -24,7 +24,11 @@ public static class GrpcClientExtensions
         services.AddSingleton(sp =>
         {
             var channel = GrpcChannel.ForAddress(address);
-            return (TClient)Activator.CreateInstance(typeof(TClient), channel)!;
+            var client = Activator.CreateInstance(typeof(TClient), channel) as TClient
+                ?? throw new InvalidOperationException(
+                    $"Failed to create gRPC client '{typeof(TClient).Name}'. " +
+                    "Ensure it has a public constructor accepting GrpcChannel.");
+            return client;
         });
 
         return services;

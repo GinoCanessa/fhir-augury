@@ -2,8 +2,18 @@ using System.Text.Json.Serialization;
 
 namespace FhirAugury.Common.Caching;
 
+/// <summary>Common interface for source cache metadata with shared sync tracking properties.</summary>
+public interface ICacheMetadata
+{
+    /// <summary>Human-readable last sync date string.</summary>
+    string? LastSyncDate { get; }
+
+    /// <summary>Precise timestamp of the last sync.</summary>
+    DateTimeOffset? LastSyncTimestamp { get; }
+}
+
 /// <summary>Sync metadata for Jira cache.</summary>
-public record JiraCacheMetadata
+public record JiraCacheMetadata : ICacheMetadata
 {
     [JsonPropertyName("lastSyncDate")]
     public string? LastSyncDate { get; init; }
@@ -19,7 +29,7 @@ public record JiraCacheMetadata
 }
 
 /// <summary>Sync metadata for a single Zulip stream.</summary>
-public record ZulipStreamCacheMetadata
+public record ZulipStreamCacheMetadata : ICacheMetadata
 {
     [JsonPropertyName("streamId")]
     public int StreamId { get; init; }
@@ -38,7 +48,7 @@ public record ZulipStreamCacheMetadata
 }
 
 /// <summary>Sync metadata for Confluence cache.</summary>
-public record ConfluenceCacheMetadata
+public record ConfluenceCacheMetadata : ICacheMetadata
 {
     [JsonPropertyName("lastSyncDate")]
     public string? LastSyncDate { get; init; }

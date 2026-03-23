@@ -1,9 +1,12 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace FhirAugury.Common.Caching;
 
 /// <summary>Top-level cache configuration.</summary>
 public class CacheConfiguration
 {
     /// <summary>Root directory for all source caches.</summary>
+    [Required]
     public string RootPath { get; set; } = "./cache";
 
     /// <summary>Default cache mode for all sources.</summary>

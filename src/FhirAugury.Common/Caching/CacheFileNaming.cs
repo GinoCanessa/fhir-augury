@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -22,9 +23,9 @@ public static partial class CacheFileNaming
     [GeneratedRegex(@"^DayOf_(\d{4}-\d{2}-\d{2})(?:-(\d{3}))?\.(\w+)$")]
     private static partial Regex DayOfPattern();
 
-    public static bool TryParse(string fileName, out ParsedBatchFile result)
+    public static bool TryParse(string fileName, [NotNullWhen(true)] out ParsedBatchFile? result)
     {
-        result = default!;
+        result = null;
 
         if (string.IsNullOrEmpty(fileName))
             return false;

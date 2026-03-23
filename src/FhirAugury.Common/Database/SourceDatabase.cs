@@ -11,7 +11,11 @@ public abstract class SourceDatabase : IDisposable
 {
     private readonly string _connectionString;
     private readonly bool _readOnly;
-    protected readonly ILogger Logger;
+
+    /// <summary>Indicates whether this instance has been disposed.</summary>
+    protected bool Disposed { get; private set; }
+
+    protected ILogger Logger { get; }
 
     /// <summary>Default batch size for transaction-batched operations.</summary>
     public const int DefaultBatchSize = 1000;
@@ -31,6 +35,10 @@ public abstract class SourceDatabase : IDisposable
     }
 
     /// <summary>Opens a new SQLite connection with WAL mode and performance pragmas.</summary>
+    /// <remarks>
+    /// Ideally protected, but kept public because composed services (gRPC, HTTP, indexers)
+    /// need direct connection access. A future refactor could introduce a connection factory.
+    /// </remarks>
     public SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_connectionString);
@@ -204,6 +212,13 @@ public abstract class SourceDatabase : IDisposable
 
     public void Dispose()
     {
+        Dispose(disposing: true);
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>Override in subclasses to release resources.</summary>
+    protected virtual void Dispose(bool disposing)
+    {
+        Disposed = true;
     }
 }

@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace FhirAugury.Common.Configuration;
 
 /// <summary>
@@ -6,18 +8,23 @@ namespace FhirAugury.Common.Configuration;
 public class SourceServiceConfiguration
 {
     /// <summary>HTTP port for REST API.</summary>
+    [Range(1, 65535)]
     public int HttpPort { get; set; }
 
     /// <summary>gRPC port for inter-service communication.</summary>
+    [Range(1, 65535)]
     public int GrpcPort { get; set; }
 
     /// <summary>Path to the SQLite database file.</summary>
+    [Required]
     public string DatabasePath { get; set; } = "./data/source.db";
 
     /// <summary>Path to the file-system cache directory.</summary>
+    [Required]
     public string CachePath { get; set; } = "./cache";
 
     /// <summary>Sync schedule as a TimeSpan string (e.g., "01:00:00").</summary>
+    [Required]
     public string SyncSchedule { get; set; } = "01:00:00";
 
     /// <summary>Rate limiting configuration.</summary>
@@ -29,7 +36,12 @@ public class SourceServiceConfiguration
 /// </summary>
 public class RateLimitingConfiguration
 {
+    [Range(1, 1000)]
     public int MaxRequestsPerSecond { get; set; } = 10;
+
+    [Range(1, 300)]
     public int BackoffBaseSeconds { get; set; } = 2;
+
+    [Range(0, 10)]
     public int MaxRetries { get; set; } = 3;
 }

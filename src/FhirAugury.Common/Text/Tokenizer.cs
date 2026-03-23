@@ -23,10 +23,6 @@ public static partial class Tokenizer
     [GeneratedRegex(@"\S+@\S+\.\S+")]
     private static partial Regex EmailRegex();
 
-    // Code blocks to strip (markdown-style)
-    [GeneratedRegex(@"```[\s\S]*?```", RegexOptions.Singleline)]
-    private static partial Regex CodeBlockRegex();
-
     // Word splitting: letters and digits
     [GeneratedRegex(@"[a-zA-Z0-9]+")]
     private static partial Regex WordRegex();
@@ -48,32 +44,36 @@ public static partial class Tokenizer
         // Extract FHIR operations first (before stripping)
         foreach (Match match in FhirOperationRegex().Matches(text))
         {
-            tokens.Add(match.Value.ToLowerInvariant());
+            tokens.Add(string.Create(match.Length, match, static (span, m) =>
+                m.ValueSpan.ToLowerInvariant(span)));
         }
 
         // Extract FHIR paths (e.g., Patient.name.given)
         foreach (Match match in FhirPathRegex().Matches(text))
         {
-            var path = match.Value;
-            tokens.Add(path.ToLowerInvariant());
+            var path = match.ValueSpan;
+            tokens.Add(string.Create(path.Length, match, static (span, m) =>
+                m.ValueSpan.ToLowerInvariant(span)));
 
-            // Also add individual components
-            var components = path.Split('.');
-            foreach (var component in components)
+            // Also add individual components using span-based splitting
+            foreach (var segment in path.Split('.'))
             {
-                tokens.Add(component.ToLowerInvariant());
+                var component = path[segment];
+                tokens.Add(string.Create(component.Length, component.ToString(), static (span, s) =>
+                    s.AsSpan().ToLowerInvariant(span)));
             }
         }
 
         // Strip noise: URLs, emails, code blocks
-        var cleaned = CodeBlockRegex().Replace(text, " ");
+        var cleaned = TextPatterns.CodeBlockRegex().Replace(text, " ");
         cleaned = UrlRegex().Replace(cleaned, " ");
         cleaned = EmailRegex().Replace(cleaned, " ");
 
         // Extract regular words
         foreach (Match match in WordRegex().Matches(cleaned))
         {
-            tokens.Add(match.Value.ToLowerInvariant());
+            tokens.Add(string.Create(match.Length, match, static (span, m) =>
+                m.ValueSpan.ToLowerInvariant(span)));
         }
 
         return tokens;

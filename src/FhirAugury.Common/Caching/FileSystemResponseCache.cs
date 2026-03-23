@@ -1,3 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
+
 namespace FhirAugury.Common.Caching;
 
 /// <summary>
@@ -6,48 +9,64 @@ namespace FhirAugury.Common.Caching;
 public class FileSystemResponseCache : IResponseCache
 {
     private readonly string _rootPath;
+    private readonly string _rootPathWithSep;
+    private readonly ILogger? _logger;
+    private static readonly Random Jitter = new();
 
-    public FileSystemResponseCache(string rootPath)
+    public FileSystemResponseCache(string rootPath, ILogger? logger = null)
     {
         _rootPath = Path.GetFullPath(rootPath);
+        _rootPathWithSep = _rootPath.EndsWith(Path.DirectorySeparatorChar)
+            ? _rootPath
+            : _rootPath + Path.DirectorySeparatorChar;
+        _logger = logger;
         Directory.CreateDirectory(_rootPath);
     }
 
     public string RootPath => _rootPath;
 
-    public bool TryGet(string source, string key, out Stream content)
+    public bool TryGet(string source, string key, [NotNullWhen(true)] out Stream? content)
     {
         var path = ResolvePath(source, key);
-        if (File.Exists(path))
+
+        // Retry to handle races with concurrent PutAsync (temp+move)
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            content = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            return true;
+            if (!File.Exists(path))
+            {
+                content = null;
+                return false;
+            }
+
+            try
+            {
+                content = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                return true;
+            }
+            catch (FileNotFoundException)
+            {
+                // File was moved/deleted between Exists check and Open
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                // File may be locked by a concurrent write
+            }
+
+            Thread.Sleep(Jitter.Next(10, 50));
         }
 
-        content = Stream.Null;
+        content = null;
         return false;
     }
 
     public async Task PutAsync(string source, string key, Stream content, CancellationToken ct)
     {
         var finalPath = ResolvePath(source, key);
-        var dir = Path.GetDirectoryName(finalPath)!;
-        Directory.CreateDirectory(dir);
-
-        var tempPath = finalPath + ".tmp";
-        try
-        {
-            await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-            {
-                await content.CopyToAsync(fs, ct);
-            }
-            File.Move(tempPath, finalPath, overwrite: true);
-        }
-        catch
-        {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-            throw;
-        }
+        await AtomicFileWriter.WriteAsync(
+            finalPath,
+            async fs => await content.CopyToAsync(fs, ct),
+            _logger,
+            ct);
     }
 
     public void Remove(string source, string key)
@@ -122,6 +141,33 @@ public class FileSystemResponseCache : IResponseCache
         return new CacheStats(source, fileCount, totalBytes, subPaths.Order().ToList());
     }
 
+    public Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(TryGet(source, key, out var content) ? content : (Stream?)null);
+    }
+
+    public Task RemoveAsync(string source, string key, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Remove(source, key);
+        return Task.CompletedTask;
+    }
+
+    public Task ClearAsync(string source, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Clear(source);
+        return Task.CompletedTask;
+    }
+
+    public Task ClearAllAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ClearAll();
+        return Task.CompletedTask;
+    }
+
     private IEnumerable<string> EnumerateKeysInternal(string directory, string source)
     {
         if (!Directory.Exists(directory))
@@ -156,19 +202,18 @@ public class FileSystemResponseCache : IResponseCache
         return sortedBatch.Concat(nonBatchKeys);
     }
 
+    private void EnsureWithinRoot(string resolved, string paramName)
+    {
+        if (!resolved.StartsWith(_rootPathWithSep, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(resolved, _rootPath, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"'{paramName}' resolves outside the cache root.", paramName);
+    }
+
     private string ResolveSourcePath(string source)
     {
         var combined = Path.Combine(_rootPath, source);
         var resolved = Path.GetFullPath(combined);
-
-        var rootWithSep = _rootPath.EndsWith(Path.DirectorySeparatorChar)
-            ? _rootPath
-            : _rootPath + Path.DirectorySeparatorChar;
-
-        if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(resolved, _rootPath, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException($"Source '{source}' resolves outside the cache root.", nameof(source));
-
+        EnsureWithinRoot(resolved, nameof(source));
         return resolved;
     }
 
@@ -176,15 +221,7 @@ public class FileSystemResponseCache : IResponseCache
     {
         var combined = Path.Combine(_rootPath, source, key.Replace('/', Path.DirectorySeparatorChar));
         var resolved = Path.GetFullPath(combined);
-
-        var rootWithSep = _rootPath.EndsWith(Path.DirectorySeparatorChar)
-            ? _rootPath
-            : _rootPath + Path.DirectorySeparatorChar;
-
-        if (!resolved.StartsWith(rootWithSep, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(resolved, _rootPath, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException($"Key '{key}' resolves outside the cache root.", nameof(key));
-
+        EnsureWithinRoot(resolved, nameof(key));
         return resolved;
     }
 

@@ -7,7 +7,7 @@ public class CacheFileNamingTests
     {
         var result = Caching.CacheFileNaming.TryParse("DayOf_2025-01-15-001.xml", out var parsed);
         Assert.True(result);
-        Assert.Equal(Caching.CacheFileNaming.BatchPrefix.DayOf, parsed.Prefix);
+        Assert.Equal(Caching.CacheFileNaming.BatchPrefix.DayOf, parsed!.Prefix);
         Assert.Equal(new DateOnly(2025, 1, 15), parsed.Date);
         Assert.Equal(1, parsed.SequenceNumber);
     }
@@ -17,7 +17,7 @@ public class CacheFileNamingTests
     {
         var result = Caching.CacheFileNaming.TryParse("_WeekOf_2025-01-13-000.json", out var parsed);
         Assert.True(result);
-        Assert.Equal(Caching.CacheFileNaming.BatchPrefix.WeekOf, parsed.Prefix);
+        Assert.Equal(Caching.CacheFileNaming.BatchPrefix.WeekOf, parsed!.Prefix);
         Assert.Equal(new DateOnly(2025, 1, 13), parsed.Date);
         Assert.Equal(0, parsed.SequenceNumber);
     }

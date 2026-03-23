@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace FhirAugury.Common.Caching;
 
 /// <summary>
@@ -10,9 +12,9 @@ public sealed class NullResponseCache : IResponseCache
 
     public string RootPath => string.Empty;
 
-    public bool TryGet(string source, string key, out Stream content)
+    public bool TryGet(string source, string key, [NotNullWhen(true)] out Stream? content)
     {
-        content = Stream.Null;
+        content = null;
         return false;
     }
 
@@ -25,4 +27,16 @@ public sealed class NullResponseCache : IResponseCache
     public void Clear(string source) { }
     public void ClearAll() { }
     public CacheStats GetStats(string source) => new(source, 0, 0, []);
+
+    public Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default)
+        => Task.FromResult<Stream?>(null);
+
+    public Task RemoveAsync(string source, string key, CancellationToken ct = default)
+        => Task.CompletedTask;
+
+    public Task ClearAsync(string source, CancellationToken ct = default)
+        => Task.CompletedTask;
+
+    public Task ClearAllAsync(CancellationToken ct = default)
+        => Task.CompletedTask;
 }

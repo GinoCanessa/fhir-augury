@@ -30,9 +30,6 @@ public static partial class TextSanitizer
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
 
-    [GeneratedRegex(@"```[\s\S]*?```", RegexOptions.Singleline)]
-    private static partial Regex MarkdownCodeBlockRegex();
-
     [GeneratedRegex(@"!\[([^\]]*)\]\([^\)]+\)")]
     private static partial Regex MarkdownImageRegex();
 
@@ -95,8 +92,10 @@ public static partial class TextSanitizer
         }
 
         // Order matters: code blocks first, then inline elements
-        var text = MarkdownCodeBlockRegex().Replace(md, " ");
-        text = MarkdownImageRegex().Replace(text, "$1");
+        var sb = new StringBuilder(md.Length);
+        sb.Append(TextPatterns.CodeBlockRegex().Replace(md, " "));
+
+        var text = MarkdownImageRegex().Replace(sb.ToString(), "$1");
         text = MarkdownLinkRegex().Replace(text, "$1");
         text = MarkdownInlineCodeRegex().Replace(text, "$1");
         text = MarkdownHeaderRegex().Replace(text, "");
@@ -106,9 +105,11 @@ public static partial class TextSanitizer
         text = MarkdownListRegex().Replace(text, "");
         text = MarkdownBlockquoteRegex().Replace(text, "");
         text = MarkdownHorizontalRuleRegex().Replace(text, "");
-        text = WhitespaceRegex().Replace(text, " ");
 
-        return text.Trim();
+        // Final whitespace normalization
+        sb.Clear();
+        sb.Append(text);
+        return WhitespaceRegex().Replace(sb.ToString(), " ").Trim();
     }
 
     /// <summary>

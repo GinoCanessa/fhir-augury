@@ -40,4 +40,37 @@ public static class GrpcErrorMapper
             throw new RpcException(new Status(StatusCode.Internal, "An internal error occurred"));
         }
     }
+
+    /// <summary>
+    /// Wraps an async operation (no return value) with standard gRPC error mapping.
+    /// </summary>
+    public static async Task HandleAsync(
+        Func<Task> operation,
+        ILogger logger,
+        string rpcName)
+    {
+        try
+        {
+            await operation();
+        }
+        catch (ArgumentException ex)
+        {
+            logger.LogWarning(ex, "Invalid argument in {RpcName}", rpcName);
+            throw new RpcException(new Status(StatusCode.InvalidArgument, ex.Message));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            logger.LogDebug(ex, "Not found in {RpcName}", rpcName);
+            throw new RpcException(new Status(StatusCode.NotFound, ex.Message));
+        }
+        catch (OperationCanceledException)
+        {
+            throw new RpcException(new Status(StatusCode.Cancelled, "Operation was cancelled"));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Internal error in {RpcName}", rpcName);
+            throw new RpcException(new Status(StatusCode.Internal, "An internal error occurred"));
+        }
+    }
 }

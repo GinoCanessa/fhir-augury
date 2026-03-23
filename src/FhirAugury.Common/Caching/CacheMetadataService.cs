@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Common.Caching;
 
@@ -10,38 +11,33 @@ public static class CacheMetadataService
         WriteIndented = true,
     };
 
-    /// <summary>Read a metadata file, returning null if it doesn't exist.</summary>
-    public static T? ReadMetadata<T>(string rootPath, string metaFileName) where T : class
+    /// <summary>Read a metadata file asynchronously, returning null if it doesn't exist.</summary>
+    public static async Task<T?> ReadMetadataAsync<T>(
+        string rootPath,
+        string metaFileName,
+        CancellationToken ct = default) where T : class
     {
         var path = Path.Combine(rootPath, metaFileName);
         if (!File.Exists(path))
             return null;
 
-        var json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<T>(json, JsonOptions);
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct);
     }
 
     /// <summary>Write a metadata file atomically (temp + move).</summary>
     public static async Task WriteMetadataAsync<T>(
-        string rootPath, string metaFileName, T metadata, CancellationToken ct)
+        string rootPath,
+        string metaFileName,
+        T metadata,
+        CancellationToken ct,
+        ILogger? logger = null)
     {
         var finalPath = Path.Combine(rootPath, metaFileName);
-        var dir = Path.GetDirectoryName(finalPath)!;
-        Directory.CreateDirectory(dir);
-
-        var tempPath = finalPath + ".tmp";
-        try
-        {
-            await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-            {
-                await JsonSerializer.SerializeAsync(fs, metadata, JsonOptions, ct);
-            }
-            File.Move(tempPath, finalPath, overwrite: true);
-        }
-        catch
-        {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-            throw;
-        }
+        await AtomicFileWriter.WriteAsync(
+            finalPath,
+            async fs => await JsonSerializer.SerializeAsync(fs, metadata, JsonOptions, ct),
+            logger,
+            ct);
     }
 }

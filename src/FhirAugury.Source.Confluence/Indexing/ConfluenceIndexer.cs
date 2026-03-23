@@ -230,13 +230,13 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         foreach (var token in tokens)
         {
             var classification = KeywordClassifier.Classify(token);
-            if (classification == KeywordClassifier.TypeStopWord)
+            if (classification == KeywordType.StopWord)
                 continue;
 
             if (result.TryGetValue(token, out var existing))
                 result[token] = (existing.Count + 1, existing.KeywordType);
             else
-                result[token] = (1, classification);
+                result[token] = (1, KeywordClassifier.ToStorageString(classification));
         }
 
         return result;

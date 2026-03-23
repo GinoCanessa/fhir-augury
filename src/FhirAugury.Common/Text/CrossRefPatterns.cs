@@ -1,6 +1,10 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace FhirAugury.Common.Text;
+
+/// <summary>A cross-reference link extracted from text.</summary>
+public record CrossReference(string TargetType, string TargetId, string Context);
 
 /// <summary>
 /// Regex-based cross-reference extraction patterns.
@@ -29,12 +33,12 @@ public static partial class CrossRefPatterns
     /// <summary>
     /// Extracts cross-reference links from a text string.
     /// </summary>
-    public static List<(string TargetType, string TargetId, string Context)> ExtractLinks(string text)
+    public static List<CrossReference> ExtractLinks(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return [];
 
-        var results = new List<(string TargetType, string TargetId, string Context)>();
+        var results = new List<CrossReference>();
         var seen = new HashSet<(string, string)>();
 
         // Jira URLs (check before Jira keys to avoid double-matching)
@@ -42,7 +46,7 @@ public static partial class CrossRefPatterns
         {
             var key = (TargetType: "jira", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         // Jira keys (skip if already found via URL)
@@ -50,7 +54,7 @@ public static partial class CrossRefPatterns
         {
             var key = (TargetType: "jira", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         // Zulip URLs
@@ -60,7 +64,7 @@ public static partial class CrossRefPatterns
             var topic = Uri.UnescapeDataString(match.Groups[2].Value.TrimEnd());
             var key = (TargetType: "zulip", TargetId: $"{streamId}:{topic}");
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         // GitHub issue/PR URLs
@@ -70,7 +74,7 @@ public static partial class CrossRefPatterns
             var number = match.Groups[2].Value;
             var key = (TargetType: "github", TargetId: $"{repo}#{number}");
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         // GitHub short references (HL7/repo#123)
@@ -78,7 +82,7 @@ public static partial class CrossRefPatterns
         {
             var key = (TargetType: "github", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         // Confluence URLs
@@ -87,7 +91,7 @@ public static partial class CrossRefPatterns
             var pageId = match.Groups[1].Value;
             var key = (TargetType: "confluence", TargetId: pageId);
             if (seen.Add(key))
-                results.Add((key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
+                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
 
         return results;
@@ -101,9 +105,15 @@ public static partial class CrossRefPatterns
         var halfContext = contextChars / 2;
         var start = Math.Max(0, matchIndex - halfContext);
         var end = Math.Min(fullText.Length, matchIndex + halfContext);
-        var context = fullText[start..end].ReplaceLineEndings(" ").Trim();
-        if (start > 0) context = "..." + context;
-        if (end < fullText.Length) context += "...";
-        return context;
+
+        var sb = new StringBuilder(contextChars + 6);
+        if (start > 0)
+            sb.Append("...");
+        sb.Append(fullText.AsSpan(start, end - start));
+        sb.Replace('\r', ' ').Replace('\n', ' ');
+        if (end < fullText.Length)
+            sb.Append("...");
+
+        return sb.ToString().Trim();
     }
 }
