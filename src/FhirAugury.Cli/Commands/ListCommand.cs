@@ -58,18 +58,12 @@ public static class ListCommand
                 var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
                 using var clients = new GrpcClientFactory(addr);
 
-                var sourceClient = source.ToLowerInvariant() switch
-                {
-                    "jira" => clients.JiraSource,
-                    "zulip" => clients.ZulipSource,
-                    "confluence" => new SourceService.SourceServiceClient(
-                        Grpc.Net.Client.GrpcChannel.ForAddress(
-                            Environment.GetEnvironmentVariable("FHIR_AUGURY_CONFLUENCE_GRPC") ?? "http://localhost:5181")),
-                    "github" => new SourceService.SourceServiceClient(
-                        Grpc.Net.Client.GrpcChannel.ForAddress(
-                            Environment.GetEnvironmentVariable("FHIR_AUGURY_GITHUB_GRPC") ?? "http://localhost:5191")),
-                    _ => throw new ArgumentException($"Unknown source: {source}. Supported: jira, zulip, confluence, github"),
-                };
+                var endpoints = await clients.GetServiceEndpointsAsync(ct);
+                var sourceLower = source.ToLowerInvariant();
+                if (!endpoints.TryGetValue(sourceLower, out var sourceAddress))
+                    throw new ArgumentException(
+                        $"Unknown or disabled source: {source}. Available: {string.Join(", ", endpoints.Keys)}");
+                var sourceClient = clients.GetSourceClient(sourceAddress);
 
                 var request = new ListItemsRequest
                 {

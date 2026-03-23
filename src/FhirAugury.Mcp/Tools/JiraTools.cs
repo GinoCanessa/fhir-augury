@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common.Text;
 using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
@@ -287,15 +288,8 @@ public static class JiraTools
         }
     }
 
-    private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
-    {
-        if (string.IsNullOrWhiteSpace(csv)) return;
-        foreach (var item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            field.Add(item);
-    }
+    private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string? csv) =>
+        CsvParser.AddItemsToRepeatedField(field, csv);
 
-    private static string FormatKey(string key) =>
-        string.Concat(key.Select((c, i) => i > 0 && char.IsUpper(c) ? $" {c}" : $"{c}"))
-              .Replace('_', ' ')
-              .Trim();
+    private static string FormatKey(string key) => FormatHelpers.FormatKey(key);
 }

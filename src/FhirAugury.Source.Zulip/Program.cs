@@ -69,6 +69,7 @@ builder.Services.AddHttpClient("zulip")
 builder.Services.AddSingleton<ZulipSource>();
 builder.Services.AddSingleton<ZulipIndexer>();
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
+builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();

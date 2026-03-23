@@ -22,6 +22,7 @@ public class ConfluenceGrpcService(
     ConfluenceDatabase database,
     ConfluenceIngestionPipeline pipeline,
     IResponseCache cache,
+    FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
     ConfluenceServiceOptions options)
     : SourceService.SourceServiceBase
 {
@@ -264,11 +265,11 @@ public class ConfluenceGrpcService(
     {
         var type = request.Type?.ToLowerInvariant() ?? "incremental";
 
-        _ = type switch
+        workQueue.Enqueue(ct => type switch
         {
-            "full" => Task.Run(() => pipeline.RunFullIngestionAsync(context.CancellationToken)),
-            _ => Task.Run(() => pipeline.RunIncrementalIngestionAsync(context.CancellationToken)),
-        };
+            "full" => pipeline.RunFullIngestionAsync(ct),
+            _ => pipeline.RunIncrementalIngestionAsync(ct),
+        }, $"confluence-{type}");
 
         await Task.Delay(100, context.CancellationToken);
         return GetCurrentStatus();
@@ -281,26 +282,9 @@ public class ConfluenceGrpcService(
 
     public override async Task<RebuildResponse> RebuildFromCache(RebuildRequest request, ServerCallContext context)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            var result = await pipeline.RebuildFromCacheAsync(context.CancellationToken);
-            return new RebuildResponse
-            {
-                Success = true,
-                ItemsLoaded = result.ItemsProcessed,
-                ElapsedSeconds = sw.Elapsed.TotalSeconds,
-            };
-        }
-        catch (Exception ex)
-        {
-            return new RebuildResponse
-            {
-                Success = false,
-                Error = ex.Message,
-                ElapsedSeconds = sw.Elapsed.TotalSeconds,
-            };
-        }
+        return await FhirAugury.Common.Grpc.SourceServiceLifecycle.RebuildFromCacheAsync(
+            async ct => (await pipeline.RebuildFromCacheAsync(ct)).ItemsProcessed,
+            context.CancellationToken);
     }
 
     public override Task<StatsResponse> GetStats(StatsRequest request, ServerCallContext context)
@@ -334,14 +318,7 @@ public class ConfluenceGrpcService(
 
     public override Task<HealthCheckResponse> HealthCheck(HealthCheckRequest request, ServerCallContext context)
     {
-        var integrity = database.CheckIntegrity();
-        return Task.FromResult(new HealthCheckResponse
-        {
-            Status = integrity == "ok" ? "healthy" : "degraded",
-            Version = "2.0.0",
-            UptimeSeconds = (DateTimeOffset.UtcNow - StartTime).TotalSeconds,
-            Message = pipeline.IsRunning ? $"Ingestion in progress: {pipeline.CurrentStatus}" : "OK",
-        });
+        return Task.FromResult(FhirAugury.Common.Grpc.SourceServiceLifecycle.BuildHealthCheck(database, pipeline));
     }
 
     // ── Helpers ──────────────────────────────────────────────────

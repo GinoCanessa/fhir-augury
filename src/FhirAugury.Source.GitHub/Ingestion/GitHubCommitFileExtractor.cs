@@ -110,14 +110,20 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
                 var fileLine = lines[i].Trim();
                 if (fileLine.Length >= 2 && (fileLine[0] is 'A' or 'M' or 'D' or 'R' or 'C'))
                 {
-                    var parts = fileLine.Split('\t', 2, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 2)
+                    var parts = fileLine.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
                     {
+                        // R/C rows have 3 fields: changeType, oldPath, newPath — use newPath
+                        var isRenameOrCopy = parts[0].Trim().StartsWith('R') || parts[0].Trim().StartsWith('C');
+                        var filePath = isRenameOrCopy && parts.Length >= 3
+                            ? parts[2].Trim()
+                            : parts[1].Trim();
+
                         files.Add(new GitHubCommitFileRecord
                         {
                             Id = GitHubCommitFileRecord.GetIndex(),
                             CommitSha = sha,
-                            FilePath = parts[1].Trim(),
+                            FilePath = filePath,
                             ChangeType = parts[0].Trim(),
                         });
                     }
@@ -131,7 +137,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         return results;
     }
 
-    private static async Task<string> RunGitAsync(string workingDir, string arguments, CancellationToken ct)
+    private async Task<string> RunGitAsync(string workingDir, string arguments, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -146,8 +152,25 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start git process.");
-        var stdout = await process.StandardOutput.ReadToEndAsync(ct);
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
+
         await process.WaitForExitAsync(ct);
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git {arguments} failed with exit code {process.ExitCode}: {stderr}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            logger.LogWarning("git stderr: {StdErr}", stderr);
+        }
 
         return stdout;
     }

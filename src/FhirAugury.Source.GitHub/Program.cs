@@ -77,6 +77,7 @@ builder.Services.AddSingleton<GitHubIndexer>();
 builder.Services.AddSingleton<ArtifactFileMapper>();
 builder.Services.AddSingleton<JiraRefResolver>();
 builder.Services.AddSingleton<GitHubIngestionPipeline>();
+builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();

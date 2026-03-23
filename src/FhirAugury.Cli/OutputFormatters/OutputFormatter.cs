@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Fhiraugury;
+using static FhirAugury.Common.Text.FormatHelpers;
 
 namespace FhirAugury.Cli.OutputFormatters;
 
@@ -266,33 +267,9 @@ public static class OutputFormatter
             ? ("→", xref.TargetType, xref.TargetId)
             : ("←", xref.SourceType, xref.SourceId);
 
-    internal static string FormatKey(string key)
-    {
-        var sb = new StringBuilder(key.Length + 4);
-        for (var i = 0; i < key.Length; i++)
-        {
-            var c = key[i];
-            if (c == '_')
-            {
-                sb.Append(' ');
-            }
-            else
-            {
-                if (i > 0 && char.IsUpper(c))
-                    sb.Append(' ');
-                sb.Append(c);
-            }
-        }
-        return sb.ToString().Trim();
-    }
+    internal static string FormatKey(string key) => FhirAugury.Common.Text.FormatHelpers.FormatKey(key);
 
-    internal static string FormatBytes(long bytes) => bytes switch
-    {
-        < 1024 => $"{bytes} B",
-        < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
-        < 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F1} MB",
-        _ => $"{bytes / (1024.0 * 1024 * 1024):F2} GB",
-    };
+    internal static string FormatBytes(long bytes) => FhirAugury.Common.Text.FormatHelpers.FormatBytes(bytes);
 
     private static string Truncate(string text, int maxLength)
     {

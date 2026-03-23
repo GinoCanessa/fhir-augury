@@ -70,6 +70,7 @@ builder.Services.AddHttpClient("confluence", client =>
 builder.Services.AddSingleton<ConfluenceSource>();
 builder.Services.AddSingleton<ConfluenceIndexer>();
 builder.Services.AddSingleton<ConfluenceIngestionPipeline>();
+builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();

@@ -48,15 +48,9 @@ public class UnifiedSearchService(
                 continue;
             }
 
-            tasks[sourceName] = Task.Run(async () =>
-            {
-                var request = new SearchRequest
-                {
-                    Query = query,
-                    Limit = effectiveLimit,
-                };
-                return await client.SearchAsync(request, cancellationToken: ct);
-            }, ct);
+            tasks[sourceName] = client.SearchAsync(
+                new SearchRequest { Query = query, Limit = effectiveLimit },
+                cancellationToken: ct).ResponseAsync;
         }
 
         // Collect results, handling partial failures

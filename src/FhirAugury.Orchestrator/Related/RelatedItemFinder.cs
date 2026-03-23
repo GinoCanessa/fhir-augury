@@ -106,20 +106,7 @@ public class RelatedItemFinder(
                     var client = router.GetSourceClient(source);
                     if (client is null) continue;
 
-                    searchTasks.Add(Task.Run(async () =>
-                    {
-                        try
-                        {
-                            return await client.SearchAsync(
-                                new SearchRequest { Query = searchTerms, Limit = effectiveLimit },
-                                cancellationToken: ct);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
-                            return new SearchResponse();
-                        }
-                    }, ct));
+                    searchTasks.Add(SearchSourceAsync(client, searchTerms, effectiveLimit, ct));
                 }
 
                 var searchResults = await Task.WhenAll(searchTasks);
@@ -241,6 +228,22 @@ public class RelatedItemFinder(
         }
 
         return response;
+    }
+
+    private async Task<SearchResponse> SearchSourceAsync(
+        SourceService.SourceServiceClient client, string query, int limit, CancellationToken ct)
+    {
+        try
+        {
+            return await client.SearchAsync(
+                new SearchRequest { Query = query, Limit = limit },
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
+            return new SearchResponse();
+        }
     }
 
     private string ExtractKeyTerms(ItemResponse item)

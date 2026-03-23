@@ -19,17 +19,31 @@ public class ServiceHealthMonitor(
     private readonly Dictionary<string, ServiceHealthInfo> _healthStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
+    private static readonly TimeSpan PerServiceTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>
-    /// Checks health of all enabled source services.
+    /// Checks health of all enabled source services in parallel with per-service timeouts.
     /// </summary>
     public async Task CheckAllAsync(CancellationToken ct)
     {
-        foreach (var (name, config) in options.Services)
-        {
-            if (!config.Enabled) continue;
+        var enabledServices = options.Services
+            .Where(s => s.Value.Enabled)
+            .Select(s => s.Key)
+            .ToList();
 
-            var info = await CheckServiceAsync(name, ct);
-            lock (_lock)
+        var tasks = enabledServices.Select(async name =>
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(PerServiceTimeout);
+            var info = await CheckServiceAsync(name, timeoutCts.Token);
+            return (name, info);
+        }).ToList();
+
+        var results = await Task.WhenAll(tasks);
+
+        lock (_lock)
+        {
+            foreach (var (name, info) in results)
             {
                 _healthStatus[name] = info;
             }
@@ -69,6 +83,17 @@ public class ServiceHealthMonitor(
                 ItemCount = stats.TotalItems,
                 DbSizeBytes = stats.DatabaseSizeBytes,
                 LastSyncAt = stats.LastSyncAt?.ToDateTimeOffset(),
+            };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            logger.LogWarning("Health check timed out for {Source}", sourceName);
+            return new ServiceHealthInfo
+            {
+                Name = sourceName,
+                Status = "timeout",
+                GrpcAddress = config.GrpcAddress,
+                LastError = "Health check timed out",
             };
         }
         catch (Exception ex)

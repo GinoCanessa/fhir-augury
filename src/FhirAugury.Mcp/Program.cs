@@ -8,6 +8,8 @@ using ModelContextProtocol;
 var orchestratorAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ORCHESTRATOR") ?? "http://localhost:5151";
 var jiraAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_JIRA_GRPC") ?? "http://localhost:5161";
 var zulipAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ZULIP_GRPC") ?? "http://localhost:5171";
+var confluenceAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_CONFLUENCE_GRPC") ?? "http://localhost:5181";
+var githubAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_GITHUB_GRPC") ?? "http://localhost:5191";
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -19,18 +21,26 @@ builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogL
 var orchestratorChannel = GrpcChannel.ForAddress(orchestratorAddr);
 var jiraChannel = GrpcChannel.ForAddress(jiraAddr);
 var zulipChannel = GrpcChannel.ForAddress(zulipAddr);
+var confluenceChannel = GrpcChannel.ForAddress(confluenceAddr);
+var githubChannel = GrpcChannel.ForAddress(githubAddr);
 
 builder.Services.AddSingleton(orchestratorChannel);
 builder.Services.AddSingleton(jiraChannel);
 builder.Services.AddSingleton(zulipChannel);
+builder.Services.AddSingleton(confluenceChannel);
+builder.Services.AddSingleton(githubChannel);
 
 // Register gRPC clients
 builder.Services.AddSingleton(new OrchestratorService.OrchestratorServiceClient(orchestratorChannel));
 builder.Services.AddSingleton(new SourceService.SourceServiceClient(orchestratorChannel));
 builder.Services.AddKeyedSingleton("jira", new SourceService.SourceServiceClient(jiraChannel));
 builder.Services.AddKeyedSingleton("zulip", new SourceService.SourceServiceClient(zulipChannel));
+builder.Services.AddKeyedSingleton("confluence", new SourceService.SourceServiceClient(confluenceChannel));
+builder.Services.AddKeyedSingleton("github", new SourceService.SourceServiceClient(githubChannel));
 builder.Services.AddSingleton(new JiraService.JiraServiceClient(jiraChannel));
 builder.Services.AddSingleton(new ZulipService.ZulipServiceClient(zulipChannel));
+builder.Services.AddSingleton(new ConfluenceService.ConfluenceServiceClient(confluenceChannel));
+builder.Services.AddSingleton(new GitHubService.GitHubServiceClient(githubChannel));
 
 builder.Services
     .AddMcpServer()

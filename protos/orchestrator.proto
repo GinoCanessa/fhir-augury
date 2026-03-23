@@ -30,6 +30,9 @@ service OrchestratorService {
 
   // Callback from source services when ingestion completes.
   rpc NotifyIngestionComplete(IngestionCompleteNotification) returns (IngestionCompleteAck);
+
+  // Get active service endpoints for direct access.
+  rpc GetServiceEndpoints(ServiceEndpointsRequest) returns (ServiceEndpointsResponse);
 }
 
 message UnifiedSearchRequest {
@@ -136,4 +139,16 @@ message IngestionCompleteNotification {
 
 message IngestionCompleteAck {
   bool xref_scan_triggered = 1;
+}
+
+message ServiceEndpointsRequest {}
+
+message ServiceEndpointsResponse {
+  repeated ServiceEndpoint endpoints = 1;
+}
+
+message ServiceEndpoint {
+  string name = 1;
+  string grpc_address = 2;
+  bool enabled = 3;
 }

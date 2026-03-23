@@ -11,6 +11,7 @@ public sealed class GrpcClientFactory : IDisposable
     private readonly GrpcChannel _orchestratorChannel;
     private readonly Lazy<GrpcChannel> _jiraChannel;
     private readonly Lazy<GrpcChannel> _zulipChannel;
+    private readonly List<GrpcChannel> _dynamicChannels = [];
 
     private OrchestratorService.OrchestratorServiceClient? _orchestratorClient;
     private JiraService.JiraServiceClient? _jiraClient;
@@ -42,10 +43,34 @@ public sealed class GrpcClientFactory : IDisposable
     public SourceService.SourceServiceClient ZulipSource =>
         _zulipSourceClient ??= new(_zulipChannel.Value);
 
+    /// <summary>
+    /// Queries the orchestrator for active service endpoints.
+    /// </summary>
+    public async Task<Dictionary<string, string>> GetServiceEndpointsAsync(CancellationToken ct = default)
+    {
+        var response = await Orchestrator.GetServiceEndpointsAsync(
+            new ServiceEndpointsRequest(), cancellationToken: ct);
+        return response.Endpoints
+            .Where(e => e.Enabled)
+            .ToDictionary(e => e.Name, e => e.GrpcAddress, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Creates a SourceService client for a dynamically resolved address.
+    /// </summary>
+    public SourceService.SourceServiceClient GetSourceClient(string address)
+    {
+        var channel = GrpcChannel.ForAddress(address);
+        _dynamicChannels.Add(channel);
+        return new SourceService.SourceServiceClient(channel);
+    }
+
     public void Dispose()
     {
         _orchestratorChannel.Dispose();
         if (_jiraChannel.IsValueCreated) _jiraChannel.Value.Dispose();
         if (_zulipChannel.IsValueCreated) _zulipChannel.Value.Dispose();
+        foreach (var channel in _dynamicChannels)
+            channel.Dispose();
     }
 }

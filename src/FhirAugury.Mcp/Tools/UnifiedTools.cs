@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common.Text;
 using Grpc.Core;
 using ModelContextProtocol.Server;
 
@@ -22,10 +23,7 @@ public static class UnifiedTools
             var request = new UnifiedSearchRequest { Query = query, Limit = limit };
 
             if (!string.IsNullOrWhiteSpace(sources))
-            {
-                foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.Sources.Add(s.ToLowerInvariant());
-            }
+                CsvParser.AddToRepeatedField(request.Sources, sources);
 
             var response = await orchestrator.UnifiedSearchAsync(request, cancellationToken: cancellationToken);
             return FormatSearchResults(response, query);
@@ -54,10 +52,7 @@ public static class UnifiedTools
             var request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
 
             if (!string.IsNullOrWhiteSpace(targetSources))
-            {
-                foreach (var s in targetSources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.TargetSources.Add(s.ToLowerInvariant());
-            }
+                CsvParser.AddToRepeatedField(request.TargetSources, targetSources);
 
             var response = await orchestrator.FindRelatedAsync(request, cancellationToken: cancellationToken);
 
@@ -203,10 +198,7 @@ public static class UnifiedTools
             var request = new TriggerSyncRequest { Type = type };
 
             if (!string.IsNullOrWhiteSpace(sources))
-            {
-                foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.Sources.Add(s.ToLowerInvariant());
-            }
+                CsvParser.AddToRepeatedField(request.Sources, sources);
 
             var response = await orchestrator.TriggerSyncAsync(request, cancellationToken: cancellationToken);
 
@@ -265,11 +257,5 @@ public static class UnifiedTools
         return sb.ToString();
     }
 
-    private static string FormatBytes(long bytes) => bytes switch
-    {
-        < 1024 => $"{bytes} B",
-        < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
-        < 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F1} MB",
-        _ => $"{bytes / (1024.0 * 1024 * 1024):F2} GB",
-    };
+    private static string FormatBytes(long bytes) => FormatHelpers.FormatBytes(bytes);
 }

@@ -70,6 +70,7 @@ builder.Services.AddHttpClient("jira", client =>
 builder.Services.AddSingleton<JiraSource>();
 builder.Services.AddSingleton<JiraIndexer>();
 builder.Services.AddSingleton<JiraIngestionPipeline>();
+builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();

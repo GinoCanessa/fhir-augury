@@ -1,34 +1,17 @@
-using System.Net.Http.Headers;
-using System.Text;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Source.Confluence.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Confluence.Ingestion;
 
 /// <summary>Adds Confluence authentication headers based on the configured auth mode.</summary>
-public class ConfluenceAuthHandler(IOptions<ConfluenceServiceOptions> optionsAccessor) : DelegatingHandler
+public class ConfluenceAuthHandler(IOptions<ConfluenceServiceOptions> optionsAccessor) : AtlassianAuthHandler
 {
     private readonly ConfluenceServiceOptions _options = optionsAccessor.Value;
-    private readonly string _authMode = optionsAccessor.Value.AuthMode.ToLowerInvariant();
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        switch (_authMode)
-        {
-            case "basic":
-                if (!string.IsNullOrEmpty(_options.Username) && !string.IsNullOrEmpty(_options.ApiToken))
-                {
-                    var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_options.Username}:{_options.ApiToken}"));
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
-                }
-                break;
-
-            case "cookie":
-                if (!string.IsNullOrEmpty(_options.Cookie))
-                    request.Headers.TryAddWithoutValidation("cookie", _options.Cookie);
-                break;
-        }
-
-        return base.SendAsync(request, cancellationToken);
-    }
+    protected override string AuthMode => _options.AuthMode.ToLowerInvariant();
+    protected override string? Email => null;
+    protected override string? Username => _options.Username;
+    protected override string? ApiToken => _options.ApiToken;
+    protected override string? Cookie => _options.Cookie;
 }

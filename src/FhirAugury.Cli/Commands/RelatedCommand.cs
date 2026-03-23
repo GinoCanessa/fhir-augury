@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using FhirAugury.Common.Text;
 using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
@@ -52,10 +53,7 @@ public static class RelatedCommand
                 var request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
 
                 if (!string.IsNullOrWhiteSpace(targetSources))
-                {
-                    foreach (var s in targetSources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                        request.TargetSources.Add(s.ToLowerInvariant());
-                }
+                    CsvParser.AddToRepeatedField(request.TargetSources, targetSources);
 
                 var response = await clients.Orchestrator.FindRelatedAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatRelated(response, format);

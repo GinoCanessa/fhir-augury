@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
+using FhirAugury.Common.Text;
 using Grpc.Core;
 
 namespace FhirAugury.Cli.Commands;
@@ -124,10 +125,7 @@ public static class IngestCommand
                 var request = new TriggerSyncRequest { Type = "rebuild" };
 
                 if (!string.IsNullOrWhiteSpace(sources))
-                {
-                    foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                        request.Sources.Add(s.ToLowerInvariant());
-                }
+                    CsvParser.AddToRepeatedField(request.Sources, sources);
 
                 var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatSyncStatus(response, format);
