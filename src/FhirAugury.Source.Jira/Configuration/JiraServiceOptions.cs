@@ -17,6 +17,13 @@ public class JiraServiceOptions
     public string CachePath { get; set; } = "./cache/jira";
     public string DatabasePath { get; set; } = "./data/jira.db";
     public string SyncSchedule { get; set; } = "01:00:00";
+
+    /// <summary>
+    /// Minimum age of the last sync before a new sync is triggered on startup.
+    /// Prevents redundant downloads when services are restarted frequently.
+    /// </summary>
+    public string MinSyncAge { get; set; } = "04:00:00";
+
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }
     public int PageSize { get; set; } = 100;

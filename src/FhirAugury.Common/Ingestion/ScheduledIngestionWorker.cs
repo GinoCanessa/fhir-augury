@@ -9,6 +9,7 @@ namespace FhirAugury.Common.Ingestion;
 public class ScheduledIngestionWorker<TPipeline>(
     TPipeline pipeline,
     Func<string> syncScheduleProvider,
+    Func<string> minSyncAgeProvider,
     ILogger logger)
     : BackgroundService where TPipeline : IIngestionPipeline
 {
@@ -21,10 +22,45 @@ public class ScheduledIngestionWorker<TPipeline>(
             return;
         }
 
-        logger.LogInformation("Scheduled ingestion worker started. Interval: {Interval}", interval);
+        TimeSpan minAge = TimeSpan.Zero;
+        string minSyncAgeStr = minSyncAgeProvider();
+        if (!string.IsNullOrEmpty(minSyncAgeStr) && TimeSpan.TryParse(minSyncAgeStr, out TimeSpan parsedMinAge))
+        {
+            minAge = parsedMinAge;
+        }
+
+        logger.LogInformation(
+            "Scheduled ingestion worker started. Interval: {Interval}, MinSyncAge: {MinSyncAge}",
+            interval, minAge);
 
         // Wait for initial startup to complete
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+
+        // Check if the last sync is fresh enough to skip the initial run
+        if (minAge > TimeSpan.Zero)
+        {
+            DateTimeOffset? lastSync = pipeline.GetLastSyncCompletedAt();
+            if (lastSync.HasValue)
+            {
+                TimeSpan age = DateTimeOffset.UtcNow - lastSync.Value;
+                if (age < minAge)
+                {
+                    TimeSpan remaining = minAge - age;
+                    logger.LogInformation(
+                        "Last sync was {Age} ago (threshold: {MinSyncAge}). Skipping startup sync, waiting {Remaining}",
+                        age, minAge, remaining);
+
+                    try
+                    {
+                        await Task.Delay(remaining, stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                }
+            }
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {

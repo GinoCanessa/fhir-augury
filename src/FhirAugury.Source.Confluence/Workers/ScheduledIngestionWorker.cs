@@ -14,4 +14,4 @@ public class ScheduledIngestionWorker(
     IOptions<ConfluenceServiceOptions> options,
     ILogger<ScheduledIngestionWorker> logger)
     : ScheduledIngestionWorker<ConfluenceIngestionPipeline>(
-        pipeline, () => options.Value.SyncSchedule, logger);
+        pipeline, () => options.Value.SyncSchedule, () => options.Value.MinSyncAge, logger);

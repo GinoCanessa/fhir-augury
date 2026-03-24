@@ -14,4 +14,4 @@ public class ScheduledIngestionWorker(
     IOptions<GitHubServiceOptions> options,
     ILogger<ScheduledIngestionWorker> logger)
     : ScheduledIngestionWorker<GitHubIngestionPipeline>(
-        pipeline, () => options.Value.SyncSchedule, logger);
+        pipeline, () => options.Value.SyncSchedule, () => options.Value.MinSyncAge, logger);

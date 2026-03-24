@@ -27,6 +27,13 @@ public class GitHubServiceOptions
     public string CachePath { get; set; } = "./cache/github";
     public string DatabasePath { get; set; } = "./data/github.db";
     public string SyncSchedule { get; set; } = "02:00:00";
+
+    /// <summary>
+    /// Minimum age of the last sync before a new sync is triggered on startup.
+    /// Prevents redundant downloads when services are restarted frequently.
+    /// </summary>
+    public string MinSyncAge { get; set; } = "04:00:00";
+
     public PortConfiguration Ports { get; set; } = new() { Http = 5190, Grpc = 5191 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
 }

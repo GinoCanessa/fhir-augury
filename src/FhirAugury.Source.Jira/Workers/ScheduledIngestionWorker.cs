@@ -14,4 +14,4 @@ public class ScheduledIngestionWorker(
     IOptions<JiraServiceOptions> options,
     ILogger<ScheduledIngestionWorker> logger)
     : ScheduledIngestionWorker<JiraIngestionPipeline>(
-        pipeline, () => options.Value.SyncSchedule, logger);
+        pipeline, () => options.Value.SyncSchedule, () => options.Value.MinSyncAge, logger);

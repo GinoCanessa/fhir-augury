@@ -13,4 +13,10 @@ public interface IIngestionPipeline
 
     /// <summary>Current status description.</summary>
     string CurrentStatus { get; }
+
+    /// <summary>
+    /// Returns the timestamp of the last completed sync, or null if no sync has ever completed.
+    /// Used by the scheduled worker to skip startup syncs when data is still fresh.
+    /// </summary>
+    DateTimeOffset? GetLastSyncCompletedAt();
 }

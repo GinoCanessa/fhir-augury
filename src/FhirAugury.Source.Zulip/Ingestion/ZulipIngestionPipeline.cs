@@ -162,4 +162,11 @@ public class ZulipIngestionPipeline(
         else
             ZulipSyncStateRecord.Insert(connection, syncState);
     }
+
+    public DateTimeOffset? GetLastSyncCompletedAt()
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        ZulipSyncStateRecord? state = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
+        return state?.LastSyncAt;
+    }
 }

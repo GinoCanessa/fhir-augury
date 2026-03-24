@@ -165,6 +165,13 @@ public class ConfluenceIngestionPipeline(
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 
+    public DateTimeOffset? GetLastSyncCompletedAt()
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        ConfluenceSyncStateRecord? state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+        return state?.LastSyncAt;
+    }
+
     async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
         => await RunIncrementalIngestionAsync(ct);
 }

@@ -192,4 +192,11 @@ public class JiraIngestionPipeline(
         logger.LogInformation("No sync state or cache files found; defaulting to last 30 days");
         return DateTimeOffset.UtcNow.AddDays(-30);
     }
+
+    public DateTimeOffset? GetLastSyncCompletedAt()
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
+        return state?.LastSyncAt;
+    }
 }

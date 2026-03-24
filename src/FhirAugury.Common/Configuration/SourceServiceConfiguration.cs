@@ -27,6 +27,13 @@ public class SourceServiceConfiguration
     [Required]
     public string SyncSchedule { get; set; } = "01:00:00";
 
+    /// <summary>
+    /// Minimum age of the last sync before a new sync is triggered on startup.
+    /// Prevents redundant downloads when services are restarted frequently.
+    /// TimeSpan string (e.g., "04:00:00" = 4 hours). Default is 4 hours.
+    /// </summary>
+    public string MinSyncAge { get; set; } = "04:00:00";
+
     /// <summary>Rate limiting configuration.</summary>
     public RateLimitingConfiguration RateLimiting { get; set; } = new();
 }

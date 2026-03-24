@@ -18,6 +18,13 @@ public class ConfluenceServiceOptions
     public string CachePath { get; set; } = "./cache/confluence";
     public string DatabasePath { get; set; } = "./data/confluence.db";
     public string SyncSchedule { get; set; } = "1.00:00:00";
+
+    /// <summary>
+    /// Minimum age of the last sync before a new sync is triggered on startup.
+    /// Prevents redundant downloads when services are restarted frequently.
+    /// </summary>
+    public string MinSyncAge { get; set; } = "04:00:00";
+
     public int PageSize { get; set; } = 25;
     public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
