@@ -264,7 +264,8 @@ public static class JiraHttpApi
             int linkCount = JiraIssueLinkRecord.SelectCount(connection);
             int specCount = JiraSpecArtifactRecord.SelectCount(connection);
             long dbSize = db.GetDatabaseSizeBytes();
-            CacheStats cacheStats = cache.GetStats(JiraCacheLayout.SourceName);
+            CacheStats xmlStats = cache.GetStats(JiraCacheLayout.XmlSource);
+            CacheStats jsonStats = cache.GetStats(JiraCacheLayout.JsonSource);
 
             return Results.Ok(new
             {
@@ -274,8 +275,10 @@ public static class JiraHttpApi
                 totalLinks = linkCount,
                 totalSpecArtifacts = specCount,
                 databaseSizeBytes = dbSize,
-                cacheSizeBytes = cacheStats.TotalBytes,
-                cacheFiles = cacheStats.FileCount,
+                cacheSizeBytes = xmlStats.TotalBytes + jsonStats.TotalBytes,
+                cacheFiles = xmlStats.FileCount + jsonStats.FileCount,
+                cacheXmlFiles = xmlStats.FileCount,
+                cacheJsonFiles = jsonStats.FileCount,
             });
         });
 

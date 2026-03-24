@@ -58,13 +58,28 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
     return new FileSystemResponseCache(cachePath);
 });
 
-// HTTP client with auth
+// HTTP client with auth (JSON REST API)
 builder.Services.AddTransient<JiraAuthHandler>();
 builder.Services.AddHttpClient("jira", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
     client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+}).AddHttpMessageHandler<JiraAuthHandler>();
+
+// HTTP client with auth (XML export, browser-like headers for cookie auth)
+builder.Services.AddHttpClient("jira-xml", client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-dest", "document");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-mode", "navigate");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-site", "same-origin");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-user", "?1");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("upgrade-insecure-requests", "1");
 }).AddHttpMessageHandler<JiraAuthHandler>();
 
 // Ingestion

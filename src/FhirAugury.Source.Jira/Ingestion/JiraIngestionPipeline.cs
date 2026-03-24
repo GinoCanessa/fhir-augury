@@ -172,6 +172,24 @@ public class JiraIngestionPipeline(
     {
         using SqliteConnection connection = database.OpenConnection();
         JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
-        return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
+
+        if (state is not null)
+            return state.LastSyncAt;
+
+        // No DB record — check cache for the latest cached date and resume from the day after
+        HashSet<DateOnly> cachedDates = source.GetCachedDates();
+        if (cachedDates.Count > 0)
+        {
+            DateOnly latestCached = cachedDates.Max();
+            DateOnly resumeDate = latestCached.AddDays(1);
+            logger.LogInformation(
+                "No sync state in database; latest cache file is {LatestCached}, resuming from {ResumeDate}",
+                latestCached, resumeDate);
+            return new DateTimeOffset(resumeDate.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        }
+
+        // No cache either — default to last 30 days
+        logger.LogInformation("No sync state or cache files found; defaulting to last 30 days");
+        return DateTimeOffset.UtcNow.AddDays(-30);
     }
 }
