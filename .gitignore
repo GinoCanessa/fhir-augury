@@ -400,3 +400,6 @@ sandbox.dockerfile
 *.db
 *.db-shm
 *.db-wal
+
+/*.tar
+/*.tgz
