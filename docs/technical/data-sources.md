@@ -61,6 +61,8 @@ Each source also exposes a source-specific gRPC service for domain queries:
 |-----|-------------|
 | `GetThread` | Full message thread for a topic |
 | `ListStreams` | Available streams |
+| `GetStream` | Get a single stream by ID |
+| `UpdateStream` | Update stream properties (e.g., IncludeStream flag) |
 | `ListTopics` | Topics within a stream |
 | `GetMessagesByUser` | Messages filtered by sender |
 | `QueryMessages` | Arbitrary message query |
@@ -160,17 +162,21 @@ mode is used; otherwise Cookie mode.
 
 **Data model:**
 
-- `JiraIssueRecord` — Issue key, title, description, status, priority, 25+
-  fields including HL7 custom fields
-- `JiraCommentRecord` — Comment author, body, timestamps (IssueKey FK)
+- `JiraIssueRecord` — Issue key, title, description, status, priority, 32+
+  fields including HL7 custom fields and parsed vote components
+- `JiraCommentRecord` — Comment author, body, body plain text, timestamps (IssueKey FK)
 
 16 HL7-specific custom fields are mapped to domain properties (e.g.,
 `customfield_11302` → Specification, `customfield_11400` → WorkGroup).
 
-**Database tables:** `jira_issues` (Key unique, 25+ columns),
-`jira_comments` (IssueKey FK), `jira_issues_fts` (FTS5), `jira_comments_fts`
-(FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
-`ingestion_log`.
+**Database tables:** `jira_issues` (Key unique, 32+ columns),
+`jira_comments` (IssueKey FK), `jira_issue_related` (related issue keys),
+`jira_issue_labels` (issue-to-label junction), `jira_index_workgroups`,
+`jira_index_specifications`, `jira_index_ballots`, `jira_index_labels`,
+`jira_index_types`, `jira_index_priorities`, `jira_index_statuses`,
+`jira_index_resolutions` (index/lookup tables), `jira_issues_fts` (FTS5),
+`jira_comments_fts` (FTS5), `index_keywords`, `index_corpus`,
+`index_doc_stats`, `sync_state`, `ingestion_log`.
 
 **Incremental sync:** Appends `AND updated >= '{since}'` to the JQL query.
 
@@ -200,6 +206,11 @@ HTTP Basic Auth with `email:apikey`. Credentials can come from:
 2. A `.zuliprc` file (standard Zulip bot credential format)
 
 The `OnlyWebPublic` flag restricts ingestion to web-public streams.
+The `ExcludedStreamIds` configuration option allows excluding specific streams
+from ingestion. During stream sync, excluded streams have their `IncludeStream`
+column set to `0` in the `zulip_streams` table; only streams with
+`IncludeStream = 1` are ingested for messages. The `IncludeStream` flag can
+also be toggled per-stream via the `UpdateStream` gRPC RPC.
 
 **Data model:**
 

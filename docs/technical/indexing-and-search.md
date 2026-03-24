@@ -40,9 +40,9 @@ virtual tables for fast text search within its local database.
 
 | Service | FTS5 Table | Content Table | Indexed Fields |
 |---------|------------|-------------|----------------|
-| Jira | `jira_issues_fts` | `jira_issues` | Key, Title, Description, Summary, ResolutionDescription, Labels, Specification, WorkGroup, RelatedArtifacts |
-| Jira | `jira_comments_fts` | `jira_comments` | IssueKey, Author, Body |
-| Zulip | `zulip_messages_fts` | `zulip_messages` | StreamName, Topic, SenderName, ContentPlain |
+| Jira | `jira_issues_fts` | `jira_issues` | Title, DescriptionPlain, ResolutionDescriptionPlain |
+| Jira | `jira_comments_fts` | `jira_comments` | BodyPlain |
+| Zulip | `zulip_messages_fts` | `zulip_messages` | ContentPlain, Topic |
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
 | GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
 | GitHub | `github_comments_fts` | `github_comments` | Body |

@@ -36,6 +36,17 @@ The orchestrator exposes gRPC services for:
 - **Query** — structured queries for Jira and Zulip with typed filters
 - **List** — list items with filtering and sorting
 
+### Zulip-Specific gRPC RPCs
+
+The `ZulipService` (defined in [`protos/zulip.proto`](../../protos/zulip.proto))
+includes stream management RPCs:
+
+| RPC | Request | Response | Description |
+|-----|---------|----------|-------------|
+| `ListStreams` | `ZulipListStreamsRequest` | stream `ZulipStream` | List all streams (includes `include_stream` field) |
+| `GetStream` | `GetStreamRequest` | `ZulipStreamInfo` | Get a single stream by Zulip stream ID |
+| `UpdateStream` | `UpdateStreamRequest` | `ZulipStreamInfo` | Update stream properties (`include_stream`) |
+
 The CLI (`FhirAugury.Cli`) is the recommended way to interact with the gRPC API.
 See the [CLI Reference](cli-reference.md) for all available commands.
 
@@ -203,6 +214,109 @@ Triggers an ingestion for this source service.
 ```bash
 curl -X POST http://localhost:5160/api/ingest
 ```
+
+---
+
+## Zulip Service HTTP API
+
+**Base URL:** `http://localhost:5170/api/v1`
+
+The Zulip service exposes additional endpoints for stream management beyond the
+common source service endpoints.
+
+### List Streams
+
+#### `GET /api/v1/streams`
+
+List all available Zulip streams.
+
+**Response:**
+
+```json
+{
+  "total": 42,
+  "streams": [
+    {
+      "zulipStreamId": 123,
+      "name": "implementers",
+      "description": "Discussion for implementers",
+      "messageCount": 5000,
+      "isWebPublic": true,
+      "includeStream": true,
+      "url": "https://chat.fhir.org/#narrow/stream/implementers"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `zulipStreamId` | int | Zulip's stream identifier |
+| `name` | string | Stream name |
+| `description` | string | Stream description |
+| `messageCount` | int | Number of indexed messages |
+| `isWebPublic` | bool | Whether the stream is web-public on Zulip |
+| `includeStream` | bool | Whether this stream is included in ingestion |
+| `url` | string | Direct link to the stream on chat.fhir.org |
+
+### Get Stream
+
+#### `GET /api/v1/streams/{zulipStreamId}`
+
+Get a single stream by its Zulip stream ID.
+
+**Example:**
+
+```bash
+curl http://localhost:5170/api/v1/streams/123
+```
+
+**Response:**
+
+```json
+{
+  "zulipStreamId": 123,
+  "name": "implementers",
+  "description": "Discussion for implementers",
+  "messageCount": 5000,
+  "isWebPublic": true,
+  "includeStream": true,
+  "url": "https://chat.fhir.org/#narrow/stream/implementers"
+}
+```
+
+Returns `404` if the stream is not found.
+
+### Update Stream
+
+#### `PUT /api/v1/streams/{zulipStreamId}`
+
+Update stream properties. Currently supports toggling `includeStream`, which
+controls whether the stream is included during ingestion syncs.
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:5170/api/v1/streams/123 \
+  -H "Content-Type: application/json" \
+  -d '{"includeStream": false}'
+```
+
+**Request Body:**
+
+```json
+{
+  "includeStream": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `includeStream` | bool | Yes | Whether to include this stream in ingestion |
+
+**Response:** Same shape as the GET response with updated values.
+
+Returns `404` if the stream is not found.
 
 ---
 

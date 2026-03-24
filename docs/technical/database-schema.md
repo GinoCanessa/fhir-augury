@@ -143,12 +143,14 @@ Index: `(SourceType)`
 | `ProjectKey` | TEXT | Project key |
 | `Title` | TEXT | Issue title |
 | `Description` | TEXT? | Full description |
+| `DescriptionPlain` | TEXT? | Plain-text version of Description (HTML stripped) |
 | `Summary` | TEXT? | Short summary |
 | `Type` | TEXT | Issue type (Bug, Enhancement, etc.) |
 | `Priority` | TEXT | Priority level |
 | `Status` | TEXT | Current status |
 | `Resolution` | TEXT? | Resolution type |
 | `ResolutionDescription` | TEXT? | Resolution details (custom field) |
+| `ResolutionDescriptionPlain` | TEXT? | Plain-text version of ResolutionDescription (HTML stripped) |
 | `Assignee` | TEXT? | Assigned user |
 | `Reporter` | TEXT? | Reporter user |
 | `CreatedAt` | TEXT | Creation timestamp |
@@ -165,6 +167,11 @@ Index: `(SourceType)`
 | `ChangeType` | TEXT? | Change type (custom field) |
 | `Impact` | TEXT? | Impact assessment (custom field) |
 | `Vote` | TEXT? | Vote information (custom field) |
+| `VoteMover` | TEXT? | Parsed mover from Vote field |
+| `VoteSeconder` | TEXT? | Parsed seconder from Vote field |
+| `VoteForCount` | INTEGER? | Parsed for-count from Vote field |
+| `VoteAgainstCount` | INTEGER? | Parsed against-count from Vote field |
+| `VoteAbstainCount` | INTEGER? | Parsed abstain-count from Vote field |
 | `Labels` | TEXT? | Comma-separated labels |
 | `CommentCount` | INTEGER | Number of comments |
 
@@ -181,8 +188,40 @@ Indexes: `(Key)`, `(ProjectKey, Key)`, `(Status)`, `(WorkGroup)`,
 | `Author` | TEXT | Comment author |
 | `CreatedAt` | TEXT | Comment timestamp |
 | `Body` | TEXT | Comment body |
+| `BodyPlain` | TEXT | Plain-text version of Body (HTML stripped) |
 
 Indexes: `(IssueKey)`, `(CreatedAt)`
+
+#### `jira_issue_related` — Maps issues to their related issue keys (from the RelatedIssues custom field)
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `Id` | INTEGER | PRIMARY KEY |
+| `IssueId` | INTEGER | NOT NULL |
+| `IssueKey` | TEXT | NOT NULL, indexed |
+| `RelatedIssueKey` | TEXT | NOT NULL, indexed |
+
+#### `jira_issue_labels` — Junction table linking issues to label entries
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `Id` | INTEGER | PRIMARY KEY |
+| `IssueId` | INTEGER | NOT NULL, indexed |
+| `LabelId` | INTEGER | NOT NULL, indexed |
+
+#### Index/Lookup Tables
+
+Eight tables for navigable field values, all sharing this structure:
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `Id` | INTEGER | PRIMARY KEY |
+| `Name` | TEXT | NOT NULL, UNIQUE |
+| `IssueCount` | INTEGER | NOT NULL |
+
+Table names: `jira_index_workgroups`, `jira_index_specifications`,
+`jira_index_ballots`, `jira_index_labels`, `jira_index_types`,
+`jira_index_priorities`, `jira_index_statuses`, `jira_index_resolutions`
 
 #### FTS5 tables: `jira_issues_fts`, `jira_comments_fts`
 
@@ -199,6 +238,7 @@ Indexes: `(IssueKey)`, `(CreatedAt)`
 | `Name` | TEXT | Stream name |
 | `Description` | TEXT? | Stream description |
 | `IsWebPublic` | INTEGER | Boolean: web-public flag |
+| `IncludeStream` | INTEGER | Boolean: whether stream is included in ingestion (default 1) |
 | `MessageCount` | INTEGER | Total messages fetched |
 | `LastFetchedAt` | TEXT | Last fetch timestamp |
 
@@ -368,9 +408,9 @@ Each source service creates its FTS5 virtual tables using
 
 | Service | FTS5 Table | Content Table | Indexed Columns |
 |---------|------------|--------------|----------------|
-| Jira | `jira_issues_fts` | `jira_issues` | Key, Title, Description, Summary, ResolutionDescription, Labels, Specification, WorkGroup, RelatedArtifacts |
-| Jira | `jira_comments_fts` | `jira_comments` | IssueKey, Author, Body |
-| Zulip | `zulip_messages_fts` | `zulip_messages` | StreamName, Topic, SenderName, ContentPlain |
+| Jira | `jira_issues_fts` | `jira_issues` | Title, DescriptionPlain, ResolutionDescriptionPlain |
+| Jira | `jira_comments_fts` | `jira_comments` | BodyPlain |
+| Zulip | `zulip_messages_fts` | `zulip_messages` | ContentPlain, Topic |
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
 | GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
@@ -430,6 +470,10 @@ All methods are available as both static methods and extension methods on
 ```
 Source.Jira (jira.db)
 ├── jira_issues, jira_comments          — Content tables
+├── jira_issue_related, jira_issue_labels — Relationship tables
+├── jira_index_workgroups, jira_index_specifications, jira_index_ballots,
+│   jira_index_labels, jira_index_types, jira_index_priorities,
+│   jira_index_statuses, jira_index_resolutions — Index/lookup tables
 ├── jira_issues_fts, jira_comments_fts  — FTS5 virtual tables (content-synced)
 ├── index_keywords, index_corpus, index_doc_stats — BM25 index
 └── sync_state, ingestion_log           — Sync infrastructure

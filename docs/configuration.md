@@ -34,9 +34,10 @@ pattern.
   "Jira": {
     "BaseUrl": "https://jira.hl7.org",
     "AuthMode": "cookie",
-    "CachePath": "./cache/jira",
+    "CachePath": "./cache",
     "DatabasePath": "./data/jira.db",
     "SyncSchedule": "01:00:00",
+    "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
     "Ports": {
       "Http": 5160,
@@ -60,9 +61,10 @@ pattern.
 | `Cookie` | string | | Session cookie for cookie auth |
 | `ApiToken` | string | | API token for apitoken auth |
 | `Email` | string | | Email for apitoken auth |
-| `CachePath` | string | `./cache/jira` | File-system cache directory |
+| `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/jira.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `01:00:00` | Auto-sync interval |
+| `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `DefaultProject` | string | `FHIR` | Default Jira project |
 | `Ports.Http` | int | `5160` | HTTP listen port |
 | `Ports.Grpc` | int | `5161` | gRPC listen port |
@@ -84,9 +86,11 @@ pattern.
   "Zulip": {
     "BaseUrl": "https://chat.fhir.org",
     "CredentialFile": "~/.zuliprc",
-    "CachePath": "./cache/zulip",
+    "CachePath": "./cache",
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
+    "RebuildFromCacheOnStartup": false,
+    "ExcludedStreamIds": [],
     "Ports": {
       "Http": 5170,
       "Grpc": 5171
@@ -108,9 +112,11 @@ pattern.
 | `Email` | string | | Bot/user email |
 | `ApiKey` | string | | API key |
 | `CredentialFile` | string | `~/.zuliprc` | Path to .zuliprc credentials file |
-| `CachePath` | string | `./cache/zulip` | File-system cache directory |
+| `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/zulip.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `04:00:00` | Auto-sync interval |
+| `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
+| `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
 | `Ports.Http` | int | `5170` | HTTP listen port |
 | `Ports.Grpc` | int | `5171` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
@@ -132,7 +138,7 @@ pattern.
     "BaseUrl": "https://confluence.hl7.org",
     "AuthMode": "cookie",
     "Spaces": ["FHIR", "FHIRI", "SOA"],
-    "CachePath": "./cache/confluence",
+    "CachePath": "./cache",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "Ports": {
@@ -158,7 +164,7 @@ pattern.
 | `Username` | string | | Username for basic auth |
 | `ApiToken` | string | | API token for basic auth |
 | `Spaces` | string[] | `["FHIR","FHIRI","SOA"]` | Confluence spaces to index |
-| `CachePath` | string | `./cache/confluence` | File-system cache directory |
+| `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
 | `Ports.Http` | int | `5180` | HTTP listen port |
@@ -187,7 +193,7 @@ pattern.
       "Token": null,
       "TokenEnvVar": "GITHUB_TOKEN"
     },
-    "CachePath": "./cache/github",
+    "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
     "Ports": {
@@ -213,7 +219,7 @@ pattern.
 | `AdditionalRepositories` | string[] | `[]` | Extra repositories |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
-| `CachePath` | string | `./cache/github` | File-system cache directory |
+| `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/github.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
 | `Ports.Http` | int | `5190` | HTTP listen port |
