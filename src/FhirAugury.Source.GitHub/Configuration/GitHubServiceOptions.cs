@@ -24,7 +24,7 @@ public class GitHubServiceOptions
     /// <summary>Authentication configuration.</summary>
     public AuthConfiguration Auth { get; set; } = new();
 
-    public string CachePath { get; set; } = "./cache/github";
+    public string CachePath { get; set; } = "./cache";
     public string DatabasePath { get; set; } = "./data/github.db";
     public string SyncSchedule { get; set; } = "02:00:00";
 

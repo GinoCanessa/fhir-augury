@@ -85,6 +85,7 @@ builder.Services.AddHttpClient("jira-xml", client =>
 // Ingestion
 builder.Services.AddSingleton<JiraSource>();
 builder.Services.AddSingleton<JiraIndexer>();
+builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
@@ -102,5 +103,13 @@ app.MapGrpcService<JiraSpecificGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapJiraHttpApi();
+
+// ── Reload from cache on startup (if configured) ─────────────────
+JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+if (jiraOpts.ReloadFromCacheOnStartup)
+{
+    JiraIngestionPipeline pipeline = app.Services.GetRequiredService<JiraIngestionPipeline>();
+    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+}
 
 app.Run();

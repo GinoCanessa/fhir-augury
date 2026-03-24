@@ -14,7 +14,7 @@ public class JiraServiceOptions
     public string? Cookie { get; set; }
     public string? ApiToken { get; set; }
     public string? Email { get; set; }
-    public string CachePath { get; set; } = "./cache/jira";
+    public string CachePath { get; set; } = "./cache";
     public string DatabasePath { get; set; } = "./data/jira.db";
     public string SyncSchedule { get; set; } = "01:00:00";
 
@@ -23,6 +23,11 @@ public class JiraServiceOptions
     /// Prevents redundant downloads when services are restarted frequently.
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
+
+    /// <summary>
+    /// When true, rebuilds the database from cached responses on startup.
+    /// </summary>
+    public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }

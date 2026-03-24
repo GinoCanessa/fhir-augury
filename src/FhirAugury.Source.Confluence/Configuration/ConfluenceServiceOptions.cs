@@ -15,7 +15,7 @@ public class ConfluenceServiceOptions
     public string? Username { get; set; }
     public string? ApiToken { get; set; }
     public IReadOnlyList<string> Spaces { get; set; } = ["FHIR", "FHIRI", "SOA"];
-    public string CachePath { get; set; } = "./cache/confluence";
+    public string CachePath { get; set; } = "./cache";
     public string DatabasePath { get; set; } = "./data/confluence.db";
     public string SyncSchedule { get; set; } = "1.00:00:00";
 

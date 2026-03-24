@@ -21,12 +21,14 @@ public partial record class JiraIssueRecord
     public required string ProjectKey { get; set; }
     public required string Title { get; set; }
     public required string? Description { get; set; }
+    public string? DescriptionPlain { get; set; }
     public required string? Summary { get; set; }
     public required string Type { get; set; }
     public required string Priority { get; set; }
     public required string Status { get; set; }
     public required string? Resolution { get; set; }
     public required string? ResolutionDescription { get; set; }
+    public string? ResolutionDescriptionPlain { get; set; }
     public required string? Assignee { get; set; }
     public required string? Reporter { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
@@ -45,6 +47,11 @@ public partial record class JiraIssueRecord
     public required string? ChangeType { get; set; }
     public required string? Impact { get; set; }
     public required string? Vote { get; set; }
+    public string? VoteMover { get; set; }
+    public string? VoteSeconder { get; set; }
+    public int? VoteForCount { get; set; }
+    public int? VoteAgainstCount { get; set; }
+    public int? VoteAbstainCount { get; set; }
     public required string? Labels { get; set; }
     public required int CommentCount { get; set; }
 }

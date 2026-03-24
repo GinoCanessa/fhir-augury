@@ -13,7 +13,7 @@ public class ZulipServiceOptions
     public string? CredentialFile { get; set; }
     public string? Email { get; set; }
     public string? ApiKey { get; set; }
-    public string CachePath { get; set; } = "./cache/zulip";
+    public string CachePath { get; set; } = "./cache";
     public string DatabasePath { get; set; } = "./data/zulip.db";
     public string SyncSchedule { get; set; } = "04:00:00";
 
@@ -22,6 +22,10 @@ public class ZulipServiceOptions
     /// Prevents redundant downloads when services are restarted frequently.
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
+
+    public bool RebuildFromCacheOnStartup { get; set; } = false;
+
+    public List<int> ExcludedStreamIds { get; set; } = [];
 
     public bool OnlyWebPublic { get; set; } = true;
     public int BatchSize { get; set; } = 1000;

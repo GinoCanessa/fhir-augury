@@ -21,7 +21,7 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
     {
         string safeName = repoFullName.Replace('/', '_');
         string cloneDir = Path.GetFullPath(
-            Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
+            Path.Combine(_options.CachePath, GitHubCacheLayout.SourceName, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
 
         if (Directory.Exists(Path.Combine(cloneDir, ".git")))
         {
@@ -47,7 +47,7 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
     {
         string safeName = repoFullName.Replace('/', '_');
         return Path.GetFullPath(
-            Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
+            Path.Combine(_options.CachePath, GitHubCacheLayout.SourceName, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
     }
 
     private string BuildCloneUrl(string repoFullName)

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FhirAugury.Common;
 using FhirAugury.Source.Jira.Database.Records;
 using static FhirAugury.Common.DateTimeHelper;
@@ -24,6 +25,58 @@ public static class JiraFieldMapper
         ["customfield_10510"] = nameof(JiraIssueRecord.Vote),
     };
 
+    private static readonly Regex VotePattern = new(
+        @"^\s*(.+?)\s*/\s*(.+?)\s*:\s*(\d+)\s*-\s*(\d+)\s*-\s*(\d+)\s*$",
+        RegexOptions.Compiled);
+
+    internal static string? CleanFieldValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        string cleaned = System.Net.WebUtility.HtmlDecode(value).Trim();
+        return string.IsNullOrEmpty(cleaned) ? null : cleaned;
+    }
+
+    internal static string CleanTitle(string title, string? key)
+    {
+        string cleaned = title;
+
+        // Remove the specific [KEY] prefix if key is known
+        if (!string.IsNullOrEmpty(key))
+        {
+            cleaned = cleaned.Replace($"[{key}]", "", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Also remove any generic [PROJECT-NNNNN] pattern at the start
+        cleaned = Regex.Replace(cleaned, @"^\s*\[[A-Z]+-\d+\]\s*", "");
+
+        return CleanFieldValue(cleaned) ?? cleaned.Trim();
+    }
+
+    internal static string? ToPlainText(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return null;
+        string plain = FhirAugury.Common.Text.TextSanitizer.StripHtml(html);
+        return string.IsNullOrEmpty(plain) ? null : plain;
+    }
+
+    internal static (string? Mover, string? Seconder, int? For, int? Against, int? Abstain) ParseVote(string? vote)
+    {
+        if (string.IsNullOrWhiteSpace(vote))
+            return (null, null, null, null, null);
+
+        Match match = VotePattern.Match(vote);
+        if (!match.Success)
+            return (null, null, null, null, null);
+
+        return (
+            match.Groups[1].Value.Trim(),
+            match.Groups[2].Value.Trim(),
+            int.Parse(match.Groups[3].Value),
+            int.Parse(match.Groups[4].Value),
+            int.Parse(match.Groups[5].Value)
+        );
+    }
+
     public static JiraIssueRecord MapIssue(JsonElement issueJson)
     {
         JsonElement fields = issueJson.GetProperty("fields");
@@ -36,6 +89,7 @@ public static class JiraFieldMapper
             ProjectKey = JsonElementHelper.GetNestedString(fields, "project", "key") ?? key.Split('-')[0],
             Title = JsonElementHelper.GetString(fields, "summary") ?? string.Empty,
             Description = JsonElementHelper.GetString(fields, "description"),
+            DescriptionPlain = null,
             Summary = JsonElementHelper.GetString(fields, "summary"),
             Type = JsonElementHelper.GetNestedString(fields, "issuetype", "name") ?? "Unknown",
             Priority = JsonElementHelper.GetNestedString(fields, "priority", "name") ?? "Unknown",
@@ -52,6 +106,7 @@ public static class JiraFieldMapper
             WorkGroup = null,
             RaisedInVersion = null,
             ResolutionDescription = null,
+            ResolutionDescriptionPlain = null,
             RelatedArtifacts = null,
             SelectedBallot = null,
             RelatedIssues = null,
@@ -60,11 +115,16 @@ public static class JiraFieldMapper
             ChangeType = null,
             Impact = null,
             Vote = null,
+            VoteMover = null,
+            VoteSeconder = null,
+            VoteForCount = null,
+            VoteAgainstCount = null,
+            VoteAbstainCount = null,
         };
 
         foreach ((string? fieldId, string? propertyName) in CustomFieldMap)
         {
-            string? value = ExtractCustomFieldValue(fields, fieldId);
+            string? value = CleanFieldValue(ExtractCustomFieldValue(fields, fieldId));
             if (value is null)
                 continue;
 
@@ -85,6 +145,25 @@ public static class JiraFieldMapper
             }
         }
 
+        // Clean standard field values
+        record.Type = CleanFieldValue(record.Type) ?? "Unknown";
+        record.Priority = CleanFieldValue(record.Priority) ?? "Unknown";
+        record.Status = CleanFieldValue(record.Status) ?? "Unknown";
+        record.Resolution = CleanFieldValue(record.Resolution);
+        record.Assignee = CleanFieldValue(record.Assignee);
+        record.Reporter = CleanFieldValue(record.Reporter);
+
+        // Compute plain text from HTML fields
+        record.DescriptionPlain = ToPlainText(record.Description);
+        record.ResolutionDescriptionPlain = ToPlainText(record.ResolutionDescription);
+
+        // Clean title: remove ticket identifier prefix
+        record.Title = CleanTitle(record.Title, record.Key);
+
+        // Parse vote components
+        (record.VoteMover, record.VoteSeconder, record.VoteForCount,
+         record.VoteAgainstCount, record.VoteAbstainCount) = ParseVote(record.Vote);
+
         return record;
     }
 
@@ -101,6 +180,7 @@ public static class JiraFieldMapper
 
         foreach (JsonElement comment in commentArray.EnumerateArray())
         {
+            string body = JsonElementHelper.GetString(comment, "body") ?? string.Empty;
             comments.Add(new JiraCommentRecord
             {
                 Id = JiraCommentRecord.GetIndex(),
@@ -110,7 +190,8 @@ public static class JiraFieldMapper
                          ?? JsonElementHelper.GetNestedString(comment, "author", "name")
                          ?? "Unknown",
                 CreatedAt = ParseDate(JsonElementHelper.GetString(comment, "created")),
-                Body = JsonElementHelper.GetString(comment, "body") ?? string.Empty,
+                Body = body,
+                BodyPlain = FhirAugury.Common.Text.TextSanitizer.StripHtml(body),
             });
         }
 
@@ -221,7 +302,7 @@ public static class JiraFieldMapper
         List<string> labels = new List<string>();
         foreach (JsonElement label in labelsArray.EnumerateArray())
         {
-            string? val = label.GetString();
+            string? val = CleanFieldValue(label.GetString());
             if (!string.IsNullOrEmpty(val))
                 labels.Add(val);
         }

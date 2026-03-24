@@ -111,6 +111,7 @@ public class JiraDatabaseTests : IDisposable
             Author = "testuser",
             CreatedAt = DateTimeOffset.UtcNow,
             Body = "This is a test comment",
+            BodyPlain = "This is a test comment",
         };
         JiraCommentRecord.Insert(conn, comment);
 

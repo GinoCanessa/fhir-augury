@@ -463,7 +463,7 @@ public class ZulipSpecificGrpcService(
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        using SqliteCommand cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount FROM zulip_streams ORDER BY Name ASC", connection);
+        using SqliteCommand cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount, IncludeStream FROM zulip_streams ORDER BY Name ASC", connection);
 
         using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -475,9 +475,45 @@ public class ZulipSpecificGrpcService(
                 Name = name,
                 Description = reader.IsDBNull(2) ? "" : reader.GetString(2),
                 MessageCount = reader.GetInt32(3),
+                IncludeStream = reader.GetBoolean(4),
                 Url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(name)}",
             });
         }
+    }
+
+    public override Task<ZulipStreamInfo> GetStream(GetStreamRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        ZulipStreamRecord stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: request.ZulipStreamId)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Stream with Zulip ID {request.ZulipStreamId} not found"));
+
+        return Task.FromResult(MapToStreamInfo(stream));
+    }
+
+    public override Task<ZulipStreamInfo> UpdateStream(UpdateStreamRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        ZulipStreamRecord stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: request.ZulipStreamId)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, $"Stream with Zulip ID {request.ZulipStreamId} not found"));
+
+        stream.IncludeStream = request.IncludeStream;
+        ZulipStreamRecord.Update(connection, stream);
+
+        return Task.FromResult(MapToStreamInfo(stream));
+    }
+
+    private static ZulipStreamInfo MapToStreamInfo(ZulipStreamRecord stream)
+    {
+        return new ZulipStreamInfo
+        {
+            Id = stream.Id,
+            ZulipStreamId = stream.ZulipStreamId,
+            Name = stream.Name,
+            Description = stream.Description ?? "",
+            IsWebPublic = stream.IsWebPublic,
+            MessageCount = stream.MessageCount,
+            IncludeStream = stream.IncludeStream,
+        };
     }
 
     public override async Task ListTopics(ZulipListTopicsRequest request, IServerStreamWriter<ZulipTopic> responseStream, ServerCallContext context)

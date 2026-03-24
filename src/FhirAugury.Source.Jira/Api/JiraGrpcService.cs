@@ -304,8 +304,7 @@ public class JiraGrpcService(
         int issueCount = JiraIssueRecord.SelectCount(connection);
         int commentCount = JiraCommentRecord.SelectCount(connection);
         long dbSize = database.GetDatabaseSizeBytes();
-        CacheStats xmlStats = cache.GetStats(JiraCacheLayout.XmlSource);
-        CacheStats jsonStats = cache.GetStats(JiraCacheLayout.JsonSource);
+        CacheStats cacheStats = cache.GetStats(JiraCacheLayout.SourceName);
 
         StatsResponse response = new StatsResponse
         {
@@ -313,7 +312,7 @@ public class JiraGrpcService(
             TotalItems = issueCount,
             TotalComments = commentCount,
             DatabaseSizeBytes = dbSize,
-            CacheSizeBytes = xmlStats.TotalBytes + jsonStats.TotalBytes,
+            CacheSizeBytes = cacheStats.TotalBytes,
         };
 
         // Sync state

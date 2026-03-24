@@ -14,4 +14,7 @@ public static class ZulipCacheLayout
 
     /// <summary>Returns the metadata file name for a stream.</summary>
     public static string StreamMetadataFile(int zulipStreamId) => $"_meta_s{zulipStreamId}.json";
+
+    /// <summary>Cache key for the stream metadata file used during rebuild.</summary>
+    public const string StreamsCacheKey = "streams.json";
 }

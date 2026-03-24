@@ -16,6 +16,7 @@ public class JiraIngestionPipeline(
     JiraSource source,
     JiraDatabase database,
     JiraIndexer indexer,
+    JiraIndexBuilder indexBuilder,
     IOptions<JiraServiceOptions> optionsAccessor,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -127,6 +128,12 @@ public class JiraIngestionPipeline(
     private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+
+        // Rebuild lookup/index tables
+        using (SqliteConnection conn = database.OpenConnection())
+        {
+            indexBuilder.RebuildIndexTables(conn);
+        }
 
         // Rebuild BM25 keyword index
         logger.LogInformation("Rebuilding BM25 index");

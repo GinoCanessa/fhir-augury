@@ -48,12 +48,14 @@ public static class JiraXmlParser
                 ProjectKey = item.Project?.Key ?? key.Split('-')[0],
                 Title = item.Title ?? string.Empty,
                 Description = item.Description,
+                DescriptionPlain = null,
                 Summary = item.Summary,
                 Type = item.Type?.Text ?? "Unknown",
                 Priority = item.Priority?.Text ?? "Unknown",
                 Status = item.Status?.Text ?? "Unknown",
                 Resolution = item.Resolution?.Text,
                 ResolutionDescription = null,
+                ResolutionDescriptionPlain = null,
                 Assignee = item.Assignee?.Text ?? item.Assignee?.Username,
                 Reporter = item.Reporter?.Text ?? item.Reporter?.Username,
                 CreatedAt = ParseDate(item.Created),
@@ -70,6 +72,11 @@ public static class JiraXmlParser
                 ChangeType = null,
                 Impact = null,
                 Vote = null,
+                VoteMover = null,
+                VoteSeconder = null,
+                VoteForCount = null,
+                VoteAgainstCount = null,
+                VoteAbstainCount = null,
                 Labels = null,
                 CommentCount = item.Comments?.Items?.Length ?? 0,
             };
@@ -81,9 +88,10 @@ public static class JiraXmlParser
                     if (cf.Id is null || !CustomFieldKeyMap.TryGetValue(cf.Id, out string? propertyName))
                         continue;
 
-                    string? value = cf.Values?.Items is { Length: > 0 }
-                        ? string.Join(", ", cf.Values.Items.Where(v => !string.IsNullOrEmpty(v)))
-                        : null;
+                    string? value = JiraFieldMapper.CleanFieldValue(
+                        cf.Values?.Items is { Length: > 0 }
+                            ? string.Join(", ", cf.Values.Items.Where(v => !string.IsNullOrEmpty(v)))
+                            : null);
 
                     if (value is null)
                         continue;
@@ -106,7 +114,26 @@ public static class JiraXmlParser
                 }
             }
 
-            List<JiraCommentRecord> comments = JiraCommentParser.ParseXmlComments(item, issueId, key);
+            // Clean standard field values
+            record.Type = JiraFieldMapper.CleanFieldValue(record.Type) ?? "Unknown";
+            record.Priority = JiraFieldMapper.CleanFieldValue(record.Priority) ?? "Unknown";
+            record.Status = JiraFieldMapper.CleanFieldValue(record.Status) ?? "Unknown";
+            record.Resolution = JiraFieldMapper.CleanFieldValue(record.Resolution);
+            record.Assignee = JiraFieldMapper.CleanFieldValue(record.Assignee);
+            record.Reporter = JiraFieldMapper.CleanFieldValue(record.Reporter);
+
+            // Compute plain text from HTML fields
+            record.DescriptionPlain = JiraFieldMapper.ToPlainText(record.Description);
+            record.ResolutionDescriptionPlain = JiraFieldMapper.ToPlainText(record.ResolutionDescription);
+
+            // Clean title: remove ticket identifier prefix
+            record.Title = JiraFieldMapper.CleanTitle(record.Title, record.Key);
+
+            // Parse vote components
+            (record.VoteMover, record.VoteSeconder, record.VoteForCount,
+             record.VoteAgainstCount, record.VoteAbstainCount) = JiraFieldMapper.ParseVote(record.Vote);
+
+            List<JiraCommentRecord> comments= JiraCommentParser.ParseXmlComments(item, issueId, key);
             yield return (record, comments);
         }
     }

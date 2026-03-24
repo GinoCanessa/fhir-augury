@@ -21,6 +21,7 @@ public static class JiraCommentParser
 
         foreach (JiraXmlParser.JiraXmlComment xmlComment in item.Comments.Items)
         {
+            string body = xmlComment.Text ?? string.Empty;
             comments.Add(new JiraCommentRecord
             {
                 Id = JiraCommentRecord.GetIndex(),
@@ -28,7 +29,8 @@ public static class JiraCommentParser
                 IssueKey = issueKey,
                 Author = xmlComment.Author ?? "Unknown",
                 CreatedAt = ParseDate(xmlComment.Created),
-                Body = xmlComment.Text ?? string.Empty,
+                Body = body,
+                BodyPlain = FhirAugury.Common.Text.TextSanitizer.StripHtml(body),
             });
         }
 

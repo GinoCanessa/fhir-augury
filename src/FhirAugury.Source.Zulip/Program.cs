@@ -77,6 +77,14 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 
+// ── Rebuild from cache (optional) ────────────────────────────────
+ZulipServiceOptions options = app.Services.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+if (options.RebuildFromCacheOnStartup)
+{
+    ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
+    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+}
+
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "zulip", version = "2.0.0" }));
 
@@ -87,4 +95,4 @@ app.MapGrpcService<ZulipSpecificGrpcService>();
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapZulipHttpApi();
 
-app.Run();
+await app.RunAsync();

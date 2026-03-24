@@ -56,6 +56,7 @@ public class ZulipDatabaseTests : IDisposable
             Description = "Discussion for implementers",
             IsWebPublic = true,
             MessageCount = 500,
+            IncludeStream = true,
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
 
@@ -140,6 +141,7 @@ public class ZulipDatabaseTests : IDisposable
         Description = $"Description for {name}",
         IsWebPublic = true,
         MessageCount = 0,
+        IncludeStream = true,
         LastFetchedAt = DateTimeOffset.UtcNow,
     };
 

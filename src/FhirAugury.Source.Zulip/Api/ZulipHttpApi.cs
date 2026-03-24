@@ -108,8 +108,52 @@ public static class ZulipHttpApi
                     s.Description,
                     s.MessageCount,
                     s.IsWebPublic,
+                    s.IncludeStream,
                     url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(s.Name)}",
                 }),
+            });
+        });
+
+        api.MapGet("/streams/{zulipStreamId:int}", (int zulipStreamId, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
+        {
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: zulipStreamId);
+            if (stream is null)
+                return Results.NotFound(new { error = $"Stream with Zulip ID {zulipStreamId} not found" });
+
+            return Results.Ok(new
+            {
+                stream.ZulipStreamId,
+                stream.Name,
+                stream.Description,
+                stream.MessageCount,
+                stream.IsWebPublic,
+                stream.IncludeStream,
+                url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(stream.Name)}",
+            });
+        });
+
+        api.MapPut("/streams/{zulipStreamId:int}", (int zulipStreamId, ZulipStreamUpdateRequest body, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
+        {
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: zulipStreamId);
+            if (stream is null)
+                return Results.NotFound(new { error = $"Stream with Zulip ID {zulipStreamId} not found" });
+
+            stream.IncludeStream = body.IncludeStream;
+            ZulipStreamRecord.Update(connection, stream);
+
+            return Results.Ok(new
+            {
+                stream.ZulipStreamId,
+                stream.Name,
+                stream.Description,
+                stream.MessageCount,
+                stream.IsWebPublic,
+                stream.IncludeStream,
+                url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(stream.Name)}",
             });
         });
 
@@ -265,3 +309,6 @@ public static class ZulipHttpApi
         return app;
     }
 }
+
+/// <summary>Request body for updating a Zulip stream's mutable properties.</summary>
+public record ZulipStreamUpdateRequest(bool IncludeStream);

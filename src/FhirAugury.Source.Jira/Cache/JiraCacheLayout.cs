@@ -6,11 +6,17 @@ public static class JiraCacheLayout
     /// <summary>The source name used as the cache subdirectory (legacy, kept for metadata compatibility).</summary>
     public const string SourceName = "jira";
 
-    /// <summary>Cache source subdirectory for XML RSS exports (cookie auth).</summary>
-    public const string XmlSource = "xml";
+    /// <summary>Key prefix for XML RSS exports (cookie auth) within the jira source.</summary>
+    public const string XmlPrefix = "xml";
 
-    /// <summary>Cache source subdirectory for JSON REST API responses (apitoken auth).</summary>
-    public const string JsonSource = "json";
+    /// <summary>Key prefix for JSON REST API responses (apitoken auth) within the jira source.</summary>
+    public const string JsonPrefix = "json";
+
+    /// <summary>Builds a cache key for an XML file by prepending the XML prefix.</summary>
+    public static string XmlKey(string filename) => $"{XmlPrefix}/{filename}";
+
+    /// <summary>Builds a cache key for a JSON file by prepending the JSON prefix.</summary>
+    public static string JsonKey(string filename) => $"{JsonPrefix}/{filename}";
 
     /// <summary>Extension for JSON API responses.</summary>
     public const string JsonExtension = "json";

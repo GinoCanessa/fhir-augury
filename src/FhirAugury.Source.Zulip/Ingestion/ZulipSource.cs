@@ -26,6 +26,12 @@ public class ZulipSource(
 
     public const string SourceName = "zulip";
 
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+    };
+
     /// <summary>Performs a full download of all streams and their messages.</summary>
     public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)
     {
@@ -47,7 +53,7 @@ public class ZulipSource(
 
         using SqliteConnection connection = database.OpenConnection();
 
-        // Upsert streams
+        // Upsert streams and apply exclusions
         foreach (ZulipStreamRecord stream in streams)
         {
             ZulipStreamRecord? existing = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
@@ -55,16 +61,27 @@ public class ZulipSource(
             {
                 stream.Id = existing.Id;
                 stream.MessageCount = existing.MessageCount;
+                // Preserve user-set IncludeStream; only apply config exclusion for new streams
+                stream.IncludeStream = existing.IncludeStream;
                 ZulipStreamRecord.Update(connection, stream);
             }
             else
             {
+                ApplyExclusion(stream);
                 ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
             }
         }
 
+        // Cache stream data for rebuild support (Z-10)
+        await CacheStreamDataAsync(streams, ct);
+
+        // Filter to included streams only (Z-05)
+        List<ZulipStreamRecord> activeStreams = streams.Where(s => s.IncludeStream).ToList();
+        logger.LogInformation("Processing {Active} of {Total} streams (excluded: {Excluded})",
+            activeStreams.Count, streams.Count, streams.Count - activeStreams.Count);
+
         // For each stream, paginate all messages
-        foreach (ZulipStreamRecord stream in streams)
+        foreach (ZulipStreamRecord stream in activeStreams)
         {
             if (ct.IsCancellationRequested) break;
 
@@ -180,22 +197,33 @@ public class ZulipSource(
 
         using SqliteConnection connection = database.OpenConnection();
 
+        // Upsert streams and apply exclusions
         foreach (ZulipStreamRecord stream in streams)
         {
-            if (ct.IsCancellationRequested) break;
-
-            // Upsert stream
             ZulipStreamRecord? existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
             if (existingStream is not null)
             {
                 stream.Id = existingStream.Id;
                 stream.MessageCount = existingStream.MessageCount;
+                stream.IncludeStream = existingStream.IncludeStream;
                 ZulipStreamRecord.Update(connection, stream);
             }
             else
             {
+                ApplyExclusion(stream);
                 ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
             }
+        }
+
+        // Cache stream data for rebuild support (Z-10)
+        await CacheStreamDataAsync(streams, ct);
+
+        // Filter to included streams only (Z-05)
+        List<ZulipStreamRecord> activeStreams = streams.Where(s => s.IncludeStream).ToList();
+
+        foreach (ZulipStreamRecord stream in activeStreams)
+        {
+            if (ct.IsCancellationRequested) break;
 
             ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: SourceName, SubSource: stream.Name);
             int anchor = 0;
@@ -282,7 +310,7 @@ public class ZulipSource(
     }
 
     /// <summary>Loads all messages from cached API responses (no network).</summary>
-    public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
+    public async Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
@@ -290,13 +318,50 @@ public class ZulipSource(
 
         using SqliteConnection connection = database.OpenConnection();
 
+        // Resolve stream metadata: cached file → API fallback → placeholder (Z-10, Z-06)
+        List<ZulipStreamRecord>? cachedStreams = await LoadCachedStreamDataAsync();
+
+        if (cachedStreams is null)
+        {
+            // streams.json not in cache — try fetching from API
+            try
+            {
+                cachedStreams = await FetchStreamsAsync(ct);
+                logger.LogInformation("streams.json not found in cache; fetched {Count} streams from API", cachedStreams.Count);
+                await CacheStreamDataAsync(cachedStreams, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not fetch streams from API; falling back to placeholder records from cache directories");
+            }
+        }
+
+        // Apply exclusions and upsert cached/API stream records
+        if (cachedStreams is not null)
+        {
+            foreach (ZulipStreamRecord stream in cachedStreams)
+            {
+                ApplyExclusion(stream);
+                ZulipStreamRecord? existing = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
+                if (existing is not null)
+                {
+                    stream.Id = existing.Id;
+                    ZulipStreamRecord.Update(connection, stream);
+                }
+                else
+                {
+                    ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
+                }
+            }
+        }
+
         // Discover stream directories under the zulip source cache
         string cacheRoot = cache.RootPath;
         string zulipDir = Path.Combine(cacheRoot, ZulipCacheLayout.SourceName);
         if (!Directory.Exists(zulipDir))
         {
             logger.LogWarning("No zulip cache directory found at {Path}", zulipDir);
-            return Task.FromResult(new IngestionResult(0, 0, 0, 0, errors, startedAt));
+            return new IngestionResult(0, 0, 0, 0, errors, startedAt);
         }
 
         List<string> streamDirs = Directory.GetDirectories(zulipDir)
@@ -311,20 +376,33 @@ public class ZulipSource(
 
             int streamId = int.Parse(streamDirName.AsSpan(1));
 
-            // Upsert a stream record from metadata or defaults
+            // Look up or create stream record
             ZulipStreamRecord? existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: streamId);
-            ZulipStreamRecord streamRecord = existingStream ?? new ZulipStreamRecord
-            {
-                Id = ZulipStreamRecord.GetIndex(),
-                ZulipStreamId = streamId,
-                Name = $"stream-{streamId}",
-                Description = null,
-                IsWebPublic = true,
-                MessageCount = 0,
-                LastFetchedAt = DateTimeOffset.MinValue,
-            };
+
+            // If no stream record exists (no cached streams.json and no API), create a placeholder
             if (existingStream is null)
-                ZulipStreamRecord.Insert(connection, streamRecord, ignoreDuplicates: true);
+            {
+                ZulipStreamRecord placeholder = new ZulipStreamRecord
+                {
+                    Id = ZulipStreamRecord.GetIndex(),
+                    ZulipStreamId = streamId,
+                    Name = $"stream-{streamId}",
+                    Description = null,
+                    IsWebPublic = true,
+                    MessageCount = 0,
+                    IncludeStream = !options.ExcludedStreamIds.Contains(streamId),
+                    LastFetchedAt = DateTimeOffset.MinValue,
+                };
+                ZulipStreamRecord.Insert(connection, placeholder, ignoreDuplicates: true);
+                existingStream = placeholder;
+            }
+
+            // Honor IncludeStream during cache load (Z-06)
+            if (!existingStream.IncludeStream)
+            {
+                logger.LogDebug("Skipping excluded stream {StreamId} during cache load", streamId);
+                continue;
+            }
 
             IEnumerable<string> keys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDirName);
 
@@ -344,7 +422,7 @@ public class ZulipSource(
 
                         foreach (JsonElement msgJson in messagesArray.EnumerateArray())
                         {
-                            (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, streamRecord.Name, streamRecord.Id, connection);
+                            (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, existingStream.Name, existingStream.Id, connection);
                             itemsProcessed++;
 
                             switch (outcome)
@@ -375,7 +453,60 @@ public class ZulipSource(
             "Cache ingestion complete: {Processed} processed, {New} new, {Updated} updated",
             itemsProcessed, itemsNew, itemsUpdated);
 
-        return Task.FromResult(new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt));
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);
+    }
+
+    /// <summary>Applies the ExcludedStreamIds config to a stream record.</summary>
+    private void ApplyExclusion(ZulipStreamRecord stream)
+    {
+        stream.IncludeStream = !options.ExcludedStreamIds.Contains(stream.ZulipStreamId);
+    }
+
+    /// <summary>Caches stream metadata to disk for rebuild support (Z-10).</summary>
+    private async Task CacheStreamDataAsync(List<ZulipStreamRecord> streams, CancellationToken ct)
+    {
+        StreamCacheModel model = new()
+        {
+            FetchedAt = DateTimeOffset.UtcNow,
+            Streams = streams.Select(s => new StreamCacheEntry
+            {
+                ZulipStreamId = s.ZulipStreamId,
+                Name = s.Name,
+                Description = s.Description,
+                IsWebPublic = s.IsWebPublic,
+                IncludeStream = s.IncludeStream,
+            }).ToList()
+        };
+
+        using MemoryStream ms = new();
+        await JsonSerializer.SerializeAsync(ms, model, JsonOptions, ct);
+        ms.Position = 0;
+        await cache.PutAsync(ZulipCacheLayout.SourceName, ZulipCacheLayout.StreamsCacheKey, ms, ct);
+    }
+
+    /// <summary>Loads cached stream metadata from streams.json (Z-10).</summary>
+    private async Task<List<ZulipStreamRecord>?> LoadCachedStreamDataAsync()
+    {
+        if (!cache.TryGet(ZulipCacheLayout.SourceName, ZulipCacheLayout.StreamsCacheKey, out Stream? stream))
+            return null;
+
+        using (stream)
+        {
+            StreamCacheModel? model = await JsonSerializer.DeserializeAsync<StreamCacheModel>(stream, JsonOptions);
+            if (model is null) return null;
+
+            return model.Streams.Select(s => new ZulipStreamRecord
+            {
+                Id = ZulipStreamRecord.GetIndex(),
+                ZulipStreamId = s.ZulipStreamId,
+                Name = s.Name,
+                Description = s.Description,
+                IsWebPublic = s.IsWebPublic,
+                MessageCount = 0,
+                IncludeStream = s.IncludeStream,
+                LastFetchedAt = model.FetchedAt,
+            }).ToList();
+        }
     }
 
     private async Task<List<ZulipStreamRecord>> FetchStreamsAsync(CancellationToken ct)
@@ -453,6 +584,21 @@ public class ZulipSource(
     }
 
     private enum ProcessOutcome { New, Updated, Failed }
+
+    private record StreamCacheModel
+    {
+        public DateTimeOffset FetchedAt { get; init; }
+        public List<StreamCacheEntry> Streams { get; init; } = [];
+    }
+
+    private record StreamCacheEntry
+    {
+        public int ZulipStreamId { get; init; }
+        public string Name { get; init; } = "";
+        public string? Description { get; init; }
+        public bool IsWebPublic { get; init; }
+        public bool IncludeStream { get; init; } = true;
+    }
 }
 
 /// <summary>Result of an ingestion run.</summary>

@@ -16,4 +16,5 @@ public partial record class JiraCommentRecord
     public required string Author { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
     public required string Body { get; set; }
+    public required string BodyPlain { get; set; }
 }

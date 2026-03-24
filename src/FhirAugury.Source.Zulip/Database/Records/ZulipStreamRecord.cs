@@ -18,5 +18,6 @@ public partial record class ZulipStreamRecord
     public required string? Description { get; set; }
     public required bool IsWebPublic { get; set; }
     public required int MessageCount { get; set; }
+    public required bool IncludeStream { get; set; } = true;
     public required DateTimeOffset LastFetchedAt { get; set; }
 }

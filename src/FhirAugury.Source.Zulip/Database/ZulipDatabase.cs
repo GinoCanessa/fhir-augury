@@ -30,7 +30,7 @@ public class ZulipDatabase : SourceDatabase
             ftsTableName: "zulip_messages_fts",
             contentTable: "zulip_messages",
             contentRowId: "Id",
-            indexedColumns: ["ContentPlain", "Topic", "SenderName"]);
+            indexedColumns: ["ContentPlain", "Topic"]);
     }
 
     /// <summary>Rebuilds the FTS5 index from the content table.</summary>

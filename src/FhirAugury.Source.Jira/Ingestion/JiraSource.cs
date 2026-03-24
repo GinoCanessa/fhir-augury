@@ -64,7 +64,8 @@ public class JiraSource(
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         List<string> errors = [];
 
-        List<string> existingKeys = cache.EnumerateKeys(JiraCacheLayout.JsonSource).ToList();
+        List<string> existingKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName)
+            .Where(k => k.StartsWith(JiraCacheLayout.JsonPrefix + "/")).ToList();
         DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         int startAt = 0;
@@ -98,7 +99,7 @@ public class JiraSource(
             existingKeys.Add(cacheKey);
             using (MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
             {
-                await cache.PutAsync(JiraCacheLayout.JsonSource, cacheKey, cacheStream, ct);
+                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.JsonKey(cacheKey), cacheStream, ct);
             }
 
             using JsonDocument doc = JsonDocument.Parse(json);
@@ -146,7 +147,8 @@ public class JiraSource(
         List<string> errors = [];
 
         HashSet<DateOnly> cachedDates = GetCachedDates();
-        List<string> existingXmlKeys = cache.EnumerateKeys(JiraCacheLayout.XmlSource).ToList();
+        List<string> existingXmlKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName)
+            .Where(k => k.StartsWith(JiraCacheLayout.XmlPrefix + "/")).ToList();
         DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -193,7 +195,7 @@ public class JiraSource(
             existingXmlKeys.Add(cacheKey);
             using (MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(xml)))
             {
-                await cache.PutAsync(JiraCacheLayout.XmlSource, cacheKey, cacheStream, ct);
+                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.XmlKey(cacheKey), cacheStream, ct);
             }
 
             // Parse and upsert
@@ -217,6 +219,8 @@ public class JiraSource(
 
                     foreach (JiraCommentRecord comment in comments)
                         JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+
+                    UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
 
                     itemsProcessed++;
                 }
@@ -251,7 +255,7 @@ public class JiraSource(
         foreach ((string source, string key) in MergeAndSortCacheEntries())
         {
             if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(source, key, out Stream? stream)) continue;
+            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream)) continue;
 
             using (stream)
             {
@@ -275,6 +279,8 @@ public class JiraSource(
 
                         foreach (JiraCommentRecord comment in comments)
                             JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+
+                        UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
 
                         itemsProcessed++;
                     }
@@ -323,6 +329,8 @@ public class JiraSource(
             foreach (JiraIssueLinkRecord link in links)
                 JiraIssueLinkRecord.Insert(connection, link, ignoreDuplicates: true);
 
+            UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
+
             return (existing is not null ? ProcessOutcome.Updated : ProcessOutcome.New, null);
         }
         catch (Exception ex)
@@ -366,13 +374,10 @@ public class JiraSource(
     {
         HashSet<DateOnly> dates = [];
 
-        foreach (string source in new[] { JiraCacheLayout.XmlSource, JiraCacheLayout.JsonSource })
+        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
         {
-            foreach (string key in cache.EnumerateKeys(source))
-            {
-                if (CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed))
-                    dates.Add(parsed.Date);
-            }
+            if (CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed))
+                dates.Add(parsed.Date);
         }
 
         return dates;
@@ -386,13 +391,18 @@ public class JiraSource(
     {
         List<(string Source, string Key, CacheFileNaming.ParsedBatchFile? Parsed)> entries = [];
 
-        foreach (string source in new[] { JiraCacheLayout.XmlSource, JiraCacheLayout.JsonSource })
+        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
         {
-            foreach (string key in cache.EnumerateKeys(source))
-            {
-                CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed);
-                entries.Add((source, key, parsed));
-            }
+            string sourceType;
+            if (key.StartsWith(JiraCacheLayout.XmlPrefix + "/"))
+                sourceType = JiraCacheLayout.XmlPrefix;
+            else if (key.StartsWith(JiraCacheLayout.JsonPrefix + "/"))
+                sourceType = JiraCacheLayout.JsonPrefix;
+            else
+                continue;
+
+            CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed);
+            entries.Add((sourceType, key, parsed));
         }
 
         entries.Sort((a, b) =>
@@ -420,7 +430,7 @@ public class JiraSource(
                     return seqCmp;
             }
 
-            // Tie-break by source (xml before json) then key name
+            // Tie-break by source type (xml before json) then key name
             int srcCmp = string.Compare(a.Source, b.Source, StringComparison.OrdinalIgnoreCase);
             if (srcCmp != 0)
                 return srcCmp;
@@ -432,6 +442,28 @@ public class JiraSource(
     }
 
     private enum ProcessOutcome { New, Updated, Failed }
+
+    private static void UpsertRelatedIssues(SqliteConnection conn, int issueId, string issueKey, string? relatedIssues)
+    {
+        using SqliteCommand deleteCmd = conn.CreateCommand();
+        deleteCmd.CommandText = "DELETE FROM jira_issue_related WHERE IssueKey = @key";
+        deleteCmd.Parameters.AddWithValue("@key", issueKey);
+        deleteCmd.ExecuteNonQuery();
+
+        if (string.IsNullOrWhiteSpace(relatedIssues)) return;
+
+        string[] keys = relatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        foreach (string relatedKey in keys)
+        {
+            JiraIssueRelatedRecord.Insert(conn, new JiraIssueRelatedRecord
+            {
+                Id = 0,
+                IssueId = issueId,
+                IssueKey = issueKey,
+                RelatedIssueKey = relatedKey
+            }, ignoreDuplicates: true);
+        }
+    }
 }
 
 /// <summary>Result of an ingestion run.</summary>
