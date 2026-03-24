@@ -21,6 +21,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_ORCHESTRATOR_");
 
 builder.Services.Configure<OrchestratorOptions>(

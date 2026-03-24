@@ -19,6 +19,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_JIRA_");
 
 builder.Services.Configure<JiraServiceOptions>(builder.Configuration.GetSection(JiraServiceOptions.SectionName));
