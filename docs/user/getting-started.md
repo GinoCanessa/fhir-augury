@@ -231,6 +231,79 @@ Set the `GITHUB_TOKEN` environment variable, or create
 A personal access token is recommended. Without one, GitHub limits you to 60 API
 requests per hour (vs. 5,000 with a token).
 
+## Configure Cache Locations
+
+Each source service caches HTTP responses to the local file system, reducing
+load on upstream platforms and speeding up re-indexing. The orchestrator, CLI,
+and MCP server do not use a cache.
+
+### Defaults
+
+When running from source, each service caches to a subdirectory under `./cache/`
+relative to the project root:
+
+| Service | Default `CachePath` |
+|---------|---------------------|
+| Jira | `./cache/jira` |
+| Zulip | `./cache/zulip` |
+| Confluence | `./cache/confluence` |
+| GitHub | `./cache/github` |
+
+When running via Docker Compose, each service uses a named Docker volume mounted
+at `/app/cache` inside the container (e.g., `jira-cache`, `zulip-cache`).
+
+### Overriding cache locations (run from source)
+
+To change a service's cache path, add a `CachePath` entry to the service's
+`appsettings.local.json`. For example, to store the Jira cache in a custom
+directory:
+
+```json
+{
+  "Jira": {
+    "CachePath": "/data/fhir-augury/jira-cache"
+  }
+}
+```
+
+The pattern is the same for each source — use the service's configuration
+section name (`Jira`, `Zulip`, `Confluence`, or `GitHub`):
+
+```json
+{
+  "Zulip": {
+    "CachePath": "/data/fhir-augury/zulip-cache"
+  }
+}
+```
+
+### Overriding cache locations (Docker Compose)
+
+In Docker Compose, each service's cache path is set via an environment variable.
+You can override these in a `docker-compose.override.yml` or by exporting
+environment variables before running `docker compose up`:
+
+| Service | Environment Variable |
+|---------|---------------------|
+| Jira | `FHIR_AUGURY_JIRA__Jira__CachePath` |
+| Zulip | `FHIR_AUGURY_ZULIP__Zulip__CachePath` |
+| Confluence | `FHIR_AUGURY_CONFLUENCE__Confluence__CachePath` |
+| GitHub | `FHIR_AUGURY_GITHUB__GitHub__CachePath` |
+
+To bind-mount a host directory instead of using a named volume, add a
+`docker-compose.override.yml`:
+
+```yaml
+services:
+  source-jira:
+    volumes:
+      - /data/jira-cache:/app/cache
+```
+
+> **Note:** The service creates the cache directory automatically on startup if
+> it does not exist. All resolved cache paths are validated to stay within the
+> configured root to prevent path-traversal issues.
+
 ## Example Workflows
 
 ### Search across all sources
