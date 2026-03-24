@@ -50,13 +50,15 @@ Database record types across all v2 projects use `cslightdbgen.sqlitegen`, a
 Roslyn source generator that produces CRUD code at compile time. The pattern is:
 
 ```csharp
-[Table("my_items")]
+[LdgSQLiteTable("my_items")]
 public partial record class MyItemRecord
 {
-    [Column("id"), PrimaryKey]
-    public string Id { get; set; } = string.Empty;
+    [LdgSQLiteKey]
+    public long Id { get; set; }
 
-    [Column("title")]
+    [LdgSQLiteUnique]
+    public string UniqueId { get; set; } = string.Empty;
+
     public string Title { get; set; } = string.Empty;
 
     // ... source generator emits Insert, Update, Delete, SelectAll, etc.

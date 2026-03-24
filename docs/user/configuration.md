@@ -247,6 +247,8 @@ services via gRPC. It is configured entirely through environment variables:
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
+| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
 
 See [MCP Tools](mcp-tools.md) for client configuration and tool documentation.
 

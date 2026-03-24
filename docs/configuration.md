@@ -295,6 +295,8 @@ configured through environment variables:
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence gRPC address |
+| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
 
 See [MCP setup](../README.md#mcp-setup) for client configuration examples.
 

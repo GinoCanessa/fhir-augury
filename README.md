@@ -98,7 +98,9 @@ Configure your MCP client to connect to the running services:
       "env": {
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
-        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
+        "FHIR_AUGURY_CONFLUENCE_GRPC": "http://localhost:5181",
+        "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
       }
     }
   }

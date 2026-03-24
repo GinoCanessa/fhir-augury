@@ -18,10 +18,6 @@ Orchestrator (:5150 HTTP / :5151 gRPC)
 └── Source.GitHub     (:5190 HTTP / :5191 gRPC)
 ```
 
-> **Legacy v1** (`FhirAugury.Service`, `FhirAugury.Models`,
-> `FhirAugury.Database`, `FhirAugury.Indexing`, `FhirAugury.Sources.*`) remains
-> in the codebase but is no longer the primary architecture.
-
 ## Common gRPC Contract — `SourceService`
 
 Every source service implements the `SourceService` gRPC service defined in
