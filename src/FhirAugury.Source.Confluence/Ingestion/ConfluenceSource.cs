@@ -7,6 +7,7 @@ using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using static FhirAugury.Common.DateTimeHelper;
 using static FhirAugury.Common.JsonElementHelper;
 
@@ -16,12 +17,14 @@ namespace FhirAugury.Source.Confluence.Ingestion;
 /// Fetches pages from the Confluence REST API, caches responses, and upserts into the database.
 /// </summary>
 public class ConfluenceSource(
-    ConfluenceServiceOptions options,
+    IOptions<ConfluenceServiceOptions> optionsAccessor,
     IHttpClientFactory httpClientFactory,
     ConfluenceDatabase database,
     IResponseCache cache,
     ILogger<ConfluenceSource> logger)
 {
+    private readonly ConfluenceServiceOptions options = optionsAccessor.Value;
+
     public const string SourceName = "confluence";
 
     /// <summary>Performs a full download of all pages in configured spaces.</summary>

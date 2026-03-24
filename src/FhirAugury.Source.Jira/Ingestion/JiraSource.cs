@@ -7,6 +7,7 @@ using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -15,12 +16,14 @@ namespace FhirAugury.Source.Jira.Ingestion;
 /// Supports full and incremental downloads.
 /// </summary>
 public class JiraSource(
-    JiraServiceOptions options,
+    IOptions<JiraServiceOptions> optionsAccessor,
     IHttpClientFactory httpClientFactory,
     JiraDatabase database,
     IResponseCache cache,
     ILogger<JiraSource> logger)
 {
+    private readonly JiraServiceOptions options = optionsAccessor.Value;
+
     public const string SourceName = "jira";
 
     /// <summary>Performs a full download of all issues matching the configured JQL.</summary>

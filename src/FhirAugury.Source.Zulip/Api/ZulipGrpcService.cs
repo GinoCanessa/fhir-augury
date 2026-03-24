@@ -409,9 +409,11 @@ public class ZulipGrpcService(
 /// </summary>
 public class ZulipSpecificGrpcService(
     ZulipDatabase database,
-    ZulipServiceOptions options)
+    IOptions<ZulipServiceOptions> optionsAccessor)
     : ZulipService.ZulipServiceBase
 {
+    private readonly ZulipServiceOptions options = optionsAccessor.Value;
+
     public override Task<ZulipThread> GetThread(ZulipGetThreadRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();

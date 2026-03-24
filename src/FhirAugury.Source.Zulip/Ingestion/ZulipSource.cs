@@ -7,6 +7,7 @@ using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Zulip.Ingestion;
 
@@ -15,12 +16,14 @@ namespace FhirAugury.Source.Zulip.Ingestion;
 /// and upserts into the database. Supports full, incremental, and cache-only modes.
 /// </summary>
 public class ZulipSource(
-    ZulipServiceOptions options,
+    IOptions<ZulipServiceOptions> optionsAccessor,
     IHttpClientFactory httpClientFactory,
     ZulipDatabase database,
     IResponseCache cache,
     ILogger<ZulipSource> logger)
 {
+    private readonly ZulipServiceOptions options = optionsAccessor.Value;
+
     public const string SourceName = "zulip";
 
     /// <summary>Performs a full download of all streams and their messages.</summary>

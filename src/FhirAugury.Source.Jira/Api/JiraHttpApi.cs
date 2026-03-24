@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 using System.Text;
 
 namespace FhirAugury.Source.Jira.Api;
@@ -21,8 +22,9 @@ public static class JiraHttpApi
     {
         RouteGroupBuilder api = app.MapGroup("/api/v1");
 
-        api.MapGet("/search", (string? q, int? limit, JiraDatabase db, JiraServiceOptions options) =>
+        api.MapGet("/search", (string? q, int? limit, JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) =>
         {
+            JiraServiceOptions options = optionsAccessor.Value;
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
@@ -67,8 +69,9 @@ public static class JiraHttpApi
             return Results.Ok(new { query = q, total = results.Count, results });
         });
 
-        api.MapGet("/items/{key}", (string key, JiraDatabase db, JiraServiceOptions options) =>
+        api.MapGet("/items/{key}", (string key, JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) =>
         {
+            JiraServiceOptions options = optionsAccessor.Value;
             using SqliteConnection connection = db.OpenConnection();
             JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
             if (issue is null)
@@ -134,8 +137,9 @@ public static class JiraHttpApi
             return Results.Ok(new { total = items.Count, items });
         });
 
-        api.MapGet("/items/{key}/related", (string key, int? limit, JiraDatabase db, JiraServiceOptions options) =>
+        api.MapGet("/items/{key}/related", (string key, int? limit, JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) =>
         {
+            JiraServiceOptions options = optionsAccessor.Value;
             using SqliteConnection connection = db.OpenConnection();
             int maxResults = Math.Min(limit ?? 10, 50);
 
@@ -165,8 +169,9 @@ public static class JiraHttpApi
             return Results.Ok(new { sourceKey = key, related = results });
         });
 
-        api.MapGet("/items/{key}/snapshot", (string key, JiraDatabase db, JiraServiceOptions options) =>
+        api.MapGet("/items/{key}/snapshot", (string key, JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) =>
         {
+            JiraServiceOptions options = optionsAccessor.Value;
             using SqliteConnection connection = db.OpenConnection();
             JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
             if (issue is null)

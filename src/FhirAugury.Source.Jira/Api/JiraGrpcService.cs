@@ -12,6 +12,7 @@ using FhirAugury.Source.Jira.Ingestion;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Api;
 
@@ -23,9 +24,10 @@ public class JiraGrpcService(
     JiraIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    JiraServiceOptions options)
+    IOptions<JiraServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
+    private readonly JiraServiceOptions options = optionsAccessor.Value;
     private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
 
     // ── SourceService RPCs ────────────────────────────────────────
@@ -437,10 +439,12 @@ public class JiraGrpcService(
 public class JiraSpecificGrpcService(
     JiraDatabase database,
     JiraIngestionPipeline pipeline,
-    JiraServiceOptions options)
+    IOptions<JiraServiceOptions> optionsAccessor)
     : JiraService.JiraServiceBase
 #pragma warning restore CS9113
 {
+    private readonly JiraServiceOptions options = optionsAccessor.Value;
+
     public override async Task GetIssueComments(JiraGetCommentsRequest request, IServerStreamWriter<Fhiraugury.JiraComment> responseStream, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();

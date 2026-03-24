@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Confluence.Api;
 
@@ -20,8 +21,9 @@ public static class ConfluenceHttpApi
     {
         RouteGroupBuilder api = app.MapGroup("/api/v1");
 
-        api.MapGet("/search", (string? q, int? limit, ConfluenceDatabase db, ConfluenceServiceOptions options) =>
+        api.MapGet("/search", (string? q, int? limit, ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) =>
         {
+            ConfluenceServiceOptions options = optionsAccessor.Value;
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
@@ -66,8 +68,9 @@ public static class ConfluenceHttpApi
             return Results.Ok(new { query = q, total = results.Count, results });
         });
 
-        api.MapGet("/pages/{pageId}", (string pageId, ConfluenceDatabase db, ConfluenceServiceOptions options) =>
+        api.MapGet("/pages/{pageId}", (string pageId, ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) =>
         {
+            ConfluenceServiceOptions options = optionsAccessor.Value;
             using SqliteConnection connection = db.OpenConnection();
             ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
             if (page is null)

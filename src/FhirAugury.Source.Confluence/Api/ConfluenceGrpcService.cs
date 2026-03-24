@@ -12,6 +12,7 @@ using FhirAugury.Source.Confluence.Ingestion;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Confluence.Api;
 
@@ -23,9 +24,10 @@ public class ConfluenceGrpcService(
     ConfluenceIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    ConfluenceServiceOptions options)
+    IOptions<ConfluenceServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
+    private readonly ConfluenceServiceOptions options = optionsAccessor.Value;
     private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
 
     // ── SourceService RPCs ────────────────────────────────────────
@@ -419,9 +421,11 @@ public class ConfluenceGrpcService(
 /// </summary>
 public class ConfluenceSpecificGrpcService(
     ConfluenceDatabase database,
-    ConfluenceServiceOptions options)
+    IOptions<ConfluenceServiceOptions> optionsAccessor)
     : ConfluenceService.ConfluenceServiceBase
 {
+    private readonly ConfluenceServiceOptions options = optionsAccessor.Value;
+
     public override async Task GetPageComments(ConfluenceGetCommentsRequest request, IServerStreamWriter<ConfluenceComment> responseStream, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
