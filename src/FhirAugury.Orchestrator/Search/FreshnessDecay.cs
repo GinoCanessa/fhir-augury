@@ -17,17 +17,17 @@ public class FreshnessDecay(IOptions<OrchestratorOptions> optionsAccessor)
     /// </summary>
     public List<ScoredItem> Apply(IEnumerable<ScoredItem> items)
     {
-        var now = DateTimeOffset.UtcNow;
-        var results = new List<ScoredItem>();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        List<ScoredItem> results = new List<ScoredItem>();
 
-        foreach (var item in items)
+        foreach (ScoredItem item in items)
         {
-            var weight = options.Search.FreshnessWeights.GetValueOrDefault(item.Source, 1.0);
-            var decay = 1.0;
+            double weight = options.Search.FreshnessWeights.GetValueOrDefault(item.Source, 1.0);
+            double decay = 1.0;
 
             if (item.UpdatedAt is DateTimeOffset updatedAt)
             {
-                var ageDays = (now - updatedAt).TotalDays;
+                double ageDays = (now - updatedAt).TotalDays;
                 decay = 1.0 / (1.0 + weight * Math.Pow(ageDays / 365.0, 2));
             }
 

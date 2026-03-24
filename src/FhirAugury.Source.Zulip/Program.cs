@@ -14,7 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
@@ -24,9 +24,9 @@ builder.Configuration
 builder.Services.Configure<ZulipServiceOptions>(builder.Configuration.GetSection(ZulipServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
-var portsSection = builder.Configuration.GetSection($"{ZulipServiceOptions.SectionName}:Ports");
-var httpPort = portsSection.GetValue<int>("Http", 5170);
-var grpcPort = portsSection.GetValue<int>("Grpc", 5171);
+IConfigurationSection portsSection = builder.Configuration.GetSection($"{ZulipServiceOptions.SectionName}:Ports");
+int httpPort = portsSection.GetValue<int>("Http", 5170);
+int grpcPort = portsSection.GetValue<int>("Grpc", 5171);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -40,10 +40,10 @@ builder.Services.AddGrpc();
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-    var dbPath = Path.GetFullPath(opts.DatabasePath);
+    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(opts.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    var db = new ZulipDatabase(dbPath, sp.GetRequiredService<ILogger<ZulipDatabase>>());
+    ZulipDatabase db = new ZulipDatabase(dbPath, sp.GetRequiredService<ILogger<ZulipDatabase>>());
     db.Initialize();
     return db;
 });
@@ -51,8 +51,8 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-    var cachePath = Path.GetFullPath(opts.CachePath);
+    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+    string cachePath = Path.GetFullPath(opts.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
@@ -61,7 +61,7 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
 builder.Services.AddHttpClient("zulip")
     .ConfigureHttpClient((sp, client) =>
     {
-        var opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+        ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
         ZulipAuthHandler.ConfigureHttpClient(client, opts);
     });
 
@@ -74,7 +74,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "zulip", version = "2.0.0" }));

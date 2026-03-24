@@ -1,5 +1,6 @@
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Source.GitHub.Tests;
@@ -25,8 +26,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesAllTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("github_repos", tables);
         Assert.Contains("github_issues", tables);
@@ -42,8 +43,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesFtsVirtualTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("github_issues_fts", tables);
         Assert.Contains("github_comments_fts", tables);
@@ -53,8 +54,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Repo_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var repo = new GitHubRepoRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        GitHubRepoRecord repo = new GitHubRepoRecord
         {
             Id = GitHubRepoRecord.GetIndex(),
             FullName = "HL7/fhir",
@@ -66,7 +67,7 @@ public class GitHubDatabaseTests : IDisposable
         };
 
         GitHubRepoRecord.Insert(conn, repo);
-        var result = GitHubRepoRecord.SelectSingle(conn, FullName: "HL7/fhir");
+        GitHubRepoRecord? result = GitHubRepoRecord.SelectSingle(conn, FullName: "HL7/fhir");
 
         Assert.NotNull(result);
         Assert.Equal("HL7", result.Owner);
@@ -76,11 +77,11 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Issue_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var issue = CreateSampleIssue("HL7/fhir#42", "HL7/fhir", 42, "Fix patient resource");
+        using SqliteConnection conn = _db.OpenConnection();
+        GitHubIssueRecord issue = CreateSampleIssue("HL7/fhir#42", "HL7/fhir", 42, "Fix patient resource");
 
         GitHubIssueRecord.Insert(conn, issue);
-        var result = GitHubIssueRecord.SelectSingle(conn, UniqueKey: "HL7/fhir#42");
+        GitHubIssueRecord? result = GitHubIssueRecord.SelectSingle(conn, UniqueKey: "HL7/fhir#42");
 
         Assert.NotNull(result);
         Assert.Equal(42, result.Number);
@@ -91,8 +92,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_CommitFile_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var commitFile = new GitHubCommitFileRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        GitHubCommitFileRecord commitFile = new GitHubCommitFileRecord
         {
             Id = GitHubCommitFileRecord.GetIndex(),
             CommitSha = "abc123",
@@ -101,7 +102,7 @@ public class GitHubDatabaseTests : IDisposable
         };
 
         GitHubCommitFileRecord.Insert(conn, commitFile);
-        var results = GitHubCommitFileRecord.SelectList(conn, CommitSha: "abc123");
+        List<GitHubCommitFileRecord> results = GitHubCommitFileRecord.SelectList(conn, CommitSha: "abc123");
 
         Assert.Single(results);
         Assert.Equal("source/patient/Patient-spreadsheet.xml", results[0].FilePath);
@@ -110,8 +111,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_JiraRef_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var jiraRef = new GitHubJiraRefRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        GitHubJiraRefRecord jiraRef = new GitHubJiraRefRecord
         {
             Id = GitHubJiraRefRecord.GetIndex(),
             SourceType = "issue",
@@ -122,7 +123,7 @@ public class GitHubDatabaseTests : IDisposable
         };
 
         GitHubJiraRefRecord.Insert(conn, jiraRef);
-        var results = GitHubJiraRefRecord.SelectList(conn, RepoFullName: "HL7/fhir");
+        List<GitHubJiraRefRecord> results = GitHubJiraRefRecord.SelectList(conn, RepoFullName: "HL7/fhir");
 
         Assert.Single(results);
         Assert.Equal("FHIR-12345", results[0].JiraKey);
@@ -131,8 +132,8 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_SpecFileMap_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var mapping = new GitHubSpecFileMapRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        GitHubSpecFileMapRecord mapping = new GitHubSpecFileMapRecord
         {
             Id = GitHubSpecFileMapRecord.GetIndex(),
             RepoFullName = "HL7/fhir",
@@ -142,7 +143,7 @@ public class GitHubDatabaseTests : IDisposable
         };
 
         GitHubSpecFileMapRecord.Insert(conn, mapping);
-        var results = GitHubSpecFileMapRecord.SelectList(conn, RepoFullName: "HL7/fhir");
+        List<GitHubSpecFileMapRecord> results = GitHubSpecFileMapRecord.SelectList(conn, RepoFullName: "HL7/fhir");
 
         Assert.Single(results);
         Assert.Equal("patient", results[0].ArtifactKey);
@@ -151,15 +152,15 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void Fts5_IndexesIssuesOnInsert()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         GitHubIssueRecord.Insert(conn, CreateSampleIssue("HL7/fhir#1", "HL7/fhir", 1, "Patient resource validation bug"));
         GitHubIssueRecord.Insert(conn, CreateSampleIssue("HL7/fhir#2", "HL7/fhir", 2, "Observation code system update"));
 
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT UniqueKey FROM github_issues WHERE Id IN (SELECT rowid FROM github_issues_fts WHERE github_issues_fts MATCH '\"Patient\"')";
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
-        var keys = new List<string>();
+        List<string> keys = new List<string>();
         while (reader.Read()) keys.Add(reader.GetString(0));
 
         Assert.Single(keys);
@@ -169,7 +170,7 @@ public class GitHubDatabaseTests : IDisposable
     [Fact]
     public void CheckIntegrity_ReturnsOk()
     {
-        var result = _db.CheckIntegrity();
+        string result = _db.CheckIntegrity();
         Assert.Equal("ok", result);
     }
 
@@ -198,10 +199,10 @@ public class GitHubDatabaseTests : IDisposable
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
     {
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') ORDER BY name";
-        using var reader = cmd.ExecuteReader();
-        var names = new List<string>();
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        List<string> names = new List<string>();
         while (reader.Read()) names.Add(reader.GetString(0));
         return names;
     }

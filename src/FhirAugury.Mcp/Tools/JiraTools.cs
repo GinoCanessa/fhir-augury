@@ -21,11 +21,11 @@ public static class JiraTools
     {
         try
         {
-            var request = new SearchRequest { Query = query, Limit = limit };
+            SearchRequest request = new SearchRequest { Query = query, Limit = limit };
             if (!string.IsNullOrEmpty(status))
                 request.Filters.Add("status", status);
 
-            var response = await jiraSource.SearchAsync(request, cancellationToken: cancellationToken);
+            SearchResponse response = await jiraSource.SearchAsync(request, cancellationToken: cancellationToken);
             return UnifiedTools.FormatSearchResults(response, query);
         }
         catch (RpcException ex)
@@ -47,15 +47,15 @@ public static class JiraTools
     {
         try
         {
-            var response = await orchestrator.GetItemAsync(
+            ItemResponse response = await orchestrator.GetItemAsync(
                 new GetItemRequest { Id = key, IncludeContent = true, IncludeComments = includeComments },
                 cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"# {response.Id}: {response.Title}");
             sb.AppendLine();
 
-            foreach (var (k, v) in response.Metadata)
+            foreach ((string? k, string? v) in response.Metadata)
                 sb.AppendLine($"- **{FormatKey(k)}:** {v}");
 
             if (response.CreatedAt is not null)
@@ -75,7 +75,7 @@ public static class JiraTools
                 sb.AppendLine();
                 sb.AppendLine($"## Comments ({response.Comments.Count})");
                 sb.AppendLine();
-                foreach (var c in response.Comments)
+                foreach (Comment? c in response.Comments)
                 {
                     sb.AppendLine($"### {c.Author} — {c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                     sb.AppendLine(c.Body);
@@ -107,11 +107,11 @@ public static class JiraTools
     {
         try
         {
-            using var call = jira.GetIssueComments(new JiraGetCommentsRequest { IssueKey = key },
+            using AsyncServerStreamingCall<JiraComment> call = jira.GetIssueComments(new JiraGetCommentsRequest { IssueKey = key },
                 cancellationToken: cancellationToken);
 
-            var comments = new List<JiraComment>();
-            await foreach (var comment in call.ResponseStream.ReadAllAsync(cancellationToken))
+            List<JiraComment> comments = new List<JiraComment>();
+            await foreach (JiraComment? comment in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 comments.Add(comment);
                 if (comments.Count >= limit) break;
@@ -120,11 +120,11 @@ public static class JiraTools
             if (comments.Count == 0)
                 return $"No comments on {key}.";
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"## Comments on {key} ({comments.Count})");
             sb.AppendLine();
 
-            foreach (var c in comments)
+            foreach (JiraComment c in comments)
             {
                 sb.AppendLine($"### {c.Author} — {c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                 sb.AppendLine(c.Body);
@@ -159,7 +159,7 @@ public static class JiraTools
     {
         try
         {
-            var request = new JiraQueryRequest
+            JiraQueryRequest request = new JiraQueryRequest
             {
                 Query = query ?? "",
                 SortBy = sortBy,
@@ -173,14 +173,14 @@ public static class JiraTools
             AddItems(request.Types_, types);
             AddItems(request.Priorities, priorities);
 
-            using var call = jira.QueryIssues(request, cancellationToken: cancellationToken);
+            using AsyncServerStreamingCall<JiraIssueSummary> call = jira.QueryIssues(request, cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Jira Query Results");
             sb.AppendLine();
 
-            var count = 0;
-            await foreach (var issue in call.ResponseStream.ReadAllAsync(cancellationToken))
+            int count = 0;
+            await foreach (JiraIssueSummary? issue in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 sb.AppendLine($"- **{issue.Key}** [{issue.Status}] {issue.Title}");
                 if (!string.IsNullOrEmpty(issue.WorkGroup))
@@ -218,7 +218,7 @@ public static class JiraTools
     {
         try
         {
-            var response = await orchestrator.GetSnapshotAsync(
+            SnapshotResponse response = await orchestrator.GetSnapshotAsync(
                 new GetSnapshotRequest { Id = key, IncludeComments = includeComments, IncludeInternalRefs = true },
                 cancellationToken: cancellationToken);
             return response.Markdown;
@@ -245,7 +245,7 @@ public static class JiraTools
     {
         try
         {
-            var request = new ListItemsRequest
+            ListItemsRequest request = new ListItemsRequest
             {
                 Limit = limit,
                 SortBy = sortBy,
@@ -256,14 +256,14 @@ public static class JiraTools
             if (!string.IsNullOrEmpty(workGroup))
                 request.Filters.Add("work_group", workGroup);
 
-            using var call = jiraSource.ListItems(request, cancellationToken: cancellationToken);
+            using AsyncServerStreamingCall<ItemSummary> call = jiraSource.ListItems(request, cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Jira Issues");
             sb.AppendLine();
 
-            var count = 0;
-            await foreach (var item in call.ResponseStream.ReadAllAsync(cancellationToken))
+            int count = 0;
+            await foreach (ItemSummary? item in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 sb.AppendLine($"- **{item.Id}** {item.Title}");
                 if (item.UpdatedAt is not null)

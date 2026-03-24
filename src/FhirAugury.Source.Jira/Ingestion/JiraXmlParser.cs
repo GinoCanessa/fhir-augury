@@ -28,20 +28,20 @@ public static class JiraXmlParser
 
     public static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseExport(Stream stream)
     {
-        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
-        using var reader = XmlReader.Create(stream, settings);
-        var rss = (JiraRss?)Serializer.Deserialize(reader)
+        XmlReaderSettings settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
+        using XmlReader reader = XmlReader.Create(stream, settings);
+        JiraRss rss = (JiraRss?)Serializer.Deserialize(reader)
                   ?? throw new InvalidOperationException("Failed to deserialize Jira XML export.");
 
         if (rss.Channel?.Items is null)
             yield break;
 
-        foreach (var item in rss.Channel.Items)
+        foreach (JiraItem item in rss.Channel.Items)
         {
-            var key = item.Key?.Text ?? string.Empty;
-            var issueId = JiraIssueRecord.GetIndex();
+            string key = item.Key?.Text ?? string.Empty;
+            int issueId = JiraIssueRecord.GetIndex();
 
-            var record = new JiraIssueRecord
+            JiraIssueRecord record = new JiraIssueRecord
             {
                 Id = issueId,
                 Key = key,
@@ -76,12 +76,12 @@ public static class JiraXmlParser
 
             if (item.CustomFields?.Items is not null)
             {
-                foreach (var cf in item.CustomFields.Items)
+                foreach (JiraXmlCustomField cf in item.CustomFields.Items)
                 {
-                    if (cf.Id is null || !CustomFieldKeyMap.TryGetValue(cf.Id, out var propertyName))
+                    if (cf.Id is null || !CustomFieldKeyMap.TryGetValue(cf.Id, out string? propertyName))
                         continue;
 
-                    var value = cf.Values?.Items is { Length: > 0 }
+                    string? value = cf.Values?.Items is { Length: > 0 }
                         ? string.Join(", ", cf.Values.Items.Where(v => !string.IsNullOrEmpty(v)))
                         : null;
 
@@ -106,7 +106,7 @@ public static class JiraXmlParser
                 }
             }
 
-            var comments = JiraCommentParser.ParseXmlComments(item, issueId, key);
+            List<JiraCommentRecord> comments = JiraCommentParser.ParseXmlComments(item, issueId, key);
             yield return (record, comments);
         }
     }

@@ -11,8 +11,8 @@ public static class GitHubIssueMapper
     /// <summary>Maps a GitHub issue/PR JSON element to a GitHubIssueRecord.</summary>
     public static GitHubIssueRecord MapIssue(JsonElement issueJson, string repoFullName)
     {
-        var number = issueJson.GetProperty("number").GetInt32();
-        var isPullRequest = issueJson.TryGetProperty("pull_request", out _);
+        int number = issueJson.GetProperty("number").GetInt32();
+        bool isPullRequest = issueJson.TryGetProperty("pull_request", out _);
 
         return new GitHubIssueRecord
         {
@@ -63,7 +63,7 @@ public static class GitHubIssueMapper
             Owner = GetNestedString(repoJson, "owner", "login") ?? string.Empty,
             Name = repoJson.GetProperty("name").GetString() ?? string.Empty,
             Description = GetString(repoJson, "description"),
-            HasIssues = repoJson.TryGetProperty("has_issues", out var hi) && hi.GetBoolean(),
+            HasIssues = repoJson.TryGetProperty("has_issues", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
     }
@@ -71,7 +71,7 @@ public static class GitHubIssueMapper
     /// <summary>Maps a GitHub commit JSON element to a GitHubCommitRecord.</summary>
     public static GitHubCommitRecord MapCommit(JsonElement commitJson, string repoFullName)
     {
-        var commitData = commitJson.TryGetProperty("commit", out var inner) ? inner : commitJson;
+        JsonElement commitData = commitJson.TryGetProperty("commit", out JsonElement inner) ? inner : commitJson;
 
         return new GitHubCommitRecord
         {
@@ -91,13 +91,13 @@ public static class GitHubIssueMapper
 
     private static string? ExtractLabels(JsonElement issueJson)
     {
-        if (!issueJson.TryGetProperty("labels", out var labelsArray) || labelsArray.ValueKind != JsonValueKind.Array)
+        if (!issueJson.TryGetProperty("labels", out JsonElement labelsArray) || labelsArray.ValueKind != JsonValueKind.Array)
             return null;
 
-        var labels = new List<string>();
-        foreach (var label in labelsArray.EnumerateArray())
+        List<string> labels = new List<string>();
+        foreach (JsonElement label in labelsArray.EnumerateArray())
         {
-            var name = label.GetProperty("name").GetString();
+            string? name = label.GetProperty("name").GetString();
             if (!string.IsNullOrEmpty(name)) labels.Add(name);
         }
 
@@ -106,13 +106,13 @@ public static class GitHubIssueMapper
 
     private static string? ExtractAssignees(JsonElement issueJson)
     {
-        if (!issueJson.TryGetProperty("assignees", out var assigneesArray) || assigneesArray.ValueKind != JsonValueKind.Array)
+        if (!issueJson.TryGetProperty("assignees", out JsonElement assigneesArray) || assigneesArray.ValueKind != JsonValueKind.Array)
             return null;
 
-        var assignees = new List<string>();
-        foreach (var assignee in assigneesArray.EnumerateArray())
+        List<string> assignees = new List<string>();
+        foreach (JsonElement assignee in assigneesArray.EnumerateArray())
         {
-            var login = assignee.GetProperty("login").GetString();
+            string? login = assignee.GetProperty("login").GetString();
             if (!string.IsNullOrEmpty(login)) assignees.Add(login);
         }
 
@@ -121,10 +121,10 @@ public static class GitHubIssueMapper
 
     private static string? GetPullRequestMergeState(JsonElement issueJson)
     {
-        if (!issueJson.TryGetProperty("pull_request", out var pr))
+        if (!issueJson.TryGetProperty("pull_request", out JsonElement pr))
             return null;
 
-        if (pr.TryGetProperty("merged_at", out var mergedAt) && mergedAt.ValueKind != JsonValueKind.Null)
+        if (pr.TryGetProperty("merged_at", out JsonElement mergedAt) && mergedAt.ValueKind != JsonValueKind.Null)
             return "merged";
 
         return null;

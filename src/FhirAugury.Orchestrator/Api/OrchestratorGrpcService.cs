@@ -1,5 +1,6 @@
 using Fhiraugury;
 using FhirAugury.Common.Grpc;
+using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
@@ -10,6 +11,7 @@ using FhirAugury.Orchestrator.Search;
 using FhirAugury.Orchestrator.Workers;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Orchestrator.Api;
@@ -33,18 +35,18 @@ public class OrchestratorGrpcService(
     {
         return GrpcErrorMapper.HandleAsync(async () =>
         {
-            var (results, warnings) = await searchService.SearchAsync(
+            (List<ScoredItem>? results, List<string>? warnings) = await searchService.SearchAsync(
                 request.Query,
                 request.Sources.Count > 0 ? request.Sources.ToList() : null,
                 request.Limit,
                 context.CancellationToken);
 
-            var response = new SearchResponse { Query = request.Query };
+            SearchResponse response = new SearchResponse { Query = request.Query };
             response.Warnings.AddRange(warnings);
 
-            foreach (var item in results)
+            foreach (ScoredItem item in results)
             {
-                var resultItem = new SearchResultItem
+                SearchResultItem resultItem = new SearchResultItem
                 {
                     Source = item.Source,
                     Id = item.Id,
@@ -55,7 +57,7 @@ public class OrchestratorGrpcService(
                 };
                 if (item.UpdatedAt is DateTimeOffset updatedAt)
                     resultItem.UpdatedAt = Timestamp.FromDateTimeOffset(updatedAt);
-                foreach (var (k, v) in item.Metadata)
+                foreach ((string? k, string? v) in item.Metadata)
                     resultItem.Metadata[k] = v;
 
                 response.Results.Add(resultItem);
@@ -78,17 +80,17 @@ public class OrchestratorGrpcService(
 
     public override async Task<GetXRefResponse> GetCrossReferences(GetXRefRequest request, ServerCallContext context)
     {
-        var ct = context.CancellationToken;
-        using var connection = database.OpenConnection();
-        var response = new GetXRefResponse();
+        CancellationToken ct = context.CancellationToken;
+        using SqliteConnection connection = database.OpenConnection();
+        GetXRefResponse response = new GetXRefResponse();
 
-        var direction = request.Direction?.ToLowerInvariant() ?? "both";
+        string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
         if (direction is "outgoing" or "both")
         {
-            var outgoing = CrossRefLinkRecord.SelectList(connection,
+            List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
                 SourceType: request.Source, SourceId: request.Id);
-            foreach (var link in outgoing)
+            foreach (CrossRefLinkRecord link in outgoing)
             {
                 response.References.Add(new CrossReference
                 {
@@ -104,9 +106,9 @@ public class OrchestratorGrpcService(
 
         if (direction is "incoming" or "both")
         {
-            var incoming = CrossRefLinkRecord.SelectList(connection,
+            List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
                 TargetType: request.Source, TargetId: request.Id);
-            foreach (var link in incoming)
+            foreach (CrossRefLinkRecord link in incoming)
             {
                 response.References.Add(new CrossReference
                 {
@@ -121,20 +123,20 @@ public class OrchestratorGrpcService(
         }
 
         // Enrich references with target title and URL from source services
-        var targets = response.References
+        List<(string TargetType, string TargetId)> targets = response.References
             .Select(r => (r.TargetType, r.TargetId))
             .Distinct()
             .ToList();
 
-        var lookupCache = new Dictionary<(string, string), (string Title, string Url)>();
-        foreach (var (targetType, targetId) in targets)
+        Dictionary<(string, string), (string Title, string Url)> lookupCache = new Dictionary<(string, string), (string Title, string Url)>();
+        foreach ((string? targetType, string? targetId) in targets)
         {
-            var client = router.GetSourceClient(targetType);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(targetType);
             if (client is null) continue;
 
             try
             {
-                var item = await client.GetItemAsync(
+                ItemResponse item = await client.GetItemAsync(
                     new GetItemRequest { Id = targetId }, cancellationToken: ct);
                 lookupCache[(targetType, targetId)] = (item.Title, item.Url);
             }
@@ -144,9 +146,9 @@ public class OrchestratorGrpcService(
             }
         }
 
-        foreach (var reference in response.References)
+        foreach (CrossReference? reference in response.References)
         {
-            if (lookupCache.TryGetValue((reference.TargetType, reference.TargetId), out var info))
+            if (lookupCache.TryGetValue((reference.TargetType, reference.TargetId), out (string Title, string Url) info))
             {
                 reference.TargetTitle = info.Title;
                 reference.TargetUrl = info.Url;
@@ -160,10 +162,10 @@ public class OrchestratorGrpcService(
     {
         return GrpcErrorMapper.HandleAsync(async () =>
         {
-            var source = !string.IsNullOrEmpty(request.SourceName)
+            string source = !string.IsNullOrEmpty(request.SourceName)
                 ? request.SourceName
                 : context.RequestHeaders.GetValue("x-source") ?? "";
-            var client = router.GetSourceClient(source)
+            SourceService.SourceServiceClient client = router.GetSourceClient(source)
                 ?? throw new KeyNotFoundException($"Source '{source}' not found or disabled");
 
             return await client.GetItemAsync(request, cancellationToken: context.CancellationToken);
@@ -174,10 +176,10 @@ public class OrchestratorGrpcService(
     {
         return GrpcErrorMapper.HandleAsync(async () =>
         {
-            var source = !string.IsNullOrEmpty(request.SourceName)
+            string source = !string.IsNullOrEmpty(request.SourceName)
                 ? request.SourceName
                 : context.RequestHeaders.GetValue("x-source") ?? "";
-            var client = router.GetSourceClient(source)
+            SourceService.SourceServiceClient client = router.GetSourceClient(source)
                 ?? throw new KeyNotFoundException($"Source '{source}' not found or disabled");
 
             return await client.GetSnapshotAsync(request, cancellationToken: context.CancellationToken);
@@ -188,10 +190,10 @@ public class OrchestratorGrpcService(
     {
         return GrpcErrorMapper.HandleAsync(async () =>
         {
-            var source = !string.IsNullOrEmpty(request.SourceName)
+            string source = !string.IsNullOrEmpty(request.SourceName)
                 ? request.SourceName
                 : context.RequestHeaders.GetValue("x-source") ?? "";
-            var client = router.GetSourceClient(source)
+            SourceService.SourceServiceClient client = router.GetSourceClient(source)
                 ?? throw new KeyNotFoundException($"Source '{source}' not found or disabled");
 
             return await client.GetContentAsync(request, cancellationToken: context.CancellationToken);
@@ -200,14 +202,14 @@ public class OrchestratorGrpcService(
 
     public override async Task<TriggerSyncResponse> TriggerSync(TriggerSyncRequest request, ServerCallContext context)
     {
-        var response = new TriggerSyncResponse();
-        var targetSources = request.Sources.Count > 0
+        TriggerSyncResponse response = new TriggerSyncResponse();
+        List<string> targetSources = request.Sources.Count > 0
             ? request.Sources.ToList()
             : router.GetEnabledSources().ToList();
 
-        foreach (var sourceName in targetSources)
+        foreach (string sourceName in targetSources)
         {
-            var client = router.GetSourceClient(sourceName);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
             if (client is null)
             {
                 response.Statuses.Add(new SourceSyncStatus
@@ -221,8 +223,8 @@ public class OrchestratorGrpcService(
 
             try
             {
-                var ingestionRequest = new TriggerIngestionRequest { Type = request.Type };
-                var result = await client.TriggerIngestionAsync(ingestionRequest,
+                TriggerIngestionRequest ingestionRequest = new TriggerIngestionRequest { Type = request.Type };
+                IngestionStatusResponse result = await client.TriggerIngestionAsync(ingestionRequest,
                     cancellationToken: context.CancellationToken);
 
                 response.Statuses.Add(new SourceSyncStatus
@@ -252,12 +254,12 @@ public class OrchestratorGrpcService(
     {
         await healthMonitor.CheckAllAsync(context.CancellationToken);
 
-        using var connection = database.OpenConnection();
-        var linkCount = CrossRefLinkRecord.SelectCount(connection);
-        var scanState = XrefScanStateRecord.SelectList(connection);
-        var lastScan = scanState.OrderByDescending(s => s.LastScanAt).FirstOrDefault();
+        using SqliteConnection connection = database.OpenConnection();
+        int linkCount = CrossRefLinkRecord.SelectCount(connection);
+        List<XrefScanStateRecord> scanState = XrefScanStateRecord.SelectList(connection);
+        XrefScanStateRecord? lastScan = scanState.OrderByDescending(s => s.LastScanAt).FirstOrDefault();
 
-        var response = new ServicesStatusResponse
+        ServicesStatusResponse response = new ServicesStatusResponse
         {
             CrossRefLinks = linkCount,
         };
@@ -265,10 +267,10 @@ public class OrchestratorGrpcService(
         if (lastScan is not null)
             response.LastXrefScanAt = Timestamp.FromDateTimeOffset(lastScan.LastScanAt);
 
-        var healthStatus = healthMonitor.GetCurrentStatus();
-        foreach (var (name, info) in healthStatus)
+        Dictionary<string, ServiceHealthInfo> healthStatus = healthMonitor.GetCurrentStatus();
+        foreach ((string? name, ServiceHealthInfo? info) in healthStatus)
         {
-            var health = new ServiceHealth
+            ServiceHealth health = new ServiceHealth
             {
                 Name = info.Name,
                 Status = info.Status,
@@ -289,7 +291,7 @@ public class OrchestratorGrpcService(
     public override async Task<TriggerXRefScanResponse> TriggerXRefScan(
         TriggerXRefScanRequest request, ServerCallContext context)
     {
-        var newLinks = await crossRefLinker.ScanAllSourcesAsync(request.FullRescan, context.CancellationToken);
+        int newLinks = await crossRefLinker.ScanAllSourcesAsync(request.FullRescan, context.CancellationToken);
 
         return new TriggerXRefScanResponse
         {
@@ -317,11 +319,11 @@ public class OrchestratorGrpcService(
     public override Task<ServiceEndpointsResponse> GetServiceEndpoints(
         ServiceEndpointsRequest request, ServerCallContext context)
     {
-        var response = new ServiceEndpointsResponse();
+        ServiceEndpointsResponse response = new ServiceEndpointsResponse();
 
-        foreach (var sourceName in router.GetEnabledSources())
+        foreach (string sourceName in router.GetEnabledSources())
         {
-            var config = router.GetSourceConfig(sourceName);
+            SourceServiceConfig? config = router.GetSourceConfig(sourceName);
             if (config is null)
                 continue;
 

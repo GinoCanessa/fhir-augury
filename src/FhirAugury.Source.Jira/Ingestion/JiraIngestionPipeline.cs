@@ -3,6 +3,7 @@ using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -37,7 +38,7 @@ public class JiraIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            var result = await source.DownloadAllAsync(jqlOverride, ct);
+            IngestionResult result = await source.DownloadAllAsync(jqlOverride, ct);
             PostIngestion(result, "full", ct);
 
             _currentStatus = "idle";
@@ -65,10 +66,10 @@ public class JiraIngestionPipeline(
 
         try
         {
-            var since = GetLastSyncTime();
+            DateTimeOffset since = GetLastSyncTime();
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
-            var result = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult result = await source.DownloadIncrementalAsync(since, ct);
             PostIngestion(result, "incremental", ct);
 
             _currentStatus = "idle";
@@ -105,7 +106,7 @@ public class JiraIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase(ct);
 
-            var result = await source.LoadFromCacheAsync(ct);
+            IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
 
             _currentStatus = "idle";
@@ -143,11 +144,11 @@ public class JiraIngestionPipeline(
     {
         ct.ThrowIfCancellationRequested();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: runType);
+        JiraSyncStateRecord? existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: runType);
 
-        var syncState = new JiraSyncStateRecord
+        JiraSyncStateRecord syncState = new JiraSyncStateRecord
         {
             Id = existing?.Id ?? JiraSyncStateRecord.GetIndex(),
             SourceName = JiraSource.SourceName,
@@ -169,8 +170,8 @@ public class JiraIngestionPipeline(
 
     private DateTimeOffset GetLastSyncTime()
     {
-        using var connection = database.OpenConnection();
-        var state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 }

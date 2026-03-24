@@ -26,10 +26,10 @@ public abstract class AtlassianAuthHandler : DelegatingHandler
 
             case "basic":
             case "apitoken":
-                var user = !string.IsNullOrEmpty(Email) ? Email : Username;
+                string? user = !string.IsNullOrEmpty(Email) ? Email : Username;
                 if (!string.IsNullOrEmpty(user) && !string.IsNullOrEmpty(ApiToken))
                 {
-                    var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{ApiToken}"));
+                    string credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{ApiToken}"));
                     request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
                 }
                 break;

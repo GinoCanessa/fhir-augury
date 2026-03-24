@@ -14,12 +14,12 @@ public static class JiraCommentParser
     /// <summary>Extracts comments from a Jira XML export item.</summary>
     public static List<JiraCommentRecord> ParseXmlComments(JiraXmlParser.JiraItem item, int issueId, string issueKey)
     {
-        var comments = new List<JiraCommentRecord>();
+        List<JiraCommentRecord> comments = new List<JiraCommentRecord>();
 
         if (item.Comments?.Items is null)
             return comments;
 
-        foreach (var xmlComment in item.Comments.Items)
+        foreach (JiraXmlParser.JiraXmlComment xmlComment in item.Comments.Items)
         {
             comments.Add(new JiraCommentRecord
             {

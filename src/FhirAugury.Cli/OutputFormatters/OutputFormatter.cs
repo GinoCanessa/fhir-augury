@@ -25,19 +25,19 @@ public static class OutputFormatter
             case "md":
                 Console.WriteLine("| Source | ID | Title | Score | Updated |");
                 Console.WriteLine("|--------|-----|-------|-------|---------|");
-                foreach (var r in response.Results)
+                foreach (SearchResultItem? r in response.Results)
                 {
-                    var updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                    string updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                     Console.WriteLine($"| {r.Source} | {r.Id} | {r.Title} | {r.Score:F2} | {updated} |");
                 }
                 break;
             default:
                 Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-45} {"Score",8} {"Updated",-12}");
                 Console.WriteLine($"{"─────────",-12} {"──────────────",-16} {"───────────────────────────────────────────",-45} {"──────",8} {"──────────",-12}");
-                foreach (var r in response.Results)
+                foreach (SearchResultItem? r in response.Results)
                 {
-                    var title = r.Title.Length > 43 ? r.Title[..40] + "..." : r.Title;
-                    var updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                    string title = r.Title.Length > 43 ? r.Title[..40] + "..." : r.Title;
+                    string updated = r.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                     Console.WriteLine($"{r.Source,-12} {r.Id,-16} {title,-45} {r.Score,8:F2} {updated,-12}");
                 }
                 Console.WriteLine();
@@ -48,7 +48,7 @@ public static class OutputFormatter
         if (response.Warnings.Count > 0)
         {
             Console.Error.WriteLine();
-            foreach (var w in response.Warnings)
+            foreach (string? w in response.Warnings)
                 Console.Error.WriteLine($"Warning: {w}");
         }
     }
@@ -73,7 +73,7 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine("| Field | Value |");
                 Console.WriteLine("|-------|-------|");
-                foreach (var (k, v) in item.Metadata)
+                foreach ((string? k, string? v) in item.Metadata)
                     Console.WriteLine($"| {FormatKey(k)} | {v} |");
                 if (item.CreatedAt is not null)
                     Console.WriteLine($"| Created | {item.CreatedAt.ToDateTimeOffset():yyyy-MM-dd} |");
@@ -89,7 +89,7 @@ public static class OutputFormatter
                 {
                     Console.WriteLine();
                     Console.WriteLine($"### Comments ({item.Comments.Count})");
-                    foreach (var c in item.Comments)
+                    foreach (Comment? c in item.Comments)
                         Console.WriteLine($"\n**{c.Author}** ({c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd}):\n{c.Body}");
                 }
                 break;
@@ -97,7 +97,7 @@ public static class OutputFormatter
                 Console.WriteLine($"ID:       {item.Id}");
                 Console.WriteLine($"Source:   {item.Source}");
                 Console.WriteLine($"Title:    {item.Title}");
-                foreach (var (k, v) in item.Metadata)
+                foreach ((string? k, string? v) in item.Metadata)
                     Console.WriteLine($"{FormatKey(k) + ":",-14}{v}");
                 if (item.CreatedAt is not null)
                     Console.WriteLine($"Created:  {item.CreatedAt.ToDateTimeOffset():yyyy-MM-dd}");
@@ -113,7 +113,7 @@ public static class OutputFormatter
                 if (item.Comments.Count > 0)
                 {
                     Console.WriteLine($"\nComments ({item.Comments.Count}):");
-                    foreach (var c in item.Comments)
+                    foreach (Comment? c in item.Comments)
                         Console.WriteLine($"  [{c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd}] {c.Author}: {Truncate(c.Body, 100)}");
                 }
                 break;
@@ -136,7 +136,7 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine("| Source | ID | Title | Relevance | Relationship |");
                 Console.WriteLine("|--------|-----|-------|-----------|-------------|");
-                foreach (var i in response.Items)
+                foreach (RelatedItem? i in response.Items)
                     Console.WriteLine($"| {i.Source} | {i.Id} | {i.Title} | {i.RelevanceScore:F2} | {i.Relationship} |");
                 break;
             default:
@@ -144,9 +144,9 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine($"{"Source",-12} {"ID",-16} {"Title",-40} {"Score",8} {"Relationship",-15}");
                 Console.WriteLine($"{"─────────",-12} {"──────────────",-16} {"──────────────────────────────────────",-40} {"──────",8} {"────────────",-15}");
-                foreach (var i in response.Items)
+                foreach (RelatedItem? i in response.Items)
                 {
-                    var title = i.Title.Length > 38 ? i.Title[..35] + "..." : i.Title;
+                    string title = i.Title.Length > 38 ? i.Title[..35] + "..." : i.Title;
                     Console.WriteLine($"{i.Source,-12} {i.Id,-16} {title,-40} {i.RelevanceScore,8:F2} {i.Relationship,-15}");
                 }
                 Console.WriteLine();
@@ -171,18 +171,18 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine("| Direction | Type | ID | Link Type | Title |");
                 Console.WriteLine("|-----------|------|-----|-----------|-------|");
-                foreach (var x in response.References)
+                foreach (CrossReference? x in response.References)
                 {
-                    var (arrow, otherType, otherId) = GetDirection(x, sourceType, sourceId);
+                    (string? arrow, string? otherType, string? otherId) = GetDirection(x, sourceType, sourceId);
                     Console.WriteLine($"| {arrow} | {otherType} | {otherId} | {x.LinkType} | {x.TargetTitle} |");
                 }
                 break;
             default:
                 Console.WriteLine($"Cross-references for [{sourceType}] {sourceId} ({response.References.Count}):");
                 Console.WriteLine();
-                foreach (var x in response.References)
+                foreach (CrossReference? x in response.References)
                 {
-                    var (arrow, otherType, otherId) = GetDirection(x, sourceType, sourceId);
+                    (string? arrow, string? otherType, string? otherId) = GetDirection(x, sourceType, sourceId);
                     Console.WriteLine($"  {arrow} [{otherType}] {otherId}  ({x.LinkType})");
                     if (!string.IsNullOrEmpty(x.TargetTitle))
                         Console.WriteLine($"    Title: {x.TargetTitle}");
@@ -217,10 +217,10 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine("| Service | Status | Items | DB Size | Last Sync |");
                 Console.WriteLine("|---------|--------|-------|---------|-----------|");
-                foreach (var s in response.Services)
+                foreach (ServiceHealth? s in response.Services)
                 {
-                    var dbSize = FormatBytes(s.DbSizeBytes);
-                    var lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    string dbSize = FormatBytes(s.DbSizeBytes);
+                    string lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
                     Console.WriteLine($"| {s.Name} | {s.Status} | {s.ItemCount} | {dbSize} | {lastSync} |");
                 }
                 break;
@@ -231,11 +231,11 @@ public static class OutputFormatter
                 Console.WriteLine();
                 Console.WriteLine($"{"Service",-12} {"Status",-10} {"Items",8} {"DB Size",10} {"Last Sync",-20} {"Error",-30}");
                 Console.WriteLine($"{"─────────",-12} {"────────",-10} {"──────",8} {"────────",10} {"──────────────────",-20} {"────────────────────────────",-30}");
-                foreach (var s in response.Services)
+                foreach (ServiceHealth? s in response.Services)
                 {
-                    var dbSize = FormatBytes(s.DbSizeBytes);
-                    var lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
-                    var error = string.IsNullOrEmpty(s.LastError) ? "" : Truncate(s.LastError, 28);
+                    string dbSize = FormatBytes(s.DbSizeBytes);
+                    string lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    string error = string.IsNullOrEmpty(s.LastError) ? "" : Truncate(s.LastError, 28);
                     Console.WriteLine($"{s.Name,-12} {s.Status,-10} {s.ItemCount,8} {dbSize,10} {lastSync,-20} {error,-30}");
                 }
                 break;
@@ -251,7 +251,7 @@ public static class OutputFormatter
                 break;
             default:
                 Console.WriteLine("Sync triggered:");
-                foreach (var s in response.Statuses)
+                foreach (SourceSyncStatus? s in response.Statuses)
                 {
                     Console.WriteLine($"  {s.Source}: {s.Status}");
                     if (!string.IsNullOrEmpty(s.Message))
@@ -273,7 +273,7 @@ public static class OutputFormatter
 
     private static string Truncate(string text, int maxLength)
     {
-        var singleLine = text.ReplaceLineEndings(" ");
+        string singleLine = text.ReplaceLineEndings(" ");
         return singleLine.Length > maxLength ? singleLine[..(maxLength - 3)] + "..." : singleLine;
     }
 

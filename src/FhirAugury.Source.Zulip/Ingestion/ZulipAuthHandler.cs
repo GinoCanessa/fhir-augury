@@ -10,14 +10,14 @@ public static class ZulipAuthHandler
     /// <summary>Configures an existing HttpClient with Zulip default headers and auth.</summary>
     public static void ConfigureHttpClient(HttpClient client, ZulipServiceOptions options)
     {
-        var resolved = ResolveCredentials(options);
+        ZulipServiceOptions resolved = ResolveCredentials(options);
         client.Timeout = TimeSpan.FromMinutes(10);
         client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
         client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
 
         if (!string.IsNullOrEmpty(resolved.Email) && !string.IsNullOrEmpty(resolved.ApiKey))
         {
-            var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{resolved.Email}:{resolved.ApiKey}"));
+            string credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{resolved.Email}:{resolved.ApiKey}"));
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
         }
     }
@@ -25,7 +25,7 @@ public static class ZulipAuthHandler
     /// <summary>Resolves credentials from a .zuliprc file if CredentialFile is specified.</summary>
     internal static ZulipServiceOptions ResolveCredentials(ZulipServiceOptions options)
     {
-        var credFile = options.CredentialFile;
+        string? credFile = options.CredentialFile;
 
         // Expand ~ to home directory
         if (credFile is not null && credFile.StartsWith('~'))
@@ -38,17 +38,17 @@ public static class ZulipAuthHandler
         string? apiKey = options.ApiKey;
         string? baseUrl = null;
 
-        foreach (var line in File.ReadLines(credFile))
+        foreach (string line in File.ReadLines(credFile))
         {
-            var trimmed = line.Trim();
+            string trimmed = line.Trim();
             if (trimmed.StartsWith('[') || trimmed.StartsWith('#') || !trimmed.Contains('='))
                 continue;
 
-            var parts = trimmed.Split('=', 2);
+            string[] parts = trimmed.Split('=', 2);
             if (parts.Length != 2) continue;
 
-            var key = parts[0].Trim();
-            var value = parts[1].Trim();
+            string key = parts[0].Trim();
+            string value = parts[1].Trim();
 
             switch (key)
             {

@@ -15,9 +15,9 @@ public static class CsvParser
         if (string.IsNullOrWhiteSpace(csv))
             return null;
 
-        var items = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var result = new List<string>(items.Length);
-        foreach (var item in items)
+        string[] items = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        List<string> result = new List<string>(items.Length);
+        foreach (string item in items)
             result.Add(item.ToLowerInvariant());
         return result;
     }
@@ -28,7 +28,7 @@ public static class CsvParser
     public static void AddToRepeatedField(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
-        foreach (var item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             field.Add(item.ToLowerInvariant());
     }
 
@@ -38,7 +38,7 @@ public static class CsvParser
     public static void AddItemsToRepeatedField(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
-        foreach (var item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             field.Add(item);
     }
 }

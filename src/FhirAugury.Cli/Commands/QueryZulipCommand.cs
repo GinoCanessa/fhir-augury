@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -9,51 +10,51 @@ public static class QueryZulipCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var streamsOption = new Option<string?>("--streams")
+        Option<string?> streamsOption = new Option<string?>("--streams")
         {
             Description = "Filter by stream names (comma-separated)",
         };
-        var topicOption = new Option<string?>("--topic")
+        Option<string?> topicOption = new Option<string?>("--topic")
         {
             Description = "Filter by exact topic name",
         };
-        var topicKeywordOption = new Option<string?>("--topic-keyword")
+        Option<string?> topicKeywordOption = new Option<string?>("--topic-keyword")
         {
             Description = "Filter by topic keyword (partial match)",
         };
-        var sendersOption = new Option<string?>("--senders")
+        Option<string?> sendersOption = new Option<string?>("--senders")
         {
             Description = "Filter by sender names (comma-separated)",
         };
-        var queryOption = new Option<string?>("--query")
+        Option<string?> queryOption = new Option<string?>("--query")
         {
             Description = "Text query",
         };
-        var sortByOption = new Option<string>("--sort-by")
+        Option<string> sortByOption = new Option<string>("--sort-by")
         {
             Description = "Sort by field",
             DefaultValueFactory = _ => "timestamp",
         };
-        var sortOrderOption = new Option<string>("--sort-order")
+        Option<string> sortOrderOption = new Option<string>("--sort-order")
         {
             Description = "Sort order: asc or desc",
             DefaultValueFactory = _ => "desc",
         };
-        var limitOption = new Option<int>("--limit")
+        Option<int> limitOption = new Option<int>("--limit")
         {
             Description = "Maximum results",
             DefaultValueFactory = _ => 20,
         };
-        var afterOption = new Option<DateTimeOffset?>("--after")
+        Option<DateTimeOffset?> afterOption = new Option<DateTimeOffset?>("--after")
         {
             Description = "Only messages after this date",
         };
-        var beforeOption = new Option<DateTimeOffset?>("--before")
+        Option<DateTimeOffset?> beforeOption = new Option<DateTimeOffset?>("--before")
         {
             Description = "Only messages before this date",
         };
 
-        var command = new Command("query-zulip", "Query Zulip messages with structured filters")
+        Command command = new Command("query-zulip", "Query Zulip messages with structured filters")
         {
             streamsOption,
             topicOption,
@@ -69,15 +70,15 @@ public static class QueryZulipCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
+                string format = parseResult.GetValue(formatOption)!;
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var request = new ZulipQueryRequest
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                ZulipQueryRequest request = new ZulipQueryRequest
                 {
                     Topic = parseResult.GetValue(topicOption) ?? "",
                     TopicKeyword = parseResult.GetValue(topicKeywordOption) ?? "",
@@ -90,20 +91,20 @@ public static class QueryZulipCommand
                 AddItems(request.StreamNames, parseResult.GetValue(streamsOption));
                 AddItems(request.SenderNames, parseResult.GetValue(sendersOption));
 
-                var after = parseResult.GetValue(afterOption);
+                DateTimeOffset? after = parseResult.GetValue(afterOption);
                 if (after.HasValue)
                     request.After = Timestamp.FromDateTimeOffset(after.Value);
-                var before = parseResult.GetValue(beforeOption);
+                DateTimeOffset? before = parseResult.GetValue(beforeOption);
                 if (before.HasValue)
                     request.Before = Timestamp.FromDateTimeOffset(before.Value);
 
-                using var call = clients.Zulip.QueryMessages(request, cancellationToken: ct);
+                using AsyncServerStreamingCall<ZulipMessageSummary> call = clients.Zulip.QueryMessages(request, cancellationToken: ct);
 
                 switch (format.ToLowerInvariant())
                 {
                     case "json":
-                        var items = new List<object>();
-                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
+                        List<object> items = new List<object>();
+                        await foreach (ZulipMessageSummary? msg in call.ResponseStream.ReadAllAsync(ct))
                         {
                             items.Add(new
                             {
@@ -118,10 +119,10 @@ public static class QueryZulipCommand
                     case "md":
                         Console.WriteLine("| Stream | Topic | Sender | Snippet | Timestamp |");
                         Console.WriteLine("|--------|-------|--------|---------|-----------|");
-                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
+                        await foreach (ZulipMessageSummary? msg in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
-                            var snippet = msg.Snippet.Length > 50 ? msg.Snippet[..47] + "..." : msg.Snippet;
+                            string ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
+                            string snippet = msg.Snippet.Length > 50 ? msg.Snippet[..47] + "..." : msg.Snippet;
                             Console.WriteLine($"| {msg.StreamName} | {msg.Topic} | {msg.SenderName} | {snippet} | {ts} |");
                         }
                         break;
@@ -129,11 +130,11 @@ public static class QueryZulipCommand
                     default:
                         Console.WriteLine($"{"Stream",-20} {"Topic",-25} {"Sender",-16} {"Snippet",-40} {"Timestamp",-18}");
                         Console.WriteLine($"{"──────────────────",-20} {"───────────────────────",-25} {"──────────────",-16} {"──────────────────────────────────────",-40} {"────────────────",-18}");
-                        var count = 0;
-                        await foreach (var msg in call.ResponseStream.ReadAllAsync(ct))
+                        int count = 0;
+                        await foreach (ZulipMessageSummary? msg in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var snippet = msg.Snippet.Length > 38 ? msg.Snippet[..35] + "..." : msg.Snippet;
-                            var ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
+                            string snippet = msg.Snippet.Length > 38 ? msg.Snippet[..35] + "..." : msg.Snippet;
+                            string ts = msg.Timestamp?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "";
                             Console.WriteLine($"{msg.StreamName,-20} {msg.Topic,-25} {msg.SenderName,-16} {snippet,-40} {ts,-18}");
                             count++;
                         }
@@ -156,7 +157,7 @@ public static class QueryZulipCommand
     private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
-        foreach (var item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             field.Add(item);
     }
 }

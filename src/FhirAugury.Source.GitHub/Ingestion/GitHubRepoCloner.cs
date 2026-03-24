@@ -19,8 +19,8 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
     /// </summary>
     public async Task<string> EnsureCloneAsync(string repoFullName, CancellationToken ct = default)
     {
-        var safeName = repoFullName.Replace('/', '_');
-        var cloneDir = Path.GetFullPath(
+        string safeName = repoFullName.Replace('/', '_');
+        string cloneDir = Path.GetFullPath(
             Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
 
         if (Directory.Exists(Path.Combine(cloneDir, ".git")))
@@ -34,8 +34,8 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
             logger.LogInformation("Cloning {Repo} to {Path}", repoFullName, cloneDir);
             Directory.CreateDirectory(cloneDir);
 
-            var cloneUrl = BuildCloneUrl(repoFullName);
-            var parentDir = Path.GetDirectoryName(cloneDir)!;
+            string cloneUrl = BuildCloneUrl(repoFullName);
+            string parentDir = Path.GetDirectoryName(cloneDir)!;
             await RunGitAsync(parentDir, $"clone {cloneUrl} {GitHubCacheLayout.CloneSubDir}", ct);
         }
 
@@ -45,14 +45,14 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
     /// <summary>Gets the path where a repo's clone would be stored.</summary>
     public string GetClonePath(string repoFullName)
     {
-        var safeName = repoFullName.Replace('/', '_');
+        string safeName = repoFullName.Replace('/', '_');
         return Path.GetFullPath(
             Path.Combine(_options.CachePath, GitHubCacheLayout.ReposSubDir, safeName, GitHubCacheLayout.CloneSubDir));
     }
 
     private string BuildCloneUrl(string repoFullName)
     {
-        var token = _options.Auth.ResolveToken();
+        string? token = _options.Auth.ResolveToken();
         if (!string.IsNullOrEmpty(token))
             return $"https://x-access-token:{token}@github.com/{repoFullName}.git";
 
@@ -61,7 +61,7 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
 
     private async Task RunGitAsync(string workingDir, string arguments, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
+        ProcessStartInfo psi = new ProcessStartInfo
         {
             FileName = "git",
             Arguments = arguments,
@@ -72,10 +72,10 @@ public class GitHubRepoCloner(IOptions<GitHubServiceOptions> optionsAccessor, IL
             CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi)
+        using Process process = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start git process.");
-        var stdout = await process.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await process.StandardError.ReadToEndAsync(ct);
+        string stdout = await process.StandardOutput.ReadToEndAsync(ct);
+        string stderr = await process.StandardError.ReadToEndAsync(ct);
         await process.WaitForExitAsync(ct);
 
         if (process.ExitCode != 0)

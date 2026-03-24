@@ -7,14 +7,14 @@ public class TextSanitizerTests
     [Fact]
     public void StripHtml_RemovesTags()
     {
-        var result = TextSanitizer.StripHtml("<p>Hello <b>World</b></p>");
+        string result = TextSanitizer.StripHtml("<p>Hello <b>World</b></p>");
         Assert.Equal("Hello World", result);
     }
 
     [Fact]
     public void StripHtml_DecodesEntities()
     {
-        var result = TextSanitizer.StripHtml("&amp; &lt; &gt;");
+        string result = TextSanitizer.StripHtml("&amp; &lt; &gt;");
         Assert.Equal("& < >", result);
     }
 
@@ -27,7 +27,7 @@ public class TextSanitizerTests
     [Fact]
     public void StripMarkdown_RemovesHeaders()
     {
-        var result = TextSanitizer.StripMarkdown("# Title\nContent");
+        string result = TextSanitizer.StripMarkdown("# Title\nContent");
         Assert.Contains("Title", result);
         Assert.Contains("Content", result);
     }
@@ -35,7 +35,7 @@ public class TextSanitizerTests
     [Fact]
     public void StripMarkdown_RemovesLinks()
     {
-        var result = TextSanitizer.StripMarkdown("[text](http://example.com)");
+        string result = TextSanitizer.StripMarkdown("[text](http://example.com)");
         Assert.Contains("text", result);
         Assert.DoesNotContain("http://example.com", result);
     }

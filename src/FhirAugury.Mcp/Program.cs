@@ -5,24 +5,24 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 
-var orchestratorAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ORCHESTRATOR") ?? "http://localhost:5151";
-var jiraAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_JIRA_GRPC") ?? "http://localhost:5161";
-var zulipAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ZULIP_GRPC") ?? "http://localhost:5171";
-var confluenceAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_CONFLUENCE_GRPC") ?? "http://localhost:5181";
-var githubAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_GITHUB_GRPC") ?? "http://localhost:5191";
+string orchestratorAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ORCHESTRATOR") ?? "http://localhost:5151";
+string jiraAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_JIRA_GRPC") ?? "http://localhost:5161";
+string zulipAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_ZULIP_GRPC") ?? "http://localhost:5171";
+string confluenceAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_CONFLUENCE_GRPC") ?? "http://localhost:5181";
+string githubAddr = Environment.GetEnvironmentVariable("FHIR_AUGURY_GITHUB_GRPC") ?? "http://localhost:5191";
 
-var builder = Host.CreateApplicationBuilder(args);
+HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 
 // Logging must go to stderr (stdout is the MCP stdio transport)
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
 // Register gRPC channels as singletons so they are disposed on shutdown
-var orchestratorChannel = GrpcChannel.ForAddress(orchestratorAddr);
-var jiraChannel = GrpcChannel.ForAddress(jiraAddr);
-var zulipChannel = GrpcChannel.ForAddress(zulipAddr);
-var confluenceChannel = GrpcChannel.ForAddress(confluenceAddr);
-var githubChannel = GrpcChannel.ForAddress(githubAddr);
+GrpcChannel orchestratorChannel = GrpcChannel.ForAddress(orchestratorAddr);
+GrpcChannel jiraChannel = GrpcChannel.ForAddress(jiraAddr);
+GrpcChannel zulipChannel = GrpcChannel.ForAddress(zulipAddr);
+GrpcChannel confluenceChannel = GrpcChannel.ForAddress(confluenceAddr);
+GrpcChannel githubChannel = GrpcChannel.ForAddress(githubAddr);
 
 builder.Services.AddSingleton(orchestratorChannel);
 builder.Services.AddSingleton(jiraChannel);
@@ -47,5 +47,5 @@ builder.Services
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
 
-var app = builder.Build();
+IHost app = builder.Build();
 await app.RunAsync();

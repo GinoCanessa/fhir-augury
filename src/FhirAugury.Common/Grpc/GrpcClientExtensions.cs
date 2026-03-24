@@ -18,13 +18,13 @@ public static class GrpcClientExtensions
         IConfiguration config)
         where TClient : class
     {
-        var address = config[$"Services:{sourceName}:GrpcAddress"]
+        string address = config[$"Services:{sourceName}:GrpcAddress"]
             ?? throw new InvalidOperationException($"Missing gRPC address for source '{sourceName}' in configuration.");
 
         services.AddSingleton(sp =>
         {
-            var channel = GrpcChannel.ForAddress(address);
-            var client = Activator.CreateInstance(typeof(TClient), channel) as TClient
+            GrpcChannel channel = GrpcChannel.ForAddress(address);
+            TClient client = Activator.CreateInstance(typeof(TClient), channel) as TClient
                 ?? throw new InvalidOperationException(
                     $"Failed to create gRPC client '{typeof(TClient).Name}'. " +
                     "Ensure it has a public constructor accepting GrpcChannel.");

@@ -1,5 +1,6 @@
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
+using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Orchestrator.Search;
 
@@ -16,22 +17,22 @@ public class CrossRefBooster(OrchestratorDatabase database)
     /// </summary>
     public List<ScoredItem> Boost(IEnumerable<ScoredItem> items, double boostFactor)
     {
-        var itemList = items.ToList();
+        List<ScoredItem> itemList = items.ToList();
         if (itemList.Count == 0) return itemList;
 
-        using var connection = database.OpenConnection();
-        var results = new List<ScoredItem>(itemList.Count);
+        using SqliteConnection connection = database.OpenConnection();
+        List<ScoredItem> results = new List<ScoredItem>(itemList.Count);
 
         // Batch: query all xref counts for all items using the single connection
-        foreach (var item in itemList)
+        foreach (ScoredItem? item in itemList)
         {
-            var outgoing = CrossRefLinkRecord.SelectList(connection,
+            List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
                 SourceType: item.Source, SourceId: item.Id);
-            var incoming = CrossRefLinkRecord.SelectList(connection,
+            List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
                 TargetType: item.Source, TargetId: item.Id);
-            var xrefCount = outgoing.Count + incoming.Count;
+            int xrefCount = outgoing.Count + incoming.Count;
 
-            var boosted = item.Score * (1.0 + boostFactor * Math.Log(1.0 + xrefCount));
+            double boosted = item.Score * (1.0 + boostFactor * Math.Log(1.0 + xrefCount));
             results.Add(item with { Score = boosted });
         }
 

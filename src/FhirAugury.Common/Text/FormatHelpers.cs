@@ -19,10 +19,10 @@ public static class FormatHelpers
     /// <summary>Formats a camelCase or snake_case key into a human-readable label.</summary>
     public static string FormatKey(string key)
     {
-        var sb = new StringBuilder(key.Length + 4);
-        for (var i = 0; i < key.Length; i++)
+        StringBuilder sb = new StringBuilder(key.Length + 4);
+        for (int i = 0; i < key.Length; i++)
         {
-            var c = key[i];
+            char c = key[i];
             if (c == '_')
             {
                 sb.Append(' ');

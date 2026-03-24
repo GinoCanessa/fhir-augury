@@ -39,7 +39,7 @@ public static partial class Tokenizer
             return [];
         }
 
-        var tokens = new List<string>();
+        List<string> tokens = new List<string>();
 
         // Extract FHIR operations first (before stripping)
         foreach (Match match in FhirOperationRegex().Matches(text))
@@ -51,21 +51,21 @@ public static partial class Tokenizer
         // Extract FHIR paths (e.g., Patient.name.given)
         foreach (Match match in FhirPathRegex().Matches(text))
         {
-            var path = match.ValueSpan;
+            ReadOnlySpan<char> path = match.ValueSpan;
             tokens.Add(string.Create(path.Length, match, static (span, m) =>
                 m.ValueSpan.ToLowerInvariant(span)));
 
             // Also add individual components using span-based splitting
-            foreach (var segment in path.Split('.'))
+            foreach (Range segment in path.Split('.'))
             {
-                var component = path[segment];
+                ReadOnlySpan<char> component = path[segment];
                 tokens.Add(string.Create(component.Length, component.ToString(), static (span, s) =>
                     s.AsSpan().ToLowerInvariant(span)));
             }
         }
 
         // Strip noise: URLs, emails, code blocks
-        var cleaned = TextPatterns.CodeBlockRegex().Replace(text, " ");
+        string cleaned = TextPatterns.CodeBlockRegex().Replace(text, " ");
         cleaned = UrlRegex().Replace(cleaned, " ");
         cleaned = EmailRegex().Replace(cleaned, " ");
 

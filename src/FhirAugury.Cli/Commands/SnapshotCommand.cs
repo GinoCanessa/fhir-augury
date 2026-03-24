@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using Grpc.Core;
 
@@ -8,21 +9,21 @@ public static class SnapshotCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<bool> verboseOption)
     {
-        var sourceArg = new Argument<string>("source")
+        Argument<string> sourceArg = new Argument<string>("source")
         {
             Description = "Source type (jira, zulip, confluence, github)",
         };
-        var idArg = new Argument<string>("id")
+        Argument<string> idArg = new Argument<string>("id")
         {
             Description = "Item identifier",
         };
-        var includeCommentsOption = new Option<bool>("--comments")
+        Option<bool> includeCommentsOption = new Option<bool>("--comments")
         {
             Description = "Include comments",
             DefaultValueFactory = _ => true,
         };
 
-        var command = new Command("snapshot", "Get a rich markdown snapshot of an item")
+        Command command = new Command("snapshot", "Get a rich markdown snapshot of an item")
         {
             sourceArg,
             idArg,
@@ -31,18 +32,18 @@ public static class SnapshotCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var source = parseResult.GetValue(sourceArg)!;
-                var id = parseResult.GetValue(idArg)!;
-                var includeComments = parseResult.GetValue(includeCommentsOption);
+                string source = parseResult.GetValue(sourceArg)!;
+                string id = parseResult.GetValue(idArg)!;
+                bool includeComments = parseResult.GetValue(includeCommentsOption);
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var headers = new Metadata { { "x-source", source } };
-                var response = await clients.Orchestrator.GetSnapshotAsync(
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                Metadata headers = new Metadata { { "x-source", source } };
+                SnapshotResponse response = await clients.Orchestrator.GetSnapshotAsync(
                     new GetSnapshotRequest { Id = id, IncludeComments = includeComments, IncludeInternalRefs = true, SourceName = source },
                     headers: headers,
                     cancellationToken: ct);

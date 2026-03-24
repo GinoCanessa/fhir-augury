@@ -50,7 +50,7 @@ public class JiraDatabase : SourceDatabase
     public void RebuildFtsIndexes(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
         RebuildFts5(connection, "jira_issues_fts");
         RebuildFts5(connection, "jira_comments_fts");
     }
@@ -59,9 +59,9 @@ public class JiraDatabase : SourceDatabase
     public void ResetDatabase(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
 
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = """
             DROP TABLE IF EXISTS jira_issues_fts;
             DROP TABLE IF EXISTS jira_comments_fts;

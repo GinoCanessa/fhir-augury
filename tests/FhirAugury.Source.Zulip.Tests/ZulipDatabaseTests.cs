@@ -1,5 +1,6 @@
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Source.Zulip.Tests;
@@ -25,8 +26,8 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesAllTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("zulip_streams", tables);
         Assert.Contains("zulip_messages", tables);
@@ -37,8 +38,8 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesFtsVirtualTable()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("zulip_messages_fts", tables);
     }
@@ -46,8 +47,8 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Stream_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var stream = new ZulipStreamRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        ZulipStreamRecord stream = new ZulipStreamRecord
         {
             Id = ZulipStreamRecord.GetIndex(),
             ZulipStreamId = 42,
@@ -59,7 +60,7 @@ public class ZulipDatabaseTests : IDisposable
         };
 
         ZulipStreamRecord.Insert(conn, stream);
-        var result = ZulipStreamRecord.SelectSingle(conn, ZulipStreamId: 42);
+        ZulipStreamRecord? result = ZulipStreamRecord.SelectSingle(conn, ZulipStreamId: 42);
 
         Assert.NotNull(result);
         Assert.Equal("implementers", result.Name);
@@ -69,14 +70,14 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Message_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var stream = CreateSampleStream(42, "general");
+        using SqliteConnection conn = _db.OpenConnection();
+        ZulipStreamRecord stream = CreateSampleStream(42, "general");
         ZulipStreamRecord.Insert(conn, stream);
 
-        var msg = CreateSampleMessage(stream.Id, 1001, "general", "R5 ballot", "Alice");
+        ZulipMessageRecord msg = CreateSampleMessage(stream.Id, 1001, "general", "R5 ballot", "Alice");
         ZulipMessageRecord.Insert(conn, msg);
 
-        var result = ZulipMessageRecord.SelectSingle(conn, ZulipMessageId: 1001);
+        ZulipMessageRecord? result = ZulipMessageRecord.SelectSingle(conn, ZulipMessageId: 1001);
 
         Assert.NotNull(result);
         Assert.Equal("general", result.StreamName);
@@ -87,9 +88,9 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void SelectList_ByStreamName_FiltersCorrectly()
     {
-        using var conn = _db.OpenConnection();
-        var s1 = CreateSampleStream(1, "general");
-        var s2 = CreateSampleStream(2, "committers");
+        using SqliteConnection conn = _db.OpenConnection();
+        ZulipStreamRecord s1 = CreateSampleStream(1, "general");
+        ZulipStreamRecord s2 = CreateSampleStream(2, "committers");
         ZulipStreamRecord.Insert(conn, s1);
         ZulipStreamRecord.Insert(conn, s2);
 
@@ -97,7 +98,7 @@ public class ZulipDatabaseTests : IDisposable
         ZulipMessageRecord.Insert(conn, CreateSampleMessage(s2.Id, 102, "committers", "topic2", "Bob"));
         ZulipMessageRecord.Insert(conn, CreateSampleMessage(s1.Id, 103, "general", "topic3", "Charlie"));
 
-        var general = ZulipMessageRecord.SelectList(conn, StreamName: "general");
+        List<ZulipMessageRecord> general = ZulipMessageRecord.SelectList(conn, StreamName: "general");
 
         Assert.Equal(2, general.Count);
         Assert.All(general, m => Assert.Equal("general", m.StreamName));
@@ -106,18 +107,18 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void Fts5_IndexesMessagesOnInsert()
     {
-        using var conn = _db.OpenConnection();
-        var stream = CreateSampleStream(1, "general");
+        using SqliteConnection conn = _db.OpenConnection();
+        ZulipStreamRecord stream = CreateSampleStream(1, "general");
         ZulipStreamRecord.Insert(conn, stream);
 
         ZulipMessageRecord.Insert(conn, CreateSampleMessage(stream.Id, 201, "general", "topic", "Alice", "Patient resource is broken"));
         ZulipMessageRecord.Insert(conn, CreateSampleMessage(stream.Id, 202, "general", "topic", "Bob", "Observation code system update"));
 
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT ZulipMessageId FROM zulip_messages WHERE Id IN (SELECT rowid FROM zulip_messages_fts WHERE zulip_messages_fts MATCH '\"Patient\"')";
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
-        var ids = new List<int>();
+        List<int> ids = new List<int>();
         while (reader.Read()) ids.Add(reader.GetInt32(0));
 
         Assert.Single(ids);
@@ -127,7 +128,7 @@ public class ZulipDatabaseTests : IDisposable
     [Fact]
     public void CheckIntegrity_ReturnsOk()
     {
-        var result = _db.CheckIntegrity();
+        string result = _db.CheckIntegrity();
         Assert.Equal("ok", result);
     }
 
@@ -163,10 +164,10 @@ public class ZulipDatabaseTests : IDisposable
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
     {
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') ORDER BY name";
-        using var reader = cmd.ExecuteReader();
-        var names = new List<string>();
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        List<string> names = new List<string>();
         while (reader.Read()) names.Add(reader.GetString(0));
         return names;
     }

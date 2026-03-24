@@ -16,7 +16,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
@@ -27,7 +27,7 @@ builder.Services.Configure<OrchestratorOptions>(
     builder.Configuration.GetSection(OrchestratorOptions.SectionName));
 
 // Resolve options early for Kestrel configuration
-var orchestratorOptions = new OrchestratorOptions();
+OrchestratorOptions orchestratorOptions = new OrchestratorOptions();
 builder.Configuration.GetSection(OrchestratorOptions.SectionName).Bind(orchestratorOptions);
 
 // ── Kestrel ports ────────────────────────────────────────────────
@@ -43,8 +43,8 @@ builder.Services.AddGrpc();
 // Database
 builder.Services.AddSingleton<OrchestratorDatabase>(sp =>
 {
-    var opts = sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value;
-    var dbPath = Path.GetFullPath(opts.DatabasePath);
+    OrchestratorOptions opts = sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value;
+    string dbPath = Path.GetFullPath(opts.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     return new OrchestratorDatabase(dbPath, sp.GetRequiredService<ILogger<OrchestratorDatabase>>());
 });
@@ -76,7 +76,7 @@ builder.Services.AddSingleton<XRefScanWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<XRefScanWorker>());
 builder.Services.AddHostedService<HealthCheckWorker>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "orchestrator", version = "2.0.0" }));

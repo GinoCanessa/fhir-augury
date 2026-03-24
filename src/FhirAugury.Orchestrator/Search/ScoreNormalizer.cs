@@ -13,21 +13,21 @@ public static class ScoreNormalizer
     /// </summary>
     public static List<ScoredItem> Normalize(IEnumerable<ScoredItem> items)
     {
-        var groups = items.GroupBy(i => i.Source);
-        var results = new List<ScoredItem>();
+        IEnumerable<IGrouping<string, ScoredItem>> groups = items.GroupBy(i => i.Source);
+        List<ScoredItem> results = new List<ScoredItem>();
 
-        foreach (var group in groups)
+        foreach (IGrouping<string, ScoredItem> group in groups)
         {
-            var list = group.ToList();
+            List<ScoredItem> list = group.ToList();
             if (list.Count == 0) continue;
 
-            var min = list.Min(i => i.Score);
-            var max = list.Max(i => i.Score);
-            var range = max - min;
+            double min = list.Min(i => i.Score);
+            double max = list.Max(i => i.Score);
+            double range = max - min;
 
-            foreach (var item in list)
+            foreach (ScoredItem? item in list)
             {
-                var normalized = range > 0 ? (item.Score - min) / range : 1.0;
+                double normalized = range > 0 ? (item.Score - min) / range : 1.0;
                 results.Add(item with { Score = normalized });
             }
         }

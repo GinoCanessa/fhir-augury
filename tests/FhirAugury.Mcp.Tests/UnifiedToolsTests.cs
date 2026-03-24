@@ -11,22 +11,22 @@ public class UnifiedToolsTests
     [Fact]
     public async Task Search_ReturnsFormattedResults()
     {
-        var mockResponse = McpTestHelper.CreateSearchResponse(
+        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
             ("jira", "FHIR-123", "Test Issue", 0.95),
             ("zulip", "general:topic1", "Test Topic", 0.85));
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.UnifiedSearchAsync(Arg.Any<UnifiedSearchRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.Search(client, "test query");
+        string result = await UnifiedTools.Search(client, "test query");
 
         Assert.Contains("Search Results", result);
         Assert.Contains("FHIR-123", result);
@@ -37,20 +37,20 @@ public class UnifiedToolsTests
     [Fact]
     public async Task Search_WithNoResults_ReturnsMessage()
     {
-        var emptyResponse = new SearchResponse { TotalResults = 0 };
+        SearchResponse emptyResponse = new SearchResponse { TotalResults = 0 };
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(emptyResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.UnifiedSearchAsync(Arg.Any<UnifiedSearchRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.Search(client, "nonexistent");
+        string result = await UnifiedTools.Search(client, "nonexistent");
 
         Assert.Contains("No results found", result);
     }
@@ -58,21 +58,21 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetCrossReferences_ReturnsFormattedRefs()
     {
-        var mockResponse = McpTestHelper.CreateXRefResponse(
+        GetXRefResponse mockResponse = McpTestHelper.CreateXRefResponse(
             ("jira", "FHIR-100", "zulip", "stream:topic", "mentions"));
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<GetXRefResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-100");
+        string result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-100");
 
         Assert.Contains("Cross-References", result);
         Assert.Contains("FHIR-100", result);
@@ -82,20 +82,20 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetCrossReferences_NoRefs_ReturnsMessage()
     {
-        var emptyResponse = new GetXRefResponse();
+        GetXRefResponse emptyResponse = new GetXRefResponse();
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<GetXRefResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(emptyResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-999");
+        string result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-999");
 
         Assert.Contains("No cross-references found", result);
     }
@@ -103,20 +103,20 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetStats_ReturnsFormattedStatus()
     {
-        var mockResponse = McpTestHelper.CreateServicesStatus();
+        ServicesStatusResponse mockResponse = McpTestHelper.CreateServicesStatus();
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<ServicesStatusResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.GetServicesStatusAsync(Arg.Any<ServicesStatusRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.GetStats(client);
+        string result = await UnifiedTools.GetStats(client);
 
         Assert.Contains("Services Status", result);
         Assert.Contains("jira", result);
@@ -127,21 +127,21 @@ public class UnifiedToolsTests
     [Fact]
     public async Task TriggerSync_ReturnsFormattedStatus()
     {
-        var mockResponse = new TriggerSyncResponse();
+        TriggerSyncResponse mockResponse = new TriggerSyncResponse();
         mockResponse.Statuses.Add(new SourceSyncStatus { Source = "jira", Status = "started", Message = "Incremental sync started" });
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<TriggerSyncResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.TriggerSyncAsync(Arg.Any<TriggerSyncRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.TriggerSync(client);
+        string result = await UnifiedTools.TriggerSync(client);
 
         Assert.Contains("Sync Triggered", result);
         Assert.Contains("jira", result);
@@ -151,22 +151,22 @@ public class UnifiedToolsTests
     [Fact]
     public async Task FindRelated_ReturnsFormattedRelated()
     {
-        var mockResponse = McpTestHelper.CreateRelatedResponse(
+        FindRelatedResponse mockResponse = McpTestHelper.CreateRelatedResponse(
             "jira", "FHIR-100", "Test Jira Issue",
             ("zulip", "stream:topic", "Related Thread", 8.5, "explicit_xref"));
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<FindRelatedResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.FindRelatedAsync(Arg.Any<FindRelatedRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await UnifiedTools.FindRelated(client, "jira", "FHIR-100");
+        string result = await UnifiedTools.FindRelated(client, "jira", "FHIR-100");
 
         Assert.Contains("Related Items", result);
         Assert.Contains("FHIR-100", result);

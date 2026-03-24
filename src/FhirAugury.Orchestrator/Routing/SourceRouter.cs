@@ -1,5 +1,6 @@
 using Fhiraugury;
 using FhirAugury.Orchestrator.Configuration;
+using Grpc.Net.Client;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,14 +24,14 @@ public class SourceRouter : IDisposable
         _options = options.Value;
         _logger = logger;
 
-        foreach (var (name, config) in _options.Services)
+        foreach ((string? name, SourceServiceConfig? config) in _options.Services)
         {
             if (!config.Enabled || string.IsNullOrEmpty(config.GrpcAddress))
                 continue;
 
             try
             {
-                var channel = Grpc.Net.Client.GrpcChannel.ForAddress(config.GrpcAddress);
+                GrpcChannel channel = Grpc.Net.Client.GrpcChannel.ForAddress(config.GrpcAddress);
                 _channels[name] = channel;
                 _sourceClients[name] = new SourceService.SourceServiceClient(channel);
 
@@ -79,7 +80,7 @@ public class SourceRouter : IDisposable
 
     public void Dispose()
     {
-        foreach (var channel in _channels.Values)
+        foreach (GrpcChannel channel in _channels.Values)
         {
             channel.Dispose();
         }

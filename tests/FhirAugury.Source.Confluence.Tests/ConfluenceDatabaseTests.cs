@@ -1,5 +1,6 @@
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Source.Confluence.Tests;
@@ -25,8 +26,8 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesAllTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("confluence_spaces", tables);
         Assert.Contains("confluence_pages", tables);
@@ -39,8 +40,8 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesFtsVirtualTable()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("confluence_pages_fts", tables);
     }
@@ -48,8 +49,8 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Space_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var space = new ConfluenceSpaceRecord
+        using SqliteConnection conn = _db.OpenConnection();
+        ConfluenceSpaceRecord space = new ConfluenceSpaceRecord
         {
             Id = ConfluenceSpaceRecord.GetIndex(),
             Key = "FHIR",
@@ -60,7 +61,7 @@ public class ConfluenceDatabaseTests : IDisposable
         };
 
         ConfluenceSpaceRecord.Insert(conn, space);
-        var result = ConfluenceSpaceRecord.SelectSingle(conn, Key: "FHIR");
+        ConfluenceSpaceRecord? result = ConfluenceSpaceRecord.SelectSingle(conn, Key: "FHIR");
 
         Assert.NotNull(result);
         Assert.Equal("FHIR Specification", result.Name);
@@ -69,11 +70,11 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_Page_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var page = CreateSamplePage("12345", "FHIR", "Patient Resource Overview");
+        using SqliteConnection conn = _db.OpenConnection();
+        ConfluencePageRecord page = CreateSamplePage("12345", "FHIR", "Patient Resource Overview");
 
         ConfluencePageRecord.Insert(conn, page);
-        var result = ConfluencePageRecord.SelectSingle(conn, ConfluenceId: "12345");
+        ConfluencePageRecord? result = ConfluencePageRecord.SelectSingle(conn, ConfluenceId: "12345");
 
         Assert.NotNull(result);
         Assert.Equal("Patient Resource Overview", result.Title);
@@ -83,11 +84,11 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_PageLink_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         ConfluencePageRecord.Insert(conn, CreateSamplePage("100", "FHIR", "Source Page"));
         ConfluencePageRecord.Insert(conn, CreateSamplePage("200", "FHIR", "Target Page"));
 
-        var link = new ConfluencePageLinkRecord
+        ConfluencePageLinkRecord link = new ConfluencePageLinkRecord
         {
             Id = ConfluencePageLinkRecord.GetIndex(),
             SourcePageId = "100",
@@ -96,7 +97,7 @@ public class ConfluenceDatabaseTests : IDisposable
         };
         ConfluencePageLinkRecord.Insert(conn, link);
 
-        var links = ConfluencePageLinkRecord.SelectList(conn, SourcePageId: "100");
+        List<ConfluencePageLinkRecord> links = ConfluencePageLinkRecord.SelectList(conn, SourcePageId: "100");
         Assert.Single(links);
         Assert.Equal("200", links[0].TargetPageId);
     }
@@ -104,15 +105,15 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void Fts5_IndexesPagesOnInsert()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         ConfluencePageRecord.Insert(conn, CreateSamplePage("301", "FHIR", "Patient Resource Overview", "Patient resource details and usage"));
         ConfluencePageRecord.Insert(conn, CreateSamplePage("302", "FHIR", "Observation Codes", "Code systems for observations"));
 
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT ConfluenceId FROM confluence_pages WHERE Id IN (SELECT rowid FROM confluence_pages_fts WHERE confluence_pages_fts MATCH '\"Patient\"')";
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
-        var ids = new List<string>();
+        List<string> ids = new List<string>();
         while (reader.Read()) ids.Add(reader.GetString(0));
 
         Assert.Single(ids);
@@ -122,7 +123,7 @@ public class ConfluenceDatabaseTests : IDisposable
     [Fact]
     public void CheckIntegrity_ReturnsOk()
     {
-        var result = _db.CheckIntegrity();
+        string result = _db.CheckIntegrity();
         Assert.Equal("ok", result);
     }
 
@@ -146,10 +147,10 @@ public class ConfluenceDatabaseTests : IDisposable
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
     {
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') ORDER BY name";
-        using var reader = cmd.ExecuteReader();
-        var names = new List<string>();
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        List<string> names = new List<string>();
         while (reader.Read()) names.Add(reader.GetString(0));
         return names;
     }

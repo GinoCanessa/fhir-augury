@@ -3,6 +3,8 @@ using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
+using Grpc.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Orchestrator.CrossRef;
@@ -22,29 +24,29 @@ public class StructuralLinker(
     /// </summary>
     public async Task<int> LinkSpecArtifactsAsync(CancellationToken ct)
     {
-        var jiraClient = router.GetJiraClient();
+        JiraService.JiraServiceClient? jiraClient = router.GetJiraClient();
         if (jiraClient is null)
         {
             logger.LogWarning("Jira service not available for structural linking");
             return 0;
         }
 
-        var newLinks = 0;
-        using var connection = database.OpenConnection();
+        int newLinks = 0;
+        using SqliteConnection connection = database.OpenConnection();
 
-        var request = new JiraListSpecArtifactsRequest();
-        using var stream = jiraClient.ListSpecArtifacts(request, cancellationToken: ct);
+        JiraListSpecArtifactsRequest request = new JiraListSpecArtifactsRequest();
+        using AsyncServerStreamingCall<SpecArtifactEntry> stream = jiraClient.ListSpecArtifacts(request, cancellationToken: ct);
 
         while (await stream.ResponseStream.MoveNext(ct))
         {
-            var artifact = stream.ResponseStream.Current;
+            SpecArtifactEntry artifact = stream.ResponseStream.Current;
 
             if (!string.IsNullOrEmpty(artifact.GitUrl))
             {
                 // Link spec → GitHub repo
-                var existingLinks = CrossRefLinkRecord.SelectList(connection,
+                List<CrossRefLinkRecord> existingLinks = CrossRefLinkRecord.SelectList(connection,
                     SourceType: "jira", SourceId: artifact.SpecKey);
-                var exists = existingLinks.Any(l =>
+                bool exists = existingLinks.Any(l =>
                     l.TargetType == "github" && l.TargetId == artifact.GitUrl && l.LinkType == "spec_artifact");
 
                 if (!exists)

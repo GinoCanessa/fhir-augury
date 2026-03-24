@@ -27,7 +27,7 @@ public class FileSystemResponseCache : IResponseCache
 
     public bool TryGet(string source, string key, [NotNullWhen(true)] out Stream? content)
     {
-        var path = ResolvePath(source, key);
+        string path = ResolvePath(source, key);
 
         // Retry to handle races with concurrent PutAsync (temp+move)
         for (int attempt = 0; attempt < 3; attempt++)
@@ -61,7 +61,7 @@ public class FileSystemResponseCache : IResponseCache
 
     public async Task PutAsync(string source, string key, Stream content, CancellationToken ct)
     {
-        var finalPath = ResolvePath(source, key);
+        string finalPath = ResolvePath(source, key);
         await AtomicFileWriter.WriteAsync(
             finalPath,
             async fs => await content.CopyToAsync(fs, ct),
@@ -71,30 +71,30 @@ public class FileSystemResponseCache : IResponseCache
 
     public void Remove(string source, string key)
     {
-        var path = ResolvePath(source, key);
+        string path = ResolvePath(source, key);
         if (File.Exists(path))
             File.Delete(path);
     }
 
     public IEnumerable<string> EnumerateKeys(string source)
     {
-        var sourceDir = ResolveSourcePath(source);
+        string sourceDir = ResolveSourcePath(source);
         return EnumerateKeysInternal(sourceDir, source);
     }
 
     public IEnumerable<string> EnumerateKeys(string source, string subPath)
     {
-        var sourceDir = ResolveSourcePath(source);
+        string sourceDir = ResolveSourcePath(source);
         return EnumerateKeysInternal(Path.Combine(sourceDir, subPath), source);
     }
 
     public void Clear(string source)
     {
-        var sourceDir = ResolveSourcePath(source);
+        string sourceDir = ResolveSourcePath(source);
         if (Directory.Exists(sourceDir))
             Directory.Delete(sourceDir, recursive: true);
 
-        var metaFile = Path.Combine(_rootPath, $"_meta_{source}.json");
+        string metaFile = Path.Combine(_rootPath, $"_meta_{source}.json");
         if (File.Exists(metaFile))
             File.Delete(metaFile);
     }
@@ -104,7 +104,7 @@ public class FileSystemResponseCache : IResponseCache
         if (!Directory.Exists(_rootPath))
             return;
 
-        foreach (var entry in Directory.EnumerateFileSystemEntries(_rootPath))
+        foreach (string entry in Directory.EnumerateFileSystemEntries(_rootPath))
         {
             if (File.Exists(entry))
                 File.Delete(entry);
@@ -115,25 +115,25 @@ public class FileSystemResponseCache : IResponseCache
 
     public CacheStats GetStats(string source)
     {
-        var sourceDir = Path.Combine(_rootPath, source);
+        string sourceDir = Path.Combine(_rootPath, source);
         if (!Directory.Exists(sourceDir))
             return new CacheStats(source, 0, 0, []);
 
         int fileCount = 0;
         long totalBytes = 0;
-        var subPaths = new HashSet<string>();
+        HashSet<string> subPaths = new HashSet<string>();
 
-        foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
+        foreach (string file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
         {
-            var info = new FileInfo(file);
+            FileInfo info = new FileInfo(file);
             fileCount++;
             totalBytes += info.Length;
 
-            var relative = Path.GetRelativePath(sourceDir, file);
-            var dirPart = Path.GetDirectoryName(relative);
+            string relative = Path.GetRelativePath(sourceDir, file);
+            string? dirPart = Path.GetDirectoryName(relative);
             if (!string.IsNullOrEmpty(dirPart))
             {
-                var topLevel = dirPart.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
+                string topLevel = dirPart.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
                 subPaths.Add(topLevel);
             }
         }
@@ -144,7 +144,7 @@ public class FileSystemResponseCache : IResponseCache
     public Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        return Task.FromResult(TryGet(source, key, out var content) ? content : (Stream?)null);
+        return Task.FromResult(TryGet(source, key, out Stream? content) ? content : (Stream?)null);
     }
 
     public Task RemoveAsync(string source, string key, CancellationToken ct = default)
@@ -173,20 +173,20 @@ public class FileSystemResponseCache : IResponseCache
         if (!Directory.Exists(directory))
             return [];
 
-        var sourceRoot = Path.Combine(_rootPath, source);
-        var allFiles = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+        string sourceRoot = Path.Combine(_rootPath, source);
+        List<string> allFiles = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
             .Where(f => !IsMetadataFile(Path.GetFileName(f)))
             .ToList();
 
-        var batchFiles = new List<CacheFileNaming.ParsedBatchFile>();
-        var nonBatchKeys = new List<string>();
+        List<CacheFileNaming.ParsedBatchFile> batchFiles = new List<CacheFileNaming.ParsedBatchFile>();
+        List<string> nonBatchKeys = new List<string>();
 
-        foreach (var file in allFiles)
+        foreach (string? file in allFiles)
         {
-            var key = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
-            var fileName = Path.GetFileName(file);
+            string key = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
+            string fileName = Path.GetFileName(file);
 
-            if (CacheFileNaming.TryParse(fileName, out var parsed))
+            if (CacheFileNaming.TryParse(fileName, out CacheFileNaming.ParsedBatchFile? parsed))
             {
                 batchFiles.Add(parsed with { FileName = key });
             }
@@ -196,7 +196,7 @@ public class FileSystemResponseCache : IResponseCache
             }
         }
 
-        var sortedBatch = CacheFileNaming.SortForIngestion(batchFiles).Select(f => f.FileName);
+        IEnumerable<string> sortedBatch = CacheFileNaming.SortForIngestion(batchFiles).Select(f => f.FileName);
         nonBatchKeys.Sort(StringComparer.OrdinalIgnoreCase);
 
         return sortedBatch.Concat(nonBatchKeys);
@@ -211,16 +211,16 @@ public class FileSystemResponseCache : IResponseCache
 
     private string ResolveSourcePath(string source)
     {
-        var combined = Path.Combine(_rootPath, source);
-        var resolved = Path.GetFullPath(combined);
+        string combined = Path.Combine(_rootPath, source);
+        string resolved = Path.GetFullPath(combined);
         EnsureWithinRoot(resolved, nameof(source));
         return resolved;
     }
 
     private string ResolvePath(string source, string key)
     {
-        var combined = Path.Combine(_rootPath, source, key.Replace('/', Path.DirectorySeparatorChar));
-        var resolved = Path.GetFullPath(combined);
+        string combined = Path.Combine(_rootPath, source, key.Replace('/', Path.DirectorySeparatorChar));
+        string resolved = Path.GetFullPath(combined);
         EnsureWithinRoot(resolved, nameof(key));
         return resolved;
     }

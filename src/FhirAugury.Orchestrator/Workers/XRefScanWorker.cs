@@ -29,7 +29,7 @@ public class XRefScanWorker(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var interval = TimeSpan.FromMinutes(options.Value.CrossRef.ScanIntervalMinutes);
+        TimeSpan interval = TimeSpan.FromMinutes(options.Value.CrossRef.ScanIntervalMinutes);
         if (interval <= TimeSpan.Zero)
         {
             logger.LogWarning("Cross-reference scanning disabled (interval <= 0)");
@@ -49,13 +49,13 @@ public class XRefScanWorker(
                 {
                     try
                     {
-                        var fullRescan = _scanRequested;
+                        bool fullRescan = _scanRequested;
                         _scanRequested = false;
 
                         logger.LogInformation("Starting cross-reference scan (fullRescan={FullRescan})", fullRescan);
 
-                        var textLinks = await linker.ScanAllSourcesAsync(fullRescan, stoppingToken);
-                        var structLinks = await structuralLinker.LinkSpecArtifactsAsync(stoppingToken);
+                        int textLinks = await linker.ScanAllSourcesAsync(fullRescan, stoppingToken);
+                        int structLinks = await structuralLinker.LinkSpecArtifactsAsync(stoppingToken);
 
                         logger.LogInformation(
                             "Cross-reference scan complete: {TextLinks} text links, {StructLinks} structural links",
@@ -79,7 +79,7 @@ public class XRefScanWorker(
             try
             {
                 // Wait for interval or until a scan is requested
-                var waitTime = _scanRequested ? TimeSpan.Zero : interval;
+                TimeSpan waitTime = _scanRequested ? TimeSpan.Zero : interval;
                 if (waitTime > TimeSpan.Zero)
                     await Task.Delay(waitTime, stoppingToken);
             }

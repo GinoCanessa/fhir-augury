@@ -23,10 +23,10 @@ public static partial class ConfluenceContentParser
 
         try
         {
-            var wrapped = $"<root xmlns:ac=\"http://atlassian.com/content\" xmlns:ri=\"http://atlassian.com/resource\">{storageContent}</root>";
-            var doc = XDocument.Parse(wrapped);
+            string wrapped = $"<root xmlns:ac=\"http://atlassian.com/content\" xmlns:ri=\"http://atlassian.com/resource\">{storageContent}</root>";
+            XDocument doc = XDocument.Parse(wrapped);
 
-            var text = ExtractTextFromElement(doc.Root!);
+            string text = ExtractTextFromElement(doc.Root!);
             text = WhitespaceRegex().Replace(text, " ").Trim();
             return text;
         }
@@ -38,24 +38,24 @@ public static partial class ConfluenceContentParser
 
     private static string ExtractTextFromElement(XElement element)
     {
-        var parts = new List<string>();
+        List<string> parts = new List<string>();
 
-        foreach (var node in element.Nodes())
+        foreach (XNode node in element.Nodes())
         {
             switch (node)
             {
                 case XText textNode:
-                    var text = textNode.Value.Trim();
+                    string text = textNode.Value.Trim();
                     if (!string.IsNullOrEmpty(text))
                         parts.Add(text);
                     break;
 
                 case XElement childElement:
-                    var localName = childElement.Name.LocalName;
+                    string localName = childElement.Name.LocalName;
 
                     if (localName == "structured-macro")
                     {
-                        var plainBody = childElement.Descendants()
+                        XElement? plainBody = childElement.Descendants()
                             .FirstOrDefault(e => e.Name.LocalName == "plain-text-body");
                         if (plainBody is not null)
                             parts.Add(plainBody.Value.Trim());
@@ -64,7 +64,7 @@ public static partial class ConfluenceContentParser
 
                     if (localName == "image")
                     {
-                        var alt = childElement.Attribute("alt")?.Value
+                        string? alt = childElement.Attribute("alt")?.Value
                                   ?? childElement.Attribute("ac:alt")?.Value;
                         if (!string.IsNullOrEmpty(alt))
                             parts.Add(alt);
@@ -74,7 +74,7 @@ public static partial class ConfluenceContentParser
                     if (localName == "attachment")
                         continue;
 
-                    var childText = ExtractTextFromElement(childElement);
+                    string childText = ExtractTextFromElement(childElement);
                     if (!string.IsNullOrEmpty(childText))
                         parts.Add(childText);
                     break;
@@ -86,7 +86,7 @@ public static partial class ConfluenceContentParser
 
     private static string StripHtmlFallback(string html)
     {
-        var text = HtmlTagRegex().Replace(html, " ");
+        string text = HtmlTagRegex().Replace(html, " ");
         text = System.Net.WebUtility.HtmlDecode(text);
         text = WhitespaceRegex().Replace(text, " ").Trim();
         return text;

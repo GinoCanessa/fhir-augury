@@ -12,8 +12,8 @@ internal static class McpTestHelper
 {
     internal static SearchResponse CreateSearchResponse(params (string Source, string Id, string Title, double Score)[] items)
     {
-        var response = new SearchResponse { TotalResults = items.Length };
-        foreach (var (source, id, title, score) in items)
+        SearchResponse response = new SearchResponse { TotalResults = items.Length };
+        foreach ((string? source, string? id, string? title, double score) in items)
         {
             response.Results.Add(new SearchResultItem
             {
@@ -32,13 +32,13 @@ internal static class McpTestHelper
         string seedSource, string seedId, string seedTitle,
         params (string Source, string Id, string Title, double Score, string Relationship)[] items)
     {
-        var response = new FindRelatedResponse
+        FindRelatedResponse response = new FindRelatedResponse
         {
             SeedSource = seedSource,
             SeedId = seedId,
             SeedTitle = seedTitle,
         };
-        foreach (var (source, id, title, score, rel) in items)
+        foreach ((string? source, string? id, string? title, double score, string? rel) in items)
         {
             response.Items.Add(new RelatedItem
             {
@@ -56,8 +56,8 @@ internal static class McpTestHelper
     internal static GetXRefResponse CreateXRefResponse(
         params (string SourceType, string SourceId, string TargetType, string TargetId, string LinkType)[] refs)
     {
-        var response = new GetXRefResponse();
-        foreach (var (st, si, tt, ti, lt) in refs)
+        GetXRefResponse response = new GetXRefResponse();
+        foreach ((string? st, string? si, string? tt, string? ti, string? lt) in refs)
         {
             response.References.Add(new CrossReference
             {
@@ -73,7 +73,7 @@ internal static class McpTestHelper
 
     internal static ServicesStatusResponse CreateServicesStatus()
     {
-        var response = new ServicesStatusResponse { CrossRefLinks = 42 };
+        ServicesStatusResponse response = new ServicesStatusResponse { CrossRefLinks = 42 };
         response.Services.Add(new ServiceHealth
         {
             Name = "jira",
@@ -95,7 +95,7 @@ internal static class McpTestHelper
 
     internal static ItemResponse CreateItemResponse(string source, string id, string title)
     {
-        var response = new ItemResponse
+        ItemResponse response = new ItemResponse
         {
             Source = source,
             Id = id,
@@ -113,7 +113,7 @@ internal static class McpTestHelper
     internal static AsyncServerStreamingCall<T> CreateStreamingCall<T>(params T[] items)
         where T : class
     {
-        var reader = new TestAsyncStreamReader<T>(items);
+        TestAsyncStreamReader<T> reader = new TestAsyncStreamReader<T>(items);
         return new AsyncServerStreamingCall<T>(
             reader,
             Task.FromResult(new Metadata()),

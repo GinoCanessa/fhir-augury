@@ -20,11 +20,11 @@ public static class ZulipTools
     {
         try
         {
-            var request = new SearchRequest { Query = query, Limit = limit };
+            SearchRequest request = new SearchRequest { Query = query, Limit = limit };
             if (!string.IsNullOrEmpty(stream))
                 request.Filters.Add("stream", stream);
 
-            var response = await zulipSource.SearchAsync(request, cancellationToken: cancellationToken);
+            SearchResponse response = await zulipSource.SearchAsync(request, cancellationToken: cancellationToken);
             return UnifiedTools.FormatSearchResults(response, query);
         }
         catch (RpcException ex)
@@ -47,30 +47,30 @@ public static class ZulipTools
     {
         try
         {
-            var response = await zulip.GetThreadAsync(
+            ZulipThread response = await zulip.GetThreadAsync(
                 new ZulipGetThreadRequest { StreamName = stream, Topic = topic, Limit = limit },
                 cancellationToken: cancellationToken);
 
             if (response.Messages.Count == 0)
                 return $"No messages found in stream '{stream}', topic '{topic}'.";
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"# {response.StreamName} > {response.Topic}");
             sb.AppendLine();
             sb.AppendLine($"**Messages:** {response.Messages.Count}");
 
-            var first = response.Messages[0];
-            var last = response.Messages[^1];
+            ZulipMessage first = response.Messages[0];
+            ZulipMessage last = response.Messages[^1];
             sb.AppendLine($"**First message:** {first.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
             sb.AppendLine($"**Last message:** {last.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
 
-            var participants = response.Messages.Select(m => m.SenderName).Distinct().ToList();
+            List<string> participants = response.Messages.Select(m => m.SenderName).Distinct().ToList();
             sb.AppendLine($"**Participants:** {string.Join(", ", participants)}");
             sb.AppendLine();
 
             sb.AppendLine("## Messages");
             sb.AppendLine();
-            foreach (var msg in response.Messages)
+            foreach (ZulipMessage? msg in response.Messages)
             {
                 sb.AppendLine($"### {msg.SenderName} — {msg.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                 sb.AppendLine(msg.Content);
@@ -110,7 +110,7 @@ public static class ZulipTools
     {
         try
         {
-            var request = new ZulipQueryRequest
+            ZulipQueryRequest request = new ZulipQueryRequest
             {
                 Topic = topic ?? "",
                 TopicKeyword = topicKeyword ?? "",
@@ -122,24 +122,24 @@ public static class ZulipTools
 
             if (!string.IsNullOrWhiteSpace(streams))
             {
-                foreach (var s in streams.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                foreach (string s in streams.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     request.StreamNames.Add(s);
             }
 
             if (!string.IsNullOrWhiteSpace(senders))
             {
-                foreach (var s in senders.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                foreach (string s in senders.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     request.SenderNames.Add(s);
             }
 
-            using var call = zulip.QueryMessages(request, cancellationToken: cancellationToken);
+            using AsyncServerStreamingCall<ZulipMessageSummary> call = zulip.QueryMessages(request, cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Zulip Query Results");
             sb.AppendLine();
 
-            var count = 0;
-            await foreach (var msg in call.ResponseStream.ReadAllAsync(cancellationToken))
+            int count = 0;
+            await foreach (ZulipMessageSummary? msg in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 sb.AppendLine($"- **{msg.StreamName} > {msg.Topic}** [{msg.SenderName}]");
                 if (!string.IsNullOrEmpty(msg.Snippet))
@@ -171,15 +171,15 @@ public static class ZulipTools
     {
         try
         {
-            using var call = zulip.ListStreams(new ZulipListStreamsRequest(),
+            using AsyncServerStreamingCall<ZulipStream> call = zulip.ListStreams(new ZulipListStreamsRequest(),
                 cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Zulip Streams");
             sb.AppendLine();
 
-            var count = 0;
-            await foreach (var stream in call.ResponseStream.ReadAllAsync(cancellationToken))
+            int count = 0;
+            await foreach (ZulipStream? stream in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 sb.AppendLine($"- **{stream.Name}** ({stream.MessageCount} messages)");
                 if (!string.IsNullOrEmpty(stream.Description))
@@ -211,16 +211,16 @@ public static class ZulipTools
     {
         try
         {
-            using var call = zulip.ListTopics(
+            using AsyncServerStreamingCall<ZulipTopic> call = zulip.ListTopics(
                 new ZulipListTopicsRequest { StreamName = stream, Limit = limit },
                 cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"## Topics in {stream}");
             sb.AppendLine();
 
-            var count = 0;
-            await foreach (var topic in call.ResponseStream.ReadAllAsync(cancellationToken))
+            int count = 0;
+            await foreach (ZulipTopic? topic in call.ResponseStream.ReadAllAsync(cancellationToken))
             {
                 sb.AppendLine($"- **{topic.Topic}** ({topic.MessageCount} messages)");
                 if (topic.LastMessageAt is not null)
@@ -252,7 +252,7 @@ public static class ZulipTools
     {
         try
         {
-            var response = await zulip.GetThreadSnapshotAsync(
+            SnapshotResponse response = await zulip.GetThreadSnapshotAsync(
                 new ZulipSnapshotRequest { StreamName = stream, Topic = topic, IncludeInternalRefs = true },
                 cancellationToken: cancellationToken);
             return response.Markdown;

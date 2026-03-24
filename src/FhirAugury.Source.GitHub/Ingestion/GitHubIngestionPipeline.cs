@@ -3,6 +3,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -41,7 +42,7 @@ public class GitHubIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            var result = await source.DownloadAllAsync(repoFilter, ct);
+            IngestionResult result = await source.DownloadAllAsync(repoFilter, ct);
             await PostIngestionAsync(result, "full", ct);
 
             _currentStatus = "idle";
@@ -69,10 +70,10 @@ public class GitHubIngestionPipeline(
 
         try
         {
-            var since = GetLastSyncTime();
+            DateTimeOffset since = GetLastSyncTime();
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
-            var result = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult result = await source.DownloadIncrementalAsync(since, ct);
             await PostIngestionAsync(result, "incremental", ct);
 
             _currentStatus = "idle";
@@ -103,7 +104,7 @@ public class GitHubIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase();
 
-            var result = await source.LoadFromCacheAsync(ct);
+            IngestionResult result = await source.LoadFromCacheAsync(ct);
             await PostIngestionAsync(result, "rebuild", ct);
 
             _currentStatus = "idle";
@@ -126,15 +127,15 @@ public class GitHubIngestionPipeline(
         ct.ThrowIfCancellationRequested();
 
         // Clone repos and extract commit data
-        var repos = new List<string>(_options.Repositories);
+        List<string> repos = new List<string>(_options.Repositories);
         repos.AddRange(_options.AdditionalRepositories);
 
-        foreach (var repo in repos)
+        foreach (string repo in repos)
         {
             try
             {
                 _currentStatus = $"cloning:{repo}";
-                var clonePath = await cloner.EnsureCloneAsync(repo, ct);
+                string clonePath = await cloner.EnsureCloneAsync(repo, ct);
 
                 _currentStatus = $"extracting_commits:{repo}";
                 await commitExtractor.ExtractAsync(clonePath, repo, ct);
@@ -170,11 +171,11 @@ public class GitHubIngestionPipeline(
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var existing = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName, SubSource: runType);
+        GitHubSyncStateRecord? existing = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName, SubSource: runType);
 
-        var syncState = new GitHubSyncStateRecord
+        GitHubSyncStateRecord syncState = new GitHubSyncStateRecord
         {
             Id = existing?.Id ?? GitHubSyncStateRecord.GetIndex(),
             SourceName = GitHubSource.SourceName,
@@ -196,8 +197,8 @@ public class GitHubIngestionPipeline(
 
     private DateTimeOffset GetLastSyncTime()
     {
-        using var connection = database.OpenConnection();
-        var state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 

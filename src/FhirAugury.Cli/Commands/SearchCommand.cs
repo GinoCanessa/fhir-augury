@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
 using FhirAugury.Common.Text;
@@ -10,21 +11,21 @@ public static class SearchCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var queryArg = new Argument<string>("query")
+        Argument<string> queryArg = new Argument<string>("query")
         {
             Description = "Search query text",
         };
-        var sourcesOption = new Option<string?>("--sources")
+        Option<string?> sourcesOption = new Option<string?>("--sources")
         {
             Description = "Comma-separated source filter: jira,zulip,confluence,github",
         };
-        var limitOption = new Option<int>("--limit")
+        Option<int> limitOption = new Option<int>("--limit")
         {
             Description = "Maximum results to return",
             DefaultValueFactory = _ => 20,
         };
 
-        var command = new Command("search", "Unified search across all FHIR community sources")
+        Command command = new Command("search", "Unified search across all FHIR community sources")
         {
             queryArg,
             sourcesOption,
@@ -33,23 +34,23 @@ public static class SearchCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
-                var query = parseResult.GetValue(queryArg)!;
-                var sources = parseResult.GetValue(sourcesOption);
-                var limit = parseResult.GetValue(limitOption);
+                string format = parseResult.GetValue(formatOption)!;
+                string query = parseResult.GetValue(queryArg)!;
+                string? sources = parseResult.GetValue(sourcesOption);
+                int limit = parseResult.GetValue(limitOption);
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var request = new UnifiedSearchRequest { Query = query, Limit = limit };
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                UnifiedSearchRequest request = new UnifiedSearchRequest { Query = query, Limit = limit };
 
                 if (!string.IsNullOrWhiteSpace(sources))
                     CsvParser.AddToRepeatedField(request.Sources, sources);
 
-                var response = await clients.Orchestrator.UnifiedSearchAsync(request, cancellationToken: ct);
+                SearchResponse response = await clients.Orchestrator.UnifiedSearchAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatSearchResults(response, format);
                 if (sw is not null)
                     Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");

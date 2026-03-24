@@ -3,6 +3,7 @@ using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -36,7 +37,7 @@ public class ZulipIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            var result = await source.DownloadAllAsync(ct);
+            IngestionResult result = await source.DownloadAllAsync(ct);
             PostIngestion(result, "full", ct);
 
             _currentStatus = "idle";
@@ -66,7 +67,7 @@ public class ZulipIngestionPipeline(
         {
             logger.LogInformation("Starting incremental ingestion");
 
-            var result = await source.DownloadIncrementalAsync(ct);
+            IngestionResult result = await source.DownloadIncrementalAsync(ct);
             PostIngestion(result, "incremental", ct);
 
             _currentStatus = "idle";
@@ -101,7 +102,7 @@ public class ZulipIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase();
 
-            var result = await source.LoadFromCacheAsync(ct);
+            IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
 
             _currentStatus = "idle";
@@ -137,12 +138,12 @@ public class ZulipIngestionPipeline(
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName, SubSource: runType);
+        ZulipSyncStateRecord? existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName, SubSource: runType);
 
-        var options = optionsAccessor.Value;
-        var syncState = new ZulipSyncStateRecord
+        ZulipServiceOptions options = optionsAccessor.Value;
+        ZulipSyncStateRecord syncState = new ZulipSyncStateRecord
         {
             Id = existing?.Id ?? ZulipSyncStateRecord.GetIndex(),
             SourceName = ZulipSource.SourceName,

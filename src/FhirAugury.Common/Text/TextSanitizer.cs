@@ -72,7 +72,7 @@ public static partial class TextSanitizer
             return string.Empty;
         }
 
-        var text = HtmlTagRegex().Replace(html, " ");
+        string text = HtmlTagRegex().Replace(html, " ");
         text = WebUtility.HtmlDecode(text);
         text = WhitespaceRegex().Replace(text, " ");
 
@@ -92,10 +92,10 @@ public static partial class TextSanitizer
         }
 
         // Order matters: code blocks first, then inline elements
-        var sb = new StringBuilder(md.Length);
+        StringBuilder sb = new StringBuilder(md.Length);
         sb.Append(TextPatterns.CodeBlockRegex().Replace(md, " "));
 
-        var text = MarkdownImageRegex().Replace(sb.ToString(), "$1");
+        string text = MarkdownImageRegex().Replace(sb.ToString(), "$1");
         text = MarkdownLinkRegex().Replace(text, "$1");
         text = MarkdownInlineCodeRegex().Replace(text, "$1");
         text = MarkdownHeaderRegex().Replace(text, "");

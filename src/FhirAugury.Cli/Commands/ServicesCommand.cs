@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
 using Grpc.Core;
@@ -9,7 +10,7 @@ public static class ServicesCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var command = new Command("services", "Service management and monitoring");
+        Command command = new Command("services", "Service management and monitoring");
 
         command.Add(CreateStatusCommand(orchestratorOption, formatOption));
         command.Add(CreateStatsCommand(orchestratorOption, formatOption));
@@ -20,17 +21,17 @@ public static class ServicesCommand
 
     private static Command CreateStatusCommand(Option<string> orchestratorOption, Option<string> formatOption)
     {
-        var command = new Command("status", "Get status of all connected services");
+        Command command = new Command("status", "Get status of all connected services");
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
+            string addr = parseResult.GetValue(orchestratorOption)!;
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
+                string format = parseResult.GetValue(formatOption)!;
 
-                using var clients = new GrpcClientFactory(addr);
-                var response = await clients.Orchestrator.GetServicesStatusAsync(
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                ServicesStatusResponse response = await clients.Orchestrator.GetServicesStatusAsync(
                     new ServicesStatusRequest(), cancellationToken: ct);
                 OutputFormatter.FormatServicesStatus(response, format);
             }
@@ -45,30 +46,30 @@ public static class ServicesCommand
 
     private static Command CreateStatsCommand(Option<string> orchestratorOption, Option<string> formatOption)
     {
-        var command = new Command("stats", "Get aggregate statistics across all services");
+        Command command = new Command("stats", "Get aggregate statistics across all services");
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
+            string addr = parseResult.GetValue(orchestratorOption)!;
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
+                string format = parseResult.GetValue(formatOption)!;
 
-                using var clients = new GrpcClientFactory(addr);
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
 
                 // Get status for overall info
-                var statusResponse = await clients.Orchestrator.GetServicesStatusAsync(
+                ServicesStatusResponse statusResponse = await clients.Orchestrator.GetServicesStatusAsync(
                     new ServicesStatusRequest(), cancellationToken: ct);
 
                 // Get per-source stats via SourceService.GetStats
-                var statsResults = new List<StatsResponse>();
-                foreach (var svc in statusResponse.Services)
+                List<StatsResponse> statsResults = new List<StatsResponse>();
+                foreach (ServiceHealth? svc in statusResponse.Services)
                 {
                     try
                     {
-                        var sourceClient = new SourceService.SourceServiceClient(
+                        SourceService.SourceServiceClient sourceClient = new SourceService.SourceServiceClient(
                             Grpc.Net.Client.GrpcChannel.ForAddress(svc.GrpcAddress));
-                        var stats = await sourceClient.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
+                        StatsResponse stats = await sourceClient.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
                         statsResults.Add(stats);
                     }
                     catch
@@ -103,11 +104,11 @@ public static class ServicesCommand
                         Console.WriteLine();
                         Console.WriteLine($"{"Source",-12} {"Items",8} {"Comments",10} {"DB Size",10} {"Cache",10} {"Last Sync",-20}");
                         Console.WriteLine($"{"─────────",-12} {"──────",8} {"────────",10} {"────────",10} {"────────",10} {"──────────────────",-20}");
-                        foreach (var s in statsResults)
+                        foreach (StatsResponse s in statsResults)
                         {
-                            var dbSize = OutputFormatter.FormatBytes(s.DatabaseSizeBytes);
-                            var cacheSize = OutputFormatter.FormatBytes(s.CacheSizeBytes);
-                            var lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                            string dbSize = OutputFormatter.FormatBytes(s.DatabaseSizeBytes);
+                            string cacheSize = OutputFormatter.FormatBytes(s.CacheSizeBytes);
+                            string lastSync = s.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
                             Console.WriteLine($"{s.Source,-12} {s.TotalItems,8} {s.TotalComments,10} {dbSize,10} {cacheSize,10} {lastSync,-20}");
                         }
                         break;
@@ -124,28 +125,28 @@ public static class ServicesCommand
 
     private static Command CreateXrefScanCommand(Option<string> orchestratorOption, Option<bool> verboseOption)
     {
-        var fullRescanOption = new Option<bool>("--full")
+        Option<bool> fullRescanOption = new Option<bool>("--full")
         {
             Description = "Force a full rescan instead of incremental",
             DefaultValueFactory = _ => false,
         };
 
-        var command = new Command("xref-scan", "Trigger a cross-reference scan")
+        Command command = new Command("xref-scan", "Trigger a cross-reference scan")
         {
             fullRescanOption,
         };
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var fullRescan = parseResult.GetValue(fullRescanOption);
+                bool fullRescan = parseResult.GetValue(fullRescanOption);
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var response = await clients.Orchestrator.TriggerXRefScanAsync(
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                TriggerXRefScanResponse response = await clients.Orchestrator.TriggerXRefScanAsync(
                     new TriggerXRefScanRequest { FullRescan = fullRescan },
                     cancellationToken: ct);
 

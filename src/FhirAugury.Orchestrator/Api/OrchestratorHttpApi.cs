@@ -12,7 +12,9 @@ using Google.Protobuf.WellKnownTypes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
 
 namespace FhirAugury.Orchestrator.Api;
 
@@ -21,7 +23,7 @@ public static class OrchestratorHttpApi
 {
     public static IEndpointRouteBuilder MapOrchestratorHttpApi(this IEndpointRouteBuilder app)
     {
-        var api = app.MapGroup("/api/v1");
+        RouteGroupBuilder api = app.MapGroup("/api/v1");
 
         // ── Unified search ───────────────────────────────────────────
         api.MapGet("/search", async (
@@ -34,9 +36,9 @@ public static class OrchestratorHttpApi
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
-            var sourceList = CsvParser.ParseSourceList(sources);
+            List<string>? sourceList = CsvParser.ParseSourceList(sources);
 
-            var (results, warnings) = await searchService.SearchAsync(q, sourceList, limit ?? 0, ct);
+            (List<ScoredItem>? results, List<string>? warnings) = await searchService.SearchAsync(q, sourceList, limit ?? 0, ct);
 
             return Results.Ok(new
             {
@@ -59,8 +61,8 @@ public static class OrchestratorHttpApi
             RelatedItemFinder finder,
             CancellationToken ct) =>
         {
-            var targetSourceList = CsvParser.ParseSourceList(targetSources);
-            var response = await finder.FindRelatedAsync(source, id, limit ?? 0, targetSourceList, ct);
+            List<string>? targetSourceList = CsvParser.ParseSourceList(targetSources);
+            FindRelatedResponse response = await finder.FindRelatedAsync(source, id, limit ?? 0, targetSourceList, ct);
 
             return Results.Ok(new
             {
@@ -83,14 +85,14 @@ public static class OrchestratorHttpApi
             string? direction,
             OrchestratorDatabase database) =>
         {
-            using var connection = database.OpenConnection();
-            var dir = direction?.ToLowerInvariant() ?? "both";
+            using SqliteConnection connection = database.OpenConnection();
+            string dir = direction?.ToLowerInvariant() ?? "both";
 
-            var results = new List<object>();
+            List<object> results = new List<object>();
 
             if (dir is "outgoing" or "both")
             {
-                var outgoing = CrossRefLinkRecord.SelectList(connection,
+                List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
                     SourceType: source, SourceId: id);
                 results.AddRange(outgoing.Select(l => (object)new
                 {
@@ -100,7 +102,7 @@ public static class OrchestratorHttpApi
 
             if (dir is "incoming" or "both")
             {
-                var incoming = CrossRefLinkRecord.SelectList(connection,
+                List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
                     TargetType: source, TargetId: id);
                 results.AddRange(incoming.Select(l => (object)new
                 {
@@ -118,13 +120,13 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var client = router.GetSourceClient(source);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
             if (client is null)
                 return Results.NotFound(new { error = $"Source '{source}' not found or disabled" });
 
             try
             {
-                var item = await client.GetItemAsync(
+                ItemResponse item = await client.GetItemAsync(
                     new GetItemRequest { Id = id, IncludeContent = true, IncludeComments = true },
                     cancellationToken: ct);
                 return Results.Ok(new
@@ -153,13 +155,13 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var client = router.GetSourceClient(source);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
             if (client is null)
                 return Results.NotFound(new { error = $"Source '{source}' not found or disabled" });
 
             try
             {
-                var snapshot = await client.GetSnapshotAsync(
+                SnapshotResponse snapshot = await client.GetSnapshotAsync(
                     new GetSnapshotRequest { Id = id, IncludeComments = true },
                     cancellationToken: ct);
                 return Results.Ok(new { snapshot.Id, snapshot.Source, snapshot.Markdown, snapshot.Url });
@@ -178,13 +180,13 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var client = router.GetSourceClient(source);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
             if (client is null)
                 return Results.NotFound(new { error = $"Source '{source}' not found or disabled" });
 
             try
             {
-                var content = await client.GetContentAsync(
+                ContentResponse content = await client.GetContentAsync(
                     new GetContentRequest { Id = id, Format = format ?? "text" },
                     cancellationToken: ct);
                 return Results.Ok(new
@@ -205,16 +207,16 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var type = req.Query["type"].FirstOrDefault() ?? "incremental";
-            var sourceCsv = req.Query["sources"].FirstOrDefault();
-            var targetSources = string.IsNullOrEmpty(sourceCsv)
+            string type = req.Query["type"].FirstOrDefault() ?? "incremental";
+            string? sourceCsv = req.Query["sources"].FirstOrDefault();
+            List<string> targetSources = string.IsNullOrEmpty(sourceCsv)
                 ? router.GetEnabledSources().ToList()
                 : CsvParser.ParseSourceList(sourceCsv) ?? [];
 
-            var statuses = new List<object>();
-            foreach (var sourceName in targetSources)
+            List<object> statuses = new List<object>();
+            foreach (string sourceName in targetSources)
             {
-                var client = router.GetSourceClient(sourceName);
+                SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
                 if (client is null)
                 {
                     statuses.Add(new { source = sourceName, status = "error", message = "Source not configured" });
@@ -223,7 +225,7 @@ public static class OrchestratorHttpApi
 
                 try
                 {
-                    var result = await client.TriggerIngestionAsync(
+                    IngestionStatusResponse result = await client.TriggerIngestionAsync(
                         new TriggerIngestionRequest { Type = type }, cancellationToken: ct);
                     statuses.Add(new { source = sourceName, status = result.Status, itemsTotal = result.ItemsTotal });
                 }
@@ -243,10 +245,10 @@ public static class OrchestratorHttpApi
             CancellationToken ct) =>
         {
             await monitor.CheckAllAsync(ct);
-            var status = monitor.GetCurrentStatus();
+            Dictionary<string, ServiceHealthInfo> status = monitor.GetCurrentStatus();
 
-            using var connection = database.OpenConnection();
-            var linkCount = CrossRefLinkRecord.SelectCount(connection);
+            using SqliteConnection connection = database.OpenConnection();
+            int linkCount = CrossRefLinkRecord.SelectCount(connection);
 
             return Results.Ok(new
             {
@@ -266,21 +268,21 @@ public static class OrchestratorHttpApi
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
-            var logger = loggerFactory.CreateLogger("OrchestratorHttpApi");
-            using var connection = database.OpenConnection();
-            var linkCount = CrossRefLinkRecord.SelectCount(connection);
-            var dbSize = database.GetDatabaseSizeBytes();
+            ILogger logger = loggerFactory.CreateLogger("OrchestratorHttpApi");
+            using SqliteConnection connection = database.OpenConnection();
+            int linkCount = CrossRefLinkRecord.SelectCount(connection);
+            long dbSize = database.GetDatabaseSizeBytes();
 
-            var sourceStats = new List<object>();
-            var warnings = new List<string>();
-            foreach (var sourceName in router.GetEnabledSources())
+            List<object> sourceStats = new List<object>();
+            List<string> warnings = new List<string>();
+            foreach (string sourceName in router.GetEnabledSources())
             {
-                var client = router.GetSourceClient(sourceName);
+                SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
                 if (client is null) continue;
 
                 try
                 {
-                    var stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
+                    StatsResponse stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
                     sourceStats.Add(new
                     {
                         source = stats.Source,
@@ -321,27 +323,27 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var jiraClient = router.GetJiraClient();
+            JiraService.JiraServiceClient? jiraClient = router.GetJiraClient();
             if (jiraClient is null)
                 return Results.NotFound(new { error = "Jira service not configured or disabled" });
 
-            var queryRequest = new JiraQueryRequest
+            JiraQueryRequest queryRequest = new JiraQueryRequest
             {
-                Limit = int.TryParse(req.Query["limit"], out var l) ? l : 50,
+                Limit = int.TryParse(req.Query["limit"], out int l) ? l : 50,
             };
 
-            if (req.Query.TryGetValue("status", out var statuses))
+            if (req.Query.TryGetValue("status", out StringValues statuses))
                 queryRequest.Statuses.AddRange(statuses.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries));
-            if (req.Query.TryGetValue("work_group", out var wgs))
+            if (req.Query.TryGetValue("work_group", out StringValues wgs))
                 queryRequest.WorkGroups.AddRange(wgs.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries));
-            if (req.Query.TryGetValue("specification", out var specs))
+            if (req.Query.TryGetValue("specification", out StringValues specs))
                 queryRequest.Specifications.AddRange(specs.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries));
 
-            var results = new List<object>();
-            using var stream = jiraClient.QueryIssues(queryRequest, cancellationToken: ct);
+            List<object> results = new List<object>();
+            using Grpc.Core.AsyncServerStreamingCall<JiraIssueSummary> stream = jiraClient.QueryIssues(queryRequest, cancellationToken: ct);
             while (await stream.ResponseStream.MoveNext(ct))
             {
-                var issue = stream.ResponseStream.Current;
+                JiraIssueSummary issue = stream.ResponseStream.Current;
                 results.Add(new
                 {
                     issue.Key, issue.Title, issue.Type, issue.Status, issue.Priority,
@@ -358,14 +360,14 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            var zulipClient = router.GetSourceClient("zulip");
+            SourceService.SourceServiceClient? zulipClient = router.GetSourceClient("zulip");
             if (zulipClient is null)
                 return Results.NotFound(new { error = "Zulip service not configured or disabled" });
 
-            var q = req.Query["q"].FirstOrDefault() ?? "";
-            var limit = int.TryParse(req.Query["limit"], out var l2) ? l2 : 20;
+            string q = req.Query["q"].FirstOrDefault() ?? "";
+            int limit = int.TryParse(req.Query["limit"], out int l2) ? l2 : 20;
 
-            var response = await zulipClient.SearchAsync(
+            SearchResponse response = await zulipClient.SearchAsync(
                 new SearchRequest { Query = q, Limit = limit },
                 cancellationToken: ct);
 

@@ -23,46 +23,46 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
         string? pageKey = null,
         string? elementPath = null)
     {
-        var paths = new List<string>();
+        List<string> paths = new List<string>();
 
         if (!string.IsNullOrEmpty(artifactKey))
         {
-            var maps = GitHubSpecFileMapRecord.SelectList(connection, RepoFullName: repoFullName, ArtifactKey: artifactKey);
+            List<GitHubSpecFileMapRecord> maps = GitHubSpecFileMapRecord.SelectList(connection, RepoFullName: repoFullName, ArtifactKey: artifactKey);
             paths.AddRange(maps.Select(m => m.FilePath));
         }
 
         if (!string.IsNullOrEmpty(artifactId))
         {
-            using var cmd = new SqliteCommand(
+            using SqliteCommand cmd = new SqliteCommand(
                 "SELECT FilePath FROM github_spec_file_map WHERE RepoFullName = @repo AND ArtifactKey LIKE @pattern",
                 connection);
             cmd.Parameters.AddWithValue("@repo", repoFullName);
             cmd.Parameters.AddWithValue("@pattern", $"%{artifactId}%");
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
                 paths.Add(reader.GetString(0));
         }
 
         if (!string.IsNullOrEmpty(pageKey))
         {
-            using var cmd = new SqliteCommand(
+            using SqliteCommand cmd = new SqliteCommand(
                 "SELECT FilePath FROM github_spec_file_map WHERE RepoFullName = @repo AND MapType = 'page' AND ArtifactKey = @key",
                 connection);
             cmd.Parameters.AddWithValue("@repo", repoFullName);
             cmd.Parameters.AddWithValue("@key", pageKey);
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
                 paths.Add(reader.GetString(0));
         }
 
         if (!string.IsNullOrEmpty(elementPath))
         {
-            using var cmd = new SqliteCommand(
+            using SqliteCommand cmd = new SqliteCommand(
                 "SELECT FilePath FROM github_spec_file_map WHERE RepoFullName = @repo AND FilePath LIKE @pattern",
                 connection);
             cmd.Parameters.AddWithValue("@repo", repoFullName);
             cmd.Parameters.AddWithValue("@pattern", $"%{elementPath}%");
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
                 paths.Add(reader.GetString(0));
         }
@@ -82,10 +82,10 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
             return;
         }
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Clear existing mappings for this repo
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM github_spec_file_map WHERE RepoFullName = @repo";
             cmd.Parameters.AddWithValue("@repo", repoFullName);
@@ -95,14 +95,14 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
         int mapCount = 0;
 
         // Map directories under source/ (core FHIR repo convention)
-        var sourceDir = Path.Combine(clonePath, "source");
+        string sourceDir = Path.Combine(clonePath, "source");
         if (Directory.Exists(sourceDir))
         {
-            foreach (var dir in Directory.GetDirectories(sourceDir))
+            foreach (string dir in Directory.GetDirectories(sourceDir))
             {
                 ct.ThrowIfCancellationRequested();
-                var dirName = Path.GetFileName(dir);
-                var relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
+                string dirName = Path.GetFileName(dir);
+                string relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
 
                 GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
                 {
@@ -116,11 +116,11 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
             }
 
             // Map specific resource definition files
-            foreach (var file in Directory.GetFiles(sourceDir, "*.xml", SearchOption.AllDirectories))
+            foreach (string file in Directory.GetFiles(sourceDir, "*.xml", SearchOption.AllDirectories))
             {
                 ct.ThrowIfCancellationRequested();
-                var fileName = Path.GetFileNameWithoutExtension(file);
-                var relativePath = Path.GetRelativePath(clonePath, file).Replace('\\', '/');
+                string fileName = Path.GetFileNameWithoutExtension(file);
+                string relativePath = Path.GetRelativePath(clonePath, file).Replace('\\', '/');
 
                 GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
                 {
@@ -135,14 +135,14 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
         }
 
         // Map directories under input/ (IG Publisher convention)
-        var inputDir = Path.Combine(clonePath, "input");
+        string inputDir = Path.Combine(clonePath, "input");
         if (Directory.Exists(inputDir))
         {
-            foreach (var dir in Directory.GetDirectories(inputDir, "*", SearchOption.TopDirectoryOnly))
+            foreach (string dir in Directory.GetDirectories(inputDir, "*", SearchOption.TopDirectoryOnly))
             {
                 ct.ThrowIfCancellationRequested();
-                var dirName = Path.GetFileName(dir);
-                var relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
+                string dirName = Path.GetFileName(dir);
+                string relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
 
                 GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
                 {

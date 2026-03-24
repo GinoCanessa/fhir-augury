@@ -48,7 +48,7 @@ public sealed class GrpcClientFactory : IDisposable
     /// </summary>
     public async Task<Dictionary<string, string>> GetServiceEndpointsAsync(CancellationToken ct = default)
     {
-        var response = await Orchestrator.GetServiceEndpointsAsync(
+        ServiceEndpointsResponse response = await Orchestrator.GetServiceEndpointsAsync(
             new ServiceEndpointsRequest(), cancellationToken: ct);
         return response.Endpoints
             .Where(e => e.Enabled)
@@ -60,7 +60,7 @@ public sealed class GrpcClientFactory : IDisposable
     /// </summary>
     public SourceService.SourceServiceClient GetSourceClient(string address)
     {
-        var channel = GrpcChannel.ForAddress(address);
+        GrpcChannel channel = GrpcChannel.ForAddress(address);
         _dynamicChannels.Add(channel);
         return new SourceService.SourceServiceClient(channel);
     }
@@ -70,7 +70,7 @@ public sealed class GrpcClientFactory : IDisposable
         _orchestratorChannel.Dispose();
         if (_jiraChannel.IsValueCreated) _jiraChannel.Value.Dispose();
         if (_zulipChannel.IsValueCreated) _zulipChannel.Value.Dispose();
-        foreach (var channel in _dynamicChannels)
+        foreach (GrpcChannel channel in _dynamicChannels)
             channel.Dispose();
     }
 }

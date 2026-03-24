@@ -1,6 +1,7 @@
 using Fhiraugury;
 using FhirAugury.Common.Database;
 using FhirAugury.Common.Ingestion;
+using System.Diagnostics;
 
 namespace FhirAugury.Common.Grpc;
 
@@ -18,10 +19,10 @@ public static class SourceServiceLifecycle
         Func<CancellationToken, Task<int>> rebuildFunc,
         CancellationToken ct)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            var itemsLoaded = await rebuildFunc(ct);
+            int itemsLoaded = await rebuildFunc(ct);
             return new RebuildResponse
             {
                 Success = true,
@@ -45,7 +46,7 @@ public static class SourceServiceLifecycle
         SourceDatabase database,
         IIngestionPipeline pipeline)
     {
-        var integrity = database.CheckIntegrity();
+        string integrity = database.CheckIntegrity();
         return new HealthCheckResponse
         {
             Status = integrity == "ok" ? "healthy" : "degraded",

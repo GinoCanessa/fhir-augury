@@ -34,15 +34,15 @@ public class GitHubGrpcService(
 
     public override Task<SearchResponse> Search(SearchRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
+        using SqliteConnection connection = database.OpenConnection();
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
 
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
 
-        var sql = """
+        string sql = """
             SELECT gi.UniqueKey, gi.Title,
                    snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
                    github_issues_fts.rank,
@@ -54,17 +54,17 @@ public class GitHubGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        var response = new SearchResponse { Query = request.Query };
-        using var reader = cmd.ExecuteReader();
+        SearchResponse response = new SearchResponse { Query = request.Query };
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
         while (reader.Read())
         {
-            var uniqueKey = reader.GetString(0);
+            string uniqueKey = reader.GetString(0);
             response.Results.Add(new SearchResultItem
             {
                 Source = "github",
@@ -83,11 +83,11 @@ public class GitHubGrpcService(
 
     public override Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
-        var response = new ItemResponse
+        ItemResponse response = new ItemResponse
         {
             Source = "github",
             Id = issue.UniqueKey,
@@ -108,9 +108,9 @@ public class GitHubGrpcService(
 
         if (request.IncludeComments)
         {
-            var comments = GitHubCommentRecord.SelectList(connection,
+            List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
-            foreach (var c in comments)
+            foreach (GitHubCommentRecord c in comments)
             {
                 response.Comments.Add(new Comment
                 {
@@ -127,22 +127,22 @@ public class GitHubGrpcService(
 
     public override async Task ListItems(ListItemsRequest request, IServerStreamWriter<ItemSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
-        var sortBy = !string.IsNullOrEmpty(request.SortBy) ? request.SortBy : "UpdatedAt";
-        var sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        string sortBy = !string.IsNullOrEmpty(request.SortBy) ? request.SortBy : "UpdatedAt";
+        string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
 
-        var sql = $"SELECT UniqueKey, Title, UpdatedAt, State, IsPullRequest FROM github_issues ORDER BY {sortBy} {sortOrder} LIMIT @limit OFFSET @offset";
+        string sql = $"SELECT UniqueKey, Title, UpdatedAt, State, IsPullRequest FROM github_issues ORDER BY {sortBy} {sortOrder} LIMIT @limit OFFSET @offset";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var uniqueKey = reader.GetString(0);
-            var summary = new ItemSummary
+            string uniqueKey = reader.GetString(0);
+            ItemSummary summary = new ItemSummary
             {
                 Id = uniqueKey,
                 Title = reader.GetString(1),
@@ -158,28 +158,28 @@ public class GitHubGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        var response = new SearchResponse();
+        SearchResponse response = new SearchResponse();
 
         // Find related items via Jira references sharing the same Jira keys
-        var refs = GitHubJiraRefRecord.SelectList(connection, SourceId: request.Id);
-        var relatedIds = new HashSet<string>();
+        List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: request.Id);
+        HashSet<string> relatedIds = new HashSet<string>();
 
-        foreach (var jiraRef in refs)
+        foreach (GitHubJiraRefRecord jiraRef in refs)
         {
-            var sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
-            foreach (var r in sameKeyRefs)
+            List<GitHubJiraRefRecord> sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
+            foreach (GitHubJiraRefRecord r in sameKeyRefs)
             {
                 if (r.SourceId != request.Id)
                     relatedIds.Add(r.SourceId);
             }
         }
 
-        foreach (var relatedId in relatedIds.Take(limit))
+        foreach (string? relatedId in relatedIds.Take(limit))
         {
-            var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: relatedId);
+            GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: relatedId);
             if (issue is null) continue;
 
             response.Results.Add(new SearchResultItem
@@ -198,11 +198,11 @@ public class GitHubGrpcService(
 
     public override Task<SnapshotResponse> GetSnapshot(GetSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
-        var md = BuildMarkdownSnapshot(connection, issue, request.IncludeComments, request.IncludeInternalRefs);
+        string md = BuildMarkdownSnapshot(connection, issue, request.IncludeComments, request.IncludeInternalRefs);
 
         return Task.FromResult(new SnapshotResponse
         {
@@ -215,8 +215,8 @@ public class GitHubGrpcService(
 
     public override Task<ContentResponse> GetContent(GetContentRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
         return Task.FromResult(new ContentResponse
@@ -231,10 +231,10 @@ public class GitHubGrpcService(
 
     public override async Task StreamSearchableText(StreamTextRequest request, IServerStreamWriter<SearchableTextItem> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT UniqueKey, Title, Body, Labels, UpdatedAt FROM github_issues";
-        var parameters = new List<SqliteParameter>();
+        string sql = "SELECT UniqueKey, Title, Body, Labels, UpdatedAt FROM github_issues";
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
 
         if (request.Since is not null)
         {
@@ -244,14 +244,14 @@ public class GitHubGrpcService(
 
         sql += " ORDER BY UpdatedAt ASC";
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var uniqueKey = reader.GetString(0);
-            var item = new SearchableTextItem
+            string uniqueKey = reader.GetString(0);
+            SearchableTextItem item = new SearchableTextItem
             {
                 Source = "github",
                 Id = uniqueKey,
@@ -266,13 +266,13 @@ public class GitHubGrpcService(
             }
 
             // Include comments
-            var issueKey = uniqueKey;
-            var parts = issueKey.Split('#');
-            if (parts.Length == 2 && int.TryParse(parts[1], out var issueNumber))
+            string issueKey = uniqueKey;
+            string[] parts = issueKey.Split('#');
+            if (parts.Length == 2 && int.TryParse(parts[1], out int issueNumber))
             {
-                var comments = GitHubCommentRecord.SelectList(connection,
+                List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                     RepoFullName: parts[0], IssueNumber: issueNumber);
-                foreach (var c in comments)
+                foreach (GitHubCommentRecord c in comments)
                     item.TextFields.Add(c.Body);
             }
 
@@ -282,7 +282,7 @@ public class GitHubGrpcService(
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
     {
-        var type = request.Type?.ToLowerInvariant() ?? "incremental";
+        string type = request.Type?.ToLowerInvariant() ?? "incremental";
 
         workQueue.Enqueue(ct => type switch
         {
@@ -308,14 +308,14 @@ public class GitHubGrpcService(
 
     public override Task<StatsResponse> GetStats(StatsRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var issueCount = GitHubIssueRecord.SelectCount(connection);
-        var commentCount = GitHubCommentRecord.SelectCount(connection);
-        var dbSize = database.GetDatabaseSizeBytes();
-        var cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
+        int issueCount = GitHubIssueRecord.SelectCount(connection);
+        int commentCount = GitHubCommentRecord.SelectCount(connection);
+        long dbSize = database.GetDatabaseSizeBytes();
+        CacheStats cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
 
-        var response = new StatsResponse
+        StatsResponse response = new StatsResponse
         {
             Source = "github",
             TotalItems = issueCount,
@@ -324,7 +324,7 @@ public class GitHubGrpcService(
             CacheSizeBytes = cacheStats.TotalBytes,
         };
 
-        var syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
         if (syncState is not null)
             response.LastSyncAt = Timestamp.FromDateTimeOffset(syncState.LastSyncAt);
 
@@ -346,8 +346,8 @@ public class GitHubGrpcService(
 
     private IngestionStatusResponse GetCurrentStatus()
     {
-        using var connection = database.OpenConnection();
-        var syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
 
         return new IngestionStatusResponse
         {
@@ -363,7 +363,7 @@ public class GitHubGrpcService(
     private static string BuildMarkdownSnapshot(
         SqliteConnection connection, GitHubIssueRecord issue, bool includeComments, bool includeRefs)
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# {issue.UniqueKey}: {issue.Title}");
         sb.AppendLine();
         sb.AppendLine($"**State:** {issue.State}  ");
@@ -390,13 +390,13 @@ public class GitHubGrpcService(
 
         if (includeComments)
         {
-            var comments = GitHubCommentRecord.SelectList(connection,
+            List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
             if (comments.Count > 0)
             {
                 sb.AppendLine("## Comments");
                 sb.AppendLine();
-                foreach (var c in comments)
+                foreach (GitHubCommentRecord c in comments)
                 {
                     sb.AppendLine($"### {c.Author} ({c.CreatedAt:yyyy-MM-dd})");
                     sb.AppendLine();
@@ -408,12 +408,12 @@ public class GitHubGrpcService(
 
         if (includeRefs)
         {
-            var jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
+            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
             if (jiraRefs.Count > 0)
             {
                 sb.AppendLine("## Jira References");
                 sb.AppendLine();
-                foreach (var r in jiraRefs)
+                foreach (GitHubJiraRefRecord r in jiraRefs)
                     sb.AppendLine($"- {r.JiraKey}");
                 sb.AppendLine();
             }
@@ -425,18 +425,18 @@ public class GitHubGrpcService(
     internal static string BuildIssueUrl(string uniqueKey)
     {
         // UniqueKey format: "owner/repo#number"
-        var hashIdx = uniqueKey.IndexOf('#');
+        int hashIdx = uniqueKey.IndexOf('#');
         if (hashIdx < 0) return $"https://github.com/{uniqueKey}";
-        var repo = uniqueKey[..hashIdx];
-        var number = uniqueKey[(hashIdx + 1)..];
+        string repo = uniqueKey[..hashIdx];
+        string number = uniqueKey[(hashIdx + 1)..];
         return $"https://github.com/{repo}/issues/{number}";
     }
 
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return null;
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
     }
@@ -444,7 +444,7 @@ public class GitHubGrpcService(
     internal static string SanitizeFtsQuery(string query)
     {
         if (string.IsNullOrWhiteSpace(query)) return string.Empty;
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string[] terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return string.Join(" ", terms.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
     }
 }
@@ -464,11 +464,11 @@ public class GitHubSpecificGrpcService(
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     public override async Task GetIssueComments(GitHubGetCommentsRequest request, IServerStreamWriter<GitHubComment> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var comments = GitHubCommentRecord.SelectList(connection,
+        using SqliteConnection connection = database.OpenConnection();
+        List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
             RepoFullName: request.RepoFullName, IssueNumber: request.IssueNumber);
 
-        foreach (var c in comments)
+        foreach (GitHubCommentRecord c in comments)
         {
             await responseStream.WriteAsync(new GitHubComment
             {
@@ -485,9 +485,9 @@ public class GitHubSpecificGrpcService(
 
     public override Task<GitHubPullRequest> GetPullRequestDetails(GitHubGetPRRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var uniqueKey = $"{request.RepoFullName}#{request.Number}";
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
+        using SqliteConnection connection = database.OpenConnection();
+        string uniqueKey = $"{request.RepoFullName}#{request.Number}";
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"PR {uniqueKey} not found"));
 
         if (!issue.IsPullRequest)
@@ -503,36 +503,36 @@ public class GitHubSpecificGrpcService(
 
     public override async Task GetRelatedCommits(GitHubGetCommitsRequest request, IServerStreamWriter<GitHubCommit> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Find commits via PR links
-        var prLinks = GitHubCommitPrLinkRecord.SelectList(connection,
+        List<GitHubCommitPrLinkRecord> prLinks = GitHubCommitPrLinkRecord.SelectList(connection,
             PrNumber: request.IssueNumber, RepoFullName: request.RepoFullName);
 
-        var writtenShas = new HashSet<string>();
+        HashSet<string> writtenShas = new HashSet<string>();
 
-        foreach (var link in prLinks)
+        foreach (GitHubCommitPrLinkRecord link in prLinks)
         {
             if (!writtenShas.Add(link.CommitSha)) continue;
-            var commit = GitHubCommitRecord.SelectSingle(connection, Sha: link.CommitSha);
+            GitHubCommitRecord? commit = GitHubCommitRecord.SelectSingle(connection, Sha: link.CommitSha);
             if (commit is not null)
                 await responseStream.WriteAsync(MapToProtoCommit(commit, connection));
         }
 
         // Also find commits mentioning this issue number in messages
-        var issueRef = $"#{request.IssueNumber}";
-        using var cmd = new SqliteCommand(
+        string issueRef = $"#{request.IssueNumber}";
+        using SqliteCommand cmd = new SqliteCommand(
             "SELECT Sha FROM github_commits WHERE RepoFullName = @repo AND Message LIKE @pattern LIMIT 100",
             connection);
         cmd.Parameters.AddWithValue("@repo", request.RepoFullName);
         cmd.Parameters.AddWithValue("@pattern", $"%{issueRef}%");
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var sha = reader.GetString(0);
+            string sha = reader.GetString(0);
             if (!writtenShas.Add(sha)) continue;
-            var commit = GitHubCommitRecord.SelectSingle(connection, Sha: sha);
+            GitHubCommitRecord? commit = GitHubCommitRecord.SelectSingle(connection, Sha: sha);
             if (commit is not null)
                 await responseStream.WriteAsync(MapToProtoCommit(commit, connection));
         }
@@ -540,14 +540,14 @@ public class GitHubSpecificGrpcService(
 
     public override Task<GitHubPullRequest> GetPullRequestForCommit(GitHubGetPRForCommitRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var link = GitHubCommitPrLinkRecord.SelectSingle(connection, CommitSha: request.Sha);
+        GitHubCommitPrLinkRecord? link = GitHubCommitPrLinkRecord.SelectSingle(connection, CommitSha: request.Sha);
         if (link is null)
             throw new RpcException(new Status(StatusCode.NotFound, $"No PR found for commit {request.Sha}"));
 
-        var uniqueKey = $"{link.RepoFullName}#{link.PrNumber}";
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
+        string uniqueKey = $"{link.RepoFullName}#{link.PrNumber}";
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"PR {uniqueKey} not found"));
 
         return Task.FromResult(new GitHubPullRequest
@@ -559,14 +559,14 @@ public class GitHubSpecificGrpcService(
 
     public override async Task GetCommitsForPullRequest(GitHubGetCommitsForPRRequest request, IServerStreamWriter<GitHubCommit> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var links = GitHubCommitPrLinkRecord.SelectList(connection,
+        List<GitHubCommitPrLinkRecord> links = GitHubCommitPrLinkRecord.SelectList(connection,
             PrNumber: request.PrNumber, RepoFullName: request.RepoFullName);
 
-        foreach (var link in links)
+        foreach (GitHubCommitPrLinkRecord link in links)
         {
-            var commit = GitHubCommitRecord.SelectSingle(connection, Sha: link.CommitSha);
+            GitHubCommitRecord? commit = GitHubCommitRecord.SelectSingle(connection, Sha: link.CommitSha);
             if (commit is not null)
                 await responseStream.WriteAsync(MapToProtoCommit(commit, connection));
         }
@@ -574,15 +574,15 @@ public class GitHubSpecificGrpcService(
 
     public override Task<SearchResponse> SearchCommits(SearchRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
+        using SqliteConnection connection = database.OpenConnection();
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
 
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
 
-        var sql = """
+        string sql = """
             SELECT gc.Sha, gc.Message, gc.Author, gc.Date, gc.Url,
                    github_commits_fts.rank
             FROM github_commits_fts
@@ -592,13 +592,13 @@ public class GitHubSpecificGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        var response = new SearchResponse { Query = request.Query };
-        using var reader = cmd.ExecuteReader();
+        SearchResponse response = new SearchResponse { Query = request.Query };
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
         while (reader.Read())
         {
@@ -618,10 +618,10 @@ public class GitHubSpecificGrpcService(
 
     public override async Task GetJiraReferences(GitHubGetJiraRefsRequest request, IServerStreamWriter<GitHubJiraRef> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT SourceType, SourceId, RepoFullName, JiraKey, Context FROM github_jira_refs WHERE 1=1";
-        var parameters = new List<SqliteParameter>();
+        string sql = "SELECT SourceType, SourceId, RepoFullName, JiraKey, Context FROM github_jira_refs WHERE 1=1";
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
 
         if (!string.IsNullOrEmpty(request.RepoFullName))
         {
@@ -637,10 +637,10 @@ public class GitHubSpecificGrpcService(
 
         sql += " ORDER BY JiraKey";
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             await responseStream.WriteAsync(new GitHubJiraRef
@@ -656,19 +656,19 @@ public class GitHubSpecificGrpcService(
 
     public override async Task ListRepositories(GitHubListReposRequest request, IServerStreamWriter<GitHubRepo> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var repos = GitHubRepoRecord.SelectList(connection);
+        using SqliteConnection connection = database.OpenConnection();
+        List<GitHubRepoRecord> repos = GitHubRepoRecord.SelectList(connection);
 
-        foreach (var repo in repos)
+        foreach (GitHubRepoRecord repo in repos)
         {
             // Count issues and PRs
             int issueCount = 0, prCount = 0;
-            using (var cmd = new SqliteCommand(
+            using (SqliteCommand cmd = new SqliteCommand(
                 "SELECT IsPullRequest, COUNT(*) FROM github_issues WHERE RepoFullName = @repo GROUP BY IsPullRequest",
                 connection))
             {
                 cmd.Parameters.AddWithValue("@repo", repo.FullName);
-                using var reader = cmd.ExecuteReader();
+                using SqliteDataReader reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
                     if (reader.GetBoolean(0))
@@ -692,22 +692,22 @@ public class GitHubSpecificGrpcService(
 
     public override async Task ListByLabel(GitHubLabelRequest request, IServerStreamWriter<GitHubIssueSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        var sql = "SELECT UniqueKey, RepoFullName, Number, IsPullRequest, Title, State, UpdatedAt FROM github_issues WHERE Labels LIKE @label";
+        string sql = "SELECT UniqueKey, RepoFullName, Number, IsPullRequest, Title, State, UpdatedAt FROM github_issues WHERE Labels LIKE @label";
         if (!string.IsNullOrEmpty(request.RepoFullName))
             sql += " AND RepoFullName = @repo";
         sql += " ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@label", $"%{request.Label}%");
         if (!string.IsNullOrEmpty(request.RepoFullName))
             cmd.Parameters.AddWithValue("@repo", request.RepoFullName);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             await responseStream.WriteAsync(ReadIssueSummary(reader));
@@ -716,22 +716,22 @@ public class GitHubSpecificGrpcService(
 
     public override async Task ListByMilestone(GitHubMilestoneRequest request, IServerStreamWriter<GitHubIssueSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        var sql = "SELECT UniqueKey, RepoFullName, Number, IsPullRequest, Title, State, UpdatedAt FROM github_issues WHERE Milestone = @milestone";
+        string sql = "SELECT UniqueKey, RepoFullName, Number, IsPullRequest, Title, State, UpdatedAt FROM github_issues WHERE Milestone = @milestone";
         if (!string.IsNullOrEmpty(request.RepoFullName))
             sql += " AND RepoFullName = @repo";
         sql += " ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@milestone", request.Milestone);
         if (!string.IsNullOrEmpty(request.RepoFullName))
             cmd.Parameters.AddWithValue("@repo", request.RepoFullName);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             await responseStream.WriteAsync(ReadIssueSummary(reader));
@@ -740,18 +740,18 @@ public class GitHubSpecificGrpcService(
 
     public override async Task QueryByArtifact(GitHubArtifactQueryRequest request, IServerStreamWriter<GitHubCommit> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var repoFullName = !string.IsNullOrEmpty(request.Repo) ? request.Repo : "HL7/fhir";
-        var filePaths = artifactMapper.ResolveFilePaths(
+        string repoFullName = !string.IsNullOrEmpty(request.Repo) ? request.Repo : "HL7/fhir";
+        List<string> filePaths = artifactMapper.ResolveFilePaths(
             connection, repoFullName,
             request.ArtifactKey, request.ArtifactId, request.PageKey, request.ElementPath);
 
         if (filePaths.Count == 0) return;
 
         // Build SQL to find commits that changed any of the resolved file paths
-        var placeholders = string.Join(",", filePaths.Select((_, i) => $"@path{i}"));
-        var sql = $"""
+        string placeholders = string.Join(",", filePaths.Select((_, i) => $"@path{i}"));
+        string sql = $"""
             SELECT DISTINCT gc.Sha, gc.Message, gc.Author, gc.Date, gc.Url, gc.RepoFullName
             FROM github_commit_files gcf
             JOIN github_commits gc ON gc.Sha = gcf.CommitSha
@@ -766,10 +766,10 @@ public class GitHubSpecificGrpcService(
 
         sql += " ORDER BY gc.Date DESC";
 
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
         sql += " LIMIT @limit";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@repo", repoFullName);
         for (int i = 0; i < filePaths.Count; i++)
             cmd.Parameters.AddWithValue($"@path{i}", filePaths[i]);
@@ -779,11 +779,11 @@ public class GitHubSpecificGrpcService(
             cmd.Parameters.AddWithValue("@before", request.Before.ToDateTimeOffset().ToString("o"));
         cmd.Parameters.AddWithValue("@limit", limit);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var sha = reader.GetString(0);
-            var protoCommit = new GitHubCommit
+            string sha = reader.GetString(0);
+            GitHubCommit protoCommit = new GitHubCommit
             {
                 Sha = sha,
                 Message = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -793,15 +793,15 @@ public class GitHubSpecificGrpcService(
             };
 
             // Include changed files for this commit
-            var files = GitHubCommitFileRecord.SelectList(connection, CommitSha: sha);
-            foreach (var f in files)
+            List<GitHubCommitFileRecord> files = GitHubCommitFileRecord.SelectList(connection, CommitSha: sha);
+            foreach (GitHubCommitFileRecord f in files)
                 protoCommit.ChangedFiles.Add(f.FilePath);
 
             // Optionally include PRs
             if (request.IncludePrs)
             {
-                var prLinks = GitHubCommitPrLinkRecord.SelectList(connection, CommitSha: sha);
-                foreach (var link in prLinks)
+                List<GitHubCommitPrLinkRecord> prLinks = GitHubCommitPrLinkRecord.SelectList(connection, CommitSha: sha);
+                foreach (GitHubCommitPrLinkRecord link in prLinks)
                     protoCommit.ChangedFiles.Add($"PR#{link.PrNumber}");
             }
 
@@ -811,12 +811,12 @@ public class GitHubSpecificGrpcService(
 
     public override Task<SnapshotResponse> GetIssueSnapshot(GitHubSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var uniqueKey = $"{request.RepoFullName}#{request.Number}";
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
+        using SqliteConnection connection = database.OpenConnection();
+        string uniqueKey = $"{request.RepoFullName}#{request.Number}";
+        GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {uniqueKey} not found"));
 
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# {issue.UniqueKey}: {issue.Title}");
         sb.AppendLine();
         sb.AppendLine($"| Field | Value |");
@@ -842,13 +842,13 @@ public class GitHubSpecificGrpcService(
 
         if (request.IncludeComments)
         {
-            var comments = GitHubCommentRecord.SelectList(connection,
+            List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
             if (comments.Count > 0)
             {
                 sb.AppendLine("## Comments");
                 sb.AppendLine();
-                foreach (var c in comments)
+                foreach (GitHubCommentRecord c in comments)
                 {
                     sb.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):");
                     sb.AppendLine(c.Body);
@@ -859,12 +859,12 @@ public class GitHubSpecificGrpcService(
 
         if (request.IncludeInternalRefs)
         {
-            var jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: uniqueKey);
+            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: uniqueKey);
             if (jiraRefs.Count > 0)
             {
                 sb.AppendLine("## Jira References");
                 sb.AppendLine();
-                foreach (var r in jiraRefs) sb.AppendLine($"- {r.JiraKey}");
+                foreach (GitHubJiraRefRecord r in jiraRefs) sb.AppendLine($"- {r.JiraKey}");
             }
         }
 
@@ -881,7 +881,7 @@ public class GitHubSpecificGrpcService(
 
     private static GitHubIssue MapToProtoIssue(GitHubIssueRecord issue)
     {
-        var protoIssue = new GitHubIssue
+        GitHubIssue protoIssue = new GitHubIssue
         {
             Id = issue.Id,
             RepoFullName = issue.RepoFullName,
@@ -910,7 +910,7 @@ public class GitHubSpecificGrpcService(
 
     private static GitHubCommit MapToProtoCommit(GitHubCommitRecord commit, SqliteConnection connection)
     {
-        var protoCommit = new GitHubCommit
+        GitHubCommit protoCommit = new GitHubCommit
         {
             Sha = commit.Sha,
             Message = commit.Message,
@@ -919,8 +919,8 @@ public class GitHubSpecificGrpcService(
             Url = commit.Url,
         };
 
-        var files = GitHubCommitFileRecord.SelectList(connection, CommitSha: commit.Sha);
-        foreach (var f in files)
+        List<GitHubCommitFileRecord> files = GitHubCommitFileRecord.SelectList(connection, CommitSha: commit.Sha);
+        foreach (GitHubCommitFileRecord f in files)
             protoCommit.ChangedFiles.Add(f.FilePath);
 
         return protoCommit;
@@ -928,8 +928,8 @@ public class GitHubSpecificGrpcService(
 
     private static GitHubIssueSummary ReadIssueSummary(SqliteDataReader reader)
     {
-        var uniqueKey = reader.GetString(0);
-        var summary = new GitHubIssueSummary
+        string uniqueKey = reader.GetString(0);
+        GitHubIssueSummary summary = new GitHubIssueSummary
         {
             RepoFullName = reader.IsDBNull(1) ? "" : reader.GetString(1),
             Number = reader.GetInt32(2),
@@ -940,7 +940,7 @@ public class GitHubSpecificGrpcService(
         };
 
         if (!reader.IsDBNull(6) &&
-            DateTimeOffset.TryParse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated))
+            DateTimeOffset.TryParse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset updated))
         {
             summary.UpdatedAt = Timestamp.FromDateTimeOffset(updated);
         }
@@ -951,8 +951,8 @@ public class GitHubSpecificGrpcService(
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return null;
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
     }
@@ -960,8 +960,8 @@ public class GitHubSpecificGrpcService(
     private static Timestamp ParseTimestampDirect(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return Timestamp.FromDateTimeOffset(DateTimeOffset.MinValue);
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : Timestamp.FromDateTimeOffset(DateTimeOffset.MinValue);
     }

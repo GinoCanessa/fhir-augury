@@ -18,8 +18,8 @@ public class OrchestratorDatabase : SourceDatabase
 
     public void ResetDatabase()
     {
-        using var connection = OpenConnection();
-        using var cmd = connection.CreateCommand();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = """
             DROP TABLE IF EXISTS xref_links;
             DROP TABLE IF EXISTS xref_scan_state;

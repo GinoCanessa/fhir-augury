@@ -1,3 +1,4 @@
+using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion;
 
 namespace FhirAugury.Source.GitHub.Tests;
@@ -14,17 +15,17 @@ public class GitHubCommitFileExtractorTests
     [Fact]
     public void ParseGitLogOutput_NormalAMD_ParsedCorrectly()
     {
-        var output = BuildCommitBlock(
+        string output = BuildCommitBlock(
             "abc1234567890abcdef1234567890abcdef123456",
             "Alice",
             "2024-06-15T10:00:00+00:00",
             "Add and modify files",
             "A\tsrc/NewFile.cs\nM\tsrc/Existing.cs\nD\tsrc/OldFile.cs\n");
 
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
 
         Assert.Single(results);
-        var (commit, files) = results[0];
+        (GitHubCommitRecord? commit, List<GitHubCommitFileRecord>? files) = results[0];
         Assert.Equal("abc1234567890abcdef1234567890abcdef123456", commit.Sha);
         Assert.Equal("Alice", commit.Author);
         Assert.Equal("Add and modify files", commit.Message);
@@ -43,17 +44,17 @@ public class GitHubCommitFileExtractorTests
     [Fact]
     public void ParseGitLogOutput_RenameRow_UsesNewPath()
     {
-        var output = BuildCommitBlock(
+        string output = BuildCommitBlock(
             "def4567890abcdef1234567890abcdef1234567890",
             "Bob",
             "2024-06-16T12:00:00+00:00",
             "Rename file",
             "R100\tsrc/OldName.cs\tsrc/NewName.cs\n");
 
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
 
         Assert.Single(results);
-        var files = results[0].Files;
+        List<GitHubCommitFileRecord> files = results[0].Files;
         Assert.Single(files);
         Assert.Equal("R100", files[0].ChangeType);
         Assert.Equal("src/NewName.cs", files[0].FilePath);
@@ -62,17 +63,17 @@ public class GitHubCommitFileExtractorTests
     [Fact]
     public void ParseGitLogOutput_CopyRow_UsesNewPath()
     {
-        var output = BuildCommitBlock(
+        string output = BuildCommitBlock(
             "ccc4567890abcdef1234567890abcdef1234567890",
             "Carol",
             "2024-06-17T14:00:00+00:00",
             "Copy file",
             "C100\tsrc/Original.cs\tsrc/Copied.cs\n");
 
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
 
         Assert.Single(results);
-        var files = results[0].Files;
+        List<GitHubCommitFileRecord> files = results[0].Files;
         Assert.Single(files);
         Assert.Equal("C100", files[0].ChangeType);
         Assert.Equal("src/Copied.cs", files[0].FilePath);
@@ -81,17 +82,17 @@ public class GitHubCommitFileExtractorTests
     [Fact]
     public void ParseGitLogOutput_MalformedLines_Skipped()
     {
-        var output = BuildCommitBlock(
+        string output = BuildCommitBlock(
             "aaa4567890abcdef1234567890abcdef1234567890",
             "Dave",
             "2024-06-18T08:00:00+00:00",
             "Some commit",
             "GARBAGE LINE\nX\nA\tsrc/Good.cs\n\t\n");
 
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
 
         Assert.Single(results);
-        var files = results[0].Files;
+        List<GitHubCommitFileRecord> files = results[0].Files;
         Assert.Single(files);
         Assert.Equal("src/Good.cs", files[0].FilePath);
     }
@@ -99,37 +100,37 @@ public class GitHubCommitFileExtractorTests
     [Fact]
     public void ParseGitLogOutput_EmptyOutput_ReturnsEmpty()
     {
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput("", Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput("", Repo);
         Assert.Empty(results);
     }
 
     [Fact]
     public void ParseGitLogOutput_WhitespaceOnly_ReturnsEmpty()
     {
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput("   \n  \n  ", Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput("   \n  \n  ", Repo);
         Assert.Empty(results);
     }
 
     [Fact]
     public void ParseGitLogOutput_MultipleCommits_ParsedCorrectly()
     {
-        var commit1 = BuildCommitBlock(
+        string commit1 = BuildCommitBlock(
             "1111111111111111111111111111111111111111",
             "Eve",
             "2024-06-19T09:00:00+00:00",
             "First commit",
             "A\tfile1.txt\nR095\told/path.cs\tnew/path.cs\n");
 
-        var commit2 = BuildCommitBlock(
+        string commit2 = BuildCommitBlock(
             "2222222222222222222222222222222222222222",
             "Frank",
             "2024-06-20T10:00:00+00:00",
             "Second commit",
             "M\tfile2.txt\nD\tremoved.txt\n");
 
-        var output = commit1 + "\n" + commit2;
+        string output = commit1 + "\n" + commit2;
 
-        var results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
+        List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParseGitLogOutput(output, Repo);
 
         Assert.Equal(2, results.Count);
 

@@ -17,11 +17,11 @@ public static class CacheMetadataService
         string metaFileName,
         CancellationToken ct = default) where T : class
     {
-        var path = Path.Combine(rootPath, metaFileName);
+        string path = Path.Combine(rootPath, metaFileName);
         if (!File.Exists(path))
             return null;
 
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        await using FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct);
     }
 
@@ -33,7 +33,7 @@ public static class CacheMetadataService
         CancellationToken ct,
         ILogger? logger = null)
     {
-        var finalPath = Path.Combine(rootPath, metaFileName);
+        string finalPath = Path.Combine(rootPath, metaFileName);
         await AtomicFileWriter.WriteAsync(
             finalPath,
             async fs => await JsonSerializer.SerializeAsync(fs, metadata, JsonOptions, ct),

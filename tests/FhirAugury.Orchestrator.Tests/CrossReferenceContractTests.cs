@@ -11,7 +11,7 @@ public class CrossReferenceContractTests
     [Fact]
     public void CrossReference_HasTargetTitleField()
     {
-        var xref = new CrossReference { TargetTitle = "Example Title" };
+        CrossReference xref = new CrossReference { TargetTitle = "Example Title" };
 
         Assert.Equal("Example Title", xref.TargetTitle);
     }
@@ -19,7 +19,7 @@ public class CrossReferenceContractTests
     [Fact]
     public void CrossReference_HasTargetUrlField()
     {
-        var xref = new CrossReference { TargetUrl = "https://example.com/item/1" };
+        CrossReference xref = new CrossReference { TargetUrl = "https://example.com/item/1" };
 
         Assert.Equal("https://example.com/item/1", xref.TargetUrl);
     }
@@ -27,7 +27,7 @@ public class CrossReferenceContractTests
     [Fact]
     public void CrossReference_TargetFieldsDefaultToEmpty()
     {
-        var xref = new CrossReference();
+        CrossReference xref = new CrossReference();
 
         Assert.Equal("", xref.TargetTitle);
         Assert.Equal("", xref.TargetUrl);
@@ -36,7 +36,7 @@ public class CrossReferenceContractTests
     [Fact]
     public void CrossReference_AllFieldsRoundTrip()
     {
-        var xref = new CrossReference
+        CrossReference xref = new CrossReference
         {
             SourceType = "confluence",
             SourceId = "page-1",
@@ -63,7 +63,7 @@ public class CrossReferenceContractTests
     {
         // Verify the CsvParser.ParseSourceList method used by the HTTP endpoint
         // correctly parses comma-separated source names.
-        var result = FhirAugury.Common.Text.CsvParser.ParseSourceList("jira,confluence,zulip");
+        List<string>? result = FhirAugury.Common.Text.CsvParser.ParseSourceList("jira,confluence,zulip");
 
         Assert.NotNull(result);
         Assert.Equal(3, result.Count);

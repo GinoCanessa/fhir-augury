@@ -14,8 +14,8 @@ public class ScheduledIngestionWorker<TPipeline>(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var schedule = syncScheduleProvider();
-        if (!TimeSpan.TryParse(schedule, out var interval) || interval <= TimeSpan.Zero)
+        string schedule = syncScheduleProvider();
+        if (!TimeSpan.TryParse(schedule, out TimeSpan interval) || interval <= TimeSpan.Zero)
         {
             logger.LogWarning("Invalid or disabled sync schedule: {Schedule}", schedule);
             return;

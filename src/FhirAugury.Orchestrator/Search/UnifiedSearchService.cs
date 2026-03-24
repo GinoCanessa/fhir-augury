@@ -27,21 +27,21 @@ public class UnifiedSearchService(
         int limit,
         CancellationToken ct)
     {
-        var effectiveLimit = Math.Min(
+        int effectiveLimit = Math.Min(
             limit > 0 ? limit : options.Search.DefaultLimit,
             options.Search.MaxLimit);
 
-        var targetSources = sources?.Count > 0
+        IReadOnlyList<string> targetSources = sources?.Count > 0
             ? sources
             : options.Services.Where(s => s.Value.Enabled).Select(s => s.Key).ToList();
 
         // Fan-out search to all target sources in parallel
-        var tasks = new Dictionary<string, Task<SearchResponse>>();
-        var warnings = new List<string>();
+        Dictionary<string, Task<SearchResponse>> tasks = new Dictionary<string, Task<SearchResponse>>();
+        List<string> warnings = new List<string>();
 
-        foreach (var sourceName in targetSources)
+        foreach (string sourceName in targetSources)
         {
-            var client = router.GetSourceClient(sourceName);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
             if (client is null)
             {
                 warnings.Add($"Source '{sourceName}' is not configured or disabled");
@@ -54,14 +54,14 @@ public class UnifiedSearchService(
         }
 
         // Collect results, handling partial failures
-        var allItems = new List<ScoredItem>();
+        List<ScoredItem> allItems = new List<ScoredItem>();
 
-        foreach (var (sourceName, task) in tasks)
+        foreach ((string? sourceName, Task<SearchResponse>? task) in tasks)
         {
             try
             {
-                var response = await task;
-                foreach (var result in response.Results)
+                SearchResponse response = await task;
+                foreach (SearchResultItem? result in response.Results)
                 {
                     allItems.Add(new ScoredItem
                     {
@@ -84,10 +84,10 @@ public class UnifiedSearchService(
         }
 
         // Pipeline: normalize → boost → decay → sort → limit
-        var normalized = ScoreNormalizer.Normalize(allItems);
-        var boosted = booster.Boost(normalized, options.Search.CrossRefBoostFactor);
-        var decayed = freshnessDecay.Apply(boosted);
-        var sorted = decayed.OrderByDescending(i => i.Score).Take(effectiveLimit).ToList();
+        List<ScoredItem> normalized = ScoreNormalizer.Normalize(allItems);
+        List<ScoredItem> boosted = booster.Boost(normalized, options.Search.CrossRefBoostFactor);
+        List<ScoredItem> decayed = freshnessDecay.Apply(boosted);
+        List<ScoredItem> sorted = decayed.OrderByDescending(i => i.Score).Take(effectiveLimit).ToList();
 
         return (sorted, warnings);
     }

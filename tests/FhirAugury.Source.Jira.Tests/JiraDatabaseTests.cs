@@ -1,5 +1,6 @@
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Source.Jira.Tests;
@@ -25,8 +26,8 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesAllTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("jira_issues", tables);
         Assert.Contains("jira_comments", tables);
@@ -41,8 +42,8 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void Initialize_CreatesFtsVirtualTables()
     {
-        using var conn = _db.OpenConnection();
-        var tables = GetTableNames(conn);
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> tables = GetTableNames(conn);
 
         Assert.Contains("jira_issues_fts", tables);
         Assert.Contains("jira_comments_fts", tables);
@@ -51,11 +52,11 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_JiraIssue_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
-        var issue = CreateSampleIssue("FHIR-12345");
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIssueRecord issue = CreateSampleIssue("FHIR-12345");
 
         JiraIssueRecord.Insert(conn, issue);
-        var result = JiraIssueRecord.SelectSingle(conn, Key: "FHIR-12345");
+        JiraIssueRecord? result = JiraIssueRecord.SelectSingle(conn, Key: "FHIR-12345");
 
         Assert.NotNull(result);
         Assert.Equal("FHIR-12345", result.Key);
@@ -67,12 +68,12 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void SelectList_ByStatus_FiltersCorrectly()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-1", status: "Open"));
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-2", status: "Closed"));
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-3", status: "Open"));
 
-        var openIssues = JiraIssueRecord.SelectList(conn, Status: "Open");
+        List<JiraIssueRecord> openIssues = JiraIssueRecord.SelectList(conn, Status: "Open");
 
         Assert.Equal(2, openIssues.Count);
         Assert.All(openIssues, i => Assert.Equal("Open", i.Status));
@@ -81,15 +82,15 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void Fts5_IndexesIssuesOnInsert()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-100", title: "Patient resource validation", labels: "resource"));
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-101", title: "Observation code system", labels: "coding"));
 
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT Key FROM jira_issues WHERE Id IN (SELECT rowid FROM jira_issues_fts WHERE jira_issues_fts MATCH '\"validation\"')";
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
-        var keys = new List<string>();
+        List<string> keys = new List<string>();
         while (reader.Read()) keys.Add(reader.GetString(0));
 
         Assert.Single(keys);
@@ -99,10 +100,10 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_JiraComment_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-500"));
 
-        var comment = new JiraCommentRecord
+        JiraCommentRecord comment = new JiraCommentRecord
         {
             Id = JiraCommentRecord.GetIndex(),
             IssueId = 1,
@@ -113,7 +114,7 @@ public class JiraDatabaseTests : IDisposable
         };
         JiraCommentRecord.Insert(conn, comment);
 
-        var result = JiraCommentRecord.SelectList(conn, IssueKey: "FHIR-500");
+        List<JiraCommentRecord> result = JiraCommentRecord.SelectList(conn, IssueKey: "FHIR-500");
         Assert.Single(result);
         Assert.Equal("This is a test comment", result[0].Body);
     }
@@ -121,9 +122,9 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void InsertAndSelect_SpecArtifact_RoundTrips()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
 
-        var artifact = new JiraSpecArtifactRecord
+        JiraSpecArtifactRecord artifact = new JiraSpecArtifactRecord
         {
             Id = JiraSpecArtifactRecord.GetIndex(),
             Family = "FHIR",
@@ -135,7 +136,7 @@ public class JiraDatabaseTests : IDisposable
         };
         JiraSpecArtifactRecord.Insert(conn, artifact);
 
-        var result = JiraSpecArtifactRecord.SelectSingle(conn, SpecKey: "fhir-core");
+        JiraSpecArtifactRecord? result = JiraSpecArtifactRecord.SelectSingle(conn, SpecKey: "fhir-core");
         Assert.NotNull(result);
         Assert.Equal("FHIR Core Specification", result.SpecName);
         Assert.Equal("https://github.com/HL7/fhir", result.GitUrl);
@@ -144,18 +145,18 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void ResetDatabase_ClearsAndRecreates()
     {
-        using var conn = _db.OpenConnection();
+        using SqliteConnection conn = _db.OpenConnection();
         JiraIssueRecord.Insert(conn, CreateSampleIssue("FHIR-999"));
         conn.Close();
 
         _db.ResetDatabase();
 
-        using var conn2 = _db.OpenConnection();
-        var issues = JiraIssueRecord.SelectList(conn2);
+        using SqliteConnection conn2 = _db.OpenConnection();
+        List<JiraIssueRecord> issues = JiraIssueRecord.SelectList(conn2);
         Assert.Empty(issues);
 
         // Tables still exist
-        var tables = GetTableNames(conn2);
+        List<string> tables = GetTableNames(conn2);
         Assert.Contains("jira_issues", tables);
         Assert.Contains("jira_issues_fts", tables);
     }
@@ -163,7 +164,7 @@ public class JiraDatabaseTests : IDisposable
     [Fact]
     public void CheckIntegrity_ReturnsOk()
     {
-        var result = _db.CheckIntegrity();
+        string result = _db.CheckIntegrity();
         Assert.Equal("ok", result);
     }
 
@@ -207,10 +208,10 @@ public class JiraDatabaseTests : IDisposable
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
     {
-        using var cmd = conn.CreateCommand();
+        using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger') ORDER BY name";
-        using var reader = cmd.ExecuteReader();
-        var names = new List<string>();
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        List<string> names = new List<string>();
         while (reader.Read()) names.Add(reader.GetString(0));
         return names;
     }

@@ -17,8 +17,8 @@ public static class FtsQueryHelper
         if (string.IsNullOrWhiteSpace(query))
             return string.Empty;
 
-        var terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var sb = new StringBuilder(query.Length + terms.Length * 4);
+        string[] terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        StringBuilder sb = new StringBuilder(query.Length + terms.Length * 4);
 
         for (int i = 0; i < terms.Length; i++)
         {

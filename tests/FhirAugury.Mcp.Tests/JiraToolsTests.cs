@@ -12,20 +12,20 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraIssue_ReturnsFormattedIssue()
     {
-        var mockResponse = McpTestHelper.CreateItemResponse("jira", "FHIR-123", "Test Issue Title");
+        ItemResponse mockResponse = McpTestHelper.CreateItemResponse("jira", "FHIR-123", "Test Issue Title");
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<ItemResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.GetItemAsync(Arg.Any<GetItemRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await JiraTools.GetJiraIssue(client, "FHIR-123");
+        string result = await JiraTools.GetJiraIssue(client, "FHIR-123");
 
         Assert.Contains("FHIR-123", result);
         Assert.Contains("Test Issue Title", result);
@@ -35,7 +35,7 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraComments_ReturnsFormattedComments()
     {
-        var comments = new[]
+        JiraComment[] comments = new[]
         {
             new JiraComment
             {
@@ -49,12 +49,12 @@ public class JiraToolsTests
             },
         };
 
-        var streamCall = McpTestHelper.CreateStreamingCall(comments);
-        var client = Substitute.For<JiraService.JiraServiceClient>();
+        AsyncServerStreamingCall<JiraComment> streamCall = McpTestHelper.CreateStreamingCall(comments);
+        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
         client.GetIssueComments(Arg.Any<JiraGetCommentsRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await JiraTools.GetJiraComments(client, "FHIR-100");
+        string result = await JiraTools.GetJiraComments(client, "FHIR-100");
 
         Assert.Contains("Comments on FHIR-100", result);
         Assert.Contains("User1", result);
@@ -65,12 +65,12 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraComments_NoComments_ReturnsMessage()
     {
-        var streamCall = McpTestHelper.CreateStreamingCall<JiraComment>();
-        var client = Substitute.For<JiraService.JiraServiceClient>();
+        AsyncServerStreamingCall<JiraComment> streamCall = McpTestHelper.CreateStreamingCall<JiraComment>();
+        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
         client.GetIssueComments(Arg.Any<JiraGetCommentsRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await JiraTools.GetJiraComments(client, "FHIR-999");
+        string result = await JiraTools.GetJiraComments(client, "FHIR-999");
 
         Assert.Contains("No comments", result);
     }
@@ -78,25 +78,25 @@ public class JiraToolsTests
     [Fact]
     public async Task SnapshotJiraIssue_ReturnsMarkdown()
     {
-        var mockResponse = new SnapshotResponse
+        SnapshotResponse mockResponse = new SnapshotResponse
         {
             Id = "FHIR-123",
             Source = "jira",
             Markdown = "# FHIR-123: Test Issue\n\nFull snapshot content...",
         };
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SnapshotResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
+        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
         client.GetSnapshotAsync(Arg.Any<GetSnapshotRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await JiraTools.SnapshotJiraIssue(client, "FHIR-123");
+        string result = await JiraTools.SnapshotJiraIssue(client, "FHIR-123");
 
         Assert.Contains("FHIR-123", result);
         Assert.Contains("Test Issue", result);
@@ -105,22 +105,22 @@ public class JiraToolsTests
     [Fact]
     public async Task SearchJira_ReturnsFormattedResults()
     {
-        var mockResponse = McpTestHelper.CreateSearchResponse(
+        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
             ("jira", "FHIR-100", "Issue One", 0.9),
             ("jira", "FHIR-200", "Issue Two", 0.8));
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<SourceService.SourceServiceClient>();
+        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
         client.SearchAsync(Arg.Any<SearchRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await JiraTools.SearchJira(client, "test query");
+        string result = await JiraTools.SearchJira(client, "test query");
 
         Assert.Contains("Search Results", result);
         Assert.Contains("FHIR-100", result);
@@ -130,7 +130,7 @@ public class JiraToolsTests
     [Fact]
     public async Task QueryJiraIssues_ReturnsFormattedResults()
     {
-        var issues = new[]
+        JiraIssueSummary[] issues = new[]
         {
             new JiraIssueSummary
             {
@@ -141,12 +141,12 @@ public class JiraToolsTests
             },
         };
 
-        var streamCall = McpTestHelper.CreateStreamingCall(issues);
-        var client = Substitute.For<JiraService.JiraServiceClient>();
+        AsyncServerStreamingCall<JiraIssueSummary> streamCall = McpTestHelper.CreateStreamingCall(issues);
+        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
         client.QueryIssues(Arg.Any<JiraQueryRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await JiraTools.QueryJiraIssues(client, statuses: "Open");
+        string result = await JiraTools.QueryJiraIssues(client, statuses: "Open");
 
         Assert.Contains("Jira Query Results", result);
         Assert.Contains("FHIR-100", result);
@@ -156,7 +156,7 @@ public class JiraToolsTests
     [Fact]
     public async Task ListJiraIssues_ReturnsFormattedList()
     {
-        var items = new[]
+        ItemSummary[] items = new[]
         {
             new ItemSummary
             {
@@ -166,12 +166,12 @@ public class JiraToolsTests
             },
         };
 
-        var streamCall = McpTestHelper.CreateStreamingCall(items);
-        var client = Substitute.For<SourceService.SourceServiceClient>();
+        AsyncServerStreamingCall<ItemSummary> streamCall = McpTestHelper.CreateStreamingCall(items);
+        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
         client.ListItems(Arg.Any<ListItemsRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await JiraTools.ListJiraIssues(client);
+        string result = await JiraTools.ListJiraIssues(client);
 
         Assert.Contains("Jira Issues", result);
         Assert.Contains("FHIR-100", result);

@@ -5,6 +5,7 @@ using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Source.Jira.Ingestion;
@@ -25,34 +26,34 @@ public class JiraSource(
     /// <summary>Performs a full download of all issues matching the configured JQL.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? jqlOverride, CancellationToken ct)
     {
-        var jql = jqlOverride ?? options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
+        string jql = jqlOverride ?? options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
         return await DownloadAsync(jql, ct);
     }
 
     /// <summary>Performs an incremental download of issues updated since the given timestamp.</summary>
     public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct)
     {
-        var baseJql = options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
-        var sinceStr = since.ToString("yyyy-MM-dd HH:mm");
-        var jql = $"{baseJql} AND updated >= '{sinceStr}' ORDER BY updated ASC";
+        string baseJql = options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
+        string sinceStr = since.ToString("yyyy-MM-dd HH:mm");
+        string jql = $"{baseJql} AND updated >= '{sinceStr}' ORDER BY updated ASC";
         return await DownloadAsync(jql, ct);
     }
 
     private async Task<IngestionResult> DownloadAsync(string jql, CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        var existingKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName).ToList();
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        List<string> existingKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName).ToList();
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         int startAt = 0;
         bool hasMore = true;
 
         while (hasMore && !ct.IsCancellationRequested)
         {
-            var url = $"{options.BaseUrl}/rest/api/2/search?jql={Uri.EscapeDataString(jql)}" +
+            string url = $"{options.BaseUrl}/rest/api/2/search?jql={Uri.EscapeDataString(jql)}" +
                       $"&startAt={startAt}&maxResults={options.PageSize}&fields=*all&expand=renderedFields";
 
             logger.LogInformation("Fetching issues: startAt={StartAt}", startAt);
@@ -60,8 +61,8 @@ public class JiraSource(
             string json;
             try
             {
-                var httpClient = httpClientFactory.CreateClient("jira");
-                var response = await HttpRetryHelper.GetWithRetryAsync(
+                HttpClient httpClient = httpClientFactory.CreateClient("jira");
+                HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                     httpClient, url, ct, options.RateLimiting.MaxRetries, "jira");
                 response.EnsureSuccessStatusCode();
                 json = await response.Content.ReadAsStringAsync(ct);
@@ -74,23 +75,23 @@ public class JiraSource(
             }
 
             // Write to cache
-            var cacheKey = CacheFileNaming.GenerateDailyFileName(today, JiraCacheLayout.JsonExtension, existingKeys);
+            string cacheKey = CacheFileNaming.GenerateDailyFileName(today, JiraCacheLayout.JsonExtension, existingKeys);
             existingKeys.Add(cacheKey);
-            using (var cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
+            using (MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
             {
                 await cache.PutAsync(JiraCacheLayout.SourceName, cacheKey, cacheStream, ct);
             }
 
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            var total = root.GetProperty("total").GetInt32();
-            var issues = root.GetProperty("issues");
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            int total = root.GetProperty("total").GetInt32();
+            JsonElement issues = root.GetProperty("issues");
 
-            using var connection = database.OpenConnection();
+            using SqliteConnection connection = database.OpenConnection();
 
-            foreach (var issueJson in issues.EnumerateArray())
+            foreach (JsonElement issueJson in issues.EnumerateArray())
             {
-                var (outcome, error) = ProcessIssue(issueJson, connection);
+                (ProcessOutcome outcome, string? error) = ProcessIssue(issueJson, connection);
                 itemsProcessed++;
 
                 switch (outcome)
@@ -121,25 +122,25 @@ public class JiraSource(
     /// <summary>Loads all issues from cached API responses (no network).</summary>
     public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
+        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
         {
             if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out var stream)) continue;
+            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream)) continue;
 
             using (stream)
             {
                 try
                 {
-                    var records = ParseCachedFile(stream, key);
-                    foreach (var (issue, comments) in records)
+                    IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> records = ParseCachedFile(stream, key);
+                    foreach ((JiraIssueRecord? issue, List<JiraCommentRecord>? comments) in records)
                     {
-                        var existing = JiraIssueRecord.SelectSingle(connection, Key: issue.Key);
+                        JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: issue.Key);
                         if (existing is not null)
                         {
                             issue.Id = existing.Id;
@@ -152,7 +153,7 @@ public class JiraSource(
                             itemsNew++;
                         }
 
-                        foreach (var comment in comments)
+                        foreach (JiraCommentRecord comment in comments)
                             JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
 
                         itemsProcessed++;
@@ -180,10 +181,10 @@ public class JiraSource(
         string key = string.Empty;
         try
         {
-            var issue = JiraFieldMapper.MapIssue(issueJson);
+            JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
             key = issue.Key;
 
-            var existing = JiraIssueRecord.SelectSingle(connection, Key: key);
+            JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: key);
             if (existing is not null)
             {
                 issue.Id = existing.Id;
@@ -194,12 +195,12 @@ public class JiraSource(
                 JiraIssueRecord.Insert(connection, issue, ignoreDuplicates: true);
             }
 
-            var comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
-            foreach (var comment in comments)
+            List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
+            foreach (JiraCommentRecord comment in comments)
                 JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
 
-            var links = JiraFieldMapper.MapIssueLinks(issueJson, issue.Key);
-            foreach (var link in links)
+            List<JiraIssueLinkRecord> links = JiraFieldMapper.MapIssueLinks(issueJson, issue.Key);
+            foreach (JiraIssueLinkRecord link in links)
                 JiraIssueLinkRecord.Insert(connection, link, ignoreDuplicates: true);
 
             return (existing is not null ? ProcessOutcome.Updated : ProcessOutcome.New, null);
@@ -221,16 +222,16 @@ public class JiraSource(
 
     private static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseJsonCacheFile(Stream stream)
     {
-        using var doc = JsonDocument.Parse(stream);
-        var root = doc.RootElement;
+        using JsonDocument doc = JsonDocument.Parse(stream);
+        JsonElement root = doc.RootElement;
 
-        if (!root.TryGetProperty("issues", out var issues))
+        if (!root.TryGetProperty("issues", out JsonElement issues))
             yield break;
 
-        foreach (var issueJson in issues.EnumerateArray())
+        foreach (JsonElement issueJson in issues.EnumerateArray())
         {
-            var issue = JiraFieldMapper.MapIssue(issueJson);
-            var comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
+            JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
+            List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
             yield return (issue, comments);
         }
     }

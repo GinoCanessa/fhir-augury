@@ -1,5 +1,6 @@
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Source.GitHub.Indexing;
@@ -17,9 +18,9 @@ public class JiraRefResolver(GitHubDatabase database, ILogger<JiraRefResolver> l
     /// </summary>
     public string? ResolveHashReference(string repoFullName, int number, HashSet<int>? validJiraNumbers = null)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var repo = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
+        GitHubRepoRecord? repo = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
         if (repo is null)
         {
             logger.LogDebug("Repo {Repo} not found, treating #{Number} as potential Jira ref", repoFullName, number);
@@ -33,7 +34,7 @@ public class JiraRefResolver(GitHubDatabase database, ILogger<JiraRefResolver> l
         }
 
         // Check if it matches a GitHub issue/PR number
-        var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{number}");
+        GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{number}");
         if (issue is not null)
         {
             // It's a GitHub issue/PR reference
@@ -50,11 +51,11 @@ public class JiraRefResolver(GitHubDatabase database, ILogger<JiraRefResolver> l
     public List<(int Number, string JiraKey)> ResolveAllHashReferences(
         string repoFullName, IEnumerable<int> numbers, HashSet<int>? validJiraNumbers = null)
     {
-        var results = new List<(int, string)>();
+        List<(int, string)> results = new List<(int, string)>();
 
-        foreach (var number in numbers)
+        foreach (int number in numbers)
         {
-            var jiraKey = ResolveHashReference(repoFullName, number, validJiraNumbers);
+            string? jiraKey = ResolveHashReference(repoFullName, number, validJiraNumbers);
             if (jiraKey is not null)
                 results.Add((number, jiraKey));
         }

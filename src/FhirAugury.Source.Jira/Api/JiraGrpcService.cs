@@ -32,15 +32,15 @@ public class JiraGrpcService(
 
     public override Task<SearchResponse> Search(SearchRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
+        using SqliteConnection connection = database.OpenConnection();
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
 
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
 
-        var sql = """
+        string sql = """
             SELECT ji.Key, ji.Title,
                    snippet(jira_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
                    jira_issues_fts.rank,
@@ -52,17 +52,17 @@ public class JiraGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        var response = new SearchResponse { Query = request.Query };
-        using var reader = cmd.ExecuteReader();
+        SearchResponse response = new SearchResponse { Query = request.Query };
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
         while (reader.Read())
         {
-            var key = reader.GetString(0);
+            string key = reader.GetString(0);
             response.Results.Add(new SearchResultItem
             {
                 Source = "jira",
@@ -81,11 +81,11 @@ public class JiraGrpcService(
 
     public override Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        JiraIssueRecord issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
-        var response = new ItemResponse
+        ItemResponse response = new ItemResponse
         {
             Source = "jira",
             Id = issue.Key,
@@ -107,8 +107,8 @@ public class JiraGrpcService(
 
         if (request.IncludeComments)
         {
-            var comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
-            foreach (var c in comments)
+            List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
+            foreach (JiraCommentRecord c in comments)
             {
                 response.Comments.Add(new Comment
                 {
@@ -125,22 +125,22 @@ public class JiraGrpcService(
 
     public override async Task ListItems(ListItemsRequest request, IServerStreamWriter<ItemSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
-        var sortBy = !string.IsNullOrEmpty(request.SortBy) ? request.SortBy : "UpdatedAt";
-        var sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        string sortBy = !string.IsNullOrEmpty(request.SortBy) ? request.SortBy : "UpdatedAt";
+        string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
 
-        var sql = $"SELECT Key, Title, UpdatedAt, Status, Type, WorkGroup FROM jira_issues ORDER BY {sortBy} {sortOrder} LIMIT @limit OFFSET @offset";
+        string sql = $"SELECT Key, Title, UpdatedAt, Status, Type, WorkGroup FROM jira_issues ORDER BY {sortBy} {sortOrder} LIMIT @limit OFFSET @offset";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var key = reader.GetString(0);
-            var summary = new ItemSummary
+            string key = reader.GetString(0);
+            ItemSummary summary = new ItemSummary
             {
                 Id = key,
                 Title = reader.GetString(1),
@@ -156,24 +156,24 @@ public class JiraGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        var response = new SearchResponse();
+        SearchResponse response = new SearchResponse();
 
         // Get links
-        var links = JiraIssueLinkRecord.SelectList(connection, SourceKey: request.Id);
-        var targetLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: request.Id);
+        List<JiraIssueLinkRecord> links = JiraIssueLinkRecord.SelectList(connection, SourceKey: request.Id);
+        List<JiraIssueLinkRecord> targetLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: request.Id);
 
-        var relatedKeys = links.Select(l => l.TargetKey)
+        List<string> relatedKeys = links.Select(l => l.TargetKey)
             .Concat(targetLinks.Select(l => l.SourceKey))
             .Distinct()
             .Take(limit)
             .ToList();
 
-        foreach (var relKey in relatedKeys)
+        foreach (string? relKey in relatedKeys)
         {
-            var issue = JiraIssueRecord.SelectSingle(connection, Key: relKey);
+            JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: relKey);
             if (issue is null) continue;
 
             response.Results.Add(new SearchResultItem
@@ -192,11 +192,11 @@ public class JiraGrpcService(
 
     public override Task<SnapshotResponse> GetSnapshot(GetSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        JiraIssueRecord issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
-        var md = BuildMarkdownSnapshot(connection, issue, request.IncludeComments, request.IncludeInternalRefs);
+        string md = BuildMarkdownSnapshot(connection, issue, request.IncludeComments, request.IncludeInternalRefs);
 
         return Task.FromResult(new SnapshotResponse
         {
@@ -209,8 +209,8 @@ public class JiraGrpcService(
 
     public override Task<ContentResponse> GetContent(GetContentRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
+        using SqliteConnection connection = database.OpenConnection();
+        JiraIssueRecord issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
         return Task.FromResult(new ContentResponse
@@ -225,10 +225,10 @@ public class JiraGrpcService(
 
     public override async Task StreamSearchableText(StreamTextRequest request, IServerStreamWriter<SearchableTextItem> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT Key, Title, Description, Labels, WorkGroup, Specification, UpdatedAt FROM jira_issues";
-        var parameters = new List<SqliteParameter>();
+        string sql = "SELECT Key, Title, Description, Labels, WorkGroup, Specification, UpdatedAt FROM jira_issues";
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
 
         if (request.Since is not null)
         {
@@ -238,14 +238,14 @@ public class JiraGrpcService(
 
         sql += " ORDER BY UpdatedAt ASC";
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var key = reader.GetString(0);
-            var item = new SearchableTextItem
+            string key = reader.GetString(0);
+            SearchableTextItem item = new SearchableTextItem
             {
                 Source = "jira",
                 Id = key,
@@ -260,8 +260,8 @@ public class JiraGrpcService(
             }
 
             // Include comments
-            var comments = JiraCommentRecord.SelectList(connection, IssueKey: key);
-            foreach (var c in comments)
+            List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection, IssueKey: key);
+            foreach (JiraCommentRecord c in comments)
                 item.TextFields.Add(c.Body);
 
             await responseStream.WriteAsync(item);
@@ -270,7 +270,7 @@ public class JiraGrpcService(
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
     {
-        var type = request.Type?.ToLowerInvariant() ?? "incremental";
+        string type = request.Type?.ToLowerInvariant() ?? "incremental";
 
         workQueue.Enqueue(ct => type switch
         {
@@ -297,14 +297,14 @@ public class JiraGrpcService(
 
     public override Task<StatsResponse> GetStats(StatsRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var issueCount = JiraIssueRecord.SelectCount(connection);
-        var commentCount = JiraCommentRecord.SelectCount(connection);
-        var dbSize = database.GetDatabaseSizeBytes();
-        var cacheStats = cache.GetStats(JiraCacheLayout.SourceName);
+        int issueCount = JiraIssueRecord.SelectCount(connection);
+        int commentCount = JiraCommentRecord.SelectCount(connection);
+        long dbSize = database.GetDatabaseSizeBytes();
+        CacheStats cacheStats = cache.GetStats(JiraCacheLayout.SourceName);
 
-        var response = new StatsResponse
+        StatsResponse response = new StatsResponse
         {
             Source = "jira",
             TotalItems = issueCount,
@@ -314,7 +314,7 @@ public class JiraGrpcService(
         };
 
         // Sync state
-        var syncState = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
+        JiraSyncStateRecord? syncState = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
         if (syncState is not null)
             response.LastSyncAt = Timestamp.FromDateTimeOffset(syncState.LastSyncAt);
 
@@ -333,8 +333,8 @@ public class JiraGrpcService(
 
     private IngestionStatusResponse GetCurrentStatus()
     {
-        using var connection = database.OpenConnection();
-        var syncState = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        JiraSyncStateRecord? syncState = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
 
         return new IngestionStatusResponse
         {
@@ -350,7 +350,7 @@ public class JiraGrpcService(
     private static string BuildMarkdownSnapshot(
         SqliteConnection connection, JiraIssueRecord issue, bool includeComments, bool includeRefs)
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# {issue.Key}: {issue.Title}");
         sb.AppendLine();
         sb.AppendLine($"**Status:** {issue.Status}  ");
@@ -385,12 +385,12 @@ public class JiraGrpcService(
 
         if (includeComments)
         {
-            var comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
+            List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
             if (comments.Count > 0)
             {
                 sb.AppendLine("## Comments");
                 sb.AppendLine();
-                foreach (var c in comments)
+                foreach (JiraCommentRecord c in comments)
                 {
                     sb.AppendLine($"### {c.Author} ({c.CreatedAt:yyyy-MM-dd})");
                     sb.AppendLine();
@@ -402,16 +402,16 @@ public class JiraGrpcService(
 
         if (includeRefs)
         {
-            var links = JiraIssueLinkRecord.SelectList(connection, SourceKey: issue.Key);
-            var targetLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: issue.Key);
+            List<JiraIssueLinkRecord> links = JiraIssueLinkRecord.SelectList(connection, SourceKey: issue.Key);
+            List<JiraIssueLinkRecord> targetLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: issue.Key);
 
             if (links.Count > 0 || targetLinks.Count > 0)
             {
                 sb.AppendLine("## Related Issues");
                 sb.AppendLine();
-                foreach (var l in links)
+                foreach (JiraIssueLinkRecord l in links)
                     sb.AppendLine($"- **{l.LinkType}** → {l.TargetKey}");
-                foreach (var l in targetLinks)
+                foreach (JiraIssueLinkRecord l in targetLinks)
                     sb.AppendLine($"- **{l.LinkType}** ← {l.SourceKey}");
                 sb.AppendLine();
             }
@@ -423,8 +423,8 @@ public class JiraGrpcService(
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return null;
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
     }
@@ -443,10 +443,10 @@ public class JiraSpecificGrpcService(
 {
     public override async Task GetIssueComments(JiraGetCommentsRequest request, IServerStreamWriter<Fhiraugury.JiraComment> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var comments = JiraCommentRecord.SelectList(connection, IssueKey: request.IssueKey);
+        using SqliteConnection connection = database.OpenConnection();
+        List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection, IssueKey: request.IssueKey);
 
-        foreach (var c in comments)
+        foreach (JiraCommentRecord c in comments)
         {
             await responseStream.WriteAsync(new Fhiraugury.JiraComment
             {
@@ -461,13 +461,13 @@ public class JiraSpecificGrpcService(
 
     public override Task<JiraIssueLinksResponse> GetIssueLinks(JiraGetLinksRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var outLinks = JiraIssueLinkRecord.SelectList(connection, SourceKey: request.IssueKey);
-        var inLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: request.IssueKey);
+        List<JiraIssueLinkRecord> outLinks = JiraIssueLinkRecord.SelectList(connection, SourceKey: request.IssueKey);
+        List<JiraIssueLinkRecord> inLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: request.IssueKey);
 
-        var response = new JiraIssueLinksResponse();
-        foreach (var l in outLinks)
+        JiraIssueLinksResponse response = new JiraIssueLinksResponse();
+        foreach (JiraIssueLinkRecord l in outLinks)
         {
             response.Links.Add(new Fhiraugury.JiraIssueLink
             {
@@ -476,7 +476,7 @@ public class JiraSpecificGrpcService(
                 LinkType = l.LinkType,
             });
         }
-        foreach (var l in inLinks)
+        foreach (JiraIssueLinkRecord l in inLinks)
         {
             response.Links.Add(new Fhiraugury.JiraIssueLink
             {
@@ -491,51 +491,51 @@ public class JiraSpecificGrpcService(
 
     public override async Task ListByWorkGroup(JiraWorkGroupRequest request, IServerStreamWriter<JiraIssueSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        using var cmd = new SqliteCommand(
+        using SqliteCommand cmd = new SqliteCommand(
             "SELECT Key, ProjectKey, Title, Type, Status, Priority, WorkGroup, Specification, UpdatedAt FROM jira_issues WHERE WorkGroup = @wg ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset",
             connection);
         cmd.Parameters.AddWithValue("@wg", request.WorkGroup);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
             await responseStream.WriteAsync(ReadIssueSummary(reader));
     }
 
     public override async Task ListBySpecification(JiraSpecificationRequest request, IServerStreamWriter<JiraIssueSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        using var cmd = new SqliteCommand(
+        using SqliteCommand cmd = new SqliteCommand(
             "SELECT Key, ProjectKey, Title, Type, Status, Priority, WorkGroup, Specification, UpdatedAt FROM jira_issues WHERE Specification = @spec ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset",
             connection);
         cmd.Parameters.AddWithValue("@spec", request.Specification);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
             await responseStream.WriteAsync(ReadIssueSummary(reader));
     }
 
     public override async Task QueryIssues(JiraQueryRequest request, IServerStreamWriter<JiraIssueSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var (sql, parameters) = JiraQueryBuilder.Build(request);
+        using SqliteConnection connection = database.OpenConnection();
+        (string? sql, List<SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var key = reader["Key"]?.ToString() ?? "";
-            var summary = new JiraIssueSummary
+            string key = reader["Key"]?.ToString() ?? "";
+            JiraIssueSummary summary = new JiraIssueSummary
             {
                 Key = key,
                 ProjectKey = reader["ProjectKey"]?.ToString() ?? "",
@@ -549,7 +549,7 @@ public class JiraSpecificGrpcService(
             };
 
             if (reader["UpdatedAt"] is string updatedStr &&
-                DateTimeOffset.TryParse(updatedStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated))
+                DateTimeOffset.TryParse(updatedStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset updated))
             {
                 summary.UpdatedAt = Timestamp.FromDateTimeOffset(updated);
             }
@@ -560,18 +560,18 @@ public class JiraSpecificGrpcService(
 
     public override async Task ListSpecArtifacts(JiraListSpecArtifactsRequest request, IServerStreamWriter<SpecArtifactEntry> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT Family, SpecKey, SpecName, GitUrl, PublishedUrl, DefaultWorkgroup FROM jira_spec_artifacts";
+        string sql = "SELECT Family, SpecKey, SpecName, GitUrl, PublishedUrl, DefaultWorkgroup FROM jira_spec_artifacts";
         if (!string.IsNullOrEmpty(request.FamilyFilter))
             sql += " WHERE Family = @family";
         sql += " ORDER BY Family, SpecKey";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         if (!string.IsNullOrEmpty(request.FamilyFilter))
             cmd.Parameters.AddWithValue("@family", request.FamilyFilter);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             await responseStream.WriteAsync(new SpecArtifactEntry
@@ -588,23 +588,23 @@ public class JiraSpecificGrpcService(
 
     public override Task<JiraIssueNumbersResponse> GetIssueNumbers(JiraGetIssueNumbersRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT Key FROM jira_issues";
+        string sql = "SELECT Key FROM jira_issues";
         if (!string.IsNullOrEmpty(request.ProjectFilter))
             sql += " WHERE ProjectKey = @project";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         if (!string.IsNullOrEmpty(request.ProjectFilter))
             cmd.Parameters.AddWithValue("@project", request.ProjectFilter);
 
-        var response = new JiraIssueNumbersResponse();
-        using var reader = cmd.ExecuteReader();
+        JiraIssueNumbersResponse response = new JiraIssueNumbersResponse();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var key = reader.GetString(0);
-            var dashIndex = key.LastIndexOf('-');
-            if (dashIndex >= 0 && int.TryParse(key.AsSpan(dashIndex + 1), out var number))
+            string key = reader.GetString(0);
+            int dashIndex = key.LastIndexOf('-');
+            if (dashIndex >= 0 && int.TryParse(key.AsSpan(dashIndex + 1), out int number))
                 response.IssueNumbers.Add(number);
         }
 
@@ -613,11 +613,11 @@ public class JiraSpecificGrpcService(
 
     public override Task<SnapshotResponse> GetIssueSnapshot(JiraSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var issue = JiraIssueRecord.SelectSingle(connection, Key: request.Key)
+        using SqliteConnection connection = database.OpenConnection();
+        JiraIssueRecord issue = JiraIssueRecord.SelectSingle(connection, Key: request.Key)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Key} not found"));
 
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# {issue.Key}: {issue.Title}");
         sb.AppendLine();
         sb.AppendLine($"| Field | Value |");
@@ -645,12 +645,12 @@ public class JiraSpecificGrpcService(
 
         if (request.IncludeComments)
         {
-            var comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
+            List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection, IssueKey: issue.Key);
             if (comments.Count > 0)
             {
                 sb.AppendLine("## Comments");
                 sb.AppendLine();
-                foreach (var c in comments)
+                foreach (JiraCommentRecord c in comments)
                 {
                     sb.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}):");
                     sb.AppendLine(c.Body);
@@ -661,14 +661,14 @@ public class JiraSpecificGrpcService(
 
         if (request.IncludeInternalRefs)
         {
-            var outLinks = JiraIssueLinkRecord.SelectList(connection, SourceKey: issue.Key);
-            var inLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: issue.Key);
+            List<JiraIssueLinkRecord> outLinks = JiraIssueLinkRecord.SelectList(connection, SourceKey: issue.Key);
+            List<JiraIssueLinkRecord> inLinks = JiraIssueLinkRecord.SelectList(connection, TargetKey: issue.Key);
             if (outLinks.Count > 0 || inLinks.Count > 0)
             {
                 sb.AppendLine("## Related Issues");
                 sb.AppendLine();
-                foreach (var l in outLinks) sb.AppendLine($"- {l.LinkType} → {l.TargetKey}");
-                foreach (var l in inLinks) sb.AppendLine($"- {l.LinkType} ← {l.SourceKey}");
+                foreach (JiraIssueLinkRecord l in outLinks) sb.AppendLine($"- {l.LinkType} → {l.TargetKey}");
+                foreach (JiraIssueLinkRecord l in inLinks) sb.AppendLine($"- {l.LinkType} ← {l.SourceKey}");
             }
         }
 
@@ -683,8 +683,8 @@ public class JiraSpecificGrpcService(
 
     private JiraIssueSummary ReadIssueSummary(SqliteDataReader reader)
     {
-        var key = reader.GetString(0);
-        var summary = new JiraIssueSummary
+        string key = reader.GetString(0);
+        JiraIssueSummary summary = new JiraIssueSummary
         {
             Key = key,
             ProjectKey = reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -698,7 +698,7 @@ public class JiraSpecificGrpcService(
         };
 
         if (!reader.IsDBNull(8) &&
-            DateTimeOffset.TryParse(reader.GetString(8), CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated))
+            DateTimeOffset.TryParse(reader.GetString(8), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset updated))
         {
             summary.UpdatedAt = Timestamp.FromDateTimeOffset(updated);
         }

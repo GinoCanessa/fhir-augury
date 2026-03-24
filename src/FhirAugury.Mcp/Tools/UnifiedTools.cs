@@ -20,12 +20,12 @@ public static class UnifiedTools
     {
         try
         {
-            var request = new UnifiedSearchRequest { Query = query, Limit = limit };
+            UnifiedSearchRequest request = new UnifiedSearchRequest { Query = query, Limit = limit };
 
             if (!string.IsNullOrWhiteSpace(sources))
                 CsvParser.AddToRepeatedField(request.Sources, sources);
 
-            var response = await orchestrator.UnifiedSearchAsync(request, cancellationToken: cancellationToken);
+            SearchResponse response = await orchestrator.UnifiedSearchAsync(request, cancellationToken: cancellationToken);
             return FormatSearchResults(response, query);
         }
         catch (RpcException ex)
@@ -49,14 +49,14 @@ public static class UnifiedTools
     {
         try
         {
-            var request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
+            FindRelatedRequest request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
 
             if (!string.IsNullOrWhiteSpace(targetSources))
                 CsvParser.AddToRepeatedField(request.TargetSources, targetSources);
 
-            var response = await orchestrator.FindRelatedAsync(request, cancellationToken: cancellationToken);
+            FindRelatedResponse response = await orchestrator.FindRelatedAsync(request, cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"## Related Items for [{response.SeedSource}] {response.SeedId}");
             if (!string.IsNullOrEmpty(response.SeedTitle))
                 sb.AppendLine($"**Seed:** {response.SeedTitle}");
@@ -68,7 +68,7 @@ public static class UnifiedTools
                 return sb.ToString();
             }
 
-            foreach (var item in response.Items)
+            foreach (RelatedItem? item in response.Items)
             {
                 sb.AppendLine($"### [{item.Source}] {item.Id} — {item.Title}");
                 sb.AppendLine($"- **Relevance:** {item.RelevanceScore:F2}");
@@ -103,22 +103,22 @@ public static class UnifiedTools
     {
         try
         {
-            var response = await orchestrator.GetCrossReferencesAsync(
+            GetXRefResponse response = await orchestrator.GetCrossReferencesAsync(
                 new GetXRefRequest { Source = source, Id = id, Direction = direction },
                 cancellationToken: cancellationToken);
 
             if (response.References.Count == 0)
                 return $"No cross-references found for [{source}] {id}.";
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine($"## Cross-References for [{source}] {id} ({response.References.Count})");
             sb.AppendLine();
 
-            foreach (var xref in response.References)
+            foreach (Fhiraugury.CrossReference? xref in response.References)
             {
-                var arrow = xref.SourceType == source && xref.SourceId == id ? "→" : "←";
-                var otherType = arrow == "→" ? xref.TargetType : xref.SourceType;
-                var otherId = arrow == "→" ? xref.TargetId : xref.SourceId;
+                string arrow = xref.SourceType == source && xref.SourceId == id ? "→" : "←";
+                string otherType = arrow == "→" ? xref.TargetType : xref.SourceType;
+                string otherId = arrow == "→" ? xref.TargetId : xref.SourceId;
 
                 sb.AppendLine($"- {arrow} [{otherType}] {otherId}");
                 if (!string.IsNullOrEmpty(xref.TargetTitle))
@@ -148,10 +148,10 @@ public static class UnifiedTools
     {
         try
         {
-            var response = await orchestrator.GetServicesStatusAsync(new ServicesStatusRequest(),
+            ServicesStatusResponse response = await orchestrator.GetServicesStatusAsync(new ServicesStatusRequest(),
                 cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Services Status");
             sb.AppendLine();
             sb.AppendLine($"**Cross-Reference Links:** {response.CrossRefLinks}");
@@ -159,7 +159,7 @@ public static class UnifiedTools
                 sb.AppendLine($"**Last XRef Scan:** {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
             sb.AppendLine();
 
-            foreach (var svc in response.Services)
+            foreach (ServiceHealth? svc in response.Services)
             {
                 sb.AppendLine($"### {svc.Name}");
                 sb.AppendLine($"- **Status:** {svc.Status}");
@@ -195,18 +195,18 @@ public static class UnifiedTools
     {
         try
         {
-            var request = new TriggerSyncRequest { Type = type };
+            TriggerSyncRequest request = new TriggerSyncRequest { Type = type };
 
             if (!string.IsNullOrWhiteSpace(sources))
                 CsvParser.AddToRepeatedField(request.Sources, sources);
 
-            var response = await orchestrator.TriggerSyncAsync(request, cancellationToken: cancellationToken);
+            TriggerSyncResponse response = await orchestrator.TriggerSyncAsync(request, cancellationToken: cancellationToken);
 
-            var sb = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Sync Triggered");
             sb.AppendLine();
 
-            foreach (var status in response.Statuses)
+            foreach (SourceSyncStatus? status in response.Statuses)
             {
                 sb.AppendLine($"- **{status.Source}:** {status.Status}");
                 if (!string.IsNullOrEmpty(status.Message))
@@ -230,11 +230,11 @@ public static class UnifiedTools
         if (response.Results.Count == 0)
             return $"No results found for \"{query}\".";
 
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"## Search Results ({response.TotalResults} total, showing {response.Results.Count})");
         sb.AppendLine();
 
-        foreach (var r in response.Results)
+        foreach (SearchResultItem? r in response.Results)
         {
             sb.AppendLine($"### [{r.Source}] {r.Id} — {r.Title}");
             sb.AppendLine($"- **Score:** {r.Score:F2}");
@@ -250,7 +250,7 @@ public static class UnifiedTools
         if (response.Warnings.Count > 0)
         {
             sb.AppendLine("**Warnings:**");
-            foreach (var w in response.Warnings)
+            foreach (string? w in response.Warnings)
                 sb.AppendLine($"- {w}");
         }
 

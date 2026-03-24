@@ -26,24 +26,24 @@ public class ServiceHealthMonitor(
     /// </summary>
     public async Task CheckAllAsync(CancellationToken ct)
     {
-        var enabledServices = options.Services
+        List<string> enabledServices = options.Services
             .Where(s => s.Value.Enabled)
             .Select(s => s.Key)
             .ToList();
 
-        var tasks = enabledServices.Select(async name =>
+        List<Task<(string name, ServiceHealthInfo info)>> tasks = enabledServices.Select(async name =>
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(PerServiceTimeout);
-            var info = await CheckServiceAsync(name, timeoutCts.Token);
+            ServiceHealthInfo info = await CheckServiceAsync(name, timeoutCts.Token);
             return (name, info);
         }).ToList();
 
-        var results = await Task.WhenAll(tasks);
+        (string name, ServiceHealthInfo info)[] results = await Task.WhenAll(tasks);
 
         lock (_lock)
         {
-            foreach (var (name, info) in results)
+            foreach ((string? name, ServiceHealthInfo? info) in results)
             {
                 _healthStatus[name] = info;
             }
@@ -55,8 +55,8 @@ public class ServiceHealthMonitor(
     /// </summary>
     public async Task<ServiceHealthInfo> CheckServiceAsync(string sourceName, CancellationToken ct)
     {
-        var client = router.GetSourceClient(sourceName);
-        var config = router.GetSourceConfig(sourceName);
+        SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
+        SourceServiceConfig? config = router.GetSourceConfig(sourceName);
 
         if (client is null || config is null)
         {
@@ -70,8 +70,8 @@ public class ServiceHealthMonitor(
 
         try
         {
-            var response = await client.HealthCheckAsync(new HealthCheckRequest(), cancellationToken: ct);
-            var stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
+            HealthCheckResponse response = await client.HealthCheckAsync(new HealthCheckRequest(), cancellationToken: ct);
+            StatsResponse stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
 
             return new ServiceHealthInfo
             {

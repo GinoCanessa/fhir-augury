@@ -15,10 +15,10 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
     /// <summary>Rebuilds the entire BM25 index from all Confluence pages and comments.</summary>
     public void RebuildFullIndex(CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         ClearIndex(connection);
-        var documents = CollectDocuments(connection, ct);
+        List<(string SourceType, string SourceId, string Text)> documents = CollectDocuments(connection, ct);
 
         if (documents.Count == 0)
         {
@@ -37,21 +37,21 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
     {
         if (items.Count == 0) return;
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var (sourceType, sourceId, _) in items)
+        foreach ((string? sourceType, string? sourceId, string _) in items)
         {
             ct.ThrowIfCancellationRequested();
             DeleteKeywordsForItem(connection, sourceType, sourceId);
         }
 
-        foreach (var (sourceType, sourceId, text) in items)
+        foreach ((string? sourceType, string? sourceId, string? text) in items)
         {
             ct.ThrowIfCancellationRequested();
-            var tokens = Tokenizer.Tokenize(text);
-            var keywords = CountAndClassifyTokens(tokens);
+            List<string> tokens = Tokenizer.Tokenize(text);
+            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
 
-            foreach (var (keyword, (count, keywordType)) in keywords)
+            foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
                 ConfluenceKeywordRecord.Insert(connection, new ConfluenceKeywordRecord
                 {
@@ -72,13 +72,13 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
     private static List<(string SourceType, string SourceId, string Text)> CollectDocuments(
         SqliteConnection connection, CancellationToken ct)
     {
-        var documents = new List<(string, string, string)>();
+        List<(string, string, string)> documents = new List<(string, string, string)>();
 
-        var pages = ConfluencePageRecord.SelectList(connection);
-        foreach (var page in pages)
+        List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
+        foreach (ConfluencePageRecord page in pages)
         {
             ct.ThrowIfCancellationRequested();
-            var text = string.Join(" ",
+            string text = string.Join(" ",
                 new[] { page.Title, page.BodyPlain, page.Labels }
                     .Where(s => !string.IsNullOrEmpty(s)));
 
@@ -86,8 +86,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
                 documents.Add(("confluence", page.ConfluenceId, text));
         }
 
-        var comments = ConfluenceCommentRecord.SelectList(connection);
-        foreach (var comment in comments)
+        List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection);
+        foreach (ConfluenceCommentRecord comment in comments)
         {
             ct.ThrowIfCancellationRequested();
             if (!string.IsNullOrWhiteSpace(comment.Body))
@@ -102,13 +102,13 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         List<(string SourceType, string SourceId, string Text)> documents,
         CancellationToken ct)
     {
-        foreach (var (sourceType, sourceId, text) in documents)
+        foreach ((string? sourceType, string? sourceId, string? text) in documents)
         {
             ct.ThrowIfCancellationRequested();
-            var tokens = Tokenizer.Tokenize(text);
-            var keywords = CountAndClassifyTokens(tokens);
+            List<string> tokens = Tokenizer.Tokenize(text);
+            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
 
-            foreach (var (keyword, (count, keywordType)) in keywords)
+            foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
                 ConfluenceKeywordRecord.Insert(connection, new ConfluenceKeywordRecord
                 {
@@ -126,13 +126,13 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
 
     private static void RecomputeCorpusStats(SqliteConnection connection)
     {
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM index_corpus; DELETE FROM index_doc_stats;";
             cmd.ExecuteNonQuery();
         }
 
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT SourceType, COUNT(DISTINCT SourceId) as DocCount,
@@ -140,7 +140,7 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
                 FROM index_keywords
                 GROUP BY SourceType
                 """;
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
                 ConfluenceDocStatsRecord.Insert(connection, new ConfluenceDocStatsRecord
@@ -154,7 +154,7 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         }
 
         int totalDocCount;
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "SELECT COALESCE(SUM(TotalDocuments), 0) FROM index_doc_stats";
             totalDocCount = Convert.ToInt32(cmd.ExecuteScalar());
@@ -162,18 +162,18 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
 
         if (totalDocCount == 0) return;
 
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT Keyword, KeywordType, COUNT(DISTINCT SourceType || ':' || SourceId) as DocFreq
                 FROM index_keywords
                 GROUP BY Keyword, KeywordType
                 """;
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var df = reader.GetInt32(2);
-                var idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
+                int df = reader.GetInt32(2);
+                double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
                 ConfluenceCorpusKeywordRecord.Insert(connection, new ConfluenceCorpusKeywordRecord
                 {
@@ -187,18 +187,18 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         }
 
         double overallAvgDocLen;
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT CAST(SUM(DocLen) AS REAL) / COUNT(*) FROM (
                     SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
                 )
                 """;
-            var scalar = cmd.ExecuteScalar();
+            object? scalar = cmd.ExecuteScalar();
             overallAvgDocLen = scalar is null or DBNull ? 1.0 : Convert.ToDouble(scalar);
         }
 
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 UPDATE index_keywords
@@ -225,15 +225,15 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
 
     internal static Dictionary<string, (int Count, string KeywordType)> CountAndClassifyTokens(List<string> tokens)
     {
-        var result = new Dictionary<string, (int Count, string KeywordType)>();
+        Dictionary<string, (int Count, string KeywordType)> result = new Dictionary<string, (int Count, string KeywordType)>();
 
-        foreach (var token in tokens)
+        foreach (string token in tokens)
         {
-            var classification = KeywordClassifier.Classify(token);
+            KeywordType classification = KeywordClassifier.Classify(token);
             if (classification == KeywordType.StopWord)
                 continue;
 
-            if (result.TryGetValue(token, out var existing))
+            if (result.TryGetValue(token, out (int Count, string KeywordType) existing))
                 result[token] = (existing.Count + 1, existing.KeywordType);
             else
                 result[token] = (1, KeywordClassifier.ToStorageString(classification));
@@ -244,14 +244,14 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
 
     private static void ClearIndex(SqliteConnection connection)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "DELETE FROM index_keywords; DELETE FROM index_corpus; DELETE FROM index_doc_stats;";
         cmd.ExecuteNonQuery();
     }
 
     private static void DeleteKeywordsForItem(SqliteConnection connection, string sourceType, string sourceId)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "DELETE FROM index_keywords WHERE SourceType = @type AND SourceId = @id;";
         cmd.Parameters.AddWithValue("@type", sourceType);
         cmd.Parameters.AddWithValue("@id", sourceId);

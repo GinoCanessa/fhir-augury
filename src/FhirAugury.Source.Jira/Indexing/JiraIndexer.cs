@@ -15,10 +15,10 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
     /// <summary>Rebuilds the entire BM25 index from all Jira issues and comments.</summary>
     public void RebuildFullIndex(CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         ClearIndex(connection);
-        var documents = CollectDocuments(connection, ct);
+        List<(string SourceType, string SourceId, string Text)> documents = CollectDocuments(connection, ct);
 
         if (documents.Count == 0)
         {
@@ -37,23 +37,23 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
     {
         if (items.Count == 0) return;
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var (sourceType, sourceId, _) in items)
+        foreach ((string? sourceType, string? sourceId, string _) in items)
         {
             ct.ThrowIfCancellationRequested();
             DeleteKeywordsForItem(connection, sourceType, sourceId);
         }
 
-        var allRecords = new List<JiraKeywordRecord>();
+        List<JiraKeywordRecord> allRecords = new List<JiraKeywordRecord>();
 
-        foreach (var (sourceType, sourceId, text) in items)
+        foreach ((string? sourceType, string? sourceId, string? text) in items)
         {
             ct.ThrowIfCancellationRequested();
-            var tokens = Tokenizer.Tokenize(text);
-            var keywords = CountAndClassifyTokens(tokens);
+            List<string> tokens = Tokenizer.Tokenize(text);
+            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
 
-            foreach (var (keyword, (count, keywordType)) in keywords)
+            foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
                 allRecords.Add(new JiraKeywordRecord
                 {
@@ -68,7 +68,7 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
             }
         }
 
-        foreach (var record in allRecords)
+        foreach (JiraKeywordRecord record in allRecords)
             JiraKeywordRecord.Insert(connection, record);
 
         RecomputeCorpusStats(connection);
@@ -77,13 +77,13 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
     private static List<(string SourceType, string SourceId, string Text)> CollectDocuments(
         SqliteConnection connection, CancellationToken ct)
     {
-        var documents = new List<(string, string, string)>();
+        List<(string, string, string)> documents = new List<(string, string, string)>();
 
-        var issues = JiraIssueRecord.SelectList(connection);
-        foreach (var issue in issues)
+        List<JiraIssueRecord> issues = JiraIssueRecord.SelectList(connection);
+        foreach (JiraIssueRecord issue in issues)
         {
             ct.ThrowIfCancellationRequested();
-            var text = string.Join(" ",
+            string text = string.Join(" ",
                 new[] { issue.Title, issue.Description, issue.Summary, issue.ResolutionDescription, issue.Labels, issue.RelatedArtifacts }
                     .Where(s => !string.IsNullOrEmpty(s)));
 
@@ -91,8 +91,8 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
                 documents.Add(("jira", issue.Key, text));
         }
 
-        var comments = JiraCommentRecord.SelectList(connection);
-        foreach (var comment in comments)
+        List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection);
+        foreach (JiraCommentRecord comment in comments)
         {
             ct.ThrowIfCancellationRequested();
             if (!string.IsNullOrWhiteSpace(comment.Body))
@@ -107,13 +107,13 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
         List<(string SourceType, string SourceId, string Text)> documents,
         CancellationToken ct)
     {
-        foreach (var (sourceType, sourceId, text) in documents)
+        foreach ((string? sourceType, string? sourceId, string? text) in documents)
         {
             ct.ThrowIfCancellationRequested();
-            var tokens = Tokenizer.Tokenize(text);
-            var keywords = CountAndClassifyTokens(tokens);
+            List<string> tokens = Tokenizer.Tokenize(text);
+            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
 
-            foreach (var (keyword, (count, keywordType)) in keywords)
+            foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
                 JiraKeywordRecord.Insert(connection, new JiraKeywordRecord
                 {
@@ -131,14 +131,14 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
 
     private static void RecomputeCorpusStats(SqliteConnection connection)
     {
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM index_corpus; DELETE FROM index_doc_stats;";
             cmd.ExecuteNonQuery();
         }
 
         // Compute doc stats per source type
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT SourceType, COUNT(DISTINCT SourceId) as DocCount,
@@ -146,7 +146,7 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
                 FROM index_keywords
                 GROUP BY SourceType
                 """;
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
                 JiraDocStatsRecord.Insert(connection, new JiraDocStatsRecord
@@ -161,7 +161,7 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
 
         // Total doc count for IDF
         int totalDocCount;
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "SELECT COALESCE(SUM(TotalDocuments), 0) FROM index_doc_stats";
             totalDocCount = Convert.ToInt32(cmd.ExecuteScalar());
@@ -170,18 +170,18 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
         if (totalDocCount == 0) return;
 
         // Compute and store IDF
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT Keyword, KeywordType, COUNT(DISTINCT SourceType || ':' || SourceId) as DocFreq
                 FROM index_keywords
                 GROUP BY Keyword, KeywordType
                 """;
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var df = reader.GetInt32(2);
-                var idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
+                int df = reader.GetInt32(2);
+                double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
                 JiraCorpusKeywordRecord.Insert(connection, new JiraCorpusKeywordRecord
                 {
@@ -196,18 +196,18 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
 
         // Compute BM25 scores via bulk SQL UPDATE
         double overallAvgDocLen;
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT CAST(SUM(DocLen) AS REAL) / COUNT(*) FROM (
                     SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
                 )
                 """;
-            var scalar = cmd.ExecuteScalar();
+            object? scalar = cmd.ExecuteScalar();
             overallAvgDocLen = scalar is null or DBNull ? 1.0 : Convert.ToDouble(scalar);
         }
 
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 UPDATE index_keywords
@@ -234,15 +234,15 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
 
     internal static Dictionary<string, (int Count, string KeywordType)> CountAndClassifyTokens(List<string> tokens)
     {
-        var result = new Dictionary<string, (int Count, string KeywordType)>();
+        Dictionary<string, (int Count, string KeywordType)> result = new Dictionary<string, (int Count, string KeywordType)>();
 
-        foreach (var token in tokens)
+        foreach (string token in tokens)
         {
-            var classification = KeywordClassifier.Classify(token);
+            KeywordType classification = KeywordClassifier.Classify(token);
             if (classification == KeywordType.StopWord)
                 continue;
 
-            if (result.TryGetValue(token, out var existing))
+            if (result.TryGetValue(token, out (int Count, string KeywordType) existing))
                 result[token] = (existing.Count + 1, existing.KeywordType);
             else
                 result[token] = (1, KeywordClassifier.ToStorageString(classification));
@@ -253,14 +253,14 @@ public class JiraIndexer(JiraDatabase database, ILogger<JiraIndexer> logger)
 
     private static void ClearIndex(SqliteConnection connection)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "DELETE FROM index_keywords; DELETE FROM index_corpus; DELETE FROM index_doc_stats;";
         cmd.ExecuteNonQuery();
     }
 
     private static void DeleteKeywordsForItem(SqliteConnection connection, string sourceType, string sourceId)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "DELETE FROM index_keywords WHERE SourceType = @type AND SourceId = @id;";
         cmd.Parameters.AddWithValue("@type", sourceType);
         cmd.Parameters.AddWithValue("@id", sourceId);

@@ -25,14 +25,14 @@ public static class ZulipMessageMapper
     /// <summary>Maps a Zulip message JSON element to a ZulipMessageRecord.</summary>
     public static ZulipMessageRecord MapMessage(JsonElement messageJson, string streamName, int streamDbId)
     {
-        var contentHtml = GetStringOrNull(messageJson, "content");
-        var contentPlain = TextSanitizer.StripHtml(contentHtml) ?? string.Empty;
+        string? contentHtml = GetStringOrNull(messageJson, "content");
+        string contentPlain = TextSanitizer.StripHtml(contentHtml) ?? string.Empty;
 
-        var timestamp = messageJson.GetProperty("timestamp").GetInt64();
-        var messageTimestamp = DateTimeOffset.FromUnixTimeSeconds(timestamp);
+        long timestamp = messageJson.GetProperty("timestamp").GetInt64();
+        DateTimeOffset messageTimestamp = DateTimeOffset.FromUnixTimeSeconds(timestamp);
 
         string? reactions = null;
-        if (messageJson.TryGetProperty("reactions", out var reactionsEl) &&
+        if (messageJson.TryGetProperty("reactions", out JsonElement reactionsEl) &&
             reactionsEl.ValueKind == JsonValueKind.Array &&
             reactionsEl.GetArrayLength() > 0)
         {
@@ -59,21 +59,21 @@ public static class ZulipMessageMapper
 
     private static string? GetStringOrNull(JsonElement element, string property)
     {
-        if (!element.TryGetProperty(property, out var prop) || prop.ValueKind == JsonValueKind.Null)
+        if (!element.TryGetProperty(property, out JsonElement prop) || prop.ValueKind == JsonValueKind.Null)
             return null;
         return prop.GetString();
     }
 
     private static bool GetBool(JsonElement element, string property)
     {
-        if (!element.TryGetProperty(property, out var prop))
+        if (!element.TryGetProperty(property, out JsonElement prop))
             return false;
         return prop.ValueKind == JsonValueKind.True;
     }
 
     private static int GetInt(JsonElement element, string property)
     {
-        if (!element.TryGetProperty(property, out var prop))
+        if (!element.TryGetProperty(property, out JsonElement prop))
             return 0;
         return prop.GetInt32();
     }

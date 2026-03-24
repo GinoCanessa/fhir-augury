@@ -44,7 +44,7 @@ public static class HttpRetryHelper
         int maxRetries = DefaultMaxRetries,
         string? sourceName = null)
     {
-        var backoff = DefaultInitialBackoff;
+        TimeSpan backoff = DefaultInitialBackoff;
 
         for (int attempt = 0; ; attempt++)
         {
@@ -70,8 +70,8 @@ public static class HttpRetryHelper
 
             if (AuthFailureCodes.Contains(response.StatusCode))
             {
-                var source = sourceName ?? "source";
-                var msg = response.StatusCode == HttpStatusCode.Unauthorized
+                string source = sourceName ?? "source";
+                string msg = response.StatusCode == HttpStatusCode.Unauthorized
                     ? $"Authentication failed for {source} (HTTP 401). Check your credentials — API tokens, cookies, or passwords may be expired or invalid."
                     : $"Access forbidden for {source} (HTTP 403). Check your credentials and permissions. For GitHub, verify your PAT has the required scopes.";
                 response.Dispose();
@@ -80,8 +80,8 @@ public static class HttpRetryHelper
 
             if (TransientStatusCodes.Contains(response.StatusCode) && attempt < maxRetries)
             {
-                var retryAfter = GetRetryAfter(response);
-                var delay = retryAfter ?? backoff;
+                TimeSpan? retryAfter = GetRetryAfter(response);
+                TimeSpan delay = retryAfter ?? backoff;
                 await DelayWithJitter(delay, ct);
                 backoff = NextBackoff(backoff);
                 response.Dispose();
@@ -102,7 +102,7 @@ public static class HttpRetryHelper
 
         if (response.Headers.RetryAfter?.Date is { } date)
         {
-            var delay = date - DateTimeOffset.UtcNow;
+            TimeSpan delay = date - DateTimeOffset.UtcNow;
             return delay > TimeSpan.Zero ? delay : null;
         }
 
@@ -111,8 +111,8 @@ public static class HttpRetryHelper
 
     private static async Task DelayWithJitter(TimeSpan baseDelay, CancellationToken ct)
     {
-        var jitter = 1.0 + (Random.Shared.NextDouble() * 0.4 - 0.2);
-        var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * jitter);
+        double jitter = 1.0 + (Random.Shared.NextDouble() * 0.4 - 0.2);
+        TimeSpan delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * jitter);
         if (delay > DefaultMaxBackoff)
             delay = DefaultMaxBackoff;
 
@@ -121,7 +121,7 @@ public static class HttpRetryHelper
 
     private static TimeSpan NextBackoff(TimeSpan current)
     {
-        var next = TimeSpan.FromMilliseconds(current.TotalMilliseconds * 2);
+        TimeSpan next = TimeSpan.FromMilliseconds(current.TotalMilliseconds * 2);
         return next > DefaultMaxBackoff ? DefaultMaxBackoff : next;
     }
 }

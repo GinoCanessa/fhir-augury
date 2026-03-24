@@ -5,6 +5,7 @@ using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Source.Zulip.Ingestion;
@@ -25,9 +26,9 @@ public class ZulipSource(
     /// <summary>Performs a full download of all streams and their messages.</summary>
     public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
         List<ZulipStreamRecord> streams;
         try
@@ -41,12 +42,12 @@ public class ZulipSource(
             return new IngestionResult(0, 0, 0, 0, errors, startedAt);
         }
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Upsert streams
-        foreach (var stream in streams)
+        foreach (ZulipStreamRecord stream in streams)
         {
-            var existing = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
+            ZulipStreamRecord? existing = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
             if (existing is not null)
             {
                 stream.Id = existing.Id;
@@ -60,14 +61,14 @@ public class ZulipSource(
         }
 
         // For each stream, paginate all messages
-        foreach (var stream in streams)
+        foreach (ZulipStreamRecord stream in streams)
         {
             if (ct.IsCancellationRequested) break;
 
             logger.LogInformation("Fetching messages for stream: {StreamName}", stream.Name);
 
-            var streamDir = ZulipCacheLayout.StreamDirectory(stream.ZulipStreamId);
-            var existingKeys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDir).ToList();
+            string streamDir = ZulipCacheLayout.StreamDirectory(stream.ZulipStreamId);
+            List<string> existingKeys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDir).ToList();
 
             int anchor = 0;
             bool hasMore = true;
@@ -79,20 +80,20 @@ public class ZulipSource(
                 List<JsonElement> messages;
                 try
                 {
-                    var narrow = $"[{{\"operator\":\"stream\",\"operand\":{stream.ZulipStreamId}}}]";
-                    var url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}" +
+                    string narrow = $"[{{\"operator\":\"stream\",\"operand\":{stream.ZulipStreamId}}}]";
+                    string url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}" +
                               $"&anchor={anchor}&num_before=0&num_after={options.BatchSize}";
 
-                    var response = await HttpRetryHelper.GetWithRetryAsync(
+                    HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                         httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
                     response.EnsureSuccessStatusCode();
                     rawJson = await response.Content.ReadAsStringAsync(ct);
 
-                    using var doc = JsonDocument.Parse(rawJson);
-                    var root = doc.RootElement;
-                    var foundNewest = root.TryGetProperty("found_newest", out var fn) && fn.GetBoolean();
+                    using JsonDocument doc = JsonDocument.Parse(rawJson);
+                    JsonElement root = doc.RootElement;
+                    bool foundNewest = root.TryGetProperty("found_newest", out JsonElement fn) && fn.GetBoolean();
                     messages = [];
-                    foreach (var msg in root.GetProperty("messages").EnumerateArray())
+                    foreach (JsonElement msg in root.GetProperty("messages").EnumerateArray())
                         messages.Add(msg.Clone());
                     hasMore = !foundNewest && messages.Count > 0;
                 }
@@ -106,17 +107,17 @@ public class ZulipSource(
                 // Write to cache — initial download uses WeekOf
                 if (messages.Count > 0)
                 {
-                    var oldestTimestamp = messages[0].GetProperty("timestamp").GetInt64();
-                    var oldestDate = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(oldestTimestamp).UtcDateTime);
-                    var cacheKey = $"{streamDir}/{CacheFileNaming.GenerateWeeklyFileName(oldestDate, ZulipCacheLayout.JsonExtension, existingKeys)}";
+                    long oldestTimestamp = messages[0].GetProperty("timestamp").GetInt64();
+                    DateOnly oldestDate = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(oldestTimestamp).UtcDateTime);
+                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateWeeklyFileName(oldestDate, ZulipCacheLayout.JsonExtension, existingKeys)}";
                     existingKeys.Add(Path.GetFileName(cacheKey));
-                    using var cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(rawJson));
+                    using MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(rawJson));
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);
                 }
 
-                foreach (var msgJson in messages)
+                foreach (JsonElement msgJson in messages)
                 {
-                    var (outcome, error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
+                    (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
                     itemsProcessed++;
 
                     switch (outcome)
@@ -157,10 +158,10 @@ public class ZulipSource(
     /// <summary>Performs an incremental download using per-stream sync cursors.</summary>
     public async Task<IngestionResult> DownloadIncrementalAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        List<string> errors = new List<string>();
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         List<ZulipStreamRecord> streams;
         try
@@ -174,14 +175,14 @@ public class ZulipSource(
             return new IngestionResult(0, 0, 0, 0, errors, startedAt);
         }
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var stream in streams)
+        foreach (ZulipStreamRecord stream in streams)
         {
             if (ct.IsCancellationRequested) break;
 
             // Upsert stream
-            var existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
+            ZulipStreamRecord? existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
             if (existingStream is not null)
             {
                 stream.Id = existingStream.Id;
@@ -193,15 +194,15 @@ public class ZulipSource(
                 ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
             }
 
-            var syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: SourceName, SubSource: stream.Name);
+            ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: SourceName, SubSource: stream.Name);
             int anchor = 0;
-            if (syncState?.LastCursor is not null && int.TryParse(syncState.LastCursor, out var lastId))
+            if (syncState?.LastCursor is not null && int.TryParse(syncState.LastCursor, out int lastId))
                 anchor = lastId + 1;
 
             logger.LogInformation("Incremental fetch for {Stream} from anchor {Anchor}", stream.Name, anchor);
 
-            var streamDir = ZulipCacheLayout.StreamDirectory(stream.ZulipStreamId);
-            var existingKeys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDir).ToList();
+            string streamDir = ZulipCacheLayout.StreamDirectory(stream.ZulipStreamId);
+            List<string> existingKeys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDir).ToList();
 
             bool hasMore = true;
             while (hasMore && !ct.IsCancellationRequested)
@@ -210,20 +211,20 @@ public class ZulipSource(
                 List<JsonElement> messages;
                 try
                 {
-                    var narrow = $"[{{\"operator\":\"stream\",\"operand\":{stream.ZulipStreamId}}}]";
-                    var url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}" +
+                    string narrow = $"[{{\"operator\":\"stream\",\"operand\":{stream.ZulipStreamId}}}]";
+                    string url = $"{options.BaseUrl}/api/v1/messages?narrow={Uri.EscapeDataString(narrow)}" +
                               $"&anchor={anchor}&num_before=0&num_after={options.BatchSize}";
 
-                    var response = await HttpRetryHelper.GetWithRetryAsync(
+                    HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                         httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
                     response.EnsureSuccessStatusCode();
                     rawJson = await response.Content.ReadAsStringAsync(ct);
 
-                    using var doc = JsonDocument.Parse(rawJson);
-                    var root = doc.RootElement;
-                    var foundNewest = root.TryGetProperty("found_newest", out var fn) && fn.GetBoolean();
+                    using JsonDocument doc = JsonDocument.Parse(rawJson);
+                    JsonElement root = doc.RootElement;
+                    bool foundNewest = root.TryGetProperty("found_newest", out JsonElement fn) && fn.GetBoolean();
                     messages = [];
-                    foreach (var msg in root.GetProperty("messages").EnumerateArray())
+                    foreach (JsonElement msg in root.GetProperty("messages").EnumerateArray())
                         messages.Add(msg.Clone());
                     hasMore = !foundNewest && messages.Count > 0;
                 }
@@ -237,15 +238,15 @@ public class ZulipSource(
                 // Incremental uses DayOf
                 if (messages.Count > 0)
                 {
-                    var cacheKey = $"{streamDir}/{CacheFileNaming.GenerateDailyFileName(today, ZulipCacheLayout.JsonExtension, existingKeys)}";
+                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateDailyFileName(today, ZulipCacheLayout.JsonExtension, existingKeys)}";
                     existingKeys.Add(Path.GetFileName(cacheKey));
-                    using var cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(rawJson));
+                    using MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(rawJson));
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);
                 }
 
-                foreach (var msgJson in messages)
+                foreach (JsonElement msgJson in messages)
                 {
-                    var (outcome, error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
+                    (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
                     itemsProcessed++;
 
                     switch (outcome)
@@ -280,36 +281,36 @@ public class ZulipSource(
     /// <summary>Loads all messages from cached API responses (no network).</summary>
     public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Discover stream directories under the zulip source cache
-        var cacheRoot = cache.RootPath;
-        var zulipDir = Path.Combine(cacheRoot, ZulipCacheLayout.SourceName);
+        string cacheRoot = cache.RootPath;
+        string zulipDir = Path.Combine(cacheRoot, ZulipCacheLayout.SourceName);
         if (!Directory.Exists(zulipDir))
         {
             logger.LogWarning("No zulip cache directory found at {Path}", zulipDir);
             return Task.FromResult(new IngestionResult(0, 0, 0, 0, errors, startedAt));
         }
 
-        var streamDirs = Directory.GetDirectories(zulipDir)
+        List<string> streamDirs = Directory.GetDirectories(zulipDir)
             .Select(d => Path.GetFileName(d))
             .Where(n => n.StartsWith('s') && int.TryParse(n.AsSpan(1), out _))
             .OrderBy(n => int.Parse(n.AsSpan(1)))
             .ToList();
 
-        foreach (var streamDirName in streamDirs)
+        foreach (string? streamDirName in streamDirs)
         {
             if (ct.IsCancellationRequested) break;
 
-            var streamId = int.Parse(streamDirName.AsSpan(1));
+            int streamId = int.Parse(streamDirName.AsSpan(1));
 
             // Upsert a stream record from metadata or defaults
-            var existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: streamId);
-            var streamRecord = existingStream ?? new ZulipStreamRecord
+            ZulipStreamRecord? existingStream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: streamId);
+            ZulipStreamRecord streamRecord = existingStream ?? new ZulipStreamRecord
             {
                 Id = ZulipStreamRecord.GetIndex(),
                 ZulipStreamId = streamId,
@@ -322,25 +323,25 @@ public class ZulipSource(
             if (existingStream is null)
                 ZulipStreamRecord.Insert(connection, streamRecord, ignoreDuplicates: true);
 
-            var keys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDirName);
+            IEnumerable<string> keys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDirName);
 
-            foreach (var key in keys)
+            foreach (string key in keys)
             {
                 if (ct.IsCancellationRequested) break;
 
-                if (!cache.TryGet(ZulipCacheLayout.SourceName, key, out var stream))
+                if (!cache.TryGet(ZulipCacheLayout.SourceName, key, out Stream? stream))
                     continue;
 
                 using (stream)
                 {
                     try
                     {
-                        using var doc = JsonDocument.Parse(stream);
-                        var messagesArray = doc.RootElement.GetProperty("messages");
+                        using JsonDocument doc = JsonDocument.Parse(stream);
+                        JsonElement messagesArray = doc.RootElement.GetProperty("messages");
 
-                        foreach (var msgJson in messagesArray.EnumerateArray())
+                        foreach (JsonElement msgJson in messagesArray.EnumerateArray())
                         {
-                            var (outcome, error) = ProcessMessage(msgJson, streamRecord.Name, streamRecord.Id, connection);
+                            (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, streamRecord.Name, streamRecord.Id, connection);
                             itemsProcessed++;
 
                             switch (outcome)
@@ -376,18 +377,18 @@ public class ZulipSource(
 
     private async Task<List<ZulipStreamRecord>> FetchStreamsAsync(CancellationToken ct)
     {
-        var url = $"{options.BaseUrl}/api/v1/streams";
-        var response = await HttpRetryHelper.GetWithRetryAsync(
+        string url = $"{options.BaseUrl}/api/v1/streams";
+        HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
             httpClientFactory.CreateClient("zulip"), url, ct, options.RateLimiting.MaxRetries, "zulip");
         response.EnsureSuccessStatusCode();
 
-        var json = await response.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
-        var streams = new List<ZulipStreamRecord>();
+        string json = await response.Content.ReadAsStringAsync(ct);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        List<ZulipStreamRecord> streams = new List<ZulipStreamRecord>();
 
-        foreach (var streamJson in doc.RootElement.GetProperty("streams").EnumerateArray())
+        foreach (JsonElement streamJson in doc.RootElement.GetProperty("streams").EnumerateArray())
         {
-            var stream = ZulipMessageMapper.MapStream(streamJson);
+            ZulipStreamRecord stream = ZulipMessageMapper.MapStream(streamJson);
             if (options.OnlyWebPublic && !stream.IsWebPublic)
                 continue;
             streams.Add(stream);
@@ -403,8 +404,8 @@ public class ZulipSource(
     {
         try
         {
-            var record = ZulipMessageMapper.MapMessage(messageJson, streamName, streamDbId);
-            var existing = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId);
+            ZulipMessageRecord record = ZulipMessageMapper.MapMessage(messageJson, streamName, streamDbId);
+            ZulipMessageRecord? existing = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId);
 
             if (existing is not null)
             {
@@ -418,7 +419,7 @@ public class ZulipSource(
         }
         catch (Exception ex)
         {
-            var msgId = messageJson.TryGetProperty("id", out var idProp) ? idProp.GetInt32().ToString() : "unknown";
+            string msgId = messageJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
             return (ProcessOutcome.Failed, $"msg:{msgId} - {ex.Message}");
         }
     }
@@ -426,9 +427,9 @@ public class ZulipSource(
     private static void UpdateSyncCursor(
         Microsoft.Data.Sqlite.SqliteConnection connection, string streamName, string cursor)
     {
-        var existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: SourceName, SubSource: streamName);
+        ZulipSyncStateRecord? existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: SourceName, SubSource: streamName);
 
-        var syncState = new ZulipSyncStateRecord
+        ZulipSyncStateRecord syncState = new ZulipSyncStateRecord
         {
             Id = existing?.Id ?? ZulipSyncStateRecord.GetIndex(),
             SourceName = SourceName,

@@ -1,3 +1,4 @@
+using FhirAugury.Common.Caching;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
@@ -17,22 +18,22 @@ public static class ZulipHttpApi
 {
     public static IEndpointRouteBuilder MapZulipHttpApi(this IEndpointRouteBuilder app)
     {
-        var api = app.MapGroup("/api/v1");
+        RouteGroupBuilder api = app.MapGroup("/api/v1");
 
         api.MapGet("/search", (string? q, int? limit, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
-            var options = optsAccessor.Value;
+            ZulipServiceOptions options = optsAccessor.Value;
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
-            using var connection = db.OpenConnection();
-            var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
+            using SqliteConnection connection = db.OpenConnection();
+            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
             if (string.IsNullOrEmpty(ftsQuery))
                 return Results.Ok(new { query = q, results = Array.Empty<object>() });
 
-            var maxResults = Math.Min(limit ?? 20, 200);
+            int maxResults = Math.Min(limit ?? 20, 200);
 
-            var sql = """
+            string sql = """
                 SELECT zm.ZulipMessageId, zm.StreamName, zm.Topic,
                        snippet(zulip_messages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
                        zulip_messages_fts.rank, zm.SenderName, zm.Timestamp
@@ -43,17 +44,17 @@ public static class ZulipHttpApi
                 LIMIT @limit
                 """;
 
-            using var cmd = new SqliteCommand(sql, connection);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
             cmd.Parameters.AddWithValue("@query", ftsQuery);
             cmd.Parameters.AddWithValue("@limit", maxResults);
 
-            var results = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> results = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var msgId = reader.GetInt32(0);
-                var streamName = reader.GetString(1);
-                var topic = reader.GetString(2);
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
                 results.Add(new
                 {
                     id = msgId,
@@ -71,9 +72,9 @@ public static class ZulipHttpApi
 
         api.MapGet("/messages/{id:int}", (int id, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
-            var options = optsAccessor.Value;
-            using var connection = db.OpenConnection();
-            var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
             if (message is null)
                 return Results.NotFound(new { error = $"Message {id} not found" });
 
@@ -93,9 +94,9 @@ public static class ZulipHttpApi
 
         api.MapGet("/streams", (ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
-            var options = optsAccessor.Value;
-            using var connection = db.OpenConnection();
-            var streams = ZulipStreamRecord.SelectList(connection);
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            List<ZulipStreamRecord> streams = ZulipStreamRecord.SelectList(connection);
 
             return Results.Ok(new
             {
@@ -114,12 +115,12 @@ public static class ZulipHttpApi
 
         api.MapGet("/streams/{streamName}/topics", (string streamName, int? limit, int? offset, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
-            var options = optsAccessor.Value;
-            using var connection = db.OpenConnection();
-            var maxResults = Math.Min(limit ?? 50, 500);
-            var skip = Math.Max(offset ?? 0, 0);
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 50, 500);
+            int skip = Math.Max(offset ?? 0, 0);
 
-            var sql = """
+            string sql = """
                 SELECT Topic, COUNT(*) as MsgCount, MAX(Timestamp) as LastMsgAt
                 FROM zulip_messages
                 WHERE StreamName = @streamName
@@ -128,16 +129,16 @@ public static class ZulipHttpApi
                 LIMIT @limit OFFSET @offset
                 """;
 
-            using var cmd = new SqliteCommand(sql, connection);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
             cmd.Parameters.AddWithValue("@streamName", streamName);
             cmd.Parameters.AddWithValue("@limit", maxResults);
             cmd.Parameters.AddWithValue("@offset", skip);
 
-            var topics = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> topics = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var topic = reader.GetString(0);
+                string topic = reader.GetString(0);
                 topics.Add(new
                 {
                     topic,
@@ -152,11 +153,11 @@ public static class ZulipHttpApi
 
         api.MapGet("/threads/{streamName}/{topic}", (string streamName, string topic, int? limit, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
         {
-            var options = optsAccessor.Value;
-            using var connection = db.OpenConnection();
-            var maxResults = Math.Min(limit ?? 200, 1000);
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 200, 1000);
 
-            var sql = """
+            string sql = """
                 SELECT ZulipMessageId, SenderName, ContentPlain, ContentHtml, Timestamp
                 FROM zulip_messages
                 WHERE StreamName = @streamName AND Topic = @topic
@@ -164,13 +165,13 @@ public static class ZulipHttpApi
                 LIMIT @limit
                 """;
 
-            using var cmd = new SqliteCommand(sql, connection);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
             cmd.Parameters.AddWithValue("@streamName", streamName);
             cmd.Parameters.AddWithValue("@topic", topic);
             cmd.Parameters.AddWithValue("@limit", maxResults);
 
-            var messages = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> messages = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
                 messages.Add(new
@@ -195,10 +196,10 @@ public static class ZulipHttpApi
 
         api.MapPost("/ingest", async (HttpRequest req, ZulipIngestionPipeline pipeline) =>
         {
-            var type = req.Query["type"].FirstOrDefault() ?? "incremental";
+            string type = req.Query["type"].FirstOrDefault() ?? "incremental";
             try
             {
-                var result = type == "full"
+                IngestionResult result = type == "full"
                     ? await pipeline.RunFullIngestionAsync(ct: req.HttpContext.RequestAborted)
                     : await pipeline.RunIncrementalIngestionAsync(req.HttpContext.RequestAborted);
 
@@ -216,8 +217,8 @@ public static class ZulipHttpApi
 
         api.MapGet("/status", (ZulipIngestionPipeline pipeline, ZulipDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
 
             return Results.Ok(new
             {
@@ -233,7 +234,7 @@ public static class ZulipHttpApi
         {
             try
             {
-                var result = await pipeline.RebuildFromCacheAsync();
+                IngestionResult result = await pipeline.RebuildFromCacheAsync();
                 return Results.Ok(new { result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated });
             }
             catch (InvalidOperationException ex)
@@ -244,11 +245,11 @@ public static class ZulipHttpApi
 
         api.MapGet("/stats", (ZulipDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
-            using var connection = db.OpenConnection();
-            var messageCount = ZulipMessageRecord.SelectCount(connection);
-            var streamCount = ZulipStreamRecord.SelectCount(connection);
-            var dbSize = db.GetDatabaseSizeBytes();
-            var cacheStats = cache.GetStats(ZulipCacheLayout.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            int messageCount = ZulipMessageRecord.SelectCount(connection);
+            int streamCount = ZulipStreamRecord.SelectCount(connection);
+            long dbSize = db.GetDatabaseSizeBytes();
+            CacheStats cacheStats = cache.GetStats(ZulipCacheLayout.SourceName);
 
             return Results.Ok(new
             {

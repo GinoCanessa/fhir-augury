@@ -63,7 +63,7 @@ public static class KeywordClassifier
             return KeywordType.FhirOperation;
         }
 
-        var dotIndex = token.IndexOf('.');
+        int dotIndex = token.IndexOf('.');
         if (dotIndex >= 0 && FhirVocabulary.IsResourceName(token[..dotIndex]))
         {
             return KeywordType.FhirPath;

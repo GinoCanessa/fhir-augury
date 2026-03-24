@@ -12,21 +12,21 @@ public class ZulipToolsTests
     [Fact]
     public async Task SearchZulip_ReturnsFormattedResults()
     {
-        var mockResponse = McpTestHelper.CreateSearchResponse(
+        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
             ("zulip", "general:test-topic", "Test Topic", 0.9));
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<SourceService.SourceServiceClient>();
+        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
         client.SearchAsync(Arg.Any<SearchRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await ZulipTools.SearchZulip(client, "test query");
+        string result = await ZulipTools.SearchZulip(client, "test query");
 
         Assert.Contains("Search Results", result);
         Assert.Contains("test-topic", result);
@@ -35,7 +35,7 @@ public class ZulipToolsTests
     [Fact]
     public async Task GetZulipThread_ReturnsFormattedThread()
     {
-        var thread = new ZulipThread { StreamName = "general", Topic = "test-topic" };
+        ZulipThread thread = new ZulipThread { StreamName = "general", Topic = "test-topic" };
         thread.Messages.Add(new ZulipMessage
         {
             Id = 1, StreamName = "general", Topic = "test-topic",
@@ -49,18 +49,18 @@ public class ZulipToolsTests
             Timestamp = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
         });
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<ZulipThread> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(thread),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<ZulipService.ZulipServiceClient>();
+        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
         client.GetThreadAsync(Arg.Any<ZulipGetThreadRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await ZulipTools.GetZulipThread(client, "general", "test-topic");
+        string result = await ZulipTools.GetZulipThread(client, "general", "test-topic");
 
         Assert.Contains("general > test-topic", result);
         Assert.Contains("User1", result);
@@ -72,20 +72,20 @@ public class ZulipToolsTests
     [Fact]
     public async Task GetZulipThread_NoMessages_ReturnsMessage()
     {
-        var thread = new ZulipThread { StreamName = "general", Topic = "empty-topic" };
+        ZulipThread thread = new ZulipThread { StreamName = "general", Topic = "empty-topic" };
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<ZulipThread> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(thread),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<ZulipService.ZulipServiceClient>();
+        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
         client.GetThreadAsync(Arg.Any<ZulipGetThreadRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await ZulipTools.GetZulipThread(client, "general", "empty-topic");
+        string result = await ZulipTools.GetZulipThread(client, "general", "empty-topic");
 
         Assert.Contains("No messages found", result);
     }
@@ -93,18 +93,18 @@ public class ZulipToolsTests
     [Fact]
     public async Task ListZulipStreams_ReturnsFormattedStreams()
     {
-        var streams = new[]
+        ZulipStream[] streams = new[]
         {
             new ZulipStream { Id = 1, Name = "general", Description = "General discussion", MessageCount = 500 },
             new ZulipStream { Id = 2, Name = "committers", Description = "Committer chat", MessageCount = 200 },
         };
 
-        var streamCall = McpTestHelper.CreateStreamingCall(streams);
-        var client = Substitute.For<ZulipService.ZulipServiceClient>();
+        AsyncServerStreamingCall<ZulipStream> streamCall = McpTestHelper.CreateStreamingCall(streams);
+        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
         client.ListStreams(Arg.Any<ZulipListStreamsRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await ZulipTools.ListZulipStreams(client);
+        string result = await ZulipTools.ListZulipStreams(client);
 
         Assert.Contains("Zulip Streams", result);
         Assert.Contains("general", result);
@@ -115,7 +115,7 @@ public class ZulipToolsTests
     [Fact]
     public async Task ListZulipTopics_ReturnsFormattedTopics()
     {
-        var topics = new[]
+        ZulipTopic[] topics = new[]
         {
             new ZulipTopic
             {
@@ -124,12 +124,12 @@ public class ZulipToolsTests
             },
         };
 
-        var streamCall = McpTestHelper.CreateStreamingCall(topics);
-        var client = Substitute.For<ZulipService.ZulipServiceClient>();
+        AsyncServerStreamingCall<ZulipTopic> streamCall = McpTestHelper.CreateStreamingCall(topics);
+        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
         client.ListTopics(Arg.Any<ZulipListTopicsRequest>(), null, null, default)
             .Returns(streamCall);
 
-        var result = await ZulipTools.ListZulipTopics(client, "general");
+        string result = await ZulipTools.ListZulipTopics(client, "general");
 
         Assert.Contains("Topics in general", result);
         Assert.Contains("topic-1", result);
@@ -139,25 +139,25 @@ public class ZulipToolsTests
     [Fact]
     public async Task SnapshotZulipThread_ReturnsMarkdown()
     {
-        var mockResponse = new SnapshotResponse
+        SnapshotResponse mockResponse = new SnapshotResponse
         {
             Id = "general:test-topic",
             Source = "zulip",
             Markdown = "# general > test-topic\n\nFull thread content...",
         };
 
-        var mockCall = TestCalls.AsyncUnaryCall(
+        AsyncUnaryCall<SnapshotResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
             Task.FromResult(new Metadata()),
             () => Status.DefaultSuccess,
             () => [],
             () => { });
 
-        var client = Substitute.For<ZulipService.ZulipServiceClient>();
+        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
         client.GetThreadSnapshotAsync(Arg.Any<ZulipSnapshotRequest>(), null, null, default)
             .Returns(mockCall);
 
-        var result = await ZulipTools.SnapshotZulipThread(client, "general", "test-topic");
+        string result = await ZulipTools.SnapshotZulipThread(client, "general", "test-topic");
 
         Assert.Contains("general > test-topic", result);
     }

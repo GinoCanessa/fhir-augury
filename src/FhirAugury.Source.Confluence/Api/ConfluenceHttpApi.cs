@@ -1,3 +1,4 @@
+using FhirAugury.Common.Caching;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
@@ -17,21 +18,21 @@ public static class ConfluenceHttpApi
 {
     public static IEndpointRouteBuilder MapConfluenceHttpApi(this IEndpointRouteBuilder app)
     {
-        var api = app.MapGroup("/api/v1");
+        RouteGroupBuilder api = app.MapGroup("/api/v1");
 
         api.MapGet("/search", (string? q, int? limit, ConfluenceDatabase db, ConfluenceServiceOptions options) =>
         {
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
-            using var connection = db.OpenConnection();
-            var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
+            using SqliteConnection connection = db.OpenConnection();
+            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
             if (string.IsNullOrEmpty(ftsQuery))
                 return Results.Ok(new { query = q, results = Array.Empty<object>() });
 
-            var maxResults = Math.Min(limit ?? 20, 200);
+            int maxResults = Math.Min(limit ?? 20, 200);
 
-            var sql = """
+            string sql = """
                 SELECT cp.ConfluenceId, cp.Title,
                        snippet(confluence_pages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
                        confluence_pages_fts.rank, cp.SpaceKey, cp.LastModifiedAt
@@ -42,15 +43,15 @@ public static class ConfluenceHttpApi
                 LIMIT @limit
                 """;
 
-            using var cmd = new SqliteCommand(sql, connection);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
             cmd.Parameters.AddWithValue("@query", ftsQuery);
             cmd.Parameters.AddWithValue("@limit", maxResults);
 
-            var results = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> results = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var pageId = reader.GetString(0);
+                string pageId = reader.GetString(0);
                 results.Add(new
                 {
                     pageId,
@@ -67,13 +68,13 @@ public static class ConfluenceHttpApi
 
         api.MapGet("/pages/{pageId}", (string pageId, ConfluenceDatabase db, ConfluenceServiceOptions options) =>
         {
-            using var connection = db.OpenConnection();
-            var page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
+            using SqliteConnection connection = db.OpenConnection();
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
             if (page is null)
                 return Results.NotFound(new { error = $"Page {pageId} not found" });
 
-            var comments = ConfluenceCommentRecord.SelectList(connection, PageId: page.Id);
-            var outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: pageId);
+            List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection, PageId: page.Id);
+            List<ConfluencePageLinkRecord> outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: pageId);
 
             return Results.Ok(new
             {
@@ -94,12 +95,12 @@ public static class ConfluenceHttpApi
 
         api.MapGet("/pages", (int? limit, int? offset, string? spaceKey, ConfluenceDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var maxResults = Math.Min(limit ?? 50, 500);
-            var skip = Math.Max(offset ?? 0, 0);
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 50, 500);
+            int skip = Math.Max(offset ?? 0, 0);
 
-            var sql = "SELECT ConfluenceId, Title, SpaceKey, LastModifiedAt FROM confluence_pages";
-            var parameters = new List<SqliteParameter>();
+            string sql = "SELECT ConfluenceId, Title, SpaceKey, LastModifiedAt FROM confluence_pages";
+            List<SqliteParameter> parameters = new List<SqliteParameter>();
 
             if (!string.IsNullOrEmpty(spaceKey))
             {
@@ -111,11 +112,11 @@ public static class ConfluenceHttpApi
             parameters.Add(new SqliteParameter("@limit", maxResults));
             parameters.Add(new SqliteParameter("@offset", skip));
 
-            using var cmd = new SqliteCommand(sql, connection);
-            foreach (var p in parameters) cmd.Parameters.Add(p);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-            var items = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> items = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
                 items.Add(new
@@ -132,8 +133,8 @@ public static class ConfluenceHttpApi
 
         api.MapGet("/spaces", (ConfluenceDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var spaces = ConfluenceSpaceRecord.SelectList(connection);
+            using SqliteConnection connection = db.OpenConnection();
+            List<ConfluenceSpaceRecord> spaces = ConfluenceSpaceRecord.SelectList(connection);
 
             return Results.Ok(new
             {
@@ -144,10 +145,10 @@ public static class ConfluenceHttpApi
 
         api.MapPost("/ingest", async (HttpRequest req, ConfluenceIngestionPipeline pipeline) =>
         {
-            var type = req.Query["type"].FirstOrDefault() ?? "incremental";
+            string type = req.Query["type"].FirstOrDefault() ?? "incremental";
             try
             {
-                var result = type == "full"
+                IngestionResult result = type == "full"
                     ? await pipeline.RunFullIngestionAsync(req.HttpContext.RequestAborted)
                     : await pipeline.RunIncrementalIngestionAsync(req.HttpContext.RequestAborted);
 
@@ -165,8 +166,8 @@ public static class ConfluenceHttpApi
 
         api.MapGet("/status", (ConfluenceIngestionPipeline pipeline, ConfluenceDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var syncState = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            ConfluenceSyncStateRecord? syncState = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
 
             return Results.Ok(new
             {
@@ -182,7 +183,7 @@ public static class ConfluenceHttpApi
         {
             try
             {
-                var result = await pipeline.RebuildFromCacheAsync();
+                IngestionResult result = await pipeline.RebuildFromCacheAsync();
                 return Results.Ok(new { result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated });
             }
             catch (InvalidOperationException ex)
@@ -193,13 +194,13 @@ public static class ConfluenceHttpApi
 
         api.MapGet("/stats", (ConfluenceDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
-            using var connection = db.OpenConnection();
-            var pageCount = ConfluencePageRecord.SelectCount(connection);
-            var commentCount = ConfluenceCommentRecord.SelectCount(connection);
-            var spaceCount = ConfluenceSpaceRecord.SelectCount(connection);
-            var linkCount = ConfluencePageLinkRecord.SelectCount(connection);
-            var dbSize = db.GetDatabaseSizeBytes();
-            var cacheStats = cache.GetStats(ConfluenceCacheLayout.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            int pageCount = ConfluencePageRecord.SelectCount(connection);
+            int commentCount = ConfluenceCommentRecord.SelectCount(connection);
+            int spaceCount = ConfluenceSpaceRecord.SelectCount(connection);
+            int linkCount = ConfluencePageLinkRecord.SelectCount(connection);
+            long dbSize = db.GetDatabaseSizeBytes();
+            CacheStats cacheStats = cache.GetStats(ConfluenceCacheLayout.SourceName);
 
             return Results.Ok(new
             {

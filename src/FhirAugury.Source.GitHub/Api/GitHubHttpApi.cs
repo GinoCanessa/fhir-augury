@@ -1,3 +1,4 @@
+using FhirAugury.Common.Caching;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
@@ -8,6 +9,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
+using System.Text;
 
 namespace FhirAugury.Source.GitHub.Api;
 
@@ -16,21 +18,21 @@ public static class GitHubHttpApi
 {
     public static IEndpointRouteBuilder MapGitHubHttpApi(this IEndpointRouteBuilder app)
     {
-        var api = app.MapGroup("/api/v1");
+        RouteGroupBuilder api = app.MapGroup("/api/v1");
 
         api.MapGet("/search", (string? q, int? limit, GitHubDatabase db) =>
         {
             if (string.IsNullOrWhiteSpace(q))
                 return Results.BadRequest(new { error = "Query parameter 'q' is required" });
 
-            using var connection = db.OpenConnection();
-            var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
+            using SqliteConnection connection = db.OpenConnection();
+            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(q);
             if (string.IsNullOrEmpty(ftsQuery))
                 return Results.Ok(new { query = q, results = Array.Empty<object>() });
 
-            var maxResults = Math.Min(limit ?? 20, 200);
+            int maxResults = Math.Min(limit ?? 20, 200);
 
-            var sql = """
+            string sql = """
                 SELECT gi.UniqueKey, gi.Title,
                        snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
                        github_issues_fts.rank, gi.State, gi.UpdatedAt
@@ -41,15 +43,15 @@ public static class GitHubHttpApi
                 LIMIT @limit
                 """;
 
-            using var cmd = new SqliteCommand(sql, connection);
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
             cmd.Parameters.AddWithValue("@query", ftsQuery);
             cmd.Parameters.AddWithValue("@limit", maxResults);
 
-            var results = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> results = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var uniqueKey = reader.GetString(0);
+                string uniqueKey = reader.GetString(0);
                 results.Add(new
                 {
                     key = uniqueKey,
@@ -66,14 +68,14 @@ public static class GitHubHttpApi
 
         api.MapGet("/items/{*key}", (string key, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
+            using SqliteConnection connection = db.OpenConnection();
+            GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
             if (issue is null)
                 return Results.NotFound(new { error = $"Issue {key} not found" });
 
-            var comments = GitHubCommentRecord.SelectList(connection,
+            List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
-            var jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
+            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
 
             return Results.Ok(new
             {
@@ -100,18 +102,18 @@ public static class GitHubHttpApi
 
         api.MapGet("/items", (int? limit, int? offset, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var maxResults = Math.Min(limit ?? 50, 500);
-            var skip = Math.Max(offset ?? 0, 0);
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 50, 500);
+            int skip = Math.Max(offset ?? 0, 0);
 
-            using var cmd = new SqliteCommand(
+            using SqliteCommand cmd = new SqliteCommand(
                 "SELECT UniqueKey, Title, State, IsPullRequest, UpdatedAt FROM github_issues ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset",
                 connection);
             cmd.Parameters.AddWithValue("@limit", maxResults);
             cmd.Parameters.AddWithValue("@offset", skip);
 
-            var items = new List<object>();
-            using var reader = cmd.ExecuteReader();
+            List<object> items = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
                 items.Add(new
@@ -129,26 +131,26 @@ public static class GitHubHttpApi
 
         api.MapGet("/related/{*key}", (string key, int? limit, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var maxResults = Math.Min(limit ?? 10, 50);
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 10, 50);
 
-            var refs = GitHubJiraRefRecord.SelectList(connection, SourceId: key);
-            var relatedIds = new HashSet<string>();
+            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: key);
+            HashSet<string> relatedIds = new HashSet<string>();
 
-            foreach (var jiraRef in refs)
+            foreach (GitHubJiraRefRecord jiraRef in refs)
             {
-                var sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
-                foreach (var r in sameKeyRefs)
+                List<GitHubJiraRefRecord> sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
+                foreach (GitHubJiraRefRecord r in sameKeyRefs)
                 {
                     if (r.SourceId != key)
                         relatedIds.Add(r.SourceId);
                 }
             }
 
-            var results = new List<object>();
-            foreach (var relatedId in relatedIds.Take(maxResults))
+            List<object> results = new List<object>();
+            foreach (string? relatedId in relatedIds.Take(maxResults))
             {
-                var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: relatedId);
+                GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: relatedId);
                 if (issue is null) continue;
                 results.Add(new
                 {
@@ -164,15 +166,15 @@ public static class GitHubHttpApi
 
         api.MapGet("/snapshot/{*key}", (string key, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
+            using SqliteConnection connection = db.OpenConnection();
+            GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
             if (issue is null)
                 return Results.NotFound(new { error = $"Issue {key} not found" });
 
-            var comments = GitHubCommentRecord.SelectList(connection,
+            List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
 
-            var md = new System.Text.StringBuilder();
+            StringBuilder md = new System.Text.StringBuilder();
             md.AppendLine($"# {issue.UniqueKey}: {issue.Title}");
             md.AppendLine();
             md.AppendLine($"**State:** {issue.State} | **Type:** {(issue.IsPullRequest ? "PR" : "Issue")}");
@@ -182,7 +184,7 @@ public static class GitHubHttpApi
             if (comments.Count > 0)
             {
                 md.AppendLine("## Comments");
-                foreach (var c in comments) { md.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}): {c.Body}"); md.AppendLine(); }
+                foreach (GitHubCommentRecord c in comments) { md.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}): {c.Body}"); md.AppendLine(); }
             }
 
             return Results.Ok(new { key, markdown = md.ToString(), url = GitHubGrpcService.BuildIssueUrl(key) });
@@ -190,8 +192,8 @@ public static class GitHubHttpApi
 
         api.MapGet("/content/{*key}", (string key, string? format, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
+            using SqliteConnection connection = db.OpenConnection();
+            GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
             if (issue is null)
                 return Results.NotFound(new { error = $"Issue {key} not found" });
 
@@ -200,10 +202,10 @@ public static class GitHubHttpApi
 
         api.MapPost("/ingest", async (HttpRequest req, GitHubIngestionPipeline pipeline) =>
         {
-            var type = req.Query["type"].FirstOrDefault() ?? "incremental";
+            string type = req.Query["type"].FirstOrDefault() ?? "incremental";
             try
             {
-                var result = type == "full"
+                IngestionResult result = type == "full"
                     ? await pipeline.RunFullIngestionAsync(ct: req.HttpContext.RequestAborted)
                     : await pipeline.RunIncrementalIngestionAsync(req.HttpContext.RequestAborted);
 
@@ -221,8 +223,8 @@ public static class GitHubHttpApi
 
         api.MapGet("/status", (GitHubIngestionPipeline pipeline, GitHubDatabase db) =>
         {
-            using var connection = db.OpenConnection();
-            var syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
 
             return Results.Ok(new
             {
@@ -238,7 +240,7 @@ public static class GitHubHttpApi
         {
             try
             {
-                var result = await pipeline.RebuildFromCacheAsync();
+                IngestionResult result = await pipeline.RebuildFromCacheAsync();
                 return Results.Ok(new { result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated });
             }
             catch (InvalidOperationException ex)
@@ -249,14 +251,14 @@ public static class GitHubHttpApi
 
         api.MapGet("/stats", (GitHubDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
-            using var connection = db.OpenConnection();
-            var issueCount = GitHubIssueRecord.SelectCount(connection);
-            var commentCount = GitHubCommentRecord.SelectCount(connection);
-            var commitCount = GitHubCommitRecord.SelectCount(connection);
-            var repoCount = GitHubRepoRecord.SelectCount(connection);
-            var jiraRefCount = GitHubJiraRefRecord.SelectCount(connection);
-            var dbSize = db.GetDatabaseSizeBytes();
-            var cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
+            using SqliteConnection connection = db.OpenConnection();
+            int issueCount = GitHubIssueRecord.SelectCount(connection);
+            int commentCount = GitHubCommentRecord.SelectCount(connection);
+            int commitCount = GitHubCommitRecord.SelectCount(connection);
+            int repoCount = GitHubRepoRecord.SelectCount(connection);
+            int jiraRefCount = GitHubJiraRefRecord.SelectCount(connection);
+            long dbSize = db.GetDatabaseSizeBytes();
+            CacheStats cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
 
             return Results.Ok(new
             {

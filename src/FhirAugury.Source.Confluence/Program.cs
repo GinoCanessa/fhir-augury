@@ -14,7 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
@@ -24,9 +24,9 @@ builder.Configuration
 builder.Services.Configure<ConfluenceServiceOptions>(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
-var portsSection = builder.Configuration.GetSection($"{ConfluenceServiceOptions.SectionName}:Ports");
-var httpPort = portsSection.GetValue<int>("Http", 5180);
-var grpcPort = portsSection.GetValue<int>("Grpc", 5181);
+IConfigurationSection portsSection = builder.Configuration.GetSection($"{ConfluenceServiceOptions.SectionName}:Ports");
+int httpPort = portsSection.GetValue<int>("Http", 5180);
+int grpcPort = portsSection.GetValue<int>("Grpc", 5181);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -40,10 +40,10 @@ builder.Services.AddGrpc();
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
-    var dbPath = Path.GetFullPath(options.DatabasePath);
+    ConfluenceServiceOptions options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    var db = new ConfluenceDatabase(dbPath, sp.GetRequiredService<ILogger<ConfluenceDatabase>>());
+    ConfluenceDatabase db = new ConfluenceDatabase(dbPath, sp.GetRequiredService<ILogger<ConfluenceDatabase>>());
     db.Initialize();
     return db;
 });
@@ -51,8 +51,8 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
-    var cachePath = Path.GetFullPath(options.CachePath);
+    ConfluenceServiceOptions options = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    string cachePath = Path.GetFullPath(options.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
@@ -75,7 +75,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "confluence", version = "2.0.0" }));

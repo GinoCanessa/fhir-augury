@@ -14,7 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
@@ -24,9 +24,9 @@ builder.Configuration
 builder.Services.Configure<GitHubServiceOptions>(builder.Configuration.GetSection(GitHubServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
-var portsSection = builder.Configuration.GetSection($"{GitHubServiceOptions.SectionName}:Ports");
-var httpPort = portsSection.GetValue<int>("Http", 5190);
-var grpcPort = portsSection.GetValue<int>("Grpc", 5191);
+IConfigurationSection portsSection = builder.Configuration.GetSection($"{GitHubServiceOptions.SectionName}:Ports");
+int httpPort = portsSection.GetValue<int>("Http", 5190);
+int grpcPort = portsSection.GetValue<int>("Grpc", 5191);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -40,10 +40,10 @@ builder.Services.AddGrpc();
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
-    var dbPath = Path.GetFullPath(options.DatabasePath);
+    GitHubServiceOptions options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    var db = new GitHubDatabase(dbPath, sp.GetRequiredService<ILogger<GitHubDatabase>>());
+    GitHubDatabase db = new GitHubDatabase(dbPath, sp.GetRequiredService<ILogger<GitHubDatabase>>());
     db.Initialize();
     return db;
 });
@@ -51,8 +51,8 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
-    var cachePath = Path.GetFullPath(options.CachePath);
+    GitHubServiceOptions options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    string cachePath = Path.GetFullPath(options.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
@@ -82,7 +82,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "github", version = "2.0.0" }));

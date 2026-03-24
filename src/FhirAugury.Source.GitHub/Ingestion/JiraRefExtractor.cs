@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
@@ -33,10 +34,10 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     /// </summary>
     public void ExtractAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Clear existing refs for this repo
-        using (var cmd = connection.CreateCommand())
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM github_jira_refs WHERE RepoFullName = @repo";
             cmd.Parameters.AddWithValue("@repo", repoFullName);
@@ -44,29 +45,29 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         }
 
         // Determine if repo has issues (for #NNN disambiguation)
-        var repo = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
-        var hasIssues = repo?.HasIssues ?? true;
+        GitHubRepoRecord? repo = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
+        bool hasIssues = repo?.HasIssues ?? true;
 
         // Get all GitHub issue/PR numbers for this repo (for disambiguation)
-        var githubNumbers = new HashSet<int>();
+        HashSet<int> githubNumbers = new HashSet<int>();
         if (hasIssues)
         {
-            var issues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
-            foreach (var issue in issues)
+            List<GitHubIssueRecord> issues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
+            foreach (GitHubIssueRecord issue in issues)
                 githubNumbers.Add(issue.Number);
         }
 
         int refCount = 0;
 
         // Scan issues
-        var allIssues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
-        foreach (var issue in allIssues)
+        List<GitHubIssueRecord> allIssues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
+        foreach (GitHubIssueRecord issue in allIssues)
         {
             ct.ThrowIfCancellationRequested();
-            var text = $"{issue.Title} {issue.Body}";
-            var refs = ExtractReferences(text, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
+            string text = $"{issue.Title} {issue.Body}";
+            List<GitHubJiraRefRecord> refs = ExtractReferences(text, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
 
-            foreach (var jiraRef in refs)
+            foreach (GitHubJiraRefRecord jiraRef in refs)
             {
                 jiraRef.SourceType = "issue";
                 jiraRef.SourceId = issue.UniqueKey;
@@ -76,13 +77,13 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         }
 
         // Scan comments
-        var allComments = GitHubCommentRecord.SelectList(connection, RepoFullName: repoFullName);
-        foreach (var comment in allComments)
+        List<GitHubCommentRecord> allComments = GitHubCommentRecord.SelectList(connection, RepoFullName: repoFullName);
+        foreach (GitHubCommentRecord comment in allComments)
         {
             ct.ThrowIfCancellationRequested();
-            var refs = ExtractReferences(comment.Body, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
+            List<GitHubJiraRefRecord> refs = ExtractReferences(comment.Body, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
 
-            foreach (var jiraRef in refs)
+            foreach (GitHubJiraRefRecord jiraRef in refs)
             {
                 jiraRef.SourceType = "comment";
                 jiraRef.SourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
@@ -92,13 +93,13 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         }
 
         // Scan commits
-        var allCommits = GitHubCommitRecord.SelectList(connection, RepoFullName: repoFullName);
-        foreach (var commit in allCommits)
+        List<GitHubCommitRecord> allCommits = GitHubCommitRecord.SelectList(connection, RepoFullName: repoFullName);
+        foreach (GitHubCommitRecord commit in allCommits)
         {
             ct.ThrowIfCancellationRequested();
-            var refs = ExtractReferences(commit.Message, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
+            List<GitHubJiraRefRecord> refs = ExtractReferences(commit.Message, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
 
-            foreach (var jiraRef in refs)
+            foreach (GitHubJiraRefRecord jiraRef in refs)
             {
                 jiraRef.SourceType = "commit";
                 jiraRef.SourceId = commit.Sha;
@@ -120,8 +121,8 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
 
-        var results = new List<GitHubJiraRefRecord>();
-        var seen = new HashSet<string>();
+        List<GitHubJiraRefRecord> results = new List<GitHubJiraRefRecord>();
+        HashSet<string> seen = new HashSet<string>();
 
         // Explicit patterns
         AddMatches(results, seen, FhirPattern(), text, repoFullName, m => m.Groups[1].Value);
@@ -131,8 +132,8 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         // J#N → normalize to FHIR-N
         foreach (Match m in JHashPattern().Matches(text))
         {
-            var num = m.Groups[1].Value;
-            var jiraKey = $"FHIR-{num}";
+            string num = m.Groups[1].Value;
+            string jiraKey = $"FHIR-{num}";
             if (!seen.Add(jiraKey)) continue;
 
             if (validJiraNumbers is not null && !validJiraNumbers.Contains(int.Parse(num)))
@@ -152,12 +153,12 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         // Bare #NNN disambiguation
         foreach (Match m in BareHashPattern().Matches(text))
         {
-            if (!int.TryParse(m.Groups[1].Value, out var number)) continue;
+            if (!int.TryParse(m.Groups[1].Value, out int number)) continue;
 
             if (hasIssues && githubNumbers.Contains(number))
                 continue; // It's a GitHub issue reference, skip
 
-            var jiraKey = $"FHIR-{number}";
+            string jiraKey = $"FHIR-{number}";
             if (!seen.Add(jiraKey)) continue;
 
             if (validJiraNumbers is not null && !validJiraNumbers.Contains(number))
@@ -187,7 +188,7 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     {
         foreach (Match m in pattern.Matches(text))
         {
-            var jiraKey = extractKey(m);
+            string jiraKey = extractKey(m);
             if (!seen.Add(jiraKey)) continue;
 
             results.Add(new GitHubJiraRefRecord
@@ -205,8 +206,8 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     private static string ExtractContext(string text, int matchIndex)
     {
         const int contextRadius = 80;
-        var start = Math.Max(0, matchIndex - contextRadius);
-        var end = Math.Min(text.Length, matchIndex + contextRadius);
+        int start = Math.Max(0, matchIndex - contextRadius);
+        int end = Math.Min(text.Length, matchIndex + contextRadius);
         return text[start..end].Replace('\n', ' ').Replace('\r', ' ').Trim();
     }
 }

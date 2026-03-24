@@ -36,16 +36,16 @@ public class ZulipDatabase : SourceDatabase
     /// <summary>Rebuilds the FTS5 index from the content table.</summary>
     public void RebuildFtsIndexes()
     {
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
         RebuildFts5(connection, "zulip_messages_fts");
     }
 
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase()
     {
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
 
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = """
             DROP TABLE IF EXISTS zulip_messages_fts;
             DROP TABLE IF EXISTS zulip_messages;

@@ -3,6 +3,7 @@ using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using FhirAugury.Source.Confluence.Indexing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -37,7 +38,7 @@ public class ConfluenceIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            var result = await source.DownloadAllAsync(ct);
+            IngestionResult result = await source.DownloadAllAsync(ct);
             PostIngestion(result, "full", ct);
 
             _currentStatus = "idle";
@@ -65,10 +66,10 @@ public class ConfluenceIngestionPipeline(
 
         try
         {
-            var since = GetLastSyncTime();
+            DateTimeOffset since = GetLastSyncTime();
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
-            var result = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult result = await source.DownloadIncrementalAsync(since, ct);
             PostIngestion(result, "incremental", ct);
 
             _currentStatus = "idle";
@@ -99,7 +100,7 @@ public class ConfluenceIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase();
 
-            var result = await source.LoadFromCacheAsync(ct);
+            IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
 
             _currentStatus = "idle";
@@ -133,11 +134,11 @@ public class ConfluenceIngestionPipeline(
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var existing = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName, SubSource: runType);
+        ConfluenceSyncStateRecord? existing = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName, SubSource: runType);
 
-        var syncState = new ConfluenceSyncStateRecord
+        ConfluenceSyncStateRecord syncState = new ConfluenceSyncStateRecord
         {
             Id = existing?.Id ?? ConfluenceSyncStateRecord.GetIndex(),
             SourceName = ConfluenceSource.SourceName,
@@ -159,8 +160,8 @@ public class ConfluenceIngestionPipeline(
 
     private DateTimeOffset GetLastSyncTime()
     {
-        using var connection = database.OpenConnection();
-        var state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        ConfluenceSyncStateRecord? state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 

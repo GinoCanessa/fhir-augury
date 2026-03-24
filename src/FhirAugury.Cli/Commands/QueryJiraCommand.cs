@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -9,59 +10,59 @@ public static class QueryJiraCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var statusesOption = new Option<string?>("--statuses")
+        Option<string?> statusesOption = new Option<string?>("--statuses")
         {
             Description = "Filter by statuses (comma-separated)",
         };
-        var workGroupsOption = new Option<string?>("--work-groups")
+        Option<string?> workGroupsOption = new Option<string?>("--work-groups")
         {
             Description = "Filter by work groups (comma-separated)",
         };
-        var specificationsOption = new Option<string?>("--specs")
+        Option<string?> specificationsOption = new Option<string?>("--specs")
         {
             Description = "Filter by specifications (comma-separated)",
         };
-        var typesOption = new Option<string?>("--types")
+        Option<string?> typesOption = new Option<string?>("--types")
         {
             Description = "Filter by issue types (comma-separated)",
         };
-        var prioritiesOption = new Option<string?>("--priorities")
+        Option<string?> prioritiesOption = new Option<string?>("--priorities")
         {
             Description = "Filter by priorities (comma-separated)",
         };
-        var labelsOption = new Option<string?>("--labels")
+        Option<string?> labelsOption = new Option<string?>("--labels")
         {
             Description = "Filter by labels (comma-separated)",
         };
-        var assigneesOption = new Option<string?>("--assignees")
+        Option<string?> assigneesOption = new Option<string?>("--assignees")
         {
             Description = "Filter by assignees (comma-separated)",
         };
-        var queryOption = new Option<string?>("--query")
+        Option<string?> queryOption = new Option<string?>("--query")
         {
             Description = "Text query for additional filtering",
         };
-        var sortByOption = new Option<string>("--sort-by")
+        Option<string> sortByOption = new Option<string>("--sort-by")
         {
             Description = "Sort by field",
             DefaultValueFactory = _ => "updated_at",
         };
-        var sortOrderOption = new Option<string>("--sort-order")
+        Option<string> sortOrderOption = new Option<string>("--sort-order")
         {
             Description = "Sort order: asc or desc",
             DefaultValueFactory = _ => "desc",
         };
-        var limitOption = new Option<int>("--limit")
+        Option<int> limitOption = new Option<int>("--limit")
         {
             Description = "Maximum results",
             DefaultValueFactory = _ => 20,
         };
-        var updatedAfterOption = new Option<DateTimeOffset?>("--updated-after")
+        Option<DateTimeOffset?> updatedAfterOption = new Option<DateTimeOffset?>("--updated-after")
         {
             Description = "Only issues updated after this date",
         };
 
-        var command = new Command("query-jira", "Query Jira issues with structured filters")
+        Command command = new Command("query-jira", "Query Jira issues with structured filters")
         {
             statusesOption,
             workGroupsOption,
@@ -79,15 +80,15 @@ public static class QueryJiraCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
+                string format = parseResult.GetValue(formatOption)!;
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var request = new JiraQueryRequest
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                JiraQueryRequest request = new JiraQueryRequest
                 {
                     Query = parseResult.GetValue(queryOption) ?? "",
                     SortBy = parseResult.GetValue(sortByOption)!,
@@ -103,17 +104,17 @@ public static class QueryJiraCommand
                 AddItems(request.Labels, parseResult.GetValue(labelsOption));
                 AddItems(request.Assignees, parseResult.GetValue(assigneesOption));
 
-                var updatedAfter = parseResult.GetValue(updatedAfterOption);
+                DateTimeOffset? updatedAfter = parseResult.GetValue(updatedAfterOption);
                 if (updatedAfter.HasValue)
                     request.UpdatedAfter = Timestamp.FromDateTimeOffset(updatedAfter.Value);
 
-                using var call = clients.Jira.QueryIssues(request, cancellationToken: ct);
+                using AsyncServerStreamingCall<JiraIssueSummary> call = clients.Jira.QueryIssues(request, cancellationToken: ct);
 
                 switch (format.ToLowerInvariant())
                 {
                     case "json":
-                        var items = new List<object>();
-                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
+                        List<object> items = new List<object>();
+                        await foreach (JiraIssueSummary? issue in call.ResponseStream.ReadAllAsync(ct))
                         {
                             items.Add(new
                             {
@@ -129,9 +130,9 @@ public static class QueryJiraCommand
                     case "md":
                         Console.WriteLine("| Key | Status | Type | Title | Work Group | Updated |");
                         Console.WriteLine("|-----|--------|------|-------|------------|---------|");
-                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
+                        await foreach (JiraIssueSummary? issue in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            string updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                             Console.WriteLine($"| {issue.Key} | {issue.Status} | {issue.Type} | {issue.Title} | {issue.WorkGroup} | {updated} |");
                         }
                         break;
@@ -139,11 +140,11 @@ public static class QueryJiraCommand
                     default:
                         Console.WriteLine($"{"Key",-14} {"Status",-12} {"Type",-12} {"Title",-40} {"Work Group",-20} {"Updated",-12}");
                         Console.WriteLine($"{"────────────",-14} {"──────────",-12} {"──────────",-12} {"──────────────────────────────────────",-40} {"──────────────────",-20} {"──────────",-12}");
-                        var count = 0;
-                        await foreach (var issue in call.ResponseStream.ReadAllAsync(ct))
+                        int count = 0;
+                        await foreach (JiraIssueSummary? issue in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var title = issue.Title.Length > 38 ? issue.Title[..35] + "..." : issue.Title;
-                            var updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            string title = issue.Title.Length > 38 ? issue.Title[..35] + "..." : issue.Title;
+                            string updated = issue.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                             Console.WriteLine($"{issue.Key,-14} {issue.Status,-12} {issue.Type,-12} {title,-40} {issue.WorkGroup,-20} {updated,-12}");
                             count++;
                         }
@@ -166,7 +167,7 @@ public static class QueryJiraCommand
     private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
-        foreach (var item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             field.Add(item);
     }
 }

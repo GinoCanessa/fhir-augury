@@ -5,6 +5,7 @@ using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -28,46 +29,46 @@ public class GitHubSource(
     /// <summary>Performs a full download of all issues for configured repositories.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default)
     {
-        var repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
+        List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
         return await DownloadReposAsync(repos, since: null, ct);
     }
 
     /// <summary>Performs an incremental download of issues updated since the given timestamp.</summary>
     public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct = default)
     {
-        var repos = GetEffectiveRepositories();
+        List<string> repos = GetEffectiveRepositories();
         return await DownloadReposAsync(repos, since, ct);
     }
 
     /// <summary>Loads all issues from cached API responses (no network).</summary>
     public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct = default)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var key in cache.EnumerateKeys(GitHubCacheLayout.SourceName))
+        foreach (string key in cache.EnumerateKeys(GitHubCacheLayout.SourceName))
         {
             if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out var stream)) continue;
+            if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out Stream? stream)) continue;
 
             using (stream)
             {
                 try
                 {
-                    using var doc = JsonDocument.Parse(stream);
-                    var root = doc.RootElement;
+                    using JsonDocument doc = JsonDocument.Parse(stream);
+                    JsonElement root = doc.RootElement;
 
-                    if (!root.TryGetProperty("issues", out var issues)) continue;
+                    if (!root.TryGetProperty("issues", out JsonElement issues)) continue;
 
-                    var repoFullName = root.TryGetProperty("repo", out var repoEl) ? repoEl.GetString() ?? "" : "";
+                    string repoFullName = root.TryGetProperty("repo", out JsonElement repoEl) ? repoEl.GetString() ?? "" : "";
 
-                    foreach (var issueJson in issues.EnumerateArray())
+                    foreach (JsonElement issueJson in issues.EnumerateArray())
                     {
-                        var record = GitHubIssueMapper.MapIssue(issueJson, repoFullName);
-                        var existing = GitHubIssueRecord.SelectSingle(connection, UniqueKey: record.UniqueKey);
+                        GitHubIssueRecord record = GitHubIssueMapper.MapIssue(issueJson, repoFullName);
+                        GitHubIssueRecord? existing = GitHubIssueRecord.SelectSingle(connection, UniqueKey: record.UniqueKey);
 
                         if (existing is not null)
                         {
@@ -103,13 +104,13 @@ public class GitHubSource(
     private async Task<IngestionResult> DownloadReposAsync(
         List<string> repos, DateTimeOffset? since, CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var repoFullName in repos)
+        foreach (string repoFullName in repos)
         {
             if (ct.IsCancellationRequested) break;
 
@@ -118,12 +119,12 @@ public class GitHubSource(
             // Fetch and upsert repo metadata
             try
             {
-                var repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
-                using var repoResponse = await HttpRetryHelper.GetWithRetryAsync(
+                string repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
+                using HttpResponseMessage repoResponse = await HttpRetryHelper.GetWithRetryAsync(
                     httpClientFactory.CreateClient("github"), repoUrl, ct, _options.RateLimiting.MaxRetries, "github");
                 repoResponse.EnsureSuccessStatusCode();
-                var repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
-                using var repoDoc = JsonDocument.Parse(repoJson);
+                string repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
+                using JsonDocument repoDoc = JsonDocument.Parse(repoJson);
                 UpsertRepo(connection, repoDoc.RootElement);
             }
             catch (Exception ex)
@@ -134,23 +135,23 @@ public class GitHubSource(
             // Paginate issues (includes PRs on GitHub API)
             int page = 1;
             bool hasMore = true;
-            var sinceParam = since.HasValue
+            string sinceParam = since.HasValue
                 ? $"&since={since.Value.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}"
                 : "";
 
             while (hasMore && !ct.IsCancellationRequested)
             {
-                var url = $"{GitHubApiBase}/repos/{repoFullName}/issues?state=all&per_page=100&page={page}&sort=updated&direction=asc{sinceParam}";
+                string url = $"{GitHubApiBase}/repos/{repoFullName}/issues?state=all&per_page=100&page={page}&sort=updated&direction=asc{sinceParam}";
 
                 logger.LogInformation("Fetching issues: repo={Repo}, page={Page}", repoFullName, page);
 
                 JsonDocument doc;
                 try
                 {
-                    using var response = await HttpRetryHelper.GetWithRetryAsync(
+                    using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                         httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
                     response.EnsureSuccessStatusCode();
-                    var json = await response.Content.ReadAsStringAsync(ct);
+                    string json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
                 }
                 catch (Exception ex)
@@ -162,16 +163,16 @@ public class GitHubSource(
 
                 using (doc)
                 {
-                    var issues = doc.RootElement;
+                    JsonElement issues = doc.RootElement;
                     if (issues.GetArrayLength() == 0)
                     {
                         hasMore = false;
                         break;
                     }
 
-                    foreach (var issueJson in issues.EnumerateArray())
+                    foreach (JsonElement issueJson in issues.EnumerateArray())
                     {
-                        var (outcome, error) = ProcessIssue(issueJson, repoFullName, connection);
+                        (ProcessOutcome outcome, string? error) = ProcessIssue(issueJson, repoFullName, connection);
                         itemsProcessed++;
 
                         switch (outcome)
@@ -216,10 +217,10 @@ public class GitHubSource(
         string uniqueKey = string.Empty;
         try
         {
-            var record = GitHubIssueMapper.MapIssue(issueJson, repoFullName);
+            GitHubIssueRecord record = GitHubIssueMapper.MapIssue(issueJson, repoFullName);
             uniqueKey = record.UniqueKey;
 
-            var existing = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey);
+            GitHubIssueRecord? existing = GitHubIssueRecord.SelectSingle(connection, UniqueKey: uniqueKey);
             if (existing is not null)
             {
                 record.Id = existing.Id;
@@ -239,8 +240,8 @@ public class GitHubSource(
 
     private static void UpsertRepo(Microsoft.Data.Sqlite.SqliteConnection connection, JsonElement repoJson)
     {
-        var record = GitHubIssueMapper.MapRepo(repoJson);
-        var existing = GitHubRepoRecord.SelectSingle(connection, FullName: record.FullName);
+        GitHubRepoRecord record = GitHubIssueMapper.MapRepo(repoJson);
+        GitHubRepoRecord? existing = GitHubRepoRecord.SelectSingle(connection, FullName: record.FullName);
 
         if (existing is not null)
         {
@@ -260,21 +261,21 @@ public class GitHubSource(
     {
         try
         {
-            var url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{issueNumber}/comments?per_page=100";
-            using var response = await HttpRetryHelper.GetWithRetryAsync(
+            string url = $"{GitHubApiBase}/repos/{repoFullName}/issues/{issueNumber}/comments?per_page=100";
+            using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                 httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
             response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync(ct);
+            string json = await response.Content.ReadAsStringAsync(ct);
 
-            using var doc = JsonDocument.Parse(json);
+            using JsonDocument doc = JsonDocument.Parse(json);
 
             // Look up the issue's DB ID
-            var issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
-            var issueDbId = issue?.Id ?? 0;
+            GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
+            int issueDbId = issue?.Id ?? 0;
 
-            foreach (var commentJson in doc.RootElement.EnumerateArray())
+            foreach (JsonElement commentJson in doc.RootElement.EnumerateArray())
             {
-                var comment = GitHubIssueMapper.MapComment(commentJson, issueDbId, repoFullName, issueNumber);
+                GitHubCommentRecord comment = GitHubIssueMapper.MapComment(commentJson, issueDbId, repoFullName, issueNumber);
                 GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
             }
         }
@@ -287,7 +288,7 @@ public class GitHubSource(
 
     private List<string> GetEffectiveRepositories()
     {
-        var repos = new List<string>(_options.Repositories);
+        List<string> repos = new List<string>(_options.Repositories);
         repos.AddRange(_options.AdditionalRepositories);
         return repos;
     }

@@ -22,7 +22,7 @@ public class IngestionWorkQueue(
     /// </summary>
     public void Enqueue(Func<CancellationToken, Task> work, string description)
     {
-        var appToken = lifetime.ApplicationStopping;
+        CancellationToken appToken = lifetime.ApplicationStopping;
 
         lock (_lock)
         {

@@ -38,13 +38,13 @@ public static partial class CrossRefPatterns
         if (string.IsNullOrWhiteSpace(text))
             return [];
 
-        var results = new List<CrossReference>();
-        var seen = new HashSet<(string, string)>();
+        List<CrossReference> results = new List<CrossReference>();
+        HashSet<(string, string)> seen = new HashSet<(string, string)>();
 
         // Jira URLs (check before Jira keys to avoid double-matching)
         foreach (Match match in JiraUrlRegex().Matches(text))
         {
-            var key = (TargetType: "jira", TargetId: match.Groups[1].Value);
+            (string TargetType, string TargetId) key = (TargetType: "jira", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -52,7 +52,7 @@ public static partial class CrossRefPatterns
         // Jira keys (skip if already found via URL)
         foreach (Match match in JiraKeyRegex().Matches(text))
         {
-            var key = (TargetType: "jira", TargetId: match.Groups[1].Value);
+            (string TargetType, string TargetId) key = (TargetType: "jira", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -60,9 +60,9 @@ public static partial class CrossRefPatterns
         // Zulip URLs
         foreach (Match match in ZulipUrlRegex().Matches(text))
         {
-            var streamId = match.Groups[1].Value;
-            var topic = Uri.UnescapeDataString(match.Groups[2].Value.TrimEnd());
-            var key = (TargetType: "zulip", TargetId: $"{streamId}:{topic}");
+            string streamId = match.Groups[1].Value;
+            string topic = Uri.UnescapeDataString(match.Groups[2].Value.TrimEnd());
+            (string TargetType, string TargetId) key = (TargetType: "zulip", TargetId: $"{streamId}:{topic}");
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -70,9 +70,9 @@ public static partial class CrossRefPatterns
         // GitHub issue/PR URLs
         foreach (Match match in GitHubIssueUrlRegex().Matches(text))
         {
-            var repo = match.Groups[1].Value;
-            var number = match.Groups[2].Value;
-            var key = (TargetType: "github", TargetId: $"{repo}#{number}");
+            string repo = match.Groups[1].Value;
+            string number = match.Groups[2].Value;
+            (string TargetType, string TargetId) key = (TargetType: "github", TargetId: $"{repo}#{number}");
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -80,7 +80,7 @@ public static partial class CrossRefPatterns
         // GitHub short references (HL7/repo#123)
         foreach (Match match in GitHubShortRefRegex().Matches(text))
         {
-            var key = (TargetType: "github", TargetId: match.Groups[1].Value);
+            (string TargetType, string TargetId) key = (TargetType: "github", TargetId: match.Groups[1].Value);
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -88,8 +88,8 @@ public static partial class CrossRefPatterns
         // Confluence URLs
         foreach (Match match in ConfluenceUrlRegex().Matches(text))
         {
-            var pageId = match.Groups[1].Value;
-            var key = (TargetType: "confluence", TargetId: pageId);
+            string pageId = match.Groups[1].Value;
+            (string TargetType, string TargetId) key = (TargetType: "confluence", TargetId: pageId);
             if (seen.Add(key))
                 results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
         }
@@ -102,11 +102,11 @@ public static partial class CrossRefPatterns
     /// </summary>
     public static string GetSurroundingText(string fullText, int matchIndex, int contextChars = 100)
     {
-        var halfContext = contextChars / 2;
-        var start = Math.Max(0, matchIndex - halfContext);
-        var end = Math.Min(fullText.Length, matchIndex + halfContext);
+        int halfContext = contextChars / 2;
+        int start = Math.Max(0, matchIndex - halfContext);
+        int end = Math.Min(fullText.Length, matchIndex + halfContext);
 
-        var sb = new StringBuilder(contextChars + 6);
+        StringBuilder sb = new StringBuilder(contextChars + 6);
         if (start > 0)
             sb.Append("...");
         sb.Append(fullText.AsSpan(start, end - start));

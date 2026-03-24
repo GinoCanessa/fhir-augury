@@ -22,8 +22,8 @@ public static class JiraQueryBuilder
     /// </summary>
     public static (string Sql, List<SqliteParameter> Parameters) Build(Fhiraugury.JiraQueryRequest request)
     {
-        var sb = new StringBuilder("SELECT * FROM jira_issues WHERE 1=1");
-        var parameters = new List<SqliteParameter>();
+        StringBuilder sb = new StringBuilder("SELECT * FROM jira_issues WHERE 1=1");
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
         int paramIdx = 0;
 
         AddInClause(sb, parameters, "Status", request.Statuses, ref paramIdx);
@@ -38,9 +38,9 @@ public static class JiraQueryBuilder
         AddInClause(sb, parameters, "Reporter", request.Reporters, ref paramIdx);
 
         // Labels use LIKE matching since labels are comma-separated
-        foreach (var label in request.Labels)
+        foreach (string? label in request.Labels)
         {
-            var name = $"@lbl{paramIdx++}";
+            string name = $"@lbl{paramIdx++}";
             sb.Append($" AND Labels LIKE {name}");
             parameters.Add(new SqliteParameter(name, $"%{label}%"));
         }
@@ -48,28 +48,28 @@ public static class JiraQueryBuilder
         // Timestamp filters
         if (request.CreatedAfter is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND CreatedAt >= {name}");
             parameters.Add(new SqliteParameter(name, request.CreatedAfter.ToDateTimeOffset().ToString("o")));
         }
 
         if (request.CreatedBefore is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND CreatedAt <= {name}");
             parameters.Add(new SqliteParameter(name, request.CreatedBefore.ToDateTimeOffset().ToString("o")));
         }
 
         if (request.UpdatedAfter is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND UpdatedAt >= {name}");
             parameters.Add(new SqliteParameter(name, request.UpdatedAfter.ToDateTimeOffset().ToString("o")));
         }
 
         if (request.UpdatedBefore is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND UpdatedAt <= {name}");
             parameters.Add(new SqliteParameter(name, request.UpdatedBefore.ToDateTimeOffset().ToString("o")));
         }
@@ -77,18 +77,18 @@ public static class JiraQueryBuilder
         // FTS5 subquery
         if (!string.IsNullOrWhiteSpace(request.Query))
         {
-            var name = $"@q{paramIdx++}";
+            string name = $"@q{paramIdx++}";
             sb.Append($" AND Key IN (SELECT Key FROM jira_issues ji2 WHERE ji2.Id IN (SELECT rowid FROM jira_issues_fts WHERE jira_issues_fts MATCH {name}))");
             parameters.Add(new SqliteParameter(name, FtsQueryHelper.SanitizeFtsQuery(request.Query)));
         }
 
         // Sorting
-        var sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "UpdatedAt";
-        var sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
+        string sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "UpdatedAt";
+        string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
         sb.Append($" ORDER BY {sortBy} {sortOrder}");
 
         // Pagination
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 50;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 50;
         sb.Append(" LIMIT @limit OFFSET @offset");
         parameters.Add(new SqliteParameter("@limit", limit));
         parameters.Add(new SqliteParameter("@offset", Math.Max(0, request.Offset)));
@@ -102,10 +102,10 @@ public static class JiraQueryBuilder
     {
         if (values.Count == 0) return;
 
-        var names = new List<string>();
-        foreach (var v in values)
+        List<string> names = new List<string>();
+        foreach (string v in values)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             names.Add(name);
             parameters.Add(new SqliteParameter(name, v));
         }
@@ -119,10 +119,10 @@ public static class JiraQueryBuilder
     {
         if (values.Count == 0) return;
 
-        var names = new List<string>();
-        foreach (var v in values)
+        List<string> names = new List<string>();
+        foreach (string v in values)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             names.Add(name);
             parameters.Add(new SqliteParameter(name, v));
         }

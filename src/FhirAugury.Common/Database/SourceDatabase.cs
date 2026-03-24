@@ -25,7 +25,7 @@ public abstract class SourceDatabase : IDisposable
         _readOnly = readOnly;
         Logger = logger;
 
-        var mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate;
+        SqliteOpenMode mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate;
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
@@ -41,12 +41,12 @@ public abstract class SourceDatabase : IDisposable
     /// </remarks>
     public SqliteConnection OpenConnection()
     {
-        var connection = new SqliteConnection(_connectionString);
+        SqliteConnection connection = new SqliteConnection(_connectionString);
         connection.Open();
 
         if (!_readOnly)
         {
-            using var pragma = connection.CreateCommand();
+            using SqliteCommand pragma = connection.CreateCommand();
             pragma.CommandText = """
                 PRAGMA journal_mode = WAL;
                 PRAGMA synchronous = NORMAL;
@@ -66,7 +66,7 @@ public abstract class SourceDatabase : IDisposable
     /// </summary>
     public void Initialize()
     {
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
         InitializeSchema(connection);
         Logger.LogInformation("Database initialized");
     }
@@ -83,9 +83,9 @@ public abstract class SourceDatabase : IDisposable
         Action<SqliteConnection, T> processItem,
         int batchSize = DefaultBatchSize)
     {
-        var batch = new List<T>(batchSize);
+        List<T> batch = new List<T>(batchSize);
 
-        foreach (var item in items)
+        foreach (T? item in items)
         {
             batch.Add(item);
             if (batch.Count >= batchSize)
@@ -106,7 +106,7 @@ public abstract class SourceDatabase : IDisposable
     /// </summary>
     public static void ExecuteInTransaction(SqliteConnection connection, Action<SqliteConnection> action)
     {
-        using var transaction = connection.BeginTransaction();
+        using SqliteTransaction transaction = connection.BeginTransaction();
         try
         {
             action(connection);
@@ -129,11 +129,11 @@ public abstract class SourceDatabase : IDisposable
         string contentRowId,
         string[] indexedColumns)
     {
-        var columnList = string.Join(", ", indexedColumns);
-        var sourceColumns = string.Join(", ", indexedColumns.Select(c => $"new.{c}"));
-        var oldColumns = string.Join(", ", indexedColumns.Select(c => $"old.{c}"));
+        string columnList = string.Join(", ", indexedColumns);
+        string sourceColumns = string.Join(", ", indexedColumns.Select(c => $"new.{c}"));
+        string oldColumns = string.Join(", ", indexedColumns.Select(c => $"old.{c}"));
 
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = $"""
             CREATE VIRTUAL TABLE IF NOT EXISTS {ftsTableName}
             USING fts5({columnList}, content={contentTable}, content_rowid={contentRowId});
@@ -157,7 +157,7 @@ public abstract class SourceDatabase : IDisposable
     /// <summary>Rebuilds an FTS5 index from its content table.</summary>
     protected static void RebuildFts5(SqliteConnection connection, string ftsTableName)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = $"INSERT INTO {ftsTableName}({ftsTableName}) VALUES('rebuild');";
         cmd.ExecuteNonQuery();
     }
@@ -165,20 +165,20 @@ public abstract class SourceDatabase : IDisposable
     /// <summary>Returns the database file size in bytes, or 0 for in-memory databases.</summary>
     public long GetDatabaseSizeBytes()
     {
-        using var connection = OpenConnection();
-        using var cmd = connection.CreateCommand();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "PRAGMA page_count;";
-        var pageCount = Convert.ToInt64(cmd.ExecuteScalar());
+        long pageCount = Convert.ToInt64(cmd.ExecuteScalar());
         cmd.CommandText = "PRAGMA page_size;";
-        var pageSize = Convert.ToInt64(cmd.ExecuteScalar());
+        long pageSize = Convert.ToInt64(cmd.ExecuteScalar());
         return pageCount * pageSize;
     }
 
     /// <summary>Runs PRAGMA integrity_check.</summary>
     public string CheckIntegrity()
     {
-        using var connection = OpenConnection();
-        using var cmd = connection.CreateCommand();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "PRAGMA integrity_check;";
         return cmd.ExecuteScalar()?.ToString() ?? "unknown";
     }
@@ -188,13 +188,13 @@ public abstract class SourceDatabase : IDisposable
         List<T> batch,
         Action<SqliteConnection, T> processItem)
     {
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "SAVEPOINT batch_insert;";
         cmd.ExecuteNonQuery();
 
         try
         {
-            foreach (var item in batch)
+            foreach (T? item in batch)
             {
                 processItem(connection, item);
             }

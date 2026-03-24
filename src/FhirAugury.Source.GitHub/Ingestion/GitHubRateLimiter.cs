@@ -50,27 +50,27 @@ public class GitHubRateLimiter(IOptions<GitHubServiceOptions> optionsAccessor, I
         }
 
         // Add auth header per-request if not set globally
-        var token = _options.Auth.ResolveToken();
+        string? token = _options.Auth.ResolveToken();
         if (!string.IsNullOrEmpty(token) && request.Headers.Authorization is null)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
 
-        var response = await base.SendAsync(request, cancellationToken);
+        HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
 
         // Update rate limit tracking from response headers
         if (_options.RateLimiting.RespectRateLimitHeaders)
         {
             lock (_lock)
             {
-                if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingValues) &&
-                    int.TryParse(remainingValues.FirstOrDefault(), out var remaining))
+                if (response.Headers.TryGetValues("X-RateLimit-Remaining", out IEnumerable<string>? remainingValues) &&
+                    int.TryParse(remainingValues.FirstOrDefault(), out int remaining))
                 {
                     _remaining = remaining;
                 }
 
-                if (response.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues) &&
-                    long.TryParse(resetValues.FirstOrDefault(), out var resetUnix))
+                if (response.Headers.TryGetValues("X-RateLimit-Reset", out IEnumerable<string>? resetValues) &&
+                    long.TryParse(resetValues.FirstOrDefault(), out long resetUnix))
                 {
                     _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
                 }

@@ -17,13 +17,13 @@ public static class AtomicFileWriter
         ILogger? logger = null,
         CancellationToken ct = default)
     {
-        var dir = Path.GetDirectoryName(path)!;
+        string dir = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
 
-        var tempPath = path + ".tmp";
+        string tempPath = path + ".tmp";
         try
         {
-            await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+            await using (FileStream fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
             {
                 await writeAction(fs);
             }

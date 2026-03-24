@@ -21,8 +21,8 @@ public static class ZulipQueryBuilder
     /// </summary>
     public static (string Sql, List<SqliteParameter> Parameters) Build(Fhiraugury.ZulipQueryRequest request)
     {
-        var sb = new StringBuilder("SELECT * FROM zulip_messages WHERE 1=1");
-        var parameters = new List<SqliteParameter>();
+        StringBuilder sb = new StringBuilder("SELECT * FROM zulip_messages WHERE 1=1");
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
         int paramIdx = 0;
 
         // Stream name filter
@@ -31,10 +31,10 @@ public static class ZulipQueryBuilder
         // Stream ID filter
         if (request.StreamIds.Count > 0)
         {
-            var names = new List<string>();
-            foreach (var id in request.StreamIds)
+            List<string> names = new List<string>();
+            foreach (int id in request.StreamIds)
             {
-                var name = $"@p{paramIdx++}";
+                string name = $"@p{paramIdx++}";
                 names.Add(name);
                 parameters.Add(new SqliteParameter(name, id));
             }
@@ -44,7 +44,7 @@ public static class ZulipQueryBuilder
         // Topic exact match
         if (!string.IsNullOrEmpty(request.Topic))
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND Topic = {name}");
             parameters.Add(new SqliteParameter(name, request.Topic));
         }
@@ -52,7 +52,7 @@ public static class ZulipQueryBuilder
         // Topic keyword (LIKE)
         if (!string.IsNullOrEmpty(request.TopicKeyword))
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND Topic LIKE {name}");
             parameters.Add(new SqliteParameter(name, $"%{request.TopicKeyword}%"));
         }
@@ -63,10 +63,10 @@ public static class ZulipQueryBuilder
         // Sender ID filter
         if (request.SenderIds.Count > 0)
         {
-            var names = new List<string>();
-            foreach (var id in request.SenderIds)
+            List<string> names = new List<string>();
+            foreach (int id in request.SenderIds)
             {
-                var name = $"@p{paramIdx++}";
+                string name = $"@p{paramIdx++}";
                 names.Add(name);
                 parameters.Add(new SqliteParameter(name, id));
             }
@@ -76,14 +76,14 @@ public static class ZulipQueryBuilder
         // Timestamp range
         if (request.After is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND Timestamp >= {name}");
             parameters.Add(new SqliteParameter(name, request.After.ToDateTimeOffset().ToString("o")));
         }
 
         if (request.Before is not null)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             sb.Append($" AND Timestamp <= {name}");
             parameters.Add(new SqliteParameter(name, request.Before.ToDateTimeOffset().ToString("o")));
         }
@@ -91,18 +91,18 @@ public static class ZulipQueryBuilder
         // FTS5 subquery
         if (!string.IsNullOrWhiteSpace(request.Query))
         {
-            var name = $"@q{paramIdx++}";
+            string name = $"@q{paramIdx++}";
             sb.Append($" AND Id IN (SELECT rowid FROM zulip_messages_fts WHERE zulip_messages_fts MATCH {name})");
             parameters.Add(new SqliteParameter(name, FtsQueryHelper.SanitizeFtsQuery(request.Query)));
         }
 
         // Sorting
-        var sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "Timestamp";
-        var sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
+        string sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "Timestamp";
+        string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
         sb.Append($" ORDER BY {sortBy} {sortOrder}");
 
         // Pagination
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 50;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 50;
         sb.Append(" LIMIT @limit OFFSET @offset");
         parameters.Add(new SqliteParameter("@limit", limit));
         parameters.Add(new SqliteParameter("@offset", Math.Max(0, request.Offset)));
@@ -116,10 +116,10 @@ public static class ZulipQueryBuilder
     {
         if (values.Count == 0) return;
 
-        var names = new List<string>();
-        foreach (var v in values)
+        List<string> names = new List<string>();
+        foreach (string v in values)
         {
-            var name = $"@p{paramIdx++}";
+            string name = $"@p{paramIdx++}";
             names.Add(name);
             parameters.Add(new SqliteParameter(name, v));
         }

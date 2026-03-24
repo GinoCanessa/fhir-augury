@@ -27,14 +27,14 @@ public class ConfluenceSource(
     /// <summary>Performs a full download of all pages in configured spaces.</summary>
     public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        var httpClient = httpClientFactory.CreateClient("confluence");
-        using var connection = database.OpenConnection();
+        HttpClient httpClient = httpClientFactory.CreateClient("confluence");
+        using SqliteConnection connection = database.OpenConnection();
 
-        foreach (var spaceKey in options.Spaces)
+        foreach (string spaceKey in options.Spaces)
         {
             if (ct.IsCancellationRequested) break;
 
@@ -46,7 +46,7 @@ public class ConfluenceSource(
 
             while (hasMore && !ct.IsCancellationRequested)
             {
-                var url = $"{options.BaseUrl}/rest/api/content?spaceKey={Uri.EscapeDataString(spaceKey)}" +
+                string url = $"{options.BaseUrl}/rest/api/content?spaceKey={Uri.EscapeDataString(spaceKey)}" +
                           $"&type=page&expand=body.storage,version,ancestors,metadata.labels" +
                           $"&start={start}&limit={options.PageSize}";
 
@@ -55,9 +55,9 @@ public class ConfluenceSource(
                 JsonDocument doc;
                 try
                 {
-                    using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
+                    using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
                     response.EnsureSuccessStatusCode();
-                    var json = await response.Content.ReadAsStringAsync(ct);
+                    string json = await response.Content.ReadAsStringAsync(ct);
                     doc = JsonDocument.Parse(json);
                 }
                 catch (Exception ex)
@@ -69,19 +69,19 @@ public class ConfluenceSource(
 
                 using (doc)
                 {
-                    var root = doc.RootElement;
-                    var results = root.GetProperty("results");
+                    JsonElement root = doc.RootElement;
+                    JsonElement results = root.GetProperty("results");
 
-                    foreach (var pageJson in results.EnumerateArray())
+                    foreach (JsonElement pageJson in results.EnumerateArray())
                     {
                         // Cache individual page JSON
-                        var pageId = pageJson.GetProperty("id").GetString()!;
-                        var cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
-                        var pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
-                        using var cacheStream = new MemoryStream(pageBytes);
+                        string pageId = pageJson.GetProperty("id").GetString()!;
+                        string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
+                        byte[] pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
+                        using MemoryStream cacheStream = new MemoryStream(pageBytes);
                         await cache.PutAsync(SourceName, cacheKey, cacheStream, ct);
 
-                        var result = ProcessPage(pageJson, spaceKey, connection);
+                        PageResult result = ProcessPage(pageJson, spaceKey, connection);
                         itemsProcessed++;
 
                         switch (result)
@@ -95,9 +95,9 @@ public class ConfluenceSource(
                             logger.LogInformation("Confluence progress: {Count} pages processed", itemsProcessed);
                     }
 
-                    var size = results.GetArrayLength();
+                    int size = results.GetArrayLength();
                     start += size;
-                    hasMore = root.TryGetProperty("_links", out var links) &&
+                    hasMore = root.TryGetProperty("_links", out JsonElement links) &&
                               links.TryGetProperty("next", out _);
                 }
             }
@@ -127,23 +127,23 @@ public class ConfluenceSource(
     /// <summary>Performs an incremental download of pages updated since the given timestamp.</summary>
     public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        var httpClient = httpClientFactory.CreateClient("confluence");
-        using var connection = database.OpenConnection();
+        HttpClient httpClient = httpClientFactory.CreateClient("confluence");
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
-        var spacesParam = string.Join(",", options.Spaces.Select(s => $"\"{s}\""));
-        var cql = $"lastModified >= \"{sinceStr}\" AND space in ({spacesParam}) AND type = page";
+        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
+        string spacesParam = string.Join(",", options.Spaces.Select(s => $"\"{s}\""));
+        string cql = $"lastModified >= \"{sinceStr}\" AND space in ({spacesParam}) AND type = page";
 
         int start = 0;
         bool hasMore = true;
 
         while (hasMore && !ct.IsCancellationRequested)
         {
-            var url = $"{options.BaseUrl}/rest/api/content/search?cql={Uri.EscapeDataString(cql)}" +
+            string url = $"{options.BaseUrl}/rest/api/content/search?cql={Uri.EscapeDataString(cql)}" +
                       $"&expand=body.storage,version,ancestors,metadata.labels" +
                       $"&start={start}&limit={options.PageSize}";
 
@@ -152,9 +152,9 @@ public class ConfluenceSource(
             JsonDocument doc;
             try
             {
-                using var response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
+                using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
                 response.EnsureSuccessStatusCode();
-                var json = await response.Content.ReadAsStringAsync(ct);
+                string json = await response.Content.ReadAsStringAsync(ct);
                 doc = JsonDocument.Parse(json);
             }
             catch (Exception ex)
@@ -166,20 +166,20 @@ public class ConfluenceSource(
 
             using (doc)
             {
-                var root = doc.RootElement;
-                var results = root.GetProperty("results");
+                JsonElement root = doc.RootElement;
+                JsonElement results = root.GetProperty("results");
 
-                foreach (var pageJson in results.EnumerateArray())
+                foreach (JsonElement pageJson in results.EnumerateArray())
                 {
-                    var spaceKey = GetNestedString(pageJson, "space", "key") ?? options.Spaces.FirstOrDefault() ?? "FHIR";
+                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? options.Spaces.FirstOrDefault() ?? "FHIR";
 
-                    var pageId = pageJson.GetProperty("id").GetString()!;
-                    var cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
-                    var pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
-                    using var cacheStream = new MemoryStream(pageBytes);
+                    string pageId = pageJson.GetProperty("id").GetString()!;
+                    string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
+                    byte[] pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
+                    using MemoryStream cacheStream = new MemoryStream(pageBytes);
                     await cache.PutAsync(SourceName, cacheKey, cacheStream, ct);
 
-                    var result = ProcessPage(pageJson, spaceKey, connection);
+                    PageResult result = ProcessPage(pageJson, spaceKey, connection);
                     itemsProcessed++;
 
                     switch (result)
@@ -190,9 +190,9 @@ public class ConfluenceSource(
                     }
                 }
 
-                var size = results.GetArrayLength();
+                int size = results.GetArrayLength();
                 start += size;
-                hasMore = root.TryGetProperty("_links", out var links) &&
+                hasMore = root.TryGetProperty("_links", out JsonElement links) &&
                           links.TryGetProperty("next", out _);
             }
         }
@@ -210,30 +210,30 @@ public class ConfluenceSource(
     /// <summary>Rebuilds the database from cached page JSON files.</summary>
     public async Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
     {
-        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        var errors = new List<string>();
+        List<string> errors = new List<string>();
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var keys = cache.EnumerateKeys(SourceName);
+        IEnumerable<string> keys = cache.EnumerateKeys(SourceName);
 
-        foreach (var key in keys)
+        foreach (string key in keys)
         {
             if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(SourceName, key, out var stream)) continue;
+            if (!cache.TryGet(SourceName, key, out Stream? stream)) continue;
 
             using (stream)
             {
                 try
                 {
-                    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-                    var spaceKey = GetNestedString(doc.RootElement, "space", "key") ?? "FHIR";
+                    using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+                    string spaceKey = GetNestedString(doc.RootElement, "space", "key") ?? "FHIR";
 
-                    if (doc.RootElement.TryGetProperty("space", out var spaceJson))
+                    if (doc.RootElement.TryGetProperty("space", out JsonElement spaceJson))
                         UpsertSpaceFromJson(connection, spaceJson, spaceKey, ct);
 
-                    var result = ProcessPage(doc.RootElement, spaceKey, connection);
+                    PageResult result = ProcessPage(doc.RootElement, spaceKey, connection);
                     itemsProcessed++;
 
                     switch (result)
@@ -271,51 +271,51 @@ public class ConfluenceSource(
         try
         {
             pageId = pageJson.GetProperty("id").GetString()!;
-            var title = GetString(pageJson, "title") ?? string.Empty;
+            string title = GetString(pageJson, "title") ?? string.Empty;
 
-            var bodyStorage = GetNestedString(pageJson, "body", "storage", "value");
-            var bodyPlain = ConfluenceContentParser.ToPlainText(bodyStorage);
+            string? bodyStorage = GetNestedString(pageJson, "body", "storage", "value");
+            string bodyPlain = ConfluenceContentParser.ToPlainText(bodyStorage);
 
             string? labels = null;
-            if (pageJson.TryGetProperty("metadata", out var metadata) &&
-                metadata.TryGetProperty("labels", out var labelsObj) &&
-                labelsObj.TryGetProperty("results", out var labelsArray))
+            if (pageJson.TryGetProperty("metadata", out JsonElement metadata) &&
+                metadata.TryGetProperty("labels", out JsonElement labelsObj) &&
+                labelsObj.TryGetProperty("results", out JsonElement labelsArray))
             {
-                var labelNames = new List<string>();
-                foreach (var label in labelsArray.EnumerateArray())
+                List<string> labelNames = new List<string>();
+                foreach (JsonElement label in labelsArray.EnumerateArray())
                 {
-                    var name = label.GetProperty("name").GetString();
+                    string? name = label.GetProperty("name").GetString();
                     if (!string.IsNullOrEmpty(name)) labelNames.Add(name);
                 }
                 if (labelNames.Count > 0) labels = string.Join(",", labelNames);
             }
 
             string? parentId = null;
-            if (pageJson.TryGetProperty("ancestors", out var ancestors) &&
+            if (pageJson.TryGetProperty("ancestors", out JsonElement ancestors) &&
                 ancestors.ValueKind == JsonValueKind.Array &&
                 ancestors.GetArrayLength() > 0)
             {
-                var lastAncestor = ancestors[ancestors.GetArrayLength() - 1];
+                JsonElement lastAncestor = ancestors[ancestors.GetArrayLength() - 1];
                 parentId = lastAncestor.GetProperty("id").GetString();
             }
 
-            var versionNumber = 1;
+            int versionNumber = 1;
             string? lastModifiedBy = null;
-            if (pageJson.TryGetProperty("version", out var version))
+            if (pageJson.TryGetProperty("version", out JsonElement version))
             {
-                if (version.TryGetProperty("number", out var num))
+                if (version.TryGetProperty("number", out JsonElement num))
                     versionNumber = num.GetInt32();
                 lastModifiedBy = GetNestedString(version, "by", "displayName");
             }
 
-            var url = $"{options.BaseUrl}/pages/{pageId}";
-            if (pageJson.TryGetProperty("_links", out var links) &&
-                links.TryGetProperty("webui", out var webui))
+            string url = $"{options.BaseUrl}/pages/{pageId}";
+            if (pageJson.TryGetProperty("_links", out JsonElement links) &&
+                links.TryGetProperty("webui", out JsonElement webui))
             {
                 url = $"{options.BaseUrl}{webui.GetString()}";
             }
 
-            var record = new ConfluencePageRecord
+            ConfluencePageRecord record = new ConfluencePageRecord
             {
                 Id = ConfluencePageRecord.GetIndex(),
                 ConfluenceId = pageId,
@@ -331,7 +331,7 @@ public class ConfluenceSource(
                 Url = url,
             };
 
-            var existing = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
+            ConfluencePageRecord? existing = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
             bool isNew;
 
             if (existing is not null)
@@ -347,10 +347,10 @@ public class ConfluenceSource(
             }
 
             // Extract and store internal page links
-            var extractedLinks = ConfluenceLinkExtractor.ExtractLinks(bodyStorage);
-            foreach (var (targetPageId, linkType) in extractedLinks)
+            List<(string TargetPageId, string LinkType)> extractedLinks = ConfluenceLinkExtractor.ExtractLinks(bodyStorage);
+            foreach ((string? targetPageId, string? linkType) in extractedLinks)
             {
-                var linkRecord = new ConfluencePageLinkRecord
+                ConfluencePageLinkRecord linkRecord = new ConfluencePageLinkRecord
                 {
                     Id = ConfluencePageLinkRecord.GetIndex(),
                     SourcePageId = pageId,
@@ -373,12 +373,12 @@ public class ConfluenceSource(
     {
         try
         {
-            var httpClient = httpClientFactory.CreateClient("confluence");
-            var spaceUrl = $"{options.BaseUrl}/rest/api/space/{Uri.EscapeDataString(spaceKey)}";
-            using var spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: SourceName);
+            HttpClient httpClient = httpClientFactory.CreateClient("confluence");
+            string spaceUrl = $"{options.BaseUrl}/rest/api/space/{Uri.EscapeDataString(spaceKey)}";
+            using HttpResponseMessage spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: SourceName);
             spaceResponse.EnsureSuccessStatusCode();
-            var spaceJson = await spaceResponse.Content.ReadAsStringAsync(ct);
-            using var spaceDoc = JsonDocument.Parse(spaceJson);
+            string spaceJson = await spaceResponse.Content.ReadAsStringAsync(ct);
+            using JsonDocument spaceDoc = JsonDocument.Parse(spaceJson);
             UpsertSpaceFromJson(connection, spaceDoc.RootElement, spaceKey, ct);
         }
         catch (Exception ex)
@@ -390,7 +390,7 @@ public class ConfluenceSource(
 
     private void UpsertSpaceFromJson(SqliteConnection connection, JsonElement spaceJson, string spaceKey, CancellationToken ct = default)
     {
-        var record = new ConfluenceSpaceRecord
+        ConfluenceSpaceRecord record = new ConfluenceSpaceRecord
         {
             Id = ConfluenceSpaceRecord.GetIndex(),
             Key = spaceKey,
@@ -400,7 +400,7 @@ public class ConfluenceSource(
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
 
-        var existing = ConfluenceSpaceRecord.SelectSingle(connection, Key: spaceKey);
+        ConfluenceSpaceRecord? existing = ConfluenceSpaceRecord.SelectSingle(connection, Key: spaceKey);
         if (existing is not null)
         {
             record.Id = existing.Id;

@@ -34,15 +34,15 @@ public class ZulipGrpcService(
 
     public override Task<SearchResponse> Search(SearchRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
+        using SqliteConnection connection = database.OpenConnection();
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.Query);
 
         if (string.IsNullOrEmpty(ftsQuery))
             return Task.FromResult(new SearchResponse { Query = request.Query });
 
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
 
-        var sql = """
+        string sql = """
             SELECT zm.ZulipMessageId, zm.Topic, zm.StreamName,
                    snippet(zulip_messages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
                    zulip_messages_fts.rank,
@@ -54,19 +54,19 @@ public class ZulipGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        var response = new SearchResponse { Query = request.Query };
-        using var reader = cmd.ExecuteReader();
+        SearchResponse response = new SearchResponse { Query = request.Query };
+        using SqliteDataReader reader = cmd.ExecuteReader();
 
         while (reader.Read())
         {
-            var msgId = reader.GetInt32(0);
-            var topic = reader.IsDBNull(1) ? "" : reader.GetString(1);
-            var streamName = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            int msgId = reader.GetInt32(0);
+            string topic = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            string streamName = reader.IsDBNull(2) ? "" : reader.GetString(2);
 
             response.Results.Add(new SearchResultItem
             {
@@ -86,15 +86,15 @@ public class ZulipGrpcService(
 
     public override Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        if (!int.TryParse(request.Id, out var msgId))
+        if (!int.TryParse(request.Id, out int msgId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "ID must be a Zulip message ID integer"));
 
-        var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
+        ZulipMessageRecord message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Message {request.Id} not found"));
 
-        var response = new ItemResponse
+        ItemResponse response = new ItemResponse
         {
             Source = "zulip",
             Id = message.ZulipMessageId.ToString(),
@@ -116,23 +116,23 @@ public class ZulipGrpcService(
 
     public override async Task ListItems(ListItemsRequest request, IServerStreamWriter<ItemSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        var sql = "SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp FROM zulip_messages ORDER BY Timestamp DESC LIMIT @limit OFFSET @offset";
+        string sql = "SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp FROM zulip_messages ORDER BY Timestamp DESC LIMIT @limit OFFSET @offset";
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var msgId = reader.GetInt32(0);
-            var streamName = reader.GetString(1);
-            var topic = reader.GetString(2);
+            int msgId = reader.GetInt32(0);
+            string streamName = reader.GetString(1);
+            string topic = reader.GetString(2);
 
-            var summary = new ItemSummary
+            ItemSummary summary = new ItemSummary
             {
                 Id = msgId.ToString(),
                 Title = $"[{streamName}] {topic}",
@@ -149,18 +149,18 @@ public class ZulipGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (!int.TryParse(request.Id, out var msgId))
+        if (!int.TryParse(request.Id, out int msgId))
             return Task.FromResult(new SearchResponse());
 
         // Find messages in the same topic thread
-        var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+        ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
         if (message is null)
             return Task.FromResult(new SearchResponse());
 
-        var sql = """
+        string sql = """
             SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp, substr(ContentPlain, 1, 200)
             FROM zulip_messages
             WHERE StreamName = @streamName AND Topic = @topic AND ZulipMessageId != @msgId
@@ -168,19 +168,19 @@ public class ZulipGrpcService(
             LIMIT @limit
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@streamName", message.StreamName);
         cmd.Parameters.AddWithValue("@topic", message.Topic);
         cmd.Parameters.AddWithValue("@msgId", msgId);
         cmd.Parameters.AddWithValue("@limit", limit);
 
-        var response = new SearchResponse();
-        using var reader = cmd.ExecuteReader();
+        SearchResponse response = new SearchResponse();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var relMsgId = reader.GetInt32(0);
-            var streamName = reader.GetString(1);
-            var topic = reader.GetString(2);
+            int relMsgId = reader.GetInt32(0);
+            string streamName = reader.GetString(1);
+            string topic = reader.GetString(2);
 
             response.Results.Add(new SearchResultItem
             {
@@ -199,15 +199,15 @@ public class ZulipGrpcService(
 
     public override Task<SnapshotResponse> GetSnapshot(GetSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        if (!int.TryParse(request.Id, out var msgId))
+        if (!int.TryParse(request.Id, out int msgId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "ID must be a Zulip message ID integer"));
 
-        var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
+        ZulipMessageRecord message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Message {request.Id} not found"));
 
-        var md = BuildThreadMarkdownSnapshot(connection, message.StreamName, message.Topic);
+        string md = BuildThreadMarkdownSnapshot(connection, message.StreamName, message.Topic);
 
         return Task.FromResult(new SnapshotResponse
         {
@@ -220,15 +220,15 @@ public class ZulipGrpcService(
 
     public override Task<ContentResponse> GetContent(GetContentRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        if (!int.TryParse(request.Id, out var msgId))
+        if (!int.TryParse(request.Id, out int msgId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "ID must be a Zulip message ID integer"));
 
-        var message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
+        ZulipMessageRecord message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Message {request.Id} not found"));
 
-        var content = request.Format?.Equals("html", StringComparison.OrdinalIgnoreCase) == true
+        string content = request.Format?.Equals("html", StringComparison.OrdinalIgnoreCase) == true
             ? (message.ContentHtml ?? "")
             : (message.ContentPlain ?? "");
 
@@ -244,10 +244,10 @@ public class ZulipGrpcService(
 
     public override async Task StreamSearchableText(StreamTextRequest request, IServerStreamWriter<SearchableTextItem> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var sql = "SELECT ZulipMessageId, StreamName, Topic, SenderName, ContentPlain, Timestamp FROM zulip_messages";
-        var parameters = new List<SqliteParameter>();
+        string sql = "SELECT ZulipMessageId, StreamName, Topic, SenderName, ContentPlain, Timestamp FROM zulip_messages";
+        List<SqliteParameter> parameters = new List<SqliteParameter>();
 
         if (request.Since is not null)
         {
@@ -257,14 +257,14 @@ public class ZulipGrpcService(
 
         sql += " ORDER BY Timestamp ASC";
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var msgId = reader.GetInt32(0).ToString();
-            var item = new SearchableTextItem
+            string msgId = reader.GetInt32(0).ToString();
+            SearchableTextItem item = new SearchableTextItem
             {
                 Source = "zulip",
                 Id = msgId,
@@ -285,7 +285,7 @@ public class ZulipGrpcService(
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
     {
-        var type = request.Type?.ToLowerInvariant() ?? "incremental";
+        string type = request.Type?.ToLowerInvariant() ?? "incremental";
 
         workQueue.Enqueue(ct => type switch
         {
@@ -311,14 +311,14 @@ public class ZulipGrpcService(
 
     public override Task<StatsResponse> GetStats(StatsRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var messageCount = ZulipMessageRecord.SelectCount(connection);
-        var streamCount = ZulipStreamRecord.SelectCount(connection);
-        var dbSize = database.GetDatabaseSizeBytes();
-        var cacheStats = cache.GetStats(ZulipCacheLayout.SourceName);
+        int messageCount = ZulipMessageRecord.SelectCount(connection);
+        int streamCount = ZulipStreamRecord.SelectCount(connection);
+        long dbSize = database.GetDatabaseSizeBytes();
+        CacheStats cacheStats = cache.GetStats(ZulipCacheLayout.SourceName);
 
-        var response = new StatsResponse
+        StatsResponse response = new StatsResponse
         {
             Source = "zulip",
             TotalItems = messageCount,
@@ -327,7 +327,7 @@ public class ZulipGrpcService(
             CacheSizeBytes = cacheStats.TotalBytes,
         };
 
-        var syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
+        ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
         if (syncState is not null)
             response.LastSyncAt = Timestamp.FromDateTimeOffset(syncState.LastSyncAt);
 
@@ -345,8 +345,8 @@ public class ZulipGrpcService(
 
     private IngestionStatusResponse GetCurrentStatus()
     {
-        using var connection = database.OpenConnection();
-        var syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
+        using SqliteConnection connection = database.OpenConnection();
+        ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
 
         return new IngestionStatusResponse
         {
@@ -364,24 +364,24 @@ public class ZulipGrpcService(
 
     private static string BuildThreadMarkdownSnapshot(SqliteConnection connection, string streamName, string topic)
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# [{streamName}] > {topic}");
         sb.AppendLine();
 
-        using var cmd = new SqliteCommand(
+        using SqliteCommand cmd = new SqliteCommand(
             "SELECT SenderName, ContentPlain, Timestamp FROM zulip_messages WHERE StreamName = @streamName AND Topic = @topic ORDER BY Timestamp ASC",
             connection);
         cmd.Parameters.AddWithValue("@streamName", streamName);
         cmd.Parameters.AddWithValue("@topic", topic);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var sender = reader.GetString(0);
-            var content = reader.IsDBNull(1) ? "" : reader.GetString(1);
-            var ts = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            string sender = reader.GetString(0);
+            string content = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            string ts = reader.IsDBNull(2) ? "" : reader.GetString(2);
 
-            if (DateTimeOffset.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
+            if (DateTimeOffset.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt))
                 sb.AppendLine($"### {sender} ({dt:yyyy-MM-dd HH:mm})");
             else
                 sb.AppendLine($"### {sender}");
@@ -397,8 +397,8 @@ public class ZulipGrpcService(
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return null;
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
     }
@@ -414,10 +414,10 @@ public class ZulipSpecificGrpcService(
 {
     public override Task<ZulipThread> GetThread(ZulipGetThreadRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 200;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 1000) : 200;
 
-        var sql = """
+        string sql = """
             SELECT ZulipMessageId, StreamId, StreamName, Topic, SenderName, ContentPlain, ContentHtml, Timestamp
             FROM zulip_messages
             WHERE StreamName = @streamName AND Topic = @topic
@@ -425,19 +425,19 @@ public class ZulipSpecificGrpcService(
             LIMIT @limit
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@streamName", request.StreamName);
         cmd.Parameters.AddWithValue("@topic", request.Topic);
         cmd.Parameters.AddWithValue("@limit", limit);
 
-        var thread = new ZulipThread
+        ZulipThread thread = new ZulipThread
         {
             StreamName = request.StreamName,
             Topic = request.Topic,
             Url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(request.StreamName)}/topic/{Uri.EscapeDataString(request.Topic)}",
         };
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             thread.Messages.Add(new ZulipMessage
@@ -459,14 +459,14 @@ public class ZulipSpecificGrpcService(
 
     public override async Task ListStreams(ZulipListStreamsRequest request, IServerStreamWriter<ZulipStream> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        using var cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount FROM zulip_streams ORDER BY Name ASC", connection);
+        using SqliteCommand cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount FROM zulip_streams ORDER BY Name ASC", connection);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var name = reader.GetString(1);
+            string name = reader.GetString(1);
             await responseStream.WriteAsync(new ZulipStream
             {
                 Id = reader.GetInt32(0),
@@ -480,10 +480,10 @@ public class ZulipSpecificGrpcService(
 
     public override async Task ListTopics(ZulipListTopicsRequest request, IServerStreamWriter<ZulipTopic> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
-        var sql = """
+        string sql = """
             SELECT Topic, COUNT(*) as MsgCount, MAX(Timestamp) as LastMsgAt
             FROM zulip_messages
             WHERE StreamName = @streamName
@@ -492,15 +492,15 @@ public class ZulipSpecificGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using var cmd = new SqliteCommand(sql, connection);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@streamName", request.StreamName);
         cmd.Parameters.AddWithValue("@limit", limit);
         cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var topic = reader.GetString(0);
+            string topic = reader.GetString(0);
             await responseStream.WriteAsync(new ZulipTopic
             {
                 StreamName = request.StreamName,
@@ -514,8 +514,8 @@ public class ZulipSpecificGrpcService(
 
     public override async Task GetMessagesByUser(ZulipUserMessagesRequest request, IServerStreamWriter<ZulipMessageSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 500) : 50;
 
         string sql;
         SqliteCommand cmd;
@@ -554,12 +554,12 @@ public class ZulipSpecificGrpcService(
 
         using (cmd)
         {
-            using var reader = cmd.ExecuteReader();
+            using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var msgId = reader.GetInt32(0);
-                var streamName = reader.GetString(1);
-                var topic = reader.GetString(2);
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
 
                 await responseStream.WriteAsync(new ZulipMessageSummary
                 {
@@ -577,19 +577,19 @@ public class ZulipSpecificGrpcService(
 
     public override async Task QueryMessages(ZulipQueryRequest request, IServerStreamWriter<ZulipMessageSummary> responseStream, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
-        var (sql, parameters) = ZulipQueryBuilder.Build(request);
+        using SqliteConnection connection = database.OpenConnection();
+        (string? sql, List<SqliteParameter>? parameters) = ZulipQueryBuilder.Build(request);
 
-        using var cmd = new SqliteCommand(sql, connection);
-        foreach (var p in parameters) cmd.Parameters.Add(p);
+        using SqliteCommand cmd = new SqliteCommand(sql, connection);
+        foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var msgId = reader["ZulipMessageId"] is long l ? (int)l : 0;
-            var streamName = reader["StreamName"]?.ToString() ?? "";
-            var topic = reader["Topic"]?.ToString() ?? "";
-            var content = reader["ContentPlain"]?.ToString() ?? "";
+            int msgId = reader["ZulipMessageId"] is long l ? (int)l : 0;
+            string streamName = reader["StreamName"]?.ToString() ?? "";
+            string topic = reader["Topic"]?.ToString() ?? "";
+            string content = reader["ContentPlain"]?.ToString() ?? "";
 
             await responseStream.WriteAsync(new ZulipMessageSummary
             {
@@ -599,7 +599,7 @@ public class ZulipSpecificGrpcService(
                 SenderName = reader["SenderName"]?.ToString() ?? "",
                 Snippet = content.Length > 200 ? content[..200] : content,
                 Timestamp = reader["Timestamp"] is string tsStr &&
-                    DateTimeOffset.TryParse(tsStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out var ts)
+                    DateTimeOffset.TryParse(tsStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset ts)
                     ? Timestamp.FromDateTimeOffset(ts)
                     : null,
                 Url = BuildMessageUrl(streamName, topic, msgId),
@@ -609,9 +609,9 @@ public class ZulipSpecificGrpcService(
 
     public override Task<SnapshotResponse> GetThreadSnapshot(ZulipSnapshotRequest request, ServerCallContext context)
     {
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
-        var md = BuildThreadMarkdownSnapshot(connection, request.StreamName, request.Topic, request.IncludeInternalRefs);
+        string md = BuildThreadMarkdownSnapshot(connection, request.StreamName, request.Topic, request.IncludeInternalRefs);
 
         return Task.FromResult(new SnapshotResponse
         {
@@ -629,24 +629,24 @@ public class ZulipSpecificGrpcService(
 
     private static string BuildThreadMarkdownSnapshot(SqliteConnection connection, string streamName, string topic, bool includeRefs)
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.AppendLine($"# [{streamName}] > {topic}");
         sb.AppendLine();
 
-        using var cmd = new SqliteCommand(
+        using SqliteCommand cmd = new SqliteCommand(
             "SELECT SenderName, ContentPlain, Timestamp FROM zulip_messages WHERE StreamName = @streamName AND Topic = @topic ORDER BY Timestamp ASC",
             connection);
         cmd.Parameters.AddWithValue("@streamName", streamName);
         cmd.Parameters.AddWithValue("@topic", topic);
 
-        using var reader = cmd.ExecuteReader();
+        using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var sender = reader.GetString(0);
-            var content = reader.IsDBNull(1) ? "" : reader.GetString(1);
-            var ts = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            string sender = reader.GetString(0);
+            string content = reader.IsDBNull(1) ? "" : reader.GetString(1);
+            string ts = reader.IsDBNull(2) ? "" : reader.GetString(2);
 
-            if (DateTimeOffset.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt))
+            if (DateTimeOffset.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt))
                 sb.AppendLine($"### {sender} ({dt:yyyy-MM-dd HH:mm})");
             else
                 sb.AppendLine($"### {sender}");
@@ -662,8 +662,8 @@ public class ZulipSpecificGrpcService(
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
         if (reader.IsDBNull(ordinal)) return null;
-        var str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+        string str = reader.GetString(ordinal);
+        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
     }

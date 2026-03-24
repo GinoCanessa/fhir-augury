@@ -30,10 +30,10 @@ public static partial class CacheFileNaming
         if (string.IsNullOrEmpty(fileName))
             return false;
 
-        var match = WeekOfPattern().Match(fileName);
+        Match match = WeekOfPattern().Match(fileName);
         if (match.Success)
         {
-            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date))
                 return false;
 
             int? seq = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : null;
@@ -44,7 +44,7 @@ public static partial class CacheFileNaming
         match = DayOfPattern().Match(fileName);
         if (match.Success)
         {
-            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date))
                 return false;
 
             int? seq = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : null;
@@ -57,13 +57,13 @@ public static partial class CacheFileNaming
 
     public static string GenerateDailyFileName(DateOnly date, string extension, IEnumerable<string> existingFiles)
     {
-        var dateStr = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string dateStr = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
         int maxSeq = -1;
-        foreach (var file in existingFiles)
+        foreach (string file in existingFiles)
         {
-            var name = Path.GetFileName(file);
-            if (TryParse(name, out var parsed) &&
+            string name = Path.GetFileName(file);
+            if (TryParse(name, out ParsedBatchFile? parsed) &&
                 parsed.Prefix == BatchPrefix.DayOf &&
                 parsed.Date == date &&
                 parsed.SequenceNumber.HasValue)
@@ -77,14 +77,14 @@ public static partial class CacheFileNaming
 
     public static string GenerateWeeklyFileName(DateOnly date, string extension, IEnumerable<string> existingFiles)
     {
-        var monday = NormalizeToMonday(date);
-        var dateStr = monday.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        DateOnly monday = NormalizeToMonday(date);
+        string dateStr = monday.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
         int maxSeq = -1;
-        foreach (var file in existingFiles)
+        foreach (string file in existingFiles)
         {
-            var name = Path.GetFileName(file);
-            if (TryParse(name, out var parsed) &&
+            string name = Path.GetFileName(file);
+            if (TryParse(name, out ParsedBatchFile? parsed) &&
                 parsed.Prefix == BatchPrefix.WeekOf &&
                 parsed.Date == monday &&
                 parsed.SequenceNumber.HasValue)
@@ -104,7 +104,7 @@ public static partial class CacheFileNaming
 
     private static DateOnly NormalizeToMonday(DateOnly date)
     {
-        var daysFromMonday = ((int)date.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+        int daysFromMonday = ((int)date.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
         return date.AddDays(-daysFromMonday);
     }
 }

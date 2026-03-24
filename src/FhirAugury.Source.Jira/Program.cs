@@ -14,7 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // ── Configuration ────────────────────────────────────────────────
 builder.Configuration
@@ -24,9 +24,9 @@ builder.Configuration
 builder.Services.Configure<JiraServiceOptions>(builder.Configuration.GetSection(JiraServiceOptions.SectionName));
 
 // ── Kestrel ports ────────────────────────────────────────────────
-var portsSection = builder.Configuration.GetSection($"{JiraServiceOptions.SectionName}:Ports");
-var httpPort = portsSection.GetValue<int>("Http", 5160);
-var grpcPort = portsSection.GetValue<int>("Grpc", 5161);
+IConfigurationSection portsSection = builder.Configuration.GetSection($"{JiraServiceOptions.SectionName}:Ports");
+int httpPort = portsSection.GetValue<int>("Http", 5160);
+int grpcPort = portsSection.GetValue<int>("Grpc", 5161);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -40,10 +40,10 @@ builder.Services.AddGrpc();
 // Database
 builder.Services.AddSingleton(sp =>
 {
-    var jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
-    var dbPath = Path.GetFullPath(jiraOptions.DatabasePath);
+    JiraServiceOptions jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(jiraOptions.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    var db = new JiraDatabase(dbPath, sp.GetRequiredService<ILogger<JiraDatabase>>());
+    JiraDatabase db = new JiraDatabase(dbPath, sp.GetRequiredService<ILogger<JiraDatabase>>());
     db.Initialize();
     return db;
 });
@@ -51,8 +51,8 @@ builder.Services.AddSingleton(sp =>
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>
 {
-    var jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
-    var cachePath = Path.GetFullPath(jiraOptions.CachePath);
+    JiraServiceOptions jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+    string cachePath = Path.GetFullPath(jiraOptions.CachePath);
     Directory.CreateDirectory(cachePath);
     return new FileSystemResponseCache(cachePath);
 });
@@ -75,7 +75,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "jira", version = "2.0.0" }));

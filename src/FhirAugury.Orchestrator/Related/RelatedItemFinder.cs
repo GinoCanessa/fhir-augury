@@ -5,6 +5,7 @@ using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Orchestrator.Search;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -31,10 +32,10 @@ public class RelatedItemFinder(
         IReadOnlyList<string>? targetSources,
         CancellationToken ct)
     {
-        var effectiveLimit = limit > 0 ? limit : options.Related.DefaultLimit;
+        int effectiveLimit = limit > 0 ? limit : options.Related.DefaultLimit;
 
         // Get the seed item for context
-        var seedClient = router.GetSourceClient(seedSource);
+        SourceService.SourceServiceClient? seedClient = router.GetSourceClient(seedSource);
         ItemResponse? seedItem = null;
         if (seedClient is not null)
         {
@@ -49,19 +50,19 @@ public class RelatedItemFinder(
             }
         }
 
-        var candidates = new Dictionary<string, RelatedCandidate>(); // key: "source:id"
-        using var connection = database.OpenConnection();
+        Dictionary<string, RelatedCandidate> candidates = new Dictionary<string, RelatedCandidate>(); // key: "source:id"
+        using SqliteConnection connection = database.OpenConnection();
 
         // Signal 1: Explicit cross-references (items this item mentions)
-        var outgoing = CrossRefLinkRecord.SelectList(connection,
+        List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
             SourceType: seedSource, SourceId: seedId);
-        foreach (var link in outgoing)
+        foreach (CrossRefLinkRecord link in outgoing)
         {
             if (targetSources?.Count > 0 && !targetSources.Contains(link.TargetType))
                 continue;
 
-            var key = $"{link.TargetType}:{link.TargetId}";
-            if (!candidates.TryGetValue(key, out var candidate))
+            string key = $"{link.TargetType}:{link.TargetId}";
+            if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
             {
                 candidate = new RelatedCandidate { Source = link.TargetType, Id = link.TargetId };
                 candidates[key] = candidate;
@@ -72,15 +73,15 @@ public class RelatedItemFinder(
         }
 
         // Signal 2: Reverse cross-references (items that mention this item)
-        var incoming = CrossRefLinkRecord.SelectList(connection,
+        List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
             TargetType: seedSource, TargetId: seedId);
-        foreach (var link in incoming)
+        foreach (CrossRefLinkRecord link in incoming)
         {
             if (targetSources?.Count > 0 && !targetSources.Contains(link.SourceType))
                 continue;
 
-            var key = $"{link.SourceType}:{link.SourceId}";
-            if (!candidates.TryGetValue(key, out var candidate))
+            string key = $"{link.SourceType}:{link.SourceId}";
+            if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
             {
                 candidate = new RelatedCandidate { Source = link.SourceType, Id = link.SourceId };
                 candidates[key] = candidate;
@@ -93,33 +94,33 @@ public class RelatedItemFinder(
         // Signal 3: BM25 similarity — extract key terms from seed and search
         if (seedItem is not null)
         {
-            var searchTerms = ExtractKeyTerms(seedItem);
+            string searchTerms = ExtractKeyTerms(seedItem);
             if (!string.IsNullOrEmpty(searchTerms))
             {
-                var searchSources = targetSources?.Count > 0
+                IReadOnlyList<string> searchSources = targetSources?.Count > 0
                     ? targetSources
                     : options.Services.Where(s => s.Value.Enabled).Select(s => s.Key).ToList();
 
-                var searchTasks = new List<Task<SearchResponse>>();
-                foreach (var source in searchSources)
+                List<Task<SearchResponse>> searchTasks = new List<Task<SearchResponse>>();
+                foreach (string source in searchSources)
                 {
-                    var client = router.GetSourceClient(source);
+                    SourceService.SourceServiceClient? client = router.GetSourceClient(source);
                     if (client is null) continue;
 
                     searchTasks.Add(SearchSourceAsync(client, searchTerms, effectiveLimit, ct));
                 }
 
-                var searchResults = await Task.WhenAll(searchTasks);
-                foreach (var searchResponse in searchResults)
+                SearchResponse[] searchResults = await Task.WhenAll(searchTasks);
+                foreach (SearchResponse? searchResponse in searchResults)
                 {
-                    foreach (var result in searchResponse.Results)
+                    foreach (SearchResultItem? result in searchResponse.Results)
                     {
                         // Skip the seed item itself
                         if (result.Source == seedSource && result.Id == seedId)
                             continue;
 
-                        var key = $"{result.Source}:{result.Id}";
-                        if (!candidates.TryGetValue(key, out var candidate))
+                        string key = $"{result.Source}:{result.Id}";
+                        if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
                         {
                             candidate = new RelatedCandidate { Source = result.Source, Id = result.Id };
                             candidates[key] = candidate;
@@ -136,32 +137,32 @@ public class RelatedItemFinder(
             }
 
             // Signal 4: Shared metadata (work group, specification, labels)
-            if (seedItem.Metadata.TryGetValue("work_group", out var workGroup) && !string.IsNullOrEmpty(workGroup))
+            if (seedItem.Metadata.TryGetValue("work_group", out string? workGroup) && !string.IsNullOrEmpty(workGroup))
             {
-                foreach (var (source, config) in options.Services)
+                foreach ((string? source, SourceServiceConfig? config) in options.Services)
                 {
                     if (!config.Enabled) continue;
                     if (targetSources?.Count > 0 && !targetSources.Contains(source)) continue;
 
-                    var client = router.GetSourceClient(source);
+                    SourceService.SourceServiceClient? client = router.GetSourceClient(source);
                     if (client is null) continue;
 
                     try
                     {
-                        var metaResults = await client.SearchAsync(
+                        SearchResponse metaResults = await client.SearchAsync(
                             new SearchRequest { Query = workGroup, Limit = effectiveLimit },
                             cancellationToken: ct);
 
-                        foreach (var result in metaResults.Results)
+                        foreach (SearchResultItem? result in metaResults.Results)
                         {
                             if (result.Source == seedSource && result.Id == seedId) continue;
 
-                            var hasSharedMetadata =
-                                result.Metadata.TryGetValue("work_group", out var rWg) && rWg == workGroup;
+                            bool hasSharedMetadata =
+                                result.Metadata.TryGetValue("work_group", out string? rWg) && rWg == workGroup;
                             if (!hasSharedMetadata) continue;
 
-                            var key = $"{result.Source}:{result.Id}";
-                            if (!candidates.TryGetValue(key, out var candidate))
+                            string key = $"{result.Source}:{result.Id}";
+                            if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
                             {
                                 candidate = new RelatedCandidate { Source = result.Source, Id = result.Id };
                                 candidates[key] = candidate;
@@ -182,14 +183,14 @@ public class RelatedItemFinder(
         }
 
         // Enrich candidates that don't have title/url yet
-        foreach (var candidate in candidates.Values.Where(c => string.IsNullOrEmpty(c.Title)))
+        foreach (RelatedCandidate? candidate in candidates.Values.Where(c => string.IsNullOrEmpty(c.Title)))
         {
-            var client = router.GetSourceClient(candidate.Source);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(candidate.Source);
             if (client is null) continue;
 
             try
             {
-                var item = await client.GetItemAsync(
+                ItemResponse item = await client.GetItemAsync(
                     new GetItemRequest { Id = candidate.Id }, cancellationToken: ct);
                 candidate.Title = item.Title;
                 candidate.Url = item.Url;
@@ -201,18 +202,18 @@ public class RelatedItemFinder(
         }
 
         // Build response
-        var response = new FindRelatedResponse
+        FindRelatedResponse response = new FindRelatedResponse
         {
             SeedSource = seedSource,
             SeedId = seedId,
             SeedTitle = seedItem?.Title ?? "",
         };
 
-        var sorted = candidates.Values
+        IEnumerable<RelatedCandidate> sorted = candidates.Values
             .OrderByDescending(c => c.Score)
             .Take(effectiveLimit);
 
-        foreach (var candidate in sorted)
+        foreach (RelatedCandidate? candidate in sorted)
         {
             response.Items.Add(new RelatedItem
             {
@@ -248,8 +249,8 @@ public class RelatedItemFinder(
 
     private string ExtractKeyTerms(ItemResponse item)
     {
-        var text = $"{item.Title} {item.Content}";
-        var tokens = Tokenizer.Tokenize(text)
+        string text = $"{item.Title} {item.Content}";
+        IEnumerable<string> tokens = Tokenizer.Tokenize(text)
             .Where(t => !StopWords.IsStopWord(t) && t.Length > 2)
             .Distinct()
             .Take(options.Related.MaxKeyTerms);

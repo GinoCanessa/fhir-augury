@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using Grpc.Core;
 
@@ -8,32 +9,32 @@ public static class ListCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var sourceArg = new Argument<string>("source")
+        Argument<string> sourceArg = new Argument<string>("source")
         {
             Description = "Source type (jira, zulip, confluence, github)",
         };
-        var limitOption = new Option<int>("--limit")
+        Option<int> limitOption = new Option<int>("--limit")
         {
             Description = "Maximum results",
             DefaultValueFactory = _ => 20,
         };
-        var sortByOption = new Option<string>("--sort-by")
+        Option<string> sortByOption = new Option<string>("--sort-by")
         {
             Description = "Sort by field",
             DefaultValueFactory = _ => "updated_at",
         };
-        var sortOrderOption = new Option<string>("--sort-order")
+        Option<string> sortOrderOption = new Option<string>("--sort-order")
         {
             Description = "Sort order: asc or desc",
             DefaultValueFactory = _ => "desc",
         };
-        var filterOption = new Option<string[]>("--filter")
+        Option<string[]> filterOption = new Option<string[]>("--filter")
         {
             Description = "Filters in key=value format (repeatable)",
             AllowMultipleArgumentsPerToken = true,
         };
 
-        var command = new Command("list", "List items from a source service")
+        Command command = new Command("list", "List items from a source service")
         {
             sourceArg,
             limitOption,
@@ -44,48 +45,48 @@ public static class ListCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
-                var source = parseResult.GetValue(sourceArg)!;
-                var limit = parseResult.GetValue(limitOption);
-                var sortBy = parseResult.GetValue(sortByOption)!;
-                var sortOrder = parseResult.GetValue(sortOrderOption)!;
-                var filters = parseResult.GetValue(filterOption) ?? [];
+                string format = parseResult.GetValue(formatOption)!;
+                string source = parseResult.GetValue(sourceArg)!;
+                int limit = parseResult.GetValue(limitOption);
+                string sortBy = parseResult.GetValue(sortByOption)!;
+                string sortOrder = parseResult.GetValue(sortOrderOption)!;
+                string[] filters = parseResult.GetValue(filterOption) ?? [];
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
 
-                var endpoints = await clients.GetServiceEndpointsAsync(ct);
-                var sourceLower = source.ToLowerInvariant();
-                if (!endpoints.TryGetValue(sourceLower, out var sourceAddress))
+                Dictionary<string, string> endpoints = await clients.GetServiceEndpointsAsync(ct);
+                string sourceLower = source.ToLowerInvariant();
+                if (!endpoints.TryGetValue(sourceLower, out string? sourceAddress))
                     throw new ArgumentException(
                         $"Unknown or disabled source: {source}. Available: {string.Join(", ", endpoints.Keys)}");
-                var sourceClient = clients.GetSourceClient(sourceAddress);
+                SourceService.SourceServiceClient sourceClient = clients.GetSourceClient(sourceAddress);
 
-                var request = new ListItemsRequest
+                ListItemsRequest request = new ListItemsRequest
                 {
                     Limit = limit,
                     SortBy = sortBy,
                     SortOrder = sortOrder,
                 };
 
-                foreach (var filter in filters)
+                foreach (string? filter in filters)
                 {
-                    var parts = filter.Split('=', 2);
+                    string[] parts = filter.Split('=', 2);
                     if (parts.Length == 2)
                         request.Filters.Add(parts[0].Trim(), parts[1].Trim());
                 }
 
-                using var call = sourceClient.ListItems(request, cancellationToken: ct);
+                using AsyncServerStreamingCall<ItemSummary> call = sourceClient.ListItems(request, cancellationToken: ct);
 
                 switch (format.ToLowerInvariant())
                 {
                     case "json":
-                        var items = new List<object>();
-                        await foreach (var item in call.ResponseStream.ReadAllAsync(ct))
+                        List<object> items = new List<object>();
+                        await foreach (ItemSummary? item in call.ResponseStream.ReadAllAsync(ct))
                         {
                             items.Add(new
                             {
@@ -101,9 +102,9 @@ public static class ListCommand
                     case "md":
                         Console.WriteLine("| ID | Title | Updated | URL |");
                         Console.WriteLine("|----|-------|---------|-----|");
-                        await foreach (var item in call.ResponseStream.ReadAllAsync(ct))
+                        await foreach (ItemSummary? item in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var updated = item.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            string updated = item.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                             Console.WriteLine($"| {item.Id} | {item.Title} | {updated} | {item.Url} |");
                         }
                         break;
@@ -111,11 +112,11 @@ public static class ListCommand
                     default:
                         Console.WriteLine($"{"ID",-16} {"Title",-45} {"Updated",-12} {"URL"}");
                         Console.WriteLine($"{"──────────────",-16} {"───────────────────────────────────────────",-45} {"──────────",-12} {"───"}");
-                        var count = 0;
-                        await foreach (var item in call.ResponseStream.ReadAllAsync(ct))
+                        int count = 0;
+                        await foreach (ItemSummary? item in call.ResponseStream.ReadAllAsync(ct))
                         {
-                            var title = item.Title.Length > 43 ? item.Title[..40] + "..." : item.Title;
-                            var updated = item.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
+                            string title = item.Title.Length > 43 ? item.Title[..40] + "..." : item.Title;
+                            string updated = item.UpdatedAt?.ToDateTimeOffset().ToString("yyyy-MM-dd") ?? "";
                             Console.WriteLine($"{item.Id,-16} {title,-45} {updated,-12} {item.Url}");
                             count++;
                         }

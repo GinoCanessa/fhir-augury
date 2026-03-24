@@ -5,6 +5,8 @@ using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
 using Google.Protobuf.WellKnownTypes;
+using Grpc.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -27,15 +29,15 @@ public class CrossRefLinker(
     /// </summary>
     public async Task<int> ScanAllSourcesAsync(bool fullRescan, CancellationToken ct)
     {
-        var totalNewLinks = 0;
+        int totalNewLinks = 0;
 
-        foreach (var (sourceName, config) in options.Services)
+        foreach ((string? sourceName, SourceServiceConfig? config) in options.Services)
         {
             if (!config.Enabled) continue;
 
             try
             {
-                var newLinks = await ScanSourceAsync(sourceName, fullRescan, ct);
+                int newLinks = await ScanSourceAsync(sourceName, fullRescan, ct);
                 totalNewLinks += newLinks;
                 logger.LogInformation("Cross-ref scan for {Source}: {NewLinks} new links", sourceName, newLinks);
             }
@@ -53,47 +55,47 @@ public class CrossRefLinker(
     /// </summary>
     public async Task<int> ScanSourceAsync(string sourceName, bool fullRescan, CancellationToken ct)
     {
-        var client = router.GetSourceClient(sourceName);
+        SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
         if (client is null)
         {
             logger.LogWarning("No source client found for {Source}", sourceName);
             return 0;
         }
 
-        using var connection = database.OpenConnection();
+        using SqliteConnection connection = database.OpenConnection();
 
         // Get scan state for cursor-based incremental scanning
-        var scanState = XrefScanStateRecord.SelectSingle(connection, SourceName: sourceName);
-        var request = new StreamTextRequest();
+        XrefScanStateRecord? scanState = XrefScanStateRecord.SelectSingle(connection, SourceName: sourceName);
+        StreamTextRequest request = new StreamTextRequest();
         if (!fullRescan && scanState?.LastScanAt is DateTimeOffset lastScan)
         {
             request.Since = Timestamp.FromDateTimeOffset(lastScan);
         }
 
-        var newLinks = 0;
-        var latestTimestamp = scanState?.LastScanAt ?? DateTimeOffset.MinValue;
+        int newLinks = 0;
+        DateTimeOffset latestTimestamp = scanState?.LastScanAt ?? DateTimeOffset.MinValue;
 
-        using var stream = client.StreamSearchableText(request, cancellationToken: ct);
+        using AsyncServerStreamingCall<SearchableTextItem> stream = client.StreamSearchableText(request, cancellationToken: ct);
         while (await stream.ResponseStream.MoveNext(ct))
         {
-            var item = stream.ResponseStream.Current;
+            SearchableTextItem item = stream.ResponseStream.Current;
 
             // Extract links from all text fields
-            var combinedText = string.Join("\n", new[] { item.Title }.Concat(item.TextFields));
-            var extractedLinks = CrossRefPatterns.ExtractLinks(combinedText);
+            string combinedText = string.Join("\n", new[] { item.Title }.Concat(item.TextFields));
+            List<Common.Text.CrossReference> extractedLinks = CrossRefPatterns.ExtractLinks(combinedText);
 
             // Query existing links once per item to avoid repeated DB reads in the inner loop
-            var existingLinks = CrossRefLinkRecord.SelectList(connection,
+            List<CrossRefLinkRecord> existingLinks = CrossRefLinkRecord.SelectList(connection,
                 SourceType: sourceName, SourceId: item.Id);
 
-            foreach(var (targetType, targetId, context) in extractedLinks)
+            foreach((string? targetType, string? targetId, string? context) in extractedLinks)
             {
                 // Skip self-references
                 if (targetType == sourceName && targetId == item.Id)
                     continue;
 
                 // Check for existing link (queried once per item above)
-                var exists = existingLinks.Any(l =>
+                bool exists = existingLinks.Any(l =>
                     l.TargetType == targetType && l.TargetId == targetId);
 
                 if (!exists)
@@ -115,7 +117,7 @@ public class CrossRefLinker(
 
             if (item.UpdatedAt is not null)
             {
-                var itemTime = item.UpdatedAt.ToDateTimeOffset();
+                DateTimeOffset itemTime = item.UpdatedAt.ToDateTimeOffset();
                 if (itemTime > latestTimestamp)
                     latestTimestamp = itemTime;
             }

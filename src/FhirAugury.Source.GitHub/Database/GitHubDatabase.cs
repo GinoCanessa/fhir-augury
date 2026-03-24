@@ -64,7 +64,7 @@ public class GitHubDatabase : SourceDatabase
     /// <summary>Rebuilds all FTS5 indexes from their content tables.</summary>
     public void RebuildFtsIndexes()
     {
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
         RebuildFts5(connection, "github_issues_fts");
         RebuildFts5(connection, "github_comments_fts");
         RebuildFts5(connection, "github_commits_fts");
@@ -73,9 +73,9 @@ public class GitHubDatabase : SourceDatabase
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase()
     {
-        using var connection = OpenConnection();
+        using SqliteConnection connection = OpenConnection();
 
-        using var cmd = connection.CreateCommand();
+        using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = """
             DROP TABLE IF EXISTS github_issues_fts;
             DROP TABLE IF EXISTS github_comments_fts;

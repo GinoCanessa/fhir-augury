@@ -26,10 +26,10 @@ public static class JiraFieldMapper
 
     public static JiraIssueRecord MapIssue(JsonElement issueJson)
     {
-        var fields = issueJson.GetProperty("fields");
-        var key = issueJson.GetProperty("key").GetString()!;
+        JsonElement fields = issueJson.GetProperty("fields");
+        string key = issueJson.GetProperty("key").GetString()!;
 
-        var record = new JiraIssueRecord
+        JiraIssueRecord record = new JiraIssueRecord
         {
             Id = JiraIssueRecord.GetIndex(),
             Key = key,
@@ -62,9 +62,9 @@ public static class JiraFieldMapper
             Vote = null,
         };
 
-        foreach (var (fieldId, propertyName) in CustomFieldMap)
+        foreach ((string? fieldId, string? propertyName) in CustomFieldMap)
         {
-            var value = ExtractCustomFieldValue(fields, fieldId);
+            string? value = ExtractCustomFieldValue(fields, fieldId);
             if (value is null)
                 continue;
 
@@ -90,16 +90,16 @@ public static class JiraFieldMapper
 
     public static List<JiraCommentRecord> MapComments(JsonElement issueJson, int issueId, string issueKey)
     {
-        var comments = new List<JiraCommentRecord>();
-        var fields = issueJson.GetProperty("fields");
+        List<JiraCommentRecord> comments = new List<JiraCommentRecord>();
+        JsonElement fields = issueJson.GetProperty("fields");
 
-        if (!fields.TryGetProperty("comment", out var commentField))
+        if (!fields.TryGetProperty("comment", out JsonElement commentField))
             return comments;
 
-        if (!commentField.TryGetProperty("comments", out var commentArray))
+        if (!commentField.TryGetProperty("comments", out JsonElement commentArray))
             return comments;
 
-        foreach (var comment in commentArray.EnumerateArray())
+        foreach (JsonElement comment in commentArray.EnumerateArray())
         {
             comments.Add(new JiraCommentRecord
             {
@@ -120,19 +120,19 @@ public static class JiraFieldMapper
     /// <summary>Extracts issue links from a JSON issue element.</summary>
     public static List<JiraIssueLinkRecord> MapIssueLinks(JsonElement issueJson, string issueKey)
     {
-        var links = new List<JiraIssueLinkRecord>();
-        var fields = issueJson.GetProperty("fields");
+        List<JiraIssueLinkRecord> links = new List<JiraIssueLinkRecord>();
+        JsonElement fields = issueJson.GetProperty("fields");
 
-        if (!fields.TryGetProperty("issuelinks", out var linkArray) || linkArray.ValueKind != JsonValueKind.Array)
+        if (!fields.TryGetProperty("issuelinks", out JsonElement linkArray) || linkArray.ValueKind != JsonValueKind.Array)
             return links;
 
-        foreach (var link in linkArray.EnumerateArray())
+        foreach (JsonElement link in linkArray.EnumerateArray())
         {
-            var linkType = JsonElementHelper.GetNestedString(link, "type", "name") ?? "relates to";
+            string linkType = JsonElementHelper.GetNestedString(link, "type", "name") ?? "relates to";
 
-            if (link.TryGetProperty("outwardIssue", out var outward))
+            if (link.TryGetProperty("outwardIssue", out JsonElement outward))
             {
-                var targetKey = JsonElementHelper.GetString(outward, "key");
+                string? targetKey = JsonElementHelper.GetString(outward, "key");
                 if (!string.IsNullOrEmpty(targetKey))
                 {
                     links.Add(new JiraIssueLinkRecord
@@ -145,9 +145,9 @@ public static class JiraFieldMapper
                 }
             }
 
-            if (link.TryGetProperty("inwardIssue", out var inward))
+            if (link.TryGetProperty("inwardIssue", out JsonElement inward))
             {
-                var sourceKey = JsonElementHelper.GetString(inward, "key");
+                string? sourceKey = JsonElementHelper.GetString(inward, "key");
                 if (!string.IsNullOrEmpty(sourceKey))
                 {
                     links.Add(new JiraIssueLinkRecord
@@ -166,7 +166,7 @@ public static class JiraFieldMapper
 
     private static string? ExtractCustomFieldValue(JsonElement fields, string fieldId)
     {
-        if (!fields.TryGetProperty(fieldId, out var prop) || prop.ValueKind == JsonValueKind.Null)
+        if (!fields.TryGetProperty(fieldId, out JsonElement prop) || prop.ValueKind == JsonValueKind.Null)
             return null;
 
         return prop.ValueKind switch
@@ -181,13 +181,13 @@ public static class JiraFieldMapper
 
     private static string? GetNestedStringFromObject(JsonElement obj)
     {
-        if (obj.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String)
+        if (obj.TryGetProperty("value", out JsonElement value) && value.ValueKind == JsonValueKind.String)
             return value.GetString();
 
-        if (obj.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+        if (obj.TryGetProperty("name", out JsonElement name) && name.ValueKind == JsonValueKind.String)
             return name.GetString();
 
-        if (obj.TryGetProperty("displayName", out var displayName) && displayName.ValueKind == JsonValueKind.String)
+        if (obj.TryGetProperty("displayName", out JsonElement displayName) && displayName.ValueKind == JsonValueKind.String)
             return displayName.GetString();
 
         return obj.ToString();
@@ -195,11 +195,11 @@ public static class JiraFieldMapper
 
     private static string? ExtractArrayValues(JsonElement array)
     {
-        var values = new List<string>();
+        List<string> values = new List<string>();
 
-        foreach (var element in array.EnumerateArray())
+        foreach (JsonElement element in array.EnumerateArray())
         {
-            var val = element.ValueKind switch
+            string? val = element.ValueKind switch
             {
                 JsonValueKind.String => element.GetString(),
                 JsonValueKind.Object => GetNestedStringFromObject(element),
@@ -215,13 +215,13 @@ public static class JiraFieldMapper
 
     private static string? GetLabels(JsonElement fields)
     {
-        if (!fields.TryGetProperty("labels", out var labelsArray) || labelsArray.ValueKind != JsonValueKind.Array)
+        if (!fields.TryGetProperty("labels", out JsonElement labelsArray) || labelsArray.ValueKind != JsonValueKind.Array)
             return null;
 
-        var labels = new List<string>();
-        foreach (var label in labelsArray.EnumerateArray())
+        List<string> labels = new List<string>();
+        foreach (JsonElement label in labelsArray.EnumerateArray())
         {
-            var val = label.GetString();
+            string? val = label.GetString();
             if (!string.IsNullOrEmpty(val))
                 labels.Add(val);
         }
@@ -231,13 +231,13 @@ public static class JiraFieldMapper
 
     private static int GetCommentCount(JsonElement fields)
     {
-        if (!fields.TryGetProperty("comment", out var commentField))
+        if (!fields.TryGetProperty("comment", out JsonElement commentField))
             return 0;
 
-        if (commentField.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number)
+        if (commentField.TryGetProperty("total", out JsonElement total) && total.ValueKind == JsonValueKind.Number)
             return total.GetInt32();
 
-        if (commentField.TryGetProperty("comments", out var comments) && comments.ValueKind == JsonValueKind.Array)
+        if (commentField.TryGetProperty("comments", out JsonElement comments) && comments.ValueKind == JsonValueKind.Array)
             return comments.GetArrayLength();
 
         return 0;

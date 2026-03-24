@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Fhiraugury;
 using FhirAugury.Cli.OutputFormatters;
 using FhirAugury.Common.Text;
@@ -10,7 +11,7 @@ public static class IngestCommand
 {
     public static Command Create(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var command = new Command("ingest", "Ingestion and sync management");
+        Command command = new Command("ingest", "Ingestion and sync management");
 
         command.Add(CreateTriggerCommand(orchestratorOption, formatOption, verboseOption));
         command.Add(CreateStatusCommand(orchestratorOption));
@@ -21,17 +22,17 @@ public static class IngestCommand
 
     private static Command CreateTriggerCommand(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var sourcesOption = new Option<string?>("--sources")
+        Option<string?> sourcesOption = new Option<string?>("--sources")
         {
             Description = "Comma-separated sources to sync (empty for all)",
         };
-        var typeOption = new Option<string>("--type")
+        Option<string> typeOption = new Option<string>("--type")
         {
             Description = "Sync type: incremental, full, rebuild",
             DefaultValueFactory = _ => "incremental",
         };
 
-        var command = new Command("trigger", "Trigger synchronization across source services")
+        Command command = new Command("trigger", "Trigger synchronization across source services")
         {
             sourcesOption,
             typeOption,
@@ -39,25 +40,25 @@ public static class IngestCommand
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
-                var sources = parseResult.GetValue(sourcesOption);
-                var type = parseResult.GetValue(typeOption)!;
+                string format = parseResult.GetValue(formatOption)!;
+                string? sources = parseResult.GetValue(sourcesOption);
+                string type = parseResult.GetValue(typeOption)!;
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var request = new TriggerSyncRequest { Type = type };
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                TriggerSyncRequest request = new TriggerSyncRequest { Type = type };
 
                 if (!string.IsNullOrWhiteSpace(sources))
                 {
-                    foreach (var s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    foreach (string s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                         request.Sources.Add(s.ToLowerInvariant());
                 }
 
-                var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
+                TriggerSyncResponse response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatSyncStatus(response, format);
                 if (sw is not null)
                     Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
@@ -73,20 +74,20 @@ public static class IngestCommand
 
     private static Command CreateStatusCommand(Option<string> orchestratorOption)
     {
-        var command = new Command("status", "Get ingestion status");
+        Command command = new Command("status", "Get ingestion status");
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
+            string addr = parseResult.GetValue(orchestratorOption)!;
             try
             {
-                using var clients = new GrpcClientFactory(addr);
-                var response = await clients.Orchestrator.GetServicesStatusAsync(
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                ServicesStatusResponse response = await clients.Orchestrator.GetServicesStatusAsync(
                     new ServicesStatusRequest(), cancellationToken: ct);
 
-                foreach (var svc in response.Services)
+                foreach (ServiceHealth? svc in response.Services)
                 {
-                    var lastSync = svc.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
+                    string lastSync = svc.LastSyncAt?.ToDateTimeOffset().ToString("yyyy-MM-dd HH:mm") ?? "never";
                     Console.WriteLine($"{svc.Name}: {svc.Status} (last sync: {lastSync}, items: {svc.ItemCount})");
                 }
             }
@@ -101,33 +102,33 @@ public static class IngestCommand
 
     private static Command CreateRebuildCommand(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
     {
-        var sourcesOption = new Option<string?>("--sources")
+        Option<string?> sourcesOption = new Option<string?>("--sources")
         {
             Description = "Comma-separated sources to rebuild (empty for all)",
         };
 
-        var command = new Command("rebuild", "Rebuild from cache")
+        Command command = new Command("rebuild", "Rebuild from cache")
         {
             sourcesOption,
         };
 
         command.SetAction(async (parseResult, ct) =>
         {
-            var addr = parseResult.GetValue(orchestratorOption)!;
-            var verbose = parseResult.GetValue(verboseOption);
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
             try
             {
-                var format = parseResult.GetValue(formatOption)!;
-                var sources = parseResult.GetValue(sourcesOption);
+                string format = parseResult.GetValue(formatOption)!;
+                string? sources = parseResult.GetValue(sourcesOption);
 
-                var sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using var clients = new GrpcClientFactory(addr);
-                var request = new TriggerSyncRequest { Type = "rebuild" };
+                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                TriggerSyncRequest request = new TriggerSyncRequest { Type = "rebuild" };
 
                 if (!string.IsNullOrWhiteSpace(sources))
                     CsvParser.AddToRepeatedField(request.Sources, sources);
 
-                var response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
+                TriggerSyncResponse response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatSyncStatus(response, format);
                 if (sw is not null)
                     Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
