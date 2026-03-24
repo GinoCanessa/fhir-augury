@@ -10,6 +10,13 @@ namespace FhirAugury.Source.Jira.Database.Records;
 [LdgSQLiteIndex(nameof(WorkGroup))]
 [LdgSQLiteIndex(nameof(Specification))]
 [LdgSQLiteIndex(nameof(UpdatedAt))]
+[LdgSQLiteIndex(nameof(Type))]
+[LdgSQLiteIndex(nameof(Priority))]
+[LdgSQLiteIndex(nameof(Resolution))]
+[LdgSQLiteIndex(nameof(SelectedBallot))]
+[LdgSQLiteIndex(nameof(Assignee))]
+[LdgSQLiteIndex(nameof(Reporter))]
+[LdgSQLiteIndex(nameof(CreatedAt))]
 public partial record class JiraIssueRecord
 {
     [LdgSQLiteKey]
