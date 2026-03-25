@@ -351,6 +351,9 @@ public class ConfluenceSource(
 
             // Extract and store internal page links
             List<(string TargetPageId, string LinkType)> extractedLinks = ConfluenceLinkExtractor.ExtractLinks(bodyStorage);
+
+            List<ConfluencePageLinkRecord> toInsert = [];
+
             foreach ((string? targetPageId, string? linkType) in extractedLinks)
             {
                 ConfluencePageLinkRecord linkRecord = new ConfluencePageLinkRecord
@@ -360,8 +363,10 @@ public class ConfluenceSource(
                     TargetPageId = targetPageId,
                     LinkType = linkType,
                 };
-                ConfluencePageLinkRecord.Insert(connection, linkRecord, ignoreDuplicates: true);
+                toInsert.Add(linkRecord);
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
             return isNew ? PageResult.New : PageResult.Updated;
         }

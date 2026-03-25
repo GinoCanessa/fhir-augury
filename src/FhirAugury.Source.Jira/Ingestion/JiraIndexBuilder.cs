@@ -71,16 +71,20 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
             }
         }
 
+        List<JiraIndexLabelRecord> indexLabelsToInsert = [];
+
         // Insert into index table
         foreach ((string name, int count) in labelCounts)
         {
-            JiraIndexLabelRecord.Insert(conn, new JiraIndexLabelRecord
+            indexLabelsToInsert.Add(new()
             {
-                Id = 0,
+                Id = JiraIndexLabelRecord.GetIndex(),
                 Name = name,
                 IssueCount = count,
-            }, ignoreDuplicates: true);
+            });
         }
+
+        indexLabelsToInsert.Insert(conn, ignoreDuplicates: true, insertPrimaryKey: true);
 
         // Build junction table
         using SqliteCommand issueCmd = conn.CreateCommand();
@@ -95,6 +99,8 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
             labelIds[label.Name] = label.Id;
         }
 
+        List<JiraIssueLabelRecord> issueLabelsToInsert = [];
+
         while (issueReader.Read())
         {
             int issueId = issueReader.GetInt32(0);
@@ -103,15 +109,17 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
             {
                 if (labelIds.TryGetValue(label, out int labelId))
                 {
-                    JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord
+                    issueLabelsToInsert.Add(new()
                     {
-                        Id = 0,
+                        Id = JiraIssueLabelRecord.GetIndex(),
                         IssueId = issueId,
                         LabelId = labelId,
-                    }, ignoreDuplicates: true);
+                    });
                 }
             }
         }
+
+        issueLabelsToInsert.Insert(conn, ignoreDuplicates: true, insertPrimaryKey: true);
 
         logger.LogInformation("Labels index rebuilt: {Count} distinct labels", labelCounts.Count);
     }

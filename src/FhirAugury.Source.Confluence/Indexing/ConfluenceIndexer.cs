@@ -55,9 +55,11 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
+            List<ConfluenceKeywordRecord> toInsert = [];
+
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
-                ConfluenceKeywordRecord.Insert(connection, new ConfluenceKeywordRecord
+                toInsert.Add(new()
                 {
                     Id = ConfluenceKeywordRecord.GetIndex(),
                     SourceType = sourceType,
@@ -68,6 +70,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                     Bm25Score = 0,
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         RecomputeCorpusStats(connection);
@@ -113,9 +117,11 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
+            List<ConfluenceKeywordRecord> toInsert = [];
+
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
-                ConfluenceKeywordRecord.Insert(connection, new ConfluenceKeywordRecord
+                toInsert.Add(new()
                 {
                     Id = ConfluenceKeywordRecord.GetIndex(),
                     SourceType = sourceType,
@@ -126,6 +132,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                     Bm25Score = 0,
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
     }
 
@@ -146,9 +154,12 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                 GROUP BY SourceType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<ConfluenceDocStatsRecord> toInsert = [];
+
             while (reader.Read())
             {
-                ConfluenceDocStatsRecord.Insert(connection, new ConfluenceDocStatsRecord
+                toInsert.Add(new()
                 {
                     Id = ConfluenceDocStatsRecord.GetIndex(),
                     SourceType = reader.GetString(0),
@@ -156,6 +167,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                     AverageDocLength = reader.GetDouble(2),
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         int totalDocCount;
@@ -175,12 +188,15 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                 GROUP BY Keyword, KeywordType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<ConfluenceCorpusKeywordRecord> toInsert = [];
+
             while (reader.Read())
             {
                 int df = reader.GetInt32(2);
                 double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
-                ConfluenceCorpusKeywordRecord.Insert(connection, new ConfluenceCorpusKeywordRecord
+                toInsert.Add(new()
                 {
                     Id = ConfluenceCorpusKeywordRecord.GetIndex(),
                     Keyword = reader.GetString(0),
@@ -189,6 +205,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                     Idf = idf,
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         double overallAvgDocLen;

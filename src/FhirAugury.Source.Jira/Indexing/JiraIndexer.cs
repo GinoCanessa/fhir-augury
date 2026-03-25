@@ -72,8 +72,7 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
             }
         }
 
-        foreach (JiraKeywordRecord record in allRecords)
-            JiraKeywordRecord.Insert(connection, record);
+        allRecords.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
         RecomputeCorpusStats(connection);
     }
@@ -118,9 +117,11 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
+            List<JiraKeywordRecord> toInsert = [];
+
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
-                JiraKeywordRecord.Insert(connection, new JiraKeywordRecord
+                toInsert.Add(new()
                 {
                     Id = JiraKeywordRecord.GetIndex(),
                     SourceType = sourceType,
@@ -131,6 +132,8 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
                     Bm25Score = 0,
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
     }
 
@@ -152,9 +155,11 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
                 GROUP BY SourceType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<JiraDocStatsRecord> toInsert = [];
             while (reader.Read())
             {
-                JiraDocStatsRecord.Insert(connection, new JiraDocStatsRecord
+                toInsert.Add(new()
                 {
                     Id = JiraDocStatsRecord.GetIndex(),
                     SourceType = reader.GetString(0),
@@ -162,6 +167,8 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
                     AverageDocLength = reader.GetDouble(2),
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Total doc count for IDF
@@ -183,12 +190,15 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
                 GROUP BY Keyword, KeywordType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<JiraCorpusKeywordRecord> toInsert = [];
+
             while (reader.Read())
             {
                 int df = reader.GetInt32(2);
                 double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
-                JiraCorpusKeywordRecord.Insert(connection, new JiraCorpusKeywordRecord
+                toInsert.Add(new()
                 {
                     Id = JiraCorpusKeywordRecord.GetIndex(),
                     Keyword = reader.GetString(0),
@@ -197,6 +207,8 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
                     Idf = idf,
                 });
             }
+
+            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Compute BM25 scores via bulk SQL UPDATE

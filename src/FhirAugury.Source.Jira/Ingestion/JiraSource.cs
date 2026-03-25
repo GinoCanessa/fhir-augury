@@ -202,28 +202,98 @@ public class JiraSource(
             try
             {
                 using MemoryStream parseStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(xml));
+
+                Dictionary<string, JiraIssueRecord> toUpdate = [];
+                Dictionary<string, JiraIssueRecord> toInsert = [];
+
+                Dictionary<string, List<JiraCommentRecord>> commentsToInsert = [];
+                Dictionary<string, List<JiraIssueRelatedRecord>> relatedIssuesToInsert = [];
+
                 foreach ((JiraIssueRecord issue, List<JiraCommentRecord> comments) in JiraXmlParser.ParseExport(parseStream))
                 {
-                    JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: issue.Key);
-                    if (existing is not null)
+                    if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                     {
                         issue.Id = existing.Id;
-                        JiraIssueRecord.Update(connection, issue);
-                        itemsUpdated++;
+                        toInsert[issue.Key] = issue;
+                    }
+                    else if (toUpdate.TryGetValue(issue.Key, out existing))
+                    {
+                        issue.Id = existing.Id;
+                        toUpdate[issue.Key] = issue;
+                    }
+                    else if (JiraIssueRecord.SelectSingle(connection, Key: issue.Key) is JiraIssueRecord dbExisting)
+                    {
+                        issue.Id = dbExisting.Id;
+                        toUpdate[issue.Key] = issue;
+                        RemoveExistingComments(connection, issue.Key);
+                        RemoveRelatedIssues(connection, issue.Key);
                     }
                     else
                     {
-                        JiraIssueRecord.Insert(connection, issue, ignoreDuplicates: true);
-                        itemsNew++;
+                        if (issue.Id <= 0)
+                        {
+                            issue.Id = JiraIssueRecord.GetIndex();
+                        }
+
+                        toInsert[issue.Key] = issue;
                     }
 
                     foreach (JiraCommentRecord comment in comments)
-                        JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+                    {
+                        if (comment.Id <= 0) 
+                        {
+                            comment.Id = JiraCommentRecord.GetIndex();
+                        }
+                        comment.IssueId = issue.Id;
+                    }
 
-                    UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
+                    commentsToInsert[issue.Key] = comments;
+
+                    if (issue.RelatedIssues is not null)
+                    {
+                        List<JiraIssueRelatedRecord> related = [];
+
+                        string[] keys = issue.RelatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                        foreach (string relatedKey in keys)
+                        {
+                            related.Add(new()
+                            {
+                                Id = JiraIssueRelatedRecord.GetIndex(),
+                                IssueId = issue.Id,
+                                IssueKey = issue.Key,
+                                RelatedIssueKey = relatedKey
+                            });
+                        }
+
+                        if (related.Count > 0)
+                        {
+                            relatedIssuesToInsert[issue.Key] = related;
+                        }
+                        else if (relatedIssuesToInsert.ContainsKey(issue.Key))
+                        {
+                            relatedIssuesToInsert.Remove(issue.Key);
+                        }
+                    }
 
                     itemsProcessed++;
                 }
+
+                toUpdate.Values.Update(connection);
+                toInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                foreach (List<JiraCommentRecord> comments in commentsToInsert.Values)
+                {
+                    comments.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                foreach (List<JiraIssueRelatedRecord> relateds in relatedIssuesToInsert.Values)
+                {
+                    relateds.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                itemsNew += toInsert.Count;
+                itemsUpdated += toUpdate.Count;
+
             }
             catch (Exception ex)
             {
@@ -259,28 +329,80 @@ public class JiraSource(
 
             using (stream)
             {
+                Dictionary<string, JiraIssueRecord> toUpdate = [];
+                Dictionary<string, JiraIssueRecord> toInsert = [];
+
+                Dictionary<string, List<JiraCommentRecord>> commentsToInsert = [];
+                Dictionary<string, List<JiraIssueRelatedRecord>> relatedIssuesToInsert = [];
+
                 try
                 {
                     IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> records = ParseCachedFile(stream, key);
                     foreach ((JiraIssueRecord? issue, List<JiraCommentRecord>? comments) in records)
                     {
-                        JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: issue.Key);
-                        if (existing is not null)
+                        if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                         {
                             issue.Id = existing.Id;
-                            JiraIssueRecord.Update(connection, issue);
-                            itemsUpdated++;
+                            toInsert[issue.Key] = issue;
+                        }
+                        else if (toUpdate.TryGetValue(issue.Key, out existing))
+                        {
+                            issue.Id = existing.Id;
+                            toUpdate[issue.Key] = issue;
+                        }
+                        else if (JiraIssueRecord.SelectSingle(connection, Key: issue.Key) is JiraIssueRecord dbExisting)
+                        {
+                            issue.Id = dbExisting.Id;
+                            toUpdate[issue.Key] = issue;
+                            RemoveExistingComments(connection, issue.Key);
+                            RemoveRelatedIssues(connection, issue.Key);
                         }
                         else
                         {
-                            JiraIssueRecord.Insert(connection, issue, ignoreDuplicates: true);
-                            itemsNew++;
+                            if (issue.Id <= 0)
+                            {
+                                issue.Id = JiraIssueRecord.GetIndex();
+                            }
+
+                            toInsert[issue.Key] = issue;
                         }
 
                         foreach (JiraCommentRecord comment in comments)
-                            JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+                        {
+                            if (comment.Id <= 0)
+                            {
+                                comment.Id = JiraCommentRecord.GetIndex();
+                            }
+                            comment.IssueId = issue.Id;
+                        }
 
-                        UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
+                        commentsToInsert[issue.Key] = comments;
+
+                        if (issue.RelatedIssues is not null)
+                        {
+                            List<JiraIssueRelatedRecord> related = [];
+
+                            string[] keys = issue.RelatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                            foreach (string relatedKey in keys)
+                            {
+                                related.Add(new()
+                                {
+                                    Id = JiraIssueRelatedRecord.GetIndex(),
+                                    IssueId = issue.Id,
+                                    IssueKey = issue.Key,
+                                    RelatedIssueKey = relatedKey
+                                });
+                            }
+
+                            if (related.Count > 0)
+                            {
+                                relatedIssuesToInsert[issue.Key] = related;
+                            }
+                            else if (relatedIssuesToInsert.ContainsKey(issue.Key))
+                            {
+                                relatedIssuesToInsert.Remove(issue.Key);
+                            }
+                        }
 
                         itemsProcessed++;
                     }
@@ -291,6 +413,23 @@ public class JiraSource(
                     itemsFailed++;
                     errors.Add($"{source}/{key}: {ex.Message}");
                 }
+
+                toUpdate.Values.Update(connection);
+                toInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                foreach (List<JiraCommentRecord> comments in commentsToInsert.Values)
+                {
+                    comments.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                foreach (List<JiraIssueRelatedRecord> relateds in relatedIssuesToInsert.Values)
+                {
+                    relateds.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                itemsNew += toInsert.Count;
+                itemsUpdated += toUpdate.Count;
+
             }
         }
 
@@ -323,13 +462,39 @@ public class JiraSource(
 
             List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
             foreach (JiraCommentRecord comment in comments)
+            {
                 JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+            }
 
             List<JiraIssueLinkRecord> links = JiraFieldMapper.MapIssueLinks(issueJson, issue.Key);
             foreach (JiraIssueLinkRecord link in links)
+            {
                 JiraIssueLinkRecord.Insert(connection, link, ignoreDuplicates: true);
+            }
 
-            UpsertRelatedIssues(connection, issue.Id, issue.Key, issue.RelatedIssues);
+            RemoveRelatedIssues(connection, issue.Key);
+
+            if (issue.RelatedIssues is not null)
+            {
+                List<JiraIssueRelatedRecord> related = [];
+
+                string[] keys = issue.RelatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                foreach (string relatedKey in keys)
+                {
+                    related.Add(new()
+                    {
+                        Id = JiraIssueRelatedRecord.GetIndex(),
+                        IssueId = issue.Id,
+                        IssueKey = issue.Key,
+                        RelatedIssueKey = relatedKey
+                    });
+                }
+
+                if (related.Count > 0)
+                {
+                    related.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+            }
 
             return (existing is not null ? ProcessOutcome.Updated : ProcessOutcome.New, null);
         }
@@ -443,26 +608,20 @@ public class JiraSource(
 
     private enum ProcessOutcome { New, Updated, Failed }
 
-    private static void UpsertRelatedIssues(SqliteConnection conn, int issueId, string issueKey, string? relatedIssues)
+    private static void RemoveExistingComments(SqliteConnection conn, string issueKey)
+    {
+        using SqliteCommand deleteCmd = conn.CreateCommand();
+        deleteCmd.CommandText = "DELETE FROM jira_comments WHERE IssueKey = @key";
+        deleteCmd.Parameters.AddWithValue("@key", issueKey);
+        deleteCmd.ExecuteNonQuery();
+    }
+
+    private static void RemoveRelatedIssues(SqliteConnection conn, string issueKey)
     {
         using SqliteCommand deleteCmd = conn.CreateCommand();
         deleteCmd.CommandText = "DELETE FROM jira_issue_related WHERE IssueKey = @key";
         deleteCmd.Parameters.AddWithValue("@key", issueKey);
         deleteCmd.ExecuteNonQuery();
-
-        if (string.IsNullOrWhiteSpace(relatedIssues)) return;
-
-        string[] keys = relatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        foreach (string relatedKey in keys)
-        {
-            JiraIssueRelatedRecord.Insert(conn, new JiraIssueRelatedRecord
-            {
-                Id = 0,
-                IssueId = issueId,
-                IssueKey = issueKey,
-                RelatedIssueKey = relatedKey
-            }, ignoreDuplicates: true);
-        }
     }
 }
 
