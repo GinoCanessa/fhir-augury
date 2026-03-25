@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
@@ -12,20 +13,7 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// </summary>
 public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefExtractor> logger)
 {
-    // Explicit Jira reference patterns
-    [GeneratedRegex(@"\b(FHIR-\d+)\b", RegexOptions.Compiled)]
-    private static partial Regex FhirPattern();
-
-    [GeneratedRegex(@"\b(JF-\d+)\b", RegexOptions.Compiled)]
-    private static partial Regex JfPattern();
-
-    [GeneratedRegex(@"\bJ#(\d+)\b", RegexOptions.Compiled)]
-    private static partial Regex JHashPattern();
-
-    [GeneratedRegex(@"\b(GF-\d+)\b", RegexOptions.Compiled)]
-    private static partial Regex GfPattern();
-
-    // Bare #NNN reference (ambiguous — needs disambiguation)
+    // Bare #NNN reference (ambiguous — needs GitHub-specific disambiguation)
     [GeneratedRegex(@"(?<![a-zA-Z\d/])#(\d+)\b", RegexOptions.Compiled)]
     private static partial Regex BareHashPattern();
 
@@ -121,36 +109,27 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
 
-        List<GitHubJiraRefRecord> results = new List<GitHubJiraRefRecord>();
-        HashSet<string> seen = new HashSet<string>();
+        // Use shared extractor for common patterns (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
+        List<JiraTicketMatch> commonMatches = JiraTicketExtractor.ExtractTickets(text, validJiraNumbers);
 
-        // Explicit patterns
-        AddMatches(results, seen, FhirPattern(), text, repoFullName, m => m.Groups[1].Value);
-        AddMatches(results, seen, JfPattern(), text, repoFullName, m => m.Groups[1].Value);
-        AddMatches(results, seen, GfPattern(), text, repoFullName, m => m.Groups[1].Value);
+        List<GitHubJiraRefRecord> results = [];
+        HashSet<string> seen = [];
 
-        // J#N → normalize to FHIR-N
-        foreach (Match m in JHashPattern().Matches(text))
+        foreach (JiraTicketMatch match in commonMatches)
         {
-            string num = m.Groups[1].Value;
-            string jiraKey = $"FHIR-{num}";
-            if (!seen.Add(jiraKey)) continue;
-
-            if (validJiraNumbers is not null && !validJiraNumbers.Contains(int.Parse(num)))
-                continue;
-
+            if (!seen.Add(match.JiraKey)) continue;
             results.Add(new GitHubJiraRefRecord
             {
                 Id = GitHubJiraRefRecord.GetIndex(),
                 SourceType = "",
                 SourceId = "",
                 RepoFullName = repoFullName,
-                JiraKey = jiraKey,
-                Context = ExtractContext(text, m.Index),
+                JiraKey = match.JiraKey,
+                Context = match.Context,
             });
         }
 
-        // Bare #NNN disambiguation
+        // GitHub-specific: bare #NNN disambiguation (not in shared extractor)
         foreach (Match m in BareHashPattern().Matches(text))
         {
             if (!int.TryParse(m.Groups[1].Value, out int number)) continue;
@@ -171,43 +150,10 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
                 SourceId = "",
                 RepoFullName = repoFullName,
                 JiraKey = jiraKey,
-                Context = ExtractContext(text, m.Index),
+                Context = CrossRefPatterns.GetSurroundingText(text, m.Index, 160),
             });
         }
 
         return results;
-    }
-
-    private static void AddMatches(
-        List<GitHubJiraRefRecord> results,
-        HashSet<string> seen,
-        Regex pattern,
-        string text,
-        string repoFullName,
-        Func<Match, string> extractKey)
-    {
-        foreach (Match m in pattern.Matches(text))
-        {
-            string jiraKey = extractKey(m);
-            if (!seen.Add(jiraKey)) continue;
-
-            results.Add(new GitHubJiraRefRecord
-            {
-                Id = GitHubJiraRefRecord.GetIndex(),
-                SourceType = "",
-                SourceId = "",
-                RepoFullName = repoFullName,
-                JiraKey = jiraKey,
-                Context = ExtractContext(text, m.Index),
-            });
-        }
-    }
-
-    private static string ExtractContext(string text, int matchIndex)
-    {
-        const int contextRadius = 80;
-        int start = Math.Max(0, matchIndex - contextRadius);
-        int end = Math.Min(text.Length, matchIndex + contextRadius);
-        return text[start..end].Replace('\n', ' ').Replace('\r', ' ').Trim();
     }
 }

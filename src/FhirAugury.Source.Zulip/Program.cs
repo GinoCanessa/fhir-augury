@@ -84,6 +84,7 @@ builder.Services.AddSingleton(sp =>
         opts.Bm25,
         sp.GetRequiredService<ILogger<ZulipIndexer>>());
 });
+builder.Services.AddSingleton<ZulipTicketIndexer>();
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

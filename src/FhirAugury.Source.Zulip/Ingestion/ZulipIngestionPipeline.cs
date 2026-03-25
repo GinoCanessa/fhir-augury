@@ -16,6 +16,7 @@ public class ZulipIngestionPipeline(
     ZulipSource source,
     ZulipDatabase database,
     ZulipIndexer indexer,
+    ZulipTicketIndexer ticketIndexer,
     IOptions<ZulipServiceOptions> optionsAccessor,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -127,6 +128,10 @@ public class ZulipIngestionPipeline(
         // Rebuild BM25 keyword index
         logger.LogInformation("Rebuilding BM25 index");
         indexer.RebuildFullIndex(ct);
+
+        // Extract and index ticket references
+        logger.LogInformation("Indexing ticket references");
+        ticketIndexer.RebuildFullIndex(ct);
 
         // Update sync state
         UpdateSyncState(result, runType, ct);
