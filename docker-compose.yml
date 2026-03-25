@@ -18,6 +18,7 @@ services:
     volumes:
       - jira-cache:/app/cache
       - jira-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5160:5160"
       - "5161:5161"
@@ -44,6 +45,7 @@ services:
     volumes:
       - zulip-cache:/app/cache
       - zulip-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5170:5170"
       - "5171:5171"
@@ -70,6 +72,7 @@ services:
     volumes:
       - confluence-cache:/app/cache
       - confluence-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5180:5180"
       - "5181:5181"
@@ -96,6 +99,7 @@ services:
     volumes:
       - github-cache:/app/cache
       - github-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5190:5190"
       - "5191:5191"
@@ -130,6 +134,7 @@ services:
         required: false
     volumes:
       - orchestrator-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5150:5150"
       - "5151:5151"

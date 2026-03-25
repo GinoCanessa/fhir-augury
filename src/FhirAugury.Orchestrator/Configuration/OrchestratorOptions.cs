@@ -10,6 +10,7 @@ public class OrchestratorOptions
     public CrossRefOptions CrossRef { get; set; } = new();
     public SearchOptions Search { get; set; } = new();
     public RelatedOptions Related { get; set; } = new();
+    public FhirAugury.Common.Configuration.DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
 }
 
 public class PortConfiguration

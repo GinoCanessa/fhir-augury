@@ -127,4 +127,10 @@ if (jiraOpts.ReloadFromCacheOnStartup)
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
 
+// ── Ensure dictionary database ───────────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    jiraOpts.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
 app.Run();

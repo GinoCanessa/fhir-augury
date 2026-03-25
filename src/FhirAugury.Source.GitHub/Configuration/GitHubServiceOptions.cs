@@ -37,6 +37,7 @@ public class GitHubServiceOptions
     public PortConfiguration Ports { get; set; } = new() { Http = 5190, Grpc = 5191 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
+    public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
 }
 

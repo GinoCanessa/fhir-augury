@@ -79,6 +79,15 @@ builder.Services.AddHostedService<HealthCheckWorker>();
 
 WebApplication app = builder.Build();
 
+// ── Ensure dictionary database ───────────────────────────────────
+{
+    OrchestratorOptions opts = app.Services.GetRequiredService<IOptions<OrchestratorOptions>>().Value;
+    await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+        opts.DictionaryDatabase,
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+        CancellationToken.None);
+}
+
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "orchestrator", version = "2.0.0" }));
 

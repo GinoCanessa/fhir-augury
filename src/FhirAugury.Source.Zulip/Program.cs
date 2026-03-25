@@ -100,6 +100,12 @@ if (options.RebuildFromCacheOnStartup)
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
 
+// ── Ensure dictionary database ───────────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    options.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "zulip", version = "2.0.0" }));
 

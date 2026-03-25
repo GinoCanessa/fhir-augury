@@ -93,6 +93,15 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 
+// ── Ensure dictionary database ───────────────────────────────────
+{
+    ConfluenceServiceOptions opts = app.Services.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+        opts.DictionaryDatabase,
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+        CancellationToken.None);
+}
+
 // ── Health check ─────────────────────────────────────────────────
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "confluence", version = "2.0.0" }));
 
