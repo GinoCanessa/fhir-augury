@@ -90,7 +90,7 @@ Each source service (`Source.Jira`, `Source.Zulip`, `Source.Confluence`,
 |-----------|---------|
 | `Api/` | gRPC service implementations (SourceService + source-specific service) |
 | `Cache/` | File-system response cache for raw API responses |
-| `Configuration/` | Source-specific options (including `Bm25` and `AuxiliaryDatabase` sub-options) |
+| `Configuration/` | Source-specific options (including `Bm25`, `AuxiliaryDatabase`, and `DictionaryDatabase` sub-options) |
 | `Database/` | SQLite schema, record types, source-generated CRUD |
 | `Indexing/` | FTS5 search and BM25 indexing logic (uses shared `TokenCounter` and `Lemmatizer`) |
 | `Ingestion/` | Download pipeline: fetch → cache → parse → store |
@@ -103,9 +103,10 @@ gRPC contract and a source-specific gRPC service (e.g., `JiraService`).
 
 At startup, each service registers an `AuxiliaryDatabase` singleton that loads
 optional external stop words, lemmatization data, and FHIR vocabulary from
-read-only SQLite databases. The `Lemmatizer` and merged stop-word/vocabulary
-sets are injected into the service's indexer alongside configurable `Bm25Options`
-(K1/B parameters).
+read-only SQLite databases. A `DictionaryDatabase` is also built from source
+text files in the configured dictionary path. The `Lemmatizer` and merged
+stop-word/vocabulary sets are injected into the service's indexer alongside
+configurable `Bm25Options` (K1/B/UseLemmatization parameters).
 
 ## Data Flow
 

@@ -130,8 +130,9 @@ provides:
   properties. Falls back to hardcoded defaults when database files are not
   configured.
 - **`Configuration/`** — Shared configuration types including
-  `AuxiliaryDatabaseOptions` (paths to auxiliary/FHIR spec DBs) and
-  `Bm25Options` (configurable K1/B parameters per service).
+  `AuxiliaryDatabaseOptions` (paths to auxiliary/FHIR spec DBs),
+  `Bm25Options` (configurable K1/B/UseLemmatization/FtsTokenizer parameters
+  per service), and `DictionaryDatabaseOptions` (compiled dictionary builder).
 - **`Caching/`** — `IResponseCache`, `FileSystemResponseCache` (atomic writes
   via temp + move), `CacheMode` enum (`Disabled`, `WriteThrough`, `CacheOnly`,
   `WriteOnly`), `CacheFileNaming` (`_WeekOf_`/`DayOf_` batch naming).

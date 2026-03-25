@@ -94,6 +94,14 @@ Each service uses named Docker volumes for persistent storage:
 | `github-data` | GitHub | SQLite database + FTS5 index |
 | `orchestrator-data` | Orchestrator | Cross-reference database |
 
+### Bind Mounts
+
+All services also use a shared read-only bind mount for dictionary data:
+
+| Mount | Service | Contents |
+|-------|---------|----------|
+| `./cache/dictionary:/app/cache/dictionary:ro` | All services | Dictionary source files (shared) |
+
 ### Operational Procedures
 
 ```bash
@@ -124,7 +132,7 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | `FHIR_AUGURY_JIRA__Jira__BaseUrl` | `https://jira.hl7.org` | Jira server URL |
 | `FHIR_AUGURY_JIRA__Jira__AuthMode` | `cookie` | `cookie` or `apitoken` |
 | `FHIR_AUGURY_JIRA__Jira__Cookie` | | Session cookie value |
-| `FHIR_AUGURY_JIRA__Jira__CachePath` | `./cache/jira` | Cache directory |
+| `FHIR_AUGURY_JIRA__Jira__CachePath` | `./cache` | Cache directory |
 | `FHIR_AUGURY_JIRA__Jira__DatabasePath` | `./data/jira.db` | Database path |
 | `FHIR_AUGURY_JIRA__Jira__Bm25__K1` | `1.2` | BM25 term frequency saturation |
 | `FHIR_AUGURY_JIRA__Jira__Bm25__B` | `0.75` | BM25 document length normalization |
@@ -138,7 +146,7 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | `FHIR_AUGURY_ZULIP__Zulip__BaseUrl` | `https://chat.fhir.org` | Zulip server URL |
 | `FHIR_AUGURY_ZULIP__Zulip__Email` | | Bot email |
 | `FHIR_AUGURY_ZULIP__Zulip__ApiKey` | | API key |
-| `FHIR_AUGURY_ZULIP__Zulip__CachePath` | `./cache/zulip` | Cache directory |
+| `FHIR_AUGURY_ZULIP__Zulip__CachePath` | `./cache` | Cache directory |
 | `FHIR_AUGURY_ZULIP__Zulip__DatabasePath` | `./data/zulip.db` | Database path |
 | `FHIR_AUGURY_ZULIP__Zulip__Bm25__K1` | `1.2` | BM25 term frequency saturation |
 | `FHIR_AUGURY_ZULIP__Zulip__Bm25__B` | `0.75` | BM25 document length normalization |
@@ -152,7 +160,7 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | `FHIR_AUGURY_CONFLUENCE__Confluence__BaseUrl` | `https://confluence.hl7.org` | Server URL |
 | `FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode` | `cookie` | `cookie` or `basic` |
 | `FHIR_AUGURY_CONFLUENCE__Confluence__Cookie` | | Session cookie |
-| `FHIR_AUGURY_CONFLUENCE__Confluence__CachePath` | `./cache/confluence` | Cache directory |
+| `FHIR_AUGURY_CONFLUENCE__Confluence__CachePath` | `./cache` | Cache directory |
 | `FHIR_AUGURY_CONFLUENCE__Confluence__DatabasePath` | `./data/confluence.db` | Database path |
 | `FHIR_AUGURY_CONFLUENCE__Confluence__Bm25__K1` | `1.2` | BM25 term frequency saturation |
 | `FHIR_AUGURY_CONFLUENCE__Confluence__Bm25__B` | `0.75` | BM25 document length normalization |
@@ -164,7 +172,7 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_TOKEN` | | GitHub personal access token |
-| `FHIR_AUGURY_GITHUB__GitHub__CachePath` | `./cache/github` | Cache directory |
+| `FHIR_AUGURY_GITHUB__GitHub__CachePath` | `./cache` | Cache directory |
 | `FHIR_AUGURY_GITHUB__GitHub__DatabasePath` | `./data/github.db` | Database path |
 | `FHIR_AUGURY_GITHUB__GitHub__Bm25__K1` | `1.2` | BM25 term frequency saturation |
 | `FHIR_AUGURY_GITHUB__GitHub__Bm25__B` | `0.75` | BM25 document length normalization |

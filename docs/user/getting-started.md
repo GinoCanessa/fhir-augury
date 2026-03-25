@@ -260,15 +260,16 @@ and MCP server do not use a cache.
 
 ### Defaults
 
-When running from source, each service caches to a subdirectory under `./cache/`
-relative to the project root:
+When running from source, each service caches to `./cache/` relative to the
+project root. The `FileSystemResponseCache` internally organizes files into
+source-specific subdirectories (e.g., `./cache/jira/`, `./cache/zulip/`).
 
 | Service | Default `CachePath` |
 |---------|---------------------|
-| Jira | `./cache/jira` |
-| Zulip | `./cache/zulip` |
-| Confluence | `./cache/confluence` |
-| GitHub | `./cache/github` |
+| Jira | `./cache` |
+| Zulip | `./cache` |
+| Confluence | `./cache` |
+| GitHub | `./cache` |
 
 When running via Docker Compose, each service uses a named Docker volume mounted
 at `/app/cache` inside the container (e.g., `jira-cache`, `zulip-cache`).

@@ -58,6 +58,7 @@ Each source service runs independently with its own database, cache, and ports.
     "CachePath": "./cache",
     "DatabasePath": "./data/jira.db",
     "SyncSchedule": "01:00:00",
+    "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
     "Ports": { "Http": 5160, "Grpc": 5161 },
@@ -66,10 +67,15 @@ Each source service runs independently with its own database, cache, and ports.
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
     },
-    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -104,6 +110,7 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "CachePath": "./cache",
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
+    "MinSyncAge": "04:00:00",
     "RebuildFromCacheOnStartup": false,
     "ExcludedStreamIds": [],
     "Ports": { "Http": 5170, "Grpc": 5171 },
@@ -112,10 +119,15 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
     },
-    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -143,16 +155,22 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "CachePath": "./cache",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
+    "MinSyncAge": "04:00:00",
     "Ports": { "Http": 5180, "Grpc": 5181 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
     },
-    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -188,6 +206,7 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
     "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
+    "MinSyncAge": "04:00:00",
     "Ports": { "Http": 5190, "Grpc": 5191 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
@@ -195,10 +214,15 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "MaxRetries": 5,
       "RespectRateLimitHeaders": true
     },
-    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -244,6 +268,11 @@ search, cross-references, and related-item discovery.
     },
     "Related": {
       "DefaultLimit": 20
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -295,18 +324,24 @@ Each source service manages its own sync schedule independently:
 | Confluence | 24 hours | Pages change infrequently |
 | GitHub | 2 hours | Moderate update frequency |
 
+All source services also have a `MinSyncAge` setting (default `04:00:00`) that
+prevents over-syncing by skipping the startup incremental sync if the last sync
+occurred less than `MinSyncAge` ago.
+
 ---
 
 ## BM25 Tuning
 
 Each source service uses the
 [BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25) for keyword-based
-relevance scoring. Two parameters can be tuned per service:
+relevance scoring. The following parameters can be tuned per service:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `Bm25.K1` | `1.2` | Term frequency saturation — higher values give more weight to repeated terms (typical range 1.2–2.0) |
 | `Bm25.B` | `0.75` | Document length normalization — `0` = no length normalization, `1` = full normalization |
+| `Bm25.UseLemmatization` | `true` | Enable lemmatization during keyword indexing (normalizes inflected words to base forms) |
+| `Bm25.FtsTokenizer` | `null` | Custom FTS5 tokenizer (null uses the default SQLite tokenizer) |
 
 Different content types may benefit from different parameters. For example,
 short Zulip messages might use lower `B` values (less length normalization),
@@ -363,3 +398,34 @@ FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/data/fhir-spec.
 
 Both paths are optional. When not configured (or when the files don't exist),
 the system falls back to its built-in defaults with no loss of functionality.
+
+---
+
+## Dictionary Database
+
+All services (sources and orchestrator) include a `DictionaryDatabase` section
+that manages a compiled dictionary database from source text files. The
+dictionary is built automatically on startup from `*.words.txt` and
+`*.typo.txt` files in the source path.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DictionaryDatabase.SourcePath` | `./cache/dictionary` | Directory containing dictionary source files |
+| `DictionaryDatabase.DatabasePath` | `./data/dictionary.db` | Path for the compiled SQLite dictionary database |
+| `DictionaryDatabase.ForceRebuild` | `false` | Force rebuild even if the database already exists |
+
+```json
+{
+  "Jira": {
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
+    }
+  }
+}
+```
+
+In Docker Compose, dictionary source files are shared across services via a
+read-only bind mount (`./cache/dictionary:/app/cache/dictionary:ro`). The
+compiled database is stored in each service's data volume.

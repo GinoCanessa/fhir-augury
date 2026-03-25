@@ -60,6 +60,10 @@ plus one for the orchestrator:
 | `github-data` | GitHub SQLite database + FTS index | No — rebuildable from cache |
 | `orchestrator-data` | Orchestrator database (cross-refs, search) | No — rebuildable |
 
+All services also have a read-only bind mount for shared dictionary data:
+`./cache/dictionary:/app/cache/dictionary:ro`. This provides dictionary source
+files that each service compiles into its own `dictionary.db` at startup.
+
 > **Important:** Cache volumes contain raw API responses that take significant
 > time and API quota to re-download. Always back up cache volumes before
 > destructive operations.

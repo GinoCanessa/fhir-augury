@@ -37,6 +37,7 @@ pattern.
     "CachePath": "./cache",
     "DatabasePath": "./data/jira.db",
     "SyncSchedule": "01:00:00",
+    "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
     "Ports": {
@@ -50,11 +51,18 @@ pattern.
     },
     "Bm25": {
       "K1": 1.2,
-      "B": 0.75
+      "B": 0.75,
+      "UseLemmatization": true,
+      "FtsTokenizer": null
     },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -72,8 +80,10 @@ pattern.
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/jira.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `01:00:00` | Auto-sync interval |
+| `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `DefaultProject` | string | `FHIR` | Default Jira project |
+| `DefaultJql` | string? | `null` | Custom JQL query to use instead of the default |
 | `Ports.Http` | int | `5160` | HTTP listen port |
 | `Ports.Grpc` | int | `5161` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
@@ -81,8 +91,13 @@ pattern.
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
 | `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `Bm25.UseLemmatization` | bool | `true` | Enable lemmatization during keyword indexing |
+| `Bm25.FtsTokenizer` | string? | `null` | Custom FTS5 tokenizer (null uses default) |
 | `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
 | `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
+| `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
+| `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
+| `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
 
 ---
 
@@ -101,6 +116,7 @@ pattern.
     "CachePath": "./cache",
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
+    "MinSyncAge": "04:00:00",
     "RebuildFromCacheOnStartup": false,
     "ExcludedStreamIds": [],
     "Ports": {
@@ -114,11 +130,18 @@ pattern.
     },
     "Bm25": {
       "K1": 1.2,
-      "B": 0.75
+      "B": 0.75,
+      "UseLemmatization": true,
+      "FtsTokenizer": null
     },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -135,6 +158,7 @@ pattern.
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/zulip.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `04:00:00` | Auto-sync interval |
+| `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
 | `Ports.Http` | int | `5170` | HTTP listen port |
@@ -144,8 +168,13 @@ pattern.
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
 | `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `Bm25.UseLemmatization` | bool | `true` | Enable lemmatization during keyword indexing |
+| `Bm25.FtsTokenizer` | string? | `null` | Custom FTS5 tokenizer (null uses default) |
 | `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
 | `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
+| `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
+| `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
+| `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
 
 ---
 
@@ -165,6 +194,7 @@ pattern.
     "CachePath": "./cache",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
+    "MinSyncAge": "04:00:00",
     "Ports": {
       "Http": 5180,
       "Grpc": 5181
@@ -176,11 +206,18 @@ pattern.
     },
     "Bm25": {
       "K1": 1.2,
-      "B": 0.75
+      "B": 0.75,
+      "UseLemmatization": true,
+      "FtsTokenizer": null
     },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -199,6 +236,7 @@ pattern.
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
+| `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `Ports.Http` | int | `5180` | HTTP listen port |
 | `Ports.Grpc` | int | `5181` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
@@ -206,8 +244,13 @@ pattern.
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
 | `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `Bm25.UseLemmatization` | bool | `true` | Enable lemmatization during keyword indexing |
+| `Bm25.FtsTokenizer` | string? | `null` | Custom FTS5 tokenizer (null uses default) |
 | `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
 | `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
+| `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
+| `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
+| `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
 
 ---
 
@@ -232,6 +275,7 @@ pattern.
     "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
+    "MinSyncAge": "04:00:00",
     "Ports": {
       "Http": 5190,
       "Grpc": 5191
@@ -244,11 +288,18 @@ pattern.
     },
     "Bm25": {
       "K1": 1.2,
-      "B": 0.75
+      "B": 0.75,
+      "UseLemmatization": true,
+      "FtsTokenizer": null
     },
     "AuxiliaryDatabase": {
       "AuxiliaryDatabasePath": null,
       "FhirSpecDatabasePath": null
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
@@ -266,14 +317,20 @@ pattern.
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/github.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
+| `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `Ports.Http` | int | `5190` | HTTP listen port |
 | `Ports.Grpc` | int | `5191` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.RespectRateLimitHeaders` | bool | `true` | Honor GitHub rate headers |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
 | `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `Bm25.UseLemmatization` | bool | `true` | Enable lemmatization during keyword indexing |
+| `Bm25.FtsTokenizer` | string? | `null` | Custom FTS5 tokenizer (null uses default) |
 | `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
 | `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
+| `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
+| `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
+| `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
 
 ---
 
@@ -315,10 +372,19 @@ pattern.
       "SharedMetadataWeight": 2.0,
       "DefaultLimit": 20,
       "MaxKeyTerms": 15
+    },
+    "DictionaryDatabase": {
+      "SourcePath": "./cache/dictionary",
+      "DatabasePath": "./data/dictionary.db",
+      "ForceRebuild": false
     }
   }
 }
 ```
+
+> **Note:** The default `appsettings.json` ships with only Jira and Zulip in
+> the `Services` section. Add Confluence and/or GitHub entries when deploying
+> those source services.
 
 ### Configuration Options
 
@@ -336,6 +402,9 @@ pattern.
 | `Search.CrossRefBoostFactor` | double | `0.5` | Boost for cross-referenced items |
 | `Related.DefaultLimit` | int | `20` | Default related items limit |
 | `Related.MaxKeyTerms` | int | `15` | Max terms for similarity |
+| `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
+| `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
+| `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
 
 ---
 
@@ -376,6 +445,10 @@ environment:
   # Auxiliary databases (optional — mount the DB files into the container)
   - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/app/data/auxiliary.db
   - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/app/data/fhir-spec.db
+
+  # Dictionary database (shared dictionary data — mounted read-only via Docker Compose)
+  - FHIR_AUGURY_JIRA__Jira__DictionaryDatabase__SourcePath=/app/cache/dictionary
+  - FHIR_AUGURY_JIRA__Jira__DictionaryDatabase__DatabasePath=/app/data/dictionary.db
 ```
 
 See [deployment.md](deployment.md) for complete Docker configuration.

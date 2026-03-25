@@ -85,10 +85,11 @@ provides reusable infrastructure.
 FhirAugury.Common/
 ├── Caching/                  # IResponseCache, FileSystemResponseCache, CacheMode
 ├── Configuration/            # Shared configuration types (AuxiliaryDatabaseOptions,
-│                             #   Bm25Options)
+│                             #   Bm25Options, DictionaryDatabaseOptions)
 ├── Database/                 # SourceDatabase abstract: SQLite WAL, FTS5 helpers;
 │                             #   AuxiliaryDatabase: read-only stop words, lemmas,
-│                             #   FHIR vocab loader
+│                             #   FHIR vocab loader;
+│                             #   DictionaryDatabase: compiled dictionary builder
 ├── Grpc/                     # gRPC client helpers, GrpcErrorMapper,
 │                             #   AtlassianAuthHandler, SourceServiceLifecycle
 ├── Ingestion/                # IIngestionPipeline, IngestionWorkQueue,

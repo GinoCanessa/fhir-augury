@@ -157,6 +157,8 @@ Parameters are **configurable per service** via `Bm25Options`:
 |-----------|---------|-------------|
 | **K1** | `1.2` | Term frequency saturation (typical range 1.2–2.0) |
 | **B** | `0.75` | Document length normalization (0 = none, 1 = full) |
+| **UseLemmatization** | `true` | Enable lemmatization during keyword indexing |
+| **FtsTokenizer** | `null` | Custom FTS5 tokenizer (null uses default) |
 
 ```
 score = IDF × (tf × (k1 + 1)) / (tf + k1 × (1 - b + b × docLen / avgDocLen))
@@ -378,7 +380,8 @@ queries).
 | `FhirVocabulary` | `FhirAugury.Common.Text` | 100+ FHIR resource names and 30+ operations (extensible via auxiliary DB) |
 | `StopWords` | `FhirAugury.Common.Text` | 200+ English stop words (extensible via auxiliary DB) |
 | `AuxiliaryDatabase` | `FhirAugury.Common.Database` | Loads stop words, lemmas, and FHIR vocab from optional read-only SQLite databases |
-| `Bm25Options` | `FhirAugury.Common.Configuration` | Per-service BM25 K1/B parameter configuration |
+| `Bm25Options` | `FhirAugury.Common.Configuration` | Per-service BM25 K1/B/UseLemmatization/FtsTokenizer configuration |
+| `DictionaryDatabase` | `FhirAugury.Common.Database` | Compiles dictionary source files (*.words.txt, *.typo.txt) into a SQLite database |
 | `CrossRefPatterns` | `FhirAugury.Common.Text` | Regex patterns for cross-source identifier extraction |
 | `TextSanitizer` | `FhirAugury.Common.Text` | HTML/Markdown stripping, NFC Unicode normalization |
 | `CrossRefLinker` | Orchestrator | Streams text from sources, extracts cross-references, stores in `cross_ref_links` |
