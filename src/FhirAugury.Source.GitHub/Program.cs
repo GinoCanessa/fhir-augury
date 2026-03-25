@@ -46,7 +46,7 @@ builder.Services.AddSingleton(sp =>
     GitHubServiceOptions options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    GitHubDatabase db = new GitHubDatabase(dbPath, sp.GetRequiredService<ILogger<GitHubDatabase>>());
+    GitHubDatabase db = new GitHubDatabase(dbPath, sp.GetRequiredService<ILogger<GitHubDatabase>>(), ftsTokenizer: options.Bm25.FtsTokenizer);
     db.Initialize();
     return db;
 });

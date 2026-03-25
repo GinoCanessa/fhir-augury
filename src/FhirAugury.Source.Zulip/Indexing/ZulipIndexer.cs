@@ -13,6 +13,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
 {
     private readonly double _k1 = bm25Options.K1;
     private readonly double _b = bm25Options.B;
+    private readonly Lemmatizer _lemmatizer = bm25Options.UseLemmatization ? auxiliaryDatabase.Lemmatizer : Lemmatizer.Empty;
 
     /// <summary>Rebuilds the entire BM25 index from all Zulip messages.</summary>
     public void RebuildFullIndex(CancellationToken ct = default)
@@ -54,7 +55,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             ct.ThrowIfCancellationRequested();
             List<string> tokens = Tokenizer.Tokenize(text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
-                tokens, auxiliaryDatabase.Lemmatizer, auxiliaryDatabase.StopWords);
+                tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
@@ -107,7 +108,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             ct.ThrowIfCancellationRequested();
             List<string> tokens = Tokenizer.Tokenize(text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
-                tokens, auxiliaryDatabase.Lemmatizer, auxiliaryDatabase.StopWords);
+                tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {

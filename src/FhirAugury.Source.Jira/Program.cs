@@ -46,7 +46,7 @@ builder.Services.AddSingleton(sp =>
     JiraServiceOptions jiraOptions = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
     string dbPath = Path.GetFullPath(jiraOptions.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    JiraDatabase db = new JiraDatabase(dbPath, sp.GetRequiredService<ILogger<JiraDatabase>>());
+    JiraDatabase db = new JiraDatabase(dbPath, sp.GetRequiredService<ILogger<JiraDatabase>>(), ftsTokenizer: jiraOptions.Bm25.FtsTokenizer);
     db.Initialize();
     return db;
 });

@@ -8,8 +8,13 @@ namespace FhirAugury.Source.Jira.Database;
 /// <summary>Jira-specific SQLite database with schema, FTS5, and batch operations.</summary>
 public class JiraDatabase : SourceDatabase
 {
-    public JiraDatabase(string dbPath, ILogger<JiraDatabase> logger, bool readOnly = false)
-        : base(dbPath, logger, readOnly) { }
+    private readonly string? _ftsTokenizer;
+
+    public JiraDatabase(string dbPath, ILogger<JiraDatabase> logger, bool readOnly = false, string? ftsTokenizer = null)
+        : base(dbPath, logger, readOnly)
+    {
+        _ftsTokenizer = ftsTokenizer;
+    }
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
@@ -36,24 +41,26 @@ public class JiraDatabase : SourceDatabase
         CreateJiraCommentsFts(connection);
     }
 
-    private static void CreateJiraIssuesFts(SqliteConnection connection)
+    private void CreateJiraIssuesFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "jira_issues_fts",
             contentTable: "jira_issues",
             contentRowId: "Id",
-            indexedColumns: ["Title", "DescriptionPlain", "ResolutionDescriptionPlain"]);
+            indexedColumns: ["Title", "DescriptionPlain", "ResolutionDescriptionPlain"],
+            tokenizer: _ftsTokenizer);
     }
 
-    private static void CreateJiraCommentsFts(SqliteConnection connection)
+    private void CreateJiraCommentsFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "jira_comments_fts",
             contentTable: "jira_comments",
             contentRowId: "Id",
-            indexedColumns: ["BodyPlain"]);
+            indexedColumns: ["BodyPlain"],
+            tokenizer: _ftsTokenizer);
     }
 
     /// <summary>Rebuilds both FTS5 indexes from their content tables.</summary>

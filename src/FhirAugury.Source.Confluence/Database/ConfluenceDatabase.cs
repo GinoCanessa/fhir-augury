@@ -8,8 +8,13 @@ namespace FhirAugury.Source.Confluence.Database;
 /// <summary>Confluence-specific SQLite database with schema, FTS5, and batch operations.</summary>
 public class ConfluenceDatabase : SourceDatabase
 {
-    public ConfluenceDatabase(string dbPath, ILogger<ConfluenceDatabase> logger, bool readOnly = false)
-        : base(dbPath, logger, readOnly) { }
+    private readonly string? _ftsTokenizer;
+
+    public ConfluenceDatabase(string dbPath, ILogger<ConfluenceDatabase> logger, bool readOnly = false, string? ftsTokenizer = null)
+        : base(dbPath, logger, readOnly)
+    {
+        _ftsTokenizer = ftsTokenizer;
+    }
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
@@ -25,14 +30,15 @@ public class ConfluenceDatabase : SourceDatabase
         CreateConfluencePagesFts(connection);
     }
 
-    private static void CreateConfluencePagesFts(SqliteConnection connection)
+    private void CreateConfluencePagesFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "confluence_pages_fts",
             contentTable: "confluence_pages",
             contentRowId: "Id",
-            indexedColumns: ["BodyPlain", "Title", "Labels"]);
+            indexedColumns: ["BodyPlain", "Title", "Labels"],
+            tokenizer: _ftsTokenizer);
     }
 
     /// <summary>Rebuilds the FTS5 index from the content table.</summary>

@@ -8,8 +8,13 @@ namespace FhirAugury.Source.Zulip.Database;
 /// <summary>Zulip-specific SQLite database with schema, FTS5, and batch operations.</summary>
 public class ZulipDatabase : SourceDatabase
 {
-    public ZulipDatabase(string dbPath, ILogger<ZulipDatabase> logger, bool readOnly = false)
-        : base(dbPath, logger, readOnly) { }
+    private readonly string? _ftsTokenizer;
+
+    public ZulipDatabase(string dbPath, ILogger<ZulipDatabase> logger, bool readOnly = false, string? ftsTokenizer = null)
+        : base(dbPath, logger, readOnly)
+    {
+        _ftsTokenizer = ftsTokenizer;
+    }
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
@@ -23,14 +28,15 @@ public class ZulipDatabase : SourceDatabase
         CreateZulipMessagesFts(connection);
     }
 
-    private static void CreateZulipMessagesFts(SqliteConnection connection)
+    private void CreateZulipMessagesFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "zulip_messages_fts",
             contentTable: "zulip_messages",
             contentRowId: "Id",
-            indexedColumns: ["ContentPlain", "Topic"]);
+            indexedColumns: ["ContentPlain", "Topic"],
+            tokenizer: _ftsTokenizer);
     }
 
     /// <summary>Rebuilds the FTS5 index from the content table.</summary>

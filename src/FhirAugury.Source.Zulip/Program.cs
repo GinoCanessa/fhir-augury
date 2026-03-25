@@ -46,7 +46,7 @@ builder.Services.AddSingleton(sp =>
     ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
     string dbPath = Path.GetFullPath(opts.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-    ZulipDatabase db = new ZulipDatabase(dbPath, sp.GetRequiredService<ILogger<ZulipDatabase>>());
+    ZulipDatabase db = new ZulipDatabase(dbPath, sp.GetRequiredService<ILogger<ZulipDatabase>>(), ftsTokenizer: opts.Bm25.FtsTokenizer);
     db.Initialize();
     return db;
 });

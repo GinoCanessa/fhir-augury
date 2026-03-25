@@ -122,21 +122,27 @@ public abstract class SourceDatabase : IDisposable
     /// <summary>
     /// Creates an FTS5 virtual table with content-sync triggers.
     /// </summary>
+    /// <param name="tokenizer">
+    /// Optional FTS5 tokenizer specification (e.g., "porter", "unicode61 remove_diacritics 1").
+    /// When null, the SQLite default tokenizer is used.
+    /// </param>
     protected static void CreateFts5Table(
         SqliteConnection connection,
         string ftsTableName,
         string contentTable,
         string contentRowId,
-        string[] indexedColumns)
+        string[] indexedColumns,
+        string? tokenizer = null)
     {
         string columnList = string.Join(", ", indexedColumns);
         string sourceColumns = string.Join(", ", indexedColumns.Select(c => $"new.{c}"));
         string oldColumns = string.Join(", ", indexedColumns.Select(c => $"old.{c}"));
+        string tokenizeClause = tokenizer is not null ? $", tokenize='{tokenizer}'" : "";
 
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = $"""
             CREATE VIRTUAL TABLE IF NOT EXISTS {ftsTableName}
-            USING fts5({columnList}, content={contentTable}, content_rowid={contentRowId});
+            USING fts5({columnList}, content={contentTable}, content_rowid={contentRowId}{tokenizeClause});
 
             CREATE TRIGGER IF NOT EXISTS {ftsTableName}_ai AFTER INSERT ON {contentTable} BEGIN
                 INSERT INTO {ftsTableName}(rowid, {columnList}) VALUES (new.{contentRowId}, {sourceColumns});

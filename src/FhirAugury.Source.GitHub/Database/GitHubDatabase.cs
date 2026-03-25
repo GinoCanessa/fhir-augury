@@ -8,8 +8,13 @@ namespace FhirAugury.Source.GitHub.Database;
 /// <summary>GitHub-specific SQLite database with schema, FTS5, and batch operations.</summary>
 public class GitHubDatabase : SourceDatabase
 {
-    public GitHubDatabase(string dbPath, ILogger<GitHubDatabase> logger, bool readOnly = false)
-        : base(dbPath, logger, readOnly) { }
+    private readonly string? _ftsTokenizer;
+
+    public GitHubDatabase(string dbPath, ILogger<GitHubDatabase> logger, bool readOnly = false, string? ftsTokenizer = null)
+        : base(dbPath, logger, readOnly)
+    {
+        _ftsTokenizer = ftsTokenizer;
+    }
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
@@ -31,34 +36,37 @@ public class GitHubDatabase : SourceDatabase
         CreateGitHubCommitsFts(connection);
     }
 
-    private static void CreateGitHubIssuesFts(SqliteConnection connection)
+    private void CreateGitHubIssuesFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "github_issues_fts",
             contentTable: "github_issues",
             contentRowId: "Id",
-            indexedColumns: ["Title", "Body"]);
+            indexedColumns: ["Title", "Body"],
+            tokenizer: _ftsTokenizer);
     }
 
-    private static void CreateGitHubCommentsFts(SqliteConnection connection)
+    private void CreateGitHubCommentsFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "github_comments_fts",
             contentTable: "github_comments",
             contentRowId: "Id",
-            indexedColumns: ["Body"]);
+            indexedColumns: ["Body"],
+            tokenizer: _ftsTokenizer);
     }
 
-    private static void CreateGitHubCommitsFts(SqliteConnection connection)
+    private void CreateGitHubCommitsFts(SqliteConnection connection)
     {
         CreateFts5Table(
             connection,
             ftsTableName: "github_commits_fts",
             contentTable: "github_commits",
             contentRowId: "Id",
-            indexedColumns: ["Message"]);
+            indexedColumns: ["Message"],
+            tokenizer: _ftsTokenizer);
     }
 
     /// <summary>Rebuilds all FTS5 indexes from their content tables.</summary>
