@@ -1,4 +1,6 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Database;
 using FhirAugury.Source.Confluence.Api;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
@@ -69,7 +71,20 @@ builder.Services.AddHttpClient("confluence", client =>
 
 // Ingestion
 builder.Services.AddSingleton<ConfluenceSource>();
-builder.Services.AddSingleton<ConfluenceIndexer>();
+builder.Services.AddSingleton(sp =>
+{
+    ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    return new AuxiliaryDatabase(opts.AuxiliaryDatabase, sp.GetRequiredService<ILogger<AuxiliaryDatabase>>());
+});
+builder.Services.AddSingleton(sp =>
+{
+    ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    return new ConfluenceIndexer(
+        sp.GetRequiredService<ConfluenceDatabase>(),
+        sp.GetRequiredService<AuxiliaryDatabase>(),
+        opts.Bm25,
+        sp.GetRequiredService<ILogger<ConfluenceIndexer>>());
+});
 builder.Services.AddSingleton<ConfluenceIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

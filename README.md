@@ -75,6 +75,9 @@ dotnet run --project src/FhirAugury.Orchestrator
 
 - **Unified search** across Jira issues, Zulip chat, Confluence wiki, and GitHub
 - **Full-text search** via SQLite FTS5 with BM25 relevance scoring
+- **Lemmatization** — normalizes inflected words to base forms for better recall
+- **Configurable BM25** — per-service K1/B tuning for different content types
+- **Auxiliary database** — optional external stop words, lemmas, and FHIR spec data
 - **Cross-reference linking** — detects mentions and links between sources
 - **Related items** — find similar content using BM25 keyword vectors
 - **FHIR-aware tokenization** — recognizes FHIR paths, operations, and terms

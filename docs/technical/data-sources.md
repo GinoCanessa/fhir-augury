@@ -123,16 +123,30 @@ provides:
   `InitializeSchema()`, `ExecuteInBatches()` (savepoints),
   `ExecuteInTransaction()`, `CreateFts5Table()` (auto-generates content-sync
   triggers), `RebuildFts5()`, `GetDatabaseSizeBytes()`, `CheckIntegrity()`.
+- **`Database/AuxiliaryDatabase`** — Read-only SQLite loader for optional
+  external stop words, lemmatization data, and FHIR vocabulary. Loads data once
+  at startup into frozen collections (`FrozenSet`/`FrozenDictionary`). Provides
+  `StopWords`, `Lemmatizer`, `FhirResourceNames`, and `FhirOperations`
+  properties. Falls back to hardcoded defaults when database files are not
+  configured.
+- **`Configuration/`** — Shared configuration types including
+  `AuxiliaryDatabaseOptions` (paths to auxiliary/FHIR spec DBs) and
+  `Bm25Options` (configurable K1/B parameters per service).
 - **`Caching/`** — `IResponseCache`, `FileSystemResponseCache` (atomic writes
   via temp + move), `CacheMode` enum (`Disabled`, `WriteThrough`, `CacheOnly`,
   `WriteOnly`), `CacheFileNaming` (`_WeekOf_`/`DayOf_` batch naming).
 - **`Text/`** — `CrossRefPatterns` (regex patterns for Jira keys, Jira/Zulip/
   GitHub/Confluence URLs, GitHub short refs `HL7/repo#123`),
-  `FhirVocabulary` (100+ FHIR resource names, 30+ operations),
+  `FhirVocabulary` (100+ FHIR resource names, 30+ operations; extensible via
+  auxiliary DB using `CreateMergedResourceNames()`/`CreateMergedOperations()`),
   `KeywordClassifier` (word/stop_word/fhir_path/fhir_operation),
-  `StopWords` (200+ English), `TextSanitizer` (strip HTML/Markdown, NFC
+  `StopWords` (200+ English; extensible via auxiliary DB using
+  `CreateMergedSet()`), `TextSanitizer` (strip HTML/Markdown, NFC
   Unicode normalization), `Tokenizer` (FHIR paths/operations first, then
-  strip URLs/emails/code blocks, then words).
+  strip URLs/emails/code blocks, then words), `TokenCounter` (shared
+  count-and-classify with stop-word filtering and lemmatization),
+  `Lemmatizer` (inflection→lemma normalization with `Empty` singleton
+  fallback).
 - **`Grpc/`** — `GrpcClientExtensions`, `GrpcErrorMapper`.
 - **`HttpRetryHelper`** — Exponential backoff ±20% jitter, max 30s delay,
   respects `Retry-After` headers. Fails immediately on 401/403.

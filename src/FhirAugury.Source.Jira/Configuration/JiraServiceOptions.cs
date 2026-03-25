@@ -34,4 +34,6 @@ public class JiraServiceOptions
     public int PageSize { get; set; } = 100;
     public PortConfiguration Ports { get; set; } = new() { Http = 5160, Grpc = 5161 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
+    public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
+    public Bm25Options Bm25 { get; set; } = new();
 }

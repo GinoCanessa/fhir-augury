@@ -1,3 +1,5 @@
+using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Database;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
@@ -7,10 +9,10 @@ using Microsoft.Extensions.Logging;
 namespace FhirAugury.Source.Confluence.Indexing;
 
 /// <summary>BM25 keyword scoring pipeline scoped to the Confluence corpus.</summary>
-public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIndexer> logger)
+public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase auxiliaryDatabase, Bm25Options bm25Options, ILogger<ConfluenceIndexer> logger)
 {
-    public const double DefaultK1 = 1.2;
-    public const double DefaultB = 0.75;
+    private readonly double _k1 = bm25Options.K1;
+    private readonly double _b = bm25Options.B;
 
     /// <summary>Rebuilds the entire BM25 index from all Confluence pages and comments.</summary>
     public void RebuildFullIndex(CancellationToken ct = default)
@@ -49,7 +51,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         {
             ct.ThrowIfCancellationRequested();
             List<string> tokens = Tokenizer.Tokenize(text);
-            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
+            Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
+                tokens, auxiliaryDatabase.Lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
@@ -97,7 +100,7 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         return documents;
     }
 
-    private static void BuildIndex(
+    private void BuildIndex(
         SqliteConnection connection,
         List<(string SourceType, string SourceId, string Text)> documents,
         CancellationToken ct)
@@ -106,7 +109,8 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         {
             ct.ThrowIfCancellationRequested();
             List<string> tokens = Tokenizer.Tokenize(text);
-            Dictionary<string, (int Count, string KeywordType)> keywords = CountAndClassifyTokens(tokens);
+            Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
+                tokens, auxiliaryDatabase.Lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
@@ -124,7 +128,7 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
         }
     }
 
-    private static void RecomputeCorpusStats(SqliteConnection connection)
+    private void RecomputeCorpusStats(SqliteConnection connection)
     {
         using (SqliteCommand cmd = connection.CreateCommand())
         {
@@ -216,30 +220,11 @@ public class ConfluenceIndexer(ConfluenceDatabase database, ILogger<ConfluenceIn
                     LIMIT 1
                 )
                 """;
-            cmd.Parameters.AddWithValue("@k1", DefaultK1);
-            cmd.Parameters.AddWithValue("@b", DefaultB);
+            cmd.Parameters.AddWithValue("@k1", _k1);
+            cmd.Parameters.AddWithValue("@b", _b);
             cmd.Parameters.AddWithValue("@avgDocLen", overallAvgDocLen > 0 ? overallAvgDocLen : 1.0);
             cmd.ExecuteNonQuery();
         }
-    }
-
-    internal static Dictionary<string, (int Count, string KeywordType)> CountAndClassifyTokens(List<string> tokens)
-    {
-        Dictionary<string, (int Count, string KeywordType)> result = new Dictionary<string, (int Count, string KeywordType)>();
-
-        foreach (string token in tokens)
-        {
-            KeywordType classification = KeywordClassifier.Classify(token);
-            if (classification == KeywordType.StopWord)
-                continue;
-
-            if (result.TryGetValue(token, out (int Count, string KeywordType) existing))
-                result[token] = (existing.Count + 1, existing.KeywordType);
-            else
-                result[token] = (1, KeywordClassifier.ToStorageString(classification));
-        }
-
-        return result;
     }
 
     private static void ClearIndex(SqliteConnection connection)

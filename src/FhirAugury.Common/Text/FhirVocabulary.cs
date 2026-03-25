@@ -1,7 +1,10 @@
+using System.Collections.Frozen;
+
 namespace FhirAugury.Common.Text;
 
 /// <summary>
 /// Known FHIR resource names and operations for token classification.
+/// Provides hardcoded defaults that can be merged with database-loaded FHIR specification data.
 /// </summary>
 public static class FhirVocabulary
 {
@@ -85,4 +88,42 @@ public static class FhirVocabulary
 
     /// <summary>Returns true if the token is a known FHIR operation.</summary>
     public static bool IsOperation(string token) => Operations.Contains(token);
+
+    /// <summary>
+    /// Creates a frozen set combining hardcoded resource names with additional names
+    /// (typically element paths loaded from a FHIR specification database).
+    /// </summary>
+    public static FrozenSet<string> CreateMergedResourceNames(IEnumerable<string>? additionalNames = null)
+    {
+        HashSet<string> merged = new(ResourceNames, StringComparer.OrdinalIgnoreCase);
+
+        if (additionalNames is not null)
+        {
+            foreach (string name in additionalNames)
+            {
+                merged.Add(name);
+            }
+        }
+
+        return merged.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Creates a frozen set combining hardcoded operations with additional operations
+    /// (typically loaded from a FHIR specification database).
+    /// </summary>
+    public static FrozenSet<string> CreateMergedOperations(IEnumerable<string>? additionalOps = null)
+    {
+        HashSet<string> merged = new(Operations, StringComparer.OrdinalIgnoreCase);
+
+        if (additionalOps is not null)
+        {
+            foreach (string op in additionalOps)
+            {
+                merged.Add(op);
+            }
+        }
+
+        return merged.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    }
 }

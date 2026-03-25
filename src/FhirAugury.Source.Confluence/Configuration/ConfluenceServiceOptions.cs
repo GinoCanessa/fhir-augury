@@ -28,4 +28,6 @@ public class ConfluenceServiceOptions
     public int PageSize { get; set; } = 25;
     public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
+    public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
+    public Bm25Options Bm25 { get; set; } = new();
 }

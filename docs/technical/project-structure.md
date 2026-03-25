@@ -84,14 +84,20 @@ provides reusable infrastructure.
 ```
 FhirAugury.Common/
 ├── Caching/                  # IResponseCache, FileSystemResponseCache, CacheMode
-├── Configuration/            # Shared configuration types
-├── Database/                 # SourceDatabase abstract: SQLite WAL, FTS5 helpers
+├── Configuration/            # Shared configuration types (AuxiliaryDatabaseOptions,
+│                             #   Bm25Options)
+├── Database/                 # SourceDatabase abstract: SQLite WAL, FTS5 helpers;
+│                             #   AuxiliaryDatabase: read-only stop words, lemmas,
+│                             #   FHIR vocab loader
 ├── Grpc/                     # gRPC client helpers, GrpcErrorMapper,
 │                             #   AtlassianAuthHandler, SourceServiceLifecycle
 ├── Ingestion/                # IIngestionPipeline, IngestionWorkQueue,
 │                             #   ScheduledIngestionWorker<T>
 ├── Text/                     # CrossRefPatterns, FhirVocabulary (100+ resources,
-│                             #   30+ operations), Tokenizer, StopWords,
+│                             #   30+ operations, extensible via aux DB),
+│                             #   Tokenizer, TokenCounter (shared count+classify),
+│                             #   Lemmatizer (inflection→lemma normalization),
+│                             #   StopWords (extensible via aux DB),
 │                             #   TextSanitizer, KeywordClassifier, CsvParser,
 │                             #   FormatHelpers, FtsQueryHelper, TextPatterns
 └── HttpRetryHelper.cs        # Retry with exponential backoff

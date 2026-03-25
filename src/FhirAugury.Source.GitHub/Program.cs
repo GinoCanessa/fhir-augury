@@ -1,4 +1,6 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Database;
 using FhirAugury.Source.GitHub.Api;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
@@ -74,7 +76,20 @@ builder.Services.AddSingleton<GitHubSource>();
 builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
 builder.Services.AddSingleton<JiraRefExtractor>();
-builder.Services.AddSingleton<GitHubIndexer>();
+builder.Services.AddSingleton(sp =>
+{
+    GitHubServiceOptions opts = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    return new AuxiliaryDatabase(opts.AuxiliaryDatabase, sp.GetRequiredService<ILogger<AuxiliaryDatabase>>());
+});
+builder.Services.AddSingleton(sp =>
+{
+    GitHubServiceOptions opts = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    return new GitHubIndexer(
+        sp.GetRequiredService<GitHubDatabase>(),
+        sp.GetRequiredService<AuxiliaryDatabase>(),
+        opts.Bm25,
+        sp.GetRequiredService<ILogger<GitHubIndexer>>());
+});
 builder.Services.AddSingleton<ArtifactFileMapper>();
 builder.Services.AddSingleton<JiraRefResolver>();
 builder.Services.AddSingleton<GitHubIngestionPipeline>();

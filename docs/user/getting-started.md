@@ -117,7 +117,28 @@ curl http://localhost:5150/health
 Services auto-download and index data on startup via their built-in
 `ScheduledIngestionWorker`. No manual download or index-build step is required.
 
-### 5. Run your first search
+### 5. (Optional) Configure auxiliary databases
+
+For improved search quality, you can provide auxiliary databases with extended
+stop words, lemmatization data, and FHIR vocabulary. Create
+`appsettings.local.json` in each source service directory:
+
+```json
+{
+  "Jira": {
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": "/path/to/auxiliary.db",
+      "FhirSpecDatabasePath": "/path/to/fhir-spec.db"
+    }
+  }
+}
+```
+
+This is optional — the system works with built-in defaults when no auxiliary
+databases are configured. See [Configuration](configuration.md#auxiliary-database-optional)
+for details.
+
+### 6. Run your first search
 
 ```bash
 dotnet run --project src/FhirAugury.Cli -- search "patient"

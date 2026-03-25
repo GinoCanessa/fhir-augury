@@ -1,4 +1,6 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Database;
 using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
@@ -68,7 +70,20 @@ builder.Services.AddHttpClient("zulip")
 
 // Ingestion
 builder.Services.AddSingleton<ZulipSource>();
-builder.Services.AddSingleton<ZulipIndexer>();
+builder.Services.AddSingleton(sp =>
+{
+    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+    return new AuxiliaryDatabase(opts.AuxiliaryDatabase, sp.GetRequiredService<ILogger<AuxiliaryDatabase>>());
+});
+builder.Services.AddSingleton(sp =>
+{
+    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+    return new ZulipIndexer(
+        sp.GetRequiredService<ZulipDatabase>(),
+        sp.GetRequiredService<AuxiliaryDatabase>(),
+        opts.Bm25,
+        sp.GetRequiredService<ILogger<ZulipIndexer>>());
+});
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

@@ -47,6 +47,14 @@ pattern.
       "MaxRequestsPerSecond": 10,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": {
+      "K1": 1.2,
+      "B": 0.75
+    },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -71,6 +79,10 @@ pattern.
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
+| `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
+| `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
+| `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
 
 ---
 
@@ -99,6 +111,14 @@ pattern.
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": {
+      "K1": 1.2,
+      "B": 0.75
+    },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -122,6 +142,10 @@ pattern.
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
+| `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
+| `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
+| `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
 
 ---
 
@@ -149,6 +173,14 @@ pattern.
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": {
+      "K1": 1.2,
+      "B": 0.75
+    },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -172,6 +204,10 @@ pattern.
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
+| `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
+| `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
+| `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
 
 ---
 
@@ -205,6 +241,14 @@ pattern.
       "BackoffBaseSeconds": 5,
       "MaxRetries": 5,
       "RespectRateLimitHeaders": true
+    },
+    "Bm25": {
+      "K1": 1.2,
+      "B": 0.75
+    },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -226,6 +270,10 @@ pattern.
 | `Ports.Grpc` | int | `5191` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.RespectRateLimitHeaders` | bool | `true` | Honor GitHub rate headers |
+| `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
+| `Bm25.B` | double | `0.75` | BM25 document length normalization |
+| `AuxiliaryDatabase.AuxiliaryDatabasePath` | string? | `null` | Path to auxiliary SQLite DB (stop words + lemmas) |
+| `AuxiliaryDatabase.FhirSpecDatabasePath` | string? | `null` | Path to FHIR specification SQLite DB |
 
 ---
 
@@ -320,6 +368,14 @@ environment:
 
   # Override orchestrator gRPC addresses to use container names
   - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
+
+  # BM25 tuning (optional)
+  - FHIR_AUGURY_JIRA__Jira__Bm25__K1=1.2
+  - FHIR_AUGURY_JIRA__Jira__Bm25__B=0.75
+
+  # Auxiliary databases (optional — mount the DB files into the container)
+  - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/app/data/auxiliary.db
+  - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/app/data/fhir-spec.db
 ```
 
 See [deployment.md](deployment.md) for complete Docker configuration.

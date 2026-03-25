@@ -54,7 +54,7 @@ Ports: HTTP (even) / gRPC (odd)
 
 | Component | Project | Role |
 |-----------|---------|------|
-| **Common** | `FhirAugury.Common` | Shared library: compiled protos, caching, database helpers, text utilities, gRPC client helpers |
+| **Common** | `FhirAugury.Common` | Shared library: compiled protos, caching, database helpers, text utilities, gRPC client helpers, auxiliary database loader, BM25 configuration |
 | **Source.Jira** | `FhirAugury.Source.Jira` | Jira source service — downloads, indexes, and serves Jira issues and comments |
 | **Source.Zulip** | `FhirAugury.Source.Zulip` | Zulip source service — downloads, indexes, and serves Zulip streams and messages |
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
@@ -90,9 +90,9 @@ Each source service (`Source.Jira`, `Source.Zulip`, `Source.Confluence`,
 |-----------|---------|
 | `Api/` | gRPC service implementations (SourceService + source-specific service) |
 | `Cache/` | File-system response cache for raw API responses |
-| `Configuration/` | Source-specific options and configuration binding |
+| `Configuration/` | Source-specific options (including `Bm25` and `AuxiliaryDatabase` sub-options) |
 | `Database/` | SQLite schema, record types, source-generated CRUD |
-| `Indexing/` | FTS5 search and indexing logic |
+| `Indexing/` | FTS5 search and BM25 indexing logic (uses shared `TokenCounter` and `Lemmatizer`) |
 | `Ingestion/` | Download pipeline: fetch → cache → parse → store |
 | `Workers/` | Background workers (e.g., `ScheduledIngestionWorker`) |
 | `Program.cs` | Entry point: dual-port Kestrel (HTTP + gRPC), DI registration |
@@ -100,6 +100,12 @@ Each source service (`Source.Jira`, `Source.Zulip`, `Source.Confluence`,
 Each service has its own SQLite database (WAL mode, FTS5 virtual tables) and
 file-system response cache. Services implement both the common `SourceService`
 gRPC contract and a source-specific gRPC service (e.g., `JiraService`).
+
+At startup, each service registers an `AuxiliaryDatabase` singleton that loads
+optional external stop words, lemmatization data, and FHIR vocabulary from
+read-only SQLite databases. The `Lemmatizer` and merged stop-word/vocabulary
+sets are injected into the service's indexer alongside configurable `Bm25Options`
+(K1/B parameters).
 
 ## Data Flow
 

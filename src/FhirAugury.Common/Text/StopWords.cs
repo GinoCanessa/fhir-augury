@@ -1,11 +1,14 @@
+using System.Collections.Frozen;
+
 namespace FhirAugury.Common.Text;
 
 /// <summary>
 /// Common English stop words to filter from keyword indexes.
+/// Provides hardcoded defaults that can be merged with database-loaded stop words.
 /// </summary>
 public static class StopWords
 {
-    private static readonly HashSet<string> Words =
+    private static readonly HashSet<string> DefaultWords =
     [
         "a", "about", "above", "after", "again", "against", "all", "am", "an",
         "and", "any", "are", "aren't", "as", "at", "be", "because", "been",
@@ -35,6 +38,25 @@ public static class StopWords
         "used", "using", "want", "way", "well",
     ];
 
-    /// <summary>Returns true if the word is a stop word.</summary>
-    public static bool IsStopWord(string word) => Words.Contains(word);
+    /// <summary>Returns true if the word is in the default hardcoded stop word set.</summary>
+    public static bool IsStopWord(string word) => DefaultWords.Contains(word);
+
+    /// <summary>
+    /// Creates a frozen set combining the hardcoded defaults with additional stop words
+    /// (typically loaded from an auxiliary database).
+    /// </summary>
+    public static FrozenSet<string> CreateMergedSet(IEnumerable<string>? additionalWords = null)
+    {
+        HashSet<string> merged = new(DefaultWords, StringComparer.Ordinal);
+
+        if (additionalWords is not null)
+        {
+            foreach (string word in additionalWords)
+            {
+                merged.Add(word);
+            }
+        }
+
+        return merged.ToFrozenSet(StringComparer.Ordinal);
+    }
 }

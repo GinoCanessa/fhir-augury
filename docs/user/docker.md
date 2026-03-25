@@ -94,6 +94,31 @@ GITHUB_TOKEN=ghp_...
 > **Security note:** For production, use a `.env` file (gitignored) or Docker
 > secrets instead of hardcoding credentials in `docker-compose.yml`.
 
+## Auxiliary Databases (Optional)
+
+To provide auxiliary databases (extended stop words, lemmatization, FHIR
+vocabulary) in Docker, bind-mount the database files into each source container
+and set the paths via environment variables:
+
+```yaml
+# docker-compose.override.yml
+services:
+  source-jira:
+    volumes:
+      - ./data/auxiliary.db:/app/data/auxiliary.db:ro
+      - ./data/fhir-spec.db:/app/data/fhir-spec.db:ro
+    environment:
+      - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/app/data/auxiliary.db
+      - FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/app/data/fhir-spec.db
+```
+
+Apply the same pattern for each source service (`source-zulip`,
+`source-confluence`, `source-github`), adjusting the environment variable
+prefix accordingly. The databases are opened read-only, so the `:ro` mount
+flag is recommended.
+
+When not configured, the system uses built-in defaults.
+
 ## Health Checks
 
 All services expose a `GET /health` endpoint. Health check configuration:

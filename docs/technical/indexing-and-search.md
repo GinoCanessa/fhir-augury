@@ -151,7 +151,12 @@ database for similarity search and keyword-based ranking.
 
 ### BM25 Formula
 
-Parameters: **k1 = 1.2**, **b = 0.75**
+Parameters are **configurable per service** via `Bm25Options`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **K1** | `1.2` | Term frequency saturation (typical range 1.2–2.0) |
+| **B** | `0.75` | Document length normalization (0 = none, 1 = full) |
 
 ```
 score = IDF × (tf × (k1 + 1)) / (tf + k1 × (1 - b + b × docLen / avgDocLen))
@@ -161,25 +166,45 @@ Where:
 
 - **IDF** = `log(1 + (N - df + 0.5) / (df + 0.5))`
 - **tf** = term frequency in the document
-- **k1** = term frequency saturation (`1.2`)
-- **b** = document length normalization (`0.75`)
+- **k1** = term frequency saturation (from `Bm25Options.K1`)
+- **b** = document length normalization (from `Bm25Options.B`)
 - **N** = total documents in the source type
 - **df** = number of documents containing the term
 - **docLen** = number of tokens in this document
 - **avgDocLen** = average document length for this source type
 
+Different content types may benefit from different parameters — for example,
+short Zulip messages vs. long Confluence pages. Configure via `appsettings.json`
+or environment variables:
+
+```json
+{
+  "Zulip": {
+    "Bm25": { "K1": 1.5, "B": 0.5 }
+  }
+}
+```
+
+Or via environment variables: `FHIR_AUGURY_ZULIP__Zulip__Bm25__K1=1.5`
+
 ### Index Build Pipeline (per-service)
 
-Each source service builds its BM25 index locally:
+Each source service builds its BM25 index locally using `TokenCounter` (a
+shared helper in `FhirAugury.Common.Text`) that centralizes the
+count-and-classify logic:
 
 1. **Collect documents** — Tokenize all content from the source's content tables
 2. **Classify keywords** — Determine keyword type using `KeywordClassifier`
-3. **Filter stop words** — Remove stop words (200+ English words)
-4. **Count TF** — Compute term frequencies per document
-5. **Insert keywords** — Store rows in `index_keywords`
-6. **Corpus stats** — Compute document frequencies, IDF, and average doc lengths
+3. **Filter stop words** — Remove stop words (hardcoded defaults merged with
+   optional auxiliary database words)
+4. **Lemmatize** — Normalize inflected words to their base (lemma) form using
+   `Lemmatizer` (e.g., "patients" → "patient", "searching" → "search")
+5. **Count TF** — Compute term frequencies per document using lemmatized forms
+6. **Insert keywords** — Store rows in `index_keywords`
+7. **Corpus stats** — Compute document frequencies, IDF, and average doc lengths
    in `index_corpus` and `index_doc_stats`
-7. **BM25 scores** — Bulk SQL UPDATE computes all BM25 scores using subqueries
+8. **BM25 scores** — Bulk SQL UPDATE computes all BM25 scores using the
+   service's configured K1 and B values
 
 Both full rebuild and incremental update are supported. Incremental updates
 recompute only the affected documents but refresh corpus-wide statistics.
@@ -210,16 +235,65 @@ of four types:
 |------|----------|---------|
 | `fhir_operation` | Starts with `$` | `$validate` |
 | `fhir_path` | Contains `.` and first segment is a known FHIR resource, or token is a resource name | `Patient.name.given` |
-| `stop_word` | In the stop-word list (200+ common English words) | `the`, `and`, `also` |
+| `stop_word` | In the stop-word list (hardcoded defaults, optionally extended from auxiliary DB) | `the`, `and`, `also` |
 | `word` | Everything else | `terminology` |
 
 Stop words are filtered out entirely and not indexed.
 
+### Lemmatization
+
+After tokenization and classification, the `Lemmatizer` (in
+`FhirAugury.Common.Text`) normalizes inflected words to their base (lemma)
+form. This improves search recall — searching for "patients" matches documents
+containing "patient" — and concentrates term frequencies for more accurate BM25
+scoring.
+
+| Input | Lemmatized Output |
+|-------|-------------------|
+| `patients` | `patient` |
+| `searching` | `search` |
+| `observations` | `observation` |
+| `validated` | `validate` |
+
+Lemmatization is applied only to `word`-type tokens (not FHIR paths or
+operations). The lemma mappings are loaded from the auxiliary database's
+`lemmas` table at startup. When no auxiliary database is configured, the
+`Lemmatizer.Empty` singleton passes all tokens through unchanged.
+
 ### FHIR Vocabulary
 
-`FhirVocabulary` (in `FhirAugury.Common.Text`) contains 100+ FHIR R4 resource
-names (Patient, Observation, MedicationRequest, etc.) and 30+ FHIR operations
-($validate, $expand, $everything, etc.). All matching is case-insensitive.
+`FhirVocabulary` (in `FhirAugury.Common.Text`) provides hardcoded defaults of
+100+ FHIR R4 resource names (Patient, Observation, MedicationRequest, etc.) and
+30+ FHIR operations ($validate, $expand, $everything, etc.). All matching is
+case-insensitive.
+
+When an auxiliary FHIR specification database is configured, `FhirVocabulary`
+merges hardcoded defaults with database-loaded element paths and operation
+codes via `CreateMergedResourceNames()` and `CreateMergedOperations()`. This
+allows the vocabulary to stay current with newer FHIR versions without code
+changes.
+
+### Auxiliary Database
+
+The `AuxiliaryDatabase` (in `FhirAugury.Common.Database`) provides an optional,
+read-only SQLite database infrastructure for loading stop words, lemmatization
+data, and FHIR domain vocabulary at startup. All data is loaded once and cached
+in frozen/immutable collections (`FrozenSet`, `FrozenDictionary`) for
+thread-safe, zero-allocation lookups during tokenization.
+
+Two optional database files are supported:
+
+| Database | Tables | Purpose |
+|----------|--------|---------|
+| **Auxiliary DB** | `stop_words`, `lemmas` | Extended stop words and inflection→lemma mappings |
+| **FHIR Spec DB** | `elements`, `operations` | FHIR element paths and operation codes |
+
+When database paths are not configured, the system falls back to hardcoded
+defaults. See [Configuration](../configuration.md) for how to configure
+auxiliary database paths per service.
+
+See [Database Schema](database-schema.md#auxiliary-databases) for table
+definitions.
 
 ## Cross-Reference Linking
 
@@ -298,9 +372,13 @@ queries).
 | `SourceDatabase.CreateFts5Table()` | `FhirAugury.Common` | Creates FTS5 virtual tables with auto-generated content-sync triggers |
 | `SourceDatabase.RebuildFts5()` | `FhirAugury.Common` | Rebuilds FTS5 index from content table |
 | `Tokenizer` | `FhirAugury.Common.Text` | FHIR-aware tokenization (operations, paths, words) |
+| `TokenCounter` | `FhirAugury.Common.Text` | Shared token counting with stop-word filtering and lemmatization |
+| `Lemmatizer` | `FhirAugury.Common.Text` | Inflection→lemma normalization (e.g., "patients" → "patient") |
 | `KeywordClassifier` | `FhirAugury.Common.Text` | Token classification (fhir_path, fhir_operation, stop_word, word) |
-| `FhirVocabulary` | `FhirAugury.Common.Text` | 100+ FHIR resource names and 30+ operations |
-| `StopWords` | `FhirAugury.Common.Text` | 200+ English stop words |
+| `FhirVocabulary` | `FhirAugury.Common.Text` | 100+ FHIR resource names and 30+ operations (extensible via auxiliary DB) |
+| `StopWords` | `FhirAugury.Common.Text` | 200+ English stop words (extensible via auxiliary DB) |
+| `AuxiliaryDatabase` | `FhirAugury.Common.Database` | Loads stop words, lemmas, and FHIR vocab from optional read-only SQLite databases |
+| `Bm25Options` | `FhirAugury.Common.Configuration` | Per-service BM25 K1/B parameter configuration |
 | `CrossRefPatterns` | `FhirAugury.Common.Text` | Regex patterns for cross-source identifier extraction |
 | `TextSanitizer` | `FhirAugury.Common.Text` | HTML/Markdown stripping, NFC Unicode normalization |
 | `CrossRefLinker` | Orchestrator | Streams text from sources, extracts cross-references, stores in `cross_ref_links` |

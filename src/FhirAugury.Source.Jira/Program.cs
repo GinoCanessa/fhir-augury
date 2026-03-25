@@ -1,4 +1,6 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Database;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -84,7 +86,20 @@ builder.Services.AddHttpClient("jira-xml", client =>
 
 // Ingestion
 builder.Services.AddSingleton<JiraSource>();
-builder.Services.AddSingleton<JiraIndexer>();
+builder.Services.AddSingleton(sp =>
+{
+    JiraServiceOptions opts = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+    return new AuxiliaryDatabase(opts.AuxiliaryDatabase, sp.GetRequiredService<ILogger<AuxiliaryDatabase>>());
+});
+builder.Services.AddSingleton(sp =>
+{
+    JiraServiceOptions opts = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+    return new JiraIndexer(
+        sp.GetRequiredService<JiraDatabase>(),
+        sp.GetRequiredService<AuxiliaryDatabase>(),
+        opts.Bm25,
+        sp.GetRequiredService<ILogger<JiraIndexer>>());
+});
 builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();

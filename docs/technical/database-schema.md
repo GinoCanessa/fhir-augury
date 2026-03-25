@@ -500,3 +500,69 @@ Orchestrator (orchestrator.db)
 ├── cross_ref_links                     — Cross-source reference links
 └── xref_scan_state                     — Incremental scan cursors
 ```
+
+---
+
+## Auxiliary Databases
+
+In addition to the per-service SQLite databases, FHIR Augury supports two
+optional **read-only** auxiliary databases that provide extended vocabulary and
+language data to all source services. These are loaded once at startup by the
+`AuxiliaryDatabase` class in `FhirAugury.Common` and cached in frozen/immutable
+collections for thread-safe access.
+
+### Auxiliary Database (stop words + lemmas)
+
+A shared SQLite file configured via `AuxiliaryDatabasePath` in each service's
+`AuxiliaryDatabase` configuration section.
+
+#### `stop_words` — Extended stop word list
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `word` | TEXT NOT NULL | A stop word to exclude from indexing |
+
+These are merged with the hardcoded defaults in `StopWords` at startup via
+`StopWords.CreateMergedSet()`.
+
+#### `lemmas` — Inflection-to-lemma mappings
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Inflection` | TEXT NOT NULL | Inflected word form (e.g., "patients") |
+| `Category` | TEXT | Part of speech or category (informational) |
+| `Lemma` | TEXT NOT NULL | Base form (e.g., "patient") |
+
+Used by the `Lemmatizer` class to normalize tokens during keyword extraction.
+Only entries with inflection length ≥ 3 characters are loaded.
+
+### FHIR Specification Database (element paths + operations)
+
+A separate SQLite file configured via `FhirSpecDatabasePath` in each service's
+`AuxiliaryDatabase` configuration section.
+
+#### `elements` — FHIR element paths
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Path` | TEXT | FHIR element path (e.g., `Patient.name.given`) |
+
+Resource names are extracted from the path (the segment before the first dot)
+and merged with the hardcoded defaults in `FhirVocabulary` via
+`FhirVocabulary.CreateMergedResourceNames()`.
+
+#### `operations` — FHIR operation codes
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Code` | TEXT | Operation code (e.g., `validate` or `$validate`) |
+
+Operation codes are normalized to include the `$` prefix and merged with
+hardcoded defaults via `FhirVocabulary.CreateMergedOperations()`.
+
+### Graceful Degradation
+
+When auxiliary database paths are not configured (or the files don't exist),
+the system falls back to hardcoded defaults — no auxiliary database is required
+for normal operation. All SQL failures during loading are caught and logged as
+warnings.

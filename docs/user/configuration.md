@@ -65,6 +65,11 @@ Each source service runs independently with its own database, cache, and ports.
       "MaxRequestsPerSecond": 10,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -106,6 +111,11 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -138,6 +148,11 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
       "MaxRetries": 3
+    },
+    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -179,6 +194,11 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "BackoffBaseSeconds": 5,
       "MaxRetries": 5,
       "RespectRateLimitHeaders": true
+    },
+    "Bm25": { "K1": 1.2, "B": 0.75 },
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": null,
+      "FhirSpecDatabasePath": null
     }
   }
 }
@@ -274,3 +294,72 @@ Each source service manages its own sync schedule independently:
 | Zulip | 4 hours | High volume but append-only |
 | Confluence | 24 hours | Pages change infrequently |
 | GitHub | 2 hours | Moderate update frequency |
+
+---
+
+## BM25 Tuning
+
+Each source service uses the
+[BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25) for keyword-based
+relevance scoring. Two parameters can be tuned per service:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `Bm25.K1` | `1.2` | Term frequency saturation — higher values give more weight to repeated terms (typical range 1.2–2.0) |
+| `Bm25.B` | `0.75` | Document length normalization — `0` = no length normalization, `1` = full normalization |
+
+Different content types may benefit from different parameters. For example,
+short Zulip messages might use lower `B` values (less length normalization),
+while long Confluence pages might use higher `B` values.
+
+```json
+{
+  "Zulip": {
+    "Bm25": { "K1": 1.5, "B": 0.5 }
+  }
+}
+```
+
+Via environment variables:
+
+```bash
+FHIR_AUGURY_ZULIP__Zulip__Bm25__K1=1.5
+FHIR_AUGURY_ZULIP__Zulip__Bm25__B=0.5
+```
+
+---
+
+## Auxiliary Database (Optional)
+
+Each source service can optionally load extended stop words, lemmatization data,
+and FHIR vocabulary from read-only SQLite databases. This improves search
+quality by:
+
+- **Stop words** — Filtering out additional common words beyond the built-in set
+- **Lemmatization** — Normalizing inflected words to base forms (e.g.,
+  "patients" → "patient") for better recall
+- **FHIR vocabulary** — Recognizing additional FHIR element paths and operations
+  from a FHIR specification database
+
+Configure the paths in each source service's `AuxiliaryDatabase` section:
+
+```json
+{
+  "Jira": {
+    "AuxiliaryDatabase": {
+      "AuxiliaryDatabasePath": "/data/auxiliary.db",
+      "FhirSpecDatabasePath": "/data/fhir-spec.db"
+    }
+  }
+}
+```
+
+Via environment variables:
+
+```bash
+FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/data/auxiliary.db
+FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/data/fhir-spec.db
+```
+
+Both paths are optional. When not configured (or when the files don't exist),
+the system falls back to its built-in defaults with no loss of functionality.

@@ -31,4 +31,6 @@ public class ZulipServiceOptions
     public int BatchSize { get; set; } = 1000;
     public PortConfiguration Ports { get; set; } = new() { Http = 5170, Grpc = 5171 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
+    public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
+    public Bm25Options Bm25 { get; set; } = new();
 }
