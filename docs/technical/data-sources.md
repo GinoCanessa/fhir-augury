@@ -237,8 +237,17 @@ HTML content is stripped to plain text via `TextSanitizer.StripHtml`.
 
 **Database tables:** `zulip_streams` (ZulipStreamId unique),
 `zulip_messages` (ZulipMessageId unique, StreamId FK), `zulip_messages_fts`
-(FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
+(FTS5), `zulip_message_tickets` (message→Jira key links),
+`zulip_thread_tickets` (thread→Jira key aggregations with reference counts),
+`index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
 `ingestion_log`.
+
+**Jira ticket indexing:** After each ingestion (full, incremental, or cache
+rebuild), the `ZulipTicketIndexer` scans all messages for Jira ticket references
+(e.g., `FHIR-43499`, Jira URLs) and populates the message-ticket and
+thread-ticket link tables. A standalone re-index can be triggered on startup via
+the `ReindexTicketsOnStartup` configuration option without requiring a full
+cache rebuild.
 
 **Incremental sync:** Cursor-based using `sync_state` — stores the last synced
 message ID per stream. Sets `anchor = lastId + 1` and fetches forward.

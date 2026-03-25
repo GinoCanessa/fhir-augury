@@ -112,6 +112,7 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "SyncSchedule": "04:00:00",
     "MinSyncAge": "04:00:00",
     "RebuildFromCacheOnStartup": false,
+    "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
     "Ports": { "Http": 5170, "Grpc": 5171 },
     "RateLimiting": {

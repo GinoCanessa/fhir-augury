@@ -118,6 +118,7 @@ pattern.
     "SyncSchedule": "04:00:00",
     "MinSyncAge": "04:00:00",
     "RebuildFromCacheOnStartup": false,
+    "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
     "Ports": {
       "Http": 5170,
@@ -160,6 +161,7 @@ pattern.
 | `SyncSchedule` | TimeSpan | `04:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
+| `ReindexTicketsOnStartup` | bool | `false` | Force rebuild of Jira ticket reference indexes on startup. Skipped when `RebuildFromCacheOnStartup` is `true` (cache rebuilds already include ticket indexing). |
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
 | `Ports.Http` | int | `5170` | HTTP listen port |
 | `Ports.Grpc` | int | `5171` | gRPC listen port |

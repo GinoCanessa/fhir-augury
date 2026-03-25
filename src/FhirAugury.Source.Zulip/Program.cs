@@ -100,6 +100,15 @@ if (options.RebuildFromCacheOnStartup)
     ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
+else if (options.ReindexTicketsOnStartup)
+{
+    // Standalone ticket re-index (skipped when RebuildFromCacheOnStartup
+    // is true because the cache rebuild already includes ticket indexing).
+    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    startupLogger.LogInformation("Re-indexing Jira ticket references on startup");
+    ZulipTicketIndexer ticketIndexer = app.Services.GetRequiredService<ZulipTicketIndexer>();
+    ticketIndexer.RebuildFullIndex(CancellationToken.None);
+}
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

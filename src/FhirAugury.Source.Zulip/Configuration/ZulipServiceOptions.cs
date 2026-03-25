@@ -25,6 +25,14 @@ public class ZulipServiceOptions
 
     public bool RebuildFromCacheOnStartup { get; set; } = false;
 
+    /// <summary>
+    /// Force a full rebuild of Jira ticket reference indexes on startup.
+    /// This is independent of <see cref="RebuildFromCacheOnStartup"/>, which
+    /// already triggers ticket re-indexing as part of a full cache rebuild.
+    /// A new database creation also triggers ticket indexing automatically.
+    /// </summary>
+    public bool ReindexTicketsOnStartup { get; set; } = false;
+
     public List<int> ExcludedStreamIds { get; set; } = [];
 
     public bool OnlyWebPublic { get; set; } = true;
