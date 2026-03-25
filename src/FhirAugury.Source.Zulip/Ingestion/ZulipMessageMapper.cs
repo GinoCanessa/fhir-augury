@@ -42,7 +42,7 @@ public static class ZulipMessageMapper
 
         return new ZulipMessageRecord
         {
-            Id = ZulipMessageRecord.GetIndex(),
+            Id = 0,
             ZulipMessageId = messageJson.GetProperty("id").GetInt32(),
             StreamId = streamDbId,
             StreamName = streamName,

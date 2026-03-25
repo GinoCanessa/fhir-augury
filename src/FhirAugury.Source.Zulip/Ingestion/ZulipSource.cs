@@ -135,24 +135,56 @@ public class ZulipSource(
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);
                 }
 
+                Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
+                Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
+
                 foreach (JsonElement msgJson in messages)
                 {
-                    (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
                     itemsProcessed++;
-
-                    switch (outcome)
-                    {
-                        case ProcessOutcome.New: itemsNew++; streamMessageCount++; break;
-                        case ProcessOutcome.Updated: itemsUpdated++; break;
-                        case ProcessOutcome.Failed:
-                            itemsFailed++;
-                            if (error is not null) errors.Add(error);
-                            break;
-                    }
 
                     if (itemsProcessed % 5000 == 0)
                         logger.LogInformation("Download progress: {Count} messages processed", itemsProcessed);
+
+                    ZulipMessageRecord record;
+                    try
+                    {
+                        record = ZulipMessageMapper.MapMessage(msgJson, stream.Name, stream.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        string msgId = msgJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
+                        itemsFailed++;
+                        errors.Add($"msg:{msgId} - {ex.Message}");
+                        continue;
+                    }
+
+                    if (messagesToInsert.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? existing))
+                    {
+                        record.Id = existing.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else if (messagesToUpdate.TryGetValue(record.ZulipMessageId, out existing))
+                    {
+                        record.Id = existing.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                    {
+                        record.Id = dbExisting.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else
+                    {
+                        record.Id = ZulipMessageRecord.GetIndex();
+                        messagesToInsert[record.ZulipMessageId] = record;
+                    }
                 }
+
+                messagesToUpdate.Values.Update(connection);
+                messagesToInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                itemsNew += messagesToInsert.Count;
+                itemsUpdated += messagesToUpdate.Count;
 
                 if (messages.Count > 0)
                     anchor = messages[^1].GetProperty("id").GetInt32() + 1;
@@ -275,21 +307,53 @@ public class ZulipSource(
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);
                 }
 
+                Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
+                Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
+
                 foreach (JsonElement msgJson in messages)
                 {
-                    (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, stream.Name, stream.Id, connection);
                     itemsProcessed++;
 
-                    switch (outcome)
+                    ZulipMessageRecord record;
+                    try
                     {
-                        case ProcessOutcome.New: itemsNew++; break;
-                        case ProcessOutcome.Updated: itemsUpdated++; break;
-                        case ProcessOutcome.Failed:
-                            itemsFailed++;
-                            if (error is not null) errors.Add(error);
-                            break;
+                        record = ZulipMessageMapper.MapMessage(msgJson, stream.Name, stream.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        string msgId = msgJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
+                        itemsFailed++;
+                        errors.Add($"msg:{msgId} - {ex.Message}");
+                        continue;
+                    }
+
+                    if (messagesToInsert.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? existing))
+                    {
+                        record.Id = existing.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else if (messagesToUpdate.TryGetValue(record.ZulipMessageId, out existing))
+                    {
+                        record.Id = existing.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                    {
+                        record.Id = dbExisting.Id;
+                        messagesToUpdate[record.ZulipMessageId] = record;
+                    }
+                    else
+                    {
+                        record.Id = ZulipMessageRecord.GetIndex();
+                        messagesToInsert[record.ZulipMessageId] = record;
                     }
                 }
+
+                messagesToUpdate.Values.Update(connection);
+                messagesToInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                itemsNew += messagesToInsert.Count;
+                itemsUpdated += messagesToUpdate.Count;
 
                 if (messages.Count > 0)
                     anchor = messages[^1].GetProperty("id").GetInt32() + 1;
@@ -404,6 +468,9 @@ public class ZulipSource(
                 continue;
             }
 
+            int maxMessageId = 0;
+            int streamMessageCount = 0;
+
             IEnumerable<string> keys = cache.EnumerateKeys(ZulipCacheLayout.SourceName, streamDirName);
 
             foreach (string key in keys)
@@ -420,21 +487,63 @@ public class ZulipSource(
                         using JsonDocument doc = JsonDocument.Parse(stream);
                         JsonElement messagesArray = doc.RootElement.GetProperty("messages");
 
+                        Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
+                        Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
+
                         foreach (JsonElement msgJson in messagesArray.EnumerateArray())
                         {
-                            (ProcessOutcome outcome, string? error) = ProcessMessage(msgJson, existingStream.Name, existingStream.Id, connection);
                             itemsProcessed++;
 
-                            switch (outcome)
+                            if (itemsProcessed % 5000 == 0 && itemsProcessed > 0)
+                                logger.LogInformation("Cache ingestion progress: {Count} messages processed", itemsProcessed);
+
+                            ZulipMessageRecord record;
+                            try
                             {
-                                case ProcessOutcome.New: itemsNew++; break;
-                                case ProcessOutcome.Updated: itemsUpdated++; break;
-                                case ProcessOutcome.Failed:
-                                    itemsFailed++;
-                                    if (error is not null) errors.Add(error);
-                                    break;
+                                record = ZulipMessageMapper.MapMessage(msgJson, existingStream.Name, existingStream.Id);
+                            }
+                            catch (Exception ex)
+                            {
+                                string msgId = msgJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
+                                itemsFailed++;
+                                errors.Add($"msg:{msgId} - {ex.Message}");
+                                continue;
+                            }
+
+                            if (messagesToInsert.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? existing))
+                            {
+                                record.Id = existing.Id;
+                                messagesToUpdate[record.ZulipMessageId] = record;
+                            }
+                            else if (messagesToUpdate.TryGetValue(record.ZulipMessageId, out existing))
+                            {
+                                record.Id = existing.Id;
+                                messagesToUpdate[record.ZulipMessageId] = record;
+                            }
+                            else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                            {
+                                record.Id = dbExisting.Id;
+                                messagesToUpdate[record.ZulipMessageId] = record;
+                            }
+                            else
+                            {
+                                record.Id = ZulipMessageRecord.GetIndex();
+                                messagesToInsert[record.ZulipMessageId] = record;
+                            }
+
+                            if (msgJson.TryGetProperty("id", out JsonElement idElement))
+                            {
+                                int msgId = idElement.GetInt32();
+                                if (msgId > maxMessageId)
+                                    maxMessageId = msgId;
                             }
                         }
+
+                        messagesToUpdate.Values.Update(connection);
+                        messagesToInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                        itemsNew += messagesToInsert.Count;
+                        itemsUpdated += messagesToUpdate.Count;
                     }
                     catch (Exception ex)
                     {
@@ -443,10 +552,15 @@ public class ZulipSource(
                         errors.Add($"{key}: {ex.Message}");
                     }
                 }
-
-                if (itemsProcessed % 5000 == 0 && itemsProcessed > 0)
-                    logger.LogInformation("Cache ingestion progress: {Count} messages processed", itemsProcessed);
             }
+
+            // Set per-stream sync cursor so incremental downloads start after cached data
+            if (maxMessageId > 0)
+                UpdateSyncCursor(connection, existingStream.Name, maxMessageId.ToString());
+
+            existingStream.MessageCount += streamMessageCount;
+            existingStream.LastFetchedAt = DateTimeOffset.UtcNow;
+            ZulipStreamRecord.Update(connection, existingStream);
         }
 
         logger.LogInformation(
@@ -532,31 +646,31 @@ public class ZulipSource(
         return streams;
     }
 
-    private static (ProcessOutcome Outcome, string? Error) ProcessMessage(
-        JsonElement messageJson, string streamName, int streamDbId,
-        Microsoft.Data.Sqlite.SqliteConnection connection)
-    {
-        try
-        {
-            ZulipMessageRecord record = ZulipMessageMapper.MapMessage(messageJson, streamName, streamDbId);
-            ZulipMessageRecord? existing = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId);
+    //private static (ProcessOutcome Outcome, string? Error) ProcessMessage(
+    //    JsonElement messageJson, string streamName, int streamDbId,
+    //    Microsoft.Data.Sqlite.SqliteConnection connection)
+    //{
+    //    try
+    //    {
+    //        ZulipMessageRecord record = ZulipMessageMapper.MapMessage(messageJson, streamName, streamDbId);
+    //        ZulipMessageRecord? existing = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId);
 
-            if (existing is not null)
-            {
-                record.Id = existing.Id;
-                ZulipMessageRecord.Update(connection, record);
-                return (ProcessOutcome.Updated, null);
-            }
+    //        if (existing is not null)
+    //        {
+    //            record.Id = existing.Id;
+    //            ZulipMessageRecord.Update(connection, record);
+    //            return (ProcessOutcome.Updated, null);
+    //        }
 
-            ZulipMessageRecord.Insert(connection, record, ignoreDuplicates: true);
-            return (ProcessOutcome.New, null);
-        }
-        catch (Exception ex)
-        {
-            string msgId = messageJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
-            return (ProcessOutcome.Failed, $"msg:{msgId} - {ex.Message}");
-        }
-    }
+    //        ZulipMessageRecord.Insert(connection, record, ignoreDuplicates: true);
+    //        return (ProcessOutcome.New, null);
+    //    }
+    //    catch (Exception ex)
+    //    {
+    //        string msgId = messageJson.TryGetProperty("id", out JsonElement idProp) ? idProp.GetInt32().ToString() : "unknown";
+    //        return (ProcessOutcome.Failed, $"msg:{msgId} - {ex.Message}");
+    //    }
+    //}
 
     private static void UpdateSyncCursor(
         Microsoft.Data.Sqlite.SqliteConnection connection, string streamName, string cursor)

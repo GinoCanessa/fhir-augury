@@ -38,7 +38,9 @@ public class ZulipIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            IngestionResult result = await source.DownloadAllAsync(ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadAllAsync(ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "full", ct);
 
             _currentStatus = "idle";
@@ -68,7 +70,9 @@ public class ZulipIngestionPipeline(
         {
             logger.LogInformation("Starting incremental ingestion");
 
-            IngestionResult result = await source.DownloadIncrementalAsync(ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadIncrementalAsync(ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "incremental", ct);
 
             _currentStatus = "idle";
@@ -119,6 +123,44 @@ public class ZulipIngestionPipeline(
         {
             _runLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Loads cached data into the database if it is empty, setting sync cursors
+    /// so subsequent downloads only fetch new data.
+    /// </summary>
+    private async Task<IngestionResult?> LoadCacheIfDatabaseEmptyAsync(CancellationToken ct)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        int streamCount = ZulipStreamRecord.SelectCount(connection);
+
+        if (streamCount > 0)
+            return null;
+
+        logger.LogInformation("Database is empty; loading local cache before downloading");
+        IngestionResult cacheResult = await source.LoadFromCacheAsync(ct);
+
+        if (cacheResult.ItemsProcessed > 0)
+            logger.LogInformation("Pre-loaded {Count} items from cache ({New} new)",
+                cacheResult.ItemsProcessed, cacheResult.ItemsNew);
+        else
+            logger.LogInformation("No cached data found to pre-load");
+
+        return cacheResult;
+    }
+
+    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult second)
+    {
+        if (first is null)
+            return second;
+
+        return new IngestionResult(
+            first.ItemsProcessed + second.ItemsProcessed,
+            first.ItemsNew + second.ItemsNew,
+            first.ItemsUpdated + second.ItemsUpdated,
+            first.ItemsFailed + second.ItemsFailed,
+            [.. first.Errors, .. second.Errors],
+            first.StartedAt);
     }
 
     private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
