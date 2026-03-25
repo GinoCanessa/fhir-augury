@@ -5,7 +5,6 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 /// <summary>A comment on a GitHub issue or pull request.</summary>
 [LdgSQLiteTable("github_comments")]
 [LdgSQLiteIndex(nameof(IssueId))]
-[LdgSQLiteIndex(nameof(RepoFullName))]
 [LdgSQLiteIndex(nameof(RepoFullName), nameof(IssueNumber))]
 public partial record class GitHubCommentRecord
 {

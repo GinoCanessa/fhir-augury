@@ -4,7 +4,6 @@ namespace FhirAugury.Source.Confluence.Database.Records;
 
 /// <summary>A Confluence page with content in both storage and plain text formats.</summary>
 [LdgSQLiteTable("confluence_pages")]
-[LdgSQLiteIndex(nameof(ConfluenceId))]
 [LdgSQLiteIndex(nameof(SpaceKey))]
 [LdgSQLiteIndex(nameof(ParentId))]
 [LdgSQLiteIndex(nameof(LastModifiedAt))]

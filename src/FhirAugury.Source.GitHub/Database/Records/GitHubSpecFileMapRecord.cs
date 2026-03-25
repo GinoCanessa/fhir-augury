@@ -4,8 +4,7 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 
 /// <summary>Maps a FHIR artifact to a file path in a repository.</summary>
 [LdgSQLiteTable("github_spec_file_map")]
-[LdgSQLiteIndex(nameof(RepoFullName))]
-[LdgSQLiteIndex(nameof(ArtifactKey))]
+[LdgSQLiteIndex(nameof(RepoFullName), nameof(ArtifactKey))]
 [LdgSQLiteIndex(nameof(FilePath))]
 public partial record class GitHubSpecFileMapRecord
 {

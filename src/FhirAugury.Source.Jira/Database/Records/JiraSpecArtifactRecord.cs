@@ -4,8 +4,7 @@ namespace FhirAugury.Source.Jira.Database.Records;
 
 /// <summary>Parsed JIRA-Spec-Artifacts data linking specs to Git repos.</summary>
 [LdgSQLiteTable("jira_spec_artifacts")]
-[LdgSQLiteIndex(nameof(Family))]
-[LdgSQLiteIndex(nameof(SpecKey))]
+[LdgSQLiteIndex(nameof(Family), nameof(SpecKey))]
 public partial record class JiraSpecArtifactRecord
 {
     [LdgSQLiteKey]

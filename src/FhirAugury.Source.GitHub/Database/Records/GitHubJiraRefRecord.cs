@@ -4,7 +4,7 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 
 /// <summary>A Jira issue reference found in GitHub content.</summary>
 [LdgSQLiteTable("github_jira_refs")]
-[LdgSQLiteIndex(nameof(JiraKey))]
+[LdgSQLiteIndex(nameof(JiraKey), nameof(RepoFullName))]
 [LdgSQLiteIndex(nameof(SourceType), nameof(SourceId))]
 [LdgSQLiteIndex(nameof(RepoFullName))]
 public partial record class GitHubJiraRefRecord

@@ -4,10 +4,10 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 
 /// <summary>A GitHub issue or pull request.</summary>
 [LdgSQLiteTable("github_issues")]
-[LdgSQLiteIndex(nameof(RepoFullName))]
-[LdgSQLiteIndex(nameof(State))]
-[LdgSQLiteIndex(nameof(UpdatedAt))]
 [LdgSQLiteIndex(nameof(RepoFullName), nameof(Number))]
+[LdgSQLiteIndex(nameof(State))]
+[LdgSQLiteIndex(nameof(Milestone))]
+[LdgSQLiteIndex(nameof(UpdatedAt))]
 public partial record class GitHubIssueRecord
 {
     [LdgSQLiteKey]

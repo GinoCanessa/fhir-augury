@@ -4,9 +4,9 @@ namespace FhirAugury.Source.Zulip.Database.Records;
 
 /// <summary>A Zulip message within a stream and topic.</summary>
 [LdgSQLiteTable("zulip_messages")]
-[LdgSQLiteIndex(nameof(StreamId))]
 [LdgSQLiteIndex(nameof(StreamId), nameof(Topic))]
 [LdgSQLiteIndex(nameof(SenderId))]
+[LdgSQLiteIndex(nameof(SenderName))]
 [LdgSQLiteIndex(nameof(Timestamp))]
 [LdgSQLiteIndex(nameof(StreamName), nameof(Topic))]
 public partial record class ZulipMessageRecord

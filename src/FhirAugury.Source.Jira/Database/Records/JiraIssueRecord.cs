@@ -4,11 +4,10 @@ namespace FhirAugury.Source.Jira.Database.Records;
 
 /// <summary>A Jira issue with core fields and HL7-specific custom fields.</summary>
 [LdgSQLiteTable("jira_issues")]
-[LdgSQLiteIndex(nameof(Key))]
 [LdgSQLiteIndex(nameof(ProjectKey), nameof(Key))]
 [LdgSQLiteIndex(nameof(Status))]
-[LdgSQLiteIndex(nameof(WorkGroup))]
-[LdgSQLiteIndex(nameof(Specification))]
+[LdgSQLiteIndex(nameof(WorkGroup), nameof(UpdatedAt))]
+[LdgSQLiteIndex(nameof(Specification), nameof(UpdatedAt))]
 [LdgSQLiteIndex(nameof(UpdatedAt))]
 [LdgSQLiteIndex(nameof(Type))]
 [LdgSQLiteIndex(nameof(Priority))]

@@ -6,7 +6,6 @@ namespace FhirAugury.Source.Zulip.Database.Records;
 /// <summary>Per-document keyword with term frequency and BM25 score.</summary>
 [LdgSQLiteTable("index_keywords")]
 [LdgSQLiteIndex(nameof(SourceType), nameof(SourceId))]
-[LdgSQLiteIndex(nameof(Keyword))]
 [LdgSQLiteIndex(nameof(Keyword), nameof(KeywordType))]
 public partial record class ZulipKeywordRecord : IKeywordRecord
 {

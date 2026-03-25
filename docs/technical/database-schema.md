@@ -105,7 +105,7 @@ Index: `(SourceName, StartedAt)`
 | `KeywordType` | TEXT | Classification: word, fhir_path, fhir_operation |
 | `Bm25Score` | REAL | Pre-computed BM25 score |
 
-Indexes: `(SourceType, SourceId)`, `(Keyword)`, `(Keyword, KeywordType)`
+Indexes: `(SourceType, SourceId)`, `(Keyword, KeywordType)`
 
 #### `index_corpus` — Corpus statistics (per-service)
 
@@ -175,8 +175,8 @@ Index: `(SourceType)`
 | `Labels` | TEXT? | Comma-separated labels |
 | `CommentCount` | INTEGER | Number of comments |
 
-Indexes: `(Key)`, `(ProjectKey, Key)`, `(Status)`, `(WorkGroup)`,
-`(Specification)`, `(UpdatedAt)`
+Indexes: `(ProjectKey, Key)`, `(Status)`, `(WorkGroup, UpdatedAt)`,
+`(Specification, UpdatedAt)`, `(UpdatedAt)`
 
 #### `jira_comments`
 
@@ -262,7 +262,7 @@ Index: `(Name)`
 | `CreatedAt` | TEXT | Record creation time |
 | `Reactions` | TEXT? | JSON-encoded reactions |
 
-Indexes: `(StreamId)`, `(StreamId, Topic)`, `(SenderId)`, `(Timestamp)`,
+Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 `(StreamName, Topic)`
 
 #### FTS5 table: `zulip_messages_fts`
@@ -354,7 +354,7 @@ Index: `(PageId)`
 | `HeadBranch` | TEXT? | PR head branch |
 | `BaseBranch` | TEXT? | PR base branch |
 
-Indexes: `(RepoFullName)`, `(State)`, `(UpdatedAt)`, `(RepoFullName, Number)`
+Indexes: `(RepoFullName, Number)`, `(State)`, `(Milestone)`, `(UpdatedAt)`
 
 #### `github_comments`
 
@@ -369,7 +369,7 @@ Indexes: `(RepoFullName)`, `(State)`, `(UpdatedAt)`, `(RepoFullName, Number)`
 | `Body` | TEXT | Comment body |
 | `IsReviewComment` | INTEGER | Boolean: is this a review comment |
 
-Indexes: `(IssueId)`, `(RepoFullName)`
+Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`
 
 #### FTS5 tables: `github_issues_fts`, `github_comments_fts`
 
@@ -428,8 +428,8 @@ service project:
 
 ```csharp
 [LdgSQLiteTable("jira_issues")]
-[LdgSQLiteIndex(nameof(Key))]
 [LdgSQLiteIndex(nameof(Status))]
+[LdgSQLiteIndex(nameof(WorkGroup), nameof(UpdatedAt))]
 public partial record class JiraIssueRecord
 {
     [LdgSQLiteKey]
