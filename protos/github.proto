@@ -68,6 +68,16 @@ message GitHubCommit {
   google.protobuf.Timestamp date = 4;
   string url = 5;
   repeated string changed_files = 6;
+  string author_email = 7;
+  string committer_name = 8;
+  string committer_email = 9;
+  google.protobuf.Timestamp committer_date = 10;
+  int32 files_changed = 11;
+  int32 insertions = 12;
+  int32 deletions = 13;
+  int32 impact = 14;
+  string body = 15;
+  string refs = 16;
 }
 
 message GitHubRepo {

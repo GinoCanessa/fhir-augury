@@ -107,8 +107,12 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
         foreach (GitHubCommitRecord commit in commits)
         {
             ct.ThrowIfCancellationRequested();
-            if (!string.IsNullOrWhiteSpace(commit.Message))
-                documents.Add(("github-commit", commit.Sha, commit.Message));
+            string text = string.Join(" ",
+                new[] { commit.Message, commit.Body }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+                documents.Add(("github-commit", commit.Sha, text));
         }
 
         return documents;

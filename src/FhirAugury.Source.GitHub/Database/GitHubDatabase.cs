@@ -65,7 +65,7 @@ public class GitHubDatabase : SourceDatabase
             ftsTableName: "github_commits_fts",
             contentTable: "github_commits",
             contentRowId: "Id",
-            indexedColumns: ["Message"],
+            indexedColumns: ["Message", "Body"],
             tokenizer: _ftsTokenizer);
     }
 

@@ -752,7 +752,9 @@ public class GitHubSpecificGrpcService(
         // Build SQL to find commits that changed any of the resolved file paths
         string placeholders = string.Join(",", filePaths.Select((_, i) => $"@path{i}"));
         string sql = $"""
-            SELECT DISTINCT gc.Sha, gc.Message, gc.Author, gc.Date, gc.Url, gc.RepoFullName
+            SELECT DISTINCT gc.Sha, gc.Message, gc.Author, gc.Date, gc.Url, gc.RepoFullName,
+                   gc.AuthorEmail, gc.CommitterName, gc.CommitterEmail,
+                   gc.FilesChanged, gc.Insertions, gc.Deletions, gc.Body, gc.Refs
             FROM github_commit_files gcf
             JOIN github_commits gc ON gc.Sha = gcf.CommitSha
             WHERE gcf.FilePath IN ({placeholders})
@@ -790,7 +792,16 @@ public class GitHubSpecificGrpcService(
                 Author = reader.IsDBNull(2) ? "" : reader.GetString(2),
                 Date = ParseTimestampDirect(reader, 3),
                 Url = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                AuthorEmail = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                CommitterName = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                CommitterEmail = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                FilesChanged = reader.IsDBNull(9) ? 0 : reader.GetInt32(9),
+                Insertions = reader.IsDBNull(10) ? 0 : reader.GetInt32(10),
+                Deletions = reader.IsDBNull(11) ? 0 : reader.GetInt32(11),
+                Body = reader.IsDBNull(12) ? "" : reader.GetString(12),
+                Refs = reader.IsDBNull(13) ? "" : reader.GetString(13),
             };
+            protoCommit.Impact = protoCommit.Insertions - protoCommit.Deletions;
 
             // Include changed files for this commit
             List<GitHubCommitFileRecord> files = GitHubCommitFileRecord.SelectList(connection, CommitSha: sha);
@@ -917,6 +928,15 @@ public class GitHubSpecificGrpcService(
             Author = commit.Author,
             Date = Timestamp.FromDateTimeOffset(commit.Date),
             Url = commit.Url,
+            AuthorEmail = commit.AuthorEmail ?? "",
+            CommitterName = commit.CommitterName ?? "",
+            CommitterEmail = commit.CommitterEmail ?? "",
+            FilesChanged = commit.FilesChanged,
+            Insertions = commit.Insertions,
+            Deletions = commit.Deletions,
+            Impact = commit.Insertions - commit.Deletions,
+            Body = commit.Body ?? "",
+            Refs = commit.Refs ?? "",
         };
 
         List<GitHubCommitFileRecord> files = GitHubCommitFileRecord.SelectList(connection, CommitSha: commit.Sha);
