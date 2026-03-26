@@ -75,4 +75,11 @@ public class AuthConfiguration
 public class GitHubRateLimitConfiguration : RateLimitConfiguration
 {
     public bool RespectRateLimitHeaders { get; set; } = true;
+
+    /// <summary>
+    /// Maximum number of concurrent HTTP requests to the GitHub API. Default is 1
+    /// to prevent rate-limit header races where multiple in-flight requests depart
+    /// before any response updates the remaining count.
+    /// </summary>
+    public int MaxConcurrentRequests { get; set; } = 1;
 }

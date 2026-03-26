@@ -15,6 +15,9 @@ public class GitHubRateLimiter(IOptions<GitHubServiceOptions> optionsAccessor, I
     private int _remaining = int.MaxValue;
     private DateTimeOffset _resetTime = DateTimeOffset.MinValue;
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
+    private readonly SemaphoreSlim _concurrencyGate = new(
+        optionsAccessor.Value.RateLimiting.MaxConcurrentRequests,
+        optionsAccessor.Value.RateLimiting.MaxConcurrentRequests);
 
     /// <summary>Configures an existing HttpClient with GitHub default headers (non-auth).</summary>
     public static void ConfigureHttpClient(HttpClient client)
@@ -27,58 +30,69 @@ public class GitHubRateLimiter(IOptions<GitHubServiceOptions> optionsAccessor, I
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        // Check if we should wait for rate limit reset
-        TimeSpan delay;
-        lock (_lock)
-        {
-            if (_remaining <= 10 && _resetTime > DateTimeOffset.UtcNow)
-            {
-                delay = _resetTime - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
-            }
-            else
-            {
-                delay = TimeSpan.Zero;
-            }
-        }
+        if (_concurrencyGate.CurrentCount == 0)
+            logger?.LogDebug("Waiting for previous GitHub API request to complete...");
 
-        if (delay > TimeSpan.Zero)
+        await _concurrencyGate.WaitAsync(cancellationToken);
+        try
         {
-            logger?.LogWarning(
-                "Rate limit approaching ({Remaining} remaining). Waiting {Delay:F0}s until reset.",
-                _remaining, delay.TotalSeconds);
-            await Task.Delay(delay, cancellationToken);
-        }
-
-        // Add auth header per-request if not set globally
-        string? token = _options.Auth.ResolveToken();
-        if (!string.IsNullOrEmpty(token) && request.Headers.Authorization is null)
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        }
-
-        HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
-
-        // Update rate limit tracking from response headers
-        if (_options.RateLimiting.RespectRateLimitHeaders)
-        {
+            // Check if we should wait for rate limit reset
+            TimeSpan delay;
             lock (_lock)
             {
-                if (response.Headers.TryGetValues("X-RateLimit-Remaining", out IEnumerable<string>? remainingValues) &&
-                    int.TryParse(remainingValues.FirstOrDefault(), out int remaining))
+                if (_remaining <= 10 && _resetTime > DateTimeOffset.UtcNow)
                 {
-                    _remaining = remaining;
+                    delay = _resetTime - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
                 }
-
-                if (response.Headers.TryGetValues("X-RateLimit-Reset", out IEnumerable<string>? resetValues) &&
-                    long.TryParse(resetValues.FirstOrDefault(), out long resetUnix))
+                else
                 {
-                    _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
+                    delay = TimeSpan.Zero;
                 }
             }
+
+            if (delay > TimeSpan.Zero)
+            {
+                logger?.LogWarning(
+                    "Rate limit approaching ({Remaining} remaining). Waiting {Delay:F0}s until reset.",
+                    _remaining, delay.TotalSeconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+
+            // Add auth header per-request if not set globally
+            string? token = _options.Auth.ResolveToken();
+            if (!string.IsNullOrEmpty(token) && request.Headers.Authorization is null)
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+
+            HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
+
+            // Update rate limit tracking from response headers
+            if (_options.RateLimiting.RespectRateLimitHeaders)
+            {
+                lock (_lock)
+                {
+                    if (response.Headers.TryGetValues("X-RateLimit-Remaining", out IEnumerable<string>? remainingValues) &&
+                        int.TryParse(remainingValues.FirstOrDefault(), out int remaining))
+                    {
+                        _remaining = remaining;
+                    }
+
+                    if (response.Headers.TryGetValues("X-RateLimit-Reset", out IEnumerable<string>? resetValues) &&
+                        long.TryParse(resetValues.FirstOrDefault(), out long resetUnix))
+                    {
+                        _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
+                    }
+                }
+            }
+
+            logger?.LogDebug("GitHub API: {Status}, Rate limit remaining: {Remaining}", response.StatusCode, _remaining);
+
+            return response;
         }
-
-        logger?.LogDebug("GitHub API: {Status}, Rate limit remaining: {Remaining}", response.StatusCode, _remaining);
-
-        return response;
+        finally
+        {
+            _concurrencyGate.Release();
+        }
     }
 }

@@ -23,6 +23,12 @@ public class GhCliConfiguration
     /// <summary>Timeout for individual gh process invocations.</summary>
     public string ProcessTimeout { get; set; } = "00:05:00";
 
+    /// <summary>
+    /// Maximum number of concurrent gh CLI processes. Default is 1 to prevent
+    /// CLI state file contention and rate-limit pressure.
+    /// </summary>
+    public int MaxConcurrentProcesses { get; set; } = 1;
+
     /// <summary>Parses <see cref="ProcessTimeout"/> as a <see cref="TimeSpan"/>.</summary>
     public TimeSpan GetProcessTimeout() => TimeSpan.TryParse(ProcessTimeout, out TimeSpan ts) ? ts : TimeSpan.FromMinutes(5);
 }

@@ -16,6 +16,9 @@ public class GhCliRunner(
     ILogger<GhCliRunner> logger)
 {
     private readonly GhCliConfiguration _config = optionsAccessor.Value.GhCli;
+    private readonly SemaphoreSlim _processGate = new(
+        optionsAccessor.Value.GhCli.MaxConcurrentProcesses,
+        optionsAccessor.Value.GhCli.MaxConcurrentProcesses);
 
     /// <summary>Runs a gh command and returns the parsed JSON output.</summary>
     public async Task<JsonDocument> RunAsync(string arguments, CancellationToken ct)
@@ -185,44 +188,55 @@ public class GhCliRunner(
     private async Task<(string Stdout, string Stderr, int ExitCode)> ExecuteProcessAsync(
         string arguments, CancellationToken ct)
     {
-        ProcessStartInfo psi = new ProcessStartInfo
-        {
-            FileName = _config.ExecutablePath,
-            Arguments = arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        if (_processGate.CurrentCount == 0)
+            logger.LogDebug("Waiting for previous gh CLI operation to complete before running: gh {Args}", arguments);
 
-        logger.LogDebug("Running: {Exe} {Args}", _config.ExecutablePath, arguments);
-
-        using Process process = new Process { StartInfo = psi };
-        StringBuilder stdoutBuilder = new StringBuilder();
-        StringBuilder stderrBuilder = new StringBuilder();
-
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdoutBuilder.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrBuilder.AppendLine(e.Data); };
-
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        TimeSpan timeout = _config.GetProcessTimeout();
-        using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linkedCts.CancelAfter(timeout);
-
+        await _processGate.WaitAsync(ct);
         try
         {
-            await process.WaitForExitAsync(linkedCts.Token);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            // Timeout — kill the process
-            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
-            throw new TimeoutException($"gh command timed out after {timeout}: gh {arguments}");
-        }
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = _config.ExecutablePath,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
 
-        return (stdoutBuilder.ToString(), stderrBuilder.ToString(), process.ExitCode);
+            logger.LogDebug("Running: {Exe} {Args}", _config.ExecutablePath, arguments);
+
+            using Process process = new Process { StartInfo = psi };
+            StringBuilder stdoutBuilder = new StringBuilder();
+            StringBuilder stderrBuilder = new StringBuilder();
+
+            process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdoutBuilder.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrBuilder.AppendLine(e.Data); };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            TimeSpan timeout = _config.GetProcessTimeout();
+            using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            linkedCts.CancelAfter(timeout);
+
+            try
+            {
+                await process.WaitForExitAsync(linkedCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Timeout — kill the process
+                try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+                throw new TimeoutException($"gh command timed out after {timeout}: gh {arguments}");
+            }
+
+            return (stdoutBuilder.ToString(), stderrBuilder.ToString(), process.ExitCode);
+        }
+        finally
+        {
+            _processGate.Release();
+        }
     }
 }
