@@ -410,10 +410,12 @@ pattern.
 
 ---
 
-## MCP Server
+## MCP Server (Stdio) — `FhirAugury.McpStdio`
 
-The MCP server (`FhirAugury.Mcp`) connects to services via gRPC and is
-configured through environment variables:
+The stdio MCP server connects to services via gRPC and is configured through
+environment variables. It is packaged as the `fhir-augury-mcp` dotnet tool.
+
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -422,6 +424,38 @@ configured through environment variables:
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
 | `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence gRPC address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
+
+### CLI Arguments
+
+| Argument | Values | Description |
+|----------|--------|-------------|
+| `--mode` | `orchestrator` (default), `direct` | Operation mode |
+| `--source` | `jira`, `zulip`, `confluence`, `github` | Source for direct mode |
+
+Direct mode bypasses the orchestrator and connects to a single source service.
+
+---
+
+## MCP Server (HTTP) — `FhirAugury.McpHttp`
+
+The HTTP MCP server runs as a long-lived ASP.NET service exposing the MCP
+endpoint at `/mcp` via HTTP/SSE transport. It is included in the Aspire AppHost
+on port 5200.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
+| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
+| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence gRPC address |
+| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
+
+### appsettings.json
+
+Standard ASP.NET logging configuration. The HTTP port (5200) is configured in
+`Properties/launchSettings.json`.
 
 See [MCP setup](../README.md#mcp-setup) for client configuration examples.
 

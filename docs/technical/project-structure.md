@@ -28,7 +28,7 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (10 projects)
+│   └── (12 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
     └── (7 test projects)
@@ -47,6 +47,7 @@ Common contract implemented by all source services:
 - `StreamSearchableText` — streams text for cross-reference scanning
 - `TriggerIngestion`, `GetIngestionStatus`, `RebuildFromCache` — ingestion control
 - `GetStats`, `HealthCheck` — monitoring
+- `GetItemCrossReferences` — cross-references for a specific item
 
 ### `orchestrator.proto`
 
@@ -63,8 +64,9 @@ Orchestrator's unified API:
 - **`jira.proto`** (`JiraService`) — `GetIssueComments`, `GetIssueLinks`,
   `ListByWorkGroup`, `ListBySpecification`, `QueryIssues`, `ListSpecArtifacts`,
   `GetIssueNumbers`, `GetIssueSnapshot`
-- **`zulip.proto`** (`ZulipService`) — `GetThread`, `ListStreams`, `ListTopics`,
-  `GetMessagesByUser`, `QueryMessages`, `GetThreadSnapshot`
+- **`zulip.proto`** (`ZulipService`) — `GetThread`, `ListStreams`, `GetStream`,
+  `UpdateStream`, `ListTopics`, `GetMessagesByUser`, `QueryMessages`,
+  `GetThreadSnapshot`
 - **`confluence.proto`** (`ConfluenceService`) — `GetPageComments`,
   `GetPageChildren`, `GetPageAncestors`, `ListSpaces`, `GetLinkedPages`,
   `GetPagesByLabel`, `GetPageSnapshot`
@@ -161,15 +163,41 @@ FhirAugury.Orchestrator/
 └── Dockerfile                # Service container image
 ```
 
-### `FhirAugury.Mcp`
+### `FhirAugury.McpShared`
 
-MCP server for LLM agents (stdio transport, 17 tools via gRPC to orchestrator).
+Shared MCP library containing all 16 tool implementations and service
+registration logic.
 
 ```
-FhirAugury.Mcp/
-├── Tools/                    # MCP tool implementations (search, retrieval, etc.)
-├── Program.cs                # Entry point: DI, stdio transport, tool discovery
-└── FhirAugury.Mcp.csproj
+FhirAugury.McpShared/
+├── Tools/                    # UnifiedTools.cs, JiraTools.cs, ZulipTools.cs
+├── McpServiceRegistration.cs # Shared DI registration for MCP tools and gRPC clients
+└── FhirAugury.McpShared.csproj
+```
+
+### `FhirAugury.McpStdio`
+
+Stdio-based MCP server (generic .NET Host, packaged as `fhir-augury-mcp`
+dotnet tool). No Aspire dependency.
+
+```
+FhirAugury.McpStdio/
+├── Program.cs                # Entry point: generic Host, stdio transport
+└── FhirAugury.McpStdio.csproj
+```
+
+### `FhirAugury.McpHttp`
+
+HTTP/SSE-based MCP server (ASP.NET Core WebApplication, port 5200, `/mcp`
+endpoint). Includes Aspire ServiceDefaults.
+
+```
+FhirAugury.McpHttp/
+├── Program.cs                # Entry point: WebApplication, HTTP/SSE transport
+├── appsettings.json          # Default configuration
+├── Properties/
+│   └── launchSettings.json   # Launch profile (port 5200)
+└── FhirAugury.McpHttp.csproj
 ```
 
 ### `FhirAugury.Cli`
@@ -210,8 +238,9 @@ Key capabilities:
 ### `FhirAugury.AppHost`
 
 [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
-application host. Orchestrates all five services for local development with an
-integrated dashboard.
+application host. Orchestrates all six services for local development with an
+integrated dashboard. Confluence uses `WithExplicitStart()` and must be started
+manually from the dashboard.
 
 ```
 FhirAugury.AppHost/
@@ -237,7 +266,7 @@ HTTP/gRPC ports (`isProxied: false`) and configures the orchestrator to
 | `FhirAugury.Source.Confluence.Tests` | Confluence source service: ingestion, indexing, gRPC API |
 | `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, gRPC API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
-| `FhirAugury.Mcp.Tests` | MCP server tool functions |
+| `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |
 
 ## Build Configuration
 

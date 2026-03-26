@@ -4,21 +4,35 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via gRPC to the orchestrator and source
-services, providing 17 tools across 3 categories.
+services, providing 16 tools across 3 categories (Unified, Jira, Zulip).
+
+> **Note:** Confluence and GitHub tools are not yet implemented. The gRPC client
+> configuration for those services is present but no MCP tools expose them yet.
 
 ## Setup
 
-### Building the MCP Server
+### Building
 
 ```bash
-dotnet build src/FhirAugury.Mcp
+# Build all projects (recommended)
+dotnet build fhir-augury.slnx
+
+# Or build only the shared MCP library
+dotnet build src/FhirAugury.McpShared
 ```
 
-The MCP server can also be installed as a dotnet tool (`fhir-augury-mcp`).
+The MCP server is split into three projects:
+
+- **`FhirAugury.McpStdio`** — stdio-based MCP server (also packaged as the
+  `fhir-augury-mcp` dotnet tool)
+- **`FhirAugury.McpHttp`** — HTTP/SSE-based MCP server (ASP.NET Core, runs on
+  port 5200, endpoint `/mcp`)
+- **`FhirAugury.McpShared`** — shared library with tool implementations
 
 ### Configuration
 
-The MCP server is configured entirely through environment variables:
+Both MCP servers (`McpStdio` and `McpHttp`) register gRPC clients via
+environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -28,9 +42,16 @@ The MCP server is configured entirely through environment variables:
 | `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
 
-The MCP server uses stdio transport and sends all logging to stderr.
+### Stdio Transport (Claude Desktop, etc.)
 
-### Connecting Claude Desktop
+The stdio server (`McpStdio`) uses stdio transport and sends all logging to
+stderr. Run it with:
+
+```bash
+dotnet run --project src/FhirAugury.McpStdio
+```
+
+#### Connecting Claude Desktop
 
 Add to your Claude Desktop configuration
 (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
@@ -42,7 +63,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
     "fhir-augury": {
       "command": "dotnet",
       "args": [
-        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp"
+        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
@@ -56,22 +77,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 }
 ```
 
-### Connecting via HTTP (VS Code, Copilot, etc.)
-
-For MCP clients that support HTTP-based transport, connect to the
-orchestrator's MCP endpoint directly:
-
-```json
-{
-  "mcpServers": {
-    "fhir-augury": {
-      "url": "http://localhost:5150/mcp"
-    }
-  }
-}
-```
-
-### Direct Mode (Single Source)
+#### Direct Mode (Single Source)
 
 To connect directly to a single source service, bypassing the orchestrator:
 
@@ -81,7 +87,7 @@ To connect directly to a single source service, bypassing the orchestrator:
     "fhir-augury-jira": {
       "command": "dotnet",
       "args": [
-        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp",
+        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
         "--", "--mode", "direct", "--source", "jira"
       ],
       "env": {
@@ -94,6 +100,31 @@ To connect directly to a single source service, bypassing the orchestrator:
 
 > **Tip:** See `mcp-config-examples/` in the repository for ready-to-use
 > configuration files.
+
+### HTTP Transport (VS Code, Copilot, etc.)
+
+The HTTP server (`McpHttp`) is an ASP.NET Core application that exposes the MCP
+endpoint via HTTP/SSE. It includes Aspire ServiceDefaults integration. Run it
+with:
+
+```bash
+dotnet run --project src/FhirAugury.McpHttp
+```
+
+The server runs on port 5200 with the MCP endpoint at `/mcp`.
+
+For MCP clients that support HTTP-based transport (VS Code, Copilot, etc.),
+connect to the McpHttp server:
+
+```json
+{
+  "mcpServers": {
+    "fhir-augury": {
+      "url": "http://localhost:5200/mcp"
+    }
+  }
+}
+```
 
 ---
 

@@ -9,6 +9,7 @@ builder.Services.AddMcpGrpcClients();
 
 builder.Services
     .AddMcpServer()
+    .WithHttpTransport()
     .WithToolsFromAssembly(typeof(UnifiedTools).Assembly);
 
 WebApplication app = builder.Build();

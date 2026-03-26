@@ -265,6 +265,27 @@ Index: `(Name)`
 Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 `(StreamName, Topic)`
 
+#### `zulip_message_tickets` — Per-message Jira references
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `ZulipMessageId` | INTEGER | Zulip message ID |
+| `JiraKey` | TEXT | Referenced Jira issue key |
+| `Context` | TEXT? | Surrounding text context |
+
+#### `zulip_thread_tickets` — Aggregated Jira references per thread
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `StreamName` | TEXT | Stream name |
+| `Topic` | TEXT | Topic name |
+| `JiraKey` | TEXT | Referenced Jira issue key |
+| `ReferenceCount` | INTEGER | Number of references in thread |
+| `FirstSeenAt` | TEXT | First reference timestamp |
+| `LastSeenAt` | TEXT | Most recent reference timestamp |
+
 #### FTS5 table: `zulip_messages_fts`
 
 ---
@@ -313,6 +334,17 @@ Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
 | `Body` | TEXT | Comment body (plain text) |
 
 Index: `(PageId)`
+
+#### `confluence_jira_refs` — Jira references found in Confluence pages
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `ConfluenceId` | TEXT | Confluence page ID |
+| `JiraKey` | TEXT | Referenced Jira issue key |
+| `Context` | TEXT? | Surrounding text context |
+
+Indexes: `(ConfluenceId)`, `(JiraKey)`
 
 #### FTS5 table: `confluence_pages_fts`
 
@@ -371,7 +403,62 @@ Indexes: `(RepoFullName, Number)`, `(State)`, `(Milestone)`, `(UpdatedAt)`
 
 Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`
 
-#### FTS5 tables: `github_issues_fts`, `github_comments_fts`
+#### `github_commits`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `Sha` | TEXT UNIQUE | Commit SHA hash |
+| `RepoFullName` | TEXT | Repository full name |
+| `Message` | TEXT | Commit message |
+| `Author` | TEXT? | Commit author |
+| `CreatedAt` | TEXT | Commit timestamp |
+
+Indexes: `(RepoFullName)`, `(CreatedAt)`
+
+#### `github_commit_files` — Files changed in a commit
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `CommitId` | INTEGER FK | → `github_commits.Id` |
+| `FilePath` | TEXT | Changed file path |
+
+Index: `(CommitId)`
+
+#### `github_commit_pr_links` — Commit-to-PR associations
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `CommitId` | INTEGER FK | → `github_commits.Id` |
+| `IssueId` | INTEGER FK | → `github_issues.Id` |
+
+Indexes: `(CommitId)`, `(IssueId)`
+
+#### `github_jira_refs` — Jira references found in GitHub items
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `IssueId` | INTEGER FK | → `github_issues.Id` |
+| `JiraKey` | TEXT | Referenced Jira issue key |
+| `Context` | TEXT? | Surrounding text context |
+
+Indexes: `(IssueId)`, `(JiraKey)`
+
+#### `github_spec_file_maps` — Specification file mappings
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `FilePath` | TEXT | File path in repository |
+| `SpecificationName` | TEXT | Mapped specification name |
+
+Indexes: `(RepoFullName)`, `(SpecificationName)`
+
+#### FTS5 tables: `github_issues_fts`, `github_comments_fts`, `github_commits_fts`
 
 ---
 
@@ -395,6 +482,13 @@ Indexes: `(SourceType, SourceId)`, `(TargetType, TargetId)`, `(LinkType)`
 
 #### `xref_scan_state` — Incremental cross-reference scanning state
 
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `SourceName` | TEXT | Source identifier (jira, zulip, confluence, github) |
+| `LastCursor` | TEXT? | Cursor for position-based scanning |
+| `LastScanAt` | TEXT? | Timestamp of last scan |
+
 Tracks cursor/timestamp-based incremental scanning so the Orchestrator only
 processes new or updated content when building cross-reference links.
 
@@ -414,6 +508,7 @@ Each source service creates its FTS5 virtual tables using
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
 | GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
+| GitHub | `github_commits_fts` | `github_commits` | Message |
 
 See [Indexing and Search](indexing-and-search.md) for details on how FTS5
 triggers work, how queries are processed, and how the Orchestrator aggregates
@@ -480,21 +575,25 @@ Source.Jira (jira.db)
 
 Source.Zulip (zulip.db)
 ├── zulip_streams, zulip_messages       — Content tables
+├── zulip_message_tickets, zulip_thread_tickets — Jira reference tables
 ├── zulip_messages_fts                  — FTS5 virtual table (content-synced)
-├── index_keywords, index_corpus, index_doc_stats — BM25 index
-└── sync_state, ingestion_log           — Sync infrastructure
+├── zulip_keywords, zulip_corpus_keywords, zulip_doc_stats — BM25 index
+└── zulip_sync_state, ingestion_log     — Sync infrastructure
 
 Source.Confluence (confluence.db)
 ├── confluence_spaces, confluence_pages, confluence_comments — Content tables
+├── confluence_jira_refs                — Jira reference table
 ├── confluence_pages_fts                — FTS5 virtual table (content-synced)
 ├── index_keywords, index_corpus, index_doc_stats — BM25 index
 └── sync_state, ingestion_log           — Sync infrastructure
 
 Source.GitHub (github.db)
 ├── github_repos, github_issues, github_comments — Content tables
-├── github_issues_fts, github_comments_fts       — FTS5 virtual tables (content-synced)
-├── index_keywords, index_corpus, index_doc_stats — BM25 index
-└── sync_state, ingestion_log           — Sync infrastructure
+├── github_commits, github_commit_files, github_commit_pr_links — Commit tables
+├── github_jira_refs, github_spec_file_maps — Reference/mapping tables
+├── github_issues_fts, github_comments_fts, github_commits_fts — FTS5 virtual tables
+├── github_keywords, github_corpus_keywords, github_doc_stats — BM25 index
+└── github_sync_state, ingestion_log    — Sync infrastructure
 
 Orchestrator (orchestrator.db)
 ├── cross_ref_links                     — Cross-source reference links

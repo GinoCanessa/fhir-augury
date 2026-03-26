@@ -21,7 +21,7 @@ dotnet build fhir-augury.slnx
 
 ## Solution Structure
 
-The v2 architecture uses independent microservices:
+The v2 architecture uses 12 independent projects:
 
 | Project | Type | Description |
 |---------|------|-------------|
@@ -31,7 +31,9 @@ The v2 architecture uses independent microservices:
 | `FhirAugury.Source.Confluence` | Service | Confluence source (:5180/:5181) |
 | `FhirAugury.Source.GitHub` | Service | GitHub source (:5190/:5191) |
 | `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150/:5151) |
-| `FhirAugury.Mcp` | CLI Tool | MCP server for LLM agents (stdio) |
+| `FhirAugury.McpStdio` | CLI Tool | MCP server for LLM agents (stdio transport) |
+| `FhirAugury.McpHttp` | Service | MCP server for LLM agents (HTTP/SSE transport, :5200) |
+| `FhirAugury.McpShared` | Library | Shared MCP tool implementations and gRPC client registration |
 | `FhirAugury.Cli` | CLI Tool | Command-line interface |
 | `FhirAugury.ServiceDefaults` | Library | Shared Aspire defaults (OpenTelemetry, health, resilience) |
 | `FhirAugury.AppHost` | Aspire Host | Orchestrates all services for local development |
@@ -132,18 +134,30 @@ Each service uses its own prefix for environment variables:
 
 ## Running the MCP Server
 
+### Stdio Transport
+
 ```bash
 # Connect to orchestrator (default)
-dotnet run --project src/FhirAugury.Mcp
+dotnet run --project src/FhirAugury.McpStdio
 
 # Override service addresses
 FHIR_AUGURY_ORCHESTRATOR=http://localhost:5151 \
 FHIR_AUGURY_JIRA_GRPC=http://localhost:5161 \
 FHIR_AUGURY_ZULIP_GRPC=http://localhost:5171 \
-dotnet run --project src/FhirAugury.Mcp
+dotnet run --project src/FhirAugury.McpStdio
 ```
 
-The MCP server uses stdio transport — all logging goes to stderr.
+The stdio MCP server uses stdio transport — all logging goes to stderr.
+
+### HTTP/SSE Transport
+
+```bash
+dotnet run --project src/FhirAugury.McpHttp
+# → MCP endpoint at http://localhost:5200/mcp
+```
+
+The HTTP MCP server runs as a long-lived ASP.NET service and is also included
+in the Aspire AppHost.
 
 ## Running the CLI
 
@@ -175,7 +189,7 @@ dotnet test fhir-augury.slnx --verbosity normal
 | `FhirAugury.Source.Confluence.Tests` | Confluence service logic |
 | `FhirAugury.Source.GitHub.Tests` | GitHub service logic |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator, cross-ref, search |
-| `FhirAugury.Mcp.Tests` | MCP tool functions |
+| `FhirAugury.McpShared.Tests` | MCP tool functions |
 
 ### Test Infrastructure
 

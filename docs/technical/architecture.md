@@ -60,7 +60,9 @@ Ports: HTTP (even) / gRPC (odd)
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
 | **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, and comments |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **MCP** | `FhirAugury.Mcp` | Model Context Protocol server for LLM agents (17 tools, stdio transport, gRPC to orchestrator) |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: all 16 tool implementations (UnifiedTools, JiraTools, ZulipTools) and McpServiceRegistration |
+| **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
+| **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
 | **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, gRPC to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
@@ -81,8 +83,10 @@ FhirAugury.Source.GitHub       ← Common + ServiceDefaults (implements SourceSe
     ↑
 FhirAugury.Orchestrator        ← Common + ServiceDefaults (consumes SourceService gRPC from all sources)
     ↑
-FhirAugury.Mcp                 ← Common (gRPC client to Orchestrator)
-FhirAugury.Cli                 ← Common (gRPC client to Orchestrator)
+FhirAugury.McpShared            ← Common (shared MCP tool implementations, gRPC clients)
+FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
+FhirAugury.McpHttp              ← McpShared + ServiceDefaults (HTTP/SSE transport, ASP.NET Core)
+FhirAugury.Cli                  ← Common (gRPC client to Orchestrator)
 
 FhirAugury.AppHost             ← Aspire AppHost (references all service projects for orchestration)
 ```
@@ -226,9 +230,11 @@ API responses without hitting the remote API.
 
 ### MCP and CLI as gRPC Clients
 
-Both the MCP server and CLI are thin gRPC clients to the orchestrator. They
+Both MCP servers and the CLI are thin gRPC clients to the orchestrator. They
 contain no database access or business logic — all intelligence lives in the
-orchestrator and source services.
+orchestrator and source services. McpHttp is also an ASP.NET Core web
+application (port 5200, `/mcp` endpoint) that participates in Aspire
+orchestration via ServiceDefaults.
 
 ## Concurrency Model
 
@@ -284,7 +290,7 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-five services with fixed ports matching the existing convention:
+six services with fixed ports matching the existing convention:
 
 | Service | HTTP | gRPC |
 |---------|------|------|
@@ -293,7 +299,9 @@ five services with fixed ports matching the existing convention:
 | source-confluence | 5180 | 5181 |
 | source-github | 5190 | 5191 |
 | orchestrator | 5150 | 5151 |
+| mcp | 5200 | — |
 
-The orchestrator uses `WaitFor()` to depend on all source services. All
+The orchestrator uses `WaitFor()` to depend on all source services.
+Confluence uses `WithExplicitStart()` to allow manual triggering. All
 endpoints use `isProxied: false` so services listen on their own ports
 directly (no Aspire reverse proxy).

@@ -36,6 +36,7 @@ Every source service implements the `SourceService` gRPC service defined in
 | `GetIngestionStatus` | Get current ingestion status |
 | `GetStats` | Return service statistics (item counts, DB size, last sync) |
 | `RebuildFromCache` | Rebuild the database from the file-system cache |
+| `GetItemCrossReferences` | Get cross-references for a specific item |
 | `HealthCheck` | Liveness/readiness probe |
 
 ## Source-Specific gRPC Services

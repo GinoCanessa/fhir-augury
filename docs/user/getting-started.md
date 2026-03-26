@@ -94,8 +94,10 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. All five services
-start automatically with the orchestrator waiting for sources to be healthy.
+The Aspire dashboard URL is shown in the console output. Six services are
+registered: four sources, the orchestrator, and the MCP HTTP server. Confluence
+uses `WithExplicitStart()` and must be started manually from the Aspire
+dashboard. The orchestrator waits for sources to be healthy before starting.
 
 ### 3. Configure credentials
 

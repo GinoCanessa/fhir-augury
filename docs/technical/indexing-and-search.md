@@ -46,6 +46,7 @@ virtual tables for fast text search within its local database.
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
 | GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
+| GitHub | `github_commits_fts` | `github_commits` | Message |
 
 ### FTS5 Table Creation
 

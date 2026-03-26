@@ -7,21 +7,21 @@ deployment options.
 ## Architecture Overview
 
 ```
-┌─────────────┐
-│ MCP / CLI   │ ← Clients connect via gRPC
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│ Orchestrator│ :5150 (HTTP) / :5151 (gRPC)
-└──┬───┬───┬──┘
-   │   │   │
-   │   │   └──────────────────────────────────┐
-   │   └─────────────────┐                    │
-   │                     │                    │
-┌──▼──────┐  ┌───▼──────┐  ┌──▼──────────┐  ┌──▼──────┐
-│ Jira    │  │ Zulip    │  │ Confluence  │  │ GitHub  │
-│:5160/61 │  │:5170/71  │  │ :5180/81    │  │:5190/91 │
-└─────────┘  └──────────┘  └─────────────┘  └─────────┘
+┌───────────────────────────────────────────────────────┐
+│       MCP (stdio) / MCP (HTTP :5200) / CLI            │
+└──────────────────────────┬────────────────────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │ Orchestrator│ :5150 (HTTP) / :5151 (gRPC)
+                    └──┬───┬───┬──┬──┘
+                       │   │   │  │
+       ┌───────────────┘   │   │  └──────────────────┐
+       │         ┌─────────┘   └────────────┐        │
+       │         │                          │        │
+ ┌─────▼───┐  ┌──▼─────┐  ┌──────▼──────┐  ┌──▼─────┐
+ │  Jira   │  │ Zulip  │  │ Confluence  │  │ GitHub │
+ │:5160/61 │  │:5170/71│  │  :5180/81   │  │:5190/91│
+ └─────────┘  └────────┘  └─────────────┘  └────────┘
 ```
 
 ## Quick Start
@@ -68,6 +68,7 @@ docker compose --profile jira-only up -d
 | Zulip | 5170 | 5171 | `GET /health` |
 | Confluence | 5180 | 5181 | `GET /health` |
 | GitHub | 5190 | 5191 | `GET /health` |
+| MCP (HTTP) | 5200 | — | `/mcp` |
 
 ## Volume Management
 
@@ -250,9 +251,11 @@ dotnet workload install aspire
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The AppHost starts all five services (4 source services + orchestrator) with
-the same fixed ports as Docker Compose. The orchestrator waits for all source
-services to be healthy before accepting requests.
+The AppHost starts six services (4 source services + orchestrator + MCP HTTP
+server on port 5200) with the same fixed ports as Docker Compose. The
+orchestrator waits for all source services to be healthy before accepting
+requests. The Confluence source uses `WithExplicitStart()` and must be started
+manually from the Aspire dashboard.
 
 The Aspire dashboard is available at the URL shown in the console output
 (typically `https://localhost:17128`). It provides:

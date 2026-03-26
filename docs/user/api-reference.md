@@ -13,11 +13,13 @@ also exposes a lightweight HTTP API for health checks and basic operations.
 | Zulip | 5170 | 5171 | Indexes chat.fhir.org |
 | Confluence | 5180 | 5181 | Indexes confluence.hl7.org |
 | GitHub | 5190 | 5191 | Indexes HL7 GitHub repos |
+| MCP HTTP | 5200 | — | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 
-> **Note:** The CLI and MCP server connect to the orchestrator's gRPC port
-> (5151). The HTTP endpoints documented here are primarily for health checks,
-> diagnostics, and lightweight integrations. For full functionality, use the
-> CLI or MCP tools.
+> **Note:** The CLI and MCP stdio server connect to the orchestrator's gRPC port
+> (5151). The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on
+> port 5200 that provides the same MCP tools via HTTP/SSE transport. The HTTP
+> endpoints documented here are primarily for health checks, diagnostics, and
+> lightweight integrations. For full functionality, use the CLI or MCP tools.
 
 ---
 
@@ -33,6 +35,7 @@ The orchestrator exposes gRPC services for:
 - **CrossReference** — query cross-reference links between items
 - **Ingestion** — trigger syncs, check status, rebuild indexes
 - **Services** — health checks, statistics, cross-reference scanning
+- **GetServiceEndpoints** — discover registered source service endpoints
 - **Query** — structured queries for Jira and Zulip with typed filters
 - **List** — list items with filtering and sorting
 
@@ -162,6 +165,36 @@ Trigger an ingestion sync.
 Get health and status of all services.
 
 **Response:** Status of orchestrator and each registered source service.
+
+---
+
+## MCP HTTP Server
+
+**Base URL:** `http://localhost:5200`
+
+The MCP HTTP server (`FhirAugury.McpHttp`) is a separate ASP.NET Core service
+that exposes MCP tools via HTTP/SSE transport. It is distinct from the
+orchestrator — it connects to the orchestrator and source services via gRPC as
+a client.
+
+### MCP Endpoint
+
+#### `GET /mcp` (SSE) / `POST /mcp` (HTTP)
+
+The Model Context Protocol endpoint. MCP clients (VS Code, Copilot, etc.)
+connect to this endpoint to discover and invoke the 16 MCP tools.
+
+**Example client configuration:**
+
+```json
+{
+  "mcpServers": {
+    "fhir-augury": {
+      "url": "http://localhost:5200/mcp"
+    }
+  }
+}
+```
 
 ---
 
@@ -329,6 +362,7 @@ Returns `404` if the stream is not found.
 | Zulip | `http://localhost:5170/health` | Zulip message indexing |
 | Confluence | `http://localhost:5180/health` | Confluence page indexing |
 | GitHub | `http://localhost:5190/health` | GitHub issue/PR indexing |
+| MCP HTTP | `http://localhost:5200/health` | MCP HTTP/SSE server |
 
 ---
 

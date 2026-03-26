@@ -43,6 +43,13 @@ Docker Compose profiles let you run only the services you need:
 | Zulip Source | 5170 | 5171 |
 | Confluence Source | 5180 | 5181 |
 | GitHub Source | 5190 | 5191 |
+| MCP HTTP | 5200 | — |
+
+> **Note:** The MCP HTTP server (`FhirAugury.McpHttp`) can also be deployed as
+> a container. It exposes the MCP endpoint at `http://localhost:5200/mcp` and
+> connects to the orchestrator and source services via gRPC using the same
+> `FHIR_AUGURY_*` environment variables documented in
+> [Configuration](configuration.md#mcphttp).
 
 ## Volume Management
 

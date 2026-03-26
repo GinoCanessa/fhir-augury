@@ -292,8 +292,10 @@ FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 
 ## MCP Server Configuration
 
-The MCP server (`FhirAugury.Mcp`) connects to the orchestrator and source
-services via gRPC. It is configured entirely through environment variables:
+The MCP tools are provided by two server projects (`FhirAugury.McpStdio` and
+`FhirAugury.McpHttp`) that share a common library (`FhirAugury.McpShared`).
+Both connect to the orchestrator and source services via gRPC using the same
+environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -302,6 +304,36 @@ services via gRPC. It is configured entirely through environment variables:
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
 | `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
+
+### McpStdio
+
+The stdio-based server (`FhirAugury.McpStdio`) is configured entirely through
+environment variables (listed above). It supports `--mode` and `--source`
+command-line arguments for direct mode (connecting to a single source service,
+bypassing the orchestrator):
+
+```bash
+# Default mode (orchestrator)
+dotnet run --project src/FhirAugury.McpStdio
+
+# Direct mode — single source
+dotnet run --project src/FhirAugury.McpStdio -- --mode direct --source jira
+```
+
+### McpHttp
+
+The HTTP-based server (`FhirAugury.McpHttp`) is an ASP.NET Core application
+that exposes the MCP endpoint via HTTP/SSE. It uses the same gRPC environment
+variables as `McpStdio`, plus standard ASP.NET Core configuration:
+
+- **Port:** 5200 (configurable via `ASPNETCORE_URLS` or `--urls`)
+- **MCP endpoint:** `/mcp`
+- **Aspire integration:** Includes Aspire ServiceDefaults for health checks,
+  telemetry, and service discovery
+
+```bash
+dotnet run --project src/FhirAugury.McpHttp
+```
 
 See [MCP Tools](mcp-tools.md) for client configuration and tool documentation.
 

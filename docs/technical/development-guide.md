@@ -95,7 +95,7 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 | `FhirAugury.Source.Confluence.Tests` | Confluence source: ingestion, indexing, gRPC API |
 | `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, gRPC API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
-| `FhirAugury.Mcp.Tests` | MCP server tool functions |
+| `FhirAugury.McpShared.Tests` | MCP server tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |
 
 ### Test Infrastructure
 
@@ -152,18 +152,31 @@ The Aspire dashboard (URL shown in console output) provides real-time logs,
 distributed traces, and metrics across all services. All services use the same
 fixed ports as when running individually.
 
-### MCP Server
+### MCP Server (Stdio)
 
-The MCP server connects to the orchestrator via gRPC. Configure the
+The stdio MCP server connects to the orchestrator via gRPC. Configure the
 orchestrator endpoint via environment variables:
 
 ```bash
-dotnet run --project src/FhirAugury.Mcp
+dotnet run --project src/FhirAugury.McpStdio
 ```
 
-The MCP server communicates with LLM clients via stdin/stdout using JSON-RPC.
-All logging goes to stderr to avoid interfering with the transport. See
-`mcp-config-examples/` for client configuration examples.
+The stdio server communicates with LLM clients via stdin/stdout using JSON-RPC.
+All logging goes to stderr to avoid interfering with the transport. It is also
+packaged as the `fhir-augury-mcp` dotnet tool. See `mcp-config-examples/` for
+client configuration examples.
+
+### MCP Server (HTTP)
+
+The HTTP MCP server runs as an ASP.NET Core web application on port 5200,
+exposing the `/mcp` endpoint for HTTP/SSE transport:
+
+```bash
+dotnet run --project src/FhirAugury.McpHttp
+# Starts on HTTP :5200, endpoint /mcp
+```
+
+McpHttp includes Aspire ServiceDefaults and is registered in the AppHost.
 
 ### CLI
 

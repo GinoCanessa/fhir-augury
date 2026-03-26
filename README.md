@@ -80,6 +80,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Zulip | [5170](http://localhost:5170/health) | 5171 | FHIR Zulip chat messages |
 | Confluence | [5180](http://localhost:5180/health) | 5181 | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | 5191 | HL7 GitHub issues, PRs, and commits |
+| MCP (HTTP) | [5200](http://localhost:5200/mcp) | — | MCP server (HTTP/SSE transport) |
 
 ## Features
 
@@ -92,7 +93,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **Related items** — find similar content using BM25 keyword vectors
 - **FHIR-aware tokenization** — recognizes FHIR paths, operations, and terms
 - **Independent services** — each source runs standalone with its own database
-- **MCP server** for integration with LLM agents (Claude, Copilot, etc.)
+- **MCP servers** — stdio and HTTP/SSE transports for integration with LLM agents
 - **CLI tool** for searching and managing services via gRPC
 - **Docker Compose** deployment with profiles for subset stacks
 - **.NET Aspire** orchestration with dashboard, OpenTelemetry, and service discovery
@@ -101,14 +102,14 @@ dotnet run --project src/FhirAugury.Orchestrator
 
 Configure your MCP client to connect to the running services:
 
-### Full Stack (Orchestrator Mode)
+### Stdio Mode (Full Stack)
 
 ```json
 {
   "mcpServers": {
     "fhir-augury": {
       "command": "dotnet",
-      "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp"],
+      "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"],
       "env": {
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
@@ -121,18 +122,38 @@ Configure your MCP client to connect to the running services:
 }
 ```
 
-### Single Source (Direct Mode)
+### Stdio Mode (Direct — Single Source)
 
 ```json
 {
   "mcpServers": {
     "fhir-augury-jira": {
       "command": "dotnet",
-      "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.Mcp",
+      "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
                "--", "--mode", "direct", "--source", "jira"],
       "env": {
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
       }
+    }
+  }
+}
+```
+
+### HTTP Mode
+
+Start the HTTP MCP server (included in Aspire, or run manually):
+
+```bash
+dotnet run --project src/FhirAugury.McpHttp
+```
+
+Then configure your MCP client:
+
+```json
+{
+  "mcpServers": {
+    "fhir-augury": {
+      "url": "http://localhost:5200/mcp"
     }
   }
 }
@@ -164,7 +185,9 @@ docker compose --profile jira-only up -d   # Single source
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits ingestion |
 | Common | `src/FhirAugury.Common` | Shared types, protobuf definitions, utilities |
-| MCP Server | `src/FhirAugury.Mcp` | Model Context Protocol server for LLM agents |
+| MCP Server (stdio) | `src/FhirAugury.McpStdio` | MCP server for LLM agents (stdio transport, e.g., Claude Desktop) |
+| MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
+| MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and gRPC client registration |
 | CLI | `src/FhirAugury.Cli` | Command-line interface via gRPC |
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
@@ -212,7 +235,7 @@ docker compose --profile jira-only up -d   # Single source
 - **Communication:** gRPC (inter-service), HTTP (health/REST)
 - **Protobuf:** Shared definitions in `protos/`
 - **CLI framework:** System.CommandLine
-- **MCP:** Model Context Protocol (stdio transport)
+- **MCP:** Model Context Protocol (stdio and HTTP/SSE transports)
 - **Containerization:** Docker with multi-stage builds
 - **Orchestration:** .NET Aspire (optional, for development)
 - **Observability:** OpenTelemetry (via Aspire ServiceDefaults)
