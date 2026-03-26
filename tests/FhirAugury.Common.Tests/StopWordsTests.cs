@@ -24,26 +24,26 @@ public class StopWordsTests
     [Fact]
     public void CreateMergedSet_IncludesDefaults()
     {
-        System.Collections.Frozen.FrozenSet<string> merged = StopWords.CreateMergedSet();
-        Assert.True(merged.Contains("the"));
-        Assert.True(merged.Contains("is"));
-        Assert.True(merged.Contains("using"));
+        IReadOnlySet<string> merged = StopWords.CreateMergedSet();
+        Assert.Contains("the", merged);
+        Assert.Contains("is", merged);
+        Assert.Contains("using", merged);
     }
 
     [Fact]
     public void CreateMergedSet_IncludesAdditionalWords()
     {
-        System.Collections.Frozen.FrozenSet<string> merged = StopWords.CreateMergedSet(["custom1", "custom2"]);
-        Assert.True(merged.Contains("custom1"));
-        Assert.True(merged.Contains("custom2"));
+        IReadOnlySet<string> merged = StopWords.CreateMergedSet(["custom1", "custom2"]);
+        Assert.Contains("custom1", merged);
+        Assert.Contains("custom2", merged);
         // Still contains defaults
-        Assert.True(merged.Contains("the"));
+        Assert.Contains("the", merged);
     }
 
     [Fact]
     public void CreateMergedSet_HandlesNull()
     {
-        System.Collections.Frozen.FrozenSet<string> merged = StopWords.CreateMergedSet(null);
-        Assert.True(merged.Contains("the"));
+        IReadOnlySet<string> merged = StopWords.CreateMergedSet(null);
+        Assert.Contains("the", merged);
     }
 }
