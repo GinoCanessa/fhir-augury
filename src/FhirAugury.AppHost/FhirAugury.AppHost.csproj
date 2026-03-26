@@ -1,0 +1,17 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.2.0">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.AppHost</RootNamespace>
+    <UserSecretsId>673dd955-52e3-44d3-977e-9a1045855eff</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Orchestrator\FhirAugury.Orchestrator.csproj" />
+    <ProjectReference Include="..\FhirAugury.Source.Jira\FhirAugury.Source.Jira.csproj" />
+    <ProjectReference Include="..\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />
+    <ProjectReference Include="..\FhirAugury.Source.Confluence\FhirAugury.Source.Confluence.csproj" />
+    <ProjectReference Include="..\FhirAugury.Source.GitHub\FhirAugury.Source.GitHub.csproj" />
+  </ItemGroup>
+
+</Project>

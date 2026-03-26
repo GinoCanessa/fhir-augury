@@ -26,6 +26,9 @@ builder.Configuration
 
 builder.Services.Configure<JiraServiceOptions>(builder.Configuration.GetSection(JiraServiceOptions.SectionName));
 
+// ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
+builder.AddServiceDefaults();
+
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{JiraServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5160);
@@ -110,7 +113,7 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "jira", version = "2.0.0" }));
+app.MapDefaultEndpoints();
 
 // ── gRPC services ────────────────────────────────────────────────
 app.MapGrpcService<JiraGrpcService>();

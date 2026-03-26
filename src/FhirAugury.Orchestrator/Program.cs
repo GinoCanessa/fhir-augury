@@ -27,6 +27,9 @@ builder.Configuration
 builder.Services.Configure<OrchestratorOptions>(
     builder.Configuration.GetSection(OrchestratorOptions.SectionName));
 
+// ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
+builder.AddServiceDefaults();
+
 // Resolve options early for Kestrel configuration
 OrchestratorOptions orchestratorOptions = new OrchestratorOptions();
 builder.Configuration.GetSection(OrchestratorOptions.SectionName).Bind(orchestratorOptions);
@@ -89,7 +92,7 @@ WebApplication app = builder.Build();
 }
 
 // ── Health check ─────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "orchestrator", version = "2.0.0" }));
+app.MapDefaultEndpoints();
 
 // ── gRPC services ────────────────────────────────────────────────
 app.MapGrpcService<OrchestratorGrpcService>();

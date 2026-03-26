@@ -8,6 +8,8 @@
     <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
     <Project Path="src/FhirAugury.Mcp/FhirAugury.Mcp.csproj" />
+    <Project Path="src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj" />
+    <Project Path="src/FhirAugury.AppHost/FhirAugury.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />

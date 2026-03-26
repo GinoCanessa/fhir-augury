@@ -26,6 +26,9 @@ builder.Configuration
 
 builder.Services.Configure<GitHubServiceOptions>(builder.Configuration.GetSection(GitHubServiceOptions.SectionName));
 
+// ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
+builder.AddServiceDefaults();
+
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{GitHubServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5190);
@@ -110,7 +113,7 @@ WebApplication app = builder.Build();
 }
 
 // ── Health check ─────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "github", version = "2.0.0" }));
+app.MapDefaultEndpoints();
 
 // ── gRPC services ────────────────────────────────────────────────
 app.MapGrpcService<GitHubGrpcService>();

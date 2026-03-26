@@ -26,6 +26,9 @@ builder.Configuration
 
 builder.Services.Configure<ZulipServiceOptions>(builder.Configuration.GetSection(ZulipServiceOptions.SectionName));
 
+// ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
+builder.AddServiceDefaults();
+
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{ZulipServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5170);
@@ -117,7 +120,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     CancellationToken.None);
 
 // ── Health check ─────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "zulip", version = "2.0.0" }));
+app.MapDefaultEndpoints();
 
 // ── gRPC services ────────────────────────────────────────────────
 app.MapGrpcService<ZulipGrpcService>();

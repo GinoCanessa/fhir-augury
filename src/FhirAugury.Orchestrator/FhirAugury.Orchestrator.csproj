@@ -11,5 +11,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.ServiceDefaults\FhirAugury.ServiceDefaults.csproj" />
   </ItemGroup>
 </Project>

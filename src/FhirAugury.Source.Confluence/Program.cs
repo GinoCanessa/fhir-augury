@@ -26,6 +26,9 @@ builder.Configuration
 
 builder.Services.Configure<ConfluenceServiceOptions>(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName));
 
+// ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
+builder.AddServiceDefaults();
+
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{ConfluenceServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5180);
@@ -103,7 +106,7 @@ WebApplication app = builder.Build();
 }
 
 // ── Health check ─────────────────────────────────────────────────
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "confluence", version = "2.0.0" }));
+app.MapDefaultEndpoints();
 
 // ── gRPC services ────────────────────────────────────────────────
 app.MapGrpcService<ConfluenceGrpcService>();
