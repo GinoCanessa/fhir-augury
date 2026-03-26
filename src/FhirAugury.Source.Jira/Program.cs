@@ -36,7 +36,7 @@ int grpcPort = portsSection.GetValue<int>("Grpc", 5161);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1);
     k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 

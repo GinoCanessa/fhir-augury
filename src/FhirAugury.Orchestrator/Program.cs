@@ -37,7 +37,7 @@ builder.Configuration.GetSection(OrchestratorOptions.SectionName).Bind(orchestra
 // ── Kestrel ports ────────────────────────────────────────────────
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(orchestratorOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
+    k.ListenAnyIP(orchestratorOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1);
     k.ListenAnyIP(orchestratorOptions.Ports.Grpc, o => o.Protocols = HttpProtocols.Http2);
 });
 
