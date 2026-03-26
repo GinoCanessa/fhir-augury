@@ -10,6 +10,7 @@ public class ScheduledIngestionWorker<TPipeline>(
     TPipeline pipeline,
     Func<string> syncScheduleProvider,
     Func<string> minSyncAgeProvider,
+    Func<bool> ingestionPausedProvider,
     ILogger logger)
     : BackgroundService where TPipeline : IIngestionPipeline
 {
@@ -64,19 +65,26 @@ public class ScheduledIngestionWorker<TPipeline>(
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            if (ingestionPausedProvider())
             {
-                logger.LogInformation("Starting scheduled incremental ingestion");
-                await pipeline.RunIncrementalIngestionAsync(stoppingToken);
-                logger.LogInformation("Scheduled ingestion completed successfully");
+                logger.LogInformation("Ingestion is paused, skipping scheduled run");
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            else
             {
-                break;
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Scheduled ingestion failed");
+                try
+                {
+                    logger.LogInformation("Starting scheduled incremental ingestion");
+                    await pipeline.RunIncrementalIngestionAsync(stoppingToken);
+                    logger.LogInformation("Scheduled ingestion completed successfully");
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Scheduled ingestion failed");
+                }
             }
 
             try

@@ -25,6 +25,12 @@ public class ConfluenceServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
+    /// <summary>
+    /// When true, pauses all ingestion (scheduled and on-demand). The service remains
+    /// available for queries but will not download new content.
+    /// </summary>
+    public bool IngestionPaused { get; set; } = false;
+
     public int PageSize { get; set; } = 25;
     public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();

@@ -415,6 +415,9 @@ public class GitHubGrpcService(
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
     {
+        if (_options.IngestionPaused)
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Ingestion is paused"));
+
         string type = request.Type?.ToLowerInvariant() ?? "incremental";
 
         workQueue.Enqueue(ct => type switch

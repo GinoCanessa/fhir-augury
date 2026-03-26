@@ -25,6 +25,12 @@ public class JiraServiceOptions
     public string MinSyncAge { get; set; } = "04:00:00";
 
     /// <summary>
+    /// When true, pauses all ingestion (scheduled and on-demand). The service remains
+    /// available for queries but will not download new content.
+    /// </summary>
+    public bool IngestionPaused { get; set; } = false;
+
+    /// <summary>
     /// When true, rebuilds the database from cached responses on startup.
     /// </summary>
     public bool ReloadFromCacheOnStartup { get; set; } = false;
