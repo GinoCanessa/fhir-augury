@@ -77,56 +77,45 @@ Returns orchestrator health status.
 
 ### Search
 
-#### `POST /api/search`
+#### `GET /api/v1/search`
 
 Unified search across all sources.
 
-**Request Body:**
+**Query Parameters:**
 
-```json
-{
-  "query": "patient matching algorithm",
-  "sources": ["jira", "zulip"],
-  "limit": 20
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
 | `query` | string | Yes | Search query text |
-| `sources` | string[] | No | Filter to specific sources (omit for all) |
+| `sources` | string | No | Comma-separated source filter (omit for all) |
 | `limit` | int | No | Maximum results (default: 20) |
 
-**Response:** Array of search results with source, ID, title, snippet, and
-relevance score.
+**Example:** `GET /api/v1/search?query=patient+matching&sources=jira,zulip&limit=10`
 
 ### Related Items
 
-#### `POST /api/related`
+#### `GET /api/v1/related/{source}/{id}`
 
 Find items related to a given item.
 
-**Request Body:**
+**Path Parameters:**
 
-```json
-{
-  "source": "jira",
-  "id": "FHIR-43499",
-  "targetSources": ["zulip", "confluence"],
-  "limit": 10
-}
-```
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | string | Source type (jira, zulip, confluence, github) |
+| `id` | string | Item identifier |
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `source` | string | Yes | Source of the reference item |
-| `id` | string | Yes | Item identifier |
-| `targetSources` | string[] | No | Sources to search for related items |
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targetSources` | string | No | Comma-separated target sources |
 | `limit` | int | No | Maximum results (default: 20) |
+
+**Example:** `GET /api/v1/related/jira/FHIR-43499?targetSources=zulip&limit=5`
 
 ### Cross-References
 
-#### `GET /api/xref/{source}/{id}`
+#### `GET /api/v1/xref/{source}/{id}`
 
 Get cross-references for an item.
 
@@ -136,13 +125,33 @@ Get cross-references for an item.
 |-----------|------|---------|-------------|
 | `direction` | string | `outgoing` | `outgoing`, `incoming`, or `both` |
 
-**Example:** `GET /api/xref/jira/FHIR-43499?direction=both`
+**Example:** `GET /api/v1/xref/jira/FHIR-43499?direction=both`
 
-### Sync
+### Items
 
-#### `POST /api/sync`
+#### `GET /api/v1/items/{source}/{id}`
 
-Trigger an ingestion sync.
+Get full details of an item from a source service.
+
+**Example:** `GET /api/v1/items/jira/FHIR-43499`
+
+#### `GET /api/v1/items/{source}/{id}/snapshot`
+
+Get a rich Markdown snapshot of an item.
+
+**Example:** `GET /api/v1/items/jira/FHIR-43499/snapshot`
+
+#### `GET /api/v1/items/{source}/{id}/content`
+
+Get the full content of an item.
+
+**Example:** `GET /api/v1/items/jira/FHIR-43499/content`
+
+### Ingestion
+
+#### `POST /api/v1/ingest/trigger`
+
+Trigger an ingestion sync on source services.
 
 **Request Body:**
 
@@ -158,13 +167,31 @@ Trigger an ingestion sync.
 | `sources` | string[] | No | Sources to sync (omit for all) |
 | `type` | string | No | `full` or `incremental` (default: `incremental`) |
 
-### Status
+### Rebuild Index
 
-#### `GET /api/status`
+#### `POST /api/v1/rebuild-index`
 
-Get health and status of all services.
+Rebuild specific indexes on source services.
 
-**Response:** Status of orchestrator and each registered source service.
+### Services
+
+#### `GET /api/v1/services`
+
+Get health status of all connected services.
+
+#### `GET /api/v1/stats`
+
+Get aggregate statistics across all source services.
+
+### Structured Queries
+
+#### `POST /api/v1/jira/query`
+
+Structured Jira issue query (proxied to Jira source).
+
+#### `POST /api/v1/zulip/query`
+
+Structured Zulip message query (proxied to Zulip source).
 
 ---
 
@@ -182,7 +209,7 @@ a client.
 #### `GET /mcp` (SSE) / `POST /mcp` (HTTP)
 
 The Model Context Protocol endpoint. MCP clients (VS Code, Copilot, etc.)
-connect to this endpoint to discover and invoke the 16 MCP tools.
+connect to this endpoint to discover and invoke the 18 MCP tools.
 
 **Example client configuration:**
 
@@ -226,27 +253,43 @@ curl http://localhost:5160/health
 
 ### Statistics
 
-#### `GET /api/stats`
+#### `GET /api/v1/stats`
 
 Returns source-specific statistics (item counts, last sync time, index status).
 
 **Example:**
 
 ```bash
-curl http://localhost:5160/api/stats
+curl http://localhost:5160/api/v1/stats
 ```
+
+### Status
+
+#### `GET /api/v1/status`
+
+Returns source service health status.
 
 ### Ingestion
 
-#### `POST /api/ingest`
+#### `POST /api/v1/ingest`
 
 Triggers an ingestion for this source service.
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:5160/api/ingest
+curl -X POST http://localhost:5160/api/v1/ingest
 ```
+
+### Rebuild
+
+#### `POST /api/v1/rebuild`
+
+Rebuild database from cache.
+
+#### `POST /api/v1/rebuild-index`
+
+Rebuild specific indexes on this source service.
 
 ---
 

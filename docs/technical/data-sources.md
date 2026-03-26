@@ -37,6 +37,8 @@ Every source service implements the `SourceService` gRPC service defined in
 | `GetStats` | Return service statistics (item counts, DB size, last sync) |
 | `RebuildFromCache` | Rebuild the database from the file-system cache |
 | `GetItemCrossReferences` | Get cross-references for a specific item |
+| `NotifyPeerIngestionComplete` | Notify this source that a peer completed ingestion (triggers xref re-scan) |
+| `RebuildIndex` | Rebuild specific indexes (BM25, FTS, cross-refs, lookup tables, etc.) |
 | `HealthCheck` | Liveness/readiness probe |
 
 ## Source-Specific gRPC Services
@@ -319,6 +321,18 @@ Bearer token via PAT. Without a token, requests are unauthenticated (60 req/hr
 vs 5,000 with a token). The service includes rate limiting that monitors
 `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers.
 
+**Data Provider:**
+
+The GitHub source supports two data provider implementations selected via the
+`Provider` setting:
+
+- **`rest`** (code default) — Uses the GitHub REST API directly
+- **`gh-cli`** (appsettings default) — Uses the `gh` CLI tool, which handles
+  authentication automatically and supports GitHub Enterprise
+
+The `gh-cli` provider is configured via the `GhCli` section with settings for
+executable path, query limits, hostname, and process timeout.
+
 **Data model:**
 
 - `GitHubRepoRecord` — Full name, owner, name, description
@@ -331,15 +345,24 @@ the `pull_request` field.
 
 **Database tables:** `github_repos` (FullName unique), `github_issues`
 (UniqueKey unique, IsPullRequest, RepoFullName), `github_comments` (IssueId FK,
-IsReviewComment), `github_issues_fts` (FTS5), `github_comments_fts` (FTS5),
-`index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
-`ingestion_log`.
+IsReviewComment), `github_commits` (Sha, RepoFullName, Message, Body, Author, etc.),
+`github_commit_files` (CommitSha, FilePath, ChangeType), `github_commit_pr_links`
+(CommitSha, PrNumber, RepoFullName), `github_spec_file_map` (RepoFullName, ArtifactKey,
+FilePath, MapType), `github_issues_fts` (FTS5), `github_comments_fts` (FTS5),
+`github_commits_fts` (FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`,
+`sync_state`, `ingestion_log`.
 
 **Incremental sync:** Uses GitHub's `since` query parameter.
 
 **Pagination:** Page-based. Continues while returned array length ≥ PageSize.
 
 **Default repositories:** `["HL7/fhir"]`
+
+**Cross-reference tables:** Each source database also maintains xref tables for
+references found in its content pointing to other sources (e.g., `xref_jira`,
+`xref_zulip`, `xref_github`, `xref_confluence`, `xref_fhir_element`). These are
+shared record types defined in `FhirAugury.Common.Database.Records` and populated
+by shared extractors in `FhirAugury.Common.Indexing`.
 
 ---
 
@@ -426,5 +449,5 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 | **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |
 | **HTTP timeout** | 5 min | 10 min | 5 min | 5 min |
-| **FTS5 tables** | issues + comments | messages | pages | issues + comments |
+| **FTS5 tables** | issues + comments | messages | pages | issues + comments + commits |
 | **Own database** | `jira.db` | `zulip.db` | `confluence.db` | `github.db` |

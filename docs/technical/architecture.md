@@ -32,8 +32,8 @@ manages cross-references, and provides a unified API to clients.
 │                    ▼              ▼                                │
 │           ┌────────────────────────────────┐                      │
 │           │      Orchestrator :5150/:5151  │                      │
-│           │  [UnifiedSearch] [CrossRefs]   │                      │
-│           │  [RelatedItems]  [SQLite]      │                      │
+│           │  [UnifiedSearch] [XRefFanout] │                      │
+│           │  [RelatedItems]  [SQLite]     │                      │
 │           └────────┬──────────┬────────────┘                      │
 │                    │          │                                    │
 │           ┌────────┴──┐  ┌───┴─────────┐  ┌────────────────┐     │
@@ -60,7 +60,7 @@ Ports: HTTP (even) / gRPC (odd)
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
 | **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, and comments |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: all 16 tool implementations (UnifiedTools, JiraTools, ZulipTools) and McpServiceRegistration |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: all 18 tool implementations (UnifiedTools, JiraTools, ZulipTools) and McpServiceRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
 | **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, gRPC to orchestrator) |
@@ -134,8 +134,8 @@ configurable `Bm25Options` (K1/B/UseLemmatization parameters).
    source-generated CRUD
 6. **FTS5 sync** — Triggers on content tables automatically update FTS5 virtual
    tables (no application code needed)
-7. **Notify** — The source service calls `NotifyIngestionComplete` on the
-   orchestrator, which triggers a cross-reference scan of new items
+7. **Notify** — The source service notifies peers via
+   `NotifyPeerIngestionComplete` so they can re-scan for new cross-references
 
 ### Search Pipeline
 
@@ -146,26 +146,28 @@ configurable `Bm25Options` (K1/B/UseLemmatization parameters).
 4. **Per-source search** — Each source executes an FTS5 MATCH query against its
    own database and returns scored results
 5. **Normalize** — Per-source min-max score normalization to `[0, 1]`
-6. **Cross-ref boost** — Items with cross-references to other results get a
-   score boost from the orchestrator's cross-reference database
-7. **Freshness decay** — Scores are adjusted based on item age
-8. **Sort & limit** — Results are sorted by final score and truncated to the
+6. **Freshness decay** — Scores are adjusted based on item age
+7. **Sort & limit** — Results are sorted by final score and truncated to the
    requested limit
-9. **Return** — Merged results are returned to the client
+8. **Return** — Merged results are returned to the client
 
 ### Cross-Reference System
 
-The orchestrator's `CrossRefLinker` builds and maintains a cross-reference
-graph across all sources:
+Cross-references are **source-owned**: each source service maintains its own
+set of xref tables that track references TO other sources found within its
+content.
 
-1. **Stream** — `StreamSearchableText` gRPC calls stream searchable text from
-   each source service
-2. **Extract** — Regex patterns in `CrossRefPatterns` identify cross-source
-   identifiers (Jira issue keys like `FHIR-12345`, URLs, GitHub references)
-3. **Store** — Extracted cross-references are persisted in the orchestrator's
-   own SQLite database
-4. **Scan schedule** — `XRefScanWorker` runs every 30 minutes to process new
-   content
+1. **Extract** — During ingestion, each source service runs shared extractors
+   from `FhirAugury.Common.Indexing` against its content to find references
+   to items in other sources
+2. **Store** — Extracted references are stored in the source's own database
+   in typed xref tables (`xref_jira`, `xref_zulip`, `xref_confluence`,
+   `xref_github`, `xref_fhir_element`)
+3. **Query** — The orchestrator fans out `GetItemCrossReferences` gRPC calls
+   to all sources and merges the results
+4. **Peer notification** — When a source completes ingestion, it notifies
+   peers via `NotifyPeerIngestionComplete` so they can re-scan for new
+   references
 
 ### Related Items
 
@@ -173,8 +175,7 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 | Signal | Weight | Description |
 |--------|--------|-------------|
-| Explicit cross-references | 10 | Direct xrefs from source item to target |
-| Reverse cross-references | 8 | Other items that reference the source item |
+| Cross-source references | 10 | Items linked via cross-references (outgoing + incoming) |
 | BM25 text similarity | 3 | Keyword overlap via BM25 scoring |
 | Shared metadata | 2 | Common labels, components, specifications, etc. |
 
@@ -184,7 +185,7 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 Each source service owns its own SQLite database. This provides process
 isolation, independent scaling, and eliminates cross-service write contention.
-The orchestrator has a separate SQLite database for cross-references. WAL mode
+The orchestrator has a separate SQLite database for scan state coordination. WAL mode
 enables concurrent reads within each service.
 
 ### gRPC for Inter-Service Communication
@@ -192,8 +193,10 @@ enables concurrent reads within each service.
 All service-to-service communication uses gRPC with Protocol Buffers. Six proto
 files define the service contracts:
 
-- `source_service.proto` — Common contract all sources implement
-- `orchestrator.proto` — Orchestrator's unified API
+- `source_service.proto` — Common contract all sources implement (including
+  `NotifyPeerIngestionComplete` for peer xref updates and `RebuildIndex`
+  for index management)
+- `orchestrator.proto` — Orchestrator's unified API (including `RebuildIndex`)
 - `jira.proto`, `zulip.proto`, `confluence.proto`, `github.proto` —
   Source-specific operations
 

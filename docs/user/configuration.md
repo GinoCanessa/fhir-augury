@@ -204,6 +204,13 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "Token": null,
       "TokenEnvVar": "GITHUB_TOKEN"
     },
+    "Provider": "gh-cli",
+    "GhCli": {
+      "ExecutablePath": "gh",
+      "Limit": 1000,
+      "Hostname": null,
+      "ProcessTimeout": "00:05:00"
+    },
     "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
@@ -240,6 +247,20 @@ GITHUB_TOKEN=ghp_...
 # Or set the token directly in config
 FHIR_AUGURY_GITHUB__GitHub__Auth__Token=ghp_...
 ```
+
+**Data provider:** The `Provider` setting selects the data fetch implementation:
+
+- **`rest`** — Uses the GitHub REST API directly (default in code)
+- **`gh-cli`** — Uses the `gh` CLI tool (default in appsettings.json, recommended)
+
+The `GhCli` section configures the `gh` CLI provider:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `GhCli.ExecutablePath` | `gh` | Path to the gh CLI executable |
+| `GhCli.Limit` | `1000` | Maximum items per gh CLI query |
+| `GhCli.Hostname` | `null` | GitHub Enterprise hostname (null for github.com) |
+| `GhCli.ProcessTimeout` | `00:05:00` | Timeout for gh CLI processes |
 
 ---
 

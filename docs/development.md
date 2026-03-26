@@ -102,9 +102,10 @@ dotnet run --project src/FhirAugury.AppHost
 ```
 
 The AppHost starts all source services and the orchestrator with their standard
-ports. The orchestrator automatically waits for all source services to be
-healthy. The Aspire dashboard (URL shown in the console) provides real-time
-logs, distributed traces, and metrics.
+ports. The orchestrator waits for Jira, Zulip, and GitHub to be healthy before
+starting. Confluence and MCP HTTP use explicit start and must be started
+manually from the Aspire dashboard. The Aspire dashboard (URL shown in the
+console) provides real-time logs, distributed traces, and metrics.
 
 ### Local Configuration
 

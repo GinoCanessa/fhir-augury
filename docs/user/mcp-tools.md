@@ -4,7 +4,7 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via gRPC to the orchestrator and source
-services, providing 16 tools across 3 categories (Unified, Jira, Zulip).
+services, providing 18 tools across 3 categories (Unified, Jira, Zulip).
 
 > **Note:** Confluence and GitHub tools are not yet implemented. The gRPC client
 > configuration for those services is present but no MCP tools expose them yet.
@@ -200,6 +200,20 @@ Trigger a data sync for one or more sources.
 TriggerSync(sources: "jira", type: "full")
 ```
 
+### `RebuildIndex`
+
+Rebuild specific indexes on source services without re-downloading data.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sources` | string | No | all | Comma-separated sources to rebuild |
+| `indexType` | string | No | `all` | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` |
+
+**Example:** Rebuild BM25 indexes on Jira:
+```
+RebuildIndex(sources: "jira", indexType: "bm25")
+```
+
 ---
 
 ## Jira Tools
@@ -223,6 +237,7 @@ Get full details of a Jira issue including metadata, description, and comments.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `key` | string | Yes | Issue key (e.g., `FHIR-43499`) |
+| `includeComments` | bool | No | `true` | Include issue comments |
 
 ### `GetJiraComments`
 

@@ -40,6 +40,8 @@ pattern.
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": {
       "Http": 5160,
       "Grpc": 5161
@@ -84,6 +86,8 @@ pattern.
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `DefaultProject` | string | `FHIR` | Default Jira project |
 | `DefaultJql` | string? | `null` | Custom JQL query to use instead of the default |
+| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5160` | HTTP listen port |
 | `Ports.Grpc` | int | `5161` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
@@ -120,6 +124,8 @@ pattern.
     "RebuildFromCacheOnStartup": false,
     "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": {
       "Http": 5170,
       "Grpc": 5171
@@ -155,7 +161,7 @@ pattern.
 | `BaseUrl` | string | `https://chat.fhir.org` | Zulip server URL |
 | `Email` | string | | Bot/user email |
 | `ApiKey` | string | | API key |
-| `CredentialFile` | string | `~/.zuliprc` | Path to .zuliprc credentials file |
+| `CredentialFile` | string | `null` | Path to .zuliprc credentials file |
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/zulip.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `04:00:00` | Auto-sync interval |
@@ -163,6 +169,8 @@ pattern.
 | `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `ReindexTicketsOnStartup` | bool | `false` | Force rebuild of Jira ticket reference indexes on startup. Skipped when `RebuildFromCacheOnStartup` is `true` (cache rebuilds already include ticket indexing). |
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
+| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5170` | HTTP listen port |
 | `Ports.Grpc` | int | `5171` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
@@ -197,6 +205,8 @@ pattern.
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": {
       "Http": 5180,
       "Grpc": 5181
@@ -239,6 +249,8 @@ pattern.
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
+| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5180` | HTTP listen port |
 | `Ports.Grpc` | int | `5181` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
@@ -270,6 +282,13 @@ pattern.
     "Repositories": ["HL7/fhir"],
     "AdditionalRepositories": [],
     "ManualLinks": [],
+    "Provider": "gh-cli",
+    "GhCli": {
+      "ExecutablePath": "gh",
+      "Limit": 1000,
+      "Hostname": null,
+      "ProcessTimeout": "00:05:00"
+    },
     "Auth": {
       "Token": null,
       "TokenEnvVar": "GITHUB_TOKEN"
@@ -278,6 +297,8 @@ pattern.
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
     "MinSyncAge": "04:00:00",
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": {
       "Http": 5190,
       "Grpc": 5191
@@ -314,15 +335,23 @@ pattern.
 | `RepoMode` | string | `core` | Repository selection mode |
 | `Repositories` | string[] | `["HL7/fhir"]` | Repositories to track |
 | `AdditionalRepositories` | string[] | `[]` | Extra repositories |
+| `Provider` | string | `gh-cli` | Data provider: `rest` (REST API) or `gh-cli` (GitHub CLI) |
+| `GhCli.ExecutablePath` | string | `gh` | Path to the gh CLI executable |
+| `GhCli.Limit` | int | `1000` | Maximum items per gh CLI query |
+| `GhCli.Hostname` | string? | `null` | GitHub Enterprise hostname (null for github.com) |
+| `GhCli.ProcessTimeout` | TimeSpan | `00:05:00` | Timeout for gh CLI processes |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/github.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
+| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5190` | HTTP listen port |
 | `Ports.Grpc` | int | `5191` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
+| `RateLimiting.MaxConcurrentRequests` | int | `1` | Maximum concurrent API requests |
 | `RateLimiting.RespectRateLimitHeaders` | bool | `true` | Honor GitHub rate headers |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
 | `Bm25.B` | double | `0.75` | BM25 document length normalization |
@@ -357,19 +386,13 @@ pattern.
       "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": true },
       "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
     },
-    "CrossRef": {
-      "ScanIntervalMinutes": 30,
-      "ValidateTargets": true
-    },
     "Search": {
       "DefaultLimit": 20,
       "MaxLimit": 100,
-      "CrossRefBoostFactor": 0.5,
       "FreshnessWeights": { "jira": 0.5, "zulip": 2.0 }
     },
     "Related": {
-      "ExplicitXrefWeight": 10.0,
-      "ReverseXrefWeight": 8.0,
+      "CrossSourceWeight": 10.0,
       "Bm25SimilarityWeight": 3.0,
       "SharedMetadataWeight": 2.0,
       "DefaultLimit": 20,
@@ -397,11 +420,12 @@ pattern.
 | `Ports.Grpc` | int | `5151` | gRPC listen port |
 | `Services.{Name}.GrpcAddress` | string | varies | gRPC endpoint for source |
 | `Services.{Name}.Enabled` | bool | `true` | Enable/disable source |
-| `CrossRef.ScanIntervalMinutes` | int | `30` | Cross-ref scan frequency |
-| `CrossRef.ValidateTargets` | bool | `true` | Validate xref targets exist |
 | `Search.DefaultLimit` | int | `20` | Default search result limit |
 | `Search.MaxLimit` | int | `100` | Maximum search result limit |
-| `Search.CrossRefBoostFactor` | double | `0.5` | Boost for cross-referenced items |
+| `Search.FreshnessWeights` | Dictionary | varies | Per-source freshness weight multipliers |
+| `Related.CrossSourceWeight` | double | `10.0` | Weight for cross-source references |
+| `Related.Bm25SimilarityWeight` | double | `3.0` | Weight for BM25 text similarity |
+| `Related.SharedMetadataWeight` | double | `2.0` | Weight for shared metadata |
 | `Related.DefaultLimit` | int | `20` | Default related items limit |
 | `Related.MaxKeyTerms` | int | `15` | Max terms for similarity |
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |

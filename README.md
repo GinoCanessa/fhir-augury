@@ -57,7 +57,8 @@ aspire run
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and
-metrics at the URL shown in the console output.
+metrics at the URL shown in the console output. Confluence and MCP HTTP use
+explicit start and must be started manually from the dashboard.
 
 ### From Source
 

@@ -19,6 +19,7 @@ These options apply to all commands:
 | `--orchestrator` | string | `http://localhost:5151` | Orchestrator gRPC endpoint (or set `FHIR_AUGURY_ORCHESTRATOR` env var) |
 | `--format` | string | `table` | Output format: `table`, `json`, `markdown` |
 | `--verbose` | flag | `false` | Enable verbose output |
+| `--version` | flag | `false` | Show version information |
 
 ## Environment Variables
 
@@ -79,7 +80,7 @@ dotnet run --project src/FhirAugury.Cli -- get <source> <id> [options]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--comments` | flag | `false` | Include comments in output |
+| `--comments` | flag | `true` | Include comments in output |
 
 **Examples:**
 
@@ -148,7 +149,7 @@ dotnet run --project src/FhirAugury.Cli -- snapshot <source> <id> [options]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--comments` | flag | `false` | Include comments in snapshot |
+| `--comments` | flag | `true` | Include comments in snapshot |
 
 **Examples:**
 
@@ -182,7 +183,7 @@ dotnet run --project src/FhirAugury.Cli -- xref <source> <id> [options]
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--direction` | string | `outgoing` | Cross-reference direction: `outgoing`, `incoming`, `both` |
+| `--direction` | string | `both` | Cross-reference direction: `outgoing`, `incoming`, `both` |
 
 **Examples:**
 
@@ -288,6 +289,15 @@ dotnet run --project src/FhirAugury.Cli -- list <source> [options]
 |----------|-------------|
 | `source` | Source to list: `jira`, `zulip`, `confluence`, `github` |
 
+**Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--limit` | int | `20` | Maximum results |
+| `--sort-by` | string | `updated_at` | Sort by field |
+| `--sort-order` | string | `desc` | Sort order: `asc` or `desc` |
+| `--filter` | string[] | | Filters in key=value format (repeatable) |
+
 **Examples:**
 
 ```bash
@@ -315,7 +325,7 @@ dotnet run --project src/FhirAugury.Cli -- ingest trigger [options]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--sources` | string | all | Comma-separated sources to sync |
-| `--type` | string | `incremental` | Ingestion type: `full`, `incremental` |
+| `--type` | string | `incremental` | Sync type: `incremental`, `full`, `rebuild` |
 
 **Examples:**
 
@@ -365,6 +375,34 @@ dotnet run --project src/FhirAugury.Cli -- ingest rebuild --sources jira
 
 ---
 
+### `ingest index` — Rebuild indexes
+
+Rebuilds specific indexes on source services without re-downloading or
+rebuilding from cache.
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- ingest index [options]
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--sources` | string | all | Comma-separated sources to rebuild indexes on |
+| `--type` | string | `all` | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` |
+
+**Examples:**
+
+```bash
+# Rebuild all indexes on all sources
+dotnet run --project src/FhirAugury.Cli -- ingest index
+
+# Rebuild only BM25 indexes on Jira
+dotnet run --project src/FhirAugury.Cli -- ingest index --sources jira --type bm25
+```
+
+---
+
 ## Service Management Commands
 
 ### `services status` — Service health
@@ -383,30 +421,4 @@ Shows aggregate statistics across all source services.
 
 ```bash
 dotnet run --project src/FhirAugury.Cli -- services stats
-```
-
----
-
-### `services xref-scan` — Trigger cross-reference scan
-
-Triggers a cross-reference scan across sources to discover links between items.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- services xref-scan [options]
-```
-
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--full` | flag | `false` | Run a full scan (default is incremental) |
-
-**Examples:**
-
-```bash
-# Incremental scan
-dotnet run --project src/FhirAugury.Cli -- services xref-scan
-
-# Full rescan
-dotnet run --project src/FhirAugury.Cli -- services xref-scan --full
 ```

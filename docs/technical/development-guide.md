@@ -278,10 +278,10 @@ Each v2 service registers its own components via standard ASP.NET Core DI in
 
 The orchestrator registers:
 
-- Orchestrator database (cross-references)
+- Orchestrator database (cross-reference scan state)
 - `SourceRouter` (gRPC channels to sources)
-- `UnifiedSearchService`, `CrossRefLinker`, `RelatedItemFinder`
-- `ServiceHealthMonitor`, `HealthCheckWorker`, `XRefScanWorker`
+- `UnifiedSearchService`, `RelatedItemFinder`
+- `ServiceHealthMonitor`, `HealthCheckWorker`
 - gRPC service (`OrchestratorService`)
 
 ### Error Handling

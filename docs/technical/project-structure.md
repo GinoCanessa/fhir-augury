@@ -48,6 +48,8 @@ Common contract implemented by all source services:
 - `TriggerIngestion`, `GetIngestionStatus`, `RebuildFromCache` — ingestion control
 - `GetStats`, `HealthCheck` — monitoring
 - `GetItemCrossReferences` — cross-references for a specific item
+- `NotifyPeerIngestionComplete` — peer notification for cross-reference updates
+- `RebuildIndex` — rebuild specific indexes
 
 ### `orchestrator.proto`
 
@@ -56,8 +58,9 @@ Orchestrator's unified API:
 - `UnifiedSearch`, `FindRelated`, `GetCrossReferences` — aggregated queries
 - `GetItem`, `GetSnapshot`, `GetContent` — proxied to appropriate source
 - `TriggerSync`, `GetServicesStatus` — service management
-- `TriggerXRefScan`, `NotifyIngestionComplete` — cross-reference system
+- `NotifyIngestionComplete` — cross-reference system
 - `GetServiceEndpoints` — service discovery for direct access
+- `RebuildIndex` — fan-out index rebuild to sources
 
 ### Source-Specific Protos
 
@@ -150,14 +153,13 @@ Central coordinator (HTTP :5150, gRPC :5151).
 FhirAugury.Orchestrator/
 ├── Api/                      # OrchestratorGrpcService, OrchestratorHttpApi
 ├── Configuration/            # Orchestrator settings, source endpoints
-├── CrossRef/                 # CrossRefLinker, StructuralLinker
-├── Database/                 # Orchestrator SQLite DB (cross-references)
+├── Database/                 # Orchestrator SQLite DB (scan state)
 ├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
-├── Related/                  # RelatedItemFinder (4-signal ranking)
+├── Related/                  # RelatedItemFinder (multi-signal ranking)
 ├── Routing/                  # SourceRouter — creates gRPC channels to sources
-├── Search/                   # UnifiedSearchService, CrossRefBooster, FreshnessDecay,
+├── Search/                   # UnifiedSearchService, FreshnessDecay,
 │                             #   ScoreNormalizer
-├── Workers/                  # HealthCheckWorker, XRefScanWorker (every 30 min)
+├── Workers/                  # HealthCheckWorker
 ├── Program.cs                # Dual-port Kestrel, DI registration
 ├── appsettings.json          # Default configuration
 └── Dockerfile                # Service container image
@@ -165,7 +167,7 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing all 16 tool implementations and service
+Shared MCP library containing all 18 tool implementations and service
 registration logic.
 
 ```
