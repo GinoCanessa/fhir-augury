@@ -22,7 +22,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         _db.Initialize();
 
         IOptions<GitHubServiceOptions> options = Options.Create(new GitHubServiceOptions());
-        _service = new GitHubGrpcService(_db, null!, null!, null!, options);
+        _service = new GitHubGrpcService(_db, null!, null!, null!, null!, null!, null!, null!, null!, options);
     }
 
     public void Dispose()

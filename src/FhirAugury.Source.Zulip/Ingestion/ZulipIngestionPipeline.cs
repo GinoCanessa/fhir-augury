@@ -1,8 +1,10 @@
+using Fhiraugury;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,6 +19,7 @@ public class ZulipIngestionPipeline(
     ZulipDatabase database,
     ZulipIndexer indexer,
     ZulipTicketIndexer ticketIndexer,
+    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<ZulipServiceOptions> optionsAccessor,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -42,6 +45,7 @@ public class ZulipIngestionPipeline(
             IngestionResult downloadResult = await source.DownloadAllAsync(ct);
             IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "full", ct);
+            await NotifyOrchestratorAsync(result, "full");
 
             _currentStatus = "idle";
             return result;
@@ -74,6 +78,7 @@ public class ZulipIngestionPipeline(
             IngestionResult downloadResult = await source.DownloadIncrementalAsync(ct);
             IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "incremental", ct);
+            await NotifyOrchestratorAsync(result, "incremental");
 
             _currentStatus = "idle";
             return result;
@@ -109,6 +114,7 @@ public class ZulipIngestionPipeline(
 
             IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
+            await NotifyOrchestratorAsync(result, "rebuild");
 
             _currentStatus = "idle";
             return result;
@@ -208,6 +214,26 @@ public class ZulipIngestionPipeline(
             ZulipSyncStateRecord.Update(connection, syncState);
         else
             ZulipSyncStateRecord.Insert(connection, syncState);
+    }
+
+    private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
+    {
+        if (orchestratorClient is null) return;
+
+        try
+        {
+            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            {
+                Source = ZulipSource.SourceName,
+                Type = runType,
+                ItemsIngested = result.ItemsProcessed,
+                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to notify orchestrator of ingestion completion");
+        }
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()

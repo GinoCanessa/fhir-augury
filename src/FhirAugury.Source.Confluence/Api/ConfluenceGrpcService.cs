@@ -24,6 +24,9 @@ public class ConfluenceGrpcService(
     ConfluenceIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
+    ConfluenceJiraRefRebuilder jiraRefRebuilder,
+    ConfluenceLinkRebuilder linkRebuilder,
+    ConfluenceIndexer indexer,
     IOptions<ConfluenceServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -543,6 +546,60 @@ public class ConfluenceGrpcService(
         return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
+    }
+
+    public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
+        PeerIngestionNotification request, ServerCallContext context)
+    {
+        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        {
+            workQueue.Enqueue(ct =>
+            {
+                jiraRefRebuilder.RebuildAll(ct);
+                return Task.CompletedTask;
+            }, "rebuild-jira-xrefs");
+
+            return Task.FromResult(new PeerIngestionAck
+                { Acknowledged = true, ActionTaken = "queued jira ref index rebuild" });
+        }
+
+        return Task.FromResult(new PeerIngestionAck
+            { Acknowledged = true, ActionTaken = "no action needed" });
+    }
+
+    public override Task<RebuildIndexResponse> RebuildIndex(
+        RebuildIndexRequest request, ServerCallContext context)
+    {
+        string indexType = request.IndexType?.ToLowerInvariant() ?? "all";
+
+        workQueue.Enqueue(ct =>
+        {
+            switch (indexType)
+            {
+                case "bm25":
+                    indexer.RebuildFullIndex(ct);
+                    break;
+                case "cross-refs":
+                    jiraRefRebuilder.RebuildAll(ct);
+                    break;
+                case "page-links":
+                    linkRebuilder.RebuildAll(ct);
+                    break;
+                case "fts":
+                    database.RebuildFtsIndexes();
+                    break;
+                case "all":
+                    jiraRefRebuilder.RebuildAll(ct);
+                    linkRebuilder.RebuildAll(ct);
+                    indexer.RebuildFullIndex(ct);
+                    database.RebuildFtsIndexes();
+                    break;
+            }
+            return Task.CompletedTask;
+        }, $"rebuild-index-{indexType}");
+
+        return Task.FromResult(new RebuildIndexResponse
+            { Success = true, ActionTaken = $"queued {indexType} index rebuild" });
     }
 }
 

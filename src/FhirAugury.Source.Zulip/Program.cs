@@ -1,3 +1,4 @@
+using Fhiraugury;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
@@ -7,6 +8,7 @@ using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using FhirAugury.Source.Zulip.Workers;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -101,6 +103,19 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILogger<ZulipIndexer>>());
 });
 builder.Services.AddSingleton<ZulipTicketIndexer>();
+
+// Orchestrator client (optional — for ingestion notifications)
+#pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
+builder.Services.AddSingleton(sp =>
+{
+    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
+    if (string.IsNullOrWhiteSpace(opts.OrchestratorGrpcAddress))
+        return (OrchestratorService.OrchestratorServiceClient?)null;
+    GrpcChannel channel = GrpcChannel.ForAddress(opts.OrchestratorGrpcAddress);
+    return (OrchestratorService.OrchestratorServiceClient?)new OrchestratorService.OrchestratorServiceClient(channel);
+});
+#pragma warning restore CS8634, CS8621
+
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

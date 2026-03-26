@@ -1,3 +1,4 @@
+using Fhiraugury;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
@@ -7,6 +8,7 @@ using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
 using FhirAugury.Source.Confluence.Ingestion;
 using FhirAugury.Source.Confluence.Workers;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -89,6 +91,21 @@ builder.Services.AddSingleton(sp =>
         opts.Bm25,
         sp.GetRequiredService<ILogger<ConfluenceIndexer>>());
 });
+builder.Services.AddSingleton<ConfluenceJiraRefRebuilder>();
+builder.Services.AddSingleton<ConfluenceLinkRebuilder>();
+
+// Orchestrator client (optional — for ingestion notifications)
+#pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
+builder.Services.AddSingleton(sp =>
+{
+    ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
+    if (string.IsNullOrWhiteSpace(opts.OrchestratorGrpcAddress))
+        return (OrchestratorService.OrchestratorServiceClient?)null;
+    GrpcChannel channel = GrpcChannel.ForAddress(opts.OrchestratorGrpcAddress);
+    return (OrchestratorService.OrchestratorServiceClient?)new OrchestratorService.OrchestratorServiceClient(channel);
+});
+#pragma warning restore CS8634, CS8621
+
 builder.Services.AddSingleton<ConfluenceIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

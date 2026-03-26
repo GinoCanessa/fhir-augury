@@ -1,3 +1,4 @@
+using Fhiraugury;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
@@ -7,6 +8,7 @@ using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
 using FhirAugury.Source.Jira.Workers;
+using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -107,6 +109,19 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraZulipRefExtractor>();
+
+// Orchestrator client (optional — for ingestion notifications)
+#pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
+builder.Services.AddSingleton(sp =>
+{
+    JiraServiceOptions opts = sp.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+    if (string.IsNullOrWhiteSpace(opts.OrchestratorGrpcAddress))
+        return (OrchestratorService.OrchestratorServiceClient?)null;
+    GrpcChannel channel = GrpcChannel.ForAddress(opts.OrchestratorGrpcAddress);
+    return (OrchestratorService.OrchestratorServiceClient?)new OrchestratorService.OrchestratorServiceClient(channel);
+});
+#pragma warning restore CS8634, CS8621
+
 builder.Services.AddSingleton<JiraIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

@@ -24,10 +24,15 @@ public class GitHubGrpcService(
     GitHubIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
+    JiraRefExtractor jiraRefExtractor,
+    GitHubIndexer indexer,
+    GitHubRepoCloner cloner,
+    GitHubCommitFileExtractor commitExtractor,
+    ArtifactFileMapper artifactFileMapper,
     IOptions<GitHubServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
-    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
+    private readonly GitHubServiceOptions options = optionsAccessor.Value;
     private static readonly DateTimeOffset StartTime = DateTimeOffset.UtcNow;
 
     // ── SourceService RPCs ────────────────────────────────────────
@@ -415,7 +420,7 @@ public class GitHubGrpcService(
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
     {
-        if (_options.IngestionPaused)
+        if (options.IngestionPaused)
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Ingestion is paused"));
 
         string type = request.Type?.ToLowerInvariant() ?? "incremental";
@@ -492,7 +497,7 @@ public class GitHubGrpcService(
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
             LastError = syncState?.LastError ?? "",
-            SyncSchedule = _options.SyncSchedule,
+            SyncSchedule = options.SyncSchedule,
         };
     }
 
@@ -582,6 +587,78 @@ public class GitHubGrpcService(
         if (string.IsNullOrWhiteSpace(query)) return string.Empty;
         string[] terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return string.Join(" ", terms.Select(t => $"\"{t.Replace("\"", "\"\"")}\""));
+    }
+
+    public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
+        PeerIngestionNotification request, ServerCallContext context)
+    {
+        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        {
+            workQueue.Enqueue(async ct =>
+            {
+                List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+                foreach (string repo in repos)
+                    jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+            }, "rebuild-jira-xrefs");
+
+            return Task.FromResult(new PeerIngestionAck
+                { Acknowledged = true, ActionTaken = "queued jira ref index rebuild" });
+        }
+
+        return Task.FromResult(new PeerIngestionAck
+            { Acknowledged = true, ActionTaken = "no action needed" });
+    }
+
+    public override Task<RebuildIndexResponse> RebuildIndex(
+        RebuildIndexRequest request, ServerCallContext context)
+    {
+        string indexType = request.IndexType?.ToLowerInvariant() ?? "all";
+
+        workQueue.Enqueue(async ct =>
+        {
+            List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+            switch (indexType)
+            {
+                case "commits":
+                    foreach (string repo in repos)
+                    {
+                        string path = await cloner.EnsureCloneAsync(repo, ct);
+                        await commitExtractor.ExtractAsync(path, repo, ct);
+                    }
+                    break;
+                case "cross-refs":
+                    foreach (string repo in repos)
+                        jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                    break;
+                case "bm25":
+                    indexer.RebuildFullIndex(ct);
+                    break;
+                case "artifact-map":
+                    foreach (string repo in repos)
+                    {
+                        string path = await cloner.EnsureCloneAsync(repo, ct);
+                        artifactFileMapper.BuildMappings(repo, path, ct);
+                    }
+                    break;
+                case "fts":
+                    database.RebuildFtsIndexes();
+                    break;
+                case "all":
+                    foreach (string repo in repos)
+                    {
+                        string path = await cloner.EnsureCloneAsync(repo, ct);
+                        await commitExtractor.ExtractAsync(path, repo, ct);
+                        jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                        artifactFileMapper.BuildMappings(repo, path, ct);
+                    }
+                    indexer.RebuildFullIndex(ct);
+                    database.RebuildFtsIndexes();
+                    break;
+            }
+        }, $"rebuild-index-{indexType}");
+
+        return Task.FromResult(new RebuildIndexResponse
+            { Success = true, ActionTaken = $"queued {indexType} index rebuild" });
     }
 }
 

@@ -34,6 +34,12 @@ public class SourceServiceConfiguration
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
+    /// <summary>
+    /// gRPC address of the orchestrator service (e.g., "http://localhost:5151").
+    /// When set, the source will notify the orchestrator after ingestion completes.
+    /// </summary>
+    public string? OrchestratorGrpcAddress { get; set; }
+
     /// <summary>Rate limiting configuration.</summary>
     public RateLimitingConfiguration RateLimiting { get; set; } = new();
 }

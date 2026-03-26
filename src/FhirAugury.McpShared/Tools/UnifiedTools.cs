@@ -257,4 +257,41 @@ public static class UnifiedTools
     }
 
     private static string FormatBytes(long bytes) => FormatHelpers.FormatBytes(bytes);
+
+    [McpServerTool, Description("Rebuild specific indexes on source services. Use this to refresh BM25 search indexes, FTS5 full-text indexes, cross-reference indexes, or other specialized indexes.")]
+    public static async Task<string> RebuildIndex(
+        OrchestratorService.OrchestratorServiceClient orchestrator,
+        [Description("Comma-separated sources to rebuild indexes on (empty for all): jira,zulip,github,confluence")] string? sources = null,
+        [Description("Index type: all, bm25, fts, cross-refs, lookup-tables, commits, artifact-map, page-links")] string indexType = "all",
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            OrchestratorRebuildIndexRequest request = new() { IndexType = indexType };
+
+            if (!string.IsNullOrWhiteSpace(sources))
+                CsvParser.AddToRepeatedField(request.Sources, sources);
+
+            OrchestratorRebuildIndexResponse response =
+                await orchestrator.RebuildIndexAsync(request, cancellationToken: cancellationToken);
+
+            StringBuilder sb = new();
+            sb.AppendLine($"## Index Rebuild Results ({response.Results.Count} sources)");
+            sb.AppendLine();
+
+            foreach (SourceRebuildIndexStatus status in response.Results)
+            {
+                string icon = status.Success ? "✅" : "❌";
+                sb.AppendLine($"- {icon} **{status.Source}**: {status.ActionTaken ?? status.Error}");
+                if (status.ElapsedSeconds > 0)
+                    sb.AppendLine($"  - Elapsed: {status.ElapsedSeconds:F1}s");
+            }
+
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
 }

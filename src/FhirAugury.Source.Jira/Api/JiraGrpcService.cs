@@ -24,6 +24,9 @@ public class JiraGrpcService(
     JiraIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
+    JiraZulipRefExtractor zulipRefExtractor,
+    JiraIndexer indexer,
+    JiraIndexBuilder indexBuilder,
     IOptions<JiraServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -579,6 +582,62 @@ public class JiraGrpcService(
         }
 
         return sb.ToString();
+    }
+
+    public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
+        PeerIngestionNotification request, ServerCallContext context)
+    {
+        if (request.Source.Equals("zulip", StringComparison.OrdinalIgnoreCase))
+        {
+            workQueue.Enqueue(ct =>
+            {
+                zulipRefExtractor.ExtractAll(ct);
+                return Task.CompletedTask;
+            }, "rebuild-zulip-xrefs");
+
+            return Task.FromResult(new PeerIngestionAck
+                { Acknowledged = true, ActionTaken = "queued zulip ref index rebuild" });
+        }
+
+        return Task.FromResult(new PeerIngestionAck
+            { Acknowledged = true, ActionTaken = "no action needed" });
+    }
+
+    public override Task<RebuildIndexResponse> RebuildIndex(
+        RebuildIndexRequest request, ServerCallContext context)
+    {
+        string indexType = request.IndexType?.ToLowerInvariant() ?? "all";
+
+        workQueue.Enqueue(ct =>
+        {
+            switch (indexType)
+            {
+                case "lookup-tables":
+                    using (SqliteConnection conn = database.OpenConnection())
+                        indexBuilder.RebuildIndexTables(conn);
+                    break;
+                case "cross-refs":
+                    zulipRefExtractor.ExtractAll(ct);
+                    break;
+                case "bm25":
+                    indexer.RebuildFullIndex(ct);
+                    break;
+                case "fts":
+                    database.RebuildFtsIndexes();
+                    break;
+                case "all":
+                    using (SqliteConnection conn = database.OpenConnection())
+                        indexBuilder.RebuildIndexTables(conn);
+                    zulipRefExtractor.ExtractAll(ct);
+                    indexer.RebuildFullIndex(ct);
+                    database.RebuildFtsIndexes();
+                    break;
+            }
+            return Task.CompletedTask;
+        }, $"rebuild-index-{indexType}");
+
+        return Task.FromResult(new RebuildIndexResponse
+            { Success = true, ActionTaken = $"queued {indexType} index rebuild" });
     }
 
     private static Timestamp? ParseTimestamp(SqliteDataReader reader, int ordinal)

@@ -43,6 +43,13 @@ service SourceService {
 
   // Return cross-references this source has discovered for a given item.
   rpc GetItemCrossReferences(GetItemXRefRequest) returns (GetItemXRefResponse);
+
+  // Notify this source that a peer source completed ingestion,
+  // so it can rebuild cross-reference indexes for that source.
+  rpc NotifyPeerIngestionComplete(PeerIngestionNotification) returns (PeerIngestionAck);
+
+  // Trigger rebuild of a specific index type on this source.
+  rpc RebuildIndex(RebuildIndexRequest) returns (RebuildIndexResponse);
 }
 
 // ── Request/Response Messages ────────────────────────────────────
@@ -235,4 +242,30 @@ message SourceCrossReference {
   string context = 6;         // surrounding text snippet
   string source_title = 7;    // title of the item in this source
   string source_url = 8;      // URL of the item in this source
+}
+
+// ── Peer Ingestion Notification ──────────────────────────────────
+
+message PeerIngestionNotification {
+  string source = 1;          // name of the source that completed (e.g., "jira")
+  string type = 2;            // ingestion type that completed ("full", "incremental", "rebuild")
+  int32 items_ingested = 3;   // how many items were processed
+}
+
+message PeerIngestionAck {
+  bool acknowledged = 1;
+  string action_taken = 2;    // what the source did (e.g., "rebuilt jira ticket index")
+}
+
+// ── Index Rebuild ────────────────────────────────────────────────
+
+message RebuildIndexRequest {
+  string index_type = 1;  // "all", "bm25", "fts", "cross-refs", "lookup-tables", etc.
+}
+
+message RebuildIndexResponse {
+  bool success = 1;
+  string action_taken = 2;
+  double elapsed_seconds = 3;
+  string error = 4;
 }

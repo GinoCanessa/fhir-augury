@@ -25,6 +25,9 @@ public class ConfluenceServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
+    /// <summary>gRPC address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorGrpcAddress { get; set; }
+
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
     /// available for queries but will not download new content.

@@ -16,6 +16,7 @@ public static class IngestCommand
         command.Add(CreateTriggerCommand(orchestratorOption, formatOption, verboseOption));
         command.Add(CreateStatusCommand(orchestratorOption));
         command.Add(CreateRebuildCommand(orchestratorOption, formatOption, verboseOption));
+        command.Add(CreateIndexCommand(orchestratorOption, formatOption, verboseOption));
 
         return command;
     }
@@ -130,6 +131,61 @@ public static class IngestCommand
 
                 TriggerSyncResponse response = await clients.Orchestrator.TriggerSyncAsync(request, cancellationToken: ct);
                 OutputFormatter.FormatSyncStatus(response, format);
+                if (sw is not null)
+                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
+            }
+            catch (RpcException ex)
+            {
+                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
+            }
+        });
+
+        return command;
+    }
+
+    private static Command CreateIndexCommand(Option<string> orchestratorOption, Option<string> formatOption, Option<bool> verboseOption)
+    {
+        Option<string?> sourcesOption = new Option<string?>("--sources")
+        {
+            Description = "Comma-separated sources to rebuild indexes on (empty for all)",
+        };
+        Option<string> typeOption = new Option<string>("--type")
+        {
+            Description = "Index type: all, bm25, fts, cross-refs, lookup-tables, commits, artifact-map, page-links",
+            DefaultValueFactory = _ => "all",
+        };
+
+        Command command = new Command("index", "Rebuild specific indexes on source services")
+        {
+            sourcesOption,
+            typeOption,
+        };
+
+        command.SetAction(async (parseResult, ct) =>
+        {
+            string addr = parseResult.GetValue(orchestratorOption)!;
+            bool verbose = parseResult.GetValue(verboseOption);
+            try
+            {
+                string? sources = parseResult.GetValue(sourcesOption);
+                string type = parseResult.GetValue(typeOption)!;
+
+                Stopwatch? sw = verbose ? Stopwatch.StartNew() : null;
+                using GrpcClientFactory clients = new GrpcClientFactory(addr);
+                OrchestratorRebuildIndexRequest request = new() { IndexType = type };
+
+                if (!string.IsNullOrWhiteSpace(sources))
+                    CsvParser.AddToRepeatedField(request.Sources, sources);
+
+                OrchestratorRebuildIndexResponse response =
+                    await clients.Orchestrator.RebuildIndexAsync(request, cancellationToken: ct);
+
+                foreach (SourceRebuildIndexStatus status in response.Results)
+                {
+                    string icon = status.Success ? "✓" : "✗";
+                    Console.WriteLine($"  {icon} {status.Source}: {status.ActionTaken ?? status.Error}");
+                }
+
                 if (sw is not null)
                     Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
             }

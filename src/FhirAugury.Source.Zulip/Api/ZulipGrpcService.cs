@@ -24,6 +24,8 @@ public class ZulipGrpcService(
     ZulipIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
+    ZulipTicketIndexer ticketIndexer,
+    ZulipIndexer indexer,
     IOptions<ZulipServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -531,6 +533,56 @@ public class ZulipGrpcService(
         return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
             ? Timestamp.FromDateTimeOffset(dt)
             : null;
+    }
+
+    public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
+        PeerIngestionNotification request, ServerCallContext context)
+    {
+        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        {
+            workQueue.Enqueue(ct =>
+            {
+                ticketIndexer.RebuildFullIndex(ct);
+                return Task.CompletedTask;
+            }, "rebuild-jira-xrefs");
+
+            return Task.FromResult(new PeerIngestionAck
+                { Acknowledged = true, ActionTaken = "queued jira ticket index rebuild" });
+        }
+
+        return Task.FromResult(new PeerIngestionAck
+            { Acknowledged = true, ActionTaken = "no action needed" });
+    }
+
+    public override Task<RebuildIndexResponse> RebuildIndex(
+        RebuildIndexRequest request, ServerCallContext context)
+    {
+        string indexType = request.IndexType?.ToLowerInvariant() ?? "all";
+
+        workQueue.Enqueue(ct =>
+        {
+            switch (indexType)
+            {
+                case "bm25":
+                    indexer.RebuildFullIndex(ct);
+                    break;
+                case "cross-refs":
+                    ticketIndexer.RebuildFullIndex(ct);
+                    break;
+                case "fts":
+                    database.RebuildFtsIndexes();
+                    break;
+                case "all":
+                    indexer.RebuildFullIndex(ct);
+                    ticketIndexer.RebuildFullIndex(ct);
+                    database.RebuildFtsIndexes();
+                    break;
+            }
+            return Task.CompletedTask;
+        }, $"rebuild-index-{indexType}");
+
+        return Task.FromResult(new RebuildIndexResponse
+            { Success = true, ActionTaken = $"queued {indexType} index rebuild" });
     }
 }
 

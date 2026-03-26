@@ -1,8 +1,10 @@
+using Fhiraugury;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,6 +20,7 @@ public class JiraIngestionPipeline(
     JiraIndexer indexer,
     JiraIndexBuilder indexBuilder,
     JiraZulipRefExtractor zulipRefExtractor,
+    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<JiraServiceOptions> optionsAccessor,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -40,8 +43,11 @@ public class JiraIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            IngestionResult result = await source.DownloadAllAsync(jqlOverride, ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadAllAsync(jqlOverride, ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "full", ct);
+            await NotifyOrchestratorAsync(result, "full");
 
             _currentStatus = "idle";
             return result;
@@ -71,8 +77,11 @@ public class JiraIngestionPipeline(
             DateTimeOffset since = GetLastSyncTime();
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
-            IngestionResult result = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "incremental", ct);
+            await NotifyOrchestratorAsync(result, "incremental");
 
             _currentStatus = "idle";
             return result;
@@ -110,6 +119,7 @@ public class JiraIngestionPipeline(
 
             IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
+            await NotifyOrchestratorAsync(result, "rebuild");
 
             _currentStatus = "idle";
             return result;
@@ -124,6 +134,44 @@ public class JiraIngestionPipeline(
         {
             _runLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Loads cached data into the database if it is empty, setting sync cursors
+    /// so subsequent downloads only fetch new data.
+    /// </summary>
+    private async Task<IngestionResult?> LoadCacheIfDatabaseEmptyAsync(CancellationToken ct)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        int issueCount = JiraIssueRecord.SelectCount(connection);
+
+        if (issueCount > 0)
+            return null;
+
+        logger.LogInformation("Database is empty; loading local cache before downloading");
+        IngestionResult cacheResult = await source.LoadFromCacheAsync(ct);
+
+        if (cacheResult.ItemsProcessed > 0)
+            logger.LogInformation("Pre-loaded {Count} items from cache ({New} new)",
+                cacheResult.ItemsProcessed, cacheResult.ItemsNew);
+        else
+            logger.LogInformation("No cached data found to pre-load");
+
+        return cacheResult;
+    }
+
+    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult second)
+    {
+        if (first is null)
+            return second;
+
+        return new IngestionResult(
+            first.ItemsProcessed + second.ItemsProcessed,
+            first.ItemsNew + second.ItemsNew,
+            first.ItemsUpdated + second.ItemsUpdated,
+            first.ItemsFailed + second.ItemsFailed,
+            [.. first.Errors, .. second.Errors],
+            first.StartedAt);
     }
 
     private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
@@ -150,6 +198,26 @@ public class JiraIngestionPipeline(
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
+    }
+
+    private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
+    {
+        if (orchestratorClient is null) return;
+
+        try
+        {
+            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            {
+                Source = JiraSource.SourceName,
+                Type = runType,
+                ItemsIngested = result.ItemsProcessed,
+                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to notify orchestrator of ingestion completion");
+        }
     }
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)

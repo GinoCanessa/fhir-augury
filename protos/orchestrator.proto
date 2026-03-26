@@ -30,6 +30,9 @@ service OrchestratorService {
 
   // Get active service endpoints for direct access.
   rpc GetServiceEndpoints(ServiceEndpointsRequest) returns (ServiceEndpointsResponse);
+
+  // Trigger index rebuild on one or more sources.
+  rpc RebuildIndex(OrchestratorRebuildIndexRequest) returns (OrchestratorRebuildIndexResponse);
 }
 
 message UnifiedSearchRequest {
@@ -138,4 +141,23 @@ message ServiceEndpoint {
   string name = 1;
   string grpc_address = 2;
   bool enabled = 3;
+}
+
+// ── Orchestrator Index Rebuild ───────────────────────────────────
+
+message OrchestratorRebuildIndexRequest {
+  repeated string sources = 1;   // empty = all enabled sources
+  string index_type = 2;         // "all", "bm25", "fts", "cross-refs", etc.
+}
+
+message OrchestratorRebuildIndexResponse {
+  repeated SourceRebuildIndexStatus results = 1;
+}
+
+message SourceRebuildIndexStatus {
+  string source = 1;
+  bool success = 2;
+  string action_taken = 3;
+  double elapsed_seconds = 4;
+  string error = 5;
 }

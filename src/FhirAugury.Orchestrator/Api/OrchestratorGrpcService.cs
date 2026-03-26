@@ -248,7 +248,7 @@ public class OrchestratorGrpcService(
         return response;
     }
 
-    public override Task<IngestionCompleteAck> NotifyIngestionComplete(
+    public override async Task<IngestionCompleteAck> NotifyIngestionComplete(
         IngestionCompleteNotification request, ServerCallContext context)
     {
         logger.LogInformation(
@@ -272,7 +272,77 @@ public class OrchestratorGrpcService(
         else
             XrefScanStateRecord.Insert(connection, record);
 
-        return Task.FromResult(new IngestionCompleteAck { Acknowledged = true });
+        // Fan out to all OTHER sources
+        PeerIngestionNotification peerNotification = new()
+        {
+            Source = request.Source,
+            Type = request.Type,
+            ItemsIngested = request.ItemsIngested,
+        };
+
+        List<string> targets = router.GetEnabledSources()
+            .Where(s => !s.Equals(request.Source, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Task[] fanOutTasks = targets.Select(async targetSource =>
+        {
+            try
+            {
+                SourceService.SourceServiceClient? client = router.GetSourceClient(targetSource);
+                if (client is not null)
+                    await client.NotifyPeerIngestionCompleteAsync(peerNotification);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to notify {Target} of {Source} ingestion",
+                    targetSource, request.Source);
+            }
+        }).ToArray();
+
+        await Task.WhenAll(fanOutTasks);
+
+        return new IngestionCompleteAck { Acknowledged = true };
+    }
+
+    public override async Task<OrchestratorRebuildIndexResponse> RebuildIndex(
+        OrchestratorRebuildIndexRequest request, ServerCallContext context)
+    {
+        List<string> targets = request.Sources.Count > 0
+            ? request.Sources.ToList()
+            : router.GetEnabledSources().ToList();
+
+        RebuildIndexRequest sourceRequest = new() { IndexType = request.IndexType };
+        List<SourceRebuildIndexStatus> results = [];
+
+        await Task.WhenAll(targets.Select(async source =>
+        {
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
+            if (client is null)
+            {
+                lock (results) results.Add(new SourceRebuildIndexStatus
+                    { Source = source, Success = false, Error = "source not found" });
+                return;
+            }
+
+            try
+            {
+                RebuildIndexResponse resp = await client.RebuildIndexAsync(sourceRequest);
+                lock (results) results.Add(new SourceRebuildIndexStatus
+                {
+                    Source = source, Success = resp.Success,
+                    ActionTaken = resp.ActionTaken, ElapsedSeconds = resp.ElapsedSeconds,
+                });
+            }
+            catch (Exception ex)
+            {
+                lock (results) results.Add(new SourceRebuildIndexStatus
+                    { Source = source, Success = false, Error = ex.Message });
+            }
+        }));
+
+        OrchestratorRebuildIndexResponse response = new();
+        response.Results.AddRange(results);
+        return response;
     }
 
     public override Task<ServiceEndpointsResponse> GetServiceEndpoints(
