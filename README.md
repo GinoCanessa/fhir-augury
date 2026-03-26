@@ -53,7 +53,7 @@ docker compose --profile full logs -f
 
 ```bash
 # Start all services with the Aspire dashboard
-dotnet run --project src/FhirAugury.AppHost
+aspire run
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and

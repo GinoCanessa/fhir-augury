@@ -1,8 +1,15 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
 // ── Source services (pinned ports matching existing convention) ───
+// Use WithEndpoint callback to configure the auto-discovered "http" endpoint
+// (AddProject auto-creates "http" from launchSettings.json in Aspire 13.2+).
 var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
-    .WithHttpEndpoint(port: 5160, targetPort: 5160, name: "http", isProxied: false)
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5160;
+        e.TargetPort = 5160;
+        e.IsProxied = false;
+    })
     .WithEndpoint("grpc", e =>
     {
         e.Port = 5161;
@@ -12,7 +19,12 @@ var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
     });
 
 var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
-    .WithHttpEndpoint(port: 5170, targetPort: 5170, name: "http", isProxied: false)
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5170;
+        e.TargetPort = 5170;
+        e.IsProxied = false;
+    })
     .WithEndpoint("grpc", e =>
     {
         e.Port = 5171;
@@ -22,7 +34,12 @@ var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
     });
 
 var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("source-confluence")
-    .WithHttpEndpoint(port: 5180, targetPort: 5180, name: "http", isProxied: false)
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5180;
+        e.TargetPort = 5180;
+        e.IsProxied = false;
+    })
     .WithEndpoint("grpc", e =>
     {
         e.Port = 5181;
@@ -32,7 +49,12 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
     });
 
 var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-github")
-    .WithHttpEndpoint(port: 5190, targetPort: 5190, name: "http", isProxied: false)
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5190;
+        e.TargetPort = 5190;
+        e.IsProxied = false;
+    })
     .WithEndpoint("grpc", e =>
     {
         e.Port = 5191;
@@ -43,7 +65,12 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
 
 // ── Orchestrator ─────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
-    .WithHttpEndpoint(port: 5150, targetPort: 5150, name: "http", isProxied: false)
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5150;
+        e.TargetPort = 5150;
+        e.IsProxied = false;
+    })
     .WithEndpoint("grpc", e =>
     {
         e.Port = 5151;
