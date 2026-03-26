@@ -1,4 +1,5 @@
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -26,7 +27,12 @@ public class ConfluenceDatabase : SourceDatabase
         ConfluenceKeywordRecord.CreateTable(connection);
         ConfluenceCorpusKeywordRecord.CreateTable(connection);
         ConfluenceDocStatsRecord.CreateTable(connection);
-        ConfluenceJiraRefRecord.CreateTable(connection);
+
+        // Shared cross-reference tables
+        JiraXRefRecord.CreateTable(connection);
+        ZulipXRefRecord.CreateTable(connection);
+        GitHubXRefRecord.CreateTable(connection);
+        FhirElementXRefRecord.CreateTable(connection);
 
         CreateConfluencePagesFts(connection);
     }
@@ -49,6 +55,20 @@ public class ConfluenceDatabase : SourceDatabase
         RebuildFts5(connection, "confluence_pages_fts");
     }
 
+    /// <summary>
+    /// Check if the primary content table of this database is empty
+    /// </summary>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    public bool PrimaryContentTableIsEmpty(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM confluence_pages";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
+
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase()
     {
@@ -66,6 +86,10 @@ public class ConfluenceDatabase : SourceDatabase
             DROP TABLE IF EXISTS index_corpus;
             DROP TABLE IF EXISTS index_doc_stats;
             DROP TABLE IF EXISTS confluence_jira_refs;
+            DROP TABLE IF EXISTS xref_jira;
+            DROP TABLE IF EXISTS xref_zulip;
+            DROP TABLE IF EXISTS xref_github;
+            DROP TABLE IF EXISTS xref_fhir_element;
             """;
         cmd.ExecuteNonQuery();
 

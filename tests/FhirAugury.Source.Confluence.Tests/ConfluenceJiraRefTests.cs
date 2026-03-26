@@ -1,6 +1,6 @@
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Database;
-using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -29,19 +29,21 @@ public class ConfluenceJiraRefTests : IDisposable
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord record = new ConfluenceJiraRefRecord
+        JiraXRefRecord record = new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "50001",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page",
+            SourceId = "50001",
+            LinkType = "mentions",
             JiraKey = "FHIR-12345",
             Context = "See FHIR-12345 for patient resource details",
         };
 
-        ConfluenceJiraRefRecord.Insert(conn, record);
-        ConfluenceJiraRefRecord? result = ConfluenceJiraRefRecord.SelectSingle(conn, JiraKey: "FHIR-12345");
+        JiraXRefRecord.Insert(conn, record);
+        JiraXRefRecord? result = JiraXRefRecord.SelectSingle(conn, JiraKey: "FHIR-12345");
 
         Assert.NotNull(result);
-        Assert.Equal("50001", result.ConfluenceId);
+        Assert.Equal("50001", result.SourceId);
         Assert.Equal("FHIR-12345", result.JiraKey);
         Assert.Equal("See FHIR-12345 for patient resource details", result.Context);
     }
@@ -51,65 +53,65 @@ public class ConfluenceJiraRefTests : IDisposable
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "100",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "100", LinkType = "mentions",
             JiraKey = "FHIR-1001",
             Context = "Referenced in page 100",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "200",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "200", LinkType = "mentions",
             JiraKey = "FHIR-1001",
             Context = "Also referenced in page 200",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "300",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "300", LinkType = "mentions",
             JiraKey = "FHIR-9999",
             Context = "Different ticket in page 300",
         });
 
-        List<ConfluenceJiraRefRecord> results = ConfluenceJiraRefRecord.SelectList(conn, JiraKey: "FHIR-1001");
+        List<JiraXRefRecord> results = JiraXRefRecord.SelectList(conn, JiraKey: "FHIR-1001");
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal("FHIR-1001", r.JiraKey));
     }
 
     [Fact]
-    public void JiraRefRecord_SelectByConfluenceId()
+    public void JiraRefRecord_SelectBySourceId()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "400",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "400", LinkType = "mentions",
             JiraKey = "FHIR-2001",
             Context = "First ref in page 400",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "400",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "400", LinkType = "mentions",
             JiraKey = "GF-500",
             Context = "Second ref in page 400",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "500",
+            Id = JiraXRefRecord.GetIndex(),
+            SourceType = "page", SourceId = "500", LinkType = "mentions",
             JiraKey = "FHIR-3001",
             Context = "Ref in different page",
         });
 
-        List<ConfluenceJiraRefRecord> results = ConfluenceJiraRefRecord.SelectList(conn, ConfluenceId: "400");
+        List<JiraXRefRecord> results = JiraXRefRecord.SelectList(conn, SourceId: "400");
 
         Assert.Equal(2, results.Count);
-        Assert.All(results, r => Assert.Equal("400", r.ConfluenceId));
+        Assert.All(results, r => Assert.Equal("400", r.SourceId));
     }
 
     [Fact]

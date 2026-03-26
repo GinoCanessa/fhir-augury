@@ -6,6 +6,9 @@
         <TargetFramework>net10.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
+		<!-- CS0436: CsLightDbGen source generator produces attribute types in both
+		     Common and each source project; the local type is always preferred. -->
+		<NoWarn>$(NoWarn);CS0436</NoWarn>
 		<VersionPrefix>$([System.DateTime]::Now.ToString("yyyy.MMdd.HHmm"))</VersionPrefix>
 		<Version>$(VersionPrefix)</Version>
 		<AssemblyName>$(AssemblyName.Replace(' ', '_'))</AssemblyName>

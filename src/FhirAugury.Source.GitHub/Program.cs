@@ -129,32 +129,7 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 
-// ── Ensure dictionary database ───────────────────────────────────
-{
-    GitHubServiceOptions opts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
-    await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
-        opts.DictionaryDatabase,
-        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
-        CancellationToken.None);
-}
-
-// ── Validate gh CLI if selected ──────────────────────────────────
-{
-    GitHubServiceOptions opts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
-    if (opts.Provider.Equals("gh-cli", StringComparison.OrdinalIgnoreCase))
-    {
-        GhCliRunner ghRunner = app.Services.GetRequiredService<GhCliRunner>();
-        bool valid = await ghRunner.ValidateAsync(CancellationToken.None);
-        if (!valid)
-        {
-            ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-            startupLogger.LogCritical(
-                "gh CLI provider selected but gh is not available or not authenticated. " +
-                "Run 'gh auth login' or set Provider to 'rest' in configuration.");
-            throw new InvalidOperationException("gh CLI is not available or not authenticated.");
-        }
-    }
-}
+GitHubServiceOptions githubOpts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
@@ -165,5 +140,34 @@ app.MapGrpcService<GitHubSpecificGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapGitHubHttpApi();
+
+// ── Ensure dictionary database ───────────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    githubOpts.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
+// ── Validate gh CLI if selected ──────────────────────────────────
+if (githubOpts.Provider.Equals("gh-cli", StringComparison.OrdinalIgnoreCase))
+{
+    GhCliRunner ghRunner = app.Services.GetRequiredService<GhCliRunner>();
+    bool valid = await ghRunner.ValidateAsync(CancellationToken.None);
+    if (!valid)
+    {
+        ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+        startupLogger.LogCritical(
+            "gh CLI provider selected but gh is not available or not authenticated. " +
+            "Run 'gh auth login' or set Provider to 'rest' in configuration.");
+        throw new InvalidOperationException("gh CLI is not available or not authenticated.");
+    }
+}
+
+// ── Reload from cache on startup (if configured) ─────────────────
+if (githubOpts.ReloadFromCacheOnStartup ||
+    app.Services.GetRequiredService<GitHubDatabase>().PrimaryContentTableIsEmpty())
+{
+    GitHubIngestionPipeline pipeline = app.Services.GetRequiredService<GitHubIngestionPipeline>();
+    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+}
 
 app.Run();

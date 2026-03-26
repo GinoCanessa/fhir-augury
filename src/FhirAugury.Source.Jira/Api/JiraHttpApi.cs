@@ -1,4 +1,5 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
@@ -256,7 +257,50 @@ public static class JiraHttpApi
             }
         });
 
-        api.MapGet("/stats", (JiraDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
+        api.MapPost("/rebuild-index", (
+            HttpRequest req,
+            IngestionWorkQueue workQueue,
+            JiraDatabase database,
+            JiraIndexBuilder indexBuilder,
+            JiraXRefRebuilder xrefRebuilder,
+            JiraIndexer indexer) =>
+        {
+            string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
+
+            workQueue.Enqueue(ct =>
+            {
+                switch (indexType)
+                {
+                    case "lookup-tables":
+                        using (SqliteConnection conn = database.OpenConnection())
+                            indexBuilder.RebuildIndexTables(conn);
+                        break;
+                    case "cross-refs":
+                        xrefRebuilder.ExtractAll(ct);
+                        break;
+                    case "bm25":
+                        indexer.RebuildFullIndex(ct);
+                        break;
+                    case "fts":
+                        database.RebuildFtsIndexes();
+                        break;
+                    case "all":
+                        using (SqliteConnection conn = database.OpenConnection())
+                            indexBuilder.RebuildIndexTables(conn);
+                        xrefRebuilder.ExtractAll(ct);
+                        indexer.RebuildFullIndex(ct);
+                        database.RebuildFtsIndexes();
+                        break;
+                    default:
+                        return Task.CompletedTask;
+                }
+                return Task.CompletedTask;
+            }, $"rebuild-index-{indexType}");
+
+            return Results.Ok(new { success = true, actionTaken = $"queued {indexType} index rebuild" });
+        });
+
+        api.MapGet("/stats",(JiraDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             int issueCount = JiraIssueRecord.SelectCount(connection);

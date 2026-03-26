@@ -108,7 +108,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILogger<JiraIndexer>>());
 });
 builder.Services.AddSingleton<JiraIndexBuilder>();
-builder.Services.AddSingleton<JiraZulipRefExtractor>();
+builder.Services.AddSingleton<JiraXRefRebuilder>();
 
 // Orchestrator client (optional — for ingestion notifications)
 #pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
@@ -129,6 +129,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
+JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
@@ -140,18 +141,19 @@ app.MapGrpcService<JiraSpecificGrpcService>();
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapJiraHttpApi();
 
+// ── Ensure dictionary database exists ────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    jiraOpts.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
 // ── Reload from cache on startup (if configured) ─────────────────
-JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
-if (jiraOpts.ReloadFromCacheOnStartup)
+if (jiraOpts.ReloadFromCacheOnStartup ||
+    app.Services.GetRequiredService<JiraDatabase>().PrimaryContentTableIsEmpty())
 {
     JiraIngestionPipeline pipeline = app.Services.GetRequiredService<JiraIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
 
-// ── Ensure dictionary database ───────────────────────────────────
-await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
-    jiraOpts.DictionaryDatabase,
-    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
-    CancellationToken.None);
 
 app.Run();

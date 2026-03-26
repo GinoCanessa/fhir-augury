@@ -53,6 +53,11 @@ public class GitHubServiceOptions
     /// </summary>
     public bool IngestionPaused { get; set; } = false;
 
+    /// <summary>
+    /// When true, rebuilds the database from cached responses on startup.
+    /// </summary>
+    public bool ReloadFromCacheOnStartup { get; set; } = false;
+
     public PortConfiguration Ports { get; set; } = new() { Http = 5190, Grpc = 5191 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();

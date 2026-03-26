@@ -1,9 +1,11 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
+using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -287,7 +289,43 @@ public static class ZulipHttpApi
             }
         });
 
-        api.MapGet("/stats", (ZulipDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
+        api.MapPost("/rebuild-index", (
+            HttpRequest req,
+            IngestionWorkQueue workQueue,
+            ZulipDatabase database,
+            ZulipIndexer indexer,
+            ZulipTicketIndexer ticketIndexer) =>
+        {
+            string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
+
+            workQueue.Enqueue(ct =>
+            {
+                switch (indexType)
+                {
+                    case "bm25":
+                        indexer.RebuildFullIndex(ct);
+                        break;
+                    case "cross-refs":
+                        ticketIndexer.RebuildFullIndex(ct);
+                        break;
+                    case "fts":
+                        database.RebuildFtsIndexes();
+                        break;
+                    case "all":
+                        indexer.RebuildFullIndex(ct);
+                        ticketIndexer.RebuildFullIndex(ct);
+                        database.RebuildFtsIndexes();
+                        break;
+                    default:
+                        return Task.CompletedTask;
+                }
+                return Task.CompletedTask;
+            }, $"rebuild-index-{indexType}");
+
+            return Results.Ok(new { success = true, actionTaken = $"queued {indexType} index rebuild" });
+        });
+
+        api.MapGet("/stats",(ZulipDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             int messageCount = ZulipMessageRecord.SelectCount(connection);

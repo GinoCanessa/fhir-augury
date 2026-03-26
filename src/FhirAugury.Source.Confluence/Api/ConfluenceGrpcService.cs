@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
@@ -24,7 +25,7 @@ public class ConfluenceGrpcService(
     ConfluenceIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    ConfluenceJiraRefRebuilder jiraRefRebuilder,
+    ConfluenceXRefRebuilder xrefRebuilder,
     ConfluenceLinkRebuilder linkRebuilder,
     ConfluenceIndexer indexer,
     IOptions<ConfluenceServiceOptions> optionsAccessor)
@@ -201,14 +202,14 @@ public class ConfluenceGrpcService(
         if (request.SeedSource == "jira")
         {
             // Find Confluence pages that reference this Jira ticket
-            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, JiraKey: request.SeedId);
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
             HashSet<string> seen = [];
-            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            foreach (JiraXRefRecord jiraRef in refs)
             {
-                if (!seen.Add(jiraRef.ConfluenceId)) continue;
+                if (!seen.Add(jiraRef.SourceId)) continue;
                 if (seen.Count > limit) break;
 
-                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.ConfluenceId);
+                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.SourceId);
                 if (page is null) continue;
 
                 response.Results.Add(new SearchResultItem
@@ -271,38 +272,69 @@ public class ConfluenceGrpcService(
 
         if (request.Source == "confluence" && direction is "outgoing" or "both")
         {
-            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, ConfluenceId: request.Id);
             ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: request.Id);
-            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            string sourceTitle = page?.Title ?? "";
+            string sourceUrl = page?.Url ?? "";
+
+            foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: request.Id))
             {
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence",
-                    SourceId = request.Id,
-                    TargetType = "jira",
-                    TargetId = jiraRef.JiraKey,
-                    LinkType = "mentions",
-                    Context = jiraRef.Context ?? "",
-                    SourceTitle = page?.Title ?? "",
-                    SourceUrl = page?.Url ?? "",
+                    SourceType = "confluence", SourceId = request.Id,
+                    TargetType = "jira", TargetId = r.JiraKey,
+                    LinkType = "mentions", Context = r.Context ?? "",
+                    SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                });
+            }
+
+            foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "confluence", SourceId = request.Id,
+                    TargetType = "zulip", TargetId = r.TargetId,
+                    LinkType = "mentions", Context = r.Context ?? "",
+                    SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                });
+            }
+
+            foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "confluence", SourceId = request.Id,
+                    TargetType = "github", TargetId = r.TargetId,
+                    LinkType = "mentions", Context = r.Context ?? "",
+                    SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                });
+            }
+
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "confluence", SourceId = request.Id,
+                    TargetType = "fhir", TargetId = r.TargetId,
+                    LinkType = "mentions", Context = r.Context ?? "",
+                    SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                 });
             }
         }
 
         if (request.Source == "jira" && direction is "incoming" or "both")
         {
-            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, JiraKey: request.Id);
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             HashSet<string> seen = [];
-            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            foreach (JiraXRefRecord jiraRef in refs)
             {
-                if (!seen.Add(jiraRef.ConfluenceId)) continue;
-                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.ConfluenceId);
+                if (!seen.Add(jiraRef.SourceId)) continue;
+                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.SourceId);
                 if (page is null) continue;
 
                 response.References.Add(new SourceCrossReference
                 {
                     SourceType = "confluence",
-                    SourceId = jiraRef.ConfluenceId,
+                    SourceId = jiraRef.SourceId,
                     TargetType = "jira",
                     TargetId = request.Id,
                     LinkType = "mentions",
@@ -555,12 +587,12 @@ public class ConfluenceGrpcService(
         {
             workQueue.Enqueue(ct =>
             {
-                jiraRefRebuilder.RebuildAll(ct);
+                xrefRebuilder.RebuildAll(ct);
                 return Task.CompletedTask;
-            }, "rebuild-jira-xrefs");
+            }, "rebuild-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued jira ref index rebuild" });
+                { Acknowledged = true, ActionTaken = "queued cross-ref index rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck
@@ -580,7 +612,7 @@ public class ConfluenceGrpcService(
                     indexer.RebuildFullIndex(ct);
                     break;
                 case "cross-refs":
-                    jiraRefRebuilder.RebuildAll(ct);
+                    xrefRebuilder.RebuildAll(ct);
                     break;
                 case "page-links":
                     linkRebuilder.RebuildAll(ct);
@@ -589,7 +621,7 @@ public class ConfluenceGrpcService(
                     database.RebuildFtsIndexes();
                     break;
                 case "all":
-                    jiraRefRebuilder.RebuildAll(ct);
+                    xrefRebuilder.RebuildAll(ct);
                     linkRebuilder.RebuildAll(ct);
                     indexer.RebuildFullIndex(ct);
                     database.RebuildFtsIndexes();

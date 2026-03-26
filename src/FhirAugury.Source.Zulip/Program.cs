@@ -124,9 +124,27 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 
-// ── Rebuild from cache (optional) ────────────────────────────────
 ZulipServiceOptions options = app.Services.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-if (options.RebuildFromCacheOnStartup)
+
+// ── Health check ─────────────────────────────────────────────────
+app.MapDefaultEndpoints();
+
+// ── gRPC services ────────────────────────────────────────────────
+app.MapGrpcService<ZulipGrpcService>();
+app.MapGrpcService<ZulipSpecificGrpcService>();
+
+// ── HTTP API ─────────────────────────────────────────────────────
+app.MapZulipHttpApi();
+
+// ── Ensure dictionary database exists ────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    options.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
+// ── Rebuild from cache (optional) ────────────────────────────────
+if (options.RebuildFromCacheOnStartup ||
+    app.Services.GetRequiredService<ZulipDatabase>().PrimaryContentTableIsEmpty())
 {
     ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
@@ -141,20 +159,5 @@ else if (options.ReindexTicketsOnStartup)
     ticketIndexer.RebuildFullIndex(CancellationToken.None);
 }
 
-// ── Ensure dictionary database ───────────────────────────────────
-await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
-    options.DictionaryDatabase,
-    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
-    CancellationToken.None);
-
-// ── Health check ─────────────────────────────────────────────────
-app.MapDefaultEndpoints();
-
-// ── gRPC services ────────────────────────────────────────────────
-app.MapGrpcService<ZulipGrpcService>();
-app.MapGrpcService<ZulipSpecificGrpcService>();
-
-// ── HTTP API ─────────────────────────────────────────────────────
-app.MapZulipHttpApi();
 
 await app.RunAsync();

@@ -91,7 +91,7 @@ builder.Services.AddSingleton(sp =>
         opts.Bm25,
         sp.GetRequiredService<ILogger<ConfluenceIndexer>>());
 });
-builder.Services.AddSingleton<ConfluenceJiraRefRebuilder>();
+builder.Services.AddSingleton<ConfluenceXRefRebuilder>();
 builder.Services.AddSingleton<ConfluenceLinkRebuilder>();
 
 // Orchestrator client (optional — for ingestion notifications)
@@ -113,15 +113,7 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
-
-// ── Ensure dictionary database ───────────────────────────────────
-{
-    ConfluenceServiceOptions opts = app.Services.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
-    await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
-        opts.DictionaryDatabase,
-        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
-        CancellationToken.None);
-}
+ConfluenceServiceOptions confluenceOpts = app.Services.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
@@ -132,5 +124,19 @@ app.MapGrpcService<ConfluenceSpecificGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapConfluenceHttpApi();
+
+// ── Ensure dictionary database ───────────────────────────────────
+await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
+    confluenceOpts.DictionaryDatabase,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
+    CancellationToken.None);
+
+// ── Reload from cache on startup (if configured) ─────────────────
+if (confluenceOpts.ReloadFromCacheOnStartup ||
+    app.Services.GetRequiredService<ConfluenceDatabase>().PrimaryContentTableIsEmpty())
+{
+    ConfluenceIngestionPipeline pipeline = app.Services.GetRequiredService<ConfluenceIngestionPipeline>();
+    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+}
 
 app.Run();

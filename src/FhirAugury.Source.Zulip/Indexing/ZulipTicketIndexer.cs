@@ -1,3 +1,5 @@
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -7,64 +9,58 @@ using Microsoft.Extensions.Logging;
 namespace FhirAugury.Source.Zulip.Indexing;
 
 /// <summary>
-/// Scans Zulip messages for Jira ticket references and populates
-/// message-ticket and thread-ticket link tables.
+/// Scans Zulip messages for cross-references (Jira, GitHub, Confluence, FHIR elements)
+/// using shared extractors, and populates xref tables and thread-ticket link tables.
 /// </summary>
 public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndexer> logger)
 {
     /// <summary>
-    /// Rebuilds all ticket reference tables from scratch.
-    /// Scans every message and rebuilds both message-ticket and thread-ticket tables.
+    /// Rebuilds all cross-reference and ticket reference tables from scratch.
+    /// Scans every message, runs all extractors, and rebuilds thread-ticket aggregation.
     /// </summary>
     public void RebuildFullIndex(CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        // Clear existing ticket data
+        // Clear existing xref and ticket data
         using (SqliteCommand cmd = connection.CreateCommand())
         {
-            cmd.CommandText = "DELETE FROM zulip_thread_tickets; DELETE FROM zulip_message_tickets;";
+            cmd.CommandText = """
+                DELETE FROM xref_jira;
+                DELETE FROM xref_github;
+                DELETE FROM xref_confluence;
+                DELETE FROM xref_fhir_element;
+                DELETE FROM zulip_thread_tickets;
+                """;
             cmd.ExecuteNonQuery();
         }
 
-        // Scan all messages and extract ticket references
+        // Scan all messages and extract cross-references
         List<ZulipMessageRecord> messages = ZulipMessageRecord.SelectList(connection);
-        int messageTicketCount = 0;
+        int refCount = 0;
 
         foreach (ZulipMessageRecord message in messages)
         {
             ct.ThrowIfCancellationRequested();
 
-            List<JiraTicketMatch> tickets = ExtractFromMessage(message);
-            if (tickets.Count == 0) continue;
+            string messageText = GetMessageText(message);
+            if (string.IsNullOrWhiteSpace(messageText)) continue;
 
-            HashSet<string> seenKeys = [];
-            foreach (JiraTicketMatch ticket in tickets)
-            {
-                if (!seenKeys.Add(ticket.JiraKey)) continue;
-
-                ZulipMessageTicketRecord.Insert(connection, new ZulipMessageTicketRecord
-                {
-                    Id = ZulipMessageTicketRecord.GetIndex(),
-                    ZulipMessageId = message.ZulipMessageId,
-                    JiraKey = ticket.JiraKey,
-                    Context = ticket.Context,
-                }, ignoreDuplicates: true);
-                messageTicketCount++;
-            }
+            string sourceId = message.ZulipMessageId.ToString();
+            refCount += ExtractAndInsertRefs(connection, sourceId, messageText);
         }
 
-        // Aggregate thread-level ticket links
+        // Aggregate thread-level ticket links from xref_jira
         int threadTicketCount = AggregateThreadTickets(connection);
 
         logger.LogInformation(
-            "Ticket index rebuilt: {MessageTickets} message-ticket links, {ThreadTickets} thread-ticket links",
-            messageTicketCount, threadTicketCount);
+            "Cross-reference index rebuilt: {RefCount} refs from {MessageCount} messages, {ThreadTickets} thread-ticket links",
+            refCount, messages.Count, threadTicketCount);
     }
 
     /// <summary>
     /// Incrementally indexes only messages that were ingested since the last run.
-    /// Updates message-ticket links and refreshes affected thread-ticket rows.
+    /// Extracts cross-references and refreshes affected thread-ticket rows.
     /// </summary>
     public void IndexNewMessages(IReadOnlyList<int> newZulipMessageIds, CancellationToken ct = default)
     {
@@ -73,6 +69,7 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
         using SqliteConnection connection = database.OpenConnection();
 
         HashSet<(string StreamName, string Topic)> affectedThreads = [];
+        int refCount = 0;
 
         foreach (int zulipMessageId in newZulipMessageIds)
         {
@@ -81,24 +78,14 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
             ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: zulipMessageId);
             if (message is null) continue;
 
-            List<JiraTicketMatch> tickets = ExtractFromMessage(message);
-            if (tickets.Count == 0) continue;
+            string messageText = GetMessageText(message);
+            if (string.IsNullOrWhiteSpace(messageText)) continue;
 
-            affectedThreads.Add((message.StreamName, message.Topic));
-
-            HashSet<string> seenKeys = [];
-            foreach (JiraTicketMatch ticket in tickets)
-            {
-                if (!seenKeys.Add(ticket.JiraKey)) continue;
-
-                ZulipMessageTicketRecord.Insert(connection, new ZulipMessageTicketRecord
-                {
-                    Id = ZulipMessageTicketRecord.GetIndex(),
-                    ZulipMessageId = zulipMessageId,
-                    JiraKey = ticket.JiraKey,
-                    Context = ticket.Context,
-                }, ignoreDuplicates: true);
-            }
+            string sourceId = message.ZulipMessageId.ToString();
+            int extracted = ExtractAndInsertRefs(connection, sourceId, messageText);
+            if (extracted > 0)
+                affectedThreads.Add((message.StreamName, message.Topic));
+            refCount += extracted;
         }
 
         // Refresh affected threads
@@ -109,27 +96,54 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
         }
 
         logger.LogInformation(
-            "Incremental ticket index: {Messages} messages scanned, {Threads} threads refreshed",
-            newZulipMessageIds.Count, affectedThreads.Count);
+            "Incremental cross-reference index: {Messages} messages scanned, {Refs} refs, {Threads} threads refreshed",
+            newZulipMessageIds.Count, refCount, affectedThreads.Count);
     }
 
-    private static List<JiraTicketMatch> ExtractFromMessage(ZulipMessageRecord message)
+    /// <summary>Combines plain text and HTML content from a message for extraction.</summary>
+    private static string GetMessageText(ZulipMessageRecord message)
     {
-        // Scan both plain text and HTML, merge and deduplicate
-        List<JiraTicketMatch> tickets = JiraTicketExtractor.ExtractTickets(message.ContentPlain);
+        string plain = message.ContentPlain ?? "";
+        string html = message.ContentHtml ?? "";
+        if (string.IsNullOrWhiteSpace(html))
+            return plain;
+        return $"{plain} {html}";
+    }
 
-        if (!string.IsNullOrWhiteSpace(message.ContentHtml))
+    /// <summary>Runs all shared extractors on the text and inserts records. Returns count of refs inserted.</summary>
+    private static int ExtractAndInsertRefs(SqliteConnection connection, string sourceId, string messageText)
+    {
+        int count = 0;
+
+        foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("message", sourceId, null, messageText))
         {
-            List<JiraTicketMatch> htmlTickets = JiraTicketExtractor.ExtractTickets(message.ContentHtml);
-            HashSet<string> existingKeys = new HashSet<string>(tickets.Select(t => t.JiraKey));
-            foreach (JiraTicketMatch htmlTicket in htmlTickets)
-            {
-                if (existingKeys.Add(htmlTicket.JiraKey))
-                    tickets.Add(htmlTicket);
-            }
+            r.Id = JiraXRefRecord.GetIndex();
+            JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
         }
 
-        return tickets;
+        foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("message", sourceId, messageText))
+        {
+            r.Id = GitHubXRefRecord.GetIndex();
+            GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences("message", sourceId, messageText))
+        {
+            r.Id = ConfluenceXRefRecord.GetIndex();
+            ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("message", sourceId, messageText))
+        {
+            r.Id = FhirElementXRefRecord.GetIndex();
+            FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        return count;
     }
 
     private static int AggregateThreadTickets(SqliteConnection connection)
@@ -141,13 +155,14 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
                 ROW_NUMBER() OVER () as Id,
                 m.StreamName,
                 m.Topic,
-                mt.JiraKey,
+                xr.JiraKey,
                 COUNT(*) as ReferenceCount,
                 MIN(m.Timestamp) as FirstSeenAt,
                 MAX(m.Timestamp) as LastSeenAt
-            FROM zulip_message_tickets mt
-            JOIN zulip_messages m ON m.ZulipMessageId = mt.ZulipMessageId
-            GROUP BY m.StreamName, m.Topic, mt.JiraKey
+            FROM xref_jira xr
+            JOIN zulip_messages m ON CAST(m.ZulipMessageId AS TEXT) = xr.SourceId
+            WHERE xr.SourceType = 'message'
+            GROUP BY m.StreamName, m.Topic, xr.JiraKey
             """;
         return cmd.ExecuteNonQuery();
     }
@@ -163,7 +178,7 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
             deleteCmd.ExecuteNonQuery();
         }
 
-        // Re-aggregate for this thread
+        // Re-aggregate for this thread from xref_jira
         using SqliteCommand insertCmd = connection.CreateCommand();
         insertCmd.CommandText = """
             INSERT INTO zulip_thread_tickets (Id, StreamName, Topic, JiraKey, ReferenceCount, FirstSeenAt, LastSeenAt)
@@ -171,14 +186,15 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
                 ROW_NUMBER() OVER () + COALESCE((SELECT MAX(Id) FROM zulip_thread_tickets), 0) as Id,
                 m.StreamName,
                 m.Topic,
-                mt.JiraKey,
+                xr.JiraKey,
                 COUNT(*) as ReferenceCount,
                 MIN(m.Timestamp) as FirstSeenAt,
                 MAX(m.Timestamp) as LastSeenAt
-            FROM zulip_message_tickets mt
-            JOIN zulip_messages m ON m.ZulipMessageId = mt.ZulipMessageId
-            WHERE m.StreamName = @stream AND m.Topic = @topic
-            GROUP BY m.StreamName, m.Topic, mt.JiraKey
+            FROM xref_jira xr
+            JOIN zulip_messages m ON CAST(m.ZulipMessageId AS TEXT) = xr.SourceId
+            WHERE xr.SourceType = 'message'
+              AND m.StreamName = @stream AND m.Topic = @topic
+            GROUP BY m.StreamName, m.Topic, xr.JiraKey
             """;
         insertCmd.Parameters.AddWithValue("@stream", streamName);
         insertCmd.Parameters.AddWithValue("@topic", topic);

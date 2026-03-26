@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
@@ -9,7 +11,8 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 
 /// <summary>
 /// Scans GitHub content (issues, PRs, comments, commit messages) for
-/// Jira issue references (FHIR-N, JF-N, J#N, GF-N patterns).
+/// cross-references to Jira, Zulip, Confluence, and FHIR elements.
+/// Keeps the GitHub-specific bare #NNN → Jira disambiguation logic.
 /// </summary>
 public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefExtractor> logger)
 {
@@ -18,17 +21,21 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     private static partial Regex BareHashPattern();
 
     /// <summary>
-    /// Extracts Jira references from all issues, comments, and commits in the database.
+    /// Extracts cross-references from all issues, comments, and commits in the database.
     /// </summary>
     public void ExtractAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        // Clear existing refs for this repo
+        // Clear existing cross-reference tables
         using (SqliteCommand cmd = connection.CreateCommand())
         {
-            cmd.CommandText = "DELETE FROM github_jira_refs WHERE RepoFullName = @repo";
-            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            cmd.CommandText = """
+                DELETE FROM xref_jira;
+                DELETE FROM xref_zulip;
+                DELETE FROM xref_confluence;
+                DELETE FROM xref_fhir_element;
+                """;
             cmd.ExecuteNonQuery();
         }
 
@@ -37,7 +44,7 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         bool hasIssues = repo?.HasIssues ?? true;
 
         // Get all GitHub issue/PR numbers for this repo (for disambiguation)
-        HashSet<int> githubNumbers = new HashSet<int>();
+        HashSet<int> githubNumbers = [];
         if (hasIssues)
         {
             List<GitHubIssueRecord> issues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
@@ -53,15 +60,7 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         {
             ct.ThrowIfCancellationRequested();
             string text = $"{issue.Title} {issue.Body}";
-            List<GitHubJiraRefRecord> refs = ExtractReferences(text, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
-
-            foreach (GitHubJiraRefRecord jiraRef in refs)
-            {
-                jiraRef.SourceType = "issue";
-                jiraRef.SourceId = issue.UniqueKey;
-                GitHubJiraRefRecord.Insert(connection, jiraRef, ignoreDuplicates: true);
-                refCount++;
-            }
+            refCount += ExtractAndInsertAll(connection, text, "issue", issue.UniqueKey, hasIssues, githubNumbers, validJiraNumbers);
         }
 
         // Scan comments
@@ -69,15 +68,8 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         foreach (GitHubCommentRecord comment in allComments)
         {
             ct.ThrowIfCancellationRequested();
-            List<GitHubJiraRefRecord> refs = ExtractReferences(comment.Body, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
-
-            foreach (GitHubJiraRefRecord jiraRef in refs)
-            {
-                jiraRef.SourceType = "comment";
-                jiraRef.SourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
-                GitHubJiraRefRecord.Insert(connection, jiraRef, ignoreDuplicates: true);
-                refCount++;
-            }
+            string sourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
+            refCount += ExtractAndInsertAll(connection, comment.Body, "comment", sourceId, hasIssues, githubNumbers, validJiraNumbers);
         }
 
         // Scan commits
@@ -85,49 +77,86 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
         foreach (GitHubCommitRecord commit in allCommits)
         {
             ct.ThrowIfCancellationRequested();
-            List<GitHubJiraRefRecord> refs = ExtractReferences(commit.Message, repoFullName, hasIssues, githubNumbers, validJiraNumbers);
-
-            foreach (GitHubJiraRefRecord jiraRef in refs)
-            {
-                jiraRef.SourceType = "commit";
-                jiraRef.SourceId = commit.Sha;
-                GitHubJiraRefRecord.Insert(connection, jiraRef, ignoreDuplicates: true);
-                refCount++;
-            }
+            refCount += ExtractAndInsertAll(connection, commit.Message, "commit", commit.Sha, hasIssues, githubNumbers, validJiraNumbers);
         }
 
-        logger.LogInformation("Extracted {Count} Jira references from {Repo}", refCount, repoFullName);
+        logger.LogInformation("Extracted {Count} cross-references from {Repo}", refCount, repoFullName);
     }
 
-    /// <summary>Extracts Jira references from a text string.</summary>
-    internal static List<GitHubJiraRefRecord> ExtractReferences(
+    /// <summary>
+    /// Runs all shared extractors plus GitHub-specific bare #NNN Jira disambiguation
+    /// on a single text and inserts all results into the xref tables.
+    /// </summary>
+    private static int ExtractAndInsertAll(
+        SqliteConnection connection,
         string text,
-        string repoFullName,
+        string sourceType,
+        string sourceId,
+        bool hasIssues,
+        HashSet<int> githubNumbers,
+        HashSet<int>? validJiraNumbers)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return 0;
+        int count = 0;
+
+        // Jira: shared extractor + GitHub-specific bare #NNN disambiguation
+        List<JiraXRefRecord> jiraRefs = ExtractJiraReferences(text, sourceType, sourceId, hasIssues, githubNumbers, validJiraNumbers);
+        foreach (JiraXRefRecord r in jiraRefs)
+        {
+            r.Id = JiraXRefRecord.GetIndex();
+            JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        // Zulip
+        foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(sourceType, sourceId, text))
+        {
+            r.Id = ZulipXRefRecord.GetIndex();
+            ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        // Confluence
+        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(sourceType, sourceId, text))
+        {
+            r.Id = ConfluenceXRefRecord.GetIndex();
+            ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        // FHIR elements
+        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(sourceType, sourceId, text))
+        {
+            r.Id = FhirElementXRefRecord.GetIndex();
+            FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Extracts Jira references using the shared extractor plus GitHub-specific
+    /// bare #NNN disambiguation logic.
+    /// </summary>
+    internal static List<JiraXRefRecord> ExtractJiraReferences(
+        string text,
+        string sourceType,
+        string sourceId,
         bool hasIssues,
         HashSet<int> githubNumbers,
         HashSet<int>? validJiraNumbers)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
 
-        // Use shared extractor for common patterns (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
-        List<JiraTicketMatch> commonMatches = JiraTicketExtractor.ExtractTickets(text, validJiraNumbers);
-
-        List<GitHubJiraRefRecord> results = [];
+        // Shared extractor for standard patterns (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
+        CrossRefExtractionContext? context = validJiraNumbers is not null
+            ? new CrossRefExtractionContext(ValidJiraNumbers: validJiraNumbers)
+            : null;
+        List<JiraXRefRecord> results = JiraReferenceExtractor.GetReferences(sourceType, sourceId, context, text);
         HashSet<string> seen = [];
-
-        foreach (JiraTicketMatch match in commonMatches)
-        {
-            if (!seen.Add(match.JiraKey)) continue;
-            results.Add(new GitHubJiraRefRecord
-            {
-                Id = GitHubJiraRefRecord.GetIndex(),
-                SourceType = "",
-                SourceId = "",
-                RepoFullName = repoFullName,
-                JiraKey = match.JiraKey,
-                Context = match.Context,
-            });
-        }
+        foreach (JiraXRefRecord r in results)
+            seen.Add(r.JiraKey);
 
         // GitHub-specific: bare #NNN disambiguation (not in shared extractor)
         foreach (Match m in BareHashPattern().Matches(text))
@@ -143,12 +172,12 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
             if (validJiraNumbers is not null && !validJiraNumbers.Contains(number))
                 continue;
 
-            results.Add(new GitHubJiraRefRecord
+            results.Add(new JiraXRefRecord
             {
-                Id = GitHubJiraRefRecord.GetIndex(),
-                SourceType = "",
-                SourceId = "",
-                RepoFullName = repoFullName,
+                Id = 0,
+                SourceType = sourceType,
+                SourceId = sourceId,
+                LinkType = "mentions",
                 JiraKey = jiraKey,
                 Context = CrossRefPatterns.GetSurroundingText(text, m.Index, 160),
             });

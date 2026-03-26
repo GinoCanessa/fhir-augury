@@ -1,18 +1,16 @@
-using FhirAugury.Source.GitHub.Database.Records;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion;
 
 namespace FhirAugury.Source.GitHub.Tests;
 
 public class JiraRefExtractorTests
 {
-    private const string Repo = "HL7/fhir";
-
     [Fact]
-    public void ExtractReferences_FhirPattern_ExtractsCorrectly()
+    public void ExtractJiraReferences_FhirPattern_ExtractsCorrectly()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "Fix for FHIR-43499 and FHIR-12345",
-            Repo, hasIssues: true, [], null);
+            "issue", "HL7/fhir#1", hasIssues: true, [], null);
 
         Assert.Equal(2, refs.Count);
         Assert.Contains(refs, r => r.JiraKey == "FHIR-43499");
@@ -20,69 +18,69 @@ public class JiraRefExtractorTests
     }
 
     [Fact]
-    public void ExtractReferences_JfPattern_ExtractsCorrectly()
+    public void ExtractJiraReferences_JfPattern_ExtractsCorrectly()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "Related to JF-1234",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
         Assert.Equal("JF-1234", refs[0].JiraKey);
     }
 
     [Fact]
-    public void ExtractReferences_GfPattern_ExtractsCorrectly()
+    public void ExtractJiraReferences_GfPattern_ExtractsCorrectly()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "See GF-5678 for details",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
         Assert.Equal("GF-5678", refs[0].JiraKey);
     }
 
     [Fact]
-    public void ExtractReferences_JHash_NormalizesToFhir()
+    public void ExtractJiraReferences_JHash_NormalizesToFhir()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "As per J#999",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
         Assert.Equal("FHIR-999", refs[0].JiraKey);
     }
 
     [Fact]
-    public void ExtractReferences_BareHash_HasIssuesTrue_MatchesGitHub_Skipped()
+    public void ExtractJiraReferences_BareHash_HasIssuesTrue_MatchesGitHub_Skipped()
     {
         HashSet<int> githubNumbers = new HashSet<int> { 42 };
 
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "See #42 for context",
-            Repo, hasIssues: true, githubNumbers, null);
+            "issue", "HL7/fhir#1", hasIssues: true, githubNumbers, null);
 
         Assert.Empty(refs);
     }
 
     [Fact]
-    public void ExtractReferences_BareHash_HasIssuesTrue_NoGitHubMatch_ExtractsAsJira()
+    public void ExtractJiraReferences_BareHash_HasIssuesTrue_NoGitHubMatch_ExtractsAsJira()
     {
         HashSet<int> githubNumbers = new HashSet<int> { 1, 2, 3 };
 
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "See #9999 for context",
-            Repo, hasIssues: true, githubNumbers, null);
+            "issue", "HL7/fhir#1", hasIssues: true, githubNumbers, null);
 
         Assert.Single(refs);
         Assert.Equal("FHIR-9999", refs[0].JiraKey);
     }
 
     [Fact]
-    public void ExtractReferences_BareHash_HasIssuesFalse_AllTreatedAsJira()
+    public void ExtractJiraReferences_BareHash_HasIssuesFalse_AllTreatedAsJira()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "References #100, #200, #300",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Equal(3, refs.Count);
         Assert.Contains(refs, r => r.JiraKey == "FHIR-100");
@@ -91,14 +89,14 @@ public class JiraRefExtractorTests
     }
 
     [Fact]
-    public void ExtractReferences_ValidJiraNumbers_FiltersJHashAndBareHash()
+    public void ExtractJiraReferences_ValidJiraNumbers_FiltersJHashAndBareHash()
     {
         // validJiraNumbers only affects J#N and bare #NNN patterns, not explicit FHIR-N
         HashSet<int> validNumbers = new HashSet<int> { 42 };
 
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "J#42 and J#9999 and #100",
-            Repo, hasIssues: false, [], validNumbers);
+            "issue", "HL7/fhir#1", hasIssues: false, [], validNumbers);
 
         // J#42 → FHIR-42 (valid), J#9999 → FHIR-9999 (invalid), #100 → FHIR-100 (invalid)
         Assert.Single(refs);
@@ -106,35 +104,37 @@ public class JiraRefExtractorTests
     }
 
     [Fact]
-    public void ExtractReferences_Deduplication_NoDuplicates()
+    public void ExtractJiraReferences_Deduplication_NoDuplicates()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "FHIR-100 is related to FHIR-100 and also FHIR-100",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
     }
 
     [Fact]
-    public void ExtractReferences_EmptyText_ReturnsEmpty()
+    public void ExtractJiraReferences_EmptyText_ReturnsEmpty()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences("", Repo, hasIssues: false, [], null);
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+            "", "issue", "HL7/fhir#1", hasIssues: false, [], null);
         Assert.Empty(refs);
     }
 
     [Fact]
-    public void ExtractReferences_NullText_ReturnsEmpty()
+    public void ExtractJiraReferences_NullText_ReturnsEmpty()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(null!, Repo, hasIssues: false, [], null);
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+            null!, "issue", "HL7/fhir#1", hasIssues: false, [], null);
         Assert.Empty(refs);
     }
 
     [Fact]
-    public void ExtractReferences_Context_ExtractsSurroundingText()
+    public void ExtractJiraReferences_Context_ExtractsSurroundingText()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "This is some surrounding context text about FHIR-42 and more text after it",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
         Assert.NotEmpty(refs[0].Context!);
@@ -142,11 +142,11 @@ public class JiraRefExtractorTests
     }
 
     [Fact]
-    public void ExtractReferences_MixedPatterns_AllExtracted()
+    public void ExtractJiraReferences_MixedPatterns_AllExtracted()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "FHIR-100 and JF-200 and GF-300 mentioned together",
-            Repo, hasIssues: false, [], null);
+            "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
         Assert.Equal(3, refs.Count);
         Assert.Contains(refs, r => r.JiraKey == "FHIR-100");
@@ -155,26 +155,28 @@ public class JiraRefExtractorTests
     }
 
     [Fact]
-    public void ExtractReferences_JHashValidation_FiltersInvalid()
+    public void ExtractJiraReferences_JHashValidation_FiltersInvalid()
     {
         HashSet<int> validNumbers = new HashSet<int> { 42 };
 
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "J#42 and J#9999",
-            Repo, hasIssues: false, [], validNumbers);
+            "issue", "HL7/fhir#1", hasIssues: false, [], validNumbers);
 
         Assert.Single(refs);
         Assert.Equal("FHIR-42", refs[0].JiraKey);
     }
 
     [Fact]
-    public void ExtractReferences_RepoFullName_IsSet()
+    public void ExtractJiraReferences_SourceFields_AreSet()
     {
-        List<GitHubJiraRefRecord> refs = JiraRefExtractor.ExtractReferences(
+        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
             "FHIR-12345",
-            "HL7/us-core", hasIssues: false, [], null);
+            "issue", "HL7/us-core#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
-        Assert.Equal("HL7/us-core", refs[0].RepoFullName);
+        Assert.Equal("issue", refs[0].SourceType);
+        Assert.Equal("HL7/us-core#1", refs[0].SourceId);
+        Assert.Equal("mentions", refs[0].LinkType);
     }
 }

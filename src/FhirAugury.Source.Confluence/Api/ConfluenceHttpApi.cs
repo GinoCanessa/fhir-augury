@@ -1,4 +1,5 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
@@ -195,7 +196,48 @@ public static class ConfluenceHttpApi
             }
         });
 
-        api.MapGet("/stats", (ConfluenceDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
+        api.MapPost("/rebuild-index", (
+            HttpRequest req,
+            IngestionWorkQueue workQueue,
+            ConfluenceDatabase database,
+            ConfluenceIndexer indexer,
+            ConfluenceXRefRebuilder xrefRebuilder,
+            ConfluenceLinkRebuilder linkRebuilder) =>
+        {
+            string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
+
+            workQueue.Enqueue(ct =>
+            {
+                switch (indexType)
+                {
+                    case "bm25":
+                        indexer.RebuildFullIndex(ct);
+                        break;
+                    case "cross-refs":
+                        xrefRebuilder.RebuildAll(ct);
+                        break;
+                    case "page-links":
+                        linkRebuilder.RebuildAll(ct);
+                        break;
+                    case "fts":
+                        database.RebuildFtsIndexes();
+                        break;
+                    case "all":
+                        xrefRebuilder.RebuildAll(ct);
+                        linkRebuilder.RebuildAll(ct);
+                        indexer.RebuildFullIndex(ct);
+                        database.RebuildFtsIndexes();
+                        break;
+                    default:
+                        return Task.CompletedTask;
+                }
+                return Task.CompletedTask;
+            }, $"rebuild-index-{indexType}");
+
+            return Results.Ok(new { success = true, actionTaken = $"queued {indexType} index rebuild" });
+        });
+
+        api.MapGet("/stats",(ConfluenceDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             int pageCount = ConfluencePageRecord.SelectCount(connection);

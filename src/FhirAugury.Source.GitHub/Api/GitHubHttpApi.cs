@@ -1,14 +1,18 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Ingestion;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
+using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 using System.Text;
 
 namespace FhirAugury.Source.GitHub.Api;
@@ -75,7 +79,7 @@ public static class GitHubHttpApi
 
             List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection,
                 RepoFullName: issue.RepoFullName, IssueNumber: issue.Number);
-            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
+            List<JiraXRefRecord> jiraRefs = JiraXRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
 
             return Results.Ok(new
             {
@@ -134,13 +138,13 @@ public static class GitHubHttpApi
             using SqliteConnection connection = db.OpenConnection();
             int maxResults = Math.Min(limit ?? 10, 50);
 
-            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: key);
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, SourceId: key);
             HashSet<string> relatedIds = new HashSet<string>();
 
-            foreach (GitHubJiraRefRecord jiraRef in refs)
+            foreach (JiraXRefRecord jiraRef in refs)
             {
-                List<GitHubJiraRefRecord> sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
-                foreach (GitHubJiraRefRecord r in sameKeyRefs)
+                List<JiraXRefRecord> sameKeyRefs = JiraXRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
+                foreach (JiraXRefRecord r in sameKeyRefs)
                 {
                     if (r.SourceId != key)
                         relatedIds.Add(r.SourceId);
@@ -249,14 +253,74 @@ public static class GitHubHttpApi
             }
         });
 
-        api.MapGet("/stats", (GitHubDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
+        api.MapPost("/rebuild-index", (
+            HttpRequest req,
+            IngestionWorkQueue workQueue,
+            GitHubDatabase database,
+            GitHubIndexer indexer,
+            JiraRefExtractor jiraRefExtractor,
+            GitHubRepoCloner cloner,
+            GitHubCommitFileExtractor commitExtractor,
+            ArtifactFileMapper artifactFileMapper,
+            IOptions<GitHubServiceOptions> optionsAccessor) =>
+        {
+            string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
+            GitHubServiceOptions options = optionsAccessor.Value;
+
+            workQueue.Enqueue(async ct =>
+            {
+                List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+                switch (indexType)
+                {
+                    case "commits":
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, ct);
+                        }
+                        break;
+                    case "cross-refs":
+                        foreach (string repo in repos)
+                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                        break;
+                    case "bm25":
+                        indexer.RebuildFullIndex(ct);
+                        break;
+                    case "artifact-map":
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            artifactFileMapper.BuildMappings(repo, path, ct);
+                        }
+                        break;
+                    case "fts":
+                        database.RebuildFtsIndexes();
+                        break;
+                    case "all":
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, ct);
+                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                            artifactFileMapper.BuildMappings(repo, path, ct);
+                        }
+                        indexer.RebuildFullIndex(ct);
+                        database.RebuildFtsIndexes();
+                        break;
+                }
+            }, $"rebuild-index-{indexType}");
+
+            return Results.Ok(new { success = true, actionTaken = $"queued {indexType} index rebuild" });
+        });
+
+        api.MapGet("/stats",(GitHubDatabase db, FhirAugury.Common.Caching.IResponseCache cache) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             int issueCount = GitHubIssueRecord.SelectCount(connection);
             int commentCount = GitHubCommentRecord.SelectCount(connection);
             int commitCount = GitHubCommitRecord.SelectCount(connection);
             int repoCount = GitHubRepoRecord.SelectCount(connection);
-            int jiraRefCount = GitHubJiraRefRecord.SelectCount(connection);
+            int jiraRefCount = JiraXRefRecord.SelectCount(connection);
             long dbSize = db.GetDatabaseSizeBytes();
             CacheStats cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
 

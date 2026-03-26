@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.GitHub.Api;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
@@ -55,13 +56,13 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         BaseBranch = null,
     };
 
-    private static GitHubJiraRefRecord CreateJiraRef(
-        string sourceType, string sourceId, string repo, string jiraKey, string? context = null) => new()
+    private static JiraXRefRecord CreateJiraRef(
+        string sourceType, string sourceId, string jiraKey, string? context = null) => new()
     {
-        Id = GitHubJiraRefRecord.GetIndex(),
+        Id = JiraXRefRecord.GetIndex(),
         SourceType = sourceType,
         SourceId = sourceId,
-        RepoFullName = repo,
+        LinkType = "mentions",
         JiraKey = jiraKey,
         Context = context ?? $"Ref to {jiraKey}",
     };
@@ -86,8 +87,8 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue1);
         GitHubIssueRecord.Insert(conn, issue2);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#100", "HL7/fhir", "FHIR-55001"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#200", "HL7/fhir", "FHIR-55001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#100", "FHIR-55001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#200", "FHIR-55001"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {
@@ -113,7 +114,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, parentIssue);
 
         // Comment source ID format: "repo#issueNum:commentId"
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#42:12345", "HL7/fhir", "FHIR-55002"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#42:12345", "FHIR-55002"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {
@@ -137,7 +138,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord pr = CreateIssue("HL7/fhir", 300, "PR fixing observation", isPr: true);
         GitHubIssueRecord.Insert(conn, pr);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("commit", "abc123def", "HL7/fhir", "FHIR-55003"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("commit", "abc123def", "FHIR-55003"));
         GitHubCommitPrLinkRecord.Insert(conn, CreateCommitPrLink("abc123def", "HL7/fhir", 300));
 
         GetRelatedRequest request = new GetRelatedRequest
@@ -178,8 +179,8 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue);
 
         // Two different ref types both resolving to the same issue
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#50", "HL7/fhir", "FHIR-55004"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#50:99999", "HL7/fhir", "FHIR-55004"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#50", "FHIR-55004"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#50:99999", "FHIR-55004"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {
@@ -224,8 +225,8 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue1);
         GitHubIssueRecord.Insert(conn, issue2);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#10", "HL7/fhir", "FHIR-77001"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#20", "HL7/fhir", "FHIR-77001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#10", "FHIR-77001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#20", "FHIR-77001"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {
@@ -247,7 +248,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         {
             GitHubIssueRecord issue = CreateIssue("HL7/fhir", 400 + i, $"Limit test issue {i}");
             GitHubIssueRecord.Insert(conn, issue);
-            GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", $"HL7/fhir#{400 + i}", "HL7/fhir", "FHIR-55005"));
+            JiraXRefRecord.Insert(conn, CreateJiraRef("issue", $"HL7/fhir#{400 + i}", "FHIR-55005"));
         }
 
         GetRelatedRequest request = new GetRelatedRequest
@@ -270,7 +271,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
 
         GitHubIssueRecord issue = CreateIssue("HL7/fhir", 777, "URL check issue");
         GitHubIssueRecord.Insert(conn, issue);
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#777", "HL7/fhir", "FHIR-55006"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#777", "FHIR-55006"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {
@@ -290,12 +291,12 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         using SqliteConnection conn = _db.OpenConnection();
 
         // Insert jira ref pointing to a non-existent issue
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#9999", "HL7/fhir", "FHIR-55007"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#9999", "FHIR-55007"));
 
         // Insert another ref pointing to an existing issue
         GitHubIssueRecord issue = CreateIssue("HL7/fhir", 888, "Resolvable issue");
         GitHubIssueRecord.Insert(conn, issue);
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#888", "HL7/fhir", "FHIR-55007"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#888", "FHIR-55007"));
 
         GetRelatedRequest request = new GetRelatedRequest
         {

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
@@ -277,16 +278,51 @@ public class ZulipGrpcService(
         {
             if (int.TryParse(request.Id, out int msgId))
             {
-                List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(connection, ZulipMessageId: msgId);
-                foreach (ZulipMessageTicketRecord ticket in tickets)
+                ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                string sourceTitle = message is not null ? $"{message.StreamName} > {message.Topic}" : "";
+                string sourceUrl = message is not null ? BuildMessageUrl(message.StreamName, message.Topic, msgId) : "";
+
+                foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: request.Id))
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "zulip",
-                        SourceId = request.Id,
-                        TargetType = "jira",
-                        TargetId = ticket.JiraKey,
-                        LinkType = "mentions",
+                        SourceType = "zulip", SourceId = request.Id,
+                        TargetType = "jira", TargetId = r.JiraKey,
+                        LinkType = "mentions", Context = r.Context ?? "",
+                        SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                    });
+                }
+
+                foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "zulip", SourceId = request.Id,
+                        TargetType = "github", TargetId = r.TargetId,
+                        LinkType = "mentions", Context = r.Context ?? "",
+                        SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                    });
+                }
+
+                foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "zulip", SourceId = request.Id,
+                        TargetType = "confluence", TargetId = r.TargetId,
+                        LinkType = "mentions", Context = r.Context ?? "",
+                        SourceTitle = sourceTitle, SourceUrl = sourceUrl,
+                    });
+                }
+
+                foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "zulip", SourceId = request.Id,
+                        TargetType = "fhir", TargetId = r.TargetId,
+                        LinkType = "mentions", Context = r.Context ?? "",
+                        SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                     });
                 }
             }
@@ -294,31 +330,26 @@ public class ZulipGrpcService(
 
         if (request.Source == "jira" && direction is "incoming" or "both")
         {
-            string sql = """
-                SELECT mt.ZulipMessageId, m.StreamName, m.Topic, m.SenderName, m.Timestamp
-                FROM zulip_message_tickets mt
-                JOIN zulip_messages m ON m.ZulipMessageId = mt.ZulipMessageId
-                WHERE mt.JiraKey = @id
-                """;
-
-            using SqliteCommand cmd = new SqliteCommand(sql, connection);
-            cmd.Parameters.AddWithValue("@id", request.Id);
-            using SqliteDataReader reader = cmd.ExecuteReader();
-            while (reader.Read())
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
+            HashSet<string> seen = [];
+            foreach (JiraXRefRecord jiraRef in refs)
             {
-                int msgId = reader.GetInt32(0);
-                string streamName = reader.GetString(1);
-                string topic = reader.GetString(2);
+                if (!seen.Add(jiraRef.SourceId)) continue;
+                if (!int.TryParse(jiraRef.SourceId, out int msgId)) continue;
+
+                ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                if (message is null) continue;
 
                 response.References.Add(new SourceCrossReference
                 {
                     SourceType = "zulip",
-                    SourceId = msgId.ToString(),
+                    SourceId = jiraRef.SourceId,
                     TargetType = "jira",
                     TargetId = request.Id,
                     LinkType = "mentions",
-                    SourceTitle = $"{streamName} > {topic}",
-                    SourceUrl = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}/near/{msgId}",
+                    Context = jiraRef.Context ?? "",
+                    SourceTitle = $"{message.StreamName} > {message.Topic}",
+                    SourceUrl = BuildMessageUrl(message.StreamName, message.Topic, msgId),
                 });
             }
         }

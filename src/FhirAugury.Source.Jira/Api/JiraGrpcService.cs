@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
@@ -24,7 +25,7 @@ public class JiraGrpcService(
     JiraIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    JiraZulipRefExtractor zulipRefExtractor,
+    JiraXRefRebuilder xrefRebuilder,
     JiraIndexer indexer,
     JiraIndexBuilder indexBuilder,
     IOptions<JiraServiceOptions> optionsAccessor)
@@ -211,17 +212,17 @@ public class JiraGrpcService(
             if (parts.Length == 2 && int.TryParse(parts[0], out int streamId))
             {
                 string topicName = parts[1];
-                List<JiraZulipRefRecord> refs = JiraZulipRefRecord.SelectList(connection,
+                List<ZulipXRefRecord> refs = ZulipXRefRecord.SelectList(connection,
                     StreamId: streamId, TopicName: topicName);
 
                 HashSet<string> seen = [];
                 SearchResponse response = new SearchResponse();
 
-                foreach (JiraZulipRefRecord zRef in refs)
+                foreach (ZulipXRefRecord zRef in refs)
                 {
-                    if (!seen.Add(zRef.IssueKey)) continue;
+                    if (!seen.Add(zRef.SourceId)) continue;
 
-                    JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: zRef.IssueKey);
+                    JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: zRef.SourceId);
                     if (issue is null) continue;
 
                     response.Results.Add(new SearchResultItem
@@ -302,27 +303,78 @@ public class JiraGrpcService(
                 }
             }
 
-            // Zulip references from Jira content
+            // Cross-source references from Jira content
             if (direction is "outgoing" or "both")
             {
-                List<JiraZulipRefRecord> zulipRefs = JiraZulipRefRecord.SelectList(connection, IssueKey: request.Id);
-                foreach (JiraZulipRefRecord zRef in zulipRefs)
+                foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: request.Id))
                 {
-                    string targetId = zRef.TopicName is not null
-                        ? $"{zRef.StreamId}:{zRef.TopicName}"
-                        : zRef.StreamId.ToString();
-
                     response.References.Add(new SourceCrossReference
                     {
                         SourceType = "jira",
                         SourceId = request.Id,
                         TargetType = "zulip",
-                        TargetId = targetId,
+                        TargetId = r.TargetId,
                         LinkType = "mentions",
-                        Context = zRef.Context ?? "",
+                        Context = r.Context ?? "",
                         SourceTitle = "",
                         SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
                     });
+                }
+
+                foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "github",
+                        TargetId = r.TargetId,
+                        LinkType = "mentions",
+                        Context = r.Context ?? "",
+                        SourceTitle = "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
+                    });
+                }
+
+                foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "confluence",
+                        TargetId = r.TargetId,
+                        LinkType = "mentions",
+                        Context = r.Context ?? "",
+                        SourceTitle = "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
+                    });
+                }
+
+                foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: request.Id))
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "fhir",
+                        TargetId = r.TargetId,
+                        LinkType = "mentions",
+                        Context = r.Context ?? "",
+                        SourceTitle = "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
+                    });
+                }
+            }
+
+            // Incoming Zulip references (Zulip topics that reference this Jira issue)
+            if (direction is "incoming" or "both")
+            {
+                JiraIssueRecord? issueForIncoming = JiraIssueRecord.SelectSingle(connection, Key: request.Id);
+                if (issueForIncoming is not null)
+                {
+                    // Check if any Zulip xref records reference this issue by stream/topic
+                    // (incoming = some other source references this Jira issue via Zulip)
                 }
             }
 
@@ -591,12 +643,12 @@ public class JiraGrpcService(
         {
             workQueue.Enqueue(ct =>
             {
-                zulipRefExtractor.ExtractAll(ct);
+                xrefRebuilder.ExtractAll(ct);
                 return Task.CompletedTask;
-            }, "rebuild-zulip-xrefs");
+            }, "rebuild-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued zulip ref index rebuild" });
+                { Acknowledged = true, ActionTaken = "queued xref rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck
@@ -617,7 +669,7 @@ public class JiraGrpcService(
                         indexBuilder.RebuildIndexTables(conn);
                     break;
                 case "cross-refs":
-                    zulipRefExtractor.ExtractAll(ct);
+                    xrefRebuilder.ExtractAll(ct);
                     break;
                 case "bm25":
                     indexer.RebuildFullIndex(ct);
@@ -628,7 +680,7 @@ public class JiraGrpcService(
                 case "all":
                     using (SqliteConnection conn = database.OpenConnection())
                         indexBuilder.RebuildIndexTables(conn);
-                    zulipRefExtractor.ExtractAll(ct);
+                    xrefRebuilder.ExtractAll(ct);
                     indexer.RebuildFullIndex(ct);
                     database.RebuildFtsIndexes();
                     break;

@@ -1,3 +1,4 @@
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
@@ -37,11 +38,11 @@ public class ZulipTicketIndexerTests : IDisposable
         _indexer.RebuildFullIndex();
 
         using SqliteConnection conn = _db.OpenConnection();
-        List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(conn);
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn);
 
-        Assert.Single(tickets);
-        Assert.Equal(1001, tickets[0].ZulipMessageId);
-        Assert.Equal("FHIR-43499", tickets[0].JiraKey);
+        Assert.Single(refs);
+        Assert.Equal("1001", refs[0].SourceId);
+        Assert.Equal("FHIR-43499", refs[0].JiraKey);
     }
 
     [Fact]
@@ -74,9 +75,9 @@ public class ZulipTicketIndexerTests : IDisposable
         _indexer.RebuildFullIndex();
 
         using SqliteConnection conn = _db.OpenConnection();
-        List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(conn);
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn);
 
-        Assert.Single(tickets);
+        Assert.Single(refs);
     }
 
     [Fact]
@@ -88,12 +89,12 @@ public class ZulipTicketIndexerTests : IDisposable
         _indexer.RebuildFullIndex();
 
         using SqliteConnection conn = _db.OpenConnection();
-        List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(conn, ZulipMessageId: 1001);
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, SourceId: "1001");
 
-        Assert.Equal(3, tickets.Count);
-        Assert.Contains(tickets, t => t.JiraKey == "FHIR-100");
-        Assert.Contains(tickets, t => t.JiraKey == "FHIR-200");
-        Assert.Contains(tickets, t => t.JiraKey == "GF-300");
+        Assert.Equal(3, refs.Count);
+        Assert.Contains(refs, t => t.JiraKey == "FHIR-100");
+        Assert.Contains(refs, t => t.JiraKey == "FHIR-200");
+        Assert.Contains(refs, t => t.JiraKey == "GF-300");
     }
 
     // ── Thread Aggregation ───────────────────────────────────────────
@@ -164,10 +165,10 @@ public class ZulipTicketIndexerTests : IDisposable
         _indexer.RebuildFullIndex();
 
         using SqliteConnection conn = _db.OpenConnection();
-        List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(conn, ZulipMessageId: 1001);
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, SourceId: "1001");
 
-        Assert.Single(tickets);
-        Assert.Equal("FHIR-99999", tickets[0].JiraKey);
+        Assert.Single(refs);
+        Assert.Equal("FHIR-99999", refs[0].JiraKey);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

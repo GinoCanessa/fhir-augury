@@ -1,4 +1,5 @@
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Zulip.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -20,12 +21,17 @@ public class ZulipDatabase : SourceDatabase
     {
         ZulipStreamRecord.CreateTable(connection);
         ZulipMessageRecord.CreateTable(connection);
-        ZulipMessageTicketRecord.CreateTable(connection);
         ZulipThreadTicketRecord.CreateTable(connection);
         ZulipSyncStateRecord.CreateTable(connection);
         ZulipKeywordRecord.CreateTable(connection);
         ZulipCorpusKeywordRecord.CreateTable(connection);
         ZulipDocStatsRecord.CreateTable(connection);
+
+        // Shared cross-reference tables
+        JiraXRefRecord.CreateTable(connection);
+        GitHubXRefRecord.CreateTable(connection);
+        ConfluenceXRefRecord.CreateTable(connection);
+        FhirElementXRefRecord.CreateTable(connection);
 
         CreateZulipMessagesFts(connection);
     }
@@ -48,6 +54,20 @@ public class ZulipDatabase : SourceDatabase
         RebuildFts5(connection, "zulip_messages_fts");
     }
 
+    /// <summary>
+    /// Check if the primary content table of this database is empty
+    /// </summary>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    public bool PrimaryContentTableIsEmpty(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM zulip_messages";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
+
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase()
     {
@@ -64,6 +84,10 @@ public class ZulipDatabase : SourceDatabase
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;
             DROP TABLE IF EXISTS index_doc_stats;
+            DROP TABLE IF EXISTS xref_jira;
+            DROP TABLE IF EXISTS xref_github;
+            DROP TABLE IF EXISTS xref_confluence;
+            DROP TABLE IF EXISTS xref_fhir_element;
             """;
         cmd.ExecuteNonQuery();
 

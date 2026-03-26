@@ -244,6 +244,47 @@ public static class OrchestratorHttpApi
             return Results.Ok(new { type, statuses });
         });
 
+        // ── Rebuild index (fan-out) ──────────────────────────────────
+        api.MapPost("/rebuild-index", async (
+            HttpRequest req,
+            SourceRouter router,
+            CancellationToken ct) =>
+        {
+            string indexType = req.Query["type"].FirstOrDefault() ?? "all";
+            string? sourceCsv = req.Query["sources"].FirstOrDefault();
+            List<string> targets = string.IsNullOrEmpty(sourceCsv)
+                ? router.GetEnabledSources().ToList()
+                : CsvParser.ParseSourceList(sourceCsv) ?? [];
+
+            RebuildIndexRequest sourceRequest = new() { IndexType = indexType };
+            List<object> results = [];
+
+            await Task.WhenAll(targets.Select(async source =>
+            {
+                SourceService.SourceServiceClient? client = router.GetSourceClient(source);
+                if (client is null)
+                {
+                    lock (results)
+                        results.Add(new { source, success = false, actionTaken = (string?)null, error = "Source not configured" });
+                    return;
+                }
+
+                try
+                {
+                    RebuildIndexResponse resp = await client.RebuildIndexAsync(sourceRequest, cancellationToken: ct);
+                    lock (results)
+                        results.Add(new { source, success = resp.Success, actionTaken = resp.ActionTaken, error = resp.Error });
+                }
+                catch (Exception ex)
+                {
+                    lock (results)
+                        results.Add(new { source, success = false, actionTaken = (string?)null, error = ex.Message });
+                }
+            }));
+
+            return Results.Ok(new { indexType, results });
+        });
+
         // ── Services health ──────────────────────────────────────────
         api.MapGet("/services", async (
             ServiceHealthMonitor monitor,

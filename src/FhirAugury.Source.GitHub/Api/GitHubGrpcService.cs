@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Text;
 using Fhiraugury;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Configuration;
@@ -172,13 +174,13 @@ public class GitHubGrpcService(
         SearchResponse response = new SearchResponse();
 
         // Find related items via Jira references sharing the same Jira keys
-        List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: request.Id);
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, SourceId: request.Id);
         HashSet<string> relatedIds = new HashSet<string>();
 
-        foreach (GitHubJiraRefRecord jiraRef in refs)
+        foreach (JiraXRefRecord jiraRef in refs)
         {
-            List<GitHubJiraRefRecord> sameKeyRefs = GitHubJiraRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
-            foreach (GitHubJiraRefRecord r in sameKeyRefs)
+            List<JiraXRefRecord> sameKeyRefs = JiraXRefRecord.SelectList(connection, JiraKey: jiraRef.JiraKey);
+            foreach (JiraXRefRecord r in sameKeyRefs)
             {
                 if (r.SourceId != request.Id)
                     relatedIds.Add(r.SourceId);
@@ -211,12 +213,12 @@ public class GitHubGrpcService(
         if (request.SeedSource == "jira")
         {
             using SqliteConnection connection = database.OpenConnection();
-            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, JiraKey: request.SeedId);
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
 
             HashSet<string> seen = [];
             SearchResponse response = new SearchResponse();
 
-            foreach (GitHubJiraRefRecord jiraRef in refs)
+            foreach (JiraXRefRecord jiraRef in refs)
             {
                 GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
                 if (issue is null || !seen.Add(issue.UniqueKey))
@@ -253,13 +255,13 @@ public class GitHubGrpcService(
         return ftsResult;
     }
 
-    private GitHubIssueRecord? ResolveToIssue(SqliteConnection conn, GitHubJiraRefRecord jiraRef)
+    private GitHubIssueRecord? ResolveToIssue(SqliteConnection conn, ICrossReferenceRecord xref)
     {
-        return jiraRef.SourceType switch
+        return xref.SourceType switch
         {
-            "issue" => GitHubIssueRecord.SelectSingle(conn, UniqueKey: jiraRef.SourceId),
-            "comment" => ResolveCommentToIssue(conn, jiraRef.SourceId),
-            "commit" => ResolveCommitToIssue(conn, jiraRef),
+            "issue" => GitHubIssueRecord.SelectSingle(conn, UniqueKey: xref.SourceId),
+            "comment" => ResolveCommentToIssue(conn, xref.SourceId),
+            "commit" => ResolveCommitToIssue(conn, xref.SourceId),
             _ => null,
         };
     }
@@ -275,10 +277,10 @@ public class GitHubGrpcService(
         return GitHubIssueRecord.SelectSingle(conn, UniqueKey: issueKey);
     }
 
-    private GitHubIssueRecord? ResolveCommitToIssue(SqliteConnection conn, GitHubJiraRefRecord jiraRef)
+    private GitHubIssueRecord? ResolveCommitToIssue(SqliteConnection conn, string sourceId)
     {
         GitHubCommitPrLinkRecord? prLink = GitHubCommitPrLinkRecord.SelectSingle(conn,
-            CommitSha: jiraRef.SourceId);
+            CommitSha: sourceId);
         if (prLink is null) return null;
 
         string uniqueKey = $"{prLink.RepoFullName}#{prLink.PrNumber}";
@@ -293,8 +295,8 @@ public class GitHubGrpcService(
 
         if (request.Source == "github" && direction is "outgoing" or "both")
         {
-            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: request.Id);
-            foreach (GitHubJiraRefRecord jiraRef in refs)
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, SourceId: request.Id);
+            foreach (JiraXRefRecord jiraRef in refs)
             {
                 GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
                 response.References.Add(new SourceCrossReference
@@ -309,12 +311,60 @@ public class GitHubGrpcService(
                     SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
                 });
             }
+
+            foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, r);
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "github",
+                    SourceId = r.SourceId,
+                    TargetType = "zulip",
+                    TargetId = r.TargetId,
+                    LinkType = "mentions",
+                    Context = r.Context ?? "",
+                    SourceTitle = issue?.Title ?? "",
+                    SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
+                });
+            }
+
+            foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, r);
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "github",
+                    SourceId = r.SourceId,
+                    TargetType = "confluence",
+                    TargetId = r.TargetId,
+                    LinkType = "mentions",
+                    Context = r.Context ?? "",
+                    SourceTitle = issue?.Title ?? "",
+                    SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
+                });
+            }
+
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: request.Id))
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, r);
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "github",
+                    SourceId = r.SourceId,
+                    TargetType = "fhir",
+                    TargetId = r.TargetId,
+                    LinkType = "mentions",
+                    Context = r.Context ?? "",
+                    SourceTitle = issue?.Title ?? "",
+                    SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
+                });
+            }
         }
 
         if (request.Source == "jira" && direction is "incoming" or "both")
         {
-            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, JiraKey: request.Id);
-            foreach (GitHubJiraRefRecord jiraRef in refs)
+            List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
+            foreach (JiraXRefRecord jiraRef in refs)
             {
                 GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
                 response.References.Add(new SourceCrossReference
@@ -472,7 +522,7 @@ public class GitHubGrpcService(
         response.AdditionalCounts.Add("repos", GitHubRepoRecord.SelectCount(connection));
         response.AdditionalCounts.Add("commits", GitHubCommitRecord.SelectCount(connection));
         response.AdditionalCounts.Add("commit_files", GitHubCommitFileRecord.SelectCount(connection));
-        response.AdditionalCounts.Add("jira_refs", GitHubJiraRefRecord.SelectCount(connection));
+        response.AdditionalCounts.Add("jira_refs", JiraXRefRecord.SelectCount(connection));
         response.AdditionalCounts.Add("spec_file_maps", GitHubSpecFileMapRecord.SelectCount(connection));
 
         return Task.FromResult(response);
@@ -549,12 +599,12 @@ public class GitHubGrpcService(
 
         if (includeRefs)
         {
-            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
+            List<JiraXRefRecord> jiraRefs = JiraXRefRecord.SelectList(connection, SourceId: issue.UniqueKey);
             if (jiraRefs.Count > 0)
             {
                 sb.AppendLine("## Jira References");
                 sb.AppendLine();
-                foreach (GitHubJiraRefRecord r in jiraRefs)
+                foreach (JiraXRefRecord r in jiraRefs)
                     sb.AppendLine($"- {r.JiraKey}");
                 sb.AppendLine();
             }
@@ -1083,12 +1133,12 @@ public class GitHubSpecificGrpcService(
 
         if (request.IncludeInternalRefs)
         {
-            List<GitHubJiraRefRecord> jiraRefs = GitHubJiraRefRecord.SelectList(connection, SourceId: uniqueKey);
+            List<JiraXRefRecord> jiraRefs = JiraXRefRecord.SelectList(connection, SourceId: uniqueKey);
             if (jiraRefs.Count > 0)
             {
                 sb.AppendLine("## Jira References");
                 sb.AppendLine();
-                foreach (GitHubJiraRefRecord r in jiraRefs) sb.AppendLine($"- {r.JiraKey}");
+                foreach (JiraXRefRecord r in jiraRefs) sb.AppendLine($"- {r.JiraKey}");
             }
         }
 

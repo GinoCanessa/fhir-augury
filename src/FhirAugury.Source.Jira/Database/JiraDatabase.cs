@@ -1,4 +1,5 @@
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -36,7 +37,10 @@ public class JiraDatabase : SourceDatabase
         JiraIndexStatusRecord.CreateTable(connection);
         JiraIndexResolutionRecord.CreateTable(connection);
         JiraIssueLabelRecord.CreateTable(connection);
-        JiraZulipRefRecord.CreateTable(connection);
+        ZulipXRefRecord.CreateTable(connection);
+        GitHubXRefRecord.CreateTable(connection);
+        ConfluenceXRefRecord.CreateTable(connection);
+        FhirElementXRefRecord.CreateTable(connection);
 
         CreateJiraIssuesFts(connection);
         CreateJiraCommentsFts(connection);
@@ -73,6 +77,20 @@ public class JiraDatabase : SourceDatabase
         RebuildFts5(connection, "jira_comments_fts");
     }
 
+    /// <summary>
+    /// Check if the primary content table of this database is empty
+    /// </summary>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    public bool PrimaryContentTableIsEmpty(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM jira_issues";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
+
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase(CancellationToken ct = default)
     {
@@ -102,6 +120,10 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_index_statuses;
             DROP TABLE IF EXISTS jira_index_resolutions;
             DROP TABLE IF EXISTS jira_zulip_refs;
+            DROP TABLE IF EXISTS xref_zulip;
+            DROP TABLE IF EXISTS xref_github;
+            DROP TABLE IF EXISTS xref_confluence;
+            DROP TABLE IF EXISTS xref_fhir_element;
             """;
         cmd.ExecuteNonQuery();
 

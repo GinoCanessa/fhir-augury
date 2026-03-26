@@ -1,4 +1,5 @@
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -24,7 +25,10 @@ public class GitHubDatabase : SourceDatabase
         GitHubCommitRecord.CreateTable(connection);
         GitHubCommitFileRecord.CreateTable(connection);
         GitHubCommitPrLinkRecord.CreateTable(connection);
-        GitHubJiraRefRecord.CreateTable(connection);
+        JiraXRefRecord.CreateTable(connection);
+        ZulipXRefRecord.CreateTable(connection);
+        ConfluenceXRefRecord.CreateTable(connection);
+        FhirElementXRefRecord.CreateTable(connection);
         GitHubSpecFileMapRecord.CreateTable(connection);
         GitHubSyncStateRecord.CreateTable(connection);
         GitHubKeywordRecord.CreateTable(connection);
@@ -78,6 +82,20 @@ public class GitHubDatabase : SourceDatabase
         RebuildFts5(connection, "github_commits_fts");
     }
 
+    /// <summary>
+    /// Check if the primary content table of this database is empty
+    /// </summary>
+    /// <param name="ct"></param>
+    /// <returns></returns>
+    public bool PrimaryContentTableIsEmpty(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM github_commits";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
+
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
     public void ResetDatabase()
     {
@@ -95,6 +113,10 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_commit_files;
             DROP TABLE IF EXISTS github_commit_pr_links;
             DROP TABLE IF EXISTS github_jira_refs;
+            DROP TABLE IF EXISTS xref_jira;
+            DROP TABLE IF EXISTS xref_zulip;
+            DROP TABLE IF EXISTS xref_confluence;
+            DROP TABLE IF EXISTS xref_fhir_element;
             DROP TABLE IF EXISTS github_spec_file_map;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;

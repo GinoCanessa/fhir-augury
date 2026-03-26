@@ -34,6 +34,11 @@ public class ConfluenceServiceOptions
     /// </summary>
     public bool IngestionPaused { get; set; } = false;
 
+    /// <summary>
+    /// When true, rebuilds the database from cached responses on startup.
+    /// </summary>
+    public bool ReloadFromCacheOnStartup { get; set; } = false;
+
     public int PageSize { get; set; } = 25;
     public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();

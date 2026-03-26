@@ -1,3 +1,4 @@
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
@@ -35,9 +36,12 @@ public class GitHubDatabaseTests : IDisposable
         Assert.Contains("github_commits", tables);
         Assert.Contains("github_commit_files", tables);
         Assert.Contains("github_commit_pr_links", tables);
-        Assert.Contains("github_jira_refs", tables);
         Assert.Contains("github_spec_file_map", tables);
         Assert.Contains("sync_state", tables);
+        Assert.Contains("xref_jira", tables);
+        Assert.Contains("xref_zulip", tables);
+        Assert.Contains("xref_confluence", tables);
+        Assert.Contains("xref_fhir_element", tables);
     }
 
     [Fact]
@@ -112,18 +116,18 @@ public class GitHubDatabaseTests : IDisposable
     public void InsertAndSelect_JiraRef_RoundTrips()
     {
         using SqliteConnection conn = _db.OpenConnection();
-        GitHubJiraRefRecord jiraRef = new GitHubJiraRefRecord
+        JiraXRefRecord jiraRef = new JiraXRefRecord
         {
-            Id = GitHubJiraRefRecord.GetIndex(),
+            Id = JiraXRefRecord.GetIndex(),
             SourceType = "issue",
             SourceId = "HL7/fhir#42",
-            RepoFullName = "HL7/fhir",
+            LinkType = "mentions",
             JiraKey = "FHIR-12345",
             Context = "Fix for FHIR-12345 patient resource",
         };
 
-        GitHubJiraRefRecord.Insert(conn, jiraRef);
-        List<GitHubJiraRefRecord> results = GitHubJiraRefRecord.SelectList(conn, RepoFullName: "HL7/fhir");
+        JiraXRefRecord.Insert(conn, jiraRef);
+        List<JiraXRefRecord> results = JiraXRefRecord.SelectList(conn, JiraKey: "FHIR-12345");
 
         Assert.Single(results);
         Assert.Equal("FHIR-12345", results[0].JiraKey);

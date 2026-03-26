@@ -1,6 +1,8 @@
 using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
@@ -369,18 +371,31 @@ public class ConfluenceSource(
 
             toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
-            // Extract Jira references from page content
+            // Extract cross-references from page content
             string pageText = $"{title} {bodyPlain}";
-            List<JiraTicketMatch> tickets = JiraTicketExtractor.ExtractTickets(pageText);
-            foreach (JiraTicketMatch ticket in tickets)
+
+            foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("page", pageId, null, pageText))
             {
-                ConfluenceJiraRefRecord.Insert(connection, new ConfluenceJiraRefRecord
-                {
-                    Id = ConfluenceJiraRefRecord.GetIndex(),
-                    ConfluenceId = pageId,
-                    JiraKey = ticket.JiraKey,
-                    Context = ticket.Context,
-                }, ignoreDuplicates: true);
+                r.Id = JiraXRefRecord.GetIndex();
+                JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            }
+
+            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("page", pageId, pageText))
+            {
+                r.Id = ZulipXRefRecord.GetIndex();
+                ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            }
+
+            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("page", pageId, pageText))
+            {
+                r.Id = GitHubXRefRecord.GetIndex();
+                GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            }
+
+            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("page", pageId, pageText))
+            {
+                r.Id = FhirElementXRefRecord.GetIndex();
+                FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
             }
 
             return isNew ? PageResult.New : PageResult.Updated;
