@@ -1,7 +1,8 @@
 # Deployment Guide
 
 FHIR Augury v2 uses a microservices architecture with five independent services
-communicating via gRPC. This guide covers Docker Compose deployment.
+communicating via gRPC. This guide covers Docker Compose and .NET Aspire
+deployment options.
 
 ## Architecture Overview
 
@@ -229,3 +230,49 @@ docker compose logs -f source-jira
 # Last 100 lines
 docker compose logs --tail 100 orchestrator
 ```
+
+## .NET Aspire
+
+As an alternative to Docker Compose, you can use [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/)
+to orchestrate all services locally. Aspire provides a dashboard with
+real-time logs, distributed traces, and metrics out of the box.
+
+### Prerequisites
+
+```bash
+# Install the Aspire workload
+dotnet workload install aspire
+```
+
+### Running with Aspire
+
+```bash
+dotnet run --project src/FhirAugury.AppHost
+```
+
+The AppHost starts all five services (4 source services + orchestrator) with
+the same fixed ports as Docker Compose. The orchestrator waits for all source
+services to be healthy before accepting requests.
+
+The Aspire dashboard is available at the URL shown in the console output
+(typically `https://localhost:17128`). It provides:
+
+- **Resources** — live status of all services
+- **Console logs** — aggregated, filterable log output
+- **Structured logs** — OpenTelemetry log records
+- **Traces** — distributed traces across gRPC calls
+- **Metrics** — ASP.NET Core, HTTP client, and runtime metrics
+
+### Aspire vs Docker Compose
+
+| Feature | Docker Compose | .NET Aspire |
+|---------|---------------|-------------|
+| Container isolation | ✅ | ❌ (runs as processes) |
+| Production deployment | ✅ | ❌ |
+| Dashboard with traces/metrics | ❌ | ✅ |
+| Service dependency management | Health check conditions | `WaitFor()` |
+| Volume management | Named volumes | Local file system |
+| Rebuild from source | Requires `docker build` | Automatic |
+
+> **Note:** Aspire is intended for development and debugging. Use Docker
+> Compose for production deployment.

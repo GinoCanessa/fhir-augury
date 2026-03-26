@@ -4,8 +4,9 @@ FHIR Augury uses a multi-container Docker Compose deployment. Each source
 (Jira, Zulip, Confluence, GitHub) runs as an independent service, with an
 orchestrator aggregating results across them.
 
-> For the complete deployment reference including all environment variables
-> and architecture details, see the [Deployment Guide](../deployment.md).
+> For the complete deployment reference including all environment variables,
+> architecture details, and .NET Aspire as an alternative, see the
+> [Deployment Guide](../deployment.md).
 
 ## Quick Start
 

@@ -8,6 +8,7 @@ and testing.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
 - Git
 - A text editor or IDE (Visual Studio, VS Code with C# Dev Kit, Rider)
+- [.NET Aspire workload](https://learn.microsoft.com/en-us/dotnet/aspire/) (optional, for orchestrated development)
 - Docker (optional, for containerized deployment)
 
 ## Getting Started
@@ -32,6 +33,8 @@ The v2 architecture uses independent microservices:
 | `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150/:5151) |
 | `FhirAugury.Mcp` | CLI Tool | MCP server for LLM agents (stdio) |
 | `FhirAugury.Cli` | CLI Tool | Command-line interface |
+| `FhirAugury.ServiceDefaults` | Library | Shared Aspire defaults (OpenTelemetry, health, resilience) |
+| `FhirAugury.AppHost` | Aspire Host | Orchestrates all services for local development |
 
 Each service has its own SQLite database, file-system cache, and exposes both
 HTTP (REST/health) and gRPC endpoints.
@@ -82,6 +85,24 @@ dotnet run --project src/FhirAugury.Source.GitHub
 dotnet run --project src/FhirAugury.Orchestrator
 # → HTTP on :5150, gRPC on :5151
 ```
+
+## Running All Services with .NET Aspire
+
+Instead of starting each service individually, you can use the Aspire AppHost
+to launch all services at once with an integrated dashboard:
+
+```bash
+# One-time: install the Aspire workload
+dotnet workload install aspire
+
+# Start all services
+dotnet run --project src/FhirAugury.AppHost
+```
+
+The AppHost starts all source services and the orchestrator with their standard
+ports. The orchestrator automatically waits for all source services to be
+healthy. The Aspire dashboard (URL shown in the console) provides real-time
+logs, distributed traces, and metrics.
 
 ### Local Configuration
 
@@ -178,7 +199,8 @@ docker compose --profile full up -d --build
 docker compose --profile full down
 ```
 
-See [deployment.md](deployment.md) for full Docker Compose documentation.
+See [deployment.md](deployment.md) for full Docker Compose and Aspire
+documentation.
 
 ## Code Conventions
 
@@ -199,6 +221,7 @@ See [deployment.md](deployment.md) for full Docker Compose documentation.
 5. Configure Kestrel with HTTP + gRPC ports
 6. Create `Dockerfile` following the existing pattern
 7. Add service to `docker-compose.yml` with volumes and health check
-8. Register the source in the Orchestrator's `appsettings.json`
-9. Add test project in `tests/FhirAugury.Source.{Name}.Tests/`
-10. Update documentation
+8. Add the service to `src/FhirAugury.AppHost/AppHost.cs` with HTTP/gRPC endpoints
+9. Register the source in the Orchestrator's `appsettings.json`
+10. Add test project in `tests/FhirAugury.Source.{Name}.Tests/`
+11. Update documentation

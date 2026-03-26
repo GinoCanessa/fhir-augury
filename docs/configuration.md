@@ -454,3 +454,34 @@ environment:
 ```
 
 See [deployment.md](deployment.md) for complete Docker configuration.
+
+---
+
+## Aspire / OpenTelemetry
+
+All web services reference `FhirAugury.ServiceDefaults`, which configures
+OpenTelemetry and service discovery automatically. These features are active
+both when running under the Aspire AppHost and when running standalone.
+
+### OpenTelemetry Export
+
+Set the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable to enable OTLP
+export of logs, metrics, and traces. When running under the Aspire AppHost,
+this is configured automatically to send telemetry to the Aspire dashboard.
+
+```bash
+# Standalone (export to a custom OTLP collector)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+  dotnet run --project src/FhirAugury.Source.Jira
+```
+
+When the variable is not set, telemetry is collected locally but not exported.
+
+### Health Endpoints
+
+ServiceDefaults maps two health endpoints on all services:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/health` | Readiness — all health checks must pass |
+| `/alive` | Liveness — only "live"-tagged checks must pass |

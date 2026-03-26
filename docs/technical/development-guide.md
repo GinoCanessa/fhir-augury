@@ -9,6 +9,7 @@ build, test, and contribute to FHIR Augury. It complements the
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
 - A text editor or IDE (Visual Studio, VS Code with C# Dev Kit, Rider)
 - Git
+- [.NET Aspire workload](https://learn.microsoft.com/en-us/dotnet/aspire/) (optional, for orchestrated development)
 - Docker (optional, for running the full stack)
 
 ## Getting Started
@@ -134,6 +135,23 @@ dotnet run --project src/FhirAugury.Orchestrator
 # Starts on HTTP :5150, gRPC :5151
 ```
 
+### All Services with .NET Aspire
+
+Instead of starting each service individually, use the Aspire AppHost to
+launch everything at once:
+
+```bash
+# One-time: install the Aspire workload
+dotnet workload install aspire
+
+# Start all services with the Aspire dashboard
+dotnet run --project src/FhirAugury.AppHost
+```
+
+The Aspire dashboard (URL shown in console output) provides real-time logs,
+distributed traces, and metrics across all services. All services use the same
+fixed ports as when running individually.
+
 ### MCP Server
 
 The MCP server connects to the orchestrator via gRPC. Configure the
@@ -207,6 +225,10 @@ Docker Compose defines 9 volumes: 4 cache volumes (`jira-cache`, `zulip-cache`,
 `orchestrator-data`) for SQLite databases. Cache volumes should be preserved
 across upgrades; data volumes can be deleted to force a rebuild from cache.
 
+> **Tip:** For development, consider using [.NET Aspire](#all-services-with-net-aspire)
+> instead of Docker — it provides faster iteration (no image rebuilds) and an
+> integrated dashboard with logs, traces, and metrics.
+
 ## Code Conventions
 
 ### Language and Framework
@@ -278,9 +300,12 @@ To add a new data source (e.g., `Source.Slack`):
 5. **Add Dockerfile** — Copy from an existing source and adjust
 6. **Add to docker-compose.yml** — Define the service with HTTP/gRPC ports,
    cache and data volumes, health check
-7. **Register in orchestrator** — Add the source endpoint to the orchestrator's
+7. **Add to AppHost** — Register the project in `src/FhirAugury.AppHost/AppHost.cs`
+   with `AddProject<>()`, HTTP/gRPC endpoints, and add it to the orchestrator's
+   `WaitFor()` chain
+8. **Register in orchestrator** — Add the source endpoint to the orchestrator's
    configuration so `SourceRouter` can create a gRPC channel to it
-8. **Add tests** — Create `tests/FhirAugury.Source.Slack.Tests/`
+9. **Add tests** — Create `tests/FhirAugury.Source.Slack.Tests/`
 
 ## Versioning
 

@@ -62,6 +62,8 @@ Ports: HTTP (even) / gRPC (odd)
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
 | **MCP** | `FhirAugury.Mcp` | Model Context Protocol server for LLM agents (17 tools, stdio transport, gRPC to orchestrator) |
 | **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, gRPC to orchestrator) |
+| **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
+| **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
 
 ## Project Dependencies
 
@@ -70,15 +72,19 @@ protos/                        ← 6 proto files (source, orchestrator, jira, zu
     ↑
 FhirAugury.Common              ← Compiles protos; shared caching, database, text, gRPC helpers
     ↑
-FhirAugury.Source.Jira         ← Common (implements SourceService + JiraService gRPC)
-FhirAugury.Source.Zulip        ← Common (implements SourceService + ZulipService gRPC)
-FhirAugury.Source.Confluence   ← Common (implements SourceService + ConfluenceService gRPC)
-FhirAugury.Source.GitHub       ← Common (implements SourceService + GitHubService gRPC)
+FhirAugury.ServiceDefaults     ← Aspire shared project: OpenTelemetry, health checks, resilience
     ↑
-FhirAugury.Orchestrator        ← Common (consumes SourceService gRPC from all sources)
+FhirAugury.Source.Jira         ← Common + ServiceDefaults (implements SourceService + JiraService gRPC)
+FhirAugury.Source.Zulip        ← Common + ServiceDefaults (implements SourceService + ZulipService gRPC)
+FhirAugury.Source.Confluence   ← Common + ServiceDefaults (implements SourceService + ConfluenceService gRPC)
+FhirAugury.Source.GitHub       ← Common + ServiceDefaults (implements SourceService + GitHubService gRPC)
+    ↑
+FhirAugury.Orchestrator        ← Common + ServiceDefaults (consumes SourceService gRPC from all sources)
     ↑
 FhirAugury.Mcp                 ← Common (gRPC client to Orchestrator)
 FhirAugury.Cli                 ← Common (gRPC client to Orchestrator)
+
+FhirAugury.AppHost             ← Aspire AppHost (references all service projects for orchestration)
 ```
 
 ## Source Service Architecture
@@ -251,3 +257,43 @@ orchestrator and source services.
   `X-RateLimit-Remaining` headers and pauses automatically
 - **Health checks:** All services expose `/health` endpoints; Docker Compose
   uses these for readiness checks
+- **Aspire WaitFor:** When using the Aspire AppHost, `WaitFor()` ensures the
+  orchestrator doesn't start until all source services are healthy
+
+## .NET Aspire Integration
+
+FHIR Augury supports [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/)
+as an optional orchestration layer for development.
+
+### ServiceDefaults
+
+The `FhirAugury.ServiceDefaults` project is a shared Aspire project
+(`IsAspireSharedProject`) referenced by all web services. It provides:
+
+- **OpenTelemetry** — Logging, metrics (ASP.NET Core, HTTP, runtime), and
+  distributed tracing (ASP.NET Core, gRPC, HTTP) with OTLP export when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
+- **Health checks** — Readiness (`/health`) and liveness (`/alive`) endpoints
+- **Service discovery** — Aspire service discovery for HTTP clients
+- **HTTP resilience** — Standard resilience handler with retry/circuit-breaker
+
+Each web service calls `builder.AddServiceDefaults()` in its `Program.cs` to
+opt in to these defaults. The ServiceDefaults are active both when running
+under Aspire and when running standalone.
+
+### AppHost
+
+The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
+five services with fixed ports matching the existing convention:
+
+| Service | HTTP | gRPC |
+|---------|------|------|
+| source-jira | 5160 | 5161 |
+| source-zulip | 5170 | 5171 |
+| source-confluence | 5180 | 5181 |
+| source-github | 5190 | 5191 |
+| orchestrator | 5150 | 5151 |
+
+The orchestrator uses `WaitFor()` to depend on all source services. All
+endpoints use `isProxied: false` so services listen on their own ports
+directly (no Aspire reverse proxy).

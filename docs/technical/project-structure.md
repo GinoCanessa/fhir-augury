@@ -28,7 +28,7 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (8 projects)
+│   └── (10 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
     └── (7 test projects)
@@ -184,6 +184,48 @@ FhirAugury.Cli/
 ├── Program.cs                # Entry point: RootCommand with subcommands
 └── FhirAugury.Cli.csproj
 ```
+
+### `FhirAugury.ServiceDefaults`
+
+Shared [Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) project
+referenced by all web services. Provides OpenTelemetry, health checks, service
+discovery, and HTTP resilience.
+
+```
+FhirAugury.ServiceDefaults/
+├── Extensions.cs                    # AddServiceDefaults(), ConfigureOpenTelemetry(),
+│                                    #   AddDefaultHealthChecks(), MapDefaultEndpoints()
+└── FhirAugury.ServiceDefaults.csproj  # IsAspireSharedProject=true
+```
+
+Key capabilities:
+
+- **OpenTelemetry** — Logging (formatted messages, scopes), metrics (ASP.NET
+  Core, HTTP client, runtime), tracing (ASP.NET Core, gRPC, HTTP) with OTLP
+  export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+- **Health endpoints** — `/health` (readiness) and `/alive` (liveness)
+- **Service discovery** — Aspire `AddServiceDiscovery()` for HTTP clients
+- **HTTP resilience** — `AddStandardResilienceHandler()` for all HTTP clients
+
+### `FhirAugury.AppHost`
+
+[.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
+application host. Orchestrates all five services for local development with an
+integrated dashboard.
+
+```
+FhirAugury.AppHost/
+├── AppHost.cs                       # Registers all projects with fixed HTTP/gRPC ports
+├── aspire.config.json               # Points to AppHost project
+├── appsettings.json                 # Logging overrides (suppresses Aspire.Hosting.Dcp)
+├── Properties/
+│   └── launchSettings.json          # Dashboard and resource service endpoints
+└── FhirAugury.AppHost.csproj        # Sdk="Aspire.AppHost.Sdk/13.2.0"
+```
+
+Uses `Aspire.AppHost.Sdk`. Registers each service project with pinned
+HTTP/gRPC ports (`isProxied: false`) and configures the orchestrator to
+`WaitFor()` all source services.
 
 ## Test Projects
 

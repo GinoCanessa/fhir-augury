@@ -36,7 +36,7 @@ aggregates results and manages cross-references across sources.
 
 ## Quick Start
 
-### Docker Compose (recommended)
+### Docker Compose (recommended for production)
 
 ```bash
 # Start all services
@@ -48,6 +48,16 @@ curl http://localhost:5150/health
 # View logs
 docker compose --profile full logs -f
 ```
+
+### .NET Aspire (recommended for development)
+
+```bash
+# Start all services with the Aspire dashboard
+dotnet run --project src/FhirAugury.AppHost
+```
+
+The Aspire dashboard provides real-time service health, logs, traces, and
+metrics at the URL shown in the console output.
 
 ### From Source
 
@@ -85,6 +95,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **MCP server** for integration with LLM agents (Claude, Copilot, etc.)
 - **CLI tool** for searching and managing services via gRPC
 - **Docker Compose** deployment with profiles for subset stacks
+- **.NET Aspire** orchestration with dashboard, OpenTelemetry, and service discovery
 
 ## MCP Setup
 
@@ -155,10 +166,13 @@ docker compose --profile jira-only up -d   # Single source
 | Common | `src/FhirAugury.Common` | Shared types, protobuf definitions, utilities |
 | MCP Server | `src/FhirAugury.Mcp` | Model Context Protocol server for LLM agents |
 | CLI | `src/FhirAugury.Cli` | Command-line interface via gRPC |
+| Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
+| App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
+- [.NET Aspire workload](https://learn.microsoft.com/en-us/dotnet/aspire/) (optional, for Aspire orchestration)
 - Docker (optional, for containerized deployment)
 
 ## Documentation
@@ -200,6 +214,8 @@ docker compose --profile jira-only up -d   # Single source
 - **CLI framework:** System.CommandLine
 - **MCP:** Model Context Protocol (stdio transport)
 - **Containerization:** Docker with multi-stage builds
+- **Orchestration:** .NET Aspire (optional, for development)
+- **Observability:** OpenTelemetry (via Aspire ServiceDefaults)
 - **Code generation:** CsLightDbGen for database CRUD
 
 ## License

@@ -21,6 +21,7 @@ response cache. The CLI and MCP tools connect to the orchestrator via gRPC.
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
 - [Docker](https://www.docker.com/) (recommended, optional for running from source)
+- [.NET Aspire workload](https://learn.microsoft.com/en-us/dotnet/aspire/) (optional, for orchestrated development)
 
 Verify your installation:
 
@@ -73,7 +74,44 @@ source.
 dotnet run --project src/FhirAugury.Cli -- search "patient"
 ```
 
-## Option B: Run from Source
+## Option B: .NET Aspire (Recommended for Development)
+
+Aspire provides an integrated dashboard with logs, traces, and metrics, and
+starts all services with a single command.
+
+### 1. Install the Aspire workload
+
+```bash
+dotnet workload install aspire
+```
+
+### 2. Clone and start services
+
+```bash
+git clone https://github.com/GinoCanessa/fhir-augury.git
+cd fhir-augury
+
+dotnet run --project src/FhirAugury.AppHost
+```
+
+The Aspire dashboard URL is shown in the console output. All five services
+start automatically with the orchestrator waiting for sources to be healthy.
+
+### 3. Configure credentials
+
+Each source service requires credentials to access its upstream platform. You
+only need to configure credentials for the sources you want to use.
+
+See [Configure Credentials](#configure-credentials) below for details on each
+source.
+
+### 4. Run your first search
+
+```bash
+dotnet run --project src/FhirAugury.Cli -- search "patient"
+```
+
+## Option C: Run from Source
 
 ### 1. Clone and build
 
@@ -103,6 +141,10 @@ dotnet run --project src/FhirAugury.Source.GitHub
 # Start the orchestrator
 dotnet run --project src/FhirAugury.Orchestrator
 ```
+
+> **Tip:** Consider using [.NET Aspire](#option-b-net-aspire-recommended-for-development)
+> instead of starting each service manually — it starts all services with a
+> single command and provides a dashboard.
 
 > **Note:** You only need to start the sources you want to use. The orchestrator
 > will work with whatever sources are available.
@@ -392,3 +434,4 @@ for setup instructions and available tools.
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
 - [Configuration](configuration.md) — full configuration reference
 - [Docker Deployment](docker.md) — advanced Docker Compose options
+- [Deployment Guide](../deployment.md) — Docker Compose and .NET Aspire deployment
