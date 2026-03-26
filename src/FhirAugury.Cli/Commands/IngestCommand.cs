@@ -183,7 +183,8 @@ public static class IngestCommand
                 foreach (SourceRebuildIndexStatus status in response.Results)
                 {
                     string icon = status.Success ? "✓" : "✗";
-                    Console.WriteLine($"  {icon} {status.Source}: {status.ActionTaken ?? status.Error}");
+                    string detail = !string.IsNullOrEmpty(status.ActionTaken) ? status.ActionTaken : status.Error;
+                    Console.WriteLine($"  {icon} {status.Source}: {detail}");
                 }
 
                 if (sw is not null)
