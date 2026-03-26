@@ -31,7 +31,8 @@ var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
         e.TargetPort = 5171;
         e.Transport = "http2";
         e.IsProxied = false;
-    });
+    })
+    .WaitFor(jira);
 
 var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("source-confluence")
     .WithEndpoint("http", e =>
@@ -46,7 +47,8 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
         e.TargetPort = 5181;
         e.Transport = "http2";
         e.IsProxied = false;
-    });
+    })
+    .WithExplicitStart();
 
 var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-github")
     .WithEndpoint("http", e =>
@@ -61,7 +63,8 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
         e.TargetPort = 5191;
         e.Transport = "http2";
         e.IsProxied = false;
-    });
+    })
+    .WaitFor(jira);
 
 // ── Orchestrator ─────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
@@ -80,7 +83,6 @@ builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     })
     .WaitFor(jira)
     .WaitFor(zulip)
-    .WaitFor(confluence)
     .WaitFor(github);
 
 builder.Build().Run();
