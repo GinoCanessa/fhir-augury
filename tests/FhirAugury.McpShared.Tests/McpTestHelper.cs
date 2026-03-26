@@ -3,7 +3,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Core.Testing;
 
-namespace FhirAugury.Mcp.Tests;
+namespace FhirAugury.McpShared.Tests;
 
 /// <summary>
 /// Helper for creating mock gRPC responses for MCP tool testing.

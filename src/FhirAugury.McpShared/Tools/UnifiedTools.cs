@@ -5,7 +5,7 @@ using FhirAugury.Common.Text;
 using Grpc.Core;
 using ModelContextProtocol.Server;
 
-namespace FhirAugury.Mcp.Tools;
+namespace FhirAugury.McpShared.Tools;
 
 [McpServerToolType]
 public static class UnifiedTools

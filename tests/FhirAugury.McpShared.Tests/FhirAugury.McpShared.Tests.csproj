@@ -18,8 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
-    <ProjectReference Include="..\..\src\FhirAugury.Mcp\FhirAugury.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.McpShared\FhirAugury.McpShared.csproj" />
   </ItemGroup>
 
 </Project>

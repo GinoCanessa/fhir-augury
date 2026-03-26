@@ -5,7 +5,7 @@
       "args": [
         "run",
         "--project",
-        "/path/to/fhir-augury/src/FhirAugury.Mcp"
+        "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",

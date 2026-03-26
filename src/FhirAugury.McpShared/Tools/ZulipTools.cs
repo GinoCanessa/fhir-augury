@@ -5,7 +5,7 @@ using Grpc.Core;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
-namespace FhirAugury.Mcp.Tools;
+namespace FhirAugury.McpShared.Tools;
 
 [McpServerToolType]
 public static class ZulipTools

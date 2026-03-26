@@ -67,7 +67,7 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
     .WaitFor(jira);
 
 // ── Orchestrator ─────────────────────────────────────────────────
-builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
+var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     .WithEndpoint("http", e =>
     {
         e.Port = 5150;
@@ -84,5 +84,15 @@ builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     .WaitFor(jira)
     .WaitFor(zulip)
     .WaitFor(github);
+
+// ── MCP HTTP server ─────────────────────────────────────────────
+builder.AddProject<Projects.FhirAugury_McpHttp>("mcp")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5200;
+        e.TargetPort = 5200;
+        e.IsProxied = false;
+    })
+    .WaitFor(orchestrator);
 
 builder.Build().Run();

@@ -7,13 +7,15 @@
     <Project Path="src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj" />
     <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
-    <Project Path="src/FhirAugury.Mcp/FhirAugury.Mcp.csproj" />
+    <Project Path="src/FhirAugury.McpShared/FhirAugury.McpShared.csproj" />
+    <Project Path="src/FhirAugury.McpStdio/FhirAugury.McpStdio.csproj" />
+    <Project Path="src/FhirAugury.McpHttp/FhirAugury.McpHttp.csproj" />
     <Project Path="src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj" />
     <Project Path="src/FhirAugury.AppHost/FhirAugury.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
-    <Project Path="tests/FhirAugury.Mcp.Tests/FhirAugury.Mcp.Tests.csproj" />
+    <Project Path="tests/FhirAugury.McpShared.Tests/FhirAugury.McpShared.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Jira.Tests/FhirAugury.Source.Jira.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Confluence.Tests/FhirAugury.Source.Confluence.Tests.csproj" />

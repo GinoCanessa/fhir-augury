@@ -1,10 +1,10 @@
 using Fhiraugury;
-using FhirAugury.Mcp.Tools;
+using FhirAugury.McpShared.Tools;
 using Grpc.Core;
 using Grpc.Core.Testing;
 using NSubstitute;
 
-namespace FhirAugury.Mcp.Tests;
+namespace FhirAugury.McpShared.Tests;
 
 public class UnifiedToolsTests
 {

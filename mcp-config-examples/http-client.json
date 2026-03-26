@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "fhir-augury": {
-      "url": "http://localhost:5150/mcp"
+      "url": "http://localhost:5200/mcp"
     }
   }
 }
