@@ -67,6 +67,14 @@ public static class HttpRetryHelper
                 backoff = NextBackoff(backoff);
                 continue;
             }
+            catch (Exception ex) when (attempt < maxRetries && IsResilienceException(ex))
+            {
+                // Polly circuit breaker, rate limiter rejection, or similar.
+                // Wait with backoff — the circuit may transition to half-open.
+                await DelayWithJitter(backoff, ct);
+                backoff = NextBackoff(backoff);
+                continue;
+            }
 
             if (AuthFailureCodes.Contains(response.StatusCode))
             {
@@ -94,6 +102,16 @@ public static class HttpRetryHelper
 
     public static bool IsAuthFailure(HttpStatusCode statusCode) => AuthFailureCodes.Contains(statusCode);
     public static bool IsTransient(HttpStatusCode statusCode) => TransientStatusCodes.Contains(statusCode);
+
+    /// <summary>
+    /// Returns true for exceptions thrown by resilience pipelines (e.g. Polly circuit breaker)
+    /// that should be retried rather than immediately propagated.
+    /// </summary>
+    private static bool IsResilienceException(Exception ex)
+    {
+        string typeName = ex.GetType().FullName ?? "";
+        return typeName.StartsWith("Polly.", StringComparison.Ordinal);
+    }
 
     private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
     {

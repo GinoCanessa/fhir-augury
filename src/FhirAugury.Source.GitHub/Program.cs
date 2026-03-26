@@ -71,7 +71,8 @@ builder.Services.AddHttpClient("github", client =>
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/vnd.github+json");
     client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
     client.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
-}).AddHttpMessageHandler<GitHubRateLimiter>();
+}).AddHttpMessageHandler<GitHubRateLimiter>()
+  .AddStandardResilienceHandler();
 
 // Ingestion
 // Ingestion — provider selection based on config

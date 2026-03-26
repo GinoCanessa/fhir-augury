@@ -70,7 +70,8 @@ builder.Services.AddHttpClient("confluence", client =>
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
     client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
-}).AddHttpMessageHandler<ConfluenceAuthHandler>();
+}).AddHttpMessageHandler<ConfluenceAuthHandler>()
+  .AddStandardResilienceHandler();
 
 // Ingestion
 builder.Services.AddSingleton<ConfluenceSource>();

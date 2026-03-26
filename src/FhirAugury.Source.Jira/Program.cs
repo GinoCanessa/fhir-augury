@@ -70,7 +70,8 @@ builder.Services.AddHttpClient("jira", client =>
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
     client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
-}).AddHttpMessageHandler<JiraAuthHandler>();
+}).AddHttpMessageHandler<JiraAuthHandler>()
+  .AddStandardResilienceHandler();
 
 // HTTP client with auth (XML export, browser-like headers for cookie auth)
 builder.Services.AddHttpClient("jira-xml", client =>
@@ -85,7 +86,8 @@ builder.Services.AddHttpClient("jira-xml", client =>
     client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-site", "same-origin");
     client.DefaultRequestHeaders.TryAddWithoutValidation("sec-fetch-user", "?1");
     client.DefaultRequestHeaders.TryAddWithoutValidation("upgrade-insecure-requests", "1");
-}).AddHttpMessageHandler<JiraAuthHandler>();
+}).AddHttpMessageHandler<JiraAuthHandler>()
+  .AddStandardResilienceHandler();
 
 // Ingestion
 builder.Services.AddSingleton<JiraSource>();

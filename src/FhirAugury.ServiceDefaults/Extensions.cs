@@ -29,7 +29,8 @@ public static class Extensions
 
         builder.Services.ConfigureHttpClientDefaults(http =>
         {
-            http.AddStandardResilienceHandler();
+            // Standard resilience is configured per-client in each source's Program.cs
+            // so each source can tune timeouts, circuit breaker thresholds, etc.
             http.AddServiceDiscovery();
         });
 

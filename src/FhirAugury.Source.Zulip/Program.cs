@@ -63,12 +63,25 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
     return new FileSystemResponseCache(cachePath);
 });
 
-// HTTP client with auth
+// HTTP client with auth and rate limiting
+builder.Services.AddTransient<ZulipRateLimiter>();
 builder.Services.AddHttpClient("zulip")
     .ConfigureHttpClient((sp, client) =>
     {
         ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
         ZulipAuthHandler.ConfigureHttpClient(client, opts);
+    })
+    .AddHttpMessageHandler<ZulipRateLimiter>()
+    .AddStandardResilienceHandler(options =>
+    {
+        // Zulip fetches up to 1000 messages per page — responses can be slow.
+        options.AttemptTimeout.Timeout = TimeSpan.FromMinutes(2);
+        options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+
+        // Relax the circuit breaker so transient slowness doesn't abort ingestion.
+        options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(5);
+        options.CircuitBreaker.FailureRatio = 0.5;
+        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(10);
     });
 
 // Ingestion
