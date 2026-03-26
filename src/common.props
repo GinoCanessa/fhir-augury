@@ -3,7 +3,7 @@
     <!-- Solution-wide properties for NuGet packaging -->
     <PropertyGroup>
         <LangVersion>14.0</LangVersion>
-        <TargetFrameworks>net10.0</TargetFrameworks>
+        <TargetFramework>net10.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<VersionPrefix>$([System.DateTime]::Now.ToString("yyyy.MMdd.HHmm"))</VersionPrefix>

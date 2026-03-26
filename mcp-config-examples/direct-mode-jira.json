@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "fhir-augury-jira": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/fhir-augury/src/FhirAugury.McpStdio",
+        "--",
+        "--mode", "direct",
+        "--source", "jira"
+      ],
+      "env": {
+        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
+      }
+    }
+  }
+}

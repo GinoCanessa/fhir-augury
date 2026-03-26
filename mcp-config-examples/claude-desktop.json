@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "fhir-augury": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/fhir-augury/src/FhirAugury.McpStdio"
+      ],
+      "env": {
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
+        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
+        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+      }
+    }
+  }
+}

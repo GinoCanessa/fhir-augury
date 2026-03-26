@@ -1,0 +1,164 @@
+# FHIR Augury — v2 Multi-Service Docker Compose
+#
+# Usage:
+#   docker compose --profile full up          # All services
+#   docker compose --profile jira-zulip up    # Jira + Zulip + Orchestrator
+#   docker compose --profile jira-only up     # Jira standalone (no orchestrator)
+#
+# Volumes:
+#   *-cache  — Critical: raw API responses, preserve across upgrades
+#   *-data   — Rebuildable: SQLite databases, can delete to force rebuild
+
+services:
+  source-jira:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Source.Jira/Dockerfile
+    profiles: ["full", "jira-zulip", "jira-only"]
+    volumes:
+      - jira-cache:/app/cache
+      - jira-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
+    ports:
+      - "5160:5160"
+      - "5161:5161"
+    environment:
+      - FHIR_AUGURY_JIRA__Jira__BaseUrl=https://jira.hl7.org
+      - FHIR_AUGURY_JIRA__Jira__AuthMode=cookie
+      - FHIR_AUGURY_JIRA__Jira__CachePath=/app/cache
+      - FHIR_AUGURY_JIRA__Jira__DatabasePath=/app/data/jira.db
+      # Uncomment and set credentials:
+      # - FHIR_AUGURY_JIRA__Jira__Cookie=JSESSIONID=...
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5160/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  source-zulip:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Source.Zulip/Dockerfile
+    profiles: ["full", "jira-zulip"]
+    volumes:
+      - zulip-cache:/app/cache
+      - zulip-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
+    ports:
+      - "5170:5170"
+      - "5171:5171"
+    environment:
+      - FHIR_AUGURY_ZULIP__Zulip__BaseUrl=https://chat.fhir.org
+      - FHIR_AUGURY_ZULIP__Zulip__CachePath=/app/cache
+      - FHIR_AUGURY_ZULIP__Zulip__DatabasePath=/app/data/zulip.db
+      # Uncomment and set credentials:
+      # - FHIR_AUGURY_ZULIP__Zulip__Email=bot@example.com
+      # - FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5170/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  source-confluence:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Source.Confluence/Dockerfile
+    profiles: ["full"]
+    volumes:
+      - confluence-cache:/app/cache
+      - confluence-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
+    ports:
+      - "5180:5180"
+      - "5181:5181"
+    environment:
+      - FHIR_AUGURY_CONFLUENCE__Confluence__BaseUrl=https://confluence.hl7.org
+      - FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode=cookie
+      - FHIR_AUGURY_CONFLUENCE__Confluence__CachePath=/app/cache
+      - FHIR_AUGURY_CONFLUENCE__Confluence__DatabasePath=/app/data/confluence.db
+      # Uncomment and set credentials:
+      # - FHIR_AUGURY_CONFLUENCE__Confluence__Cookie=JSESSIONID=...
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5180/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  source-github:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Source.GitHub/Dockerfile
+    profiles: ["full"]
+    volumes:
+      - github-cache:/app/cache
+      - github-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
+    ports:
+      - "5190:5190"
+      - "5191:5191"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - FHIR_AUGURY_GITHUB__GitHub__CachePath=/app/cache
+      - FHIR_AUGURY_GITHUB__GitHub__DatabasePath=/app/data/github.db
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5190/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Orchestrator/Dockerfile
+    profiles: ["full", "jira-zulip"]
+    depends_on:
+      source-jira:
+        condition: service_healthy
+      source-zulip:
+        condition: service_healthy
+        required: false
+      source-confluence:
+        condition: service_healthy
+        required: false
+      source-github:
+        condition: service_healthy
+        required: false
+    volumes:
+      - orchestrator-data:/app/data
+      - ./cache/dictionary:/app/cache/dictionary:ro
+    ports:
+      - "5150:5150"
+      - "5151:5151"
+    environment:
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__DatabasePath=/app/data/orchestrator.db
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress=http://source-zulip:5171
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress=http://source-confluence:5181
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__GrpcAddress=http://source-github:5191
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5150/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  jira-cache:
+  jira-data:
+  zulip-cache:
+  zulip-data:
+  confluence-cache:
+  confluence-data:
+  github-cache:
+  github-data:
+  orchestrator-data:

@@ -1,0 +1,98 @@
+using System.Net.Http.Headers;
+using FhirAugury.Source.GitHub.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace FhirAugury.Source.GitHub.Ingestion;
+
+/// <summary>
+/// HTTP delegating handler that monitors GitHub API rate limits
+/// and delays requests when approaching the limit.
+/// </summary>
+public class GitHubRateLimiter(IOptions<GitHubServiceOptions> optionsAccessor, ILogger<GitHubRateLimiter>? logger = null) : DelegatingHandler
+{
+    private readonly Lock _lock = new();
+    private int _remaining = int.MaxValue;
+    private DateTimeOffset _resetTime = DateTimeOffset.MinValue;
+    private readonly GitHubServiceOptions _options = optionsAccessor.Value;
+    private readonly SemaphoreSlim _concurrencyGate = new(
+        optionsAccessor.Value.RateLimiting.MaxConcurrentRequests,
+        optionsAccessor.Value.RateLimiting.MaxConcurrentRequests);
+
+    /// <summary>Configures an existing HttpClient with GitHub default headers (non-auth).</summary>
+    public static void ConfigureHttpClient(HttpClient client)
+    {
+        client.Timeout = TimeSpan.FromMinutes(5);
+        client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/vnd.github+json");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (_concurrencyGate.CurrentCount == 0)
+            logger?.LogDebug("Waiting for previous GitHub API request to complete...");
+
+        await _concurrencyGate.WaitAsync(cancellationToken);
+        try
+        {
+            // Check if we should wait for rate limit reset
+            TimeSpan delay;
+            lock (_lock)
+            {
+                if (_remaining <= 10 && _resetTime > DateTimeOffset.UtcNow)
+                {
+                    delay = _resetTime - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+                }
+                else
+                {
+                    delay = TimeSpan.Zero;
+                }
+            }
+
+            if (delay > TimeSpan.Zero)
+            {
+                logger?.LogWarning(
+                    "Rate limit approaching ({Remaining} remaining). Waiting {Delay:F0}s until reset.",
+                    _remaining, delay.TotalSeconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+
+            // Add auth header per-request if not set globally
+            string? token = _options.Auth.ResolveToken();
+            if (!string.IsNullOrEmpty(token) && request.Headers.Authorization is null)
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+
+            HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
+
+            // Update rate limit tracking from response headers
+            if (_options.RateLimiting.RespectRateLimitHeaders)
+            {
+                lock (_lock)
+                {
+                    if (response.Headers.TryGetValues("X-RateLimit-Remaining", out IEnumerable<string>? remainingValues) &&
+                        int.TryParse(remainingValues.FirstOrDefault(), out int remaining))
+                    {
+                        _remaining = remaining;
+                    }
+
+                    if (response.Headers.TryGetValues("X-RateLimit-Reset", out IEnumerable<string>? resetValues) &&
+                        long.TryParse(resetValues.FirstOrDefault(), out long resetUnix))
+                    {
+                        _resetTime = DateTimeOffset.FromUnixTimeSeconds(resetUnix);
+                    }
+                }
+            }
+
+            logger?.LogDebug("GitHub API: {Status}, Rate limit remaining: {Remaining}", response.StatusCode, _remaining);
+
+            return response;
+        }
+        finally
+        {
+            _concurrencyGate.Release();
+        }
+    }
+}

@@ -1,4 +1,27 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FhirAugury.Common/FhirAugury.Common.csproj" />
+    <Project Path="src/FhirAugury.Source.Jira/FhirAugury.Source.Jira.csproj" />
+    <Project Path="src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj" />
+    <Project Path="src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj" />
+    <Project Path="src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj" />
+    <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
+    <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
+    <Project Path="src/FhirAugury.McpShared/FhirAugury.McpShared.csproj" />
+    <Project Path="src/FhirAugury.McpStdio/FhirAugury.McpStdio.csproj" />
+    <Project Path="src/FhirAugury.McpHttp/FhirAugury.McpHttp.csproj" />
+    <Project Path="src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj" />
+    <Project Path="src/FhirAugury.AppHost/FhirAugury.AppHost.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
+    <Project Path="tests/FhirAugury.McpShared.Tests/FhirAugury.McpShared.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Jira.Tests/FhirAugury.Source.Jira.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Confluence.Tests/FhirAugury.Source.Confluence.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.GitHub.Tests/FhirAugury.Source.GitHub.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Orchestrator.Tests/FhirAugury.Orchestrator.Tests.csproj" />
+  </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
     <File Path="LICENSE" />
