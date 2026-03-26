@@ -195,36 +195,52 @@ public class GitHubCliProvider(
             logger.LogInformation("Incremental sync via gh CLI for {Repo} since {Since}", repoFullName, sinceStr);
             string repoArgs = runner.BuildRepoArgs(repoFullName);
 
-            // Fetch updated issues
-            string issueArgs = $"issue list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {IssueListFields}";
-            try
+            // Fetch repo metadata so we know whether issues are enabled
+            await FetchRepoMetadataAsync(connection, repoFullName, ct, errors);
+            GitHubRepoRecord? repoRecord = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
+            bool hasIssues = repoRecord?.HasIssues ?? true; // assume enabled if unknown
+
+            // Fetch updated issues (skip when the repo has issues disabled)
+            if (!hasIssues)
             {
-                await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
+                logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+            }
+            else
+            {
+                string issueArgs = $"issue list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {IssueListFields}";
+                try
                 {
-                    (ProcessOutcome outcome, string? error) = ProcessCliIssue(json, repoFullName, connection);
-                    itemsProcessed++;
-
-                    switch (outcome)
+                    await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
                     {
-                        case ProcessOutcome.New: itemsNew++; break;
-                        case ProcessOutcome.Updated: itemsUpdated++; break;
-                        case ProcessOutcome.Failed:
-                            itemsFailed++;
-                            if (error is not null) errors.Add(error);
-                            break;
-                    }
+                        (ProcessOutcome outcome, string? error) = ProcessCliIssue(json, repoFullName, connection);
+                        itemsProcessed++;
 
-                    if (outcome != ProcessOutcome.Failed)
-                    {
-                        int issueNumber = json.GetProperty("number").GetInt32();
-                        await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr: false, ct, errors);
+                        switch (outcome)
+                        {
+                            case ProcessOutcome.New: itemsNew++; break;
+                            case ProcessOutcome.Updated: itemsUpdated++; break;
+                            case ProcessOutcome.Failed:
+                                itemsFailed++;
+                                if (error is not null) errors.Add(error);
+                                break;
+                        }
+
+                        if (outcome != ProcessOutcome.Failed)
+                        {
+                            int issueNumber = json.GetProperty("number").GetInt32();
+                            await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr: false, ct, errors);
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to fetch issues for {Repo}", repoFullName);
-                errors.Add($"issues:{repoFullName} - {ex.Message}");
+                catch (Exception ex) when (ex.Message.Contains("has disabled issues", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to fetch issues for {Repo}", repoFullName);
+                    errors.Add($"issues:{repoFullName} - {ex.Message}");
+                }
             }
 
             // Fetch updated PRs

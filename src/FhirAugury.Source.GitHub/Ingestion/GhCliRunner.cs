@@ -24,7 +24,7 @@ public class GhCliRunner(
 
         if (exitCode != 0)
         {
-            logger.LogError("gh command failed (exit {ExitCode}): gh {Args}\nstderr: {Stderr}", exitCode, arguments, stderr);
+            logger.LogDebug("gh command failed (exit {ExitCode}): gh {Args}\nstderr: {Stderr}", exitCode, arguments, stderr);
             throw new InvalidOperationException($"gh command failed (exit {exitCode}): {stderr}");
         }
 
