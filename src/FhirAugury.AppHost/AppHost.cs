@@ -18,6 +18,7 @@ var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
         e.IsProxied = false;
     })
     .WithHttpCommand(
+        endpointName: "http",
         path: "/health",
         displayName: "Health Check",
         commandOptions: new HttpCommandOptions()
@@ -27,78 +28,43 @@ var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
         }
     )
     .WithHttpCommand(
+        endpointName: "http",
         path: "/rebuild-index",
         displayName: "Rebuild indexes",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Get,
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=bm25",
         displayName: "Rebuild bm25",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=bm25");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=cross-refs",
         displayName: "Rebuild cross-refs",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=cross-refs");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=fts",
         displayName: "Rebuild fts",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=fts");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     );
 
@@ -126,78 +92,43 @@ var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
         }
     )
     .WithHttpCommand(
+        endpointName: "http",
         path: "/rebuild-index",
         displayName: "Rebuild indexes",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Get,
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=bm25",
         displayName: "Rebuild bm25",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=bm25");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=cross-refs",
         displayName: "Rebuild cross-refs",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=cross-refs");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=fts",
         displayName: "Rebuild fts",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=fts");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WaitFor(jira);
@@ -217,6 +148,7 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
         e.IsProxied = false;
     })
     .WithHttpCommand(
+        endpointName: "http",
         path: "/health",
         displayName: "Health Check",
         commandOptions: new HttpCommandOptions()
@@ -226,78 +158,43 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
         }
     )
     .WithHttpCommand(
+        endpointName: "http",
         path: "/rebuild-index",
         displayName: "Rebuild indexes",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Get,
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=bm25",
         displayName: "Rebuild bm25",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=bm25");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=cross-refs",
         displayName: "Rebuild cross-refs",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=cross-refs");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=fts",
         displayName: "Rebuild fts",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=fts");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithExplicitStart();
@@ -317,6 +214,7 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
         e.IsProxied = false;
     })
     .WithHttpCommand(
+        endpointName: "http",
         path: "/health",
         displayName: "Health Check",
         commandOptions: new HttpCommandOptions()
@@ -326,78 +224,43 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
         }
     )
     .WithHttpCommand(
+        endpointName: "http",
         path: "/rebuild-index",
         displayName: "Rebuild indexes",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Get,
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=bm25",
         displayName: "Rebuild bm25",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=bm25");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=cross-refs",
         displayName: "Rebuild cross-refs",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=cross-refs");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=fts",
         displayName: "Rebuild fts",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=fts");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WaitFor(jira);
@@ -418,34 +281,23 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
         e.IsProxied = false;
     })
     .WithHttpCommand(
+        endpointName: "http",
         path: "/rebuild-index",
         displayName: "Rebuild indexes",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuilds for all active services.",
-            Method = HttpMethod.Get,
+            Method = HttpMethod.Post,
         }
     )
     .WithHttpCommand(
-        path: "/rebuild-index",
+        endpointName: "http",
+        path: "/rebuild-index?type=cross-ref",
         displayName: "Rebuild cross-refs",
         commandOptions: new HttpCommandOptions()
         {
             Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Get,
-            PrepareRequest = (ctx) =>
-            {
-                if (ctx.Request.RequestUri is null)
-                {
-                    throw new ArgumentException(nameof(ctx.Request.RequestUri));
-                }
-
-                string prefix = ctx.Request.RequestUri.Query.Length > 0 ? "&" : "?";
-
-                ctx.Request.RequestUri = new Uri(ctx.Request.RequestUri.ToString() + prefix + "type=cross-refs");
-
-                return Task.CompletedTask;
-            }
+            Method = HttpMethod.Post,
         }
     )
     .WaitFor(jira)
