@@ -36,6 +36,7 @@ public class JiraDatabase : SourceDatabase
         JiraIndexStatusRecord.CreateTable(connection);
         JiraIndexResolutionRecord.CreateTable(connection);
         JiraIssueLabelRecord.CreateTable(connection);
+        JiraZulipRefRecord.CreateTable(connection);
 
         CreateJiraIssuesFts(connection);
         CreateJiraCommentsFts(connection);
@@ -100,6 +101,7 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_index_priorities;
             DROP TABLE IF EXISTS jira_index_statuses;
             DROP TABLE IF EXISTS jira_index_resolutions;
+            DROP TABLE IF EXISTS jira_zulip_refs;
             """;
         cmd.ExecuteNonQuery();
 

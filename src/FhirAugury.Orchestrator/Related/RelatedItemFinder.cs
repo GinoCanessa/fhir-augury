@@ -1,30 +1,23 @@
 using Fhiraugury;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
-using FhirAugury.Orchestrator.Database;
-using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
-using FhirAugury.Orchestrator.Search;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Related;
 
 /// <summary>
-/// Finds related items across all sources using multiple signals:
-/// explicit xrefs, reverse xrefs, BM25 similarity, and shared metadata.
+/// Finds related items across all sources using fan-out queries:
+/// cross-source GetRelated, BM25 similarity, and shared metadata.
 /// </summary>
 public class RelatedItemFinder(
-    OrchestratorDatabase database,
     SourceRouter router,
     IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<RelatedItemFinder> logger)
 {
     private readonly OrchestratorOptions options = optionsAccessor.Value;
-    /// <summary>
-    /// Finds items related to a seed item identified by source and id.
-    /// </summary>
+
     public async Task<FindRelatedResponse> FindRelatedAsync(
         string seedSource,
         string seedId,
@@ -32,77 +25,78 @@ public class RelatedItemFinder(
         IReadOnlyList<string>? targetSources,
         CancellationToken ct)
     {
-        int effectiveLimit = limit > 0 ? limit : options.Related.DefaultLimit;
+        int effectiveLimit = Math.Clamp(
+            limit > 0 ? limit : options.Related.DefaultLimit, 1, 100);
+        Dictionary<string, RelatedCandidate> candidates = new();
 
-        // Get the seed item for context
-        SourceService.SourceServiceClient? seedClient = router.GetSourceClient(seedSource);
-        ItemResponse? seedItem = null;
-        if (seedClient is not null)
+        IReadOnlyList<string> sources = targetSources?.Count > 0
+            ? targetSources
+            : options.Services.Where(s => s.Value.Enabled).Select(s => s.Key).ToList();
+
+        // Fetch seed item for title/metadata
+        ItemResponse? seedItem = await FetchSeedItem(seedSource, seedId, ct);
+
+        // Signal A: Cross-source fan-out GetRelated
+        List<Task<(string Source, SearchResponse Response)>> relatedTasks = [];
+        foreach (string source in sources)
         {
-            try
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
+            if (client is null) continue;
+
+            string s = source;
+            relatedTasks.Add(Task.Run(async () =>
             {
-                seedItem = await seedClient.GetItemAsync(
-                    new GetItemRequest { Id = seedId, IncludeContent = true }, cancellationToken: ct);
-            }
-            catch (Exception ex)
+                SearchResponse resp = await client.GetRelatedAsync(new GetRelatedRequest
+                {
+                    SeedSource = seedSource,
+                    SeedId = seedId,
+                    Limit = effectiveLimit,
+                }, cancellationToken: ct);
+                return (s, resp);
+            }, ct));
+        }
+
+        (string Source, SearchResponse Response)[] relatedResults =
+            await Task.WhenAll(relatedTasks);
+
+        foreach ((string source, SearchResponse relatedResp) in relatedResults)
+        {
+            foreach (SearchResultItem result in relatedResp.Results)
             {
-                logger.LogWarning(ex, "Failed to fetch seed item {Source}/{Id}", seedSource, seedId);
+                if (result.Source == seedSource && result.Id == seedId) continue;
+
+                string key = $"{result.Source}:{result.Id}";
+                if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
+                {
+                    candidate = new RelatedCandidate
+                    {
+                        Source = result.Source, Id = result.Id
+                    };
+                    candidates[key] = candidate;
+                }
+
+                double score = result.Score > 0 ? result.Score : 1.0;
+                candidate.Score += options.Related.CrossSourceWeight * score;
+                if (string.IsNullOrEmpty(candidate.Relationship))
+                    candidate.Relationship = "cross_reference";
+                if (!string.IsNullOrEmpty(result.Title))
+                    candidate.Title = result.Title;
+                if (!string.IsNullOrEmpty(result.Url))
+                    candidate.Url = result.Url;
+                if (!string.IsNullOrEmpty(result.Snippet) &&
+                    string.IsNullOrEmpty(candidate.Context))
+                    candidate.Context = result.Snippet;
             }
         }
 
-        Dictionary<string, RelatedCandidate> candidates = new Dictionary<string, RelatedCandidate>(); // key: "source:id"
-        using SqliteConnection connection = database.OpenConnection();
-
-        // Signal 1: Explicit cross-references (items this item mentions)
-        List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
-            SourceType: seedSource, SourceId: seedId);
-        foreach (CrossRefLinkRecord link in outgoing)
-        {
-            if (targetSources?.Count > 0 && !targetSources.Contains(link.TargetType))
-                continue;
-
-            string key = $"{link.TargetType}:{link.TargetId}";
-            if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
-            {
-                candidate = new RelatedCandidate { Source = link.TargetType, Id = link.TargetId };
-                candidates[key] = candidate;
-            }
-            candidate.Score += options.Related.ExplicitXrefWeight;
-            candidate.Relationship = "referenced_by_seed";
-            candidate.Context = link.Context ?? "";
-        }
-
-        // Signal 2: Reverse cross-references (items that mention this item)
-        List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
-            TargetType: seedSource, TargetId: seedId);
-        foreach (CrossRefLinkRecord link in incoming)
-        {
-            if (targetSources?.Count > 0 && !targetSources.Contains(link.SourceType))
-                continue;
-
-            string key = $"{link.SourceType}:{link.SourceId}";
-            if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
-            {
-                candidate = new RelatedCandidate { Source = link.SourceType, Id = link.SourceId };
-                candidates[key] = candidate;
-            }
-            candidate.Score += options.Related.ReverseXrefWeight;
-            candidate.Relationship = "references_seed";
-            candidate.Context = link.Context ?? "";
-        }
-
-        // Signal 3: BM25 similarity — extract key terms from seed and search
+        // Signal B: BM25 similarity (existing Signal 3 logic)
         if (seedItem is not null)
         {
             string searchTerms = ExtractKeyTerms(seedItem);
             if (!string.IsNullOrEmpty(searchTerms))
             {
-                IReadOnlyList<string> searchSources = targetSources?.Count > 0
-                    ? targetSources
-                    : options.Services.Where(s => s.Value.Enabled).Select(s => s.Key).ToList();
-
-                List<Task<SearchResponse>> searchTasks = new List<Task<SearchResponse>>();
-                foreach (string source in searchSources)
+                List<Task<SearchResponse>> searchTasks = [];
+                foreach (string source in sources)
                 {
                     SourceService.SourceServiceClient? client = router.GetSourceClient(source);
                     if (client is null) continue;
@@ -111,13 +105,11 @@ public class RelatedItemFinder(
                 }
 
                 SearchResponse[] searchResults = await Task.WhenAll(searchTasks);
-                foreach (SearchResponse? searchResponse in searchResults)
+                foreach (SearchResponse searchResponse in searchResults)
                 {
-                    foreach (SearchResultItem? result in searchResponse.Results)
+                    foreach (SearchResultItem result in searchResponse.Results)
                     {
-                        // Skip the seed item itself
-                        if (result.Source == seedSource && result.Id == seedId)
-                            continue;
+                        if (result.Source == seedSource && result.Id == seedId) continue;
 
                         string key = $"{result.Source}:{result.Id}";
                         if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
@@ -136,14 +128,11 @@ public class RelatedItemFinder(
                 }
             }
 
-            // Signal 4: Shared metadata (work group, specification, labels)
+            // Signal C: Shared metadata
             if (seedItem.Metadata.TryGetValue("work_group", out string? workGroup) && !string.IsNullOrEmpty(workGroup))
             {
-                foreach ((string? source, SourceServiceConfig? config) in options.Services)
+                foreach (string source in sources)
                 {
-                    if (!config.Enabled) continue;
-                    if (targetSources?.Count > 0 && !targetSources.Contains(source)) continue;
-
                     SourceService.SourceServiceClient? client = router.GetSourceClient(source);
                     if (client is null) continue;
 
@@ -153,7 +142,7 @@ public class RelatedItemFinder(
                             new SearchRequest { Query = workGroup, Limit = effectiveLimit },
                             cancellationToken: ct);
 
-                        foreach (SearchResultItem? result in metaResults.Results)
+                        foreach (SearchResultItem result in metaResults.Results)
                         {
                             if (result.Source == seedSource && result.Id == seedId) continue;
 
@@ -182,8 +171,8 @@ public class RelatedItemFinder(
             }
         }
 
-        // Enrich candidates that don't have title/url yet
-        foreach (RelatedCandidate? candidate in candidates.Values.Where(c => string.IsNullOrEmpty(c.Title)))
+        // Enrich candidates missing title/url
+        foreach (RelatedCandidate candidate in candidates.Values.Where(c => string.IsNullOrEmpty(c.Title)))
         {
             SourceService.SourceServiceClient? client = router.GetSourceClient(candidate.Source);
             if (client is null) continue;
@@ -213,7 +202,7 @@ public class RelatedItemFinder(
             .OrderByDescending(c => c.Score)
             .Take(effectiveLimit);
 
-        foreach (RelatedCandidate? candidate in sorted)
+        foreach (RelatedCandidate candidate in sorted)
         {
             response.Items.Add(new RelatedItem
             {
@@ -229,6 +218,23 @@ public class RelatedItemFinder(
         }
 
         return response;
+    }
+
+    private async Task<ItemResponse?> FetchSeedItem(string seedSource, string seedId, CancellationToken ct)
+    {
+        SourceService.SourceServiceClient? seedClient = router.GetSourceClient(seedSource);
+        if (seedClient is null) return null;
+
+        try
+        {
+            return await seedClient.GetItemAsync(
+                new GetItemRequest { Id = seedId, IncludeContent = true }, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to fetch seed item {Source}/{Id}", seedSource, seedId);
+            return null;
+        }
     }
 
     private async Task<SearchResponse> SearchSourceAsync(

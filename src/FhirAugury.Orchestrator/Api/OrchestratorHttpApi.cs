@@ -1,9 +1,7 @@
 using Fhiraugury;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
-using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
-using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Related;
 using FhirAugury.Orchestrator.Routing;
@@ -12,7 +10,6 @@ using Google.Protobuf.WellKnownTypes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 
@@ -79,35 +76,44 @@ public static class OrchestratorHttpApi
         });
 
         // ── Cross-references ─────────────────────────────────────────
-        api.MapGet("/xref/{source}/{id}", (
+        api.MapGet("/xref/{source}/{id}", async (
             string source,
             string id,
             string? direction,
-            OrchestratorDatabase database) =>
+            SourceRouter router,
+            CancellationToken ct) =>
         {
-            using SqliteConnection connection = database.OpenConnection();
             string dir = direction?.ToLowerInvariant() ?? "both";
+            List<object> results = [];
 
-            List<object> results = new List<object>();
-
-            if (dir is "outgoing" or "both")
+            List<Task<GetItemXRefResponse>> tasks = [];
+            foreach (string srcName in router.GetEnabledSources())
             {
-                List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
-                    SourceType: source, SourceId: id);
-                results.AddRange(outgoing.Select(l => (object)new
+                SourceService.SourceServiceClient? client = router.GetSourceClient(srcName);
+                if (client is null) continue;
+
+                tasks.Add(client.GetItemCrossReferencesAsync(new GetItemXRefRequest
                 {
-                    l.SourceType, l.SourceId, l.TargetType, l.TargetId, l.LinkType, l.Context,
-                }));
+                    Source = source,
+                    Id = id,
+                    Direction = dir,
+                }, cancellationToken: ct).ResponseAsync);
             }
 
-            if (dir is "incoming" or "both")
+            foreach (Task<GetItemXRefResponse> task in tasks)
             {
-                List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
-                    TargetType: source, TargetId: id);
-                results.AddRange(incoming.Select(l => (object)new
+                try
                 {
-                    l.SourceType, l.SourceId, l.TargetType, l.TargetId, l.LinkType, l.Context,
-                }));
+                    GetItemXRefResponse result = await task;
+                    results.AddRange(result.References.Select(r => (object)new
+                    {
+                        r.SourceType, r.SourceId, r.TargetType, r.TargetId,
+                        r.LinkType, r.Context,
+                        targetTitle = r.SourceTitle,
+                        targetUrl = r.SourceUrl,
+                    }));
+                }
+                catch { /* ignore partial failures */ }
             }
 
             return Results.Ok(new { source, id, direction = dir, references = results });
@@ -241,14 +247,10 @@ public static class OrchestratorHttpApi
         // ── Services health ──────────────────────────────────────────
         api.MapGet("/services", async (
             ServiceHealthMonitor monitor,
-            OrchestratorDatabase database,
             CancellationToken ct) =>
         {
             await monitor.CheckAllAsync(ct);
             Dictionary<string, ServiceHealthInfo> status = monitor.GetCurrentStatus();
-
-            using SqliteConnection connection = database.OpenConnection();
-            int linkCount = CrossRefLinkRecord.SelectCount(connection);
 
             return Results.Ok(new
             {
@@ -257,7 +259,6 @@ public static class OrchestratorHttpApi
                     s.Name, s.Status, s.GrpcAddress, s.UptimeSeconds,
                     s.Version, s.ItemCount, s.DbSizeBytes, s.LastSyncAt, s.LastError,
                 }),
-                crossRefLinks = linkCount,
             });
         });
 
@@ -269,8 +270,6 @@ public static class OrchestratorHttpApi
             CancellationToken ct) =>
         {
             ILogger logger = loggerFactory.CreateLogger("OrchestratorHttpApi");
-            using SqliteConnection connection = database.OpenConnection();
-            int linkCount = CrossRefLinkRecord.SelectCount(connection);
             long dbSize = database.GetDatabaseSizeBytes();
 
             List<object> sourceStats = new List<object>();
@@ -311,7 +310,7 @@ public static class OrchestratorHttpApi
 
             return Results.Ok(new
             {
-                orchestrator = new { crossRefLinks = linkCount, databaseSizeBytes = dbSize },
+                orchestrator = new { databaseSizeBytes = dbSize },
                 sources = sourceStats,
                 warnings,
             });

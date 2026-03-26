@@ -26,6 +26,7 @@ public class ConfluenceDatabase : SourceDatabase
         ConfluenceKeywordRecord.CreateTable(connection);
         ConfluenceCorpusKeywordRecord.CreateTable(connection);
         ConfluenceDocStatsRecord.CreateTable(connection);
+        ConfluenceJiraRefRecord.CreateTable(connection);
 
         CreateConfluencePagesFts(connection);
     }
@@ -64,6 +65,7 @@ public class ConfluenceDatabase : SourceDatabase
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;
             DROP TABLE IF EXISTS index_doc_stats;
+            DROP TABLE IF EXISTS confluence_jira_refs;
             """;
         cmd.ExecuteNonQuery();
 

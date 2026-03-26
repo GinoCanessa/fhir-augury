@@ -14,7 +14,6 @@ public static class ServicesCommand
 
         command.Add(CreateStatusCommand(orchestratorOption, formatOption));
         command.Add(CreateStatsCommand(orchestratorOption, formatOption));
-        command.Add(CreateXrefScanCommand(orchestratorOption, verboseOption));
 
         return command;
     }
@@ -83,7 +82,6 @@ public static class ServicesCommand
                     case "json":
                         var jsonObj = new
                         {
-                            crossRefLinks = statusResponse.CrossRefLinks,
                             lastXrefScan = statusResponse.LastXrefScanAt?.ToDateTimeOffset(),
                             sources = statsResults.Select(s => new
                             {
@@ -98,7 +96,6 @@ public static class ServicesCommand
                         Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(jsonObj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
                         break;
                     default:
-                        Console.WriteLine($"Cross-Reference Links: {statusResponse.CrossRefLinks}");
                         if (statusResponse.LastXrefScanAt is not null)
                             Console.WriteLine($"Last XRef Scan:        {statusResponse.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                         Console.WriteLine();
@@ -123,43 +120,4 @@ public static class ServicesCommand
         return command;
     }
 
-    private static Command CreateXrefScanCommand(Option<string> orchestratorOption, Option<bool> verboseOption)
-    {
-        Option<bool> fullRescanOption = new Option<bool>("--full")
-        {
-            Description = "Force a full rescan instead of incremental",
-            DefaultValueFactory = _ => false,
-        };
-
-        Command command = new Command("xref-scan", "Trigger a cross-reference scan")
-        {
-            fullRescanOption,
-        };
-
-        command.SetAction(async (parseResult, ct) =>
-        {
-            string addr = parseResult.GetValue(orchestratorOption)!;
-            bool verbose = parseResult.GetValue(verboseOption);
-            try
-            {
-                bool fullRescan = parseResult.GetValue(fullRescanOption);
-
-                Stopwatch? sw = verbose ? System.Diagnostics.Stopwatch.StartNew() : null;
-                using GrpcClientFactory clients = new GrpcClientFactory(addr);
-                TriggerXRefScanResponse response = await clients.Orchestrator.TriggerXRefScanAsync(
-                    new TriggerXRefScanRequest { FullRescan = fullRescan },
-                    cancellationToken: ct);
-
-                Console.WriteLine($"XRef scan: {response.Status} ({response.ItemsToScan} items to scan)");
-                if (sw is not null)
-                    Console.Error.WriteLine($"[verbose] Completed in {sw.ElapsedMilliseconds}ms");
-            }
-            catch (RpcException ex)
-            {
-                Console.Error.WriteLine($"Error: Cannot connect to orchestrator at {addr}. {ex.Status.Detail} ({ex.StatusCode})");
-            }
-        });
-
-        return command;
-    }
 }

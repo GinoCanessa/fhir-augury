@@ -5,6 +5,7 @@ using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
+using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -367,6 +368,20 @@ public class ConfluenceSource(
             }
 
             toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+            // Extract Jira references from page content
+            string pageText = $"{title} {bodyPlain}";
+            List<JiraTicketMatch> tickets = JiraTicketExtractor.ExtractTickets(pageText);
+            foreach (JiraTicketMatch ticket in tickets)
+            {
+                ConfluenceJiraRefRecord.Insert(connection, new ConfluenceJiraRefRecord
+                {
+                    Id = ConfluenceJiraRefRecord.GetIndex(),
+                    ConfluenceId = pageId,
+                    JiraKey = ticket.JiraKey,
+                    Context = ticket.Context,
+                }, ignoreDuplicates: true);
+            }
 
             return isNew ? PageResult.New : PageResult.Updated;
         }

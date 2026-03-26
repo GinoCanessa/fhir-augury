@@ -12,7 +12,6 @@ public class OrchestratorDatabase : SourceDatabase
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
-        CrossRefLinkRecord.CreateTable(connection);
         XrefScanStateRecord.CreateTable(connection);
     }
 
@@ -21,7 +20,6 @@ public class OrchestratorDatabase : SourceDatabase
         using SqliteConnection connection = OpenConnection();
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = """
-            DROP TABLE IF EXISTS xref_links;
             DROP TABLE IF EXISTS xref_scan_state;
             """;
         cmd.ExecuteNonQuery();

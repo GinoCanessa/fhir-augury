@@ -73,7 +73,7 @@ internal static class McpTestHelper
 
     internal static ServicesStatusResponse CreateServicesStatus()
     {
-        ServicesStatusResponse response = new ServicesStatusResponse { CrossRefLinks = 42 };
+        ServicesStatusResponse response = new ServicesStatusResponse();
         response.Services.Add(new ServiceHealth
         {
             Name = "jira",

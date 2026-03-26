@@ -104,6 +104,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILogger<JiraIndexer>>());
 });
 builder.Services.AddSingleton<JiraIndexBuilder>();
+builder.Services.AddSingleton<JiraZulipRefExtractor>();
 builder.Services.AddSingleton<JiraIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

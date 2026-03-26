@@ -1,14 +1,12 @@
 using Fhiraugury;
 using FhirAugury.Common.Grpc;
 using FhirAugury.Orchestrator.Configuration;
-using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Related;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Orchestrator.Search;
-using FhirAugury.Orchestrator.Workers;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Data.Sqlite;
@@ -29,8 +27,6 @@ public class OrchestratorGrpcService(
     private readonly OrchestratorDatabase database = services.Database;
     private readonly SourceRouter router = services.Router;
     private readonly ServiceHealthMonitor healthMonitor = services.HealthMonitor;
-    private readonly CrossRefLinker crossRefLinker = services.CrossRefLinker;
-    private readonly XRefScanWorker xrefScanWorker = services.XRefScanWorker;
     public override Task<SearchResponse> UnifiedSearch(UnifiedSearchRequest request, ServerCallContext context)
     {
         return GrpcErrorMapper.HandleAsync(async () =>
@@ -81,77 +77,45 @@ public class OrchestratorGrpcService(
     public override async Task<GetXRefResponse> GetCrossReferences(GetXRefRequest request, ServerCallContext context)
     {
         CancellationToken ct = context.CancellationToken;
-        using SqliteConnection connection = database.OpenConnection();
         GetXRefResponse response = new GetXRefResponse();
 
-        string direction = request.Direction?.ToLowerInvariant() ?? "both";
-
-        if (direction is "outgoing" or "both")
+        List<Task<GetItemXRefResponse>> tasks = [];
+        foreach (string source in router.GetEnabledSources())
         {
-            List<CrossRefLinkRecord> outgoing = CrossRefLinkRecord.SelectList(connection,
-                SourceType: request.Source, SourceId: request.Id);
-            foreach (CrossRefLinkRecord link in outgoing)
-            {
-                response.References.Add(new CrossReference
-                {
-                    SourceType = link.SourceType,
-                    SourceId = link.SourceId,
-                    TargetType = link.TargetType,
-                    TargetId = link.TargetId,
-                    LinkType = link.LinkType,
-                    Context = link.Context ?? "",
-                });
-            }
-        }
-
-        if (direction is "incoming" or "both")
-        {
-            List<CrossRefLinkRecord> incoming = CrossRefLinkRecord.SelectList(connection,
-                TargetType: request.Source, TargetId: request.Id);
-            foreach (CrossRefLinkRecord link in incoming)
-            {
-                response.References.Add(new CrossReference
-                {
-                    SourceType = link.SourceType,
-                    SourceId = link.SourceId,
-                    TargetType = link.TargetType,
-                    TargetId = link.TargetId,
-                    LinkType = link.LinkType,
-                    Context = link.Context ?? "",
-                });
-            }
-        }
-
-        // Enrich references with target title and URL from source services
-        List<(string TargetType, string TargetId)> targets = response.References
-            .Select(r => (r.TargetType, r.TargetId))
-            .Distinct()
-            .ToList();
-
-        Dictionary<(string, string), (string Title, string Url)> lookupCache = new Dictionary<(string, string), (string Title, string Url)>();
-        foreach ((string? targetType, string? targetId) in targets)
-        {
-            SourceService.SourceServiceClient? client = router.GetSourceClient(targetType);
+            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
             if (client is null) continue;
 
+            tasks.Add(client.GetItemCrossReferencesAsync(new GetItemXRefRequest
+            {
+                Source = request.Source,
+                Id = request.Id,
+                Direction = request.Direction ?? "both",
+            }, cancellationToken: ct).ResponseAsync);
+        }
+
+        foreach (Task<GetItemXRefResponse> task in tasks)
+        {
             try
             {
-                ItemResponse item = await client.GetItemAsync(
-                    new GetItemRequest { Id = targetId }, cancellationToken: ct);
-                lookupCache[(targetType, targetId)] = (item.Title, item.Url);
+                GetItemXRefResponse result = await task;
+                foreach (SourceCrossReference xref in result.References)
+                {
+                    response.References.Add(new CrossReference
+                    {
+                        SourceType = xref.SourceType,
+                        SourceId = xref.SourceId,
+                        TargetType = xref.TargetType,
+                        TargetId = xref.TargetId,
+                        LinkType = xref.LinkType,
+                        Context = xref.Context,
+                        TargetTitle = xref.SourceTitle,
+                        TargetUrl = xref.SourceUrl,
+                    });
+                }
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to enrich xref target {TargetType}/{TargetId}", targetType, targetId);
-            }
-        }
-
-        foreach (CrossReference? reference in response.References)
-        {
-            if (lookupCache.TryGetValue((reference.TargetType, reference.TargetId), out (string Title, string Url) info))
-            {
-                reference.TargetTitle = info.Title;
-                reference.TargetUrl = info.Url;
+                logger.LogWarning(ex, "GetItemCrossReferences failed for a source");
             }
         }
 
@@ -255,14 +219,10 @@ public class OrchestratorGrpcService(
         await healthMonitor.CheckAllAsync(context.CancellationToken);
 
         using SqliteConnection connection = database.OpenConnection();
-        int linkCount = CrossRefLinkRecord.SelectCount(connection);
         List<XrefScanStateRecord> scanState = XrefScanStateRecord.SelectList(connection);
         XrefScanStateRecord? lastScan = scanState.OrderByDescending(s => s.LastScanAt).FirstOrDefault();
 
-        ServicesStatusResponse response = new ServicesStatusResponse
-        {
-            CrossRefLinks = linkCount,
-        };
+        ServicesStatusResponse response = new ServicesStatusResponse();
 
         if (lastScan is not null)
             response.LastXrefScanAt = Timestamp.FromDateTimeOffset(lastScan.LastScanAt);
@@ -288,32 +248,31 @@ public class OrchestratorGrpcService(
         return response;
     }
 
-    public override async Task<TriggerXRefScanResponse> TriggerXRefScan(
-        TriggerXRefScanRequest request, ServerCallContext context)
-    {
-        int newLinks = await crossRefLinker.ScanAllSourcesAsync(request.FullRescan, context.CancellationToken);
-
-        return new TriggerXRefScanResponse
-        {
-            Status = "completed",
-            ItemsToScan = newLinks,
-        };
-    }
-
     public override Task<IngestionCompleteAck> NotifyIngestionComplete(
         IngestionCompleteNotification request, ServerCallContext context)
     {
         logger.LogInformation(
-            "Ingestion complete notification from {Source}: {Type}, {Items} items",
+            "Ingestion complete from {Source}: {Type}, {Items} items",
             request.Source, request.Type, request.ItemsIngested);
 
-        // Trigger a cross-reference scan for newly ingested items
-        xrefScanWorker.RequestScan();
+        using SqliteConnection connection = database.OpenConnection();
+        XrefScanStateRecord? existing = XrefScanStateRecord.SelectSingle(
+            connection, SourceName: request.Source);
 
-        return Task.FromResult(new IngestionCompleteAck
+        XrefScanStateRecord record = new XrefScanStateRecord
         {
-            XrefScanTriggered = true,
-        });
+            Id = existing?.Id ?? XrefScanStateRecord.GetIndex(),
+            SourceName = request.Source,
+            LastCursor = null,
+            LastScanAt = request.CompletedAt?.ToDateTimeOffset() ?? DateTimeOffset.UtcNow,
+        };
+
+        if (existing is not null)
+            XrefScanStateRecord.Update(connection, record);
+        else
+            XrefScanStateRecord.Insert(connection, record);
+
+        return Task.FromResult(new IngestionCompleteAck { Acknowledged = true });
     }
 
     public override Task<ServiceEndpointsResponse> GetServiceEndpoints(

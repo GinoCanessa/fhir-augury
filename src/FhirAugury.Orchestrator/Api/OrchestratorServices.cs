@@ -1,10 +1,8 @@
-using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Related;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Orchestrator.Search;
-using FhirAugury.Orchestrator.Workers;
 
 namespace FhirAugury.Orchestrator.Api;
 
@@ -16,6 +14,4 @@ public record OrchestratorServices(
     RelatedItemFinder RelatedFinder,
     OrchestratorDatabase Database,
     SourceRouter Router,
-    ServiceHealthMonitor HealthMonitor,
-    CrossRefLinker CrossRefLinker,
-    XRefScanWorker XRefScanWorker);
+    ServiceHealthMonitor HealthMonitor);

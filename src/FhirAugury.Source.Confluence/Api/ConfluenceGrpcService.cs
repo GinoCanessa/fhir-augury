@@ -153,6 +153,9 @@ public class ConfluenceGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "confluence")
+            return GetCrossSourceRelated(request, context);
+
         using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
         SearchResponse response = new SearchResponse();
@@ -183,6 +186,130 @@ public class ConfluenceGrpcService(
         }
 
         response.TotalResults = response.Results.Count;
+        return Task.FromResult(response);
+    }
+
+    private Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+        SearchResponse response = new SearchResponse();
+
+        if (request.SeedSource == "jira")
+        {
+            // Find Confluence pages that reference this Jira ticket
+            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, JiraKey: request.SeedId);
+            HashSet<string> seen = [];
+            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            {
+                if (!seen.Add(jiraRef.ConfluenceId)) continue;
+                if (seen.Count > limit) break;
+
+                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.ConfluenceId);
+                if (page is null) continue;
+
+                response.Results.Add(new SearchResultItem
+                {
+                    Source = "confluence",
+                    Id = page.ConfluenceId,
+                    Title = page.Title,
+                    Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
+                    Score = 1.0,
+                    UpdatedAt = Timestamp.FromDateTimeOffset(page.LastModifiedAt),
+                });
+            }
+        }
+        else
+        {
+            // Unknown seed source — fall back to FTS with SeedId, scores × 0.3
+            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.SeedId);
+            if (!string.IsNullOrEmpty(ftsQuery))
+            {
+                string sql = """
+                    SELECT cp.ConfluenceId, cp.Title, confluence_pages_fts.rank, cp.Url, cp.LastModifiedAt
+                    FROM confluence_pages_fts
+                    JOIN confluence_pages cp ON cp.Id = confluence_pages_fts.rowid
+                    WHERE confluence_pages_fts MATCH @query
+                    ORDER BY confluence_pages_fts.rank
+                    LIMIT @limit
+                    """;
+
+                using SqliteCommand cmd = new SqliteCommand(sql, connection);
+                cmd.Parameters.AddWithValue("@query", ftsQuery);
+                cmd.Parameters.AddWithValue("@limit", limit);
+
+                using SqliteDataReader reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string pageId = reader.GetString(0);
+                    double rank = reader.GetDouble(2);
+                    response.Results.Add(new SearchResultItem
+                    {
+                        Source = "confluence",
+                        Id = pageId,
+                        Title = reader.GetString(1),
+                        Url = reader.IsDBNull(3) ? $"{options.BaseUrl}/pages/{pageId}" : reader.GetString(3),
+                        Score = Math.Abs(rank) * 0.3,
+                        UpdatedAt = ParseTimestamp(reader, 4),
+                    });
+                }
+            }
+        }
+
+        response.TotalResults = response.Results.Count;
+        return Task.FromResult(response);
+    }
+
+    public override Task<GetItemXRefResponse> GetItemCrossReferences(GetItemXRefRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        GetItemXRefResponse response = new GetItemXRefResponse();
+        string direction = request.Direction?.ToLowerInvariant() ?? "both";
+
+        if (request.Source == "confluence" && direction is "outgoing" or "both")
+        {
+            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, ConfluenceId: request.Id);
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: request.Id);
+            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            {
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "confluence",
+                    SourceId = request.Id,
+                    TargetType = "jira",
+                    TargetId = jiraRef.JiraKey,
+                    LinkType = "mentions",
+                    Context = jiraRef.Context ?? "",
+                    SourceTitle = page?.Title ?? "",
+                    SourceUrl = page?.Url ?? "",
+                });
+            }
+        }
+
+        if (request.Source == "jira" && direction is "incoming" or "both")
+        {
+            List<ConfluenceJiraRefRecord> refs = ConfluenceJiraRefRecord.SelectList(connection, JiraKey: request.Id);
+            HashSet<string> seen = [];
+            foreach (ConfluenceJiraRefRecord jiraRef in refs)
+            {
+                if (!seen.Add(jiraRef.ConfluenceId)) continue;
+                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: jiraRef.ConfluenceId);
+                if (page is null) continue;
+
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "confluence",
+                    SourceId = jiraRef.ConfluenceId,
+                    TargetType = "jira",
+                    TargetId = request.Id,
+                    LinkType = "mentions",
+                    Context = jiraRef.Context ?? "",
+                    SourceTitle = page.Title,
+                    SourceUrl = page.Url ?? "",
+                });
+            }
+        }
+
         return Task.FromResult(response);
     }
 

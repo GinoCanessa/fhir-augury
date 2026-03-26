@@ -1,6 +1,5 @@
 using FhirAugury.Orchestrator.Api;
 using FhirAugury.Orchestrator.Configuration;
-using FhirAugury.Orchestrator.CrossRef;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Related;
@@ -60,12 +59,9 @@ builder.Services.AddSingleton<SourceRouter>();
 // Health monitoring
 builder.Services.AddSingleton<ServiceHealthMonitor>();
 
-// Cross-reference
-builder.Services.AddSingleton<CrossRefLinker>();
-builder.Services.AddSingleton<StructuralLinker>();
+// Cross-reference — removed (fan-out architecture)
 
 // Search
-builder.Services.AddSingleton<CrossRefBooster>();
 builder.Services.AddSingleton<FreshnessDecay>();
 builder.Services.AddSingleton<UnifiedSearchService>();
 
@@ -76,8 +72,6 @@ builder.Services.AddSingleton<RelatedItemFinder>();
 builder.Services.AddSingleton<OrchestratorServices>();
 
 // Background workers
-builder.Services.AddSingleton<XRefScanWorker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<XRefScanWorker>());
 builder.Services.AddHostedService<HealthCheckWorker>();
 
 WebApplication app = builder.Build();

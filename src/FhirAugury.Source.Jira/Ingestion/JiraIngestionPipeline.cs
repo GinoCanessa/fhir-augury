@@ -17,6 +17,7 @@ public class JiraIngestionPipeline(
     JiraDatabase database,
     JiraIndexer indexer,
     JiraIndexBuilder indexBuilder,
+    JiraZulipRefExtractor zulipRefExtractor,
     IOptions<JiraServiceOptions> optionsAccessor,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -134,6 +135,10 @@ public class JiraIngestionPipeline(
         {
             indexBuilder.RebuildIndexTables(conn);
         }
+
+        // Extract Zulip references
+        logger.LogInformation("Extracting Zulip references");
+        zulipRefExtractor.ExtractAll(ct);
 
         // Rebuild BM25 keyword index
         logger.LogInformation("Rebuilding BM25 index");

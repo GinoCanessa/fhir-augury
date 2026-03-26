@@ -8,11 +8,10 @@ namespace FhirAugury.Orchestrator.Search;
 
 /// <summary>
 /// Dispatches search queries to all enabled source services in parallel,
-/// then normalizes, boosts, and applies freshness decay to merge results.
+/// then normalizes and applies freshness decay to merge results.
 /// </summary>
 public class UnifiedSearchService(
     SourceRouter router,
-    CrossRefBooster booster,
     FreshnessDecay freshnessDecay,
     IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<UnifiedSearchService> logger)
@@ -83,10 +82,9 @@ public class UnifiedSearchService(
             }
         }
 
-        // Pipeline: normalize → boost → decay → sort → limit
+        // Pipeline: normalize → decay → sort → limit
         List<ScoredItem> normalized = ScoreNormalizer.Normalize(allItems);
-        List<ScoredItem> boosted = booster.Boost(normalized, options.Search.CrossRefBoostFactor);
-        List<ScoredItem> decayed = freshnessDecay.Apply(boosted);
+        List<ScoredItem> decayed = freshnessDecay.Apply(normalized);
         List<ScoredItem> sorted = decayed.OrderByDescending(i => i.Score).Take(effectiveLimit).ToList();
 
         return (sorted, warnings);

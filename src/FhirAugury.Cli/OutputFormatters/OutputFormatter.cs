@@ -200,7 +200,6 @@ public static class OutputFormatter
             case "json":
                 PrintJson(new
                 {
-                    response.CrossRefLinks,
                     LastXrefScan = response.LastXrefScanAt?.ToDateTimeOffset(),
                     Services = response.Services.Select(s => new
                     {
@@ -213,7 +212,7 @@ public static class OutputFormatter
             case "md":
                 Console.WriteLine("## Services Status");
                 Console.WriteLine();
-                Console.WriteLine($"**Cross-Ref Links:** {response.CrossRefLinks}");
+                Console.WriteLine($"**Last XRef Scan:** {response.LastXrefScanAt?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                 Console.WriteLine();
                 Console.WriteLine("| Service | Status | Items | DB Size | Last Sync |");
                 Console.WriteLine("|---------|--------|-------|---------|-----------|");
@@ -225,7 +224,6 @@ public static class OutputFormatter
                 }
                 break;
             default:
-                Console.WriteLine($"Cross-Reference Links: {response.CrossRefLinks}");
                 if (response.LastXrefScanAt is not null)
                     Console.WriteLine($"Last XRef Scan:        {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                 Console.WriteLine();

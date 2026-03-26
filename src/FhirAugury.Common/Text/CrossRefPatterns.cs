@@ -18,7 +18,7 @@ public static partial class CrossRefPatterns
     [GeneratedRegex(@"https?://jira\.hl7\.org/browse/(FHIR-\d+)")]
     private static partial Regex JiraUrlRegex();
 
-    [GeneratedRegex(@"https?://chat\.fhir\.org/#narrow/stream/(\d+)[^/]*/topic/([^\s?#]+)")]
+    [GeneratedRegex(@"https?://chat\.fhir\.org/#narrow/(?:stream|channel)/(\d+)[^/]*/topic/([^\s?#]+)")]
     private static partial Regex ZulipUrlRegex();
 
     [GeneratedRegex(@"https?://github\.com/(HL7/[^/]+)/(?:issues|pull)/(\d+)")]

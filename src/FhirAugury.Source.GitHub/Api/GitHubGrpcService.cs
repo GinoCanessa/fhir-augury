@@ -158,6 +158,9 @@ public class GitHubGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "github")
+            return GetCrossSourceRelated(request, context);
+
         using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
@@ -193,6 +196,136 @@ public class GitHubGrpcService(
         }
 
         response.TotalResults = response.Results.Count;
+        return Task.FromResult(response);
+    }
+
+    private async Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
+    {
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+
+        if (request.SeedSource == "jira")
+        {
+            using SqliteConnection connection = database.OpenConnection();
+            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, JiraKey: request.SeedId);
+
+            HashSet<string> seen = [];
+            SearchResponse response = new SearchResponse();
+
+            foreach (GitHubJiraRefRecord jiraRef in refs)
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
+                if (issue is null || !seen.Add(issue.UniqueKey))
+                    continue;
+
+                response.Results.Add(new SearchResultItem
+                {
+                    Source = "github",
+                    Id = issue.UniqueKey,
+                    Title = issue.Title,
+                    Score = 1.0,
+                    Url = BuildIssueUrl(issue.UniqueKey),
+                    UpdatedAt = Timestamp.FromDateTimeOffset(issue.UpdatedAt),
+                });
+
+                if (response.Results.Count >= limit)
+                    break;
+            }
+
+            response.TotalResults = response.Results.Count;
+            return response;
+        }
+
+        // Unknown seed source – fall back to FTS with reduced score
+        SearchResponse ftsResult = await Search(new SearchRequest
+        {
+            Query = request.SeedId,
+            Limit = limit,
+        }, context);
+
+        foreach (SearchResultItem item in ftsResult.Results)
+            item.Score *= 0.3;
+
+        return ftsResult;
+    }
+
+    private GitHubIssueRecord? ResolveToIssue(SqliteConnection conn, GitHubJiraRefRecord jiraRef)
+    {
+        return jiraRef.SourceType switch
+        {
+            "issue" => GitHubIssueRecord.SelectSingle(conn, UniqueKey: jiraRef.SourceId),
+            "comment" => ResolveCommentToIssue(conn, jiraRef.SourceId),
+            "commit" => ResolveCommitToIssue(conn, jiraRef),
+            _ => null,
+        };
+    }
+
+    private GitHubIssueRecord? ResolveCommentToIssue(SqliteConnection conn, string sourceId)
+    {
+        // SourceId format: "{repo}#{issueNum}:{commentId}"
+        int hashIdx = sourceId.IndexOf('#');
+        int colonIdx = sourceId.LastIndexOf(':');
+        if (hashIdx < 0 || colonIdx < 0 || colonIdx <= hashIdx) return null;
+
+        string issueKey = sourceId[..colonIdx]; // "repo#issueNum"
+        return GitHubIssueRecord.SelectSingle(conn, UniqueKey: issueKey);
+    }
+
+    private GitHubIssueRecord? ResolveCommitToIssue(SqliteConnection conn, GitHubJiraRefRecord jiraRef)
+    {
+        GitHubCommitPrLinkRecord? prLink = GitHubCommitPrLinkRecord.SelectSingle(conn,
+            CommitSha: jiraRef.SourceId);
+        if (prLink is null) return null;
+
+        string uniqueKey = $"{prLink.RepoFullName}#{prLink.PrNumber}";
+        return GitHubIssueRecord.SelectSingle(conn, UniqueKey: uniqueKey);
+    }
+
+    public override Task<GetItemXRefResponse> GetItemCrossReferences(GetItemXRefRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        GetItemXRefResponse response = new GetItemXRefResponse();
+        string direction = request.Direction?.ToLowerInvariant() ?? "both";
+
+        if (request.Source == "github" && direction is "outgoing" or "both")
+        {
+            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, SourceId: request.Id);
+            foreach (GitHubJiraRefRecord jiraRef in refs)
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "github",
+                    SourceId = jiraRef.SourceId,
+                    TargetType = "jira",
+                    TargetId = jiraRef.JiraKey,
+                    LinkType = "mentions",
+                    Context = jiraRef.Context ?? "",
+                    SourceTitle = issue?.Title ?? "",
+                    SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
+                });
+            }
+        }
+
+        if (request.Source == "jira" && direction is "incoming" or "both")
+        {
+            List<GitHubJiraRefRecord> refs = GitHubJiraRefRecord.SelectList(connection, JiraKey: request.Id);
+            foreach (GitHubJiraRefRecord jiraRef in refs)
+            {
+                GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "github",
+                    SourceId = jiraRef.SourceId,
+                    TargetType = "jira",
+                    TargetId = jiraRef.JiraKey,
+                    LinkType = "mentions",
+                    Context = jiraRef.Context ?? "",
+                    SourceTitle = issue?.Title ?? "",
+                    SourceUrl = issue is not null ? BuildIssueUrl(issue.UniqueKey) : "",
+                });
+            }
+        }
+
         return Task.FromResult(response);
     }
 

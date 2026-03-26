@@ -121,7 +121,6 @@ public class UnifiedToolsTests
         Assert.Contains("Services Status", result);
         Assert.Contains("jira", result);
         Assert.Contains("zulip", result);
-        Assert.Contains("42", result); // cross-ref count
     }
 
     [Fact]

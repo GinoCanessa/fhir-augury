@@ -147,18 +147,21 @@ public class ZulipGrpcService(
         }
     }
 
-    public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
+    public override async Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "zulip")
+            return await GetCrossSourceRelated(request, context);
+
         using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
         if (!int.TryParse(request.Id, out int msgId))
-            return Task.FromResult(new SearchResponse());
+            return new SearchResponse();
 
         // Find messages in the same topic thread
         ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
         if (message is null)
-            return Task.FromResult(new SearchResponse());
+            return new SearchResponse();
 
         string sql = """
             SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp, substr(ContentPlain, 1, 200)
@@ -194,6 +197,130 @@ public class ZulipGrpcService(
         }
 
         response.TotalResults = response.Results.Count;
+        return response;
+    }
+
+    private async Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
+    {
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+
+        if (request.SeedSource == "jira")
+        {
+            using SqliteConnection connection = database.OpenConnection();
+
+            string sql = """
+                SELECT tt.StreamName, tt.Topic, tt.ReferenceCount,
+                       (SELECT ZulipMessageId FROM zulip_messages
+                        WHERE StreamName = tt.StreamName AND Topic = tt.Topic
+                        ORDER BY Timestamp DESC LIMIT 1) AS LatestMsgId,
+                       (SELECT Timestamp FROM zulip_messages
+                        WHERE StreamName = tt.StreamName AND Topic = tt.Topic
+                        ORDER BY Timestamp DESC LIMIT 1) AS LatestTimestamp
+                FROM zulip_thread_tickets tt
+                WHERE tt.JiraKey = @jiraKey
+                ORDER BY tt.LastSeenAt DESC
+                LIMIT @limit
+                """;
+
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            cmd.Parameters.AddWithValue("@jiraKey", request.SeedId);
+            cmd.Parameters.AddWithValue("@limit", limit);
+
+            SearchResponse response = new SearchResponse();
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string streamName = reader.GetString(0);
+                string topic = reader.GetString(1);
+                int latestMsgId = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+
+                if (latestMsgId == 0)
+                    continue;
+
+                response.Results.Add(new SearchResultItem
+                {
+                    Source = "zulip",
+                    Id = latestMsgId.ToString(),
+                    Title = $"[{streamName}] {topic}",
+                    Score = 1.0,
+                    Url = BuildMessageUrl(streamName, topic, latestMsgId),
+                    UpdatedAt = ParseTimestamp(reader, 4),
+                });
+            }
+
+            response.TotalResults = response.Results.Count;
+            return response;
+        }
+
+        // Unknown seed source: fall back to FTS with SeedId as keyword, reduced score
+        SearchResponse ftsResult = await Search(new SearchRequest
+        {
+            Query = request.SeedId,
+            Limit = limit,
+        }, context);
+
+        foreach (SearchResultItem item in ftsResult.Results)
+            item.Score *= 0.3;
+
+        return ftsResult;
+    }
+
+    public override Task<GetItemXRefResponse> GetItemCrossReferences(GetItemXRefRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        GetItemXRefResponse response = new GetItemXRefResponse();
+        string direction = request.Direction?.ToLowerInvariant() ?? "both";
+
+        if (request.Source == "zulip" && direction is "outgoing" or "both")
+        {
+            if (int.TryParse(request.Id, out int msgId))
+            {
+                List<ZulipMessageTicketRecord> tickets = ZulipMessageTicketRecord.SelectList(connection, ZulipMessageId: msgId);
+                foreach (ZulipMessageTicketRecord ticket in tickets)
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "zulip",
+                        SourceId = request.Id,
+                        TargetType = "jira",
+                        TargetId = ticket.JiraKey,
+                        LinkType = "mentions",
+                    });
+                }
+            }
+        }
+
+        if (request.Source == "jira" && direction is "incoming" or "both")
+        {
+            string sql = """
+                SELECT mt.ZulipMessageId, m.StreamName, m.Topic, m.SenderName, m.Timestamp
+                FROM zulip_message_tickets mt
+                JOIN zulip_messages m ON m.ZulipMessageId = mt.ZulipMessageId
+                WHERE mt.JiraKey = @id
+                """;
+
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            cmd.Parameters.AddWithValue("@id", request.Id);
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
+
+                response.References.Add(new SourceCrossReference
+                {
+                    SourceType = "zulip",
+                    SourceId = msgId.ToString(),
+                    TargetType = "jira",
+                    TargetId = request.Id,
+                    LinkType = "mentions",
+                    SourceTitle = $"{streamName} > {topic}",
+                    SourceUrl = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}/near/{msgId}",
+                });
+            }
+        }
+
         return Task.FromResult(response);
     }
 

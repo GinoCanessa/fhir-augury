@@ -25,9 +25,6 @@ service OrchestratorService {
   // Get aggregate status of all source services.
   rpc GetServicesStatus(ServicesStatusRequest) returns (ServicesStatusResponse);
 
-  // Force a cross-reference scan of recent items.
-  rpc TriggerXRefScan(TriggerXRefScanRequest) returns (TriggerXRefScanResponse);
-
   // Callback from source services when ingestion completes.
   rpc NotifyIngestionComplete(IngestionCompleteNotification) returns (IngestionCompleteAck);
 
@@ -106,8 +103,7 @@ message ServicesStatusRequest {}
 
 message ServicesStatusResponse {
   repeated ServiceHealth services = 1;
-  int32 cross_ref_links = 2;
-  google.protobuf.Timestamp last_xref_scan_at = 3;
+  google.protobuf.Timestamp last_xref_scan_at = 3;  // repurposed: last ingestion time
 }
 
 message ServiceHealth {
@@ -120,15 +116,6 @@ message ServiceHealth {
   string last_error = 7;
 }
 
-message TriggerXRefScanRequest {
-  bool full_rescan = 1;
-}
-
-message TriggerXRefScanResponse {
-  string status = 1;
-  int32 items_to_scan = 2;
-}
-
 message IngestionCompleteNotification {
   string source = 1;
   string type = 2;
@@ -138,7 +125,7 @@ message IngestionCompleteNotification {
 }
 
 message IngestionCompleteAck {
-  bool xref_scan_triggered = 1;
+  bool acknowledged = 1;
 }
 
 message ServiceEndpointsRequest {}

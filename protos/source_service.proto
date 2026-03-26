@@ -40,6 +40,9 @@ service SourceService {
 
   // Health check.
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Return cross-references this source has discovered for a given item.
+  rpc GetItemCrossReferences(GetItemXRefRequest) returns (GetItemXRefResponse);
 }
 
 // ── Request/Response Messages ────────────────────────────────────
@@ -113,8 +116,10 @@ message ListItemsRequest {
 }
 
 message GetRelatedRequest {
-  string id = 1;
+  string id = 1;              // local item ID (intra-source queries)
   int32 limit = 2;
+  string seed_source = 3;     // source type of seed (e.g., "jira")
+  string seed_id = 4;         // seed item ID (e.g., "FHIR-55001")
 }
 
 message GetSnapshotRequest {
@@ -209,4 +214,25 @@ message HealthCheckResponse {
   string version = 2;
   double uptime_seconds = 3;
   string message = 4;
+}
+
+message GetItemXRefRequest {
+  string source = 1;     // source type to query about (e.g., "jira")
+  string id = 2;         // item ID (e.g., "FHIR-55001")
+  string direction = 3;  // "outgoing", "incoming", or "both"
+}
+
+message GetItemXRefResponse {
+  repeated SourceCrossReference references = 1;
+}
+
+message SourceCrossReference {
+  string source_type = 1;     // this source's type (e.g., "github")
+  string source_id = 2;       // item in this source (e.g., "HL7/fhir#4006")
+  string target_type = 3;     // referenced source type (e.g., "jira")
+  string target_id = 4;       // referenced item (e.g., "FHIR-55001")
+  string link_type = 5;       // "mentions", "spec_artifact", "linked_issue"
+  string context = 6;         // surrounding text snippet
+  string source_title = 7;    // title of the item in this source
+  string source_url = 8;      // URL of the item in this source
 }

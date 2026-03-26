@@ -154,9 +154,8 @@ public static class UnifiedTools
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("## Services Status");
             sb.AppendLine();
-            sb.AppendLine($"**Cross-Reference Links:** {response.CrossRefLinks}");
             if (response.LastXrefScanAt is not null)
-                sb.AppendLine($"**Last XRef Scan:** {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+                sb.AppendLine($"**Last Ingestion:** {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
             sb.AppendLine();
 
             foreach (ServiceHealth? svc in response.Services)

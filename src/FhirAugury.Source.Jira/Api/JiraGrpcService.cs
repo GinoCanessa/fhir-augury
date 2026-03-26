@@ -158,6 +158,9 @@ public class JiraGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "jira")
+            return GetCrossSourceRelated(request, context);
+
         using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
@@ -189,6 +192,159 @@ public class JiraGrpcService(
         }
 
         response.TotalResults = response.Results.Count;
+        return Task.FromResult(response);
+    }
+
+    private async Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
+    {
+        int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
+
+        if (request.SeedSource == "zulip")
+        {
+            using SqliteConnection connection = database.OpenConnection();
+
+            // SeedId for Zulip is "streamId:topicName"
+            string[] parts = request.SeedId.Split(':', 2);
+            if (parts.Length == 2 && int.TryParse(parts[0], out int streamId))
+            {
+                string topicName = parts[1];
+                List<JiraZulipRefRecord> refs = JiraZulipRefRecord.SelectList(connection,
+                    StreamId: streamId, TopicName: topicName);
+
+                HashSet<string> seen = [];
+                SearchResponse response = new SearchResponse();
+
+                foreach (JiraZulipRefRecord zRef in refs)
+                {
+                    if (!seen.Add(zRef.IssueKey)) continue;
+
+                    JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: zRef.IssueKey);
+                    if (issue is null) continue;
+
+                    response.Results.Add(new SearchResultItem
+                    {
+                        Source = "jira",
+                        Id = issue.Key,
+                        Title = issue.Title,
+                        Score = 1.0,
+                        Url = $"{options.BaseUrl}/browse/{issue.Key}",
+                        UpdatedAt = Timestamp.FromDateTimeOffset(issue.UpdatedAt),
+                    });
+
+                    if (response.Results.Count >= limit) break;
+                }
+
+                response.TotalResults = response.Results.Count;
+                return response;
+            }
+        }
+
+        // Unknown seed source — fall back to FTS with reduced score
+        SearchResponse ftsResult = await Search(new SearchRequest
+        {
+            Query = request.SeedId,
+            Limit = limit,
+        }, context);
+
+        foreach (SearchResultItem item in ftsResult.Results)
+            item.Score *= 0.3;
+
+        return ftsResult;
+    }
+
+    public override Task<GetItemXRefResponse> GetItemCrossReferences(GetItemXRefRequest request, ServerCallContext context)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        GetItemXRefResponse response = new GetItemXRefResponse();
+        string direction = request.Direction?.ToLowerInvariant() ?? "both";
+
+        if (request.Source == "jira")
+        {
+            // Jira-to-Jira links
+            if (direction is "outgoing" or "both")
+            {
+                List<JiraIssueLinkRecord> links = JiraIssueLinkRecord.SelectList(connection, SourceKey: request.Id);
+                foreach (JiraIssueLinkRecord link in links)
+                {
+                    JiraIssueRecord? target = JiraIssueRecord.SelectSingle(connection, Key: link.TargetKey);
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "jira",
+                        TargetId = link.TargetKey,
+                        LinkType = "linked_issue",
+                        SourceTitle = target?.Title ?? "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{link.TargetKey}",
+                    });
+                }
+            }
+
+            if (direction is "incoming" or "both")
+            {
+                List<JiraIssueLinkRecord> links = JiraIssueLinkRecord.SelectList(connection, TargetKey: request.Id);
+                foreach (JiraIssueLinkRecord link in links)
+                {
+                    JiraIssueRecord? source = JiraIssueRecord.SelectSingle(connection, Key: link.SourceKey);
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = link.SourceKey,
+                        TargetType = "jira",
+                        TargetId = request.Id,
+                        LinkType = "linked_issue",
+                        SourceTitle = source?.Title ?? "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{link.SourceKey}",
+                    });
+                }
+            }
+
+            // Zulip references from Jira content
+            if (direction is "outgoing" or "both")
+            {
+                List<JiraZulipRefRecord> zulipRefs = JiraZulipRefRecord.SelectList(connection, IssueKey: request.Id);
+                foreach (JiraZulipRefRecord zRef in zulipRefs)
+                {
+                    string targetId = zRef.TopicName is not null
+                        ? $"{zRef.StreamId}:{zRef.TopicName}"
+                        : zRef.StreamId.ToString();
+
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "zulip",
+                        TargetId = targetId,
+                        LinkType = "mentions",
+                        Context = zRef.Context ?? "",
+                        SourceTitle = "",
+                        SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
+                    });
+                }
+            }
+
+            // Spec artifact links
+            JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: request.Id);
+            if (issue?.Specification is not null)
+            {
+                JiraSpecArtifactRecord? specArtifact = JiraSpecArtifactRecord.SelectSingle(connection, SpecKey: issue.Specification);
+                if (specArtifact?.GitUrl is not null)
+                {
+                    response.References.Add(new SourceCrossReference
+                    {
+                        SourceType = "jira",
+                        SourceId = request.Id,
+                        TargetType = "github",
+                        TargetId = specArtifact.GitUrl,
+                        LinkType = "spec_artifact",
+                        Context = $"{specArtifact.SpecName} ({specArtifact.Family})",
+                        SourceTitle = issue.Title,
+                        SourceUrl = $"{options.BaseUrl}/browse/{request.Id}",
+                    });
+                }
+            }
+        }
+
         return Task.FromResult(response);
     }
 
