@@ -324,7 +324,7 @@ public class GitHubGrpcService(
             CacheSizeBytes = cacheStats.TotalBytes,
         };
 
-        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
         if (syncState is not null)
             response.LastSyncAt = Timestamp.FromDateTimeOffset(syncState.LastSyncAt);
 
@@ -347,7 +347,7 @@ public class GitHubGrpcService(
     private IngestionStatusResponse GetCurrentStatus()
     {
         using SqliteConnection connection = database.OpenConnection();
-        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
 
         return new IngestionStatusResponse
         {

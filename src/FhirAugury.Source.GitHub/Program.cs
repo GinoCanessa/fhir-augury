@@ -74,7 +74,17 @@ builder.Services.AddHttpClient("github", client =>
 }).AddHttpMessageHandler<GitHubRateLimiter>();
 
 // Ingestion
-builder.Services.AddSingleton<GitHubSource>();
+// Ingestion — provider selection based on config
+builder.Services.AddSingleton<GhCliRunner>();
+builder.Services.AddSingleton<IGitHubDataProvider>(sp =>
+{
+    GitHubServiceOptions options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    return options.Provider.ToLowerInvariant() switch
+    {
+        "gh-cli" => ActivatorUtilities.CreateInstance<GitHubCliProvider>(sp),
+        _ => ActivatorUtilities.CreateInstance<GitHubRestProvider>(sp),
+    };
+});
 
 builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
@@ -110,6 +120,24 @@ WebApplication app = builder.Build();
         opts.DictionaryDatabase,
         app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
         CancellationToken.None);
+}
+
+// ── Validate gh CLI if selected ──────────────────────────────────
+{
+    GitHubServiceOptions opts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+    if (opts.Provider.Equals("gh-cli", StringComparison.OrdinalIgnoreCase))
+    {
+        GhCliRunner ghRunner = app.Services.GetRequiredService<GhCliRunner>();
+        bool valid = await ghRunner.ValidateAsync(CancellationToken.None);
+        if (!valid)
+        {
+            ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+            startupLogger.LogCritical(
+                "gh CLI provider selected but gh is not available or not authenticated. " +
+                "Run 'gh auth login' or set Provider to 'rest' in configuration.");
+            throw new InvalidOperationException("gh CLI is not available or not authenticated.");
+        }
+    }
 }
 
 // ── Health check ─────────────────────────────────────────────────

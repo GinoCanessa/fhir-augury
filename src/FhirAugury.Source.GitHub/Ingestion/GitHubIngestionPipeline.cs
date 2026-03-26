@@ -14,7 +14,7 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Optionally clones repos and extracts commit files and Jira references.
 /// </summary>
 public class GitHubIngestionPipeline(
-    GitHubSource source,
+    IGitHubDataProvider source,
     GitHubDatabase database,
     GitHubIndexer indexer,
     GitHubRepoCloner cloner,
@@ -173,12 +173,12 @@ public class GitHubIngestionPipeline(
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        GitHubSyncStateRecord? existing = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName, SubSource: runType);
+        GitHubSyncStateRecord? existing = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName, SubSource: runType);
 
         GitHubSyncStateRecord syncState = new GitHubSyncStateRecord
         {
             Id = existing?.Id ?? GitHubSyncStateRecord.GetIndex(),
-            SourceName = GitHubSource.SourceName,
+            SourceName = IGitHubDataProvider.SourceName,
             SubSource = runType,
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
@@ -198,14 +198,14 @@ public class GitHubIngestionPipeline(
     private DateTimeOffset GetLastSyncTime()
     {
         using SqliteConnection connection = database.OpenConnection();
-        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()
     {
         using SqliteConnection connection = database.OpenConnection();
-        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
         return state?.LastSyncAt;
     }
 

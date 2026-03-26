@@ -224,7 +224,7 @@ public static class GitHubHttpApi
         api.MapGet("/status", (GitHubIngestionPipeline pipeline, GitHubDatabase db) =>
         {
             using SqliteConnection connection = db.OpenConnection();
-            GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: GitHubSource.SourceName);
+            GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
 
             return Results.Ok(new
             {

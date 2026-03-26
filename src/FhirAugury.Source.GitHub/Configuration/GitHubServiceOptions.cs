@@ -25,6 +25,16 @@ public class GitHubServiceOptions
     public AuthConfiguration Auth { get; set; } = new();
 
     public string CachePath { get; set; } = "./cache";
+
+    /// <summary>
+    /// Data provider to use: "rest" (default) or "gh-cli".
+    /// "rest" uses HttpClient with a PAT. "gh-cli" invokes the gh CLI tool.
+    /// </summary>
+    public string Provider { get; set; } = "rest";
+
+    /// <summary>Configuration for gh CLI provider (used when Provider is "gh-cli").</summary>
+    public GhCliConfiguration GhCli { get; set; } = new();
+
     public string DatabasePath { get; set; } = "./data/github.db";
     public string SyncSchedule { get; set; } = "02:00:00";
 

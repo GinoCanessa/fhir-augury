@@ -15,12 +15,12 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Fetches issues and PRs from the GitHub REST API, caches responses, and upserts into the database.
 /// Supports full and incremental downloads.
 /// </summary>
-public class GitHubSource(
+public class GitHubRestProvider(
     IOptions<GitHubServiceOptions> optionsAccessor,
     IHttpClientFactory httpClientFactory,
     GitHubDatabase database,
     IResponseCache cache,
-    ILogger<GitHubSource> logger)
+    ILogger<GitHubRestProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
     public const string SourceName = "github";
