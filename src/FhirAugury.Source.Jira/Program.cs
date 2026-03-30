@@ -12,6 +12,7 @@ using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -154,6 +155,30 @@ if (jiraOpts.ReloadFromCacheOnStartup ||
     JiraIngestionPipeline pipeline = app.Services.GetRequiredService<JiraIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
+else
+{
+    // Check individual index tables when not reloading from cache
+    JiraDatabase jiraDb = app.Services.GetRequiredService<JiraDatabase>();
+    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
+    if (jiraDb.TableIsEmpty("jira_index_workgroups"))
+    {
+        startupLogger.LogInformation("Facet indexes are empty — rebuilding");
+        using SqliteConnection conn = jiraDb.OpenConnection();
+        app.Services.GetRequiredService<JiraIndexBuilder>().RebuildIndexTables(conn);
+    }
+
+    if (jiraDb.TableIsEmpty("xref_zulip"))
+    {
+        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
+        app.Services.GetRequiredService<JiraXRefRebuilder>().ExtractAll(CancellationToken.None);
+    }
+
+    if (jiraDb.TableIsEmpty("index_keywords"))
+    {
+        startupLogger.LogInformation("BM25 index is empty — rebuilding");
+        app.Services.GetRequiredService<JiraIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
+}
 
 app.Run();

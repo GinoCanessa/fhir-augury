@@ -149,14 +149,23 @@ if (options.RebuildFromCacheOnStartup ||
     ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
-else if (options.ReindexTicketsOnStartup)
+else
 {
-    // Standalone ticket re-index (skipped when RebuildFromCacheOnStartup
-    // is true because the cache rebuild already includes ticket indexing).
+    // Check individual index tables when not reloading from cache
+    ZulipDatabase zulipDb = app.Services.GetRequiredService<ZulipDatabase>();
     ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-    startupLogger.LogInformation("Re-indexing Jira ticket references on startup");
-    ZulipTicketIndexer ticketIndexer = app.Services.GetRequiredService<ZulipTicketIndexer>();
-    ticketIndexer.RebuildFullIndex(CancellationToken.None);
+
+    if (zulipDb.TableIsEmpty("index_keywords"))
+    {
+        startupLogger.LogInformation("BM25 index is empty — rebuilding");
+        app.Services.GetRequiredService<ZulipIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
+
+    if (options.ReindexTicketsOnStartup || zulipDb.TableIsEmpty("xref_jira"))
+    {
+        startupLogger.LogInformation("Rebuilding cross-reference indexes");
+        app.Services.GetRequiredService<ZulipTicketIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
 }
 
 

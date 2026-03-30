@@ -138,5 +138,29 @@ if (confluenceOpts.ReloadFromCacheOnStartup ||
     ConfluenceIngestionPipeline pipeline = app.Services.GetRequiredService<ConfluenceIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
+else
+{
+    // Check individual index tables when not reloading from cache
+    ConfluenceDatabase confluenceDb = app.Services.GetRequiredService<ConfluenceDatabase>();
+    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+
+    if (confluenceDb.TableIsEmpty("index_keywords"))
+    {
+        startupLogger.LogInformation("BM25 index is empty — rebuilding");
+        app.Services.GetRequiredService<ConfluenceIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
+
+    if (confluenceDb.TableIsEmpty("xref_jira"))
+    {
+        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
+        app.Services.GetRequiredService<ConfluenceXRefRebuilder>().RebuildAll(CancellationToken.None);
+    }
+
+    if (confluenceDb.TableIsEmpty("confluence_page_links"))
+    {
+        startupLogger.LogInformation("Page link index is empty — rebuilding");
+        app.Services.GetRequiredService<ConfluenceLinkRebuilder>().RebuildAll(CancellationToken.None);
+    }
+}
 
 app.Run();

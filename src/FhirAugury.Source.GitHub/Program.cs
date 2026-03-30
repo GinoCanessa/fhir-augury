@@ -169,5 +169,28 @@ if (githubOpts.ReloadFromCacheOnStartup ||
     GitHubIngestionPipeline pipeline = app.Services.GetRequiredService<GitHubIngestionPipeline>();
     await pipeline.RebuildFromCacheAsync(CancellationToken.None);
 }
+else
+{
+    // Check individual index tables when not reloading from cache
+    GitHubDatabase githubDb = app.Services.GetRequiredService<GitHubDatabase>();
+    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+
+    if (githubDb.TableIsEmpty("xref_jira"))
+    {
+        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
+        JiraRefExtractor jiraRefExtractor = app.Services.GetRequiredService<JiraRefExtractor>();
+        List<string> repos = [.. githubOpts.Repositories, .. githubOpts.AdditionalRepositories];
+        foreach (string repo in repos)
+        {
+            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, CancellationToken.None);
+        }
+    }
+
+    if (githubDb.TableIsEmpty("index_keywords"))
+    {
+        startupLogger.LogInformation("BM25 index is empty — rebuilding");
+        app.Services.GetRequiredService<GitHubIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
+}
 
 app.Run();

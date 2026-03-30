@@ -75,6 +75,19 @@ public abstract class SourceDatabase : IDisposable
     protected abstract void InitializeSchema(SqliteConnection connection);
 
     /// <summary>
+    /// Returns true if the specified table contains zero rows.
+    /// Useful for detecting missing index data on startup.
+    /// </summary>
+    public bool TableIsEmpty(string tableName, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM \"{tableName}\"";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
+
+    /// <summary>
     /// Executes a batch of items, committing every <paramref name="batchSize"/> items.
     /// </summary>
     public static void ExecuteInBatches<T>(
