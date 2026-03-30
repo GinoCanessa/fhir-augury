@@ -185,6 +185,7 @@ public class ZulipTicketIndexerTests : IDisposable
             IsWebPublic = true,
             MessageCount = 0,
             IncludeStream = true,
+            BaselineValue = 5,
             LastFetchedAt = DateTimeOffset.UtcNow,
         });
     }

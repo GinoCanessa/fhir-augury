@@ -57,6 +57,7 @@ message ZulipStream {
   int32 message_count = 4;
   string url = 5;
   bool include_stream = 6;
+  int32 baseline_value = 7;
 }
 
 message ZulipTopic {
@@ -111,6 +112,8 @@ message GetStreamRequest {
 message UpdateStreamRequest {
   int32 zulip_stream_id = 1;
   bool include_stream = 2;
+  // Baseline ranking value (0–10). When 0 in the request, the existing value is preserved.
+  int32 baseline_value = 3;
 }
 
 message ZulipStreamInfo {
@@ -121,4 +124,5 @@ message ZulipStreamInfo {
   bool is_web_public = 5;
   int32 message_count = 6;
   bool include_stream = 7;
+  int32 baseline_value = 8;
 }

@@ -38,11 +38,13 @@ public static class ZulipHttpApi
             string sql = """
                 SELECT zm.ZulipMessageId, zm.StreamName, zm.Topic,
                        snippet(zulip_messages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
-                       zulip_messages_fts.rank, zm.SenderName, zm.Timestamp
+                       zulip_messages_fts.rank, zm.SenderName, zm.Timestamp,
+                       COALESCE(zs.BaselineValue, 5) as BaselineValue
                 FROM zulip_messages_fts
                 JOIN zulip_messages zm ON zm.Id = zulip_messages_fts.rowid
+                LEFT JOIN zulip_streams zs ON zs.Id = zm.StreamId
                 WHERE zulip_messages_fts MATCH @query
-                ORDER BY zulip_messages_fts.rank
+                ORDER BY (zulip_messages_fts.rank * COALESCE(zs.BaselineValue, 5) / 5.0)
                 LIMIT @limit
                 """;
 
@@ -57,13 +59,15 @@ public static class ZulipHttpApi
                 int msgId = reader.GetInt32(0);
                 string streamName = reader.GetString(1);
                 string topic = reader.GetString(2);
+                double rawRank = reader.GetDouble(4);
+                int baselineValue = reader.GetInt32(7);
                 results.Add(new
                 {
                     id = msgId,
                     stream = streamName,
                     topic,
                     snippet = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    score = -reader.GetDouble(4),
+                    score = -rawRank * (baselineValue / 5.0),
                     sender = reader.IsDBNull(5) ? null : reader.GetString(5),
                     url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}/near/{msgId}",
                 });
@@ -111,6 +115,7 @@ public static class ZulipHttpApi
                     s.MessageCount,
                     s.IsWebPublic,
                     s.IncludeStream,
+                    s.BaselineValue,
                     url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(s.Name)}",
                 }),
             });
@@ -132,6 +137,7 @@ public static class ZulipHttpApi
                 stream.MessageCount,
                 stream.IsWebPublic,
                 stream.IncludeStream,
+                stream.BaselineValue,
                 url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(stream.Name)}",
             });
         });
@@ -145,6 +151,8 @@ public static class ZulipHttpApi
                 return Results.NotFound(new { error = $"Stream with Zulip ID {zulipStreamId} not found" });
 
             stream.IncludeStream = body.IncludeStream;
+            if (body.BaselineValue.HasValue)
+                stream.BaselineValue = Math.Clamp(body.BaselineValue.Value, 0, 10);
             ZulipStreamRecord.Update(connection, stream);
 
             return Results.Ok(new
@@ -155,6 +163,7 @@ public static class ZulipHttpApi
                 stream.MessageCount,
                 stream.IsWebPublic,
                 stream.IncludeStream,
+                stream.BaselineValue,
                 url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(stream.Name)}",
             });
         });
@@ -349,4 +358,4 @@ public static class ZulipHttpApi
 }
 
 /// <summary>Request body for updating a Zulip stream's mutable properties.</summary>
-public record ZulipStreamUpdateRequest(bool IncludeStream);
+public record ZulipStreamUpdateRequest(bool IncludeStream, int? BaselineValue = null);

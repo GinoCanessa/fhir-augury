@@ -19,5 +19,14 @@ public partial record class ZulipStreamRecord
     public required bool IsWebPublic { get; set; }
     public required int MessageCount { get; set; }
     public required bool IncludeStream { get; set; } = true;
+
+    /// <summary>
+    /// Baseline ranking value for this stream (0–10, default 5).
+    /// Scores are multiplied by BaselineValue / 5.0 so that default is neutral.
+    /// Use lower values for noisy streams (e.g. build notifications) and higher
+    /// values for high-signal discussion streams.
+    /// </summary>
+    public required int BaselineValue { get; set; } = 5;
+
     public required DateTimeOffset LastFetchedAt { get; set; }
 }

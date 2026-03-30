@@ -33,6 +33,7 @@ public class ZulipDatabase : SourceDatabase
         ConfluenceXRefRecord.CreateTable(connection);
         FhirElementXRefRecord.CreateTable(connection);
 
+        MigrateSchema(connection);
         CreateZulipMessagesFts(connection);
     }
 
@@ -45,6 +46,33 @@ public class ZulipDatabase : SourceDatabase
             contentRowId: "Id",
             indexedColumns: ["ContentPlain", "Topic"],
             tokenizer: _ftsTokenizer);
+    }
+
+    /// <summary>
+    /// Applies schema migrations for columns added after initial release.
+    /// Safe to call repeatedly; each migration checks before altering.
+    /// </summary>
+    private static void MigrateSchema(SqliteConnection connection)
+    {
+        // Migration: add BaselineValue column to zulip_streams (default 5)
+        if (!ColumnExists(connection, "zulip_streams", "BaselineValue"))
+        {
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = "ALTER TABLE zulip_streams ADD COLUMN BaselineValue INTEGER NOT NULL DEFAULT 5;";
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string table, string column)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.GetString(1) == column) return true;
+        }
+        return false;
     }
 
     /// <summary>Rebuilds the FTS5 index from the content table.</summary>

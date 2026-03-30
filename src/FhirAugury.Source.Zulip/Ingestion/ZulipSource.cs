@@ -61,13 +61,15 @@ public class ZulipSource(
             {
                 stream.Id = existing.Id;
                 stream.MessageCount = existing.MessageCount;
-                // Preserve user-set IncludeStream; only apply config exclusion for new streams
+                // Preserve user-set IncludeStream and BaselineValue; only apply config for new streams
                 stream.IncludeStream = existing.IncludeStream;
+                stream.BaselineValue = existing.BaselineValue;
                 ZulipStreamRecord.Update(connection, stream);
             }
             else
             {
                 ApplyExclusion(stream);
+                ApplyBaselineValue(stream);
                 ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
             }
         }
@@ -238,11 +240,13 @@ public class ZulipSource(
                 stream.Id = existingStream.Id;
                 stream.MessageCount = existingStream.MessageCount;
                 stream.IncludeStream = existingStream.IncludeStream;
+                stream.BaselineValue = existingStream.BaselineValue;
                 ZulipStreamRecord.Update(connection, stream);
             }
             else
             {
                 ApplyExclusion(stream);
+                ApplyBaselineValue(stream);
                 ZulipStreamRecord.Insert(connection, stream, ignoreDuplicates: true);
             }
         }
@@ -406,6 +410,7 @@ public class ZulipSource(
             foreach (ZulipStreamRecord stream in cachedStreams)
             {
                 ApplyExclusion(stream);
+                ApplyBaselineValue(stream);
                 ZulipStreamRecord? existing = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: stream.ZulipStreamId);
                 if (existing is not null)
                 {
@@ -455,8 +460,10 @@ public class ZulipSource(
                     IsWebPublic = true,
                     MessageCount = 0,
                     IncludeStream = !options.ExcludedStreamIds.Contains(streamId),
+                    BaselineValue = 5,
                     LastFetchedAt = DateTimeOffset.MinValue,
                 };
+                ApplyBaselineValue(placeholder);
                 ZulipStreamRecord.Insert(connection, placeholder, ignoreDuplicates: true);
                 existingStream = placeholder;
             }
@@ -576,6 +583,21 @@ public class ZulipSource(
         stream.IncludeStream = !options.ExcludedStreamIds.Contains(stream.ZulipStreamId);
     }
 
+    /// <summary>
+    /// Sets the stream's BaselineValue from config if a match exists, otherwise keeps the default (5).
+    /// </summary>
+    private void ApplyBaselineValue(ZulipStreamRecord stream)
+    {
+        foreach ((string? name, int value) in options.StreamBaselineValues)
+        {
+            if (stream.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                stream.BaselineValue = Math.Clamp(value, 0, 10);
+                return;
+            }
+        }
+    }
+
     /// <summary>Caches stream metadata to disk for rebuild support (Z-10).</summary>
     private async Task CacheStreamDataAsync(List<ZulipStreamRecord> streams, CancellationToken ct)
     {
@@ -618,6 +640,7 @@ public class ZulipSource(
                 IsWebPublic = s.IsWebPublic,
                 MessageCount = 0,
                 IncludeStream = s.IncludeStream,
+                BaselineValue = 5,
                 LastFetchedAt = model.FetchedAt,
             }).ToList();
         }

@@ -44,6 +44,13 @@ public class ZulipServiceOptions
 
     public List<int> ExcludedStreamIds { get; set; } = [];
 
+    /// <summary>
+    /// Per-stream baseline ranking values (0–10). Streams not listed default to 5.
+    /// Keys are stream names (case-insensitive match). Lower values reduce search
+    /// ranking for noisy/low-value streams (e.g. build notifications).
+    /// </summary>
+    public Dictionary<string, int> StreamBaselineValues { get; set; } = [];
+
     public bool OnlyWebPublic { get; set; } = true;
     public int BatchSize { get; set; } = 1000;
     public PortConfiguration Ports { get; set; } = new() { Http = 5170, Grpc = 5171 };

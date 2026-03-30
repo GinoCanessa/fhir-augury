@@ -49,11 +49,13 @@ public class ZulipGrpcService(
             SELECT zm.ZulipMessageId, zm.Topic, zm.StreamName,
                    snippet(zulip_messages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
                    zulip_messages_fts.rank,
-                   zm.SenderName, zm.Timestamp
+                   zm.SenderName, zm.Timestamp,
+                   COALESCE(zs.BaselineValue, 5) as BaselineValue
             FROM zulip_messages_fts
             JOIN zulip_messages zm ON zm.Id = zulip_messages_fts.rowid
+            LEFT JOIN zulip_streams zs ON zs.Id = zm.StreamId
             WHERE zulip_messages_fts MATCH @query
-            ORDER BY zulip_messages_fts.rank
+            ORDER BY (zulip_messages_fts.rank * COALESCE(zs.BaselineValue, 5) / 5.0)
             LIMIT @limit OFFSET @offset
             """;
 
@@ -70,6 +72,8 @@ public class ZulipGrpcService(
             int msgId = reader.GetInt32(0);
             string topic = reader.IsDBNull(1) ? "" : reader.GetString(1);
             string streamName = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            double rawRank = reader.GetDouble(4);
+            int baselineValue = reader.GetInt32(7);
 
             response.Results.Add(new SearchResultItem
             {
@@ -77,7 +81,7 @@ public class ZulipGrpcService(
                 Id = msgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = reader.IsDBNull(3) ? "" : reader.GetString(3),
-                Score = -reader.GetDouble(4),
+                Score = -rawRank * (baselineValue / 5.0),
                 Url = BuildMessageUrl(streamName, topic, msgId),
                 UpdatedAt = ParseTimestamp(reader, 6),
             });
@@ -676,7 +680,7 @@ public class ZulipSpecificGrpcService(
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        using SqliteCommand cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount, IncludeStream FROM zulip_streams ORDER BY Name ASC", connection);
+        using SqliteCommand cmd = new SqliteCommand("SELECT ZulipStreamId, Name, Description, MessageCount, IncludeStream, BaselineValue FROM zulip_streams ORDER BY Name ASC", connection);
 
         using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -689,6 +693,7 @@ public class ZulipSpecificGrpcService(
                 Description = reader.IsDBNull(2) ? "" : reader.GetString(2),
                 MessageCount = reader.GetInt32(3),
                 IncludeStream = reader.GetBoolean(4),
+                BaselineValue = reader.GetInt32(5),
                 Url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(name)}",
             });
         }
@@ -710,6 +715,8 @@ public class ZulipSpecificGrpcService(
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Stream with Zulip ID {request.ZulipStreamId} not found"));
 
         stream.IncludeStream = request.IncludeStream;
+        if (request.BaselineValue > 0)
+            stream.BaselineValue = Math.Clamp(request.BaselineValue, 0, 10);
         ZulipStreamRecord.Update(connection, stream);
 
         return Task.FromResult(MapToStreamInfo(stream));
@@ -726,6 +733,7 @@ public class ZulipSpecificGrpcService(
             IsWebPublic = stream.IsWebPublic,
             MessageCount = stream.MessageCount,
             IncludeStream = stream.IncludeStream,
+            BaselineValue = stream.BaselineValue,
         };
     }
 

@@ -19,6 +19,7 @@ public static class ZulipMessageMapper
             IsWebPublic = GetBool(streamJson, "is_web_public"),
             MessageCount = 0,
             IncludeStream = true,
+            BaselineValue = 5,
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
     }
