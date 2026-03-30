@@ -222,8 +222,10 @@ public class ZulipGrpcService(
                         ORDER BY Timestamp DESC LIMIT 1) AS LatestMsgId,
                        (SELECT Timestamp FROM zulip_messages
                         WHERE StreamName = tt.StreamName AND Topic = tt.Topic
-                        ORDER BY Timestamp DESC LIMIT 1) AS LatestTimestamp
+                        ORDER BY Timestamp DESC LIMIT 1) AS LatestTimestamp,
+                       COALESCE(zs.BaselineValue, 5) AS BaselineValue
                 FROM zulip_thread_tickets tt
+                LEFT JOIN zulip_streams zs ON zs.Name = tt.StreamName
                 WHERE tt.JiraKey = @jiraKey
                 ORDER BY tt.LastSeenAt DESC
                 LIMIT @limit
@@ -240,6 +242,7 @@ public class ZulipGrpcService(
                 string streamName = reader.GetString(0);
                 string topic = reader.GetString(1);
                 int latestMsgId = reader.IsDBNull(3) ? 0 : reader.GetInt32(3);
+                int baselineValue = reader.IsDBNull(5) ? 5 : reader.GetInt32(5);
 
                 if (latestMsgId == 0)
                     continue;
@@ -249,7 +252,7 @@ public class ZulipGrpcService(
                     Source = "zulip",
                     Id = latestMsgId.ToString(),
                     Title = $"[{streamName}] {topic}",
-                    Score = 1.0,
+                    Score = 1.0 * (baselineValue / 5.0),
                     Url = BuildMessageUrl(streamName, topic, latestMsgId),
                     UpdatedAt = ParseTimestamp(reader, 4),
                 });
