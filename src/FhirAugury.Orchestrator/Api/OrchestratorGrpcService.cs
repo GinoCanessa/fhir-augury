@@ -115,7 +115,10 @@ public class OrchestratorGrpcService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "GetItemCrossReferences failed for a source");
+                if (ex.IsTransientGrpcError(out string status))
+                    logger.LogWarning("GetItemCrossReferences failed for a source ({GrpcStatus})", status);
+                else
+                    logger.LogWarning(ex, "GetItemCrossReferences failed for a source");
             }
         }
 
@@ -311,8 +314,12 @@ public class OrchestratorGrpcService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to notify {Target} of {Source} ingestion",
-                    targetSource, request.Source);
+                if (ex.IsTransientGrpcError(out string status))
+                    logger.LogWarning("Failed to notify {Target} of {Source} ingestion ({GrpcStatus})",
+                        targetSource, request.Source, status);
+                else
+                    logger.LogWarning(ex, "Failed to notify {Target} of {Source} ingestion",
+                        targetSource, request.Source);
             }
         }).ToArray();
 

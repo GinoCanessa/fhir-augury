@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
@@ -341,7 +342,10 @@ public static class OrchestratorHttpApi
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to get stats for source {Source}", sourceName);
+                    if (ex.IsTransientGrpcError(out string status))
+                        logger.LogWarning("Failed to get stats for source {Source} ({GrpcStatus})", sourceName, status);
+                    else
+                        logger.LogWarning(ex, "Failed to get stats for source {Source}", sourceName);
                     warnings.Add($"Stats unavailable for '{sourceName}': {ex.Message}");
                     sourceStats.Add(new
                     {

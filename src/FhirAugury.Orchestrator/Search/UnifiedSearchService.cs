@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.Extensions.Logging;
@@ -77,7 +78,10 @@ public class UnifiedSearchService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Search failed for source {Source}", sourceName);
+                if (ex.IsTransientGrpcError(out string status))
+                    logger.LogWarning("Search failed for source {Source} ({GrpcStatus})", sourceName, status);
+                else
+                    logger.LogWarning(ex, "Search failed for source {Source}", sourceName);
                 warnings.Add($"Search failed for source '{sourceName}': {ex.Message}");
             }
         }

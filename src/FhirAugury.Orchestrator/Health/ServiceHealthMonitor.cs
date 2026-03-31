@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.Extensions.Logging;
@@ -111,7 +112,11 @@ public class ServiceHealthMonitor(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Health check failed for {Source}", sourceName);
+            if (ex.IsTransientGrpcError(out string status))
+                logger.LogWarning("Health check failed for {Source} ({GrpcStatus})", sourceName, status);
+            else
+                logger.LogWarning(ex, "Health check failed for {Source}", sourceName);
+
             return new ServiceHealthInfo
             {
                 Name = sourceName,

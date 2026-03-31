@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Grpc;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
@@ -165,7 +166,10 @@ public class RelatedItemFinder(
                     }
                     catch (Exception ex)
                     {
-                        logger.LogWarning(ex, "Shared metadata search failed for {Source}", source);
+                        if (ex.IsTransientGrpcError(out string status))
+                            logger.LogWarning("Shared metadata search failed for {Source} ({GrpcStatus})", source, status);
+                        else
+                            logger.LogWarning(ex, "Shared metadata search failed for {Source}", source);
                     }
                 }
             }
@@ -186,7 +190,10 @@ public class RelatedItemFinder(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to enrich related item {Source}/{Id}", candidate.Source, candidate.Id);
+                if (ex.IsTransientGrpcError(out string status))
+                    logger.LogWarning("Failed to enrich related item {Source}/{Id} ({GrpcStatus})", candidate.Source, candidate.Id, status);
+                else
+                    logger.LogWarning(ex, "Failed to enrich related item {Source}/{Id}", candidate.Source, candidate.Id);
             }
         }
 
@@ -232,7 +239,10 @@ public class RelatedItemFinder(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to fetch seed item {Source}/{Id}", seedSource, seedId);
+            if (ex.IsTransientGrpcError(out string status))
+                logger.LogWarning("Failed to fetch seed item {Source}/{Id} ({GrpcStatus})", seedSource, seedId, status);
+            else
+                logger.LogWarning(ex, "Failed to fetch seed item {Source}/{Id}", seedSource, seedId);
             return null;
         }
     }
@@ -248,7 +258,10 @@ public class RelatedItemFinder(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
+            if (ex.IsTransientGrpcError(out string status))
+                logger.LogWarning("Related search failed for source via BM25 similarity ({GrpcStatus})", status);
+            else
+                logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
             return new SearchResponse();
         }
     }
