@@ -21,6 +21,7 @@ public class ZulipIngestionPipeline(
     ZulipTicketIndexer ticketIndexer,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<ZulipServiceOptions> optionsAccessor,
+    FhirAugury.Common.Indexing.IIndexTracker tracker,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -175,11 +176,31 @@ public class ZulipIngestionPipeline(
 
         // Rebuild BM25 keyword index
         logger.LogInformation("Rebuilding BM25 index");
-        indexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("bm25");
+        try
+        {
+            indexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("bm25");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
 
         // Extract and index ticket references
         logger.LogInformation("Indexing ticket references");
-        ticketIndexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("cross-refs");
+        try
+        {
+            ticketIndexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("cross-refs");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("cross-refs", ex.Message);
+            throw;
+        }
 
         // Update sync state
         UpdateSyncState(result, runType, ct);

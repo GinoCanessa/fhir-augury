@@ -186,6 +186,17 @@ message IngestionStatusResponse {
   int32 items_processed = 5;
   string last_error = 6;
   string sync_schedule = 7;
+  repeated IndexStatus indexes = 8;
+}
+
+message IndexStatus {
+  string name = 1;
+  string description = 2;
+  bool is_rebuilding = 3;
+  google.protobuf.Timestamp last_rebuild_started_at = 4;
+  google.protobuf.Timestamp last_rebuild_completed_at = 5;
+  int32 record_count = 6;
+  string last_error = 7;
 }
 
 message RebuildRequest {

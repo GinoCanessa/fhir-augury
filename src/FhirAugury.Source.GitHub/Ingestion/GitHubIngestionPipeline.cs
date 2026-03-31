@@ -23,6 +23,7 @@ public class GitHubIngestionPipeline(
     GitHubCommitFileExtractor commitExtractor,
     JiraRefExtractor jiraRefExtractor,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
+    FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
     ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -140,36 +141,59 @@ public class GitHubIngestionPipeline(
         List<string> repos = new List<string>(_options.Repositories);
         repos.AddRange(_options.AdditionalRepositories);
 
-        foreach (string repo in repos)
+        tracker.MarkStarted("commits");
+        tracker.MarkStarted("cross-refs");
+        try
         {
-            try
+            foreach (string repo in repos)
             {
-                _currentStatus = $"cloning:{repo}";
-                string clonePath = await cloner.EnsureCloneAsync(repo, ct);
+                try
+                {
+                    _currentStatus = $"cloning:{repo}";
+                    string clonePath = await cloner.EnsureCloneAsync(repo, ct);
 
-                _currentStatus = $"extracting_commits:{repo}";
-                await commitExtractor.ExtractAsync(clonePath, repo, ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to clone/extract commits for {Repo}", repo);
-            }
+                    _currentStatus = $"extracting_commits:{repo}";
+                    await commitExtractor.ExtractAsync(clonePath, repo, ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to clone/extract commits for {Repo}", repo);
+                }
 
-            try
-            {
-                _currentStatus = $"extracting_jira_refs:{repo}";
-                jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                try
+                {
+                    _currentStatus = $"extracting_jira_refs:{repo}";
+                    jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to extract Jira references for {Repo}", repo);
+                }
             }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to extract Jira references for {Repo}", repo);
-            }
+            tracker.MarkCompleted("commits");
+            tracker.MarkCompleted("cross-refs");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("commits", ex.Message);
+            tracker.MarkFailed("cross-refs", ex.Message);
+            throw;
         }
 
         // Rebuild BM25 keyword index
         _currentStatus = "rebuilding_index";
         logger.LogInformation("Rebuilding BM25 index");
-        indexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("bm25");
+        try
+        {
+            indexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("bm25");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
 
         // Update sync state
         UpdateSyncState(result, runType, ct);

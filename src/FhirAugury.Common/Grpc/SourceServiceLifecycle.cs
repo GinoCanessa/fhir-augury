@@ -1,6 +1,8 @@
 using Fhiraugury;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
+using Google.Protobuf.WellKnownTypes;
 using System.Diagnostics;
 
 namespace FhirAugury.Common.Grpc;
@@ -54,5 +56,26 @@ public static class SourceServiceLifecycle
             UptimeSeconds = (DateTimeOffset.UtcNow - StartTime).TotalSeconds,
             Message = pipeline.IsRunning ? $"Ingestion in progress: {pipeline.CurrentStatus}" : "OK",
         };
+    }
+
+    /// <summary>Converts IndexInfo list to proto IndexStatus messages.</summary>
+    public static IEnumerable<IndexStatus> ToProtoIndexStatuses(IReadOnlyList<IndexInfo> indexes)
+    {
+        foreach (IndexInfo info in indexes)
+        {
+            IndexStatus status = new IndexStatus
+            {
+                Name = info.Name,
+                Description = info.Description,
+                IsRebuilding = info.IsRebuilding,
+                RecordCount = info.RecordCount,
+                LastError = info.LastError ?? "",
+            };
+            if (info.LastRebuildStartedAt is DateTimeOffset started)
+                status.LastRebuildStartedAt = Timestamp.FromDateTimeOffset(started);
+            if (info.LastRebuildCompletedAt is DateTimeOffset completed)
+                status.LastRebuildCompletedAt = Timestamp.FromDateTimeOffset(completed);
+            yield return status;
+        }
     }
 }

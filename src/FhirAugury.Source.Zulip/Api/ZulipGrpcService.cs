@@ -27,6 +27,7 @@ public class ZulipGrpcService(
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
     ZulipTicketIndexer ticketIndexer,
     ZulipIndexer indexer,
+    FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<ZulipServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -518,7 +519,7 @@ public class ZulipGrpcService(
         using SqliteConnection connection = database.OpenConnection();
         ZulipSyncStateRecord? syncState = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName);
 
-        return new IngestionStatusResponse
+        IngestionStatusResponse response = new IngestionStatusResponse
         {
             Source = "zulip",
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
@@ -527,6 +528,9 @@ public class ZulipGrpcService(
             LastError = syncState?.LastError ?? "",
             SyncSchedule = options.SyncSchedule,
         };
+        response.Indexes.AddRange(
+            FhirAugury.Common.Grpc.SourceServiceLifecycle.ToProtoIndexStatuses(indexTracker.GetAllStatuses()));
+        return response;
     }
 
     private string BuildMessageUrl(string streamName, string topic, int messageId) =>
@@ -602,18 +606,78 @@ public class ZulipGrpcService(
             switch (indexType)
             {
                 case "bm25":
-                    indexer.RebuildFullIndex(ct);
+                    indexTracker.MarkStarted("bm25");
+                    try
+                    {
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        throw;
+                    }
                     break;
                 case "cross-refs":
-                    ticketIndexer.RebuildFullIndex(ct);
+                    indexTracker.MarkStarted("cross-refs");
+                    try
+                    {
+                        ticketIndexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("cross-refs");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        throw;
+                    }
                     break;
                 case "fts":
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("fts");
+                    try
+                    {
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
                 case "all":
-                    indexer.RebuildFullIndex(ct);
-                    ticketIndexer.RebuildFullIndex(ct);
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("bm25");
+                    try
+                    {
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        throw;
+                    }
+                    indexTracker.MarkStarted("cross-refs");
+                    try
+                    {
+                        ticketIndexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("cross-refs");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        throw;
+                    }
+                    indexTracker.MarkStarted("fts");
+                    try
+                    {
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
             }
             return Task.CompletedTask;

@@ -28,6 +28,7 @@ public class ConfluenceGrpcService(
     ConfluenceXRefRebuilder xrefRebuilder,
     ConfluenceLinkRebuilder linkRebuilder,
     ConfluenceIndexer indexer,
+    FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<ConfluenceServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -495,7 +496,7 @@ public class ConfluenceGrpcService(
         using SqliteConnection connection = database.OpenConnection();
         ConfluenceSyncStateRecord? syncState = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
 
-        return new IngestionStatusResponse
+        IngestionStatusResponse response = new IngestionStatusResponse
         {
             Source = "confluence",
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
@@ -504,6 +505,9 @@ public class ConfluenceGrpcService(
             LastError = syncState?.LastError ?? "",
             SyncSchedule = options.SyncSchedule,
         };
+        response.Indexes.AddRange(
+            FhirAugury.Common.Grpc.SourceServiceLifecycle.ToProtoIndexStatuses(indexTracker.GetAllStatuses()));
+        return response;
     }
 
     private string BuildPageMarkdownSnapshot(
@@ -609,22 +613,38 @@ public class ConfluenceGrpcService(
             switch (indexType)
             {
                 case "bm25":
-                    indexer.RebuildFullIndex(ct);
+                    indexTracker.MarkStarted("bm25");
+                    try { indexer.RebuildFullIndex(ct); indexTracker.MarkCompleted("bm25"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("bm25", ex.Message); throw; }
                     break;
                 case "cross-refs":
-                    xrefRebuilder.RebuildAll(ct);
+                    indexTracker.MarkStarted("cross-refs");
+                    try { xrefRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("cross-refs"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
                     break;
                 case "page-links":
-                    linkRebuilder.RebuildAll(ct);
+                    indexTracker.MarkStarted("page-links");
+                    try { linkRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("page-links"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("page-links", ex.Message); throw; }
                     break;
                 case "fts":
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("fts");
+                    try { database.RebuildFtsIndexes(); indexTracker.MarkCompleted("fts"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("fts", ex.Message); throw; }
                     break;
                 case "all":
-                    xrefRebuilder.RebuildAll(ct);
-                    linkRebuilder.RebuildAll(ct);
-                    indexer.RebuildFullIndex(ct);
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("cross-refs");
+                    try { xrefRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("cross-refs"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
+                    indexTracker.MarkStarted("page-links");
+                    try { linkRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("page-links"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("page-links", ex.Message); throw; }
+                    indexTracker.MarkStarted("bm25");
+                    try { indexer.RebuildFullIndex(ct); indexTracker.MarkCompleted("bm25"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("bm25", ex.Message); throw; }
+                    indexTracker.MarkStarted("fts");
+                    try { database.RebuildFtsIndexes(); indexTracker.MarkCompleted("fts"); }
+                    catch (Exception ex) { indexTracker.MarkFailed("fts", ex.Message); throw; }
                     break;
             }
             return Task.CompletedTask;

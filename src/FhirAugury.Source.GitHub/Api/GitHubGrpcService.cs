@@ -31,6 +31,7 @@ public class GitHubGrpcService(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     ArtifactFileMapper artifactFileMapper,
+    FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<GitHubServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -540,7 +541,7 @@ public class GitHubGrpcService(
         using SqliteConnection connection = database.OpenConnection();
         GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
 
-        return new IngestionStatusResponse
+        IngestionStatusResponse response = new IngestionStatusResponse
         {
             Source = "github",
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
@@ -549,6 +550,9 @@ public class GitHubGrpcService(
             LastError = syncState?.LastError ?? "",
             SyncSchedule = options.SyncSchedule,
         };
+        response.Indexes.AddRange(
+            FhirAugury.Common.Grpc.SourceServiceLifecycle.ToProtoIndexStatuses(indexTracker.GetAllStatuses()));
+        return response;
     }
 
     private static string BuildMarkdownSnapshot(
@@ -670,39 +674,111 @@ public class GitHubGrpcService(
             switch (indexType)
             {
                 case "commits":
-                    foreach (string repo in repos)
+                    indexTracker.MarkStarted("commits");
+                    try
                     {
-                        string path = await cloner.EnsureCloneAsync(repo, ct);
-                        await commitExtractor.ExtractAsync(path, repo, ct);
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, ct);
+                        }
+                        indexTracker.MarkCompleted("commits");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("commits", ex.Message);
+                        throw;
                     }
                     break;
                 case "cross-refs":
-                    foreach (string repo in repos)
-                        jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                    indexTracker.MarkStarted("cross-refs");
+                    try
+                    {
+                        foreach (string repo in repos)
+                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                        indexTracker.MarkCompleted("cross-refs");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        throw;
+                    }
                     break;
                 case "bm25":
-                    indexer.RebuildFullIndex(ct);
+                    indexTracker.MarkStarted("bm25");
+                    try
+                    {
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        throw;
+                    }
                     break;
                 case "artifact-map":
-                    foreach (string repo in repos)
+                    indexTracker.MarkStarted("artifact-map");
+                    try
                     {
-                        string path = await cloner.EnsureCloneAsync(repo, ct);
-                        artifactFileMapper.BuildMappings(repo, path, ct);
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            artifactFileMapper.BuildMappings(repo, path, ct);
+                        }
+                        indexTracker.MarkCompleted("artifact-map");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("artifact-map", ex.Message);
+                        throw;
                     }
                     break;
                 case "fts":
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("fts");
+                    try
+                    {
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
                 case "all":
-                    foreach (string repo in repos)
+                    indexTracker.MarkStarted("commits");
+                    indexTracker.MarkStarted("cross-refs");
+                    indexTracker.MarkStarted("artifact-map");
+                    indexTracker.MarkStarted("bm25");
+                    indexTracker.MarkStarted("fts");
+                    try
                     {
-                        string path = await cloner.EnsureCloneAsync(repo, ct);
-                        await commitExtractor.ExtractAsync(path, repo, ct);
-                        jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
-                        artifactFileMapper.BuildMappings(repo, path, ct);
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, ct);
+                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                            artifactFileMapper.BuildMappings(repo, path, ct);
+                        }
+                        indexTracker.MarkCompleted("commits");
+                        indexTracker.MarkCompleted("cross-refs");
+                        indexTracker.MarkCompleted("artifact-map");
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
                     }
-                    indexer.RebuildFullIndex(ct);
-                    database.RebuildFtsIndexes();
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("commits", ex.Message);
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        indexTracker.MarkFailed("artifact-map", ex.Message);
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
             }
         }, $"rebuild-index-{indexType}");

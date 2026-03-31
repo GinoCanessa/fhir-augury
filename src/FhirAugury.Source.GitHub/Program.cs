@@ -109,6 +109,11 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<ArtifactFileMapper>();
 builder.Services.AddSingleton<JiraRefResolver>();
 
+// Index tracker
+FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
+builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
+builder.Services.AddSingleton(indexTracker);
+
 // Orchestrator client (optional — for ingestion notifications)
 #pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
 builder.Services.AddSingleton(sp =>
@@ -130,6 +135,36 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 WebApplication app = builder.Build();
 
 GitHubServiceOptions githubOpts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
+
+// Register indexes with the tracker
+FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredService<FhirAugury.Common.Indexing.IndexTracker>();
+GitHubDatabase githubDatabase = app.Services.GetRequiredService<GitHubDatabase>();
+tracker.RegisterIndex("bm25", "BM25 keyword scoring index", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    using Microsoft.Data.Sqlite.SqliteCommand cmd = new("SELECT COUNT(*) FROM index_keywords", c);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+});
+tracker.RegisterIndex("fts", "FTS5 full-text search index", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.GitHubIssueRecord.SelectCount(c);
+});
+tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Common.Database.Records.JiraXRefRecord.SelectCount(c);
+});
+tracker.RegisterIndex("commits", "Git commit extraction", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.GitHubCommitRecord.SelectCount(c);
+});
+tracker.RegisterIndex("artifact-map", "FHIR artifact-to-file mapping", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.GitHubSpecFileMapRecord.SelectCount(c);
+});
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();

@@ -35,6 +35,16 @@ public static class ServicesHandler
                 dbSizeBytes = s.DbSizeBytes,
                 lastSyncAt = s.LastSyncAt?.ToDateTimeOffset().ToString("o"),
                 lastError = s.LastError,
+                indexes = s.Indexes.Select(i => new
+                {
+                    name = i.Name,
+                    description = i.Description,
+                    isRebuilding = i.IsRebuilding,
+                    lastRebuildStartedAt = i.LastRebuildStartedAt?.ToDateTimeOffset().ToString("o"),
+                    lastRebuildCompletedAt = i.LastRebuildCompletedAt?.ToDateTimeOffset().ToString("o"),
+                    recordCount = i.RecordCount,
+                    lastError = i.LastError,
+                }).ToArray(),
             }).ToArray(),
         };
     }

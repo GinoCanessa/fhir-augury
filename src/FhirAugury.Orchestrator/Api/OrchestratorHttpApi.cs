@@ -299,6 +299,12 @@ public static class OrchestratorHttpApi
                 {
                     s.Name, s.Status, s.GrpcAddress, s.UptimeSeconds,
                     s.Version, s.ItemCount, s.DbSizeBytes, s.LastSyncAt, s.LastError,
+                    indexes = s.Indexes.Select(i => new
+                    {
+                        i.Name, i.Description, i.IsRebuilding,
+                        i.LastRebuildStartedAt, i.LastRebuildCompletedAt,
+                        i.RecordCount, i.LastError,
+                    }),
                 }),
             });
         });

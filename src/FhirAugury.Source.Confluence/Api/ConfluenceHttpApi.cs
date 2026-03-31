@@ -1,4 +1,5 @@
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
@@ -168,7 +169,7 @@ public static class ConfluenceHttpApi
             }
         });
 
-        api.MapGet("/status", (ConfluenceIngestionPipeline pipeline, ConfluenceDatabase db) =>
+        api.MapGet("/status", (ConfluenceIngestionPipeline pipeline, ConfluenceDatabase db, IIndexTracker indexTracker) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             ConfluenceSyncStateRecord? syncState = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
@@ -180,6 +181,15 @@ public static class ConfluenceHttpApi
                 lastSyncAt = syncState?.LastSyncAt,
                 itemsIngested = syncState?.ItemsIngested ?? 0,
                 lastError = syncState?.LastError,
+                indexes = indexTracker.GetAllStatuses().Select(i => new
+                {
+                    i.Name,
+                    i.Description,
+                    i.IsRebuilding,
+                    i.RecordCount,
+                    i.LastRebuildCompletedAt,
+                    i.LastError,
+                }),
             });
         });
 
@@ -202,7 +212,8 @@ public static class ConfluenceHttpApi
             ConfluenceDatabase database,
             ConfluenceIndexer indexer,
             ConfluenceXRefRebuilder xrefRebuilder,
-            ConfluenceLinkRebuilder linkRebuilder) =>
+            ConfluenceLinkRebuilder linkRebuilder,
+            IIndexTracker indexTracker) =>
         {
             string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
 
@@ -211,22 +222,38 @@ public static class ConfluenceHttpApi
                 switch (indexType)
                 {
                     case "bm25":
-                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkStarted("bm25");
+                        try { indexer.RebuildFullIndex(ct); indexTracker.MarkCompleted("bm25"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("bm25", ex.Message); throw; }
                         break;
                     case "cross-refs":
-                        xrefRebuilder.RebuildAll(ct);
+                        indexTracker.MarkStarted("cross-refs");
+                        try { xrefRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("cross-refs"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
                         break;
                     case "page-links":
-                        linkRebuilder.RebuildAll(ct);
+                        indexTracker.MarkStarted("page-links");
+                        try { linkRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("page-links"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("page-links", ex.Message); throw; }
                         break;
                     case "fts":
-                        database.RebuildFtsIndexes();
+                        indexTracker.MarkStarted("fts");
+                        try { database.RebuildFtsIndexes(); indexTracker.MarkCompleted("fts"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("fts", ex.Message); throw; }
                         break;
                     case "all":
-                        xrefRebuilder.RebuildAll(ct);
-                        linkRebuilder.RebuildAll(ct);
-                        indexer.RebuildFullIndex(ct);
-                        database.RebuildFtsIndexes();
+                        indexTracker.MarkStarted("cross-refs");
+                        try { xrefRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("cross-refs"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
+                        indexTracker.MarkStarted("page-links");
+                        try { linkRebuilder.RebuildAll(ct); indexTracker.MarkCompleted("page-links"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("page-links", ex.Message); throw; }
+                        indexTracker.MarkStarted("bm25");
+                        try { indexer.RebuildFullIndex(ct); indexTracker.MarkCompleted("bm25"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("bm25", ex.Message); throw; }
+                        indexTracker.MarkStarted("fts");
+                        try { database.RebuildFtsIndexes(); indexTracker.MarkCompleted("fts"); }
+                        catch (Exception ex) { indexTracker.MarkFailed("fts", ex.Message); throw; }
                         break;
                     default:
                         return Task.CompletedTask;

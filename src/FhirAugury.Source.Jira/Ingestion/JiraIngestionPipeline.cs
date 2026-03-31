@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -22,6 +23,7 @@ public class JiraIngestionPipeline(
     JiraXRefRebuilder xrefRebuilder,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<JiraServiceOptions> optionsAccessor,
+    IIndexTracker tracker,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly JiraServiceOptions _options = optionsAccessor.Value;
@@ -179,18 +181,48 @@ public class JiraIngestionPipeline(
         ct.ThrowIfCancellationRequested();
 
         // Rebuild lookup/index tables
-        using (SqliteConnection conn = database.OpenConnection())
+        tracker.MarkStarted("lookup-tables");
+        try
         {
-            indexBuilder.RebuildIndexTables(conn);
+            using (SqliteConnection conn = database.OpenConnection())
+            {
+                indexBuilder.RebuildIndexTables(conn);
+            }
+            tracker.MarkCompleted("lookup-tables");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("lookup-tables", ex.Message);
+            throw;
         }
 
         // Extract cross-references
         logger.LogInformation("Rebuilding cross-references");
-        xrefRebuilder.ExtractAll(ct);
+        tracker.MarkStarted("cross-refs");
+        try
+        {
+            xrefRebuilder.ExtractAll(ct);
+            tracker.MarkCompleted("cross-refs");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("cross-refs", ex.Message);
+            throw;
+        }
 
         // Rebuild BM25 keyword index
         logger.LogInformation("Rebuilding BM25 index");
-        indexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("bm25");
+        try
+        {
+            indexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("bm25");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
 
         // Update sync state
         UpdateSyncState(result, runType, ct);

@@ -5,6 +5,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
+using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
 using FhirAugury.Source.Jira.Workers;
@@ -111,6 +112,11 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraXRefRebuilder>();
 
+// Index tracker
+FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
+builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
+builder.Services.AddSingleton(indexTracker);
+
 // Orchestrator client (optional — for ingestion notifications)
 #pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
 builder.Services.AddSingleton(sp =>
@@ -131,6 +137,32 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+
+// Register indexes with the tracker
+FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredService<FhirAugury.Common.Indexing.IndexTracker>();
+JiraDatabase jiraDatabase = app.Services.GetRequiredService<JiraDatabase>();
+tracker.RegisterIndex("bm25", "BM25 keyword scoring index", () =>
+{
+    using SqliteConnection c = jiraDatabase.OpenConnection();
+    using SqliteCommand cmd = new("SELECT COUNT(*) FROM index_keywords", c);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+});
+tracker.RegisterIndex("fts", "FTS5 full-text search index", () =>
+{
+    using SqliteConnection c = jiraDatabase.OpenConnection();
+    return JiraIssueRecord.SelectCount(c);
+});
+tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
+{
+    using SqliteConnection c = jiraDatabase.OpenConnection();
+    return FhirAugury.Common.Database.Records.JiraXRefRecord.SelectCount(c);
+});
+tracker.RegisterIndex("lookup-tables", "Facet/filter indexes", () =>
+{
+    using SqliteConnection c = jiraDatabase.OpenConnection();
+    using SqliteCommand cmd = new("SELECT COUNT(*) FROM jira_index_workgroups", c);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+});
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();

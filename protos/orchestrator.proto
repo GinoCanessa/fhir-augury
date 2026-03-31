@@ -117,6 +117,7 @@ message ServiceHealth {
   int32 item_count = 5;
   int64 db_size_bytes = 6;
   string last_error = 7;
+  repeated IndexStatus indexes = 8;
 }
 
 message IngestionCompleteNotification {

@@ -18,6 +18,7 @@ public class ConfluenceIngestionPipeline(
     ConfluenceSource source,
     ConfluenceDatabase database,
     ConfluenceIndexer indexer,
+    FhirAugury.Common.Indexing.IIndexTracker tracker,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<ConfluenceServiceOptions> optionsAccessor,
     ILogger<ConfluenceIngestionPipeline> logger)
@@ -133,7 +134,17 @@ public class ConfluenceIngestionPipeline(
         ct.ThrowIfCancellationRequested();
 
         logger.LogInformation("Rebuilding BM25 index");
-        indexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("bm25");
+        try
+        {
+            indexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("bm25");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
 
         UpdateSyncState(result, runType, ct);
 

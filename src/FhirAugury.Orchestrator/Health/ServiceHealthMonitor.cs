@@ -72,6 +72,18 @@ public class ServiceHealthMonitor(
         {
             HealthCheckResponse response = await client.HealthCheckAsync(new HealthCheckRequest(), cancellationToken: ct);
             StatsResponse stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
+            IngestionStatusResponse ingestionStatus = await client.GetIngestionStatusAsync(new IngestionStatusRequest(), cancellationToken: ct);
+
+            List<ServiceIndexInfo> indexes = ingestionStatus.Indexes.Select(idx => new ServiceIndexInfo
+            {
+                Name = idx.Name,
+                Description = idx.Description,
+                IsRebuilding = idx.IsRebuilding,
+                LastRebuildStartedAt = idx.LastRebuildStartedAt?.ToDateTimeOffset(),
+                LastRebuildCompletedAt = idx.LastRebuildCompletedAt?.ToDateTimeOffset(),
+                RecordCount = idx.RecordCount,
+                LastError = string.IsNullOrEmpty(idx.LastError) ? null : idx.LastError,
+            }).ToList();
 
             return new ServiceHealthInfo
             {
@@ -83,6 +95,7 @@ public class ServiceHealthMonitor(
                 ItemCount = stats.TotalItems,
                 DbSizeBytes = stats.DatabaseSizeBytes,
                 LastSyncAt = stats.LastSyncAt?.ToDateTimeOffset(),
+                Indexes = indexes,
             };
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -142,5 +155,17 @@ public class ServiceHealthInfo
     public int ItemCount { get; set; }
     public long DbSizeBytes { get; set; }
     public DateTimeOffset? LastSyncAt { get; set; }
+    public string? LastError { get; set; }
+    public List<ServiceIndexInfo> Indexes { get; set; } = [];
+}
+
+public class ServiceIndexInfo
+{
+    public required string Name { get; set; }
+    public required string Description { get; set; }
+    public bool IsRebuilding { get; set; }
+    public DateTimeOffset? LastRebuildStartedAt { get; set; }
+    public DateTimeOffset? LastRebuildCompletedAt { get; set; }
+    public int RecordCount { get; set; }
     public string? LastError { get; set; }
 }

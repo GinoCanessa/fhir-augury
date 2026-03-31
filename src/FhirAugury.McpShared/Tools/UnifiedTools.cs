@@ -170,6 +170,23 @@ public static class UnifiedTools
                     sb.AppendLine($"- **Last Sync:** {svc.LastSyncAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
                 if (!string.IsNullOrEmpty(svc.LastError))
                     sb.AppendLine($"- **Last Error:** {svc.LastError}");
+
+                if (svc.Indexes.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("| Index | Status | Records | Last Rebuilt | Error |");
+                    sb.AppendLine("|-------|--------|---------|-------------|-------|");
+                    foreach (IndexStatus idx in svc.Indexes)
+                    {
+                        string idxStatus = idx.IsRebuilding ? "rebuilding" : "idle";
+                        string lastRebuilt = idx.LastRebuildCompletedAt is not null
+                            ? idx.LastRebuildCompletedAt.ToDateTimeOffset().ToString("HH:mm:ss")
+                            : "—";
+                        string error = string.IsNullOrEmpty(idx.LastError) ? "—" : idx.LastError;
+                        sb.AppendLine($"| {idx.Name} | {idxStatus} | {idx.RecordCount:N0} | {lastRebuilt} | {error} |");
+                    }
+                }
+
                 sb.AppendLine();
             }
 

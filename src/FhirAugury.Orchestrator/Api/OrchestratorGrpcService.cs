@@ -242,6 +242,23 @@ public class OrchestratorGrpcService(
             if (info.LastSyncAt is DateTimeOffset lastSync)
                 health.LastSyncAt = Timestamp.FromDateTimeOffset(lastSync);
 
+            foreach (ServiceIndexInfo idx in info.Indexes)
+            {
+                IndexStatus indexStatus = new IndexStatus
+                {
+                    Name = idx.Name,
+                    Description = idx.Description,
+                    IsRebuilding = idx.IsRebuilding,
+                    RecordCount = idx.RecordCount,
+                    LastError = idx.LastError ?? "",
+                };
+                if (idx.LastRebuildStartedAt is DateTimeOffset started)
+                    indexStatus.LastRebuildStartedAt = Timestamp.FromDateTimeOffset(started);
+                if (idx.LastRebuildCompletedAt is DateTimeOffset completed)
+                    indexStatus.LastRebuildCompletedAt = Timestamp.FromDateTimeOffset(completed);
+                health.Indexes.Add(indexStatus);
+            }
+
             response.Services.Add(health);
         }
 

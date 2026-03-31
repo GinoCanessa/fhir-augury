@@ -28,6 +28,7 @@ public class JiraGrpcService(
     JiraXRefRebuilder xrefRebuilder,
     JiraIndexer indexer,
     JiraIndexBuilder indexBuilder,
+    FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<JiraServiceOptions> optionsAccessor)
     : SourceService.SourceServiceBase
 {
@@ -552,7 +553,7 @@ public class JiraGrpcService(
         using SqliteConnection connection = database.OpenConnection();
         JiraSyncStateRecord? syncState = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
 
-        return new IngestionStatusResponse
+        IngestionStatusResponse response = new IngestionStatusResponse
         {
             Source = "jira",
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
@@ -561,6 +562,9 @@ public class JiraGrpcService(
             LastError = syncState?.LastError ?? "",
             SyncSchedule = options.SyncSchedule,
         };
+        response.Indexes.AddRange(
+            FhirAugury.Common.Grpc.SourceServiceLifecycle.ToProtoIndexStatuses(indexTracker.GetAllStatuses()));
+        return response;
     }
 
     private static string BuildMarkdownSnapshot(
@@ -665,24 +669,104 @@ public class JiraGrpcService(
             switch (indexType)
             {
                 case "lookup-tables":
-                    using (SqliteConnection conn = database.OpenConnection())
-                        indexBuilder.RebuildIndexTables(conn);
+                    indexTracker.MarkStarted("lookup-tables");
+                    try
+                    {
+                        using (SqliteConnection conn = database.OpenConnection())
+                            indexBuilder.RebuildIndexTables(conn);
+                        indexTracker.MarkCompleted("lookup-tables");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("lookup-tables", ex.Message);
+                        throw;
+                    }
                     break;
                 case "cross-refs":
-                    xrefRebuilder.ExtractAll(ct);
+                    indexTracker.MarkStarted("cross-refs");
+                    try
+                    {
+                        xrefRebuilder.ExtractAll(ct);
+                        indexTracker.MarkCompleted("cross-refs");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        throw;
+                    }
                     break;
                 case "bm25":
-                    indexer.RebuildFullIndex(ct);
+                    indexTracker.MarkStarted("bm25");
+                    try
+                    {
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        throw;
+                    }
                     break;
                 case "fts":
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("fts");
+                    try
+                    {
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
                 case "all":
-                    using (SqliteConnection conn = database.OpenConnection())
-                        indexBuilder.RebuildIndexTables(conn);
-                    xrefRebuilder.ExtractAll(ct);
-                    indexer.RebuildFullIndex(ct);
-                    database.RebuildFtsIndexes();
+                    indexTracker.MarkStarted("lookup-tables");
+                    try
+                    {
+                        using (SqliteConnection conn = database.OpenConnection())
+                            indexBuilder.RebuildIndexTables(conn);
+                        indexTracker.MarkCompleted("lookup-tables");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("lookup-tables", ex.Message);
+                        throw;
+                    }
+                    indexTracker.MarkStarted("cross-refs");
+                    try
+                    {
+                        xrefRebuilder.ExtractAll(ct);
+                        indexTracker.MarkCompleted("cross-refs");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        throw;
+                    }
+                    indexTracker.MarkStarted("bm25");
+                    try
+                    {
+                        indexer.RebuildFullIndex(ct);
+                        indexTracker.MarkCompleted("bm25");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("bm25", ex.Message);
+                        throw;
+                    }
+                    indexTracker.MarkStarted("fts");
+                    try
+                    {
+                        database.RebuildFtsIndexes();
+                        indexTracker.MarkCompleted("fts");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("fts", ex.Message);
+                        throw;
+                    }
                     break;
             }
             return Task.CompletedTask;
