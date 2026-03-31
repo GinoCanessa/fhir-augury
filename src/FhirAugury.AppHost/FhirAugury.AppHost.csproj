@@ -13,6 +13,7 @@
     <ProjectReference Include="..\FhirAugury.Source.Confluence\FhirAugury.Source.Confluence.csproj" />
     <ProjectReference Include="..\FhirAugury.Source.GitHub\FhirAugury.Source.GitHub.csproj" />
     <ProjectReference Include="..\FhirAugury.McpHttp\FhirAugury.McpHttp.csproj" />
+    <ProjectReference Include="..\FhirAugury.Cli\FhirAugury.Cli.csproj" />
   </ItemGroup>
 
 </Project>
