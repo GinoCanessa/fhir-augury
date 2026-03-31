@@ -64,6 +64,7 @@ message RelatedItem {
   double relevance_score = 6;
   string relationship = 7;
   string context = 8;
+  string content_type = 9;        // item kind within the source
 }
 
 message GetXRefRequest {
@@ -85,6 +86,7 @@ message CrossReference {
   string context = 6;
   string target_title = 7;
   string target_url = 8;
+  string source_content_type = 9; // item kind in the source
 }
 
 message TriggerSyncRequest {

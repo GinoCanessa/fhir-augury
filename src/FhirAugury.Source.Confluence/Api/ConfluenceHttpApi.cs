@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -276,7 +277,7 @@ public static class ConfluenceHttpApi
 
             return Results.Ok(new
             {
-                source = "confluence",
+                source = SourceSystems.Confluence,
                 totalPages = pageCount,
                 totalComments = commentCount,
                 totalSpaces = spaceCount,

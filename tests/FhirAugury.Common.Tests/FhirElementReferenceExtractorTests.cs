@@ -79,7 +79,7 @@ public class FhirElementReferenceExtractorTests
     {
         List<FhirElementXRefRecord> refs = FhirElementReferenceExtractor.GetReferences(
             "issue", "1", "Patient.name");
-        Assert.Equal("fhir", refs[0].TargetType);
+        Assert.Equal(SourceSystems.Fhir, refs[0].TargetType);
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public class FhirElementReferenceExtractorTests
     {
         List<FhirElementXRefRecord> refs = FhirElementReferenceExtractor.GetReferences(
             "message", "42", "Patient.name is required");
-        Assert.Equal("message", refs[0].SourceType);
+        Assert.Equal("message", refs[0].ContentType);
         Assert.Equal("42", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }

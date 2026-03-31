@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Orchestrator.Configuration;
 using Grpc.Net.Client;
 using Microsoft.Extensions.Logging;
@@ -35,7 +36,7 @@ public class SourceRouter : IDisposable
                 _channels[name] = channel;
                 _sourceClients[name] = new SourceService.SourceServiceClient(channel);
 
-                if (name.Equals("jira", StringComparison.OrdinalIgnoreCase))
+                if (name.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
                 {
                     _jiraClient = new JiraService.JiraServiceClient(channel);
                 }

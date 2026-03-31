@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
@@ -78,7 +79,7 @@ public class GitHubGrpcService(
                 string uniqueKey = reader.GetString(0);
                 response.Results.Add(new SearchResultItem
                 {
-                    Source = "github",
+                    Source = SourceSystems.GitHub,
                     Id = uniqueKey,
                     Title = reader.GetString(1),
                     Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
@@ -117,7 +118,7 @@ public class GitHubGrpcService(
 
                 response.Results.Add(new SearchResultItem
                 {
-                    Source = "github-file",
+                    Source = SourceSystems.GitHub, ContentType = ContentTypes.File,
                     Id = fileId,
                     Title = filePath,
                     Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
@@ -144,7 +145,7 @@ public class GitHubGrpcService(
 
         ItemResponse response = new ItemResponse
         {
-            Source = "github",
+            Source = SourceSystems.GitHub,
             Id = issue.UniqueKey,
             Title = issue.Title,
             Content = request.IncludeContent ? (issue.Body ?? "") : "",
@@ -213,7 +214,7 @@ public class GitHubGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "github")
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.GitHub)
             return GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -242,7 +243,7 @@ public class GitHubGrpcService(
 
             response.Results.Add(new SearchResultItem
             {
-                Source = "github",
+                Source = SourceSystems.GitHub,
                 Id = issue.UniqueKey,
                 Title = issue.Title,
                 Url = BuildIssueUrl(issue.UniqueKey),
@@ -258,7 +259,7 @@ public class GitHubGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == "jira")
+        if (request.SeedSource == SourceSystems.Jira)
         {
             using SqliteConnection connection = database.OpenConnection();
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
@@ -274,7 +275,7 @@ public class GitHubGrpcService(
 
                 response.Results.Add(new SearchResultItem
                 {
-                    Source = "github",
+                    Source = SourceSystems.GitHub,
                     Id = issue.UniqueKey,
                     Title = issue.Title,
                     Score = 1.0,
@@ -305,7 +306,7 @@ public class GitHubGrpcService(
 
     private GitHubIssueRecord? ResolveToIssue(SqliteConnection conn, ICrossReferenceRecord xref)
     {
-        return xref.SourceType switch
+        return xref.ContentType switch
         {
             "issue" => GitHubIssueRecord.SelectSingle(conn, UniqueKey: xref.SourceId),
             "comment" => ResolveCommentToIssue(conn, xref.SourceId),
@@ -341,7 +342,7 @@ public class GitHubGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == "github" && direction is "outgoing" or "both")
+        if (request.Source == SourceSystems.GitHub && direction is "outgoing" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, SourceId: request.Id);
             foreach (JiraXRefRecord jiraRef in refs)
@@ -349,9 +350,9 @@ public class GitHubGrpcService(
                 GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "github",
+                    SourceType = SourceSystems.GitHub,
                     SourceId = jiraRef.SourceId,
-                    TargetType = "jira",
+                    TargetType = SourceSystems.Jira,
                     TargetId = jiraRef.JiraKey,
                     LinkType = "mentions",
                     Context = jiraRef.Context ?? "",
@@ -365,9 +366,9 @@ public class GitHubGrpcService(
                 GitHubIssueRecord? issue = ResolveToIssue(connection, r);
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "github",
+                    SourceType = SourceSystems.GitHub,
                     SourceId = r.SourceId,
-                    TargetType = "zulip",
+                    TargetType = SourceSystems.Zulip,
                     TargetId = r.TargetId,
                     LinkType = "mentions",
                     Context = r.Context ?? "",
@@ -381,9 +382,9 @@ public class GitHubGrpcService(
                 GitHubIssueRecord? issue = ResolveToIssue(connection, r);
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "github",
+                    SourceType = SourceSystems.GitHub,
                     SourceId = r.SourceId,
-                    TargetType = "confluence",
+                    TargetType = SourceSystems.Confluence,
                     TargetId = r.TargetId,
                     LinkType = "mentions",
                     Context = r.Context ?? "",
@@ -397,9 +398,9 @@ public class GitHubGrpcService(
                 GitHubIssueRecord? issue = ResolveToIssue(connection, r);
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "github",
+                    SourceType = SourceSystems.GitHub,
                     SourceId = r.SourceId,
-                    TargetType = "fhir",
+                    TargetType = SourceSystems.Fhir,
                     TargetId = r.TargetId,
                     LinkType = "mentions",
                     Context = r.Context ?? "",
@@ -409,7 +410,7 @@ public class GitHubGrpcService(
             }
         }
 
-        if (request.Source == "jira" && direction is "incoming" or "both")
+        if (request.Source == SourceSystems.Jira && direction is "incoming" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             foreach (JiraXRefRecord jiraRef in refs)
@@ -417,9 +418,9 @@ public class GitHubGrpcService(
                 GitHubIssueRecord? issue = ResolveToIssue(connection, jiraRef);
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "github",
+                    SourceType = SourceSystems.GitHub,
                     SourceId = jiraRef.SourceId,
-                    TargetType = "jira",
+                    TargetType = SourceSystems.Jira,
                     TargetId = jiraRef.JiraKey,
                     LinkType = "mentions",
                     Context = jiraRef.Context ?? "",
@@ -462,7 +463,7 @@ public class GitHubGrpcService(
                 return Task.FromResult(new SnapshotResponse
                 {
                     Id = request.Id,
-                    Source = "github-file",
+                    Source = SourceSystems.GitHub, ContentType = ContentTypes.File,
                     Markdown = sb.ToString(),
                     Url = $"https://github.com/{file.RepoFullName}/blob/main/{file.FilePath}",
                 });
@@ -477,7 +478,7 @@ public class GitHubGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = issue.UniqueKey,
-            Source = "github",
+            Source = SourceSystems.GitHub,
             Markdown = md,
             Url = BuildIssueUrl(issue.UniqueKey),
         });
@@ -496,7 +497,7 @@ public class GitHubGrpcService(
                 return Task.FromResult(new ContentResponse
                 {
                     Id = request.Id,
-                    Source = "github-file",
+                    Source = SourceSystems.GitHub, ContentType = ContentTypes.File,
                     Content = file.ContentText ?? "",
                     Format = "text",
                     Url = $"https://github.com/{file.RepoFullName}/blob/main/{file.FilePath}",
@@ -510,7 +511,7 @@ public class GitHubGrpcService(
         return Task.FromResult(new ContentResponse
         {
             Id = issue.UniqueKey,
-            Source = "github",
+            Source = SourceSystems.GitHub,
             Content = issue.Body ?? "",
             Format = string.IsNullOrEmpty(request.Format) ? "markdown" : request.Format,
             Url = BuildIssueUrl(issue.UniqueKey),
@@ -541,7 +542,7 @@ public class GitHubGrpcService(
             string uniqueKey = reader.GetString(0);
             SearchableTextItem item = new SearchableTextItem
             {
-                Source = "github",
+                Source = SourceSystems.GitHub,
                 Id = uniqueKey,
                 Title = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 UpdatedAt = ParseTimestamp(reader, 4),
@@ -576,7 +577,7 @@ public class GitHubGrpcService(
 
             SearchableTextItem fileItem = new SearchableTextItem
             {
-                Source = "github-file",
+                Source = SourceSystems.GitHub, ContentType = ContentTypes.File,
                 Id = $"{file.RepoFullName}:{file.FilePath}",
                 Title = file.FilePath,
             };
@@ -626,7 +627,7 @@ public class GitHubGrpcService(
 
         StatsResponse response = new StatsResponse
         {
-            Source = "github",
+            Source = SourceSystems.GitHub,
             TotalItems = issueCount,
             TotalComments = commentCount,
             DatabaseSizeBytes = dbSize,
@@ -691,7 +692,7 @@ public class GitHubGrpcService(
 
         response = new ItemResponse
         {
-            Source = "github-file",
+            Source = SourceSystems.GitHub, ContentType = ContentTypes.File,
             Id = request.Id,
             Title = file.FilePath,
             Content = request.IncludeContent ? (file.ContentText ?? "") : "",
@@ -717,7 +718,7 @@ public class GitHubGrpcService(
 
         IngestionStatusResponse response = new IngestionStatusResponse
         {
-            Source = "github",
+            Source = SourceSystems.GitHub,
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
@@ -1138,7 +1139,7 @@ public class GitHubSpecificGrpcService(
         {
             response.Results.Add(new SearchResultItem
             {
-                Source = "github-commit",
+                Source = SourceSystems.GitHub, ContentType = ContentTypes.Commit,
                 Id = reader.GetString(0),
                 Title = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 Score = -reader.GetDouble(5),
@@ -1416,7 +1417,7 @@ public class GitHubSpecificGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = uniqueKey,
-            Source = "github",
+            Source = SourceSystems.GitHub,
             Markdown = sb.ToString(),
             Url = GitHubGrpcService.BuildIssueUrl(uniqueKey),
         });

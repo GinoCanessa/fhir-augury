@@ -37,7 +37,7 @@ public static partial class GitHubReferenceExtractor
                 results.Add(new GitHubXRefRecord
                 {
                     Id = GitHubXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = CrossRefPatterns.GetSurroundingText(text, match.Index, 160),
@@ -57,7 +57,7 @@ public static partial class GitHubReferenceExtractor
                 results.Add(new GitHubXRefRecord
                 {
                     Id = GitHubXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = CrossRefPatterns.GetSurroundingText(text, match.Index, 160),

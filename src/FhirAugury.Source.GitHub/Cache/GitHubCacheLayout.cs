@@ -1,10 +1,12 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Source.GitHub.Cache;
 
 /// <summary>Constants for GitHub cache file layout and naming conventions.</summary>
 public static class GitHubCacheLayout
 {
     /// <summary>The source name used as the cache subdirectory.</summary>
-    public const string SourceName = "github";
+    public const string SourceName = SourceSystems.GitHub;
 
     /// <summary>Extension for JSON API responses.</summary>
     public const string JsonExtension = "json";

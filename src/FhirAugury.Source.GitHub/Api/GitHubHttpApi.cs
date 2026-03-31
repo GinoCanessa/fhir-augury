@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Indexing;
@@ -401,7 +402,7 @@ public static class GitHubHttpApi
 
             return Results.Ok(new
             {
-                source = "github",
+                source = SourceSystems.GitHub,
                 totalIssues = issueCount,
                 totalComments = commentCount,
                 totalCommits = commitCount,

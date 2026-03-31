@@ -31,7 +31,7 @@ public static partial class ConfluenceReferenceExtractor
                 results.Add(new ConfluenceXRefRecord
                 {
                     Id = ConfluenceXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = CrossRefPatterns.GetSurroundingText(text, match.Index, 160),

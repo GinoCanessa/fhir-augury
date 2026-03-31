@@ -7,7 +7,7 @@ namespace FhirAugury.Common.Database;
 public interface ICrossReferenceRecord
 {
     int Id { get; set; }
-    string SourceType { get; set; }
+    string ContentType { get; set; }
     string SourceId { get; set; }
     string LinkType { get; set; }
     string? Context { get; set; }

@@ -28,7 +28,7 @@ public class ConfluenceSource(
 {
     private readonly ConfluenceServiceOptions options = optionsAccessor.Value;
 
-    public const string SourceName = "confluence";
+    public const string SourceName = SourceSystems.Confluence;
 
     /// <summary>Performs a full download of all pages in configured spaces.</summary>
     public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)

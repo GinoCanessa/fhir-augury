@@ -24,6 +24,7 @@ public static class GetHandler
         return new
         {
             source = response.Source,
+            contentType = response.ContentType,
             id = response.Id,
             title = response.Title,
             content = response.Content,

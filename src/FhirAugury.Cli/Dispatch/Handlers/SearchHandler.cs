@@ -30,6 +30,7 @@ public static class SearchHandler
                 results = response.Results.Select(r => new
                 {
                     source = r.Source,
+                    contentType = r.ContentType,
                     id = r.Id,
                     title = r.Title,
                     snippet = r.Snippet,

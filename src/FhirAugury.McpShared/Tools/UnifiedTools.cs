@@ -41,7 +41,7 @@ public static class UnifiedTools
     [McpServerTool, Description("Find items across all sources related to a given item.")]
     public static async Task<string> FindRelated(
         OrchestratorService.OrchestratorServiceClient orchestrator,
-        [Description("Source type (jira, zulip, confluence, github)")] string source,
+        [Description("Source system (jira, zulip, confluence, github)")] string source,
         [Description("Item identifier")] string id,
         [Description("Maximum results (default 20)")] int limit = 20,
         [Description("Comma-separated target sources to search")] string? targetSources = null,
@@ -96,7 +96,7 @@ public static class UnifiedTools
     [McpServerTool, Description("Get cross-references for a specific item showing links to other sources.")]
     public static async Task<string> GetCrossReferences(
         OrchestratorService.OrchestratorServiceClient orchestrator,
-        [Description("Source type (jira, zulip, confluence, github)")] string source,
+        [Description("Source system (jira, zulip, confluence, github)")] string source,
         [Description("Item identifier")] string id,
         [Description("Direction: outgoing, incoming, or both (default both)")] string direction = "both",
         CancellationToken cancellationToken = default)

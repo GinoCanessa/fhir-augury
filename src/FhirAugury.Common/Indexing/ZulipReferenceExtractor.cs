@@ -43,7 +43,7 @@ public static partial class ZulipReferenceExtractor
                 results.Add(new ZulipXRefRecord
                 {
                     Id = ZulipXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = CrossRefPatterns.GetSurroundingText(text, match.Index, 160),

@@ -10,7 +10,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "See https://chat.fhir.org/#narrow/channel/179166-implementers/topic/Exclusive%20Observation%2EreferenceRange/with/290861524 for details.";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-12345", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-12345", text);
 
         Assert.Single(results);
         ZulipXRefRecord record = results[0];
@@ -19,7 +19,7 @@ public class JiraZulipRefExtractorTests
         Assert.Equal("Exclusive Observation.referenceRange", record.TopicName);
         Assert.Equal(290861524, record.MessageId);
         Assert.Equal("FHIR-12345", record.SourceId);
-        Assert.Equal("issue", record.SourceType);
+        Assert.Equal(ContentTypes.Issue, record.ContentType);
     }
 
     [Fact]
@@ -27,7 +27,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "https://chat.fhir.org/#narrow/channel/179166-implementers/topic/TestTopic/near/540385278";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("comment", "FHIR-100", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Comment, "FHIR-100", text);
 
         Assert.Single(results);
         ZulipXRefRecord record = results[0];
@@ -42,7 +42,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "https://chat.fhir.org/#narrow/channel/179166-implementers/topic/SomeTopic";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-200", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-200", text);
 
         Assert.Single(results);
         ZulipXRefRecord record = results[0];
@@ -57,7 +57,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "https://chat.fhir.org/#narrow/channel/179166-implementers";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-300", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-300", text);
 
         Assert.Single(results);
         ZulipXRefRecord record = results[0];
@@ -72,7 +72,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "https://chat.fhir.org/#narrow/stream/179166-implementers/topic/OldTopic/with/123456";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-400", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-400", text);
 
         Assert.Single(results);
         ZulipXRefRecord record = results[0];
@@ -87,7 +87,7 @@ public class JiraZulipRefExtractorTests
     {
         string text = "https://chat.fhir.org/#narrow/channel/179166-implementers/topic/Hello%20World%2Efoo";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-500", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-500", text);
 
         Assert.Single(results);
         Assert.Equal("Hello World.foo", results[0].TopicName);
@@ -99,7 +99,7 @@ public class JiraZulipRefExtractorTests
         string url = "https://chat.fhir.org/#narrow/channel/179166-implementers/topic/TestTopic/with/999";
         string text = $"First ref: {url} and again: {url}";
 
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-600", text);
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-600", text);
 
         Assert.Single(results);
     }
@@ -107,7 +107,7 @@ public class JiraZulipRefExtractorTests
     [Fact]
     public void ExtractReferences_EmptyText_ReturnsEmpty()
     {
-        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences("issue", "FHIR-700", "");
+        List<ZulipXRefRecord> results = ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, "FHIR-700", "");
 
         Assert.Empty(results);
     }

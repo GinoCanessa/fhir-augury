@@ -23,6 +23,7 @@ public static class XrefHandler
             {
                 sourceType = x.SourceType,
                 sourceId = x.SourceId,
+                sourceContentType = x.SourceContentType,
                 targetType = x.TargetType,
                 targetId = x.TargetId,
                 linkType = x.LinkType,

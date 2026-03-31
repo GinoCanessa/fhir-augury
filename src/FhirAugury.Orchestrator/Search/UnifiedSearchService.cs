@@ -66,6 +66,7 @@ public class UnifiedSearchService(
                     allItems.Add(new ScoredItem
                     {
                         Source = result.Source,
+                        ContentType = result.ContentType,
                         Id = result.Id,
                         Title = result.Title,
                         Snippet = result.Snippet,

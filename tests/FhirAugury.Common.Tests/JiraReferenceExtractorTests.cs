@@ -110,7 +110,7 @@ public class JiraReferenceExtractorTests
     public void TargetTypeIsJira()
     {
         List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "FHIR-42");
-        Assert.Equal("jira", refs[0].TargetType);
+        Assert.Equal(SourceSystems.Jira, refs[0].TargetType);
     }
 
     [Fact]
@@ -124,7 +124,7 @@ public class JiraReferenceExtractorTests
     public void SourceFieldsSet()
     {
         List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("page", "p99", null, "FHIR-1");
-        Assert.Equal("page", refs[0].SourceType);
+        Assert.Equal("page", refs[0].ContentType);
         Assert.Equal("p99", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }

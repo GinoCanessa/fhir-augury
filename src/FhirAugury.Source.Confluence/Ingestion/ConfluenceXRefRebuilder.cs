@@ -38,28 +38,28 @@ public class ConfluenceXRefRebuilder(
             ct.ThrowIfCancellationRequested();
             string pageText = $"{page.Title} {page.BodyPlain}";
 
-            foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("page", page.ConfluenceId, null, pageText))
+            foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, null, pageText))
             {
                 r.Id = JiraXRefRecord.GetIndex();
                 JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("page", page.ConfluenceId, pageText))
+            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
             {
                 r.Id = ZulipXRefRecord.GetIndex();
                 ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("page", page.ConfluenceId, pageText))
+            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
             {
                 r.Id = GitHubXRefRecord.GetIndex();
                 GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("page", page.ConfluenceId, pageText))
+            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
             {
                 r.Id = FhirElementXRefRecord.GetIndex();
                 FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);

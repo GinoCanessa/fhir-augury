@@ -36,7 +36,7 @@ public class ConfluenceReferenceExtractorTests
     {
         List<ConfluenceXRefRecord> refs = ConfluenceReferenceExtractor.GetReferences(
             "issue", "1", "https://confluence.hl7.org/display/FHIR/123456");
-        Assert.Equal("confluence", refs[0].TargetType);
+        Assert.Equal(SourceSystems.Confluence, refs[0].TargetType);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class ConfluenceReferenceExtractorTests
     {
         List<ConfluenceXRefRecord> refs = ConfluenceReferenceExtractor.GetReferences(
             "message", "42", "https://confluence.hl7.org/display/FHIR/123456");
-        Assert.Equal("message", refs[0].SourceType);
+        Assert.Equal("message", refs[0].ContentType);
         Assert.Equal("42", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }

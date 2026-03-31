@@ -110,7 +110,7 @@ message GitHubComment {
 }
 
 message GitHubJiraRef {
-  string source_type = 1;
+  string source_type = 1;   // content type within GitHub (e.g., "issue", "commit")
   string source_id = 2;
   string repo_full_name = 3;
   string jira_key = 4;

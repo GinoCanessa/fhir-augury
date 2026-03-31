@@ -175,7 +175,7 @@ public class JiraRefExtractorTests
             "issue", "HL7/us-core#1", hasIssues: false, [], null);
 
         Assert.Single(refs);
-        Assert.Equal("issue", refs[0].SourceType);
+        Assert.Equal("issue", refs[0].ContentType);
         Assert.Equal("HL7/us-core#1", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }

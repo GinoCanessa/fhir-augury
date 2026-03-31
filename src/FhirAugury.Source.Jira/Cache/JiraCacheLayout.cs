@@ -1,10 +1,12 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Source.Jira.Cache;
 
 /// <summary>Constants for Jira cache file layout and naming conventions.</summary>
 public static class JiraCacheLayout
 {
     /// <summary>The source name used as the cache subdirectory (legacy, kept for metadata compatibility).</summary>
-    public const string SourceName = "jira";
+    public const string SourceName = SourceSystems.Jira;
 
     /// <summary>Key prefix for XML RSS exports (cookie auth) within the jira source.</summary>
     public const string XmlPrefix = "xml";

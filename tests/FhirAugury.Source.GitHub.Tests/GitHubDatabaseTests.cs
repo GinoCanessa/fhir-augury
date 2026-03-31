@@ -119,7 +119,7 @@ public class GitHubDatabaseTests : IDisposable
         JiraXRefRecord jiraRef = new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "issue",
+            ContentType = ContentTypes.Issue,
             SourceId = "HL7/fhir#42",
             LinkType = "mentions",
             JiraKey = "FHIR-12345",

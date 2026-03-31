@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Common.Grpc;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
@@ -45,7 +46,7 @@ public static class OrchestratorHttpApi
                 warnings,
                 results = results.Select(r => new
                 {
-                    r.Source, r.Id, r.Title, r.Snippet, r.Score, r.Url, r.UpdatedAt, r.Metadata,
+                    r.Source, r.ContentType, r.Id, r.Title, r.Snippet, r.Score, r.Url, r.UpdatedAt, r.Metadata,
                 }),
             });
         });
@@ -109,7 +110,7 @@ public static class OrchestratorHttpApi
                     results.AddRange(result.References.Select(r => (object)new
                     {
                         r.SourceType, r.SourceId, r.TargetType, r.TargetId,
-                        r.LinkType, r.Context,
+                        r.LinkType, r.Context, r.SourceContentType,
                         targetTitle = r.SourceTitle,
                         targetUrl = r.SourceUrl,
                     }));
@@ -410,7 +411,7 @@ public static class OrchestratorHttpApi
             SourceRouter router,
             CancellationToken ct) =>
         {
-            SourceService.SourceServiceClient? zulipClient = router.GetSourceClient("zulip");
+            SourceService.SourceServiceClient? zulipClient = router.GetSourceClient(SourceSystems.Zulip);
             if (zulipClient is null)
                 return Results.NotFound(new { error = "Zulip service not configured or disabled" });
 

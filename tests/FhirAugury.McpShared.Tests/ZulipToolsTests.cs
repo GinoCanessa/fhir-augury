@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.McpShared.Tools;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -13,7 +14,7 @@ public class ZulipToolsTests
     public async Task SearchZulip_ReturnsFormattedResults()
     {
         SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            ("zulip", "general:test-topic", "Test Topic", 0.9));
+            (SourceSystems.Zulip, "general:test-topic", "Test Topic", 0.9));
 
         AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -142,7 +143,7 @@ public class ZulipToolsTests
         SnapshotResponse mockResponse = new SnapshotResponse
         {
             Id = "general:test-topic",
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Markdown = "# general > test-topic\n\nFull thread content...",
         };
 

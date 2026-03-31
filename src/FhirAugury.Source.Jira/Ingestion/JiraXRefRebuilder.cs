@@ -41,28 +41,28 @@ public class JiraXRefRebuilder(
                         issue.ResolutionDescriptionPlain, issue.RelatedArtifacts }
                     .Where(s => !string.IsNullOrEmpty(s)));
 
-            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("issue", issue.Key, text))
+            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(ContentTypes.Issue, issue.Key, text))
             {
                 r.Id = ZulipXRefRecord.GetIndex();
                 ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("issue", issue.Key, text))
+            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Issue, issue.Key, text))
             {
                 r.Id = GitHubXRefRecord.GetIndex();
                 GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences("issue", issue.Key, text))
+            foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(ContentTypes.Issue, issue.Key, text))
             {
                 r.Id = ConfluenceXRefRecord.GetIndex();
                 ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("issue", issue.Key, text))
+            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Issue, issue.Key, text))
             {
                 r.Id = FhirElementXRefRecord.GetIndex();
                 FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
@@ -75,28 +75,28 @@ public class JiraXRefRebuilder(
         {
             ct.ThrowIfCancellationRequested();
 
-            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("comment", comment.IssueKey, comment.BodyPlain))
+            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(ContentTypes.Comment, comment.IssueKey, comment.BodyPlain))
             {
                 r.Id = ZulipXRefRecord.GetIndex();
                 ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("comment", comment.IssueKey, comment.BodyPlain))
+            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Comment, comment.IssueKey, comment.BodyPlain))
             {
                 r.Id = GitHubXRefRecord.GetIndex();
                 GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences("comment", comment.IssueKey, comment.BodyPlain))
+            foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(ContentTypes.Comment, comment.IssueKey, comment.BodyPlain))
             {
                 r.Id = ConfluenceXRefRecord.GetIndex();
                 ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
                 refCount++;
             }
 
-            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("comment", comment.IssueKey, comment.BodyPlain))
+            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Comment, comment.IssueKey, comment.BodyPlain))
             {
                 r.Id = FhirElementXRefRecord.GetIndex();
                 FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);

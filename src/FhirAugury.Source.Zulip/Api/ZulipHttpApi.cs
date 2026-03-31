@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -415,7 +416,7 @@ public static class ZulipHttpApi
 
             return Results.Ok(new
             {
-                source = "zulip",
+                source = SourceSystems.Zulip,
                 totalMessages = messageCount,
                 totalStreams = streamCount,
                 databaseSizeBytes = dbSize,

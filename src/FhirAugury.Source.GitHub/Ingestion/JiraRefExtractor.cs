@@ -187,7 +187,7 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
             results.Add(new JiraXRefRecord
             {
                 Id = JiraXRefRecord.GetIndex(),
-                SourceType = sourceType,
+                ContentType = sourceType,
                 SourceId = sourceId,
                 LinkType = "mentions",
                 JiraKey = jiraKey,

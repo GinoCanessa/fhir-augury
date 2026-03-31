@@ -66,7 +66,7 @@ public class GitHubReferenceExtractorTests
     {
         List<GitHubXRefRecord> refs = GitHubReferenceExtractor.GetReferences(
             "page", "1", "https://github.com/HL7/fhir/issues/1");
-        Assert.Equal("github", refs[0].TargetType);
+        Assert.Equal(SourceSystems.GitHub, refs[0].TargetType);
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public class GitHubReferenceExtractorTests
     {
         List<GitHubXRefRecord> refs = GitHubReferenceExtractor.GetReferences(
             "message", "42", "https://github.com/HL7/fhir/issues/1");
-        Assert.Equal("message", refs[0].SourceType);
+        Assert.Equal("message", refs[0].ContentType);
         Assert.Equal("42", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }

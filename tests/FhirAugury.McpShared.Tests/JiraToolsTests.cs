@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.McpShared.Tools;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -12,7 +13,7 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraIssue_ReturnsFormattedIssue()
     {
-        ItemResponse mockResponse = McpTestHelper.CreateItemResponse("jira", "FHIR-123", "Test Issue Title");
+        ItemResponse mockResponse = McpTestHelper.CreateItemResponse(SourceSystems.Jira, "FHIR-123", "Test Issue Title");
 
         AsyncUnaryCall<ItemResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -81,7 +82,7 @@ public class JiraToolsTests
         SnapshotResponse mockResponse = new SnapshotResponse
         {
             Id = "FHIR-123",
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Markdown = "# FHIR-123: Test Issue\n\nFull snapshot content...",
         };
 
@@ -106,8 +107,8 @@ public class JiraToolsTests
     public async Task SearchJira_ReturnsFormattedResults()
     {
         SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            ("jira", "FHIR-100", "Issue One", 0.9),
-            ("jira", "FHIR-200", "Issue Two", 0.8));
+            (SourceSystems.Jira, "FHIR-100", "Issue One", 0.9),
+            (SourceSystems.Jira, "FHIR-200", "Issue Two", 0.8));
 
         AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),

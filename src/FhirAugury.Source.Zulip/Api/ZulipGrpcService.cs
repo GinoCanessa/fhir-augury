@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
@@ -78,7 +79,7 @@ public class ZulipGrpcService(
 
             response.Results.Add(new SearchResultItem
             {
-                Source = "zulip",
+                Source = SourceSystems.Zulip,
                 Id = msgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = reader.IsDBNull(3) ? "" : reader.GetString(3),
@@ -104,7 +105,7 @@ public class ZulipGrpcService(
 
         ItemResponse response = new ItemResponse
         {
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Id = message.ZulipMessageId.ToString(),
             Title = $"[{message.StreamName}] {message.Topic}",
             Content = request.IncludeContent ? (message.ContentPlain ?? "") : "",
@@ -157,7 +158,7 @@ public class ZulipGrpcService(
 
     public override async Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "zulip")
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Zulip)
             return await GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -195,7 +196,7 @@ public class ZulipGrpcService(
 
             response.Results.Add(new SearchResultItem
             {
-                Source = "zulip",
+                Source = SourceSystems.Zulip,
                 Id = relMsgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = reader.IsDBNull(5) ? "" : reader.GetString(5),
@@ -212,7 +213,7 @@ public class ZulipGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == "jira")
+        if (request.SeedSource == SourceSystems.Jira)
         {
             using SqliteConnection connection = database.OpenConnection();
 
@@ -250,7 +251,7 @@ public class ZulipGrpcService(
 
                 response.Results.Add(new SearchResultItem
                 {
-                    Source = "zulip",
+                    Source = SourceSystems.Zulip,
                     Id = latestMsgId.ToString(),
                     Title = $"[{streamName}] {topic}",
                     Score = 1.0 * (baselineValue / 5.0),
@@ -282,7 +283,7 @@ public class ZulipGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == "zulip" && direction is "outgoing" or "both")
+        if (request.Source == SourceSystems.Zulip && direction is "outgoing" or "both")
         {
             if (int.TryParse(request.Id, out int msgId))
             {
@@ -294,8 +295,8 @@ public class ZulipGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "zulip", SourceId = request.Id,
-                        TargetType = "jira", TargetId = r.JiraKey,
+                        SourceType = SourceSystems.Zulip, SourceId = request.Id,
+                        TargetType = SourceSystems.Jira, TargetId = r.JiraKey,
                         LinkType = "mentions", Context = r.Context ?? "",
                         SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                     });
@@ -305,8 +306,8 @@ public class ZulipGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "zulip", SourceId = request.Id,
-                        TargetType = "github", TargetId = r.TargetId,
+                        SourceType = SourceSystems.Zulip, SourceId = request.Id,
+                        TargetType = SourceSystems.GitHub, TargetId = r.TargetId,
                         LinkType = "mentions", Context = r.Context ?? "",
                         SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                     });
@@ -316,8 +317,8 @@ public class ZulipGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "zulip", SourceId = request.Id,
-                        TargetType = "confluence", TargetId = r.TargetId,
+                        SourceType = SourceSystems.Zulip, SourceId = request.Id,
+                        TargetType = SourceSystems.Confluence, TargetId = r.TargetId,
                         LinkType = "mentions", Context = r.Context ?? "",
                         SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                     });
@@ -327,8 +328,8 @@ public class ZulipGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "zulip", SourceId = request.Id,
-                        TargetType = "fhir", TargetId = r.TargetId,
+                        SourceType = SourceSystems.Zulip, SourceId = request.Id,
+                        TargetType = SourceSystems.Fhir, TargetId = r.TargetId,
                         LinkType = "mentions", Context = r.Context ?? "",
                         SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                     });
@@ -336,7 +337,7 @@ public class ZulipGrpcService(
             }
         }
 
-        if (request.Source == "jira" && direction is "incoming" or "both")
+        if (request.Source == SourceSystems.Jira && direction is "incoming" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             HashSet<string> seen = [];
@@ -350,9 +351,9 @@ public class ZulipGrpcService(
 
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "zulip",
+                    SourceType = SourceSystems.Zulip,
                     SourceId = jiraRef.SourceId,
-                    TargetType = "jira",
+                    TargetType = SourceSystems.Jira,
                     TargetId = request.Id,
                     LinkType = "mentions",
                     Context = jiraRef.Context ?? "",
@@ -380,7 +381,7 @@ public class ZulipGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = request.Id,
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Markdown = md,
             Url = BuildMessageUrl(message.StreamName, message.Topic, msgId),
         });
@@ -403,7 +404,7 @@ public class ZulipGrpcService(
         return Task.FromResult(new ContentResponse
         {
             Id = request.Id,
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Content = content,
             Format = string.IsNullOrEmpty(request.Format) ? "text" : request.Format,
             Url = BuildMessageUrl(message.StreamName, message.Topic, msgId),
@@ -434,7 +435,7 @@ public class ZulipGrpcService(
             string msgId = reader.GetInt32(0).ToString();
             SearchableTextItem item = new SearchableTextItem
             {
-                Source = "zulip",
+                Source = SourceSystems.Zulip,
                 Id = msgId,
                 Title = $"[{reader.GetString(1)}] {reader.GetString(2)}",
                 UpdatedAt = ParseTimestamp(reader, 5),
@@ -491,7 +492,7 @@ public class ZulipGrpcService(
 
         StatsResponse response = new StatsResponse
         {
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             TotalItems = messageCount,
             TotalComments = 0,
             DatabaseSizeBytes = dbSize,
@@ -521,7 +522,7 @@ public class ZulipGrpcService(
 
         IngestionStatusResponse response = new IngestionStatusResponse
         {
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
@@ -580,7 +581,7 @@ public class ZulipGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             workQueue.Enqueue(ct =>
             {
@@ -942,7 +943,7 @@ public class ZulipSpecificGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = $"{request.StreamName}:{request.Topic}",
-            Source = "zulip",
+            Source = SourceSystems.Zulip,
             Markdown = md,
             Url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(request.StreamName)}/topic/{Uri.EscapeDataString(request.Topic)}",
         });

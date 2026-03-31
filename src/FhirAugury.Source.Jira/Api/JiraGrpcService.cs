@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
@@ -72,7 +73,7 @@ public class JiraGrpcService(
             string key = reader.GetString(0);
             response.Results.Add(new SearchResultItem
             {
-                Source = "jira",
+                Source = SourceSystems.Jira,
                 Id = key,
                 Title = reader.GetString(1),
                 Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
@@ -94,7 +95,7 @@ public class JiraGrpcService(
 
         ItemResponse response = new ItemResponse
         {
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Id = issue.Key,
             Title = issue.Title,
             Content = request.IncludeContent ? (issue.Description ?? "") : "",
@@ -163,7 +164,7 @@ public class JiraGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "jira")
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Jira)
             return GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -188,7 +189,7 @@ public class JiraGrpcService(
 
             response.Results.Add(new SearchResultItem
             {
-                Source = "jira",
+                Source = SourceSystems.Jira,
                 Id = issue.Key,
                 Title = issue.Title,
                 Url = $"{options.BaseUrl}/browse/{issue.Key}",
@@ -204,7 +205,7 @@ public class JiraGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == "zulip")
+        if (request.SeedSource == SourceSystems.Zulip)
         {
             using SqliteConnection connection = database.OpenConnection();
 
@@ -228,7 +229,7 @@ public class JiraGrpcService(
 
                     response.Results.Add(new SearchResultItem
                     {
-                        Source = "jira",
+                        Source = SourceSystems.Jira,
                         Id = issue.Key,
                         Title = issue.Title,
                         Score = 1.0,
@@ -263,7 +264,7 @@ public class JiraGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == "jira")
+        if (request.Source == SourceSystems.Jira)
         {
             // Jira-to-Jira links
             if (direction is "outgoing" or "both")
@@ -274,9 +275,9 @@ public class JiraGrpcService(
                     JiraIssueRecord? target = JiraIssueRecord.SelectSingle(connection, Key: link.TargetKey);
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "jira",
+                        TargetType = SourceSystems.Jira,
                         TargetId = link.TargetKey,
                         LinkType = "linked_issue",
                         SourceTitle = target?.Title ?? "",
@@ -293,9 +294,9 @@ public class JiraGrpcService(
                     JiraIssueRecord? source = JiraIssueRecord.SelectSingle(connection, Key: link.SourceKey);
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = link.SourceKey,
-                        TargetType = "jira",
+                        TargetType = SourceSystems.Jira,
                         TargetId = request.Id,
                         LinkType = "linked_issue",
                         SourceTitle = source?.Title ?? "",
@@ -311,9 +312,9 @@ public class JiraGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "zulip",
+                        TargetType = SourceSystems.Zulip,
                         TargetId = r.TargetId,
                         LinkType = "mentions",
                         Context = r.Context ?? "",
@@ -326,9 +327,9 @@ public class JiraGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "github",
+                        TargetType = SourceSystems.GitHub,
                         TargetId = r.TargetId,
                         LinkType = "mentions",
                         Context = r.Context ?? "",
@@ -341,9 +342,9 @@ public class JiraGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "confluence",
+                        TargetType = SourceSystems.Confluence,
                         TargetId = r.TargetId,
                         LinkType = "mentions",
                         Context = r.Context ?? "",
@@ -356,9 +357,9 @@ public class JiraGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "fhir",
+                        TargetType = SourceSystems.Fhir,
                         TargetId = r.TargetId,
                         LinkType = "mentions",
                         Context = r.Context ?? "",
@@ -388,9 +389,9 @@ public class JiraGrpcService(
                 {
                     response.References.Add(new SourceCrossReference
                     {
-                        SourceType = "jira",
+                        SourceType = SourceSystems.Jira,
                         SourceId = request.Id,
-                        TargetType = "github",
+                        TargetType = SourceSystems.GitHub,
                         TargetId = specArtifact.GitUrl,
                         LinkType = "spec_artifact",
                         Context = $"{specArtifact.SpecName} ({specArtifact.Family})",
@@ -415,7 +416,7 @@ public class JiraGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = issue.Key,
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Markdown = md,
             Url = $"{options.BaseUrl}/browse/{issue.Key}",
         });
@@ -430,7 +431,7 @@ public class JiraGrpcService(
         return Task.FromResult(new ContentResponse
         {
             Id = issue.Key,
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Content = issue.Description ?? "",
             Format = string.IsNullOrEmpty(request.Format) ? "text" : request.Format,
             Url = $"{options.BaseUrl}/browse/{issue.Key}",
@@ -461,7 +462,7 @@ public class JiraGrpcService(
             string key = reader.GetString(0);
             SearchableTextItem item = new SearchableTextItem
             {
-                Source = "jira",
+                Source = SourceSystems.Jira,
                 Id = key,
                 Title = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 UpdatedAt = ParseTimestamp(reader, 6),
@@ -523,7 +524,7 @@ public class JiraGrpcService(
 
         StatsResponse response = new StatsResponse
         {
-            Source = "jira",
+            Source = SourceSystems.Jira,
             TotalItems = issueCount,
             TotalComments = commentCount,
             DatabaseSizeBytes = dbSize,
@@ -555,7 +556,7 @@ public class JiraGrpcService(
 
         IngestionStatusResponse response = new IngestionStatusResponse
         {
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
@@ -1033,7 +1034,7 @@ public class JiraSpecificGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = issue.Key,
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Markdown = sb.ToString(),
             Url = $"{options.BaseUrl}/browse/{issue.Key}",
         });

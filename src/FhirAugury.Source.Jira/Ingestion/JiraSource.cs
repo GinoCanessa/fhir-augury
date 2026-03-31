@@ -28,7 +28,7 @@ public class JiraSource(
 {
     private readonly JiraServiceOptions options = optionsAccessor.Value;
 
-    public const string SourceName = "jira";
+    public const string SourceName = SourceSystems.Jira;
 
     /// <summary>Performs a full download of all issues matching the configured JQL.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? jqlOverride, CancellationToken ct)

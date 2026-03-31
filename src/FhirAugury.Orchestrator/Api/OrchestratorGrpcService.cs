@@ -45,6 +45,7 @@ public class OrchestratorGrpcService(
                 SearchResultItem resultItem = new SearchResultItem
                 {
                     Source = item.Source,
+                    ContentType = item.ContentType,
                     Id = item.Id,
                     Title = item.Title,
                     Snippet = item.Snippet,
@@ -110,6 +111,7 @@ public class OrchestratorGrpcService(
                         Context = xref.Context,
                         TargetTitle = xref.SourceTitle,
                         TargetUrl = xref.SourceUrl,
+                        SourceContentType = xref.SourceContentType,
                     });
                 }
             }

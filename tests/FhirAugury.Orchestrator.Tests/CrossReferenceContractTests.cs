@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 
 namespace FhirAugury.Orchestrator.Tests;
 
@@ -38,9 +39,9 @@ public class CrossReferenceContractTests
     {
         CrossReference xref = new CrossReference
         {
-            SourceType = "confluence",
+            SourceType = SourceSystems.Confluence,
             SourceId = "page-1",
-            TargetType = "jira",
+            TargetType = SourceSystems.Jira,
             TargetId = "FHIR-123",
             LinkType = "mentions",
             Context = "See ticket FHIR-123",
@@ -48,9 +49,9 @@ public class CrossReferenceContractTests
             TargetUrl = "https://jira.example.com/browse/FHIR-123",
         };
 
-        Assert.Equal("confluence", xref.SourceType);
+        Assert.Equal(SourceSystems.Confluence, xref.SourceType);
         Assert.Equal("page-1", xref.SourceId);
-        Assert.Equal("jira", xref.TargetType);
+        Assert.Equal(SourceSystems.Jira, xref.TargetType);
         Assert.Equal("FHIR-123", xref.TargetId);
         Assert.Equal("mentions", xref.LinkType);
         Assert.Equal("See ticket FHIR-123", xref.Context);
@@ -63,13 +64,13 @@ public class CrossReferenceContractTests
     {
         // Verify the CsvParser.ParseSourceList method used by the HTTP endpoint
         // correctly parses comma-separated source names.
-        List<string>? result = FhirAugury.Common.Text.CsvParser.ParseSourceList("jira,confluence,zulip");
+        List<string>? result = FhirAugury.Common.Text.CsvParser.ParseSourceList($"{SourceSystems.Jira},{SourceSystems.Confluence},{SourceSystems.Zulip}");
 
         Assert.NotNull(result);
         Assert.Equal(3, result.Count);
-        Assert.Contains("jira", result);
-        Assert.Contains("confluence", result);
-        Assert.Contains("zulip", result);
+        Assert.Contains(SourceSystems.Jira, result);
+        Assert.Contains(SourceSystems.Confluence, result);
+        Assert.Contains(SourceSystems.Zulip, result);
     }
 
     [Fact]
@@ -85,9 +86,9 @@ public class CrossReferenceContractTests
     {
         SourceCrossReference xref = new SourceCrossReference
         {
-            SourceType = "github",
+            SourceType = SourceSystems.GitHub,
             SourceId = "HL7/fhir#4006",
-            TargetType = "jira",
+            TargetType = SourceSystems.Jira,
             TargetId = "FHIR-55001",
             LinkType = "mentions",
             Context = "Referenced in PR",
@@ -95,9 +96,9 @@ public class CrossReferenceContractTests
             SourceUrl = "https://github.com/HL7/fhir/pull/4006",
         };
 
-        Assert.Equal("github", xref.SourceType);
+        Assert.Equal(SourceSystems.GitHub, xref.SourceType);
         Assert.Equal("HL7/fhir#4006", xref.SourceId);
-        Assert.Equal("jira", xref.TargetType);
+        Assert.Equal(SourceSystems.Jira, xref.TargetType);
         Assert.Equal("FHIR-55001", xref.TargetId);
         Assert.Equal("mentions", xref.LinkType);
         Assert.Equal("Referenced in PR", xref.Context);
@@ -110,12 +111,12 @@ public class CrossReferenceContractTests
     {
         GetItemXRefRequest request = new GetItemXRefRequest
         {
-            Source = "jira",
+            Source = SourceSystems.Jira,
             Id = "FHIR-55001",
             Direction = "both",
         };
 
-        Assert.Equal("jira", request.Source);
+        Assert.Equal(SourceSystems.Jira, request.Source);
         Assert.Equal("FHIR-55001", request.Id);
         Assert.Equal("both", request.Direction);
     }
@@ -127,11 +128,11 @@ public class CrossReferenceContractTests
         {
             Id = "FHIR-55001",
             Limit = 20,
-            SeedSource = "jira",
+            SeedSource = SourceSystems.Jira,
             SeedId = "FHIR-55001",
         };
 
-        Assert.Equal("jira", request.SeedSource);
+        Assert.Equal(SourceSystems.Jira, request.SeedSource);
         Assert.Equal("FHIR-55001", request.SeedId);
     }
 

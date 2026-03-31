@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.McpShared.Tools;
 using Grpc.Core;
 using Grpc.Core.Testing;
@@ -12,8 +13,8 @@ public class UnifiedToolsTests
     public async Task Search_ReturnsFormattedResults()
     {
         SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            ("jira", "FHIR-123", "Test Issue", 0.95),
-            ("zulip", "general:topic1", "Test Topic", 0.85));
+            (SourceSystems.Jira, "FHIR-123", "Test Issue", 0.95),
+            (SourceSystems.Zulip, "general:topic1", "Test Topic", 0.85));
 
         AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -59,7 +60,7 @@ public class UnifiedToolsTests
     public async Task GetCrossReferences_ReturnsFormattedRefs()
     {
         GetXRefResponse mockResponse = McpTestHelper.CreateXRefResponse(
-            ("jira", "FHIR-100", "zulip", "stream:topic", "mentions"));
+            (SourceSystems.Jira, "FHIR-100", SourceSystems.Zulip, "stream:topic", "mentions"));
 
         AsyncUnaryCall<GetXRefResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -72,7 +73,7 @@ public class UnifiedToolsTests
         client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
             .Returns(mockCall);
 
-        string result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-100");
+        string result = await UnifiedTools.GetCrossReferences(client, SourceSystems.Jira, "FHIR-100");
 
         Assert.Contains("Cross-References", result);
         Assert.Contains("FHIR-100", result);
@@ -95,7 +96,7 @@ public class UnifiedToolsTests
         client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
             .Returns(mockCall);
 
-        string result = await UnifiedTools.GetCrossReferences(client, "jira", "FHIR-999");
+        string result = await UnifiedTools.GetCrossReferences(client, SourceSystems.Jira, "FHIR-999");
 
         Assert.Contains("No cross-references found", result);
     }
@@ -119,15 +120,15 @@ public class UnifiedToolsTests
         string result = await UnifiedTools.GetStats(client);
 
         Assert.Contains("Services Status", result);
-        Assert.Contains("jira", result);
-        Assert.Contains("zulip", result);
+        Assert.Contains(SourceSystems.Jira, result);
+        Assert.Contains(SourceSystems.Zulip, result);
     }
 
     [Fact]
     public async Task TriggerSync_ReturnsFormattedStatus()
     {
         TriggerSyncResponse mockResponse = new TriggerSyncResponse();
-        mockResponse.Statuses.Add(new SourceSyncStatus { Source = "jira", Status = "started", Message = "Incremental sync started" });
+        mockResponse.Statuses.Add(new SourceSyncStatus { Source = SourceSystems.Jira, Status = "started", Message = "Incremental sync started" });
 
         AsyncUnaryCall<TriggerSyncResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -143,7 +144,7 @@ public class UnifiedToolsTests
         string result = await UnifiedTools.TriggerSync(client);
 
         Assert.Contains("Sync Triggered", result);
-        Assert.Contains("jira", result);
+        Assert.Contains(SourceSystems.Jira, result);
         Assert.Contains("started", result);
     }
 
@@ -151,8 +152,8 @@ public class UnifiedToolsTests
     public async Task FindRelated_ReturnsFormattedRelated()
     {
         FindRelatedResponse mockResponse = McpTestHelper.CreateRelatedResponse(
-            "jira", "FHIR-100", "Test Jira Issue",
-            ("zulip", "stream:topic", "Related Thread", 8.5, "explicit_xref"));
+            SourceSystems.Jira, "FHIR-100", "Test Jira Issue",
+            (SourceSystems.Zulip, "stream:topic", "Related Thread", 8.5, "explicit_xref"));
 
         AsyncUnaryCall<FindRelatedResponse> mockCall = TestCalls.AsyncUnaryCall(
             Task.FromResult(mockResponse),
@@ -165,7 +166,7 @@ public class UnifiedToolsTests
         client.FindRelatedAsync(Arg.Any<FindRelatedRequest>(), null, null, default)
             .Returns(mockCall);
 
-        string result = await UnifiedTools.FindRelated(client, "jira", "FHIR-100");
+        string result = await UnifiedTools.FindRelated(client, SourceSystems.Jira, "FHIR-100");
 
         Assert.Contains("Related Items", result);
         Assert.Contains("FHIR-100", result);

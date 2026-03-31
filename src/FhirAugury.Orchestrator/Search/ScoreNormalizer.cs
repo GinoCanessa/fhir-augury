@@ -39,6 +39,7 @@ public static class ScoreNormalizer
 public record ScoredItem
 {
     public required string Source { get; init; }
+    public string ContentType { get; init; } = "";
     public required string Id { get; init; }
     public required string Title { get; init; }
     public required string Snippet { get; init; }

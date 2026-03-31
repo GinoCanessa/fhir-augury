@@ -24,9 +24,9 @@ public class ZulipSource(
 {
     private readonly ZulipServiceOptions options = optionsAccessor.Value;
 
-    public const string SourceName = "zulip";
+    public const string SourceName = SourceSystems.Zulip;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions JsonOptions= new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,

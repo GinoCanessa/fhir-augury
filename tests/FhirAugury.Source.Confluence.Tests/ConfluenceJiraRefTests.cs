@@ -32,7 +32,7 @@ public class ConfluenceJiraRefTests : IDisposable
         JiraXRefRecord record = new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page",
+            ContentType = ContentTypes.Page,
             SourceId = "50001",
             LinkType = "mentions",
             JiraKey = "FHIR-12345",
@@ -56,21 +56,21 @@ public class ConfluenceJiraRefTests : IDisposable
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "100", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "100", LinkType = "mentions",
             JiraKey = "FHIR-1001",
             Context = "Referenced in page 100",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "200", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "200", LinkType = "mentions",
             JiraKey = "FHIR-1001",
             Context = "Also referenced in page 200",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "300", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "300", LinkType = "mentions",
             JiraKey = "FHIR-9999",
             Context = "Different ticket in page 300",
         });
@@ -89,21 +89,21 @@ public class ConfluenceJiraRefTests : IDisposable
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "400", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
             JiraKey = "FHIR-2001",
             Context = "First ref in page 400",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "400", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
             JiraKey = "GF-500",
             Context = "Second ref in page 400",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
-            SourceType = "page", SourceId = "500", LinkType = "mentions",
+            ContentType = ContentTypes.Page, SourceId = "500", LinkType = "mentions",
             JiraKey = "FHIR-3001",
             Context = "Ref in different page",
         });

@@ -23,8 +23,8 @@ public class GitHubRestProvider(
     ILogger<GitHubRestProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
-    public const string SourceName = "github";
-    private const string GitHubApiBase = "https://api.github.com";
+    public const string SourceName = SourceSystems.GitHub;
+    private const string GitHubApiBase= "https://api.github.com";
 
     /// <summary>Performs a full download of all issues for configured repositories.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default)

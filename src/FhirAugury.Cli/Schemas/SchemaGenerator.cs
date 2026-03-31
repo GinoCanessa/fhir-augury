@@ -137,7 +137,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source", "id"], new()
             {
                 ["command"] = Const("get"),
-                ["source"] = Prop("string", "Source type (jira, zulip, confluence, github)"),
+                ["source"] = Prop("string", "Source system (jira, zulip, confluence, github)"),
                 ["id"] = Prop("string", "Item identifier"),
                 ["includeComments"] = BoolProp("Include comments", true),
             }),
@@ -146,7 +146,7 @@ public static class SchemaGenerator
                 type = "object",
                 properties = new Dictionary<string, object>
                 {
-                    ["source"] = Prop("string", "Source type"),
+                    ["source"] = Prop("string", "Source system"),
                     ["id"] = Prop("string", "Item identifier"),
                     ["title"] = Prop("string", "Item title"),
                     ["content"] = Prop("string", "Full item content"),
@@ -164,7 +164,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source", "id"], new()
             {
                 ["command"] = Const("snapshot"),
-                ["source"] = Prop("string", "Source type"),
+                ["source"] = Prop("string", "Source system"),
                 ["id"] = Prop("string", "Item identifier"),
                 ["includeComments"] = BoolProp("Include comments", true),
             }),
@@ -174,7 +174,7 @@ public static class SchemaGenerator
                 properties = new Dictionary<string, object>
                 {
                     ["id"] = Prop("string", "Item identifier"),
-                    ["source"] = Prop("string", "Source type"),
+                    ["source"] = Prop("string", "Source system"),
                     ["markdown"] = Prop("string", "Rendered markdown content"),
                     ["url"] = Prop("string", "Item URL"),
                 },
@@ -186,7 +186,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source", "id"], new()
             {
                 ["command"] = Const("related"),
-                ["source"] = Prop("string", "Seed source type"),
+                ["source"] = Prop("string", "Seed source system"),
                 ["id"] = Prop("string", "Seed item identifier"),
                 ["targetSources"] = ArrayProp("string", "Restrict target sources"),
                 ["limit"] = IntProp("Maximum results to return", 20),
@@ -209,7 +209,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source", "id"], new()
             {
                 ["command"] = Const("xref"),
-                ["source"] = Prop("string", "Source type"),
+                ["source"] = Prop("string", "Source system"),
                 ["id"] = Prop("string", "Item identifier"),
                 ["direction"] = new { type = "string", description = "Direction: outgoing, incoming, or both", defaultValue = "both" },
             }),
@@ -228,7 +228,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source"], new()
             {
                 ["command"] = Const("list"),
-                ["source"] = Prop("string", "Source type"),
+                ["source"] = Prop("string", "Source system"),
                 ["limit"] = IntProp("Maximum results to return", 20),
                 ["sortBy"] = new { type = "string", description = "Sort by field", defaultValue = "updated_at" },
                 ["sortOrder"] = new { type = "string", description = "Sort order: asc or desc", defaultValue = "desc" },

@@ -103,7 +103,7 @@ public class ZulipReferenceExtractorTests
         List<ZulipXRefRecord> refs = ZulipReferenceExtractor.GetReferences(
             "issue", "1",
             "https://chat.fhir.org/#narrow/stream/179166-implementers/topic/Coverage");
-        Assert.Equal("zulip", refs[0].TargetType);
+        Assert.Equal(SourceSystems.Zulip, refs[0].TargetType);
     }
 
     [Fact]

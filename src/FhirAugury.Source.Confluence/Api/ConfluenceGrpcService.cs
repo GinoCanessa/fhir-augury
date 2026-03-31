@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Fhiraugury;
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
@@ -72,7 +73,7 @@ public class ConfluenceGrpcService(
             string pageId = reader.GetString(0);
             response.Results.Add(new SearchResultItem
             {
-                Source = "confluence",
+                Source = SourceSystems.Confluence,
                 Id = pageId,
                 Title = reader.GetString(1),
                 Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
@@ -94,7 +95,7 @@ public class ConfluenceGrpcService(
 
         ItemResponse response = new ItemResponse
         {
-            Source = "confluence",
+            Source = SourceSystems.Confluence,
             Id = page.ConfluenceId,
             Title = page.Title,
             Content = request.IncludeContent ? (page.BodyPlain ?? "") : "",
@@ -158,7 +159,7 @@ public class ConfluenceGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != "confluence")
+        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Confluence)
             return GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -182,7 +183,7 @@ public class ConfluenceGrpcService(
 
             response.Results.Add(new SearchResultItem
             {
-                Source = "confluence",
+                Source = SourceSystems.Confluence,
                 Id = page.ConfluenceId,
                 Title = page.Title,
                 Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
@@ -200,7 +201,7 @@ public class ConfluenceGrpcService(
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
         SearchResponse response = new SearchResponse();
 
-        if (request.SeedSource == "jira")
+        if (request.SeedSource == SourceSystems.Jira)
         {
             // Find Confluence pages that reference this Jira ticket
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
@@ -215,7 +216,7 @@ public class ConfluenceGrpcService(
 
                 response.Results.Add(new SearchResultItem
                 {
-                    Source = "confluence",
+                    Source = SourceSystems.Confluence,
                     Id = page.ConfluenceId,
                     Title = page.Title,
                     Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
@@ -250,7 +251,7 @@ public class ConfluenceGrpcService(
                     double rank = reader.GetDouble(2);
                     response.Results.Add(new SearchResultItem
                     {
-                        Source = "confluence",
+                        Source = SourceSystems.Confluence,
                         Id = pageId,
                         Title = reader.GetString(1),
                         Url = reader.IsDBNull(3) ? $"{options.BaseUrl}/pages/{pageId}" : reader.GetString(3),
@@ -271,7 +272,7 @@ public class ConfluenceGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == "confluence" && direction is "outgoing" or "both")
+        if (request.Source == SourceSystems.Confluence && direction is "outgoing" or "both")
         {
             ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: request.Id);
             string sourceTitle = page?.Title ?? "";
@@ -281,8 +282,8 @@ public class ConfluenceGrpcService(
             {
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence", SourceId = request.Id,
-                    TargetType = "jira", TargetId = r.JiraKey,
+                    SourceType = SourceSystems.Confluence, SourceId = request.Id,
+                    TargetType = SourceSystems.Jira, TargetId = r.JiraKey,
                     LinkType = "mentions", Context = r.Context ?? "",
                     SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                 });
@@ -292,8 +293,8 @@ public class ConfluenceGrpcService(
             {
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence", SourceId = request.Id,
-                    TargetType = "zulip", TargetId = r.TargetId,
+                    SourceType = SourceSystems.Confluence, SourceId = request.Id,
+                    TargetType = SourceSystems.Zulip, TargetId = r.TargetId,
                     LinkType = "mentions", Context = r.Context ?? "",
                     SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                 });
@@ -303,8 +304,8 @@ public class ConfluenceGrpcService(
             {
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence", SourceId = request.Id,
-                    TargetType = "github", TargetId = r.TargetId,
+                    SourceType = SourceSystems.Confluence, SourceId = request.Id,
+                    TargetType = SourceSystems.GitHub, TargetId = r.TargetId,
                     LinkType = "mentions", Context = r.Context ?? "",
                     SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                 });
@@ -314,15 +315,15 @@ public class ConfluenceGrpcService(
             {
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence", SourceId = request.Id,
-                    TargetType = "fhir", TargetId = r.TargetId,
+                    SourceType = SourceSystems.Confluence, SourceId = request.Id,
+                    TargetType = SourceSystems.Fhir, TargetId = r.TargetId,
                     LinkType = "mentions", Context = r.Context ?? "",
                     SourceTitle = sourceTitle, SourceUrl = sourceUrl,
                 });
             }
         }
 
-        if (request.Source == "jira" && direction is "incoming" or "both")
+        if (request.Source == SourceSystems.Jira && direction is "incoming" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             HashSet<string> seen = [];
@@ -334,9 +335,9 @@ public class ConfluenceGrpcService(
 
                 response.References.Add(new SourceCrossReference
                 {
-                    SourceType = "confluence",
+                    SourceType = SourceSystems.Confluence,
                     SourceId = jiraRef.SourceId,
-                    TargetType = "jira",
+                    TargetType = SourceSystems.Jira,
                     TargetId = request.Id,
                     LinkType = "mentions",
                     Context = jiraRef.Context ?? "",
@@ -360,7 +361,7 @@ public class ConfluenceGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = page.ConfluenceId,
-            Source = "confluence",
+            Source = SourceSystems.Confluence,
             Markdown = md,
             Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
         });
@@ -379,7 +380,7 @@ public class ConfluenceGrpcService(
         return Task.FromResult(new ContentResponse
         {
             Id = page.ConfluenceId,
-            Source = "confluence",
+            Source = SourceSystems.Confluence,
             Content = content,
             Format = string.IsNullOrEmpty(request.Format) ? "text" : request.Format,
             Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
@@ -410,7 +411,7 @@ public class ConfluenceGrpcService(
             string pageId = reader.GetString(0);
             SearchableTextItem item = new SearchableTextItem
             {
-                Source = "confluence",
+                Source = SourceSystems.Confluence,
                 Id = pageId,
                 Title = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 UpdatedAt = ParseTimestamp(reader, 5),
@@ -467,7 +468,7 @@ public class ConfluenceGrpcService(
 
         StatsResponse response = new StatsResponse
         {
-            Source = "confluence",
+            Source = SourceSystems.Confluence,
             TotalItems = pageCount,
             TotalComments = commentCount,
             DatabaseSizeBytes = dbSize,
@@ -498,8 +499,8 @@ public class ConfluenceGrpcService(
 
         IngestionStatusResponse response = new IngestionStatusResponse
         {
-            Source = "confluence",
-            Status = pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
+            Source = SourceSystems.Confluence,
+            Status = pipeline.IsRunning? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
             LastSyncAt = syncState is not null ? Timestamp.FromDateTimeOffset(syncState.LastSyncAt) : null,
             ItemsTotal = syncState?.ItemsIngested ?? 0,
             LastError = syncState?.LastError ?? "",
@@ -905,7 +906,7 @@ public class ConfluenceSpecificGrpcService(
         return Task.FromResult(new SnapshotResponse
         {
             Id = page.ConfluenceId,
-            Source = "confluence",
+            Source = SourceSystems.Confluence,
             Markdown = sb.ToString(),
             Url = page.Url ?? $"{options.BaseUrl}/pages/{page.ConfluenceId}",
         });

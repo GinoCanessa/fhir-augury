@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -404,7 +405,7 @@ public static class JiraHttpApi
 
             return Results.Ok(new
             {
-                source = "jira",
+                source = SourceSystems.Jira,
                 totalIssues = issueCount,
                 totalComments = commentCount,
                 totalLinks = linkCount,

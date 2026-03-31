@@ -60,7 +60,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                 allRecords.Add(new ZulipKeywordRecord
                 {
                     Id = ZulipKeywordRecord.GetIndex(),
-                    SourceType = content.SourceType,
+                    ContentType = content.ContentType,
                     SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
@@ -92,7 +92,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             if (!string.IsNullOrWhiteSpace(text))
                 documents.Add(new()
                 { 
-                    SourceType = "zulip", 
+                    ContentType = ContentTypes.Message,
                     SourceId = message.ZulipMessageId.ToString(), 
                     Text = text 
                 });
@@ -120,7 +120,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                 toInsert.Add(new ZulipKeywordRecord
                 {
                     Id = ZulipKeywordRecord.GetIndex(),
-                    SourceType = content.SourceType,
+                    ContentType = content.ContentType,
                     SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
@@ -145,10 +145,10 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT SourceType, COUNT(DISTINCT SourceId) as DocCount,
+                SELECT ContentType, COUNT(DISTINCT SourceId) as DocCount,
                        CAST(SUM(Count) AS REAL) / COUNT(DISTINCT SourceId) as AvgLen
                 FROM index_keywords
-                GROUP BY SourceType
+                GROUP BY ContentType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
 
@@ -159,7 +159,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                 docStatsToInsert.Add(new ZulipDocStatsRecord
                 {
                     Id = ZulipDocStatsRecord.GetIndex(),
-                    SourceType = reader.GetString(0),
+                    ContentType = reader.GetString(0),
                     TotalDocuments = reader.GetInt32(1),
                     AverageDocLength = reader.GetDouble(2),
                 });
@@ -182,7 +182,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT Keyword, KeywordType, COUNT(DISTINCT SourceType || ':' || SourceId) as DocFreq
+                SELECT Keyword, KeywordType, COUNT(DISTINCT ContentType || ':' || SourceId) as DocFreq
                 FROM index_keywords
                 GROUP BY Keyword, KeywordType
                 """;
@@ -214,7 +214,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         {
             cmd.CommandText = """
                 SELECT CAST(SUM(DocLen) AS REAL) / COUNT(*) FROM (
-                    SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
+                    SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY ContentType, SourceId
                 )
                 """;
             object? scalar = cmd.ExecuteScalar();
@@ -231,10 +231,10 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                         / (CAST(index_keywords.Count AS REAL) + @k1 * (1.0 - @b + @b * dl.DocLen / @avgDocLen))
                     FROM index_corpus c
                     JOIN (
-                        SELECT SourceType, SourceId, SUM(Count) as DocLen
+                        SELECT ContentType, SourceId, SUM(Count) as DocLen
                         FROM index_keywords
-                        GROUP BY SourceType, SourceId
-                    ) dl ON dl.SourceType = index_keywords.SourceType AND dl.SourceId = index_keywords.SourceId
+                        GROUP BY ContentType, SourceId
+                    ) dl ON dl.ContentType = index_keywords.ContentType AND dl.SourceId = index_keywords.SourceId
                     WHERE c.Keyword = index_keywords.Keyword
                     LIMIT 1
                 )
@@ -262,7 +262,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
 
         const int batchSize = 500;
 
-        foreach (IGrouping<string, IndexContent> contentGroup in contents.GroupBy(c => c.SourceType))
+        foreach (IGrouping<string, IndexContent> contentGroup in contents.GroupBy(c => c.ContentType))
         {
             string sourceType = contentGroup.Key;
 
@@ -275,7 +275,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             {
                 if (index >= batchSize)
                 {
-                    cmd.CommandText = $"DELETE FROM index_keywords WHERE SourceType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+                    cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
                     cmd.Parameters.AddWithValue("@type", sourceType);
                     cmd.ExecuteNonQuery();
 
@@ -288,7 +288,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             }
 
             // execute last batch
-            cmd.CommandText = $"DELETE FROM index_keywords WHERE SourceType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+            cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
             cmd.Parameters.AddWithValue("@type", sourceType);
             cmd.ExecuteNonQuery();
         }

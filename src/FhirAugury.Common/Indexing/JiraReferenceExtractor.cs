@@ -28,7 +28,7 @@ public static class JiraReferenceExtractor
                 results.Add(new JiraXRefRecord
                 {
                     Id = JiraXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = m.Context,

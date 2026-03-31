@@ -43,7 +43,7 @@ public static partial class FhirElementReferenceExtractor
                 results.Add(new FhirElementXRefRecord
                 {
                     Id = FhirElementXRefRecord.GetIndex(),
-                    SourceType = sourceType,
+                    ContentType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
                     Context = CrossRefPatterns.GetSurroundingText(text, match.Index, 160),

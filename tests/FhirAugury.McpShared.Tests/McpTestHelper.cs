@@ -1,4 +1,5 @@
 using Fhiraugury;
+using FhirAugury.Common;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Core.Testing;
@@ -76,7 +77,7 @@ internal static class McpTestHelper
         ServicesStatusResponse response = new ServicesStatusResponse();
         response.Services.Add(new ServiceHealth
         {
-            Name = "jira",
+            Name = SourceSystems.Jira,
             Status = "healthy",
             GrpcAddress = "http://localhost:5161",
             ItemCount = 1000,
@@ -84,7 +85,7 @@ internal static class McpTestHelper
         });
         response.Services.Add(new ServiceHealth
         {
-            Name = "zulip",
+            Name = SourceSystems.Zulip,
             Status = "healthy",
             GrpcAddress = "http://localhost:5171",
             ItemCount = 5000,

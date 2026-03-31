@@ -115,28 +115,28 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
     {
         int count = 0;
 
-        foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("message", sourceId, null, messageText))
+        foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, null, messageText))
         {
             r.Id = JiraXRefRecord.GetIndex();
             JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
             count++;
         }
 
-        foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("message", sourceId, messageText))
+        foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
         {
             r.Id = GitHubXRefRecord.GetIndex();
             GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
             count++;
         }
 
-        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences("message", sourceId, messageText))
+        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
         {
             r.Id = ConfluenceXRefRecord.GetIndex();
             ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
             count++;
         }
 
-        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("message", sourceId, messageText))
+        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
         {
             r.Id = FhirElementXRefRecord.GetIndex();
             FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
@@ -161,7 +161,7 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
                 MAX(m.Timestamp) as LastSeenAt
             FROM xref_jira xr
             JOIN zulip_messages m ON CAST(m.ZulipMessageId AS TEXT) = xr.SourceId
-            WHERE xr.SourceType = 'message'
+            WHERE xr.ContentType = 'message'
             GROUP BY m.StreamName, m.Topic, xr.JiraKey
             """;
         return cmd.ExecuteNonQuery();
@@ -192,7 +192,7 @@ public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndex
                 MAX(m.Timestamp) as LastSeenAt
             FROM xref_jira xr
             JOIN zulip_messages m ON CAST(m.ZulipMessageId AS TEXT) = xr.SourceId
-            WHERE xr.SourceType = 'message'
+            WHERE xr.ContentType = 'message'
               AND m.StreamName = @stream AND m.Topic = @topic
             GROUP BY m.StreamName, m.Topic, xr.JiraKey
             """;

@@ -1,3 +1,5 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Orchestrator.Configuration;
 
 public class OrchestratorOptions
@@ -30,8 +32,8 @@ public class SearchOptions
     public int MaxLimit { get; set; } = 100;
     public Dictionary<string, double> FreshnessWeights { get; set; } = new()
     {
-        ["jira"] = 0.5,
-        ["zulip"] = 2.0,
+        [SourceSystems.Jira] = 0.5,
+        [SourceSystems.Zulip] = 2.0,
     };
 }
 
