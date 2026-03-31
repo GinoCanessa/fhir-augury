@@ -1,5 +1,6 @@
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
@@ -21,7 +22,7 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
         using SqliteConnection connection = database.OpenConnection();
 
         ClearIndex(connection);
-        List<(string SourceType, string SourceId, string Text)> documents = CollectDocuments(connection, ct);
+        List<IndexContent> documents = CollectDocuments(connection, ct);
 
         if (documents.Count == 0)
         {
@@ -36,24 +37,23 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
     }
 
     /// <summary>Incrementally updates BM25 scores for specific items.</summary>
-    public void UpdateIndex(IReadOnlyList<(string SourceType, string SourceId, string Text)> items, CancellationToken ct = default)
+    public void UpdateIndex(IReadOnlyList<IndexContent> items, CancellationToken ct = default)
     {
-        if (items.Count == 0) return;
+        if (items.Count == 0)
+        {
+            return;
+        }
 
         using SqliteConnection connection = database.OpenConnection();
 
-        foreach ((string? sourceType, string? sourceId, string _) in items)
-        {
-            ct.ThrowIfCancellationRequested();
-            DeleteKeywordsForItem(connection, sourceType, sourceId);
-        }
+        DeleteKeywordsForItems(connection, items);
 
         List<GitHubKeywordRecord> allRecords = new List<GitHubKeywordRecord>();
 
-        foreach ((string? sourceType, string? sourceId, string? text) in items)
+        foreach (IndexContent content in items)
         {
             ct.ThrowIfCancellationRequested();
-            List<string> tokens = Tokenizer.Tokenize(text);
+            List<string> tokens = Tokenizer.Tokenize(content.Text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
@@ -62,8 +62,8 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                 allRecords.Add(new GitHubKeywordRecord
                 {
                     Id = GitHubKeywordRecord.GetIndex(),
-                    SourceType = sourceType,
-                    SourceId = sourceId,
+                    SourceType = content.SourceType,
+                    SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
                     KeywordType = keywordType,
@@ -72,18 +72,20 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
             }
         }
 
-        foreach (GitHubKeywordRecord record in allRecords)
-            GitHubKeywordRecord.Insert(connection, record);
+        allRecords.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
         RecomputeCorpusStats(connection);
     }
 
-    private static List<(string SourceType, string SourceId, string Text)> CollectDocuments(
+    private static List<IndexContent> CollectDocuments(
         SqliteConnection connection, CancellationToken ct)
     {
-        List<(string, string, string)> documents = new List<(string, string, string)>();
-
         List<GitHubIssueRecord> issues = GitHubIssueRecord.SelectList(connection);
+        List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection);
+        List<GitHubCommitRecord> commits = GitHubCommitRecord.SelectList(connection);
+
+        List<IndexContent> documents = new(issues.Count + comments.Count + commits.Count);
+
         foreach (GitHubIssueRecord issue in issues)
         {
             ct.ThrowIfCancellationRequested();
@@ -92,18 +94,30 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     .Where(s => !string.IsNullOrEmpty(s)));
 
             if (!string.IsNullOrWhiteSpace(text))
-                documents.Add(("github-issue", issue.UniqueKey, text));
+            {
+                documents.Add(new()
+                {
+                    SourceType = "github-issue",
+                    SourceId = issue.UniqueKey,
+                    Text = text,
+                });
+            }
         }
 
-        List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection);
         foreach (GitHubCommentRecord comment in comments)
         {
             ct.ThrowIfCancellationRequested();
             if (!string.IsNullOrWhiteSpace(comment.Body))
-                documents.Add(("github-comment", $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}", comment.Body));
+            {
+                documents.Add(new()
+                {
+                    SourceType = "github-comment",
+                    SourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}", 
+                    Text = comment.Body,
+                });
+            }
         }
 
-        List<GitHubCommitRecord> commits = GitHubCommitRecord.SelectList(connection);
         foreach (GitHubCommitRecord commit in commits)
         {
             ct.ThrowIfCancellationRequested();
@@ -112,7 +126,14 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     .Where(s => !string.IsNullOrEmpty(s)));
 
             if (!string.IsNullOrWhiteSpace(text))
-                documents.Add(("github-commit", commit.Sha, text));
+            {
+                documents.Add(new()
+                { 
+                    SourceType = "github-commit", 
+                    SourceId = commit.Sha, 
+                    Text = text 
+                });
+            }
         }
 
         return documents;
@@ -120,23 +141,25 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
 
     private void BuildIndex(
         SqliteConnection connection,
-        List<(string SourceType, string SourceId, string Text)> documents,
+        List<IndexContent> documents,
         CancellationToken ct)
     {
-        foreach ((string? sourceType, string? sourceId, string? text) in documents)
+        List<GitHubKeywordRecord> toInsert = new(documents.Count);
+
+        foreach (IndexContent content in documents)
         {
             ct.ThrowIfCancellationRequested();
-            List<string> tokens = Tokenizer.Tokenize(text);
+            List<string> tokens = Tokenizer.Tokenize(content.Text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
-                GitHubKeywordRecord.Insert(connection, new GitHubKeywordRecord
+                toInsert.Add(new GitHubKeywordRecord()
                 {
                     Id = GitHubKeywordRecord.GetIndex(),
-                    SourceType = sourceType,
-                    SourceId = sourceId,
+                    SourceType = content.SourceType,
+                    SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
                     KeywordType = keywordType,
@@ -144,6 +167,8 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                 });
             }
         }
+
+        toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
     }
 
     private void RecomputeCorpusStats(SqliteConnection connection)
@@ -164,9 +189,12 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                 GROUP BY SourceType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<GitHubDocStatsRecord> statsToInsert = [];
+
             while (reader.Read())
             {
-                GitHubDocStatsRecord.Insert(connection, new GitHubDocStatsRecord
+                statsToInsert.Add(new GitHubDocStatsRecord()
                 {
                     Id = GitHubDocStatsRecord.GetIndex(),
                     SourceType = reader.GetString(0),
@@ -174,6 +202,8 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     AverageDocLength = reader.GetDouble(2),
                 });
             }
+
+            statsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Total doc count for IDF
@@ -195,12 +225,15 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                 GROUP BY Keyword, KeywordType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<GitHubCorpusKeywordRecord> keywordsToInsert = [];
+
             while (reader.Read())
             {
                 int df = reader.GetInt32(2);
                 double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
-                GitHubCorpusKeywordRecord.Insert(connection, new GitHubCorpusKeywordRecord
+                keywordsToInsert.Add(new GitHubCorpusKeywordRecord()
                 {
                     Id = GitHubCorpusKeywordRecord.GetIndex(),
                     Keyword = reader.GetString(0),
@@ -209,6 +242,8 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     Idf = idf,
                 });
             }
+
+            keywordsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Compute BM25 scores via bulk SQL UPDATE
@@ -256,12 +291,44 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
         cmd.ExecuteNonQuery();
     }
 
-    private static void DeleteKeywordsForItem(SqliteConnection connection, string sourceType, string sourceId)
+    private static void DeleteKeywordsForItems(SqliteConnection connection, IReadOnlyList<IndexContent> contents)
     {
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM index_keywords WHERE SourceType = @type AND SourceId = @id;";
-        cmd.Parameters.AddWithValue("@type", sourceType);
-        cmd.Parameters.AddWithValue("@id", sourceId);
-        cmd.ExecuteNonQuery();
+        if (contents.Count == 0)
+        {
+            return;
+        }
+
+        const int batchSize = 500;
+
+        foreach (IGrouping<string, IndexContent> contentGroup in contents.GroupBy(c => c.SourceType))
+        {
+            string sourceType = contentGroup.Key;
+
+            int index = 0;
+            string[] paramNames = new string[500];
+
+            using SqliteCommand cmd = connection.CreateCommand();
+
+            foreach (IndexContent content in contentGroup)
+            {
+                if (index >= batchSize)
+                {
+                    cmd.CommandText = $"DELETE FROM index_keywords WHERE SourceType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+                    cmd.Parameters.AddWithValue("@type", sourceType);
+                    cmd.ExecuteNonQuery();
+
+                    index = 0;
+                    cmd.Parameters.Clear();
+                }
+
+                paramNames[index] = $"@id{index}";
+                cmd.Parameters.AddWithValue(paramNames[index], content.SourceId);
+            }
+
+            // execute last batch
+            cmd.CommandText = $"DELETE FROM index_keywords WHERE SourceType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+            cmd.Parameters.AddWithValue("@type", sourceType);
+            cmd.ExecuteNonQuery();
+        }
     }
 }
