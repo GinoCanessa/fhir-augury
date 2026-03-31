@@ -63,6 +63,47 @@ public class GitHubServiceOptions
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
+    public FileContentIndexingOptions FileContentIndexing { get; set; } = new();
+}
+
+/// <summary>Configuration for repository file content indexing.</summary>
+public class FileContentIndexingOptions
+{
+    /// <summary>Whether file content indexing is enabled.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Maximum file size in bytes to index (default: 512 KB).</summary>
+    public int MaxFileSizeBytes { get; set; } = 512 * 1024;
+
+    /// <summary>Maximum extracted text length per file (default: 64 KB).</summary>
+    public int MaxExtractedTextLength { get; set; } = 64 * 1024;
+
+    /// <summary>Maximum number of files to index per repository.</summary>
+    public int MaxFilesPerRepo { get; set; } = 50_000;
+
+    /// <summary>Additional file extensions to skip (beyond the built-in list).</summary>
+    public List<string> AdditionalSkipExtensions { get; set; } = [];
+
+    /// <summary>Additional directory names to skip (beyond the built-in list).</summary>
+    public List<string> AdditionalSkipDirectories { get; set; } = [];
+
+    /// <summary>When non-empty, only index files under these paths (relative to clone root).</summary>
+    public List<string> IncludeOnlyPaths { get; set; } = [];
+
+    /// <summary>
+    /// Gitignore-style glob patterns for files/directories to exclude from indexing.
+    /// Patterns follow .gitignore syntax: *, **, ?, negation with !, directory patterns
+    /// with trailing /. Evaluated in order; last match wins.
+    /// Merged with patterns from .augury-index-ignore in the repository root.
+    /// </summary>
+    public List<string> IgnorePatterns { get; set; } =
+    [
+        "**/test-data/**",
+        "**/testdata/**",
+        "**/*.generated.*",
+        "**/vendor/**",
+        "**/third_party/**",
+    ];
 }
 
 public class AuthConfiguration

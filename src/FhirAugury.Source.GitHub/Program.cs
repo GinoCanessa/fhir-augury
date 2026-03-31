@@ -91,6 +91,7 @@ builder.Services.AddSingleton<IGitHubDataProvider>(sp =>
 
 builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
+builder.Services.AddSingleton<GitHubFileContentIndexer>();
 builder.Services.AddSingleton<JiraRefExtractor>();
 builder.Services.AddSingleton(sp =>
 {
@@ -164,6 +165,11 @@ tracker.RegisterIndex("artifact-map", "FHIR artifact-to-file mapping", () =>
 {
     using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
     return FhirAugury.Source.GitHub.Database.Records.GitHubSpecFileMapRecord.SelectCount(c);
+});
+tracker.RegisterIndex("file-contents", "Repository file content indexing", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.GitHubFileContentRecord.SelectCount(c);
 });
 
 // ── Health check ─────────────────────────────────────────────────

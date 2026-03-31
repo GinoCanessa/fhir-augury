@@ -80,6 +80,18 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
             refCount += ExtractAndInsertAll(connection, commit.Message, "commit", commit.Sha, hasIssues, githubNumbers, validJiraNumbers);
         }
 
+        // Scan file contents
+        List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection, RepoFullName: repoFullName);
+        foreach (GitHubFileContentRecord file in fileContents)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!string.IsNullOrEmpty(file.ContentText))
+            {
+                string sourceId = $"{file.RepoFullName}:{file.FilePath}";
+                refCount += ExtractAndInsertAll(connection, file.ContentText, "file", sourceId, hasIssues, githubNumbers, validJiraNumbers);
+            }
+        }
+
         logger.LogInformation("Extracted {Count} cross-references from {Repo}", refCount, repoFullName);
     }
 

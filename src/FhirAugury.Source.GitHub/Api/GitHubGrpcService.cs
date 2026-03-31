@@ -30,6 +30,7 @@ public class GitHubGrpcService(
     GitHubIndexer indexer,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
+    GitHubFileContentIndexer fileContentIndexer,
     ArtifactFileMapper artifactFileMapper,
     FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<GitHubServiceOptions> optionsAccessor)
@@ -50,7 +51,10 @@ public class GitHubGrpcService(
 
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 200) : 20;
 
-        string sql = """
+        SearchResponse response = new SearchResponse { Query = request.Query };
+
+        // Search issues
+        string issueSql = """
             SELECT gi.UniqueKey, gi.Title,
                    snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
                    github_issues_fts.rank,
@@ -62,27 +66,65 @@ public class GitHubGrpcService(
             LIMIT @limit OFFSET @offset
             """;
 
-        using SqliteCommand cmd = new SqliteCommand(sql, connection);
-        cmd.Parameters.AddWithValue("@query", ftsQuery);
-        cmd.Parameters.AddWithValue("@limit", limit);
-        cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
-
-        SearchResponse response = new SearchResponse { Query = request.Query };
-        using SqliteDataReader reader = cmd.ExecuteReader();
-
-        while (reader.Read())
+        using (SqliteCommand cmd = new SqliteCommand(issueSql, connection))
         {
-            string uniqueKey = reader.GetString(0);
-            response.Results.Add(new SearchResultItem
+            cmd.Parameters.AddWithValue("@query", ftsQuery);
+            cmd.Parameters.AddWithValue("@limit", limit);
+            cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
             {
-                Source = "github",
-                Id = uniqueKey,
-                Title = reader.GetString(1),
-                Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                Score = -reader.GetDouble(3),
-                Url = BuildIssueUrl(uniqueKey),
-                UpdatedAt = ParseTimestamp(reader, 5),
-            });
+                string uniqueKey = reader.GetString(0);
+                response.Results.Add(new SearchResultItem
+                {
+                    Source = "github",
+                    Id = uniqueKey,
+                    Title = reader.GetString(1),
+                    Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    Score = -reader.GetDouble(3),
+                    Url = BuildIssueUrl(uniqueKey),
+                    UpdatedAt = ParseTimestamp(reader, 5),
+                });
+            }
+        }
+
+        // Search file contents
+        string fileSql = """
+            SELECT fc.RepoFullName, fc.FilePath,
+                   snippet(github_file_contents_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
+                   github_file_contents_fts.rank,
+                   fc.FileExtension, fc.ParserType
+            FROM github_file_contents_fts
+            JOIN github_file_contents fc ON fc.Id = github_file_contents_fts.rowid
+            WHERE github_file_contents_fts MATCH @query
+            ORDER BY github_file_contents_fts.rank
+            LIMIT @limit OFFSET @offset
+            """;
+
+        using (SqliteCommand cmd = new SqliteCommand(fileSql, connection))
+        {
+            cmd.Parameters.AddWithValue("@query", ftsQuery);
+            cmd.Parameters.AddWithValue("@limit", limit);
+            cmd.Parameters.AddWithValue("@offset", Math.Max(0, request.Offset));
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string repo = reader.GetString(0);
+                string filePath = reader.GetString(1);
+                string fileId = $"{repo}:{filePath}";
+
+                response.Results.Add(new SearchResultItem
+                {
+                    Source = "github-file",
+                    Id = fileId,
+                    Title = filePath,
+                    Snippet = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    Score = -reader.GetDouble(3),
+                    Url = $"https://github.com/{repo}/blob/main/{filePath}",
+                });
+            }
         }
 
         response.TotalResults = response.Results.Count;
@@ -92,6 +134,11 @@ public class GitHubGrpcService(
     public override Task<ItemResponse> GetItem(GetItemRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
+
+        // Check if this is a file content request (format: "owner/repo:path/to/file")
+        if (TryGetFileItem(connection, request, out ItemResponse? fileResponse))
+            return Task.FromResult(fileResponse!);
+
         GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
@@ -388,6 +435,40 @@ public class GitHubGrpcService(
     public override Task<SnapshotResponse> GetSnapshot(GetSnapshotRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
+
+        // Check if this is a file content request
+        if (TryParseFileId(request.Id, out string? fileRepo, out string? filePath))
+        {
+            GitHubFileContentRecord? file = LookupFileRecord(connection, fileRepo!, filePath!);
+            if (file is not null)
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine($"# {file.FilePath}");
+                sb.AppendLine();
+                sb.AppendLine($"**Repository:** {file.RepoFullName}  ");
+                sb.AppendLine($"**Extension:** {file.FileExtension}  ");
+                sb.AppendLine($"**Parser:** {file.ParserType}  ");
+                sb.AppendLine($"**Size:** {file.ContentLength:N0} bytes  ");
+                if (file.LastCommitSha is not null) sb.AppendLine($"**Last Commit:** {file.LastCommitSha}  ");
+                if (file.LastModifiedAt is not null) sb.AppendLine($"**Last Modified:** {file.LastModifiedAt}  ");
+                sb.AppendLine();
+                if (!string.IsNullOrEmpty(file.ContentText))
+                {
+                    sb.AppendLine("## Content");
+                    sb.AppendLine();
+                    sb.AppendLine(file.ContentText);
+                }
+
+                return Task.FromResult(new SnapshotResponse
+                {
+                    Id = request.Id,
+                    Source = "github-file",
+                    Markdown = sb.ToString(),
+                    Url = $"https://github.com/{file.RepoFullName}/blob/main/{file.FilePath}",
+                });
+            }
+        }
+
         GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
@@ -405,6 +486,24 @@ public class GitHubGrpcService(
     public override Task<ContentResponse> GetContent(GetContentRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
+
+        // Check if this is a file content request
+        if (TryParseFileId(request.Id, out string? fileRepo, out string? filePath))
+        {
+            GitHubFileContentRecord? file = LookupFileRecord(connection, fileRepo!, filePath!);
+            if (file is not null)
+            {
+                return Task.FromResult(new ContentResponse
+                {
+                    Id = request.Id,
+                    Source = "github-file",
+                    Content = file.ContentText ?? "",
+                    Format = "text",
+                    Url = $"https://github.com/{file.RepoFullName}/blob/main/{file.FilePath}",
+                });
+            }
+        }
+
         GitHubIssueRecord issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: request.Id)
             ?? throw new RpcException(new Status(StatusCode.NotFound, $"Issue {request.Id} not found"));
 
@@ -467,6 +566,24 @@ public class GitHubGrpcService(
 
             await responseStream.WriteAsync(item);
         }
+
+        // Stream file contents
+        List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection);
+        foreach (GitHubFileContentRecord file in fileContents)
+        {
+            if (string.IsNullOrEmpty(file.ContentText))
+                continue;
+
+            SearchableTextItem fileItem = new SearchableTextItem
+            {
+                Source = "github-file",
+                Id = $"{file.RepoFullName}:{file.FilePath}",
+                Title = file.FilePath,
+            };
+            fileItem.TextFields.Add(file.ContentText);
+
+            await responseStream.WriteAsync(fileItem);
+        }
     }
 
     public override async Task<IngestionStatusResponse> TriggerIngestion(TriggerIngestionRequest request, ServerCallContext context)
@@ -525,6 +642,7 @@ public class GitHubGrpcService(
         response.AdditionalCounts.Add("commit_files", GitHubCommitFileRecord.SelectCount(connection));
         response.AdditionalCounts.Add("jira_refs", JiraXRefRecord.SelectCount(connection));
         response.AdditionalCounts.Add("spec_file_maps", GitHubSpecFileMapRecord.SelectCount(connection));
+        response.AdditionalCounts.Add("file_contents", GitHubFileContentRecord.SelectCount(connection));
 
         return Task.FromResult(response);
     }
@@ -535,6 +653,62 @@ public class GitHubGrpcService(
     }
 
     // ── Helpers ──────────────────────────────────────────────────
+
+    /// <summary>Parses a file content ID in "owner/repo:path/to/file" format.</summary>
+    private static bool TryParseFileId(string id, out string? repoFullName, out string? filePath)
+    {
+        // File IDs contain a colon: "owner/repo:path/to/file"
+        // Issue IDs contain a hash: "owner/repo#42"
+        int colonIdx = id.IndexOf(':');
+        if (colonIdx > 0 && id.Contains('/'))
+        {
+            repoFullName = id[..colonIdx];
+            filePath = id[(colonIdx + 1)..];
+            return !string.IsNullOrEmpty(filePath);
+        }
+
+        repoFullName = null;
+        filePath = null;
+        return false;
+    }
+
+    private static GitHubFileContentRecord? LookupFileRecord(SqliteConnection connection, string repoFullName, string filePath)
+    {
+        List<GitHubFileContentRecord> results = GitHubFileContentRecord.SelectList(connection,
+            RepoFullName: repoFullName, FilePath: filePath);
+        return results.Count > 0 ? results[0] : null;
+    }
+
+    private static bool TryGetFileItem(SqliteConnection connection, GetItemRequest request, out ItemResponse? response)
+    {
+        response = null;
+        if (!TryParseFileId(request.Id, out string? fileRepo, out string? filePath))
+            return false;
+
+        GitHubFileContentRecord? file = LookupFileRecord(connection, fileRepo!, filePath!);
+        if (file is null)
+            return false;
+
+        response = new ItemResponse
+        {
+            Source = "github-file",
+            Id = request.Id,
+            Title = file.FilePath,
+            Content = request.IncludeContent ? (file.ContentText ?? "") : "",
+            Url = $"https://github.com/{file.RepoFullName}/blob/main/{file.FilePath}",
+        };
+
+        response.Metadata.Add("repo", file.RepoFullName);
+        response.Metadata.Add("file_path", file.FilePath);
+        response.Metadata.Add("extension", file.FileExtension);
+        response.Metadata.Add("parser_type", file.ParserType);
+        response.Metadata.Add("content_length", file.ContentLength.ToString());
+        response.Metadata.Add("extracted_length", file.ExtractedLength.ToString());
+        if (file.LastCommitSha is not null) response.Metadata.Add("last_commit_sha", file.LastCommitSha);
+        if (file.LastModifiedAt is not null) response.Metadata.Add("last_modified_at", file.LastModifiedAt);
+
+        return true;
+    }
 
     private IngestionStatusResponse GetCurrentStatus()
     {
@@ -734,6 +908,23 @@ public class GitHubGrpcService(
                         throw;
                     }
                     break;
+                case "file-contents":
+                    indexTracker.MarkStarted("file-contents");
+                    try
+                    {
+                        foreach (string repo in repos)
+                        {
+                            string path = await cloner.EnsureCloneAsync(repo, ct);
+                            fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
+                        }
+                        indexTracker.MarkCompleted("file-contents");
+                    }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("file-contents", ex.Message);
+                        throw;
+                    }
+                    break;
                 case "fts":
                     indexTracker.MarkStarted("fts");
                     try
@@ -749,6 +940,7 @@ public class GitHubGrpcService(
                     break;
                 case "all":
                     indexTracker.MarkStarted("commits");
+                    indexTracker.MarkStarted("file-contents");
                     indexTracker.MarkStarted("cross-refs");
                     indexTracker.MarkStarted("artifact-map");
                     indexTracker.MarkStarted("bm25");
@@ -759,10 +951,12 @@ public class GitHubGrpcService(
                         {
                             string path = await cloner.EnsureCloneAsync(repo, ct);
                             await commitExtractor.ExtractAsync(path, repo, ct);
+                            fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
                             jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
                             artifactFileMapper.BuildMappings(repo, path, ct);
                         }
                         indexTracker.MarkCompleted("commits");
+                        indexTracker.MarkCompleted("file-contents");
                         indexTracker.MarkCompleted("cross-refs");
                         indexTracker.MarkCompleted("artifact-map");
                         indexer.RebuildFullIndex(ct);
@@ -773,6 +967,7 @@ public class GitHubGrpcService(
                     catch (Exception ex)
                     {
                         indexTracker.MarkFailed("commits", ex.Message);
+                        indexTracker.MarkFailed("file-contents", ex.Message);
                         indexTracker.MarkFailed("cross-refs", ex.Message);
                         indexTracker.MarkFailed("artifact-map", ex.Message);
                         indexTracker.MarkFailed("bm25", ex.Message);

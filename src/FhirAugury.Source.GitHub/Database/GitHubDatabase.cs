@@ -34,10 +34,12 @@ public class GitHubDatabase : SourceDatabase
         GitHubKeywordRecord.CreateTable(connection);
         GitHubCorpusKeywordRecord.CreateTable(connection);
         GitHubDocStatsRecord.CreateTable(connection);
+        GitHubFileContentRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
         CreateGitHubCommitsFts(connection);
+        CreateGitHubFileContentsFts(connection);
     }
 
     private void CreateGitHubIssuesFts(SqliteConnection connection)
@@ -73,6 +75,17 @@ public class GitHubDatabase : SourceDatabase
             tokenizer: _ftsTokenizer);
     }
 
+    private void CreateGitHubFileContentsFts(SqliteConnection connection)
+    {
+        CreateFts5Table(
+            connection,
+            ftsTableName: "github_file_contents_fts",
+            contentTable: "github_file_contents",
+            contentRowId: "Id",
+            indexedColumns: ["ContentText", "FilePath"],
+            tokenizer: _ftsTokenizer);
+    }
+
     /// <summary>Rebuilds all FTS5 indexes from their content tables.</summary>
     public void RebuildFtsIndexes()
     {
@@ -80,6 +93,7 @@ public class GitHubDatabase : SourceDatabase
         RebuildFts5(connection, "github_issues_fts");
         RebuildFts5(connection, "github_comments_fts");
         RebuildFts5(connection, "github_commits_fts");
+        RebuildFts5(connection, "github_file_contents_fts");
     }
 
     /// <summary>
@@ -106,6 +120,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_issues_fts;
             DROP TABLE IF EXISTS github_comments_fts;
             DROP TABLE IF EXISTS github_commits_fts;
+            DROP TABLE IF EXISTS github_file_contents_fts;
             DROP TABLE IF EXISTS github_repos;
             DROP TABLE IF EXISTS github_issues;
             DROP TABLE IF EXISTS github_comments;
@@ -118,6 +133,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS xref_confluence;
             DROP TABLE IF EXISTS xref_fhir_element;
             DROP TABLE IF EXISTS github_spec_file_map;
+            DROP TABLE IF EXISTS github_file_contents;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

@@ -83,8 +83,9 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
         List<GitHubIssueRecord> issues = GitHubIssueRecord.SelectList(connection);
         List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection);
         List<GitHubCommitRecord> commits = GitHubCommitRecord.SelectList(connection);
+        List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection);
 
-        List<IndexContent> documents = new(issues.Count + comments.Count + commits.Count);
+        List<IndexContent> documents = new(issues.Count + comments.Count + commits.Count + fileContents.Count);
 
         foreach (GitHubIssueRecord issue in issues)
         {
@@ -132,6 +133,20 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     SourceType = "github-commit", 
                     SourceId = commit.Sha, 
                     Text = text 
+                });
+            }
+        }
+
+        foreach (GitHubFileContentRecord file in fileContents)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!string.IsNullOrWhiteSpace(file.ContentText))
+            {
+                documents.Add(new()
+                {
+                    SourceType = "github-file",
+                    SourceId = $"{file.RepoFullName}:{file.FilePath}",
+                    Text = file.ContentText,
                 });
             }
         }

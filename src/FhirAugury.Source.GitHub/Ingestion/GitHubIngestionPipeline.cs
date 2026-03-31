@@ -21,6 +21,7 @@ public class GitHubIngestionPipeline(
     GitHubIndexer indexer,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
+    GitHubFileContentIndexer fileContentIndexer,
     JiraRefExtractor jiraRefExtractor,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
@@ -142,6 +143,7 @@ public class GitHubIngestionPipeline(
         repos.AddRange(_options.AdditionalRepositories);
 
         tracker.MarkStarted("commits");
+        tracker.MarkStarted("file-contents");
         tracker.MarkStarted("cross-refs");
         try
         {
@@ -154,10 +156,13 @@ public class GitHubIngestionPipeline(
 
                     _currentStatus = $"extracting_commits:{repo}";
                     await commitExtractor.ExtractAsync(clonePath, repo, ct);
+
+                    _currentStatus = $"indexing_files:{repo}";
+                    fileContentIndexer.IndexRepositoryFiles(repo, clonePath, ct);
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to clone/extract commits for {Repo}", repo);
+                    logger.LogWarning(ex, "Failed to clone/extract commits/index files for {Repo}", repo);
                 }
 
                 try
@@ -171,11 +176,13 @@ public class GitHubIngestionPipeline(
                 }
             }
             tracker.MarkCompleted("commits");
+            tracker.MarkCompleted("file-contents");
             tracker.MarkCompleted("cross-refs");
         }
         catch (Exception ex)
         {
             tracker.MarkFailed("commits", ex.Message);
+            tracker.MarkFailed("file-contents", ex.Message);
             tracker.MarkFailed("cross-refs", ex.Message);
             throw;
         }
