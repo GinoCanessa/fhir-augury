@@ -232,7 +232,7 @@ also be toggled per-stream via the `UpdateStream` gRPC RPC.
 
 **Data model:**
 
-- `ZulipStreamRecord` — Stream ID, name, description, web-public flag
+- `ZulipStreamRecord` — Stream ID, name, description, web-public flag, baseline value (0–10, default 5, used as a search score multiplier)
 - `ZulipMessageRecord` — Message ID, stream, topic, sender, plain text content,
   timestamp, reactions
 

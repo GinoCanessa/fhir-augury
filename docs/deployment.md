@@ -251,12 +251,12 @@ dotnet workload install aspire
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The AppHost starts six services (4 source services + orchestrator + MCP HTTP
-server on port 5200) with the same fixed ports as Docker Compose. The
-orchestrator waits for Jira, Zulip, and GitHub sources to be healthy before
-accepting requests. Zulip and GitHub also wait for Jira. Confluence and the
-MCP HTTP server use `WithExplicitStart()` and must be started manually from
-the Aspire dashboard.
+The AppHost registers seven projects (4 source services + orchestrator + MCP
+HTTP server on port 5200 + CLI tool) with the same fixed ports as Docker
+Compose. The orchestrator waits for Jira, Zulip, and GitHub sources to be
+healthy before accepting requests. Zulip and GitHub also wait for Jira.
+Confluence, the MCP HTTP server, and the CLI use `WithExplicitStart()` and
+must be started manually from the Aspire dashboard.
 
 The Aspire dashboard is available at the URL shown in the console output
 (typically `https://localhost:17128`). It provides:

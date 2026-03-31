@@ -240,9 +240,9 @@ Key capabilities:
 ### `FhirAugury.AppHost`
 
 [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
-application host. Orchestrates all six services for local development with an
-integrated dashboard. Confluence uses `WithExplicitStart()` and must be started
-manually from the dashboard.
+application host. Orchestrates all seven projects for local development with an
+integrated dashboard. Confluence, MCP HTTP, and CLI use `WithExplicitStart()`
+and must be started manually from the dashboard.
 
 ```
 FhirAugury.AppHost/
@@ -256,7 +256,8 @@ FhirAugury.AppHost/
 
 Uses `Aspire.AppHost.Sdk`. Registers each service project with pinned
 HTTP/gRPC ports (`isProxied: false`) and configures the orchestrator to
-`WaitFor()` all source services.
+`WaitFor()` Jira, Zulip, and GitHub source services. Zulip and GitHub
+also wait for Jira. Confluence, MCP HTTP, and CLI use `WithExplicitStart()`.
 
 ## Test Projects
 

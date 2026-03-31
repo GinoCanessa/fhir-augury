@@ -40,6 +40,7 @@ pattern.
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
+    "DefaultJql": null,
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
     "Ports": {
@@ -124,6 +125,8 @@ pattern.
     "RebuildFromCacheOnStartup": false,
     "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
+    "OnlyWebPublic": true,
+    "StreamBaselineValues": {},
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
     "Ports": {
@@ -169,6 +172,8 @@ pattern.
 | `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `ReindexTicketsOnStartup` | bool | `false` | Force rebuild of Jira ticket reference indexes on startup. Skipped when `RebuildFromCacheOnStartup` is `true` (cache rebuilds already include ticket indexing). |
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
+| `OnlyWebPublic` | bool | `true` | Restrict ingestion to web-public streams only |
+| `StreamBaselineValues` | Dictionary | `{}` | Per-stream baseline multipliers for search ranking (stream name → value 0–10, default 5). Scores are multiplied by `value / 5.0`. |
 | `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5170` | HTTP listen port |
@@ -205,6 +210,7 @@ pattern.
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
+    "ReloadFromCacheOnStartup": false,
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
     "Ports": {
@@ -249,6 +255,7 @@ pattern.
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
+| `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5180` | HTTP listen port |
@@ -287,7 +294,8 @@ pattern.
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00"
+      "ProcessTimeout": "00:05:00",
+      "MaxConcurrentProcesses": 1
     },
     "Auth": {
       "Token": null,
@@ -297,6 +305,7 @@ pattern.
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
     "MinSyncAge": "04:00:00",
+    "ReloadFromCacheOnStartup": false,
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
     "Ports": {
@@ -335,17 +344,20 @@ pattern.
 | `RepoMode` | string | `core` | Repository selection mode |
 | `Repositories` | string[] | `["HL7/fhir"]` | Repositories to track |
 | `AdditionalRepositories` | string[] | `[]` | Extra repositories |
+| `ManualLinks` | object[] | `[]` | Manual link overrides |
 | `Provider` | string | `gh-cli` | Data provider: `rest` (REST API) or `gh-cli` (GitHub CLI) |
 | `GhCli.ExecutablePath` | string | `gh` | Path to the gh CLI executable |
 | `GhCli.Limit` | int | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | string? | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | TimeSpan | `00:05:00` | Timeout for gh CLI processes |
+| `GhCli.MaxConcurrentProcesses` | int | `1` | Maximum concurrent gh CLI processes |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/github.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
+| `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5190` | HTTP listen port |
@@ -383,7 +395,7 @@ pattern.
     "Services": {
       "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
       "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
-      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": true },
+      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": false },
       "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
     },
     "Search": {
@@ -407,9 +419,10 @@ pattern.
 }
 ```
 
-> **Note:** The default `appsettings.json` ships with only Jira and Zulip in
-> the `Services` section. Add Confluence and/or GitHub entries when deploying
-> those source services.
+> **Note:** The default `appsettings.json` ships with Jira, Zulip, and GitHub
+> enabled. Confluence is present but disabled by default — set
+> `Services.Confluence.Enabled` to `true` when deploying the Confluence source
+> service.
 
 ### Configuration Options
 

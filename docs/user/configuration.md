@@ -61,6 +61,9 @@ Each source service runs independently with its own database, cache, and ports.
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
+    "DefaultJql": null,
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": { "Http": 5160, "Grpc": 5161 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
@@ -114,6 +117,10 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "RebuildFromCacheOnStartup": false,
     "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
+    "OnlyWebPublic": true,
+    "StreamBaselineValues": {},
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": { "Http": 5170, "Grpc": 5171 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
@@ -157,6 +164,9 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
+    "ReloadFromCacheOnStartup": false,
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": { "Http": 5180, "Grpc": 5181 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
@@ -200,6 +210,8 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
   "GitHub": {
     "RepoMode": "core",
     "Repositories": ["HL7/fhir"],
+    "AdditionalRepositories": [],
+    "ManualLinks": [],
     "Auth": {
       "Token": null,
       "TokenEnvVar": "GITHUB_TOKEN"
@@ -209,12 +221,16 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00"
+      "ProcessTimeout": "00:05:00",
+      "MaxConcurrentProcesses": 1
     },
     "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
     "SyncSchedule": "02:00:00",
     "MinSyncAge": "04:00:00",
+    "ReloadFromCacheOnStartup": false,
+    "OrchestratorGrpcAddress": null,
+    "IngestionPaused": false,
     "Ports": { "Http": 5190, "Grpc": 5191 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
@@ -261,6 +277,7 @@ The `GhCli` section configures the `gh` CLI provider:
 | `GhCli.Limit` | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | `00:05:00` | Timeout for gh CLI processes |
+| `GhCli.MaxConcurrentProcesses` | `1` | Maximum concurrent gh CLI processes |
 
 ---
 
@@ -277,19 +294,20 @@ search, cross-references, and related-item discovery.
     "Services": {
       "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
       "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
-      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": true },
+      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": false },
       "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
-    },
-    "CrossRef": {
-      "ScanIntervalMinutes": 30,
-      "ValidateTargets": true
     },
     "Search": {
       "DefaultLimit": 20,
-      "MaxLimit": 100
+      "MaxLimit": 100,
+      "FreshnessWeights": { "jira": 0.5, "zulip": 2.0 }
     },
     "Related": {
-      "DefaultLimit": 20
+      "CrossSourceWeight": 10.0,
+      "Bm25SimilarityWeight": 3.0,
+      "SharedMetadataWeight": 2.0,
+      "DefaultLimit": 20,
+      "MaxKeyTerms": 15
     },
     "DictionaryDatabase": {
       "SourcePath": "./cache/dictionary",

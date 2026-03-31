@@ -293,7 +293,7 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-six services with fixed ports matching the existing convention:
+seven projects with fixed ports matching the existing convention:
 
 | Service | HTTP | gRPC |
 |---------|------|------|
@@ -303,8 +303,10 @@ six services with fixed ports matching the existing convention:
 | source-github | 5190 | 5191 |
 | orchestrator | 5150 | 5151 |
 | mcp | 5200 | — |
+| cli | — | — |
 
-The orchestrator uses `WaitFor()` to depend on all source services.
-Confluence uses `WithExplicitStart()` to allow manual triggering. All
-endpoints use `isProxied: false` so services listen on their own ports
-directly (no Aspire reverse proxy).
+The orchestrator uses `WaitFor()` to depend on Jira, Zulip, and GitHub
+source services. Confluence, the MCP HTTP server, and the CLI use
+`WithExplicitStart()` to allow manual triggering. All endpoints use
+`isProxied: false` so services listen on their own ports directly (no
+Aspire reverse proxy).

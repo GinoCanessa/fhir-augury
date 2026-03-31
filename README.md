@@ -53,12 +53,12 @@ docker compose --profile full logs -f
 
 ```bash
 # Start all services with the Aspire dashboard
-aspire run
+dotnet run --project src/FhirAugury.AppHost
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and
-metrics at the URL shown in the console output. Confluence and MCP HTTP use
-explicit start and must be started manually from the dashboard.
+metrics at the URL shown in the console output. Confluence, MCP HTTP, and CLI
+use explicit start and must be started manually from the dashboard.
 
 ### From Source
 
