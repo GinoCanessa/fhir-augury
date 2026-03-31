@@ -61,6 +61,8 @@ public class GitHubCliProvider(
         foreach (string key in cache.EnumerateKeys(GitHubCacheLayout.SourceName))
         {
             if (ct.IsCancellationRequested) break;
+            if (key.StartsWith(GitHubCacheLayout.ReposSubDir + "/", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!key.EndsWith("." + GitHubCacheLayout.JsonExtension, StringComparison.OrdinalIgnoreCase)) continue;
             if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out Stream? stream)) continue;
 
             using (stream)
