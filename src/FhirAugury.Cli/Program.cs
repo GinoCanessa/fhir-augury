@@ -83,8 +83,23 @@ public static class Program
             json = await File.ReadAllTextAsync(inputFile);
         }
 
-        // Execute command
-        OutputEnvelope result = await CommandDispatcher.ExecuteAsync(json);
+        // Execute command (with Ctrl+C cancellation support)
+        using CancellationTokenSource cts = new();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        OutputEnvelope result;
+        try
+        {
+            result = await CommandDispatcher.ExecuteAsync(json, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            result = OutputEnvelope.Fail("", "CANCELLED", "Operation was cancelled.");
+        }
 
         // Serialize and output
         JsonSerializerOptions opts = pretty ? PrettyJson : CompactJson;

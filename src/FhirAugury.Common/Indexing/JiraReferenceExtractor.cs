@@ -27,7 +27,7 @@ public static class JiraReferenceExtractor
                 if (!seen.Add(m.JiraKey)) continue;
                 results.Add(new JiraXRefRecord
                 {
-                    Id = 0,
+                    Id = JiraXRefRecord.GetIndex(),
                     SourceType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",

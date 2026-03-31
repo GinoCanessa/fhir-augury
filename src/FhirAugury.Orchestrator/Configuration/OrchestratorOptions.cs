@@ -42,4 +42,5 @@ public class RelatedOptions
     public double SharedMetadataWeight { get; set; } = 2.0;
     public int DefaultLimit { get; set; } = 20;
     public int MaxKeyTerms { get; set; } = 15;
+    public int PerSourceTimeoutSeconds { get; set; } = 2;
 }

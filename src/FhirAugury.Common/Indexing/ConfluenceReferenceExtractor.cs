@@ -30,7 +30,7 @@ public static partial class ConfluenceReferenceExtractor
 
                 results.Add(new ConfluenceXRefRecord
                 {
-                    Id = 0,
+                    Id = ConfluenceXRefRecord.GetIndex(),
                     SourceType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",

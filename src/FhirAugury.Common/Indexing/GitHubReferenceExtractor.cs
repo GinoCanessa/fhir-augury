@@ -36,7 +36,7 @@ public static partial class GitHubReferenceExtractor
 
                 results.Add(new GitHubXRefRecord
                 {
-                    Id = 0,
+                    Id = GitHubXRefRecord.GetIndex(),
                     SourceType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
@@ -56,7 +56,7 @@ public static partial class GitHubReferenceExtractor
 
                 results.Add(new GitHubXRefRecord
                 {
-                    Id = 0,
+                    Id = GitHubXRefRecord.GetIndex(),
                     SourceType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",

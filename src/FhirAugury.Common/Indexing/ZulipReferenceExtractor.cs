@@ -42,7 +42,7 @@ public static partial class ZulipReferenceExtractor
 
                 results.Add(new ZulipXRefRecord
                 {
-                    Id = 0,
+                    Id = ZulipXRefRecord.GetIndex(),
                     SourceType = sourceType,
                     SourceId = sourceId,
                     LinkType = "mentions",
