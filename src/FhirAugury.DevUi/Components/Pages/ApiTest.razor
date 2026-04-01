@@ -1,0 +1,221 @@
+@page "/api-test"
+@using FhirAugury.DevUi.Services
+@using Fhiraugury
+@inject OrchestratorClient Orchestrator
+
+<PageTitle>API Tests — FHIR Augury Dev UI</PageTitle>
+
+<h1 class="mb-3"><i class="bi bi-terminal"></i> API Tests</h1>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <label class="form-label fw-semibold">API</label>
+        <select class="form-select" @bind="SelectedApi">
+            <option value="">— Select API —</option>
+            <option value="related">Related</option>
+        </select>
+    </div>
+</div>
+
+@if (SelectedApi == "related")
+{
+    <div class="card mb-4">
+        <div class="card-header fw-semibold">
+            <i class="bi bi-diagram-3"></i> Find Related Items
+        </div>
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label">Source</label>
+                    <select class="form-select" @bind="_relatedSource">
+                        <option value="">— Select Source —</option>
+                        @foreach (string source in _availableSources)
+                        {
+                            <option value="@source">@source</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">ID</label>
+                    <input type="text" class="form-control" @bind="_relatedId"
+                           @bind:event="oninput"
+                           placeholder="e.g. FHIR-55001" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">&nbsp;</label>
+                    <button class="btn btn-primary d-block"
+                            @onclick="ExecuteRelatedAsync"
+                            disabled="@(_relatedRunning || string.IsNullOrWhiteSpace(_relatedSource) || string.IsNullOrWhiteSpace(_relatedId))">
+                        @if (_relatedRunning)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-play-fill"></i>
+                        }
+                        Go
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (_relatedError is not null)
+    {
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> @_relatedError
+        </div>
+    }
+
+    @if (_relatedResponse is not null)
+    {
+        <div class="mb-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                <h5 class="mb-0">
+                    Results for
+                    <code>@_relatedResponse.SeedSource:@_relatedResponse.SeedId</code>
+                    @if (!string.IsNullOrEmpty(_relatedResponse.SeedTitle))
+                    {
+                        <small class="text-body-secondary ms-1">— @_relatedResponse.SeedTitle</small>
+                    }
+                </h5>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-info">@_relatedResponse.Items.Count items</span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="ToggleRaw">
+                        <i class="bi @(_showRaw ? "bi-table" : "bi-code-slash")"></i>
+                        @(_showRaw ? "Table View" : "Raw JSON")
+                    </button>
+                </div>
+            </div>
+
+            @if (_showRaw)
+            {
+                <pre class="bg-body-secondary border rounded p-3 overflow-auto" style="max-height: 600px;"><code>@_rawJson</code></pre>
+            }
+            else if (_relatedResponse.Items.Count == 0)
+            {
+                <div class="alert alert-info">No related items found.</div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover table-sm align-middle">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Source</th>
+                                <th>ID</th>
+                                <th>Title</th>
+                                <th>Content Type</th>
+                                <th class="text-end">Relevance</th>
+                                <th>Relationship</th>
+                                <th>Snippet</th>
+                                <th>URL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (RelatedItem item in _relatedResponse.Items)
+                            {
+                                <tr>
+                                    <td><span class="badge bg-secondary">@item.Source</span></td>
+                                    <td><code>@item.Id</code></td>
+                                    <td title="@item.Title">@Truncate(item.Title, 60)</td>
+                                    <td><code>@item.ContentType</code></td>
+                                    <td class="text-end fw-semibold">@item.RelevanceScore.ToString("F2")</td>
+                                    <td>@item.Relationship</td>
+                                    <td title="@item.Snippet">@Truncate(item.Snippet, 50)</td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(item.Url))
+                                        {
+                                            <a href="@item.Url" target="_blank" rel="noopener"
+                                               class="btn btn-sm btn-outline-primary" title="Open in new tab">
+                                                <i class="bi bi-box-arrow-up-right"></i>
+                                            </a>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "source")]
+    public string? DefaultSource { get; set; }
+
+    private string SelectedApi { get; set; } = "";
+    private string _relatedSource = "";
+    private string _relatedId = "";
+    private bool _relatedRunning;
+    private string? _relatedError;
+    private FindRelatedResponse? _relatedResponse;
+    private string? _rawJson;
+    private bool _showRaw;
+    private List<string> _availableSources = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            ServiceEndpointsResponse endpoints = await Orchestrator.GetServiceEndpointsAsync();
+            _availableSources = endpoints.Endpoints
+                .Where(e => e.Enabled)
+                .Select(e => e.Name)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            // Fall back to well-known sources if orchestrator is unreachable
+            _availableSources = [
+                FhirAugury.Common.SourceSystems.Confluence,
+                FhirAugury.Common.SourceSystems.GitHub,
+                FhirAugury.Common.SourceSystems.Jira,
+                FhirAugury.Common.SourceSystems.Zulip,
+            ];
+        }
+
+        if (!string.IsNullOrEmpty(DefaultSource))
+        {
+            _relatedSource = DefaultSource;
+            SelectedApi = "related";
+        }
+    }
+
+    private async Task ExecuteRelatedAsync()
+    {
+        _relatedRunning = true;
+        _relatedError = null;
+        _relatedResponse = null;
+        _rawJson = null;
+        _showRaw = false;
+        StateHasChanged();
+
+        try
+        {
+            _relatedResponse = await Orchestrator.FindRelatedAsync(_relatedSource, _relatedId);
+            _rawJson = Orchestrator.FormatAsJson(_relatedResponse);
+        }
+        catch (Exception ex)
+        {
+            _relatedError = ex.Message;
+        }
+        finally
+        {
+            _relatedRunning = false;
+        }
+    }
+
+    private void ToggleRaw() => _showRaw = !_showRaw;
+
+    private static string Truncate(string text, int maxLength) =>
+        string.IsNullOrEmpty(text)
+            ? ""
+            : text.Length <= maxLength
+                ? text
+                : string.Concat(text.AsSpan(0, maxLength), "…");
+}

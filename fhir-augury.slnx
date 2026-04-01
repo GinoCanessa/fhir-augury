@@ -11,6 +11,7 @@
     <Project Path="src/FhirAugury.McpStdio/FhirAugury.McpStdio.csproj" />
     <Project Path="src/FhirAugury.McpHttp/FhirAugury.McpHttp.csproj" />
     <Project Path="src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj" />
+    <Project Path="src/FhirAugury.DevUi/FhirAugury.DevUi.csproj" />
     <Project Path="src/FhirAugury.AppHost/FhirAugury.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">

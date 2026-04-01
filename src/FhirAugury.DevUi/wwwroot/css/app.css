@@ -1,0 +1,36 @@
+/* FHIR Augury Dev UI */
+
+.spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+code {
+    font-size: 0.875em;
+}
+
+.table th {
+    white-space: nowrap;
+}
+
+pre code {
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Ensure nav links look clickable */
+.nav-link {
+    cursor: pointer;
+}
+
+/* Responsive card tweaks */
+@media (max-width: 768px) {
+    .card-body .row > [class*="col-"] {
+        margin-bottom: 0.5rem;
+    }
+}

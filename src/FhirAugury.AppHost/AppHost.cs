@@ -304,6 +304,17 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
     .WaitFor(zulip)
     .WaitFor(github);
 
+// ── Dev UI ───────────────────────────────────────────────────────
+builder.AddProject<Projects.FhirAugury_DevUi>("devui")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5210;
+        e.TargetPort = 5210;
+        e.IsProxied = false;
+    })
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
+
 // ── MCP HTTP server ─────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_McpHttp>("mcp")
     .WithEndpoint("http", e =>
