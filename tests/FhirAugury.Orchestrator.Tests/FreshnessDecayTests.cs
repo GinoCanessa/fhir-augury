@@ -78,8 +78,8 @@ public class FreshnessDecayTests
         List<ScoredItem> result = decay.Apply(items);
 
         // Jira (0.5 weight) decays less than Zulip (2.0 weight)
-        double jiraScore = result.Single(r => r.Source == SourceSystems.Jira).Score;
-        double zulipScore = result.Single(r => r.Source == SourceSystems.Zulip).Score;
+        double jiraScore = result.Single(r => string.Equals(r.Source, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)).Score;
+        double zulipScore = result.Single(r => string.Equals(r.Source, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase)).Score;
         Assert.True(jiraScore > zulipScore,
             $"Jira ({jiraScore:F4}) should decay less than Zulip ({zulipScore:F4})");
     }

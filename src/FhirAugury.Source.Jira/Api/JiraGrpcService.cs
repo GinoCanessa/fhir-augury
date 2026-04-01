@@ -164,7 +164,7 @@ public class JiraGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Jira)
+        if (!string.IsNullOrEmpty(request.SeedSource) && !string.Equals(request.SeedSource, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
             return GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -205,7 +205,7 @@ public class JiraGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == SourceSystems.Zulip)
+        if (string.Equals(request.SeedSource, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
         {
             using SqliteConnection connection = database.OpenConnection();
 
@@ -264,7 +264,7 @@ public class JiraGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == SourceSystems.Jira)
+        if (string.Equals(request.Source, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             // Jira-to-Jira links
             if (direction is "outgoing" or "both")

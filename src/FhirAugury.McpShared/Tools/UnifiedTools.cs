@@ -116,7 +116,7 @@ public static class UnifiedTools
 
             foreach (Fhiraugury.CrossReference? xref in response.References)
             {
-                string arrow = xref.SourceType == source && xref.SourceId == id ? "→" : "←";
+                string arrow = string.Equals(xref.SourceType, source, StringComparison.OrdinalIgnoreCase) && xref.SourceId == id ? "→" : "←";
                 string otherType = arrow == "→" ? xref.TargetType : xref.SourceType;
                 string otherId = arrow == "→" ? xref.TargetId : xref.SourceId;
 

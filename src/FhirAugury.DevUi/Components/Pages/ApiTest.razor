@@ -118,7 +118,7 @@
                             <option value="">— Select —</option>
                             @foreach (SourceEndpointInfo ep in _endpoints.Where(e => e.Name != "orchestrator"))
                             {
-                                <option value="@ep.Name">@ep.Name</option>
+                                <option value="@ep.Name.ToLowerInvariant()">@ep.Name</option>
                             }
                         </select>
                     </div>

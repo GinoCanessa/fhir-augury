@@ -214,7 +214,7 @@ public class GitHubGrpcService(
 
     public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.GitHub)
+        if (!string.IsNullOrEmpty(request.SeedSource) && !string.Equals(request.SeedSource, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
             return GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -263,7 +263,7 @@ public class GitHubGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == SourceSystems.Jira)
+        if (string.Equals(request.SeedSource, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             using SqliteConnection connection = database.OpenConnection();
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
@@ -368,7 +368,7 @@ public class GitHubGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == SourceSystems.GitHub && direction is "outgoing" or "both")
+        if (string.Equals(request.Source, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase) && direction is "outgoing" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, SourceId: request.Id);
             foreach (JiraXRefRecord jiraRef in refs)
@@ -440,7 +440,7 @@ public class GitHubGrpcService(
             }
         }
 
-        if (request.Source == SourceSystems.Jira && direction is "incoming" or "both")
+        if (string.Equals(request.Source, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase) && direction is "incoming" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             foreach (JiraXRefRecord jiraRef in refs)

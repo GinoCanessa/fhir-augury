@@ -158,7 +158,7 @@ public class ZulipGrpcService(
 
     public override async Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Zulip)
+        if (!string.IsNullOrEmpty(request.SeedSource) && !string.Equals(request.SeedSource, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
             return await GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -213,7 +213,7 @@ public class ZulipGrpcService(
     {
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
 
-        if (request.SeedSource == SourceSystems.Jira)
+        if (string.Equals(request.SeedSource, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             using SqliteConnection connection = database.OpenConnection();
 
@@ -287,7 +287,7 @@ public class ZulipGrpcService(
         GetItemXRefResponse response = new GetItemXRefResponse();
         string direction = request.Direction?.ToLowerInvariant() ?? "both";
 
-        if (request.Source == SourceSystems.Zulip && direction is "outgoing" or "both")
+        if (string.Equals(request.Source, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase) && direction is "outgoing" or "both")
         {
             if (int.TryParse(request.Id, out int msgId))
             {
@@ -341,7 +341,7 @@ public class ZulipGrpcService(
             }
         }
 
-        if (request.Source == SourceSystems.Jira && direction is "incoming" or "both")
+        if (string.Equals(request.Source, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase) && direction is "incoming" or "both")
         {
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.Id);
             HashSet<string> seen = [];

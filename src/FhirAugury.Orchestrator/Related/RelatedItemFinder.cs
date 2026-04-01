@@ -84,7 +84,7 @@ public class RelatedItemFinder(
         {
             foreach (SearchResultItem result in relatedResp.Results)
             {
-                if (result.Source == seedSource && result.Id == seedId) continue;
+                if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
                 string key = $"{result.Source}:{result.Id}";
                 if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
@@ -130,7 +130,7 @@ public class RelatedItemFinder(
                 {
                     foreach (SearchResultItem result in searchResponse.Results)
                     {
-                        if (result.Source == seedSource && result.Id == seedId) continue;
+                        if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
                         string key = $"{result.Source}:{result.Id}";
                         if (!candidates.TryGetValue(key, out RelatedCandidate? candidate))
@@ -191,7 +191,7 @@ public class RelatedItemFinder(
                 {
                     foreach (SearchResultItem result in metaResp.Results)
                     {
-                        if (result.Source == seedSource && result.Id == seedId) continue;
+                        if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
                         bool hasSharedMetadata =
                             result.Metadata.TryGetValue("work_group", out string? rWg) && rWg == workGroup;
