@@ -12,6 +12,12 @@ public class OrchestratorOptions
     public SearchOptions Search { get; set; } = new();
     public RelatedOptions Related { get; set; } = new();
     public FhirAugury.Common.Configuration.DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
+
+    /// <summary>
+    /// Interval in seconds between reconnection attempts for offline source services.
+    /// Set to 0 to disable automatic reconnection.
+    /// </summary>
+    public int ReconnectIntervalSeconds { get; set; } = 30;
 }
 
 public class PortConfiguration

@@ -73,6 +73,7 @@ builder.Services.AddSingleton<OrchestratorServices>();
 
 // Background workers
 builder.Services.AddHostedService<HealthCheckWorker>();
+builder.Services.AddHostedService<SourceReconnectionWorker>();
 
 WebApplication app = builder.Build();
 

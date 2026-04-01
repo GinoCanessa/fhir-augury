@@ -128,6 +128,20 @@ public class ServiceHealthMonitor(
     }
 
     /// <summary>
+    /// Checks health of a single source service and updates the cached status.
+    /// Used by the reconnection worker to refresh status of offline sources.
+    /// </summary>
+    public async Task<ServiceHealthInfo> CheckAndUpdateServiceAsync(string sourceName, CancellationToken ct)
+    {
+        ServiceHealthInfo info = await CheckServiceAsync(sourceName, ct);
+        lock (_lock)
+        {
+            _healthStatus[sourceName] = info;
+        }
+        return info;
+    }
+
+    /// <summary>
     /// Gets the current cached health status of all services.
     /// </summary>
     public Dictionary<string, ServiceHealthInfo> GetCurrentStatus()
