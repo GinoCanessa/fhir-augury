@@ -18,7 +18,8 @@ public class JiraReferenceExtractorTests
     {
         List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "Tracked as JF-100");
         Assert.Single(refs);
-        Assert.Equal("JF-100", refs[0].JiraKey);
+        Assert.Equal("FHIR-100", refs[0].JiraKey);
+        Assert.Equal("JF-100", refs[0].OriginalLiteral);
     }
 
     [Fact]
@@ -26,7 +27,8 @@ public class JiraReferenceExtractorTests
     {
         List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "Filed GF-200");
         Assert.Single(refs);
-        Assert.Equal("GF-200", refs[0].JiraKey);
+        Assert.Equal("FHIR-200", refs[0].JiraKey);
+        Assert.Equal("GF-200", refs[0].OriginalLiteral);
     }
 
     [Fact]
@@ -118,6 +120,22 @@ public class JiraReferenceExtractorTests
     {
         List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "FHIR-42");
         Assert.Equal("FHIR-42", refs[0].TargetId);
+    }
+
+    [Fact]
+    public void OriginalLiteralPreservedForFhirKey()
+    {
+        List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "See FHIR-12345 for details");
+        Assert.Single(refs);
+        Assert.Equal("FHIR-12345", refs[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void OriginalLiteralPreservedForJHash()
+    {
+        List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, "J#500");
+        Assert.Single(refs);
+        Assert.Equal("J#500", refs[0].OriginalLiteral);
     }
 
     [Fact]

@@ -3,7 +3,10 @@ using System.Text.RegularExpressions;
 namespace FhirAugury.Common.Text;
 
 /// <summary>A Jira ticket reference extracted from text.</summary>
-public record JiraTicketMatch(string JiraKey, string Context);
+/// <param name="JiraKey">Normalized Jira key (always FHIR-N form).</param>
+/// <param name="OriginalLiteral">The literal as it appeared in the source text.</param>
+/// <param name="Context">Surrounding text for context.</param>
+public record JiraTicketMatch(string JiraKey, string OriginalLiteral, string Context);
 
 /// <summary>
 /// Extracts Jira ticket references from arbitrary text using multiple patterns.
@@ -14,10 +17,10 @@ public static partial class JiraTicketExtractor
     [GeneratedRegex(@"\b(FHIR-\d+)\b")]
     private static partial Regex FhirKeyPattern();
 
-    [GeneratedRegex(@"\b(JF-\d+)\b")]
+    [GeneratedRegex(@"\b(JF-(\d+))\b")]
     private static partial Regex JfKeyPattern();
 
-    [GeneratedRegex(@"\b(GF-\d+)\b")]
+    [GeneratedRegex(@"\b(GF-(\d+))\b")]
     private static partial Regex GfKeyPattern();
 
     [GeneratedRegex(@"\bJ#(\d+)\b")]
@@ -52,15 +55,22 @@ public static partial class JiraTicketExtractor
         {
             string jiraKey = match.Groups[1].Value;
             if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
+                results.Add(new JiraTicketMatch(jiraKey, jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
 
-        // 2. Explicit key patterns: FHIR-N, JF-N, GF-N
-        AddKeyMatches(results, seen, FhirKeyPattern(), text, m => m.Groups[1].Value);
-        AddKeyMatches(results, seen, JfKeyPattern(), text, m => m.Groups[1].Value);
-        AddKeyMatches(results, seen, GfKeyPattern(), text, m => m.Groups[1].Value);
+        // 2. FHIR-N (already canonical)
+        AddKeyMatches(results, seen, FhirKeyPattern(), text,
+            m => m.Groups[1].Value, m => m.Groups[1].Value);
 
-        // 3. Shorthand: J#N → FHIR-N
+        // 3. JF-N → normalized FHIR-N
+        AddKeyMatches(results, seen, JfKeyPattern(), text,
+            m => $"FHIR-{m.Groups[2].Value}", m => m.Groups[1].Value);
+
+        // 4. GF-N → normalized FHIR-N
+        AddKeyMatches(results, seen, GfKeyPattern(), text,
+            m => $"FHIR-{m.Groups[2].Value}", m => m.Groups[1].Value);
+
+        // 5. Shorthand: J#N → FHIR-N
         foreach (Match match in JHashPattern().Matches(text))
         {
             string num = match.Groups[1].Value;
@@ -69,19 +79,19 @@ public static partial class JiraTicketExtractor
 
             string jiraKey = $"FHIR-{num}";
             if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
+                results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
 
-        // 4. Shorthand: GF#N → GF-N
+        // 6. Shorthand: GF#N → FHIR-N
         foreach (Match match in GfHashPattern().Matches(text))
         {
             string num = match.Groups[1].Value;
             if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
                 continue;
 
-            string jiraKey = $"GF-{num}";
+            string jiraKey = $"FHIR-{num}";
             if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
+                results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
 
         return results;
@@ -92,13 +102,14 @@ public static partial class JiraTicketExtractor
         HashSet<string> seen,
         Regex pattern,
         string text,
-        Func<Match, string> extractKey)
+        Func<Match, string> extractKey,
+        Func<Match, string> extractOriginal)
     {
         foreach (Match match in pattern.Matches(text))
         {
             string jiraKey = extractKey(match);
             if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
+                results.Add(new JiraTicketMatch(jiraKey, extractOriginal(match), CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
     }
 }

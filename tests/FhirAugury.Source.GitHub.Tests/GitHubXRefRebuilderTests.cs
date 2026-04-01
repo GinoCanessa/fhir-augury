@@ -25,7 +25,8 @@ public class GitHubXRefRebuilderTests
             "issue", "HL7/fhir#1", null);
 
         Assert.Single(refs);
-        Assert.Equal("JF-1234", refs[0].JiraKey);
+        Assert.Equal("FHIR-1234", refs[0].JiraKey);
+        Assert.Equal("JF-1234", refs[0].OriginalLiteral);
     }
 
     [Fact]
@@ -36,7 +37,8 @@ public class GitHubXRefRebuilderTests
             "issue", "HL7/fhir#1", null);
 
         Assert.Single(refs);
-        Assert.Equal("GF-5678", refs[0].JiraKey);
+        Assert.Equal("FHIR-5678", refs[0].JiraKey);
+        Assert.Equal("GF-5678", refs[0].OriginalLiteral);
     }
 
     [Fact]
@@ -120,8 +122,11 @@ public class GitHubXRefRebuilderTests
 
         Assert.Equal(3, refs.Count);
         Assert.Contains(refs, r => r.JiraKey == "FHIR-100");
-        Assert.Contains(refs, r => r.JiraKey == "JF-200");
-        Assert.Contains(refs, r => r.JiraKey == "GF-300");
+        Assert.Contains(refs, r => r.JiraKey == "FHIR-200");
+        Assert.Contains(refs, r => r.JiraKey == "FHIR-300");
+        Assert.Contains(refs, r => r.OriginalLiteral == "FHIR-100");
+        Assert.Contains(refs, r => r.OriginalLiteral == "JF-200");
+        Assert.Contains(refs, r => r.OriginalLiteral == "GF-300");
     }
 
     [Fact]

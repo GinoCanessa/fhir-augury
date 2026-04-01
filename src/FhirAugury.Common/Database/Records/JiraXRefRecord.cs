@@ -17,6 +17,7 @@ public partial record class JiraXRefRecord : ICrossReferenceRecord
     public required string LinkType { get; set; }
     public required string? Context { get; set; }
     public required string JiraKey { get; set; }
+    public required string OriginalLiteral { get; set; }
 
     [LdgSQLiteIgnore] public string TargetType => SourceSystems.Jira;
     [LdgSQLiteIgnore] public string TargetId => JiraKey;

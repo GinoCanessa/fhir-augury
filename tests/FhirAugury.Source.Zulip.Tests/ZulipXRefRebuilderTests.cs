@@ -94,7 +94,7 @@ public class ZulipXRefRebuilderTests : IDisposable
         Assert.Equal(3, refs.Count);
         Assert.Contains(refs, t => t.JiraKey == "FHIR-100");
         Assert.Contains(refs, t => t.JiraKey == "FHIR-200");
-        Assert.Contains(refs, t => t.JiraKey == "GF-300");
+        Assert.Contains(refs, t => t.JiraKey == "FHIR-300");
     }
 
     // ── Thread Aggregation ───────────────────────────────────────────

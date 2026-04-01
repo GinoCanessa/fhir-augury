@@ -123,6 +123,7 @@ public class GitHubDatabaseTests : IDisposable
             SourceId = "HL7/fhir#42",
             LinkType = "mentions",
             JiraKey = "FHIR-12345",
+            OriginalLiteral = "FHIR-12345",
             Context = "Fix for FHIR-12345 patient resource",
         };
 

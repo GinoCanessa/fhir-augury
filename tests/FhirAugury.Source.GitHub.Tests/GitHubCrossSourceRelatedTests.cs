@@ -65,6 +65,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         SourceId = sourceId,
         LinkType = "mentions",
         JiraKey = jiraKey,
+        OriginalLiteral = jiraKey,
         Context = context ?? $"Ref to {jiraKey}",
     };
 

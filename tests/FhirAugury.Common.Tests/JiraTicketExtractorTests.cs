@@ -21,7 +21,8 @@ public class JiraTicketExtractorTests
         List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("Related to JF-1234");
 
         Assert.Single(results);
-        Assert.Equal("JF-1234", results[0].JiraKey);
+        Assert.Equal("FHIR-1234", results[0].JiraKey);
+        Assert.Equal("JF-1234", results[0].OriginalLiteral);
     }
 
     [Fact]
@@ -30,7 +31,8 @@ public class JiraTicketExtractorTests
         List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("See GF-5678 for details");
 
         Assert.Single(results);
-        Assert.Equal("GF-5678", results[0].JiraKey);
+        Assert.Equal("FHIR-5678", results[0].JiraKey);
+        Assert.Equal("GF-5678", results[0].OriginalLiteral);
     }
 
     [Fact]
@@ -43,12 +45,13 @@ public class JiraTicketExtractorTests
     }
 
     [Fact]
-    public void ExtractTickets_GfHash_NormalizesToGf()
+    public void ExtractTickets_GfHash_NormalizesToFhir()
     {
         List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("Check GF#456 please");
 
         Assert.Single(results);
-        Assert.Equal("GF-456", results[0].JiraKey);
+        Assert.Equal("FHIR-456", results[0].JiraKey);
+        Assert.Equal("GF#456", results[0].OriginalLiteral);
     }
 
     [Fact]
@@ -59,6 +62,34 @@ public class JiraTicketExtractorTests
 
         Assert.Single(results);
         Assert.Equal("FHIR-12345", results[0].JiraKey);
+    }
+
+    [Fact]
+    public void ExtractTickets_FhirKey_OriginalMatchesNormalized()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("See FHIR-43499 for details");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-43499", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_JHash_OriginalPreserved()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("As per J#999");
+
+        Assert.Single(results);
+        Assert.Equal("J#999", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_JiraUrl_OriginalMatchesNormalized()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "See https://jira.hl7.org/browse/FHIR-12345 for info");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-12345", results[0].OriginalLiteral);
     }
 
     // ── Deduplication ────────────────────────────────────────────────
@@ -92,6 +123,26 @@ public class JiraTicketExtractorTests
         Assert.Equal("FHIR-100", results[0].JiraKey);
     }
 
+    [Fact]
+    public void ExtractTickets_GfKeyAndFhirKey_Deduplicated()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "GF-100 is the same as FHIR-100");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-100", results[0].JiraKey);
+    }
+
+    [Fact]
+    public void ExtractTickets_JfKeyAndFhirKey_Deduplicated()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "JF-100 is the same as FHIR-100");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-100", results[0].JiraKey);
+    }
+
     // ── Mixed Patterns ───────────────────────────────────────────────
 
     [Fact]
@@ -102,10 +153,16 @@ public class JiraTicketExtractorTests
 
         Assert.Equal(5, results.Count);
         Assert.Contains(results, r => r.JiraKey == "FHIR-100");
-        Assert.Contains(results, r => r.JiraKey == "JF-200");
-        Assert.Contains(results, r => r.JiraKey == "GF-300");
+        Assert.Contains(results, r => r.JiraKey == "FHIR-200");
+        Assert.Contains(results, r => r.JiraKey == "FHIR-300");
         Assert.Contains(results, r => r.JiraKey == "FHIR-400");
-        Assert.Contains(results, r => r.JiraKey == "GF-500");
+        Assert.Contains(results, r => r.JiraKey == "FHIR-500");
+
+        Assert.Contains(results, r => r.OriginalLiteral == "FHIR-100");
+        Assert.Contains(results, r => r.OriginalLiteral == "JF-200");
+        Assert.Contains(results, r => r.OriginalLiteral == "GF-300");
+        Assert.Contains(results, r => r.OriginalLiteral == "J#400");
+        Assert.Contains(results, r => r.OriginalLiteral == "GF#500");
     }
 
     [Fact]
@@ -138,7 +195,8 @@ public class JiraTicketExtractorTests
         List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("GF#42 and GF#9999", valid);
 
         Assert.Single(results);
-        Assert.Equal("GF-42", results[0].JiraKey);
+        Assert.Equal("FHIR-42", results[0].JiraKey);
+        Assert.Equal("GF#42", results[0].OriginalLiteral);
     }
 
     [Fact]

@@ -36,6 +36,7 @@ public class ConfluenceJiraRefTests : IDisposable
             SourceId = "50001",
             LinkType = "mentions",
             JiraKey = "FHIR-12345",
+            OriginalLiteral = "FHIR-12345",
             Context = "See FHIR-12345 for patient resource details",
         };
 
@@ -58,6 +59,7 @@ public class ConfluenceJiraRefTests : IDisposable
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "100", LinkType = "mentions",
             JiraKey = "FHIR-1001",
+            OriginalLiteral = "FHIR-1001",
             Context = "Referenced in page 100",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
@@ -65,6 +67,7 @@ public class ConfluenceJiraRefTests : IDisposable
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "200", LinkType = "mentions",
             JiraKey = "FHIR-1001",
+            OriginalLiteral = "FHIR-1001",
             Context = "Also referenced in page 200",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
@@ -72,6 +75,7 @@ public class ConfluenceJiraRefTests : IDisposable
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "300", LinkType = "mentions",
             JiraKey = "FHIR-9999",
+            OriginalLiteral = "FHIR-9999",
             Context = "Different ticket in page 300",
         });
 
@@ -91,13 +95,15 @@ public class ConfluenceJiraRefTests : IDisposable
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
             JiraKey = "FHIR-2001",
+            OriginalLiteral = "FHIR-2001",
             Context = "First ref in page 400",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
-            JiraKey = "GF-500",
+            JiraKey = "FHIR-500",
+            OriginalLiteral = "GF-500",
             Context = "Second ref in page 400",
         });
         JiraXRefRecord.Insert(conn, new JiraXRefRecord
@@ -105,6 +111,7 @@ public class ConfluenceJiraRefTests : IDisposable
             Id = JiraXRefRecord.GetIndex(),
             ContentType = ContentTypes.Page, SourceId = "500", LinkType = "mentions",
             JiraKey = "FHIR-3001",
+            OriginalLiteral = "FHIR-3001",
             Context = "Ref in different page",
         });
 
@@ -129,9 +136,12 @@ public class ConfluenceJiraRefTests : IDisposable
 
         Assert.Contains("FHIR-55001", keys);
         Assert.Contains("FHIR-55002", keys);
-        Assert.Contains("GF-123", keys);
+        Assert.Contains("FHIR-123", keys);   // GF-123 → normalized FHIR-123
         Assert.Contains("FHIR-99999", keys); // J#99999 → FHIR-99999
         Assert.Equal(4, keys.Count);
+
+        Assert.Contains(tickets, t => t.OriginalLiteral == "GF-123");
+        Assert.Contains(tickets, t => t.OriginalLiteral == "FHIR-55001");
         Assert.All(tickets, t => Assert.False(string.IsNullOrWhiteSpace(t.Context)));
     }
 }

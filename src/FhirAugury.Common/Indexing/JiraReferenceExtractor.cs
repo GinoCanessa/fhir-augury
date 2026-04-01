@@ -33,6 +33,7 @@ public static class JiraReferenceExtractor
                     LinkType = "mentions",
                     Context = m.Context,
                     JiraKey = m.JiraKey,
+                    OriginalLiteral = m.OriginalLiteral,
                 });
             }
         }
