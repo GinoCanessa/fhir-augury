@@ -13,7 +13,7 @@
 <div class="row g-3 mb-3">
     <div class="col-md-3">
         <label class="form-label fw-semibold">Source</label>
-        <select class="form-select" @bind="SelectedSource">
+        <select class="form-select" @bind="SelectedSource" @bind:after="OnSourceChanged">
             <option value="">— Select Source —</option>
             @foreach (SourceEndpointInfo ep in _endpoints)
             {
@@ -40,13 +40,29 @@
         <label class="form-label fw-semibold">API</label>
         <select class="form-select" @bind="SelectedApi">
             <option value="">— Select API —</option>
-            <option value="search">Search</option>
-            <option value="get-item">GetItem</option>
-            <option value="get-related">GetRelated</option>
-            <option value="get-snapshot">GetSnapshot</option>
-            <option value="get-content">GetContent</option>
-            <option value="get-stats">GetStats</option>
-            <option value="health-check">HealthCheck</option>
+            @if (_isOrchestrator)
+            {
+                <option value="unified-search">Unified Search</option>
+                <option value="find-related">Find Related</option>
+                <option value="get-xref">Get Cross-References</option>
+                <option value="get-item">Get Item (proxied)</option>
+                <option value="get-snapshot">Get Snapshot (proxied)</option>
+                <option value="get-content">Get Content (proxied)</option>
+                <option value="get-services-status">Services Status</option>
+                <option value="get-stats">Aggregate Stats</option>
+                <option value="rebuild-index">Rebuild Index</option>
+                <option value="trigger-sync">Trigger Sync</option>
+            }
+            else
+            {
+                <option value="search">Search</option>
+                <option value="get-item">GetItem</option>
+                <option value="get-related">GetRelated</option>
+                <option value="get-snapshot">GetSnapshot</option>
+                <option value="get-content">GetContent</option>
+                <option value="get-stats">GetStats</option>
+                <option value="health-check">HealthCheck</option>
+            }
         </select>
     </div>
 </div>
@@ -92,6 +108,40 @@
                     <div class="col-md-2">
                         <label class="form-label">Limit</label>
                         <input type="number" class="form-control" @bind="_limitInput" min="1" max="200" />
+                    </div>
+                }
+                @if (NeedsSourceFilter)
+                {
+                    <div class="col-md-2">
+                        <label class="form-label">Target Source</label>
+                        <select class="form-select" @bind="_sourceFilterInput">
+                            <option value="">— Select —</option>
+                            @foreach (SourceEndpointInfo ep in _endpoints.Where(e => e.Name != "orchestrator"))
+                            {
+                                <option value="@ep.Name">@ep.Name</option>
+                            }
+                        </select>
+                    </div>
+                }
+                @if (NeedsType)
+                {
+                    <div class="col-md-2">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" @bind="_typeInput">
+                            @if (SelectedApi == "rebuild-index")
+                            {
+                                <option value="all">all</option>
+                                <option value="bm25">bm25</option>
+                                <option value="fts">fts</option>
+                                <option value="cross-refs">cross-refs</option>
+                                <option value="lookup-tables">lookup-tables</option>
+                            }
+                            else
+                            {
+                                <option value="incremental">incremental</option>
+                                <option value="full">full</option>
+                            }
+                        </select>
                     </div>
                 }
                 <div class="col-md-2">
@@ -214,6 +264,8 @@
     private string _queryInput = "";
     private string _idInput = "";
     private int _limitInput = 20;
+    private string _sourceFilterInput = "";
+    private string _typeInput = "all";
 
     private bool _running;
     private string? _error;
@@ -229,13 +281,29 @@
     private SourceEndpointInfo? _selectedEndpoint =>
         _endpoints.FirstOrDefault(e => string.Equals(e.Name, SelectedSource, StringComparison.OrdinalIgnoreCase));
 
+    private bool _isOrchestrator => string.Equals(SelectedSource, "orchestrator", StringComparison.OrdinalIgnoreCase);
+
     // ── Input field visibility ───────────────────────────────────
 
-    private bool NeedsQuery => SelectedApi == "search";
-    private bool NeedsId => SelectedApi is "get-item" or "get-related" or "get-snapshot" or "get-content";
-    private bool NeedsLimit => SelectedApi is "search" or "get-related";
+    private bool NeedsQuery => _isOrchestrator
+        ? SelectedApi == "unified-search"
+        : SelectedApi == "search";
 
-    private string IdPlaceholder => SelectedSource?.ToLowerInvariant() switch
+    private bool NeedsId => _isOrchestrator
+        ? SelectedApi is "find-related" or "get-xref" or "get-item" or "get-snapshot" or "get-content"
+        : SelectedApi is "get-item" or "get-related" or "get-snapshot" or "get-content";
+
+    private bool NeedsLimit => _isOrchestrator
+        ? SelectedApi is "unified-search" or "find-related"
+        : SelectedApi is "search" or "get-related";
+
+    private bool NeedsSourceFilter => _isOrchestrator
+        && SelectedApi is "find-related" or "get-xref" or "get-item" or "get-snapshot" or "get-content";
+
+    private bool NeedsType => _isOrchestrator
+        && SelectedApi is "rebuild-index" or "trigger-sync";
+
+    private string IdPlaceholder => (_isOrchestrator ? _sourceFilterInput : SelectedSource)?.ToLowerInvariant() switch
     {
         "jira" => "e.g. FHIR-55001",
         "github" => "e.g. HL7/fhir#4006",
@@ -248,7 +316,8 @@
         _selectedEndpoint is not null
         && !string.IsNullOrEmpty(SelectedApi)
         && (!NeedsQuery || !string.IsNullOrWhiteSpace(_queryInput))
-        && (!NeedsId || !string.IsNullOrWhiteSpace(_idInput));
+        && (!NeedsId || !string.IsNullOrWhiteSpace(_idInput))
+        && (!NeedsSourceFilter || !string.IsNullOrWhiteSpace(_sourceFilterInput));
 
     // ── Initialization ───────────────────────────────────────────
 
@@ -279,6 +348,9 @@
             _endpoints = fallback.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
+        // Always inject orchestrator at the top of the list
+        _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.GrpcAddress, Orchestrator.HttpAddress));
+
         if (!string.IsNullOrEmpty(DefaultSource))
         {
             SelectedSource = DefaultSource;
@@ -300,12 +372,22 @@
 
         try
         {
-            SourceEndpointInfo endpoint = _selectedEndpoint!;
-
-            if (_protocol == "grpc")
-                await ExecuteGrpcAsync(endpoint);
+            if (_isOrchestrator)
+            {
+                if (_protocol == "grpc")
+                    await ExecuteOrchestratorGrpcAsync();
+                else
+                    await ExecuteOrchestratorHttpAsync();
+            }
             else
-                await ExecuteHttpAsync(endpoint);
+            {
+                SourceEndpointInfo endpoint = _selectedEndpoint!;
+
+                if (_protocol == "grpc")
+                    await ExecuteGrpcAsync(endpoint);
+                else
+                    await ExecuteHttpAsync(endpoint);
+            }
         }
         catch (Exception ex)
         {
@@ -404,7 +486,129 @@
         _elapsedMs = elapsed;
     }
 
+    // ── Orchestrator gRPC execution ─────────────────────────────
+
+    private async Task ExecuteOrchestratorGrpcAsync()
+    {
+        string rpcName;
+        IMessage response;
+        long elapsed;
+
+        switch (SelectedApi)
+        {
+            case "unified-search":
+                rpcName = "OrchestratorService/UnifiedSearch";
+                (response, elapsed) = await Orchestrator.UnifiedSearchGrpcAsync(_queryInput, _limitInput);
+                _searchResults = (SearchResponse)response;
+                break;
+            case "find-related":
+                rpcName = "OrchestratorService/FindRelated";
+                (response, elapsed) = await Orchestrator.FindRelatedGrpcAsync(_sourceFilterInput, _idInput, _limitInput);
+                break;
+            case "get-xref":
+                rpcName = "OrchestratorService/GetCrossReferences";
+                (response, elapsed) = await Orchestrator.GetCrossReferencesGrpcAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-item":
+                rpcName = "OrchestratorService/GetItem";
+                (response, elapsed) = await Orchestrator.GetItemGrpcAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-snapshot":
+                rpcName = "OrchestratorService/GetSnapshot";
+                (response, elapsed) = await Orchestrator.GetSnapshotGrpcAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-content":
+                rpcName = "OrchestratorService/GetContent";
+                (response, elapsed) = await Orchestrator.GetContentGrpcAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-services-status":
+                rpcName = "OrchestratorService/GetServicesStatus";
+                (response, elapsed) = await Orchestrator.GetServicesStatusGrpcAsync();
+                break;
+            case "get-stats":
+                // Stats is HTTP-only; fall back to HTTP
+                (string url, string json, long httpElapsed) = await Orchestrator.GetStatsHttpAsync();
+                _resultJson = json;
+                _requestInfo = $"GET {url} (HTTP-only)";
+                _elapsedMs = httpElapsed;
+                return;
+            case "rebuild-index":
+                rpcName = "OrchestratorService/RebuildIndex";
+                (response, elapsed) = await Orchestrator.RebuildIndexGrpcAsync(_typeInput);
+                break;
+            case "trigger-sync":
+                rpcName = "OrchestratorService/TriggerSync";
+                (response, elapsed) = await Orchestrator.TriggerSyncGrpcAsync(_typeInput);
+                break;
+            default:
+                return;
+        }
+
+        _resultJson = OrchestratorClient.FormatAsJson(response);
+        _requestInfo = $"gRPC {rpcName} → {Orchestrator.GrpcAddress}";
+        _elapsedMs = elapsed;
+    }
+
+    private async Task ExecuteOrchestratorHttpAsync()
+    {
+        string url;
+        string json;
+        long elapsed;
+
+        switch (SelectedApi)
+        {
+            case "unified-search":
+                (url, json, elapsed) = await Orchestrator.UnifiedSearchHttpAsync(_queryInput, _limitInput);
+                break;
+            case "find-related":
+                (url, json, elapsed) = await Orchestrator.FindRelatedHttpAsync(_sourceFilterInput, _idInput, _limitInput);
+                break;
+            case "get-xref":
+                (url, json, elapsed) = await Orchestrator.GetCrossReferencesHttpAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-item":
+                (url, json, elapsed) = await Orchestrator.GetItemHttpAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-snapshot":
+                (url, json, elapsed) = await Orchestrator.GetSnapshotHttpAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-content":
+                (url, json, elapsed) = await Orchestrator.GetContentHttpAsync(_sourceFilterInput, _idInput);
+                break;
+            case "get-services-status":
+                (url, json, elapsed) = await Orchestrator.GetServicesStatusHttpAsync();
+                break;
+            case "get-stats":
+                (url, json, elapsed) = await Orchestrator.GetStatsHttpAsync();
+                break;
+            case "rebuild-index":
+                (url, json, elapsed) = await Orchestrator.RebuildIndexHttpAsync(_typeInput);
+                break;
+            case "trigger-sync":
+                (url, json, elapsed) = await Orchestrator.TriggerSyncHttpAsync(_typeInput);
+                break;
+            default:
+                return;
+        }
+
+        _resultJson = json;
+        _requestInfo = $"{(SelectedApi is "rebuild-index" or "trigger-sync" ? "POST" : "GET")} {url}";
+        _elapsedMs = elapsed;
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
+
+    private void OnSourceChanged()
+    {
+        SelectedApi = "";
+        _sourceFilterInput = "";
+        _typeInput = "all";
+        _error = null;
+        _resultJson = null;
+        _requestInfo = null;
+        _elapsedMs = null;
+        _searchResults = null;
+    }
 
     private void ToggleRaw() => _showRaw = !_showRaw;
 
@@ -417,6 +621,12 @@
         "get-content" => "Get Content",
         "get-stats" => "Get Stats",
         "health-check" => "Health Check",
+        "unified-search" => "Unified Search",
+        "find-related" => "Find Related",
+        "get-xref" => "Get Cross-References",
+        "get-services-status" => "Services Status",
+        "rebuild-index" => "Rebuild Index",
+        "trigger-sync" => "Trigger Sync",
         _ => api,
     };
 
