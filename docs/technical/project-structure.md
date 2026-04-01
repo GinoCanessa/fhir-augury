@@ -28,7 +28,7 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (12 projects)
+│   └── (13 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
     └── (7 test projects)
@@ -204,15 +204,31 @@ FhirAugury.McpHttp/
 
 ### `FhirAugury.Cli`
 
-Command-line interface (10+ commands via gRPC to orchestrator).
+Command-line interface (13 commands via JSON-in/JSON-out, gRPC to orchestrator).
 
 ```
 FhirAugury.Cli/
-├── Commands/                 # Command implementations
-├── OutputFormatters/         # Table/JSON/Markdown formatting
+├── Dispatch/                 # CommandDispatcher and handler implementations
+│   └── Handlers/             # Per-command handlers (SearchHandler, GetHandler, etc.)
+├── Models/                   # Request/response models and OutputEnvelope
+├── Schemas/                  # SchemaGenerator for JSON schema output
 ├── GrpcClientFactory.cs      # Creates gRPC channel to orchestrator
-├── Program.cs                # Entry point: RootCommand with subcommands
+├── Program.cs                # Entry point: JSON-in/JSON-out with --json, --input, --help
 └── FhirAugury.Cli.csproj
+```
+
+### `FhirAugury.DevUi`
+
+Blazor Server operational dashboard (HTTP :5210). Connects to the orchestrator
+via gRPC to display service status, trigger index rebuilds, and browse data.
+
+```
+FhirAugury.DevUi/
+├── Components/               # App.razor, Layout, Pages, Routes.razor
+├── Services/                 # OrchestratorClient (gRPC wrapper)
+├── Program.cs                # Entry point: Blazor Server with ServiceDefaults
+├── appsettings.json          # Default configuration
+└── FhirAugury.DevUi.csproj
 ```
 
 ### `FhirAugury.ServiceDefaults`
@@ -240,8 +256,8 @@ Key capabilities:
 ### `FhirAugury.AppHost`
 
 [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
-application host. Orchestrates all seven projects for local development with an
-integrated dashboard. Confluence, MCP HTTP, and CLI use `WithExplicitStart()`
+application host. Orchestrates all eight projects for local development with an
+integrated dashboard. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`
 and must be started manually from the dashboard.
 
 ```
@@ -251,13 +267,13 @@ FhirAugury.AppHost/
 ├── appsettings.json                 # Logging overrides (suppresses Aspire.Hosting.Dcp)
 ├── Properties/
 │   └── launchSettings.json          # Dashboard and resource service endpoints
-└── FhirAugury.AppHost.csproj        # Sdk="Aspire.AppHost.Sdk/13.2.0"
+└── FhirAugury.AppHost.csproj        # Sdk="Aspire.AppHost.Sdk/13.2.1"
 ```
 
 Uses `Aspire.AppHost.Sdk`. Registers each service project with pinned
 HTTP/gRPC ports (`isProxied: false`) and configures the orchestrator to
 `WaitFor()` Jira, Zulip, and GitHub source services. Zulip and GitHub
-also wait for Jira. Confluence, MCP HTTP, and CLI use `WithExplicitStart()`.
+also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`.
 
 ## Test Projects
 

@@ -21,7 +21,7 @@ dotnet build fhir-augury.slnx
 
 ## Solution Structure
 
-The v2 architecture uses 12 independent projects:
+The v2 architecture uses 13 independent projects:
 
 | Project | Type | Description |
 |---------|------|-------------|
@@ -35,6 +35,7 @@ The v2 architecture uses 12 independent projects:
 | `FhirAugury.McpHttp` | Service | MCP server for LLM agents (HTTP/SSE transport, :5200) |
 | `FhirAugury.McpShared` | Library | Shared MCP tool implementations and gRPC client registration |
 | `FhirAugury.Cli` | CLI Tool | Command-line interface |
+| `FhirAugury.DevUi` | Blazor Server | Operational dashboard (:5210) |
 | `FhirAugury.ServiceDefaults` | Library | Shared Aspire defaults (OpenTelemetry, health, resilience) |
 | `FhirAugury.AppHost` | Aspire Host | Orchestrates all services for local development |
 
@@ -102,8 +103,8 @@ dotnet run --project src/FhirAugury.AppHost
 ```
 
 The AppHost registers all source services, the orchestrator, the MCP HTTP
-server, and the CLI tool with their standard ports. The orchestrator waits for
-Jira, Zulip, and GitHub to be healthy before starting. Confluence, MCP HTTP,
+server, the Dev UI, and the CLI tool with their standard ports. The orchestrator waits for
+Jira, Zulip, and GitHub to be healthy before starting. Confluence, Dev UI, MCP HTTP,
 and the CLI use explicit start and must be started manually from the Aspire
 dashboard. The Aspire dashboard (URL shown in the console) provides real-time
 logs, distributed traces, and metrics.
@@ -163,8 +164,11 @@ in the Aspire AppHost.
 
 ## Running the CLI
 
+The CLI uses a JSON-in/JSON-out interface via gRPC:
+
 ```bash
-dotnet run --project src/FhirAugury.Cli -- [command] [options]
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
+dotnet run --project src/FhirAugury.Cli -- --help --pretty
 ```
 
 ## Running Tests

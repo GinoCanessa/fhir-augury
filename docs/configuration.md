@@ -122,7 +122,7 @@ pattern.
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
     "MinSyncAge": "04:00:00",
-    "RebuildFromCacheOnStartup": false,
+    "ReloadFromCacheOnStartup": false,
     "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
     "OnlyWebPublic": true,
@@ -169,8 +169,8 @@ pattern.
 | `DatabasePath` | string | `./data/zulip.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `04:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
-| `RebuildFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
-| `ReindexTicketsOnStartup` | bool | `false` | Force rebuild of Jira ticket reference indexes on startup. Skipped when `RebuildFromCacheOnStartup` is `true` (cache rebuilds already include ticket indexing). |
+| `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
+| `ReindexTicketsOnStartup` | bool | `false` | Force rebuild of Jira ticket reference indexes on startup. Skipped when `ReloadFromCacheOnStartup` is `true` (cache rebuilds already include ticket indexing). |
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
 | `OnlyWebPublic` | bool | `true` | Restrict ingestion to web-public streams only |
 | `StreamBaselineValues` | Dictionary | `{}` | Per-stream baseline multipliers for search ranking (stream name → value 0–10, default 5). Scores are multiplied by `value / 5.0`. |
@@ -332,6 +332,22 @@ pattern.
       "SourcePath": "./cache/dictionary",
       "DatabasePath": "./data/dictionary.db",
       "ForceRebuild": false
+    },
+    "FileContentIndexing": {
+      "Enabled": true,
+      "MaxFileSizeBytes": 524288,
+      "MaxExtractedTextLength": 65536,
+      "MaxFilesPerRepo": 50000,
+      "AdditionalSkipExtensions": [],
+      "AdditionalSkipDirectories": [],
+      "IncludeOnlyPaths": [],
+      "IgnorePatterns": [
+        "**/test-data/**",
+        "**/testdata/**",
+        "**/*.generated.*",
+        "**/vendor/**",
+        "**/third_party/**"
+      ]
     }
   }
 }
@@ -374,6 +390,14 @@ pattern.
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
+| `FileContentIndexing.Enabled` | bool | `true` | Enable repository file content indexing |
+| `FileContentIndexing.MaxFileSizeBytes` | int | `524288` | Maximum file size in bytes to index (512 KB) |
+| `FileContentIndexing.MaxExtractedTextLength` | int | `65536` | Maximum extracted text length per file (64 KB) |
+| `FileContentIndexing.MaxFilesPerRepo` | int | `50000` | Maximum number of files to index per repository |
+| `FileContentIndexing.AdditionalSkipExtensions` | string[] | `[]` | Additional file extensions to skip |
+| `FileContentIndexing.AdditionalSkipDirectories` | string[] | `[]` | Additional directory names to skip |
+| `FileContentIndexing.IncludeOnlyPaths` | string[] | `[]` | When non-empty, only index files under these paths |
+| `FileContentIndexing.IgnorePatterns` | string[] | (defaults) | Gitignore-style glob patterns for files/directories to exclude. Merged with `.augury-index-ignore` in the repo root. |
 
 ---
 
@@ -408,8 +432,10 @@ pattern.
       "Bm25SimilarityWeight": 3.0,
       "SharedMetadataWeight": 2.0,
       "DefaultLimit": 20,
-      "MaxKeyTerms": 15
+      "MaxKeyTerms": 15,
+      "PerSourceTimeoutSeconds": 2
     },
+    "ReconnectIntervalSeconds": 30,
     "DictionaryDatabase": {
       "SourcePath": "./cache/dictionary",
       "DatabasePath": "./data/dictionary.db",
@@ -441,6 +467,8 @@ pattern.
 | `Related.SharedMetadataWeight` | double | `2.0` | Weight for shared metadata |
 | `Related.DefaultLimit` | int | `20` | Default related items limit |
 | `Related.MaxKeyTerms` | int | `15` | Max terms for similarity |
+| `Related.PerSourceTimeoutSeconds` | int | `2` | Timeout in seconds for each source during related item queries |
+| `ReconnectIntervalSeconds` | int | `30` | Interval in seconds between reconnection attempts for offline sources. Set to 0 to disable. |
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |

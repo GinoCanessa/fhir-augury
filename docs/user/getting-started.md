@@ -71,7 +71,7 @@ source.
 ### 4. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Option B: .NET Aspire (Recommended for Development)
@@ -94,11 +94,11 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. Seven projects are
-registered: four sources, the orchestrator, the MCP HTTP server, and the CLI
-tool. Confluence, the MCP HTTP server, and the CLI use `WithExplicitStart()`
-and must be started manually from the Aspire dashboard. The orchestrator waits
-for Jira, Zulip, and GitHub to be healthy before starting.
+The Aspire dashboard URL is shown in the console output. Eight projects are
+registered: four sources, the orchestrator, the MCP HTTP server, the Dev UI,
+and the CLI tool. Confluence, Dev UI, the MCP HTTP server, and the CLI use
+`WithExplicitStart()` and must be started manually from the Aspire dashboard.
+The orchestrator waits for Jira, Zulip, and GitHub to be healthy before starting.
 
 ### 3. Configure credentials
 
@@ -111,7 +111,7 @@ source.
 ### 4. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Option C: Run from Source
@@ -186,7 +186,7 @@ for details.
 ### 6. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Configure Credentials
@@ -376,52 +376,50 @@ services:
 ### Search across all sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "FHIR R5 patient resource"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"FHIR R5 patient resource"}' --pretty
 ```
 
 ### Filter search to specific sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "subscription" --sources jira,zulip
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"subscription","sources":["jira","zulip"]}' --pretty
 ```
 
 ### Get full details of an item
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499 --comments
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"get","source":"jira","id":"FHIR-43499"}' --pretty
 ```
 
 ### Find related items
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499 --target-sources zulip
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"related","source":"jira","id":"FHIR-43499"}' --pretty
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"related","source":"jira","id":"FHIR-43499","targetSources":["zulip"]}' --pretty
 ```
 
 ### View cross-references
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499 --direction both
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"xref","source":"jira","id":"FHIR-43499"}' --pretty
 ```
 
 ### Generate a Markdown snapshot
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- snapshot jira FHIR-43499 --comments
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"snapshot","source":"jira","id":"FHIR-43499","includeComments":true}' --pretty
 ```
 
 ### Check service health
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- services status
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"services","action":"status"}' --pretty
 ```
 
-### Output as JSON
+### Pretty-print output
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "terminology" --format json
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"terminology"}' --pretty
 ```
 
 ## MCP Integration

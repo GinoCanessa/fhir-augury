@@ -114,7 +114,7 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "DatabasePath": "./data/zulip.db",
     "SyncSchedule": "04:00:00",
     "MinSyncAge": "04:00:00",
-    "RebuildFromCacheOnStartup": false,
+    "ReloadFromCacheOnStartup": false,
     "ReindexTicketsOnStartup": false,
     "ExcludedStreamIds": [],
     "OnlyWebPublic": true,

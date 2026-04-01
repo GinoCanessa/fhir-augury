@@ -85,11 +85,11 @@ Unified search across all sources.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | Yes | Search query text |
+| `q` | string | Yes | Search query text |
 | `sources` | string | No | Comma-separated source filter (omit for all) |
 | `limit` | int | No | Maximum results (default: 20) |
 
-**Example:** `GET /api/v1/search?query=patient+matching&sources=jira,zulip&limit=10`
+**Example:** `GET /api/v1/search?q=patient+matching&sources=jira,zulip&limit=10`
 
 ### Related Items
 
@@ -123,7 +123,7 @@ Get cross-references for an item.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `direction` | string | `outgoing` | `outgoing`, `incoming`, or `both` |
+| `direction` | string | `both` | `outgoing`, `incoming`, or `both` |
 
 **Example:** `GET /api/v1/xref/jira/FHIR-43499?direction=both`
 
@@ -153,19 +153,14 @@ Get the full content of an item.
 
 Trigger an ingestion sync on source services.
 
-**Request Body:**
+**Query Parameters:**
 
-```json
-{
-  "sources": ["jira"],
-  "type": "incremental"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `sources` | string[] | No | Sources to sync (omit for all) |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
 | `type` | string | No | `full` or `incremental` (default: `incremental`) |
+| `sources` | string | No | Comma-separated sources to sync (omit for all) |
+
+**Example:** `POST /api/v1/ingest/trigger?type=incremental&sources=jira,zulip`
 
 ### Rebuild Index
 
@@ -202,7 +197,11 @@ Structured Zulip message query (proxied to Zulip source).
 The MCP HTTP server (`FhirAugury.McpHttp`) is a separate ASP.NET Core service
 that exposes MCP tools via HTTP/SSE transport. It is distinct from the
 orchestrator — it connects to the orchestrator and source services via gRPC as
-a client.
+a client. The server provides 18 MCP tools (6 unified, 6 Jira, 6 Zulip).
+
+> **Note:** Confluence and GitHub do not yet have dedicated MCP tools.
+> They are accessible via the unified Search, FindRelated, and
+> GetCrossReferences tools.
 
 ### MCP Endpoint
 

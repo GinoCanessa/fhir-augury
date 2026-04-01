@@ -64,6 +64,7 @@ Ports: HTTP (even) / gRPC (odd)
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
 | **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, gRPC to orchestrator) |
+| **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, gRPC to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
 
@@ -87,6 +88,7 @@ FhirAugury.McpShared            ← Common (shared MCP tool implementations, gRP
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
 FhirAugury.McpHttp              ← McpShared + ServiceDefaults (HTTP/SSE transport, ASP.NET Core)
 FhirAugury.Cli                  ← Common (gRPC client to Orchestrator)
+FhirAugury.DevUi                ← Common + ServiceDefaults (Blazor Server, gRPC to Orchestrator)
 
 FhirAugury.AppHost             ← Aspire AppHost (references all service projects for orchestration)
 ```
@@ -293,7 +295,7 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-seven projects with fixed ports matching the existing convention:
+eight projects with fixed ports matching the existing convention:
 
 | Service | HTTP | gRPC |
 |---------|------|------|
@@ -302,11 +304,12 @@ seven projects with fixed ports matching the existing convention:
 | source-confluence | 5180 | 5181 |
 | source-github | 5190 | 5191 |
 | orchestrator | 5150 | 5151 |
+| devui | 5210 | — |
 | mcp | 5200 | — |
 | cli | — | — |
 
 The orchestrator uses `WaitFor()` to depend on Jira, Zulip, and GitHub
-source services. Confluence, the MCP HTTP server, and the CLI use
+source services. Confluence, Dev UI, the MCP HTTP server, and the CLI use
 `WithExplicitStart()` to allow manual triggering. All endpoints use
 `isProxied: false` so services listen on their own ports directly (no
 Aspire reverse proxy).

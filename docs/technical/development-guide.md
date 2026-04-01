@@ -180,13 +180,14 @@ McpHttp includes Aspire ServiceDefaults and is registered in the AppHost.
 
 ### CLI
 
-The CLI connects to the orchestrator via gRPC:
+The CLI connects to the orchestrator via gRPC and uses a JSON-in/JSON-out
+interface:
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- [command] [options]
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 
-# Specify orchestrator endpoint
-dotnet run --project src/FhirAugury.Cli -- --orchestrator http://localhost:5151 search -q "patient"
+# Get help for all commands
+dotnet run --project src/FhirAugury.Cli -- --help --pretty
 ```
 
 ## Local Configuration

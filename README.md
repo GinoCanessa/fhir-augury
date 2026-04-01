@@ -57,8 +57,8 @@ dotnet run --project src/FhirAugury.AppHost
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and
-metrics at the URL shown in the console output. Confluence, MCP HTTP, and CLI
-use explicit start and must be started manually from the dashboard.
+metrics at the URL shown in the console output. Confluence, Dev UI, MCP HTTP,
+and CLI use explicit start and must be started manually from the dashboard.
 
 ### From Source
 
@@ -82,6 +82,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Confluence | [5180](http://localhost:5180/health) | 5181 | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | 5191 | HL7 GitHub issues, PRs, and commits |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | — | MCP server (HTTP/SSE transport) |
+| Dev UI | [5210](http://localhost:5210) | — | Blazor Server operational dashboard |
 
 ## Features
 
@@ -190,6 +191,7 @@ docker compose --profile jira-only up -d   # Single source
 | MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
 | MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and gRPC client registration |
 | CLI | `src/FhirAugury.Cli` | Command-line interface via gRPC |
+| Dev UI | `src/FhirAugury.DevUi` | Blazor Server operational dashboard |
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
@@ -235,7 +237,7 @@ docker compose --profile jira-only up -d   # Single source
 - **Database:** SQLite with FTS5 and WAL mode (per service)
 - **Communication:** gRPC (inter-service), HTTP (health/REST)
 - **Protobuf:** Shared definitions in `protos/`
-- **CLI framework:** System.CommandLine
+- **CLI framework:** JSON-in/JSON-out interface via gRPC
 - **MCP:** Model Context Protocol (stdio and HTTP/SSE transports)
 - **Containerization:** Docker with multi-stage builds
 - **Orchestration:** .NET Aspire (optional, for development)
