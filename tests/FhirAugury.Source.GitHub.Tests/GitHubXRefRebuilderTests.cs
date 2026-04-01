@@ -3,12 +3,12 @@ using FhirAugury.Source.GitHub.Ingestion;
 
 namespace FhirAugury.Source.GitHub.Tests;
 
-public class JiraRefExtractorTests
+public class GitHubXRefRebuilderTests
 {
     [Fact]
     public void ExtractJiraReferences_FhirPattern_ExtractsCorrectly()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "Fix for FHIR-43499 and FHIR-12345",
             "issue", "HL7/fhir#1", hasIssues: true, [], null);
 
@@ -20,7 +20,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_JfPattern_ExtractsCorrectly()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "Related to JF-1234",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -31,7 +31,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_GfPattern_ExtractsCorrectly()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "See GF-5678 for details",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -42,7 +42,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_JHash_NormalizesToFhir()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "As per J#999",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -55,7 +55,7 @@ public class JiraRefExtractorTests
     {
         HashSet<int> githubNumbers = new HashSet<int> { 42 };
 
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "See #42 for context",
             "issue", "HL7/fhir#1", hasIssues: true, githubNumbers, null);
 
@@ -67,7 +67,7 @@ public class JiraRefExtractorTests
     {
         HashSet<int> githubNumbers = new HashSet<int> { 1, 2, 3 };
 
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "See #9999 for context",
             "issue", "HL7/fhir#1", hasIssues: true, githubNumbers, null);
 
@@ -78,7 +78,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_BareHash_HasIssuesFalse_AllTreatedAsJira()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "References #100, #200, #300",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -94,7 +94,7 @@ public class JiraRefExtractorTests
         // validJiraNumbers only affects J#N and bare #NNN patterns, not explicit FHIR-N
         HashSet<int> validNumbers = new HashSet<int> { 42 };
 
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "J#42 and J#9999 and #100",
             "issue", "HL7/fhir#1", hasIssues: false, [], validNumbers);
 
@@ -106,7 +106,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_Deduplication_NoDuplicates()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "FHIR-100 is related to FHIR-100 and also FHIR-100",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -116,7 +116,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_EmptyText_ReturnsEmpty()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "", "issue", "HL7/fhir#1", hasIssues: false, [], null);
         Assert.Empty(refs);
     }
@@ -124,7 +124,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_NullText_ReturnsEmpty()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             null!, "issue", "HL7/fhir#1", hasIssues: false, [], null);
         Assert.Empty(refs);
     }
@@ -132,7 +132,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_Context_ExtractsSurroundingText()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "This is some surrounding context text about FHIR-42 and more text after it",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -144,7 +144,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_MixedPatterns_AllExtracted()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "FHIR-100 and JF-200 and GF-300 mentioned together",
             "issue", "HL7/fhir#1", hasIssues: false, [], null);
 
@@ -159,7 +159,7 @@ public class JiraRefExtractorTests
     {
         HashSet<int> validNumbers = new HashSet<int> { 42 };
 
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "J#42 and J#9999",
             "issue", "HL7/fhir#1", hasIssues: false, [], validNumbers);
 
@@ -170,7 +170,7 @@ public class JiraRefExtractorTests
     [Fact]
     public void ExtractJiraReferences_SourceFields_AreSet()
     {
-        List<JiraXRefRecord> refs = JiraRefExtractor.ExtractJiraReferences(
+        List<JiraXRefRecord> refs = GitHubXRefRebuilder.ExtractJiraReferences(
             "FHIR-12345",
             "issue", "HL7/us-core#1", hasIssues: false, [], null);
 

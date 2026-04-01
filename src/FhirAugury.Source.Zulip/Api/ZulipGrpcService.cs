@@ -26,7 +26,7 @@ public class ZulipGrpcService(
     ZulipIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    ZulipTicketIndexer ticketIndexer,
+    ZulipXRefRebuilder xrefRebuilder,
     ZulipIndexer indexer,
     FhirAugury.Common.Indexing.IIndexTracker indexTracker,
     IOptions<ZulipServiceOptions> optionsAccessor)
@@ -585,12 +585,12 @@ public class ZulipGrpcService(
         {
             workQueue.Enqueue(ct =>
             {
-                ticketIndexer.RebuildFullIndex(ct);
+                xrefRebuilder.RebuildAll(ct);
                 return Task.CompletedTask;
             }, "rebuild-jira-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued jira ticket index rebuild" });
+                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck
@@ -623,7 +623,7 @@ public class ZulipGrpcService(
                     indexTracker.MarkStarted("cross-refs");
                     try
                     {
-                        ticketIndexer.RebuildFullIndex(ct);
+                        xrefRebuilder.RebuildAll(ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex)
@@ -660,7 +660,7 @@ public class ZulipGrpcService(
                     indexTracker.MarkStarted("cross-refs");
                     try
                     {
-                        ticketIndexer.RebuildFullIndex(ct);
+                        xrefRebuilder.RebuildAll(ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex)

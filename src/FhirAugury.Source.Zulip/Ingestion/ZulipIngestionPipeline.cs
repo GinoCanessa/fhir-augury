@@ -18,7 +18,7 @@ public class ZulipIngestionPipeline(
     ZulipSource source,
     ZulipDatabase database,
     ZulipIndexer indexer,
-    ZulipTicketIndexer ticketIndexer,
+    ZulipXRefRebuilder xrefRebuilder,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     IOptions<ZulipServiceOptions> optionsAccessor,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
@@ -193,7 +193,7 @@ public class ZulipIngestionPipeline(
         tracker.MarkStarted("cross-refs");
         try
         {
-            ticketIndexer.RebuildFullIndex(ct);
+            xrefRebuilder.RebuildAll(ct);
             tracker.MarkCompleted("cross-refs");
         }
         catch (Exception ex)

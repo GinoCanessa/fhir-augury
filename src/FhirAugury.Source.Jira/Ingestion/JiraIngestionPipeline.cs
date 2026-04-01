@@ -201,7 +201,7 @@ public class JiraIngestionPipeline(
         tracker.MarkStarted("cross-refs");
         try
         {
-            xrefRebuilder.ExtractAll(ct);
+            xrefRebuilder.RebuildAll(ct);
             tracker.MarkCompleted("cross-refs");
         }
         catch (Exception ex)

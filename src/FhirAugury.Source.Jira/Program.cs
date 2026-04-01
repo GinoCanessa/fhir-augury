@@ -203,7 +203,7 @@ else
     if (jiraDb.TableIsEmpty("xref_zulip"))
     {
         startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        app.Services.GetRequiredService<JiraXRefRebuilder>().ExtractAll(CancellationToken.None);
+        app.Services.GetRequiredService<JiraXRefRebuilder>().RebuildAll(CancellationToken.None);
     }
 
     if (jiraDb.TableIsEmpty("index_keywords"))

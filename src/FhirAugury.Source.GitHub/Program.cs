@@ -92,7 +92,7 @@ builder.Services.AddSingleton<IGitHubDataProvider>(sp =>
 builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
 builder.Services.AddSingleton<GitHubFileContentIndexer>();
-builder.Services.AddSingleton<JiraRefExtractor>();
+builder.Services.AddSingleton<GitHubXRefRebuilder>();
 builder.Services.AddSingleton(sp =>
 {
     GitHubServiceOptions opts = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
@@ -219,11 +219,11 @@ else
     if (githubDb.TableIsEmpty("xref_jira"))
     {
         startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        JiraRefExtractor jiraRefExtractor = app.Services.GetRequiredService<JiraRefExtractor>();
+        GitHubXRefRebuilder xrefRebuilder = app.Services.GetRequiredService<GitHubXRefRebuilder>();
         List<string> repos = [.. githubOpts.Repositories, .. githubOpts.AdditionalRepositories];
         foreach (string repo in repos)
         {
-            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, CancellationToken.None);
+            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, CancellationToken.None);
         }
     }
 

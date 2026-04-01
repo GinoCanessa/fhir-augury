@@ -644,16 +644,16 @@ public class JiraGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals("zulip", StringComparison.OrdinalIgnoreCase))
+        if (request.Source.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
         {
             workQueue.Enqueue(ct =>
             {
-                xrefRebuilder.ExtractAll(ct);
+                xrefRebuilder.RebuildAll(ct);
                 return Task.CompletedTask;
             }, "rebuild-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued xref rebuild" });
+                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck
@@ -687,7 +687,7 @@ public class JiraGrpcService(
                     indexTracker.MarkStarted("cross-refs");
                     try
                     {
-                        xrefRebuilder.ExtractAll(ct);
+                        xrefRebuilder.RebuildAll(ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex)
@@ -738,7 +738,7 @@ public class JiraGrpcService(
                     indexTracker.MarkStarted("cross-refs");
                     try
                     {
-                        xrefRebuilder.ExtractAll(ct);
+                        xrefRebuilder.RebuildAll(ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex)

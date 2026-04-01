@@ -588,7 +588,7 @@ public class ConfluenceGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             workQueue.Enqueue(ct =>
             {
@@ -597,7 +597,7 @@ public class ConfluenceGrpcService(
             }, "rebuild-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued cross-ref index rebuild" });
+                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck

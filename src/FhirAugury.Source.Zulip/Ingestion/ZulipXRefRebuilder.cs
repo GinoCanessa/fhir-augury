@@ -6,19 +6,19 @@ using FhirAugury.Source.Zulip.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
-namespace FhirAugury.Source.Zulip.Indexing;
+namespace FhirAugury.Source.Zulip.Ingestion;
 
 /// <summary>
 /// Scans Zulip messages for cross-references (Jira, GitHub, Confluence, FHIR elements)
 /// using shared extractors, and populates xref tables and thread-ticket link tables.
 /// </summary>
-public class ZulipTicketIndexer(ZulipDatabase database, ILogger<ZulipTicketIndexer> logger)
+public class ZulipXRefRebuilder(ZulipDatabase database, ILogger<ZulipXRefRebuilder> logger)
 {
     /// <summary>
     /// Rebuilds all cross-reference and ticket reference tables from scratch.
     /// Scans every message, runs all extractors, and rebuilds thread-ticket aggregation.
     /// </summary>
-    public void RebuildFullIndex(CancellationToken ct = default)
+    public void RebuildAll(CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 

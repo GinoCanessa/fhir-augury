@@ -1,3 +1,4 @@
+using System.Text;
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
@@ -98,6 +99,138 @@ public static class ZulipHttpApi
                 message.Timestamp,
                 url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(message.StreamName)}/topic/{Uri.EscapeDataString(message.Topic)}/near/{message.ZulipMessageId}",
             });
+        });
+
+        api.MapGet("/messages/{id:int}/related", (int id, int? limit, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
+        {
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 10, 50);
+
+            ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
+            if (message is null)
+                return Results.NotFound(new { error = $"Message {id} not found" });
+
+            string sql = """
+                SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp
+                FROM zulip_messages
+                WHERE StreamName = @streamName AND Topic = @topic AND ZulipMessageId != @msgId
+                ORDER BY Timestamp DESC
+                LIMIT @limit
+                """;
+
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            cmd.Parameters.AddWithValue("@streamName", message.StreamName);
+            cmd.Parameters.AddWithValue("@topic", message.Topic);
+            cmd.Parameters.AddWithValue("@msgId", id);
+            cmd.Parameters.AddWithValue("@limit", maxResults);
+
+            List<object> results = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
+                results.Add(new
+                {
+                    messageId = msgId,
+                    title = $"[{streamName}] {topic}",
+                    sender = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}/near/{msgId}",
+                });
+            }
+
+            return Results.Ok(new { sourceKey = id.ToString(), related = results });
+        });
+
+        api.MapGet("/messages/{id:int}/snapshot", (int id, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
+        {
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
+            if (message is null)
+                return Results.NotFound(new { error = $"Message {id} not found" });
+
+            StringBuilder md = new StringBuilder();
+            md.AppendLine($"# [{message.StreamName}] > {message.Topic}");
+            md.AppendLine();
+
+            using SqliteCommand cmd = new SqliteCommand(
+                "SELECT SenderName, ContentPlain, Timestamp FROM zulip_messages WHERE StreamName = @streamName AND Topic = @topic ORDER BY Timestamp ASC",
+                connection);
+            cmd.Parameters.AddWithValue("@streamName", message.StreamName);
+            cmd.Parameters.AddWithValue("@topic", message.Topic);
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string sender = reader.GetString(0);
+                string content = reader.IsDBNull(1) ? "" : reader.GetString(1);
+                string ts = reader.IsDBNull(2) ? "" : reader.GetString(2);
+
+                if (DateTimeOffset.TryParse(ts, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset dt))
+                    md.AppendLine($"### {sender} ({dt:yyyy-MM-dd HH:mm})");
+                else
+                    md.AppendLine($"### {sender}");
+
+                md.AppendLine();
+                md.AppendLine(content);
+                md.AppendLine();
+            }
+
+            return Results.Ok(new
+            {
+                key = id.ToString(),
+                markdown = md.ToString(),
+                url = $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(message.StreamName)}/topic/{Uri.EscapeDataString(message.Topic)}/near/{id}",
+            });
+        });
+
+        api.MapGet("/messages/{id:int}/content", (int id, string? format, ZulipDatabase db) =>
+        {
+            using SqliteConnection connection = db.OpenConnection();
+            ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: id);
+            if (message is null)
+                return Results.NotFound(new { error = $"Message {id} not found" });
+
+            string content = format?.Equals("html", StringComparison.OrdinalIgnoreCase) == true
+                ? (message.ContentHtml ?? "")
+                : (message.ContentPlain ?? "");
+
+            return Results.Ok(new { key = id.ToString(), content, format = format ?? "text" });
+        });
+
+        api.MapGet("/messages", (int? limit, int? offset, ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
+        {
+            ZulipServiceOptions options = optsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 50, 500);
+            int skip = Math.Max(offset ?? 0, 0);
+
+            string sql = "SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp FROM zulip_messages ORDER BY Timestamp DESC LIMIT @limit OFFSET @offset";
+
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            cmd.Parameters.AddWithValue("@limit", maxResults);
+            cmd.Parameters.AddWithValue("@offset", skip);
+
+            List<object> items = new List<object>();
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
+                items.Add(new
+                {
+                    messageId = msgId,
+                    title = $"[{streamName}] {topic}",
+                    sender = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    timestamp = reader.IsDBNull(4) ? null : reader.GetString(4),
+                });
+            }
+
+            return Results.Ok(new { total = items.Count, items });
         });
 
         api.MapGet("/streams", (ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) =>
@@ -289,9 +422,10 @@ public static class ZulipHttpApi
                     s.Name,
                     s.Description,
                     s.IsRebuilding,
+                    s.LastRebuildStartedAt,
+                    s.LastRebuildCompletedAt,
                     s.RecordCount,
                     s.LastError,
-                    s.LastRebuildCompletedAt,
                 }),
             });
         });
@@ -314,7 +448,7 @@ public static class ZulipHttpApi
             IngestionWorkQueue workQueue,
             ZulipDatabase database,
             ZulipIndexer indexer,
-            ZulipTicketIndexer ticketIndexer,
+            ZulipXRefRebuilder xrefRebuilder,
             IIndexTracker indexTracker) =>
         {
             string indexType = (req.Query["type"].FirstOrDefault() ?? "all").ToLowerInvariant();
@@ -340,7 +474,7 @@ public static class ZulipHttpApi
                         indexTracker.MarkStarted("cross-refs");
                         try
                         {
-                            ticketIndexer.RebuildFullIndex(ct);
+                            xrefRebuilder.RebuildAll(ct);
                             indexTracker.MarkCompleted("cross-refs");
                         }
                         catch (Exception ex)
@@ -377,7 +511,7 @@ public static class ZulipHttpApi
                         indexTracker.MarkStarted("cross-refs");
                         try
                         {
-                            ticketIndexer.RebuildFullIndex(ct);
+                            xrefRebuilder.RebuildAll(ct);
                             indexTracker.MarkCompleted("cross-refs");
                         }
                         catch (Exception ex)

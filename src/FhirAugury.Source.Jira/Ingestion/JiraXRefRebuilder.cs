@@ -15,7 +15,7 @@ public class JiraXRefRebuilder(
     JiraDatabase database,
     ILogger<JiraXRefRebuilder> logger)
 {
-    public void ExtractAll(CancellationToken ct = default)
+    public void RebuildAll(CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 

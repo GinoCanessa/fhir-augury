@@ -27,7 +27,7 @@ public class GitHubGrpcService(
     GitHubIngestionPipeline pipeline,
     IResponseCache cache,
     FhirAugury.Common.Ingestion.IngestionWorkQueue workQueue,
-    JiraRefExtractor jiraRefExtractor,
+    GitHubXRefRebuilder xrefRebuilder,
     GitHubIndexer indexer,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
@@ -852,17 +852,17 @@ public class GitHubGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals("jira", StringComparison.OrdinalIgnoreCase))
+        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
         {
             workQueue.Enqueue(async ct =>
             {
                 List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
                 foreach (string repo in repos)
-                    jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                    xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
             }, "rebuild-jira-xrefs");
 
             return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued jira ref index rebuild" });
+                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
         }
 
         return Task.FromResult(new PeerIngestionAck
@@ -901,7 +901,7 @@ public class GitHubGrpcService(
                     try
                     {
                         foreach (string repo in repos)
-                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex)
@@ -984,7 +984,7 @@ public class GitHubGrpcService(
                             string path = await cloner.EnsureCloneAsync(repo, ct);
                             await commitExtractor.ExtractAsync(path, repo, ct);
                             fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
-                            jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                             artifactFileMapper.BuildMappings(repo, path, ct);
                         }
                         indexTracker.MarkCompleted("commits");

@@ -1,3 +1,4 @@
+using System.Text;
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
@@ -99,6 +100,91 @@ public static class ConfluenceHttpApi
             });
         });
 
+        api.MapGet("/pages/{pageId}/related", (string pageId, int? limit, ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) =>
+        {
+            ConfluenceServiceOptions options = optionsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            int maxResults = Math.Min(limit ?? 10, 50);
+
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
+            if (page is null)
+                return Results.NotFound(new { error = $"Page {pageId} not found" });
+
+            List<ConfluencePageLinkRecord> outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: pageId);
+            List<ConfluencePageLinkRecord> inLinks = ConfluencePageLinkRecord.SelectList(connection, TargetPageId: pageId);
+
+            List<string> relatedIds = outLinks.Select(l => l.TargetPageId)
+                .Concat(inLinks.Select(l => l.SourcePageId))
+                .Distinct()
+                .Take(maxResults)
+                .ToList();
+
+            List<object> results = new List<object>();
+            foreach (string relId in relatedIds)
+            {
+                ConfluencePageRecord? related = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: relId);
+                if (related is null) continue;
+                results.Add(new
+                {
+                    pageId = related.ConfluenceId,
+                    title = related.Title,
+                    spaceKey = related.SpaceKey,
+                    url = related.Url ?? $"{options.BaseUrl}/pages/{related.ConfluenceId}",
+                });
+            }
+
+            return Results.Ok(new { sourceKey = pageId, related = results });
+        });
+
+        api.MapGet("/pages/{pageId}/snapshot", (string pageId, ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) =>
+        {
+            ConfluenceServiceOptions options = optionsAccessor.Value;
+            using SqliteConnection connection = db.OpenConnection();
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
+            if (page is null)
+                return Results.NotFound(new { error = $"Page {pageId} not found" });
+
+            StringBuilder md = new StringBuilder();
+            md.AppendLine($"# {page.Title}");
+            md.AppendLine();
+            md.AppendLine($"**Space:** {page.SpaceKey}  ");
+            md.AppendLine($"**Version:** {page.VersionNumber}  ");
+            if (page.LastModifiedBy is not null) md.AppendLine($"**Last Modified By:** {page.LastModifiedBy}  ");
+            md.AppendLine($"**Last Modified:** {page.LastModifiedAt:yyyy-MM-dd}  ");
+            if (page.Labels is not null) md.AppendLine($"**Labels:** {page.Labels}  ");
+            md.AppendLine();
+            if (!string.IsNullOrEmpty(page.BodyPlain))
+            {
+                md.AppendLine("## Content");
+                md.AppendLine();
+                md.AppendLine(page.BodyPlain);
+                md.AppendLine();
+            }
+
+            List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection, PageId: page.Id);
+            if (comments.Count > 0)
+            {
+                md.AppendLine("## Comments");
+                foreach (ConfluenceCommentRecord c in comments) { md.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}): {c.Body}"); md.AppendLine(); }
+            }
+
+            return Results.Ok(new { key = pageId, markdown = md.ToString(), url = page.Url ?? $"{options.BaseUrl}/pages/{pageId}" });
+        });
+
+        api.MapGet("/pages/{pageId}/content", (string pageId, string? format, ConfluenceDatabase db) =>
+        {
+            using SqliteConnection connection = db.OpenConnection();
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
+            if (page is null)
+                return Results.NotFound(new { error = $"Page {pageId} not found" });
+
+            string content = format?.Equals("storage", StringComparison.OrdinalIgnoreCase) == true
+                ? (page.BodyStorage ?? "")
+                : (page.BodyPlain ?? "");
+
+            return Results.Ok(new { key = pageId, content, format = format ?? "text" });
+        });
+
         api.MapGet("/pages", (int? limit, int? offset, string? spaceKey, ConfluenceDatabase db) =>
         {
             using SqliteConnection connection = db.OpenConnection();
@@ -187,8 +273,9 @@ public static class ConfluenceHttpApi
                     i.Name,
                     i.Description,
                     i.IsRebuilding,
-                    i.RecordCount,
+                    i.LastRebuildStartedAt,
                     i.LastRebuildCompletedAt,
+                    i.RecordCount,
                     i.LastError,
                 }),
             });

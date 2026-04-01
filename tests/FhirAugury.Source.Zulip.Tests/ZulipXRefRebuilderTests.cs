@@ -1,24 +1,24 @@
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
-using FhirAugury.Source.Zulip.Indexing;
+using FhirAugury.Source.Zulip.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Source.Zulip.Tests;
 
-public class ZulipTicketIndexerTests : IDisposable
+public class ZulipXRefRebuilderTests : IDisposable
 {
     private readonly string _dbPath;
     private readonly ZulipDatabase _db;
-    private readonly ZulipTicketIndexer _indexer;
+    private readonly ZulipXRefRebuilder _indexer;
 
-    public ZulipTicketIndexerTests()
+    public ZulipXRefRebuilderTests()
     {
         _dbPath = Path.Combine(Path.GetTempPath(), $"zulip_ticket_test_{Guid.NewGuid()}.db");
         _db = new ZulipDatabase(_dbPath, NullLogger<ZulipDatabase>.Instance);
         _db.Initialize();
-        _indexer = new ZulipTicketIndexer(_db, NullLogger<ZulipTicketIndexer>.Instance);
+        _indexer = new ZulipXRefRebuilder(_db, NullLogger<ZulipXRefRebuilder>.Instance);
     }
 
     public void Dispose()
@@ -30,12 +30,12 @@ public class ZulipTicketIndexerTests : IDisposable
     // ── Full Rebuild ─────────────────────────────────────────────────
 
     [Fact]
-    public void RebuildFullIndex_IndexesMessageTickets()
+    public void RebuildAll_IndexesMessageTickets()
     {
         InsertStream(1, "general");
         InsertMessage(1, 1001, "general", "ballot", "See FHIR-43499 for the resolution");
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn);
@@ -46,14 +46,14 @@ public class ZulipTicketIndexerTests : IDisposable
     }
 
     [Fact]
-    public void RebuildFullIndex_AggregatesThreadTickets()
+    public void RebuildAll_AggregatesThreadTickets()
     {
         InsertStream(1, "general");
         InsertMessage(1, 1001, "general", "ballot", "See FHIR-100 for details");
         InsertMessage(1, 1002, "general", "ballot", "Also FHIR-100 is relevant");
         InsertMessage(1, 1003, "general", "ballot", "And FHIR-100 again");
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<ZulipThreadTicketRecord> threads = ZulipThreadTicketRecord.SelectList(conn);
@@ -66,13 +66,13 @@ public class ZulipTicketIndexerTests : IDisposable
     }
 
     [Fact]
-    public void RebuildFullIndex_ClearsExistingData()
+    public void RebuildAll_ClearsExistingData()
     {
         InsertStream(1, "general");
         InsertMessage(1, 1001, "general", "ballot", "FHIR-100 mentioned");
 
-        _indexer.RebuildFullIndex();
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn);
@@ -81,12 +81,12 @@ public class ZulipTicketIndexerTests : IDisposable
     }
 
     [Fact]
-    public void RebuildFullIndex_MultiplePatternsInOneMessage()
+    public void RebuildAll_MultiplePatternsInOneMessage()
     {
         InsertStream(1, "general");
         InsertMessage(1, 1001, "general", "ballot", "FHIR-100, J#200, and GF#300 all relevant");
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, SourceId: "1001");
@@ -107,7 +107,7 @@ public class ZulipTicketIndexerTests : IDisposable
         InsertMessage(1, 1002, "general", "topic", "FHIR-100 second", ts: new DateTimeOffset(2024, 1, 2, 0, 0, 0, TimeSpan.Zero));
         InsertMessage(1, 1003, "general", "topic", "FHIR-100 third", ts: new DateTimeOffset(2024, 1, 3, 0, 0, 0, TimeSpan.Zero));
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<ZulipThreadTicketRecord> threads = ZulipThreadTicketRecord.SelectList(conn, JiraKey: "FHIR-100");
@@ -125,7 +125,7 @@ public class ZulipTicketIndexerTests : IDisposable
         InsertMessage(1, 1001, "general", "topic", "FHIR-100 first", ts: earliest);
         InsertMessage(1, 1002, "general", "topic", "FHIR-100 latest", ts: latest);
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<ZulipThreadTicketRecord> threads = ZulipThreadTicketRecord.SelectList(conn, JiraKey: "FHIR-100");
@@ -142,7 +142,7 @@ public class ZulipTicketIndexerTests : IDisposable
         InsertMessage(1, 1001, "general", "topic", "FHIR-100 mentioned");
         InsertMessage(1, 1002, "general", "topic", "FHIR-200 different ticket");
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<ZulipThreadTicketRecord> threads = ZulipThreadTicketRecord.SelectList(conn, StreamName: "general", Topic: "topic");
@@ -162,7 +162,7 @@ public class ZulipTicketIndexerTests : IDisposable
             plainText: "Click the link below",
             html: "<p>Click <a href=\"https://jira.hl7.org/browse/FHIR-99999\">here</a></p>");
 
-        _indexer.RebuildFullIndex();
+        _indexer.RebuildAll();
 
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, SourceId: "1001");

@@ -135,7 +135,10 @@ public static class GitHubHttpApi
             return Results.Ok(new { total = items.Count, items });
         });
 
-        api.MapGet("/related/{*key}", (string key, int? limit, GitHubDatabase db) =>
+        // Catch-all {*key} must be the final segment in ASP.NET routing, so we use
+        // /items/related/{*key} instead of /items/{*key}/related (which Jira can use
+        // because Jira keys don't contain slashes).
+        api.MapGet("/items/related/{*key}", (string key, int? limit, GitHubDatabase db) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             int maxResults = Math.Min(limit ?? 10, 50);
@@ -170,7 +173,7 @@ public static class GitHubHttpApi
             return Results.Ok(new { sourceKey = key, related = results });
         });
 
-        api.MapGet("/snapshot/{*key}", (string key, GitHubDatabase db) =>
+        api.MapGet("/items/snapshot/{*key}", (string key, GitHubDatabase db) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
@@ -196,7 +199,7 @@ public static class GitHubHttpApi
             return Results.Ok(new { key, markdown = md.ToString(), url = GitHubGrpcService.BuildIssueUrl(key) });
         });
 
-        api.MapGet("/content/{*key}", (string key, string? format, GitHubDatabase db) =>
+        api.MapGet("/items/content/{*key}", (string key, string? format, GitHubDatabase db) =>
         {
             using SqliteConnection connection = db.OpenConnection();
             GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: key);
@@ -239,7 +242,16 @@ public static class GitHubHttpApi
                 lastSyncAt = syncState?.LastSyncAt,
                 itemsIngested = syncState?.ItemsIngested ?? 0,
                 lastError = syncState?.LastError,
-                indexes = indexTracker.GetAllStatuses(),
+                indexes = indexTracker.GetAllStatuses().Select(i => new
+                {
+                    i.Name,
+                    i.Description,
+                    i.IsRebuilding,
+                    i.LastRebuildStartedAt,
+                    i.LastRebuildCompletedAt,
+                    i.RecordCount,
+                    i.LastError,
+                }),
             });
         });
 
@@ -261,7 +273,7 @@ public static class GitHubHttpApi
             IngestionWorkQueue workQueue,
             GitHubDatabase database,
             GitHubIndexer indexer,
-            JiraRefExtractor jiraRefExtractor,
+            GitHubXRefRebuilder xrefRebuilder,
             GitHubRepoCloner cloner,
             GitHubCommitFileExtractor commitExtractor,
             ArtifactFileMapper artifactFileMapper,
@@ -298,7 +310,7 @@ public static class GitHubHttpApi
                         try
                         {
                             foreach (string repo in repos)
-                                jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                                xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                             indexTracker.MarkCompleted("cross-refs");
                         }
                         catch (Exception ex)
@@ -362,7 +374,7 @@ public static class GitHubHttpApi
                             {
                                 string path = await cloner.EnsureCloneAsync(repo, ct);
                                 await commitExtractor.ExtractAsync(path, repo, ct);
-                                jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                                xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                                 artifactFileMapper.BuildMappings(repo, path, ct);
                             }
                             indexTracker.MarkCompleted("commits");

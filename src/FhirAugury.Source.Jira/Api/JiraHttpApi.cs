@@ -302,7 +302,7 @@ public static class JiraHttpApi
                         indexTracker.MarkStarted("cross-refs");
                         try
                         {
-                            xrefRebuilder.ExtractAll(ct);
+                            xrefRebuilder.RebuildAll(ct);
                             indexTracker.MarkCompleted("cross-refs");
                         }
                         catch (Exception ex)
@@ -353,7 +353,7 @@ public static class JiraHttpApi
                         indexTracker.MarkStarted("cross-refs");
                         try
                         {
-                            xrefRebuilder.ExtractAll(ct);
+                            xrefRebuilder.RebuildAll(ct);
                             indexTracker.MarkCompleted("cross-refs");
                         }
                         catch (Exception ex)

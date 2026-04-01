@@ -14,7 +14,7 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// cross-references to Jira, Zulip, Confluence, and FHIR elements.
 /// Keeps the GitHub-specific bare #NNN → Jira disambiguation logic.
 /// </summary>
-public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefExtractor> logger)
+public partial class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebuilder> logger)
 {
     // Bare #NNN reference (ambiguous — needs GitHub-specific disambiguation)
     [GeneratedRegex(@"(?<![a-zA-Z\d/])#(\d+)\b", RegexOptions.Compiled)]
@@ -23,7 +23,7 @@ public partial class JiraRefExtractor(GitHubDatabase database, ILogger<JiraRefEx
     /// <summary>
     /// Extracts cross-references from all issues, comments, and commits in the database.
     /// </summary>
-    public void ExtractAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
+    public void RebuildAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 

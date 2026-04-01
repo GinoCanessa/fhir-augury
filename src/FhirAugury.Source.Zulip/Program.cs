@@ -102,7 +102,7 @@ builder.Services.AddSingleton(sp =>
         opts.Bm25,
         sp.GetRequiredService<ILogger<ZulipIndexer>>());
 });
-builder.Services.AddSingleton<ZulipTicketIndexer>();
+builder.Services.AddSingleton<ZulipXRefRebuilder>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -168,7 +168,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     CancellationToken.None);
 
 // ── Rebuild from cache (optional) ────────────────────────────────
-if (options.RebuildFromCacheOnStartup ||
+if (options.ReloadFromCacheOnStartup ||
     app.Services.GetRequiredService<ZulipDatabase>().PrimaryContentTableIsEmpty())
 {
     ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
@@ -189,9 +189,9 @@ else
     if (options.ReindexTicketsOnStartup || zulipDb.TableIsEmpty("xref_jira"))
     {
         startupLogger.LogInformation("Rebuilding cross-reference indexes");
-        app.Services.GetRequiredService<ZulipTicketIndexer>().RebuildFullIndex(CancellationToken.None);
+        app.Services.GetRequiredService<ZulipXRefRebuilder>().RebuildAll(CancellationToken.None);
     }
 }
 
 
-await app.RunAsync();
+app.Run();

@@ -32,11 +32,11 @@ public class ZulipServiceOptions
     /// </summary>
     public bool IngestionPaused { get; set; } = false;
 
-    public bool RebuildFromCacheOnStartup { get; set; } = false;
+    public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     /// <summary>
     /// Force a full rebuild of Jira ticket reference indexes on startup.
-    /// This is independent of <see cref="RebuildFromCacheOnStartup"/>, which
+    /// This is independent of <see cref="ReloadFromCacheOnStartup"/>, which
     /// already triggers ticket re-indexing as part of a full cache rebuild.
     /// A new database creation also triggers ticket indexing automatically.
     /// </summary>

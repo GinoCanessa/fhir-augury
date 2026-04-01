@@ -22,7 +22,7 @@ public class GitHubIngestionPipeline(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
-    JiraRefExtractor jiraRefExtractor,
+    GitHubXRefRebuilder xrefRebuilder,
     OrchestratorService.OrchestratorServiceClient? orchestratorClient,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
@@ -168,7 +168,7 @@ public class GitHubIngestionPipeline(
                 try
                 {
                     _currentStatus = $"extracting_jira_refs:{repo}";
-                    jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
+                    xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                 }
                 catch (Exception ex)
                 {
