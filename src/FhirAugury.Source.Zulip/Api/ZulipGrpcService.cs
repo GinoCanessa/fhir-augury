@@ -83,7 +83,7 @@ public class ZulipGrpcService(
                 Id = msgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = reader.IsDBNull(3) ? "" : reader.GetString(3),
-                Score = -rawRank * (baselineValue / 5.0),
+                Score = -rawRank * (baselineValue / 5.0), // stream baseline weighting (see GetCrossSourceRelated)
                 Url = BuildMessageUrl(streamName, topic, msgId),
                 UpdatedAt = ParseTimestamp(reader, 6),
             });
@@ -254,6 +254,10 @@ public class ZulipGrpcService(
                     Source = SourceSystems.Zulip,
                     Id = latestMsgId.ToString(),
                     Title = $"[{streamName}] {topic}",
+                    // Stream baseline multiplier: streams with BaselineValue=5 (default) score at 1.0×,
+                    // higher values boost scores (e.g., 10→2.0×), lower values reduce them (e.g., 1→0.2×).
+                    // This is part of Zulip's stream weighting system — streams marked as more relevant
+                    // to the community get higher scores in both search and cross-source related results.
                     Score = 1.0 * (baselineValue / 5.0),
                     Url = BuildMessageUrl(streamName, topic, latestMsgId),
                     UpdatedAt = ParseTimestamp(reader, 4),
@@ -581,20 +585,14 @@ public class ZulipGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
+        workQueue.Enqueue(ct =>
         {
-            workQueue.Enqueue(ct =>
-            {
-                xrefRebuilder.RebuildAll(ct);
-                return Task.CompletedTask;
-            }, "rebuild-jira-xrefs");
-
-            return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
-        }
+            xrefRebuilder.RebuildAll(ct);
+            return Task.CompletedTask;
+        }, "rebuild-xrefs");
 
         return Task.FromResult(new PeerIngestionAck
-            { Acknowledged = true, ActionTaken = "no action needed" });
+            { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
     }
 
     public override Task<RebuildIndexResponse> RebuildIndex(
@@ -767,7 +765,7 @@ public class ZulipSpecificGrpcService(
         }
     }
 
-    public override Task<ZulipStreamInfo> GetStream(GetStreamRequest request, ServerCallContext context)
+    public override Task<ZulipStreamInfo> GetStream(ZulipGetStreamRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
         ZulipStreamRecord stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: request.ZulipStreamId)
@@ -776,7 +774,7 @@ public class ZulipSpecificGrpcService(
         return Task.FromResult(MapToStreamInfo(stream));
     }
 
-    public override Task<ZulipStreamInfo> UpdateStream(UpdateStreamRequest request, ServerCallContext context)
+    public override Task<ZulipStreamInfo> UpdateStream(ZulipUpdateStreamRequest request, ServerCallContext context)
     {
         using SqliteConnection connection = database.OpenConnection();
         ZulipStreamRecord stream = ZulipStreamRecord.SelectSingle(connection, ZulipStreamId: request.ZulipStreamId)

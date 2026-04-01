@@ -852,21 +852,15 @@ public class GitHubGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
+        workQueue.Enqueue(async ct =>
         {
-            workQueue.Enqueue(async ct =>
-            {
-                List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
-                foreach (string repo in repos)
-                    xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
-            }, "rebuild-jira-xrefs");
-
-            return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
-        }
+            List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+            foreach (string repo in repos)
+                xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
+        }, "rebuild-xrefs");
 
         return Task.FromResult(new PeerIngestionAck
-            { Acknowledged = true, ActionTaken = "no action needed" });
+            { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
     }
 
     public override Task<RebuildIndexResponse> RebuildIndex(

@@ -7,8 +7,8 @@ import "source_service.proto";
 service ZulipService {
   rpc GetThread(ZulipGetThreadRequest) returns (ZulipThread);
   rpc ListStreams(ZulipListStreamsRequest) returns (stream ZulipStream);
-  rpc GetStream(GetStreamRequest) returns (ZulipStreamInfo);
-  rpc UpdateStream(UpdateStreamRequest) returns (ZulipStreamInfo);
+  rpc GetStream(ZulipGetStreamRequest) returns (ZulipStreamInfo);
+  rpc UpdateStream(ZulipUpdateStreamRequest) returns (ZulipStreamInfo);
   rpc ListTopics(ZulipListTopicsRequest) returns (stream ZulipTopic);
   rpc GetMessagesByUser(ZulipUserMessagesRequest) returns (stream ZulipMessageSummary);
   rpc QueryMessages(ZulipQueryRequest) returns (stream ZulipMessageSummary);
@@ -105,11 +105,11 @@ message ZulipSnapshotRequest {
   bool include_internal_refs = 3;
 }
 
-message GetStreamRequest {
+message ZulipGetStreamRequest {
   int32 zulip_stream_id = 1;
 }
 
-message UpdateStreamRequest {
+message ZulipUpdateStreamRequest {
   int32 zulip_stream_id = 1;
   bool include_stream = 2;
   // Baseline ranking value (0–10). When 0 in the request, the existing value is preserved.

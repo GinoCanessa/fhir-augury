@@ -644,20 +644,14 @@ public class JiraGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
+        workQueue.Enqueue(ct =>
         {
-            workQueue.Enqueue(ct =>
-            {
-                xrefRebuilder.RebuildAll(ct);
-                return Task.CompletedTask;
-            }, "rebuild-xrefs");
-
-            return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
-        }
+            xrefRebuilder.RebuildAll(ct);
+            return Task.CompletedTask;
+        }, "rebuild-xrefs");
 
         return Task.FromResult(new PeerIngestionAck
-            { Acknowledged = true, ActionTaken = "no action needed" });
+            { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
     }
 
     public override Task<RebuildIndexResponse> RebuildIndex(

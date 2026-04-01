@@ -108,6 +108,7 @@ message ServicesStatusRequest {}
 
 message ServicesStatusResponse {
   repeated ServiceHealth services = 1;
+  reserved 2;
   google.protobuf.Timestamp last_xref_scan_at = 3;  // repurposed: last ingestion time
 }
 

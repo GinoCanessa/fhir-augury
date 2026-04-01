@@ -157,10 +157,10 @@ public class ConfluenceGrpcService(
         }
     }
 
-    public override Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
+    public override async Task<SearchResponse> GetRelated(GetRelatedRequest request, ServerCallContext context)
     {
         if (!string.IsNullOrEmpty(request.SeedSource) && request.SeedSource != SourceSystems.Confluence)
-            return GetCrossSourceRelated(request, context);
+            return await GetCrossSourceRelated(request, context);
 
         using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
@@ -192,17 +192,18 @@ public class ConfluenceGrpcService(
         }
 
         response.TotalResults = response.Results.Count;
-        return Task.FromResult(response);
+        return response;
     }
 
-    private Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
+    private async Task<SearchResponse> GetCrossSourceRelated(GetRelatedRequest request, ServerCallContext context)
     {
-        using SqliteConnection connection = database.OpenConnection();
         int limit = request.Limit > 0 ? Math.Min(request.Limit, 50) : 10;
-        SearchResponse response = new SearchResponse();
 
         if (request.SeedSource == SourceSystems.Jira)
         {
+            using SqliteConnection connection = database.OpenConnection();
+            SearchResponse response = new SearchResponse();
+
             // Find Confluence pages that reference this Jira ticket
             List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(connection, JiraKey: request.SeedId);
             HashSet<string> seen = [];
@@ -224,46 +225,22 @@ public class ConfluenceGrpcService(
                     UpdatedAt = Timestamp.FromDateTimeOffset(page.LastModifiedAt),
                 });
             }
+
+            response.TotalResults = response.Results.Count;
+            return response;
         }
-        else
+
+        // Unknown seed source — fall back to FTS with reduced score
+        SearchResponse ftsResult = await Search(new SearchRequest
         {
-            // Unknown seed source — fall back to FTS with SeedId, scores × 0.3
-            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(request.SeedId);
-            if (!string.IsNullOrEmpty(ftsQuery))
-            {
-                string sql = """
-                    SELECT cp.ConfluenceId, cp.Title, confluence_pages_fts.rank, cp.Url, cp.LastModifiedAt
-                    FROM confluence_pages_fts
-                    JOIN confluence_pages cp ON cp.Id = confluence_pages_fts.rowid
-                    WHERE confluence_pages_fts MATCH @query
-                    ORDER BY confluence_pages_fts.rank
-                    LIMIT @limit
-                    """;
+            Query = request.SeedId,
+            Limit = limit,
+        }, context);
 
-                using SqliteCommand cmd = new SqliteCommand(sql, connection);
-                cmd.Parameters.AddWithValue("@query", ftsQuery);
-                cmd.Parameters.AddWithValue("@limit", limit);
+        foreach (SearchResultItem item in ftsResult.Results)
+            item.Score *= 0.3;
 
-                using SqliteDataReader reader = cmd.ExecuteReader();
-                while (reader.Read())
-                {
-                    string pageId = reader.GetString(0);
-                    double rank = reader.GetDouble(2);
-                    response.Results.Add(new SearchResultItem
-                    {
-                        Source = SourceSystems.Confluence,
-                        Id = pageId,
-                        Title = reader.GetString(1),
-                        Url = reader.IsDBNull(3) ? $"{options.BaseUrl}/pages/{pageId}" : reader.GetString(3),
-                        Score = Math.Abs(rank) * 0.3,
-                        UpdatedAt = ParseTimestamp(reader, 4),
-                    });
-                }
-            }
-        }
-
-        response.TotalResults = response.Results.Count;
-        return Task.FromResult(response);
+        return ftsResult;
     }
 
     public override Task<GetItemXRefResponse> GetItemCrossReferences(GetItemXRefRequest request, ServerCallContext context)
@@ -588,20 +565,14 @@ public class ConfluenceGrpcService(
     public override Task<PeerIngestionAck> NotifyPeerIngestionComplete(
         PeerIngestionNotification request, ServerCallContext context)
     {
-        if (request.Source.Equals(SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
+        workQueue.Enqueue(ct =>
         {
-            workQueue.Enqueue(ct =>
-            {
-                xrefRebuilder.RebuildAll(ct);
-                return Task.CompletedTask;
-            }, "rebuild-xrefs");
-
-            return Task.FromResult(new PeerIngestionAck
-                { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
-        }
+            xrefRebuilder.RebuildAll(ct);
+            return Task.CompletedTask;
+        }, "rebuild-xrefs");
 
         return Task.FromResult(new PeerIngestionAck
-            { Acknowledged = true, ActionTaken = "no action needed" });
+            { Acknowledged = true, ActionTaken = "queued cross-ref rebuild" });
     }
 
     public override Task<RebuildIndexResponse> RebuildIndex(
