@@ -145,6 +145,7 @@ message ServiceEndpoint {
   string name = 1;
   string grpc_address = 2;
   bool enabled = 3;
+  string http_address = 4;
 }
 
 // ── Orchestrator Index Rebuild ───────────────────────────────────

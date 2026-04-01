@@ -29,6 +29,7 @@ public class PortConfiguration
 public class SourceServiceConfig
 {
     public string GrpcAddress { get; set; } = "";
+    public string HttpAddress { get; set; } = "";
     public bool Enabled { get; set; } = true;
 }
 

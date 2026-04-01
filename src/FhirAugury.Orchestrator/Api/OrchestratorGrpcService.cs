@@ -386,6 +386,7 @@ public class OrchestratorGrpcService(
             {
                 Name = sourceName,
                 GrpcAddress = config.GrpcAddress,
+                HttpAddress = config.HttpAddress,
                 Enabled = config.Enabled,
             });
         }

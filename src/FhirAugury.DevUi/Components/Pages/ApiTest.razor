@@ -1,52 +1,104 @@
 @page "/api-test"
 @using FhirAugury.DevUi.Services
 @using Fhiraugury
+@using Google.Protobuf
 @inject OrchestratorClient Orchestrator
+@inject SourceDirectClient SourceClient
+@inject IConfiguration Configuration
 
 <PageTitle>API Tests — FHIR Augury Dev UI</PageTitle>
 
 <h1 class="mb-3"><i class="bi bi-terminal"></i> API Tests</h1>
 
-<div class="row g-3 mb-4">
+<div class="row g-3 mb-3">
+    <div class="col-md-3">
+        <label class="form-label fw-semibold">Source</label>
+        <select class="form-select" @bind="SelectedSource">
+            <option value="">— Select Source —</option>
+            @foreach (SourceEndpointInfo ep in _endpoints)
+            {
+                <option value="@ep.Name">@ep.Name</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label fw-semibold">Protocol</label>
+        <div class="btn-group d-block" role="group">
+            <button type="button"
+                    class="btn @(_protocol == "grpc" ? "btn-primary" : "btn-outline-primary")"
+                    @onclick='() => _protocol = "grpc"'>
+                <i class="bi bi-hdd-network"></i> gRPC
+            </button>
+            <button type="button"
+                    class="btn @(_protocol == "http" ? "btn-primary" : "btn-outline-primary")"
+                    @onclick='() => _protocol = "http"'>
+                <i class="bi bi-globe"></i> HTTP
+            </button>
+        </div>
+    </div>
     <div class="col-md-3">
         <label class="form-label fw-semibold">API</label>
         <select class="form-select" @bind="SelectedApi">
             <option value="">— Select API —</option>
-            <option value="related">Related</option>
+            <option value="search">Search</option>
+            <option value="get-item">GetItem</option>
+            <option value="get-related">GetRelated</option>
+            <option value="get-snapshot">GetSnapshot</option>
+            <option value="get-content">GetContent</option>
+            <option value="get-stats">GetStats</option>
+            <option value="health-check">HealthCheck</option>
         </select>
     </div>
 </div>
 
-@if (SelectedApi == "related")
+@if (_selectedEndpoint is not null && !string.IsNullOrEmpty(SelectedApi))
 {
+    <div class="mb-3 text-body-secondary small">
+        <i class="bi bi-info-circle"></i>
+        @if (_protocol == "grpc")
+        {
+            <span>Target: <code>@_selectedEndpoint.GrpcAddress</code> (gRPC)</span>
+        }
+        else
+        {
+            <span>Target: <code>@_selectedEndpoint.HttpAddress</code> (HTTP)</span>
+        }
+    </div>
+
     <div class="card mb-4">
         <div class="card-header fw-semibold">
-            <i class="bi bi-diagram-3"></i> Find Related Items
+            <i class="bi bi-play-circle"></i> @ApiDisplayName(SelectedApi)
         </div>
         <div class="card-body">
             <div class="row g-3 align-items-end">
-                <div class="col-md-3">
-                    <label class="form-label">Source</label>
-                    <select class="form-select" @bind="_relatedSource">
-                        <option value="">— Select Source —</option>
-                        @foreach (string source in _availableSources)
-                        {
-                            <option value="@source">@source</option>
-                        }
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">ID</label>
-                    <input type="text" class="form-control" @bind="_relatedId"
-                           @bind:event="oninput"
-                           placeholder="e.g. FHIR-55001" />
-                </div>
+                @if (NeedsQuery)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label">Query</label>
+                        <input type="text" class="form-control" @bind="_queryInput"
+                               @bind:event="oninput" placeholder="e.g. patient resource" />
+                    </div>
+                }
+                @if (NeedsId)
+                {
+                    <div class="col-md-4">
+                        <label class="form-label">ID</label>
+                        <input type="text" class="form-control" @bind="_idInput"
+                               @bind:event="oninput" placeholder="@IdPlaceholder" />
+                    </div>
+                }
+                @if (NeedsLimit)
+                {
+                    <div class="col-md-2">
+                        <label class="form-label">Limit</label>
+                        <input type="number" class="form-control" @bind="_limitInput" min="1" max="200" />
+                    </div>
+                }
                 <div class="col-md-2">
                     <label class="form-label">&nbsp;</label>
-                    <button class="btn btn-primary d-block"
-                            @onclick="ExecuteRelatedAsync"
-                            disabled="@(_relatedRunning || string.IsNullOrWhiteSpace(_relatedSource) || string.IsNullOrWhiteSpace(_relatedId))">
-                        @if (_relatedRunning)
+                    <button class="btn btn-primary d-block" @onclick="ExecuteAsync"
+                            disabled="@(_running || !CanExecute)">
+                        @if (_running)
                         {
                             <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
                         }
@@ -60,42 +112,47 @@
             </div>
         </div>
     </div>
+}
 
-    @if (_relatedError is not null)
-    {
-        <div class="alert alert-danger" role="alert">
-            <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> @_relatedError
-        </div>
-    }
+@if (_error is not null)
+{
+    <div class="alert alert-danger" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> @_error
+    </div>
+}
 
-    @if (_relatedResponse is not null)
-    {
-        <div class="mb-4">
-            <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
-                <h5 class="mb-0">
-                    Results for
-                    <code>@_relatedResponse.SeedSource:@_relatedResponse.SeedId</code>
-                    @if (!string.IsNullOrEmpty(_relatedResponse.SeedTitle))
-                    {
-                        <small class="text-body-secondary ms-1">— @_relatedResponse.SeedTitle</small>
-                    }
-                </h5>
-                <div class="d-flex align-items-center gap-2">
-                    <span class="badge bg-info">@_relatedResponse.Items.Count items</span>
+@if (_resultJson is not null)
+{
+    <div class="mb-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+            <h5 class="mb-0">
+                <i class="bi bi-check-circle text-success"></i> Response
+            </h5>
+            <div class="d-flex align-items-center gap-2">
+                @if (_requestInfo is not null)
+                {
+                    <span class="badge bg-secondary">@_requestInfo</span>
+                }
+                @if (_elapsedMs.HasValue)
+                {
+                    <span class="badge bg-info">@(_elapsedMs)ms</span>
+                }
+                @if (_searchResults is not null)
+                {
+                    <span class="badge bg-info">@_searchResults.TotalResults results</span>
                     <button class="btn btn-sm btn-outline-secondary" @onclick="ToggleRaw">
                         <i class="bi @(_showRaw ? "bi-table" : "bi-code-slash")"></i>
                         @(_showRaw ? "Table View" : "Raw JSON")
                     </button>
-                </div>
+                }
             </div>
+        </div>
 
-            @if (_showRaw)
+        @if (_searchResults is not null && !_showRaw)
+        {
+            @if (_searchResults.Results.Count == 0)
             {
-                <pre class="bg-body-secondary border rounded p-3 overflow-auto" style="max-height: 600px;"><code>@_rawJson</code></pre>
-            }
-            else if (_relatedResponse.Items.Count == 0)
-            {
-                <div class="alert alert-info">No related items found.</div>
+                <div class="alert alert-info">No results found.</div>
             }
             else
             {
@@ -107,22 +164,20 @@
                                 <th>ID</th>
                                 <th>Title</th>
                                 <th>Content Type</th>
-                                <th class="text-end">Relevance</th>
-                                <th>Relationship</th>
+                                <th class="text-end">Score</th>
                                 <th>Snippet</th>
                                 <th>URL</th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (RelatedItem item in _relatedResponse.Items)
+                            @foreach (SearchResultItem item in _searchResults.Results)
                             {
                                 <tr>
                                     <td><span class="badge bg-secondary">@item.Source</span></td>
                                     <td><code>@item.Id</code></td>
                                     <td title="@item.Title">@Truncate(item.Title, 60)</td>
                                     <td><code>@item.ContentType</code></td>
-                                    <td class="text-end fw-semibold">@item.RelevanceScore.ToString("F2")</td>
-                                    <td>@item.Relationship</td>
+                                    <td class="text-end fw-semibold">@item.Score.ToString("F2")</td>
                                     <td title="@item.Snippet">@Truncate(item.Snippet, 50)</td>
                                     <td>
                                         @if (!string.IsNullOrEmpty(item.Url))
@@ -139,78 +194,231 @@
                     </table>
                 </div>
             }
-        </div>
-    }
+        }
+        else
+        {
+            <pre class="bg-body-secondary border rounded p-3 overflow-auto"
+                 style="max-height: 600px;"><code>@_resultJson</code></pre>
+        }
+    </div>
 }
 
 @code {
     [SupplyParameterFromQuery(Name = "source")]
     public string? DefaultSource { get; set; }
 
+    private string SelectedSource { get; set; } = "";
     private string SelectedApi { get; set; } = "";
-    private string _relatedSource = "";
-    private string _relatedId = "";
-    private bool _relatedRunning;
-    private string? _relatedError;
-    private FindRelatedResponse? _relatedResponse;
-    private string? _rawJson;
+
+    private string _protocol = "grpc";
+    private string _queryInput = "";
+    private string _idInput = "";
+    private int _limitInput = 20;
+
+    private bool _running;
+    private string? _error;
+    private string? _resultJson;
+    private string? _requestInfo;
+    private long? _elapsedMs;
     private bool _showRaw;
-    private List<string> _availableSources = [];
+
+    // Typed result for table rendering (gRPC Search/GetRelated only)
+    private SearchResponse? _searchResults;
+
+    private List<SourceEndpointInfo> _endpoints = [];
+    private SourceEndpointInfo? _selectedEndpoint =>
+        _endpoints.FirstOrDefault(e => string.Equals(e.Name, SelectedSource, StringComparison.OrdinalIgnoreCase));
+
+    // ── Input field visibility ───────────────────────────────────
+
+    private bool NeedsQuery => SelectedApi == "search";
+    private bool NeedsId => SelectedApi is "get-item" or "get-related" or "get-snapshot" or "get-content";
+    private bool NeedsLimit => SelectedApi is "search" or "get-related";
+
+    private string IdPlaceholder => SelectedSource?.ToLowerInvariant() switch
+    {
+        "jira" => "e.g. FHIR-55001",
+        "github" => "e.g. HL7/fhir#4006",
+        "zulip" => "e.g. 12345",
+        "confluence" => "e.g. 12345",
+        _ => "e.g. FHIR-55001",
+    };
+
+    private bool CanExecute =>
+        _selectedEndpoint is not null
+        && !string.IsNullOrEmpty(SelectedApi)
+        && (!NeedsQuery || !string.IsNullOrWhiteSpace(_queryInput))
+        && (!NeedsId || !string.IsNullOrWhiteSpace(_idInput));
+
+    // ── Initialization ───────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             ServiceEndpointsResponse endpoints = await Orchestrator.GetServiceEndpointsAsync();
-            _availableSources = endpoints.Endpoints
+            _endpoints = endpoints.Endpoints
                 .Where(e => e.Enabled)
-                .Select(e => e.Name)
-                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .Select(e => new SourceEndpointInfo(e.Name, e.GrpcAddress, e.HttpAddress))
+                .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
         catch
         {
-            // Fall back to well-known sources if orchestrator is unreachable
-            _availableSources = [
-                FhirAugury.Common.SourceSystems.Confluence,
-                FhirAugury.Common.SourceSystems.GitHub,
-                FhirAugury.Common.SourceSystems.Jira,
-                FhirAugury.Common.SourceSystems.Zulip,
-            ];
+            // Fall back to configured defaults when orchestrator is unreachable
+            IConfigurationSection sourcesSection = Configuration.GetSection("DevUi:Sources");
+            List<SourceEndpointInfo> fallback = [];
+            foreach (IConfigurationSection child in sourcesSection.GetChildren())
+            {
+                string name = child.Key;
+                string grpc = child["GrpcAddress"] ?? "";
+                string http = child["HttpAddress"] ?? "";
+                if (!string.IsNullOrEmpty(grpc))
+                    fallback.Add(new SourceEndpointInfo(name, grpc, http));
+            }
+            _endpoints = fallback.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         if (!string.IsNullOrEmpty(DefaultSource))
         {
-            _relatedSource = DefaultSource;
-            SelectedApi = "related";
+            SelectedSource = DefaultSource;
         }
     }
 
-    private async Task ExecuteRelatedAsync()
+    // ── Execution ────────────────────────────────────────────────
+
+    private async Task ExecuteAsync()
     {
-        _relatedRunning = true;
-        _relatedError = null;
-        _relatedResponse = null;
-        _rawJson = null;
+        _running = true;
+        _error = null;
+        _resultJson = null;
+        _requestInfo = null;
+        _elapsedMs = null;
+        _searchResults = null;
         _showRaw = false;
         StateHasChanged();
 
         try
         {
-            _relatedResponse = await Orchestrator.FindRelatedAsync(_relatedSource, _relatedId);
-            _rawJson = Orchestrator.FormatAsJson(_relatedResponse);
+            SourceEndpointInfo endpoint = _selectedEndpoint!;
+
+            if (_protocol == "grpc")
+                await ExecuteGrpcAsync(endpoint);
+            else
+                await ExecuteHttpAsync(endpoint);
         }
         catch (Exception ex)
         {
-            _relatedError = ex.Message;
+            _error = ex.Message;
         }
         finally
         {
-            _relatedRunning = false;
+            _running = false;
         }
     }
 
+    private async Task ExecuteGrpcAsync(SourceEndpointInfo endpoint)
+    {
+        string grpcAddr = endpoint.GrpcAddress;
+        string rpcName;
+        IMessage response;
+        long elapsed;
+
+        switch (SelectedApi)
+        {
+            case "search":
+                rpcName = "SourceService/Search";
+                (response, elapsed) = await SourceClient.SearchGrpcAsync(grpcAddr, _queryInput, _limitInput);
+                _searchResults = (SearchResponse)response;
+                break;
+            case "get-item":
+                rpcName = "SourceService/GetItem";
+                (response, elapsed) = await SourceClient.GetItemGrpcAsync(grpcAddr, _idInput);
+                break;
+            case "get-related":
+                rpcName = "SourceService/GetRelated";
+                (response, elapsed) = await SourceClient.GetRelatedGrpcAsync(grpcAddr, _idInput, _limitInput);
+                _searchResults = (SearchResponse)response;
+                break;
+            case "get-snapshot":
+                rpcName = "SourceService/GetSnapshot";
+                (response, elapsed) = await SourceClient.GetSnapshotGrpcAsync(grpcAddr, _idInput);
+                break;
+            case "get-content":
+                rpcName = "SourceService/GetContent";
+                (response, elapsed) = await SourceClient.GetContentGrpcAsync(grpcAddr, _idInput);
+                break;
+            case "get-stats":
+                rpcName = "SourceService/GetStats";
+                (response, elapsed) = await SourceClient.GetStatsGrpcAsync(grpcAddr);
+                break;
+            case "health-check":
+                rpcName = "SourceService/HealthCheck";
+                (response, elapsed) = await SourceClient.HealthCheckGrpcAsync(grpcAddr);
+                break;
+            default:
+                return;
+        }
+
+        _resultJson = SourceDirectClient.FormatAsJson(response);
+        _requestInfo = $"gRPC {rpcName} → {grpcAddr}";
+        _elapsedMs = elapsed;
+    }
+
+    private async Task ExecuteHttpAsync(SourceEndpointInfo endpoint)
+    {
+        string httpBase = endpoint.HttpAddress;
+        string url;
+        string json;
+        long elapsed;
+
+        switch (SelectedApi)
+        {
+            case "search":
+                (url, json, elapsed) = await SourceClient.SearchHttpAsync(httpBase, _queryInput, _limitInput);
+                break;
+            case "get-item":
+                (url, json, elapsed) = await SourceClient.GetItemHttpAsync(httpBase, endpoint.Name, _idInput);
+                break;
+            case "get-related":
+                (url, json, elapsed) = await SourceClient.GetRelatedHttpAsync(httpBase, endpoint.Name, _idInput, _limitInput);
+                break;
+            case "get-snapshot":
+                (url, json, elapsed) = await SourceClient.GetSnapshotHttpAsync(httpBase, endpoint.Name, _idInput);
+                break;
+            case "get-content":
+                (url, json, elapsed) = await SourceClient.GetContentHttpAsync(httpBase, endpoint.Name, _idInput);
+                break;
+            case "get-stats":
+                (url, json, elapsed) = await SourceClient.GetStatsHttpAsync(httpBase);
+                break;
+            case "health-check":
+                (url, json, elapsed) = await SourceClient.HealthCheckHttpAsync(httpBase);
+                break;
+            default:
+                return;
+        }
+
+        _resultJson = json;
+        _requestInfo = $"GET {url}";
+        _elapsedMs = elapsed;
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────
+
     private void ToggleRaw() => _showRaw = !_showRaw;
+
+    private static string ApiDisplayName(string api) => api switch
+    {
+        "search" => "Search",
+        "get-item" => "Get Item",
+        "get-related" => "Get Related",
+        "get-snapshot" => "Get Snapshot",
+        "get-content" => "Get Content",
+        "get-stats" => "Get Stats",
+        "health-check" => "Health Check",
+        _ => api,
+    };
 
     private static string Truncate(string text, int maxLength) =>
         string.IsNullOrEmpty(text)
@@ -218,4 +426,6 @@
             : text.Length <= maxLength
                 ? text
                 : string.Concat(text.AsSpan(0, maxLength), "…");
+
+    private sealed record SourceEndpointInfo(string Name, string GrpcAddress, string HttpAddress);
 }

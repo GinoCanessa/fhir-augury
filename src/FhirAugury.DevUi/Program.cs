@@ -21,6 +21,7 @@ builder.Services.AddRazorComponents()
 
 // ── gRPC client ──────────────────────────────────────────────────
 builder.Services.AddSingleton<OrchestratorClient>();
+builder.Services.AddSingleton<SourceDirectClient>();
 
 WebApplication app = builder.Build();
 
