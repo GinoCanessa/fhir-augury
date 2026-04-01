@@ -108,7 +108,6 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILogger<GitHubIndexer>>());
 });
 builder.Services.AddSingleton<ArtifactFileMapper>();
-builder.Services.AddSingleton<JiraRefResolver>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
