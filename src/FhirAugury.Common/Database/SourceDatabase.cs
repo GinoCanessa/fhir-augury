@@ -193,7 +193,23 @@ public abstract class SourceDatabase : IDisposable
         return pageCount * pageSize;
     }
 
-    /// <summary>Runs PRAGMA integrity_check.</summary>
+    /// <summary>
+    /// Lightweight connectivity/liveness check suitable for frequent health probes.
+    /// Uses a trivial query instead of a full integrity scan.
+    /// </summary>
+    public string QuickCheck()
+    {
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT 1;";
+        object? result = cmd.ExecuteScalar();
+        return result is not null ? "ok" : "unknown";
+    }
+
+    /// <summary>
+    /// Runs a full PRAGMA integrity_check. This scans every page of the database
+    /// and can be very slow on large databases. Use only for diagnostics, not health probes.
+    /// </summary>
     public string CheckIntegrity()
     {
         using SqliteConnection connection = OpenConnection();

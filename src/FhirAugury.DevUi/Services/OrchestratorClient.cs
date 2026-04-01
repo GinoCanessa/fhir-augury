@@ -10,10 +10,12 @@ public sealed class OrchestratorClient : IDisposable
     private readonly GrpcChannel _channel;
     private readonly OrchestratorService.OrchestratorServiceClient _client;
 
+    public string GrpcAddress { get; }
+
     public OrchestratorClient(IConfiguration configuration)
     {
-        string address = configuration["DevUi:OrchestratorGrpcAddress"] ?? "http://localhost:5151";
-        _channel = GrpcChannel.ForAddress(address);
+        GrpcAddress = configuration["DevUi:OrchestratorGrpcAddress"] ?? "http://localhost:5151";
+        _channel = GrpcChannel.ForAddress(GrpcAddress);
         _client = new OrchestratorService.OrchestratorServiceClient(_channel);
     }
 
@@ -25,6 +27,14 @@ public sealed class OrchestratorClient : IDisposable
     public async Task<ServiceEndpointsResponse> GetServiceEndpointsAsync(CancellationToken ct = default)
     {
         return await _client.GetServiceEndpointsAsync(new ServiceEndpointsRequest(), cancellationToken: ct);
+    }
+
+    public async Task<OrchestratorRebuildIndexResponse> RebuildIndexAsync(
+        string source, string indexType = "all", CancellationToken ct = default)
+    {
+        OrchestratorRebuildIndexRequest request = new() { IndexType = indexType };
+        request.Sources.Add(source);
+        return await _client.RebuildIndexAsync(request, cancellationToken: ct);
     }
 
     public async Task<FindRelatedResponse> FindRelatedAsync(string source, string id, int limit = 20, CancellationToken ct = default)

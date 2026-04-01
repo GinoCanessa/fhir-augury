@@ -49,6 +49,24 @@ else
                 </tr>
             </thead>
             <tbody>
+                @* Orchestrator row *@
+                <tr>
+                    <td><strong><i class="bi bi-diagram-3 me-1"></i>Orchestrator</strong></td>
+                    <td><code>@Orchestrator.GrpcAddress</code></td>
+                    <td><span class="badge bg-success">Active</span></td>
+                    <td><span class="badge bg-success">healthy</span></td>
+                    <td class="text-end">@_services.Sum(s => (long)s.ItemCount).ToString("N0")</td>
+                    <td class="text-end">@FormatBytes(_services.Sum(s => s.DbSizeBytes))</td>
+                    <td>@FormatTimestamp(_lastActivityAt)</td>
+                    <td><span class="text-muted">—</span></td>
+                    <td><span class="text-muted">—</span></td>
+                    <td>
+                        <a class="btn btn-sm btn-primary" href="/api-test">
+                            <i class="bi bi-terminal"></i> API Tests
+                        </a>
+                    </td>
+                </tr>
+
                 @foreach (ServiceHealth service in _services)
                 {
                     bool isEnabled = _endpoints.TryGetValue(service.Name, out ServiceEndpoint? ep) && ep.Enabled;
@@ -114,7 +132,27 @@ else
                         <tr>
                             <td colspan="10" class="bg-body-secondary p-0">
                                 <div class="p-3">
-                                    <h6 class="mb-2">Indexes — @service.Name</h6>
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Indexes — @service.Name</h6>
+                                        @{
+                                            string allKey = RebuildKey(service.Name, "all");
+                                            string allType = "all";
+                                            bool allRebuilding = _rebuildingKeys.Contains(allKey);
+                                        }
+                                        <button class="btn btn-sm btn-outline-warning"
+                                                disabled="@allRebuilding"
+                                                @onclick="() => RebuildIndexAsync(service.Name, allType)">
+                                            @if (allRebuilding)
+                                            {
+                                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                            }
+                                            else
+                                            {
+                                                <i class="bi bi-arrow-repeat"></i>
+                                            }
+                                            Rebuild All
+                                        </button>
+                                    </div>
                                     <table class="table table-sm table-bordered mb-0">
                                         <thead>
                                             <tr>
@@ -124,11 +162,14 @@ else
                                                 <th class="text-end">Records</th>
                                                 <th>Last Rebuild</th>
                                                 <th>Error</th>
+                                                <th>Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             @foreach (IndexStatus idx in service.Indexes)
                                             {
+                                                string rebuildKey = RebuildKey(service.Name, idx.Name);
+                                                bool isRebuildRequested = _rebuildingKeys.Contains(rebuildKey);
                                                 <tr>
                                                     <td><code>@idx.Name</code></td>
                                                     <td>@idx.Description</td>
@@ -158,6 +199,21 @@ else
                                                             <span class="text-muted">—</span>
                                                         }
                                                     </td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-outline-warning"
+                                                                disabled="@(isRebuildRequested || allRebuilding)"
+                                                                @onclick="() => RebuildIndexAsync(service.Name, idx.Name)">
+                                                            @if (isRebuildRequested)
+                                                            {
+                                                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <i class="bi bi-arrow-repeat"></i>
+                                                            }
+                                                            Rebuild
+                                                        </button>
+                                                    </td>
                                                 </tr>
                                             }
                                         </tbody>
@@ -177,7 +233,9 @@ else
     private string? _error;
     private List<ServiceHealth> _services = [];
     private Dictionary<string, ServiceEndpoint> _endpoints = new(StringComparer.OrdinalIgnoreCase);
+    private Google.Protobuf.WellKnownTypes.Timestamp? _lastActivityAt;
     private HashSet<string> _expandedIndexes = [];
+    private HashSet<string> _rebuildingKeys = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -197,7 +255,9 @@ else
 
             await Task.WhenAll(statusTask, endpointsTask);
 
-            _services = [.. statusTask.Result.Services];
+            ServicesStatusResponse statusResult = statusTask.Result;
+            _services = [.. statusResult.Services];
+            _lastActivityAt = statusResult.LastXrefScanAt;
             _endpoints = endpointsTask.Result.Endpoints
                 .ToDictionary(e => e.Name, e => e, StringComparer.OrdinalIgnoreCase);
         }
@@ -216,6 +276,25 @@ else
         if (!_expandedIndexes.Remove(serviceName))
         {
             _expandedIndexes.Add(serviceName);
+        }
+    }
+
+    private static string RebuildKey(string service, string indexType) => $"{service}:{indexType}";
+
+    private async Task RebuildIndexAsync(string service, string indexType)
+    {
+        string key = RebuildKey(service, indexType);
+        _rebuildingKeys.Add(key);
+        StateHasChanged();
+
+        try
+        {
+            await Orchestrator.RebuildIndexAsync(service, indexType);
+        }
+        finally
+        {
+            _rebuildingKeys.Remove(key);
+            await LoadDataAsync();
         }
     }
 

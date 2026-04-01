@@ -16,57 +16,7 @@ var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
         e.TargetPort = 5161;
         e.Transport = "http2";
         e.IsProxied = false;
-    })
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/health",
-        displayName: "Health Check",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Checks the health of the source service.",
-            Method = HttpMethod.Get,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index",
-        displayName: "Rebuild indexes",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=bm25",
-        displayName: "Rebuild bm25",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=cross-refs",
-        displayName: "Rebuild cross-refs",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=fts",
-        displayName: "Rebuild fts",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Post,
-        }
-    );
+    });
 
 var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
     .WithEndpoint("http", e =>
@@ -82,55 +32,6 @@ var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
         e.Transport = "http2";
         e.IsProxied = false;
     })
-    .WithHttpCommand(
-        path: "/health",
-        displayName: "Health Check",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Checks the health of the source service.",
-            Method = HttpMethod.Get,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index",
-        displayName: "Rebuild indexes",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=bm25",
-        displayName: "Rebuild bm25",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=cross-refs",
-        displayName: "Rebuild cross-refs",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=fts",
-        displayName: "Rebuild fts",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Post,
-        }
-    )
     .WaitFor(jira);
 
 var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("source-confluence")
@@ -147,56 +48,6 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
         e.Transport = "http2";
         e.IsProxied = false;
     })
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/health",
-        displayName: "Health Check",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Checks the health of the source service.",
-            Method = HttpMethod.Get,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index",
-        displayName: "Rebuild indexes",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=bm25",
-        displayName: "Rebuild bm25",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=cross-refs",
-        displayName: "Rebuild cross-refs",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=fts",
-        displayName: "Rebuild fts",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Post,
-        }
-    )
     .WithExplicitStart();
 
 var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-github")
@@ -213,56 +64,6 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
         e.Transport = "http2";
         e.IsProxied = false;
     })
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/health",
-        displayName: "Health Check",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Checks the health of the source service.",
-            Method = HttpMethod.Get,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index",
-        displayName: "Rebuild indexes",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of all index types.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=bm25",
-        displayName: "Rebuild bm25",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of bm25 index.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=cross-refs",
-        displayName: "Rebuild cross-refs",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=fts",
-        displayName: "Rebuild fts",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of FTS.",
-            Method = HttpMethod.Post,
-        }
-    )
     .WaitFor(jira);
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -280,26 +81,6 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
         e.Transport = "http2";
         e.IsProxied = false;
     })
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index",
-        displayName: "Rebuild indexes",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuilds for all active services.",
-            Method = HttpMethod.Post,
-        }
-    )
-    .WithHttpCommand(
-        endpointName: "http",
-        path: "/rebuild-index?type=cross-ref",
-        displayName: "Rebuild cross-refs",
-        commandOptions: new HttpCommandOptions()
-        {
-            Description = "Starts index rebuild of cross-references.",
-            Method = HttpMethod.Post,
-        }
-    )
     .WaitFor(jira)
     .WaitFor(zulip)
     .WaitFor(github);

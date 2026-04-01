@@ -43,15 +43,15 @@ public static class SourceServiceLifecycle
         }
     }
 
-    /// <summary>Builds a standard HealthCheckResponse.</summary>
+    /// <summary>Builds a standard HealthCheckResponse using a lightweight liveness probe.</summary>
     public static HealthCheckResponse BuildHealthCheck(
         SourceDatabase database,
         IIngestionPipeline pipeline)
     {
-        string integrity = database.CheckIntegrity();
+        string liveness = database.QuickCheck();
         return new HealthCheckResponse
         {
-            Status = integrity == "ok" ? "healthy" : "degraded",
+            Status = liveness == "ok" ? "healthy" : "degraded",
             Version = "2.0.0",
             UptimeSeconds = (DateTimeOffset.UtcNow - StartTime).TotalSeconds,
             Message = pipeline.IsRunning ? $"Ingestion in progress: {pipeline.CurrentStatus}" : "OK",
