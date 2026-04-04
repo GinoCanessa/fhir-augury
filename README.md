@@ -28,7 +28,7 @@ aggregates results and manages cross-references across sources.
 │  ┌───▼───┐  ┌──▼───┐  ┌──▼────────┐ ┌▼──────┐              │
 │  │ Jira  │  │Zulip │  │Confluence │ │GitHub │              │
 │  │:5160  │  │:5170 │  │  :5180    │ │:5190  │              │
-│  │:5161  │  │:5171 │  │  :5181    │ │:5191  │              │
+│  │:5161  │  │:5171 │  │           │ │:5191  │              │
 │  └───────┘  └──────┘  └──────────┘ └───────┘              │
 │    Each service: SQLite + FTS5 + Cache + gRPC               │
 └──────────────────────────────────────────────────────────────┘
@@ -79,7 +79,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Orchestrator | [5150](http://localhost:5150/health) | 5151 | Unified search, cross-references, aggregation |
 | Jira | [5160](http://localhost:5160/health) | 5161 | HL7 Jira issues and comments |
 | Zulip | [5170](http://localhost:5170/health) | 5171 | FHIR Zulip chat messages |
-| Confluence | [5180](http://localhost:5180/health) | 5181 | HL7 Confluence wiki pages |
+| Confluence | [5180](http://localhost:5180/health) | — | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | 5191 | HL7 GitHub issues, PRs, and commits |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | — | MCP server (HTTP/SSE transport) |
 | Dev UI | [5210](http://localhost:5210) | — | Blazor Server operational dashboard |
@@ -116,7 +116,7 @@ Configure your MCP client to connect to the running services:
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
         "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
-        "FHIR_AUGURY_CONFLUENCE_GRPC": "http://localhost:5181",
+        "FHIR_AUGURY_CONFLUENCE_HTTP": "http://localhost:5180",
         "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
       }
     }

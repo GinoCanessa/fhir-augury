@@ -75,7 +75,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5180:5180"
-      - "5181:5181"
     environment:
       - FHIR_AUGURY_CONFLUENCE__Confluence__BaseUrl=https://confluence.hl7.org
       - FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode=cookie
@@ -141,7 +140,7 @@ services:
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__DatabasePath=/app/data/orchestrator.db
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress=http://source-zulip:5171
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress=http://source-confluence:5181
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__HttpAddress=http://source-confluence:5180
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__HttpAddress=http://source-github:5190
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5150/health"]

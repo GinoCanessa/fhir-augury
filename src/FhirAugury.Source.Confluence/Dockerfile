@@ -9,8 +9,6 @@ COPY src/Directory.Build.props src/Directory.Build.props
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
 COPY src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj src/FhirAugury.Source.Confluence/
-COPY protos/ protos/
-
 RUN dotnet restore src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj
 
 # Copy source and build
@@ -29,7 +27,7 @@ RUN adduser --disabled-password --no-create-home appuser \
     && mkdir -p /app/cache /app/data \
     && chown -R appuser:appuser /app
 
-EXPOSE 5180 5181
+EXPOSE 5180
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD wget --spider -q http://localhost:5180/health || exit 1

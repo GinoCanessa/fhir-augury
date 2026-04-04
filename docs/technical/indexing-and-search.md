@@ -19,7 +19,7 @@ In v2, search is **distributed across microservices**:
 User Query → Orchestrator
               ├── gRPC Search → Source.Jira    (local FTS5 MATCH)
               ├── gRPC Search → Source.Zulip   (local FTS5 MATCH)
-              ├── gRPC Search → Source.Confluence (local FTS5 MATCH)
+              ├── HTTP Search → Source.Confluence (local FTS5 MATCH)
               └── gRPC Search → Source.GitHub  (local FTS5 MATCH)
               ↓
          Score Normalization (per-source min-max)

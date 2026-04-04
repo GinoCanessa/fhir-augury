@@ -6,7 +6,7 @@ exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via gRPC to the orchestrator and source
 services, providing 18 tools across 3 categories (Unified, Jira, Zulip).
 
-> **Note:** Confluence and GitHub tools are not yet implemented. The gRPC client
+> **Note:** Confluence and GitHub tools are not yet implemented. The client
 > configuration for those services is present but no MCP tools expose them yet.
 
 ## Setup
@@ -39,7 +39,7 @@ environment variables:
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence source HTTP address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
 
 ### Stdio Transport (Claude Desktop, etc.)
@@ -69,7 +69,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
         "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
         "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
         "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
-        "FHIR_AUGURY_CONFLUENCE_GRPC": "http://localhost:5181",
+        "FHIR_AUGURY_CONFLUENCE_HTTP": "http://localhost:5180",
         "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
       }
     }

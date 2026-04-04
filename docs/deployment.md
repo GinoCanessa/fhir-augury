@@ -66,7 +66,7 @@ docker compose --profile jira-only up -d
 | Orchestrator | 5150 | 5151 | `GET /health` |
 | Jira | 5160 | 5161 | `GET /health` |
 | Zulip | 5170 | 5171 | `GET /health` |
-| Confluence | 5180 | 5181 | `GET /health` |
+| Confluence | 5180 | — | `GET /health` |
 | GitHub | 5190 | 5191 | `GET /health` |
 | MCP (HTTP) | 5200 | — | `/mcp` |
 
@@ -188,7 +188,7 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__DatabasePath` | `./data/orchestrator.db` | Database path |
 | `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress` | `http://localhost:5161` | Jira gRPC |
 | `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress` | `http://localhost:5171` | Zulip gRPC |
-| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress` | `http://localhost:5181` | Confluence gRPC |
+| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__HttpAddress` | `http://localhost:5180` | Confluence HTTP |
 | `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__GrpcAddress` | `http://localhost:5191` | GitHub gRPC |
 
 > **Security note:** For production, use a `.env` file (gitignored) or Docker

@@ -11,7 +11,7 @@ also exposes a lightweight HTTP API for health checks and basic operations.
 | Orchestrator | 5150 | 5151 | Central hub — routes queries to sources |
 | Jira | 5160 | 5161 | Indexes jira.hl7.org |
 | Zulip | 5170 | 5171 | Indexes chat.fhir.org |
-| Confluence | 5180 | 5181 | Indexes confluence.hl7.org |
+| Confluence | 5180 | — | Indexes confluence.hl7.org |
 | GitHub | 5190 | 5191 | Indexes HL7 GitHub repos |
 | MCP HTTP | 5200 | — | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 

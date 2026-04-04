@@ -196,7 +196,7 @@ pattern.
 ## Confluence Source Service
 
 **Prefix:** `FHIR_AUGURY_CONFLUENCE_`
-**Ports:** HTTP 5180, gRPC 5181
+**Ports:** HTTP 5180
 
 ### appsettings.json
 
@@ -214,8 +214,7 @@ pattern.
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
     "Ports": {
-      "Http": 5180,
-      "Grpc": 5181
+      "Http": 5180
     },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
@@ -259,7 +258,6 @@ pattern.
 | `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5180` | HTTP listen port |
-| `Ports.Grpc` | int | `5181` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
@@ -419,7 +417,7 @@ pattern.
     "Services": {
       "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
       "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
-      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": false },
+      "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
       "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
     },
     "Search": {
@@ -487,7 +485,7 @@ environment variables. It is packaged as the `fhir-augury-mcp` dotnet tool.
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence HTTP address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
 
 ### CLI Arguments
@@ -514,7 +512,7 @@ on port 5200.
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence HTTP address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
 
 ### appsettings.json

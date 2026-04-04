@@ -92,7 +92,7 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 | `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
 | `FhirAugury.Source.Jira.Tests` | Jira source: ingestion, indexing, gRPC API |
 | `FhirAugury.Source.Zulip.Tests` | Zulip source: ingestion, indexing, gRPC API |
-| `FhirAugury.Source.Confluence.Tests` | Confluence source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Confluence.Tests` | Confluence source: ingestion, indexing, HTTP API |
 | `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, gRPC API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
 | `FhirAugury.McpShared.Tests` | MCP server tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |
@@ -119,7 +119,7 @@ dotnet run --project src/FhirAugury.Source.Zulip
 # Starts on HTTP :5170, gRPC :5171
 
 dotnet run --project src/FhirAugury.Source.Confluence
-# Starts on HTTP :5180, gRPC :5181
+# Starts on HTTP :5180
 
 dotnet run --project src/FhirAugury.Source.GitHub
 # Starts on HTTP :5190, gRPC :5191

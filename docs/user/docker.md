@@ -41,7 +41,7 @@ Docker Compose profiles let you run only the services you need:
 | Orchestrator | 5150 | 5151 |
 | Jira Source | 5160 | 5161 |
 | Zulip Source | 5170 | 5171 |
-| Confluence Source | 5180 | 5181 |
+| Confluence Source | 5180 | — |
 | GitHub Source | 5190 | 5191 |
 | MCP HTTP | 5200 | — |
 

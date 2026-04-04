@@ -149,7 +149,7 @@ FHIR_AUGURY_ZULIP__Zulip__Email=bot@example.com
 FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
 ```
 
-### Confluence Source (`:5180` HTTP / `:5181` gRPC)
+### Confluence Source (`:5180` HTTP)
 
 ```json
 {
@@ -167,7 +167,7 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "ReloadFromCacheOnStartup": false,
     "OrchestratorGrpcAddress": null,
     "IngestionPaused": false,
-    "Ports": { "Http": 5180, "Grpc": 5181 },
+    "Ports": { "Http": 5180 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
@@ -294,7 +294,7 @@ search, cross-references, and related-item discovery.
     "Services": {
       "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
       "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
-      "Confluence": { "GrpcAddress": "http://localhost:5181", "Enabled": false },
+      "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
       "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
     },
     "Search": {
@@ -341,7 +341,7 @@ environment variables:
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
 | `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
 | `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_GRPC` | `http://localhost:5181` | Confluence source gRPC address |
+| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence source HTTP address |
 | `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
 
 ### McpStdio

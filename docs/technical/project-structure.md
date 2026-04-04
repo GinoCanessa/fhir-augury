@@ -135,7 +135,7 @@ Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 
 ### `FhirAugury.Source.Confluence`
 
-Confluence source service (HTTP :5180, gRPC :5181). Same internal structure as
+Confluence source service (HTTP :5180). Same internal structure as
 Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 `Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
 
@@ -282,7 +282,7 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
 | `FhirAugury.Source.Jira.Tests` | Jira source service: ingestion, indexing, gRPC API |
 | `FhirAugury.Source.Zulip.Tests` | Zulip source service: ingestion, indexing, gRPC API |
-| `FhirAugury.Source.Confluence.Tests` | Confluence source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Confluence.Tests` | Confluence source service: ingestion, indexing, HTTP API |
 | `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, gRPC API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
 | `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |

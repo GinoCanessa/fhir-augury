@@ -14,7 +14,7 @@ source services, aggregating search results and managing cross-references.
 Orchestrator (:5150 HTTP / :5151 gRPC)
 ├── Source.Jira       (:5160 HTTP / :5161 gRPC)
 ├── Source.Zulip      (:5170 HTTP / :5171 gRPC)
-├── Source.Confluence  (:5180 HTTP / :5181 gRPC)
+├── Source.Confluence  (:5180 HTTP)
 └── Source.GitHub     (:5190 HTTP / :5191 gRPC)
 ```
 
@@ -260,7 +260,7 @@ Continues until `found_newest` is true.
 
 ---
 
-### Confluence (`Source.Confluence` — `:5180/5181`)
+### Confluence (`Source.Confluence` — `:5180`)
 
 | Property | Value |
 |----------|-------|
@@ -268,7 +268,7 @@ Continues until `found_newest` is true.
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
 | **Data types** | Spaces + pages + comments |
 | **Database** | `confluence.db` |
-| **gRPC services** | `SourceService`, `ConfluenceService` |
+| **API** | HTTP Minimal API |
 | **Page size** | 25 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
@@ -441,7 +441,7 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 
 | Feature | Jira | Zulip | Confluence | GitHub |
 |---------|------|-------|------------|--------|
-| **Ports** | 5160/5161 | 5170/5171 | 5180/5181 | 5190/5191 |
+| **Ports** | 5160/5161 | 5170/5171 | 5180 | 5190/5191 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
 | **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
 | **Pagination** | Offset | Anchor | Offset | Page number |

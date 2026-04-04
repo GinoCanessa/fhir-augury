@@ -22,7 +22,7 @@ manages cross-references, and provides a unified API to clients.
 │ │Source.Jira│ │Source.    │ │Source.       │ │Source.       │       │
 │ │ :5160    │ │Zulip     │ │Confluence   │ │GitHub       │       │
 │ │ :5161    │ │ :5170    │ │ :5180       │ │ :5190       │       │
-│ │[SQLite]  │ │ :5171    │ │ :5181       │ │ :5191       │       │
+│ │[SQLite]  │ │ :5171    │ │             │ │ :5191       │       │
 │ │[FTS5]    │ │[SQLite]  │ │[SQLite]     │ │[SQLite]     │       │
 │ │[Cache]   │ │[FTS5]    │ │[FTS5]       │ │[FTS5]       │       │
 │ └────┬─────┘ │[Cache]   │ │[Cache]      │ │[Cache]      │       │
@@ -46,7 +46,7 @@ Ports: HTTP (even) / gRPC (odd)
   Orchestrator  :5150 / :5151
   Source.Jira   :5160 / :5161
   Source.Zulip  :5170 / :5171
-  Source.Confluence :5180 / :5181
+  Source.Confluence :5180
   Source.GitHub  :5190 / :5191
 ```
 
@@ -79,7 +79,7 @@ FhirAugury.ServiceDefaults     ← Aspire shared project: OpenTelemetry, health 
     ↑
 FhirAugury.Source.Jira         ← Common + ServiceDefaults (implements SourceService + JiraService gRPC)
 FhirAugury.Source.Zulip        ← Common + ServiceDefaults (implements SourceService + ZulipService gRPC)
-FhirAugury.Source.Confluence   ← Common + ServiceDefaults (implements SourceService + ConfluenceService gRPC)
+FhirAugury.Source.Confluence   ← Common + ServiceDefaults (HTTP API)
 FhirAugury.Source.GitHub       ← Common + ServiceDefaults (implements SourceService + GitHubService gRPC)
     ↑
 FhirAugury.Orchestrator        ← Common + ServiceDefaults (consumes SourceService gRPC from all sources)
@@ -301,7 +301,7 @@ eight projects with fixed ports matching the existing convention:
 |---------|------|------|
 | source-jira | 5160 | 5161 |
 | source-zulip | 5170 | 5171 |
-| source-confluence | 5180 | 5181 |
+| source-confluence | 5180 | — |
 | source-github | 5190 | 5191 |
 | orchestrator | 5150 | 5151 |
 | devui | 5210 | — |

@@ -28,7 +28,7 @@ The v2 architecture uses 13 independent projects:
 | `FhirAugury.Common` | Library | Shared types, gRPC protobuf, utilities |
 | `FhirAugury.Source.Jira` | Service | Jira source (:5160/:5161) |
 | `FhirAugury.Source.Zulip` | Service | Zulip source (:5170/:5171) |
-| `FhirAugury.Source.Confluence` | Service | Confluence source (:5180/:5181) |
+| `FhirAugury.Source.Confluence` | Service | Confluence source (:5180) |
 | `FhirAugury.Source.GitHub` | Service | GitHub source (:5190/:5191) |
 | `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150/:5151) |
 | `FhirAugury.McpStdio` | CLI Tool | MCP server for LLM agents (stdio transport) |
@@ -78,7 +78,7 @@ dotnet run --project src/FhirAugury.Source.Zulip
 
 # Start Confluence source service
 dotnet run --project src/FhirAugury.Source.Confluence
-# → HTTP on :5180, gRPC on :5181
+# → HTTP on :5180
 
 # Start GitHub source service
 dotnet run --project src/FhirAugury.Source.GitHub

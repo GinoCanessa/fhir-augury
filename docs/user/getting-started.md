@@ -11,7 +11,7 @@ FHIR Augury v2 uses a microservices architecture:
   queries across sources
 - **Jira source** — (HTTP :5160 / gRPC :5161) indexes jira.hl7.org
 - **Zulip source** — (HTTP :5170 / gRPC :5171) indexes chat.fhir.org
-- **Confluence source** — (HTTP :5180 / gRPC :5181) indexes confluence.hl7.org
+- **Confluence source** — (HTTP :5180) indexes confluence.hl7.org
 - **GitHub source** — (HTTP :5190 / gRPC :5191) indexes HL7 GitHub repos
 
 Each source service maintains its own SQLite database, FTS5 indexes, and
