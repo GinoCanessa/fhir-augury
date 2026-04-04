@@ -1,7 +1,6 @@
 @page "/api-test"
 @using FhirAugury.DevUi.Services
-@using Fhiraugury
-@using Google.Protobuf
+@using System.Text.Json
 @inject OrchestratorClient Orchestrator
 @inject SourceDirectClient SourceClient
 @inject IConfiguration Configuration
@@ -20,21 +19,6 @@
                 <option value="@ep.Name">@ep.Name</option>
             }
         </select>
-    </div>
-    <div class="col-md-3">
-        <label class="form-label fw-semibold">Protocol</label>
-        <div class="btn-group d-block" role="group">
-            <button type="button"
-                    class="btn @(_protocol == "grpc" ? "btn-primary" : "btn-outline-primary")"
-                    @onclick='() => _protocol = "grpc"'>
-                <i class="bi bi-hdd-network"></i> gRPC
-            </button>
-            <button type="button"
-                    class="btn @(_protocol == "http" ? "btn-primary" : "btn-outline-primary")"
-                    @onclick='() => _protocol = "http"'>
-                <i class="bi bi-globe"></i> HTTP
-            </button>
-        </div>
     </div>
     <div class="col-md-3">
         <label class="form-label fw-semibold">API</label>
@@ -71,14 +55,7 @@
 {
     <div class="mb-3 text-body-secondary small">
         <i class="bi bi-info-circle"></i>
-        @if (_protocol == "grpc")
-        {
-            <span>Target: <code>@_selectedEndpoint.GrpcAddress</code> (gRPC)</span>
-        }
-        else
-        {
-            <span>Target: <code>@_selectedEndpoint.HttpAddress</code> (HTTP)</span>
-        }
+        <span>Target: <code>@_selectedEndpoint.Address</code> (HTTP)</span>
     </div>
 
     <div class="card mb-4">
@@ -187,9 +164,9 @@
                 {
                     <span class="badge bg-info">@(_elapsedMs)ms</span>
                 }
-                @if (_searchResults is not null)
+                @if (_parsedResults is not null)
                 {
-                    <span class="badge bg-info">@_searchResults.TotalResults results</span>
+                    <span class="badge bg-info">@_parsedTotalResults results</span>
                     <button class="btn btn-sm btn-outline-secondary" @onclick="ToggleRaw">
                         <i class="bi @(_showRaw ? "bi-table" : "bi-code-slash")"></i>
                         @(_showRaw ? "Table View" : "Raw JSON")
@@ -198,9 +175,9 @@
             </div>
         </div>
 
-        @if (_searchResults is not null && !_showRaw)
+        @if (_parsedResults is not null && !_showRaw)
         {
-            @if (_searchResults.Results.Count == 0)
+            @if (_parsedResults.Count == 0)
             {
                 <div class="alert alert-info">No results found.</div>
             }
@@ -213,22 +190,20 @@
                                 <th>Source</th>
                                 <th>ID</th>
                                 <th>Title</th>
-                                <th>Content Type</th>
                                 <th class="text-end">Score</th>
                                 <th>Snippet</th>
                                 <th>URL</th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (SearchResultItem item in _searchResults.Results)
+                            @foreach (ParsedSearchResult item in _parsedResults)
                             {
                                 <tr>
                                     <td><span class="badge bg-secondary">@item.Source</span></td>
                                     <td><code>@item.Id</code></td>
                                     <td title="@item.Title">@Truncate(item.Title, 60)</td>
-                                    <td><code>@item.ContentType</code></td>
                                     <td class="text-end fw-semibold">@item.Score.ToString("F2")</td>
-                                    <td title="@item.Snippet">@Truncate(item.Snippet, 50)</td>
+                                    <td title="@item.Snippet">@Truncate(item.Snippet ?? "", 50)</td>
                                     <td>
                                         @if (!string.IsNullOrEmpty(item.Url))
                                         {
@@ -260,7 +235,6 @@
     private string SelectedSource { get; set; } = "";
     private string SelectedApi { get; set; } = "";
 
-    private string _protocol = "grpc";
     private string _queryInput = "";
     private string _idInput = "";
     private int _limitInput = 20;
@@ -274,8 +248,8 @@
     private long? _elapsedMs;
     private bool _showRaw;
 
-    // Typed result for table rendering (gRPC Search/GetRelated only)
-    private SearchResponse? _searchResults;
+    private List<ParsedSearchResult>? _parsedResults;
+    private int _parsedTotalResults;
 
     private List<SourceEndpointInfo> _endpoints = [];
     private SourceEndpointInfo? _selectedEndpoint =>
@@ -321,40 +295,24 @@
 
     // ── Initialization ───────────────────────────────────────────
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
-        try
+        IConfigurationSection sourcesSection = Configuration.GetSection("DevUi:Sources");
+        List<SourceEndpointInfo> sources = [];
+        foreach (IConfigurationSection child in sourcesSection.GetChildren())
         {
-            ServiceEndpointsResponse endpoints = await Orchestrator.GetServiceEndpointsAsync();
-            _endpoints = endpoints.Endpoints
-                .Where(e => e.Enabled)
-                .Select(e => new SourceEndpointInfo(e.Name, e.GrpcAddress, e.HttpAddress))
-                .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            string name = child.Key;
+            string address = child["Address"] ?? "";
+            if (!string.IsNullOrEmpty(address))
+                sources.Add(new SourceEndpointInfo(name, address));
         }
-        catch
-        {
-            // Fall back to configured defaults when orchestrator is unreachable
-            IConfigurationSection sourcesSection = Configuration.GetSection("DevUi:Sources");
-            List<SourceEndpointInfo> fallback = [];
-            foreach (IConfigurationSection child in sourcesSection.GetChildren())
-            {
-                string name = child.Key;
-                string grpc = child["GrpcAddress"] ?? "";
-                string http = child["HttpAddress"] ?? "";
-                if (!string.IsNullOrEmpty(grpc))
-                    fallback.Add(new SourceEndpointInfo(name, grpc, http));
-            }
-            _endpoints = fallback.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        }
-
-        // Always inject orchestrator at the top of the list
-        _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.GrpcAddress, Orchestrator.HttpAddress));
+        _endpoints = sources.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.Address));
 
         if (!string.IsNullOrEmpty(DefaultSource))
-        {
             SelectedSource = DefaultSource;
-        }
+
+        return Task.CompletedTask;
     }
 
     // ── Execution ────────────────────────────────────────────────
@@ -366,7 +324,7 @@
         _resultJson = null;
         _requestInfo = null;
         _elapsedMs = null;
-        _searchResults = null;
+        _parsedResults = null;
         _showRaw = false;
         StateHasChanged();
 
@@ -374,19 +332,12 @@
         {
             if (_isOrchestrator)
             {
-                if (_protocol == "grpc")
-                    await ExecuteOrchestratorGrpcAsync();
-                else
-                    await ExecuteOrchestratorHttpAsync();
+                await ExecuteOrchestratorAsync();
             }
             else
             {
                 SourceEndpointInfo endpoint = _selectedEndpoint!;
-
-                if (_protocol == "grpc")
-                    await ExecuteGrpcAsync(endpoint);
-                else
-                    await ExecuteHttpAsync(endpoint);
+                await ExecuteSourceAsync(endpoint);
             }
         }
         catch (Exception ex)
@@ -399,57 +350,9 @@
         }
     }
 
-    private async Task ExecuteGrpcAsync(SourceEndpointInfo endpoint)
+    private async Task ExecuteSourceAsync(SourceEndpointInfo endpoint)
     {
-        string grpcAddr = endpoint.GrpcAddress;
-        string rpcName;
-        IMessage response;
-        long elapsed;
-
-        switch (SelectedApi)
-        {
-            case "search":
-                rpcName = "SourceService/Search";
-                (response, elapsed) = await SourceClient.SearchGrpcAsync(grpcAddr, _queryInput, _limitInput);
-                _searchResults = (SearchResponse)response;
-                break;
-            case "get-item":
-                rpcName = "SourceService/GetItem";
-                (response, elapsed) = await SourceClient.GetItemGrpcAsync(grpcAddr, _idInput);
-                break;
-            case "get-related":
-                rpcName = "SourceService/GetRelated";
-                (response, elapsed) = await SourceClient.GetRelatedGrpcAsync(grpcAddr, _idInput, _limitInput);
-                _searchResults = (SearchResponse)response;
-                break;
-            case "get-snapshot":
-                rpcName = "SourceService/GetSnapshot";
-                (response, elapsed) = await SourceClient.GetSnapshotGrpcAsync(grpcAddr, _idInput);
-                break;
-            case "get-content":
-                rpcName = "SourceService/GetContent";
-                (response, elapsed) = await SourceClient.GetContentGrpcAsync(grpcAddr, _idInput);
-                break;
-            case "get-stats":
-                rpcName = "SourceService/GetStats";
-                (response, elapsed) = await SourceClient.GetStatsGrpcAsync(grpcAddr);
-                break;
-            case "health-check":
-                rpcName = "SourceService/HealthCheck";
-                (response, elapsed) = await SourceClient.HealthCheckGrpcAsync(grpcAddr);
-                break;
-            default:
-                return;
-        }
-
-        _resultJson = SourceDirectClient.FormatAsJson(response);
-        _requestInfo = $"gRPC {rpcName} → {grpcAddr}";
-        _elapsedMs = elapsed;
-    }
-
-    private async Task ExecuteHttpAsync(SourceEndpointInfo endpoint)
-    {
-        string httpBase = endpoint.HttpAddress;
+        string httpBase = endpoint.Address;
         string url;
         string json;
         long elapsed;
@@ -457,25 +360,25 @@
         switch (SelectedApi)
         {
             case "search":
-                (url, json, elapsed) = await SourceClient.SearchHttpAsync(httpBase, _queryInput, _limitInput);
+                (url, json, elapsed) = await SourceClient.SearchAsync(httpBase, _queryInput, _limitInput);
                 break;
             case "get-item":
-                (url, json, elapsed) = await SourceClient.GetItemHttpAsync(httpBase, endpoint.Name, _idInput);
+                (url, json, elapsed) = await SourceClient.GetItemAsync(httpBase, endpoint.Name, _idInput);
                 break;
             case "get-related":
-                (url, json, elapsed) = await SourceClient.GetRelatedHttpAsync(httpBase, endpoint.Name, _idInput, _limitInput);
+                (url, json, elapsed) = await SourceClient.GetRelatedAsync(httpBase, endpoint.Name, _idInput, _limitInput);
                 break;
             case "get-snapshot":
-                (url, json, elapsed) = await SourceClient.GetSnapshotHttpAsync(httpBase, endpoint.Name, _idInput);
+                (url, json, elapsed) = await SourceClient.GetSnapshotAsync(httpBase, endpoint.Name, _idInput);
                 break;
             case "get-content":
-                (url, json, elapsed) = await SourceClient.GetContentHttpAsync(httpBase, endpoint.Name, _idInput);
+                (url, json, elapsed) = await SourceClient.GetContentAsync(httpBase, endpoint.Name, _idInput);
                 break;
             case "get-stats":
-                (url, json, elapsed) = await SourceClient.GetStatsHttpAsync(httpBase);
+                (url, json, elapsed) = await SourceClient.GetStatsAsync(httpBase);
                 break;
             case "health-check":
-                (url, json, elapsed) = await SourceClient.HealthCheckHttpAsync(httpBase);
+                (url, json, elapsed) = await SourceClient.HealthCheckAsync(httpBase);
                 break;
             default:
                 return;
@@ -484,72 +387,10 @@
         _resultJson = json;
         _requestInfo = $"GET {url}";
         _elapsedMs = elapsed;
+        TryParseSearchResults(json);
     }
 
-    // ── Orchestrator gRPC execution ─────────────────────────────
-
-    private async Task ExecuteOrchestratorGrpcAsync()
-    {
-        string rpcName;
-        IMessage response;
-        long elapsed;
-
-        switch (SelectedApi)
-        {
-            case "unified-search":
-                rpcName = "OrchestratorService/UnifiedSearch";
-                (response, elapsed) = await Orchestrator.UnifiedSearchGrpcAsync(_queryInput, _limitInput);
-                _searchResults = (SearchResponse)response;
-                break;
-            case "find-related":
-                rpcName = "OrchestratorService/FindRelated";
-                (response, elapsed) = await Orchestrator.FindRelatedGrpcAsync(_sourceFilterInput, _idInput, _limitInput);
-                break;
-            case "get-xref":
-                rpcName = "OrchestratorService/GetCrossReferences";
-                (response, elapsed) = await Orchestrator.GetCrossReferencesGrpcAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-item":
-                rpcName = "OrchestratorService/GetItem";
-                (response, elapsed) = await Orchestrator.GetItemGrpcAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-snapshot":
-                rpcName = "OrchestratorService/GetSnapshot";
-                (response, elapsed) = await Orchestrator.GetSnapshotGrpcAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-content":
-                rpcName = "OrchestratorService/GetContent";
-                (response, elapsed) = await Orchestrator.GetContentGrpcAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-services-status":
-                rpcName = "OrchestratorService/GetServicesStatus";
-                (response, elapsed) = await Orchestrator.GetServicesStatusGrpcAsync();
-                break;
-            case "get-stats":
-                // Stats is HTTP-only; fall back to HTTP
-                (string url, string json, long httpElapsed) = await Orchestrator.GetStatsHttpAsync();
-                _resultJson = json;
-                _requestInfo = $"GET {url} (HTTP-only)";
-                _elapsedMs = httpElapsed;
-                return;
-            case "rebuild-index":
-                rpcName = "OrchestratorService/RebuildIndex";
-                (response, elapsed) = await Orchestrator.RebuildIndexGrpcAsync(_typeInput);
-                break;
-            case "trigger-sync":
-                rpcName = "OrchestratorService/TriggerSync";
-                (response, elapsed) = await Orchestrator.TriggerSyncGrpcAsync(_typeInput);
-                break;
-            default:
-                return;
-        }
-
-        _resultJson = OrchestratorClient.FormatAsJson(response);
-        _requestInfo = $"gRPC {rpcName} → {Orchestrator.GrpcAddress}";
-        _elapsedMs = elapsed;
-    }
-
-    private async Task ExecuteOrchestratorHttpAsync()
+    private async Task ExecuteOrchestratorAsync()
     {
         string url;
         string json;
@@ -558,34 +399,34 @@
         switch (SelectedApi)
         {
             case "unified-search":
-                (url, json, elapsed) = await Orchestrator.UnifiedSearchHttpAsync(_queryInput, _limitInput);
+                (url, json, elapsed) = await Orchestrator.UnifiedSearchAsync(_queryInput, _limitInput);
                 break;
             case "find-related":
-                (url, json, elapsed) = await Orchestrator.FindRelatedHttpAsync(_sourceFilterInput, _idInput, _limitInput);
+                (url, json, elapsed) = await Orchestrator.FindRelatedAsync(_sourceFilterInput, _idInput, _limitInput);
                 break;
             case "get-xref":
-                (url, json, elapsed) = await Orchestrator.GetCrossReferencesHttpAsync(_sourceFilterInput, _idInput);
+                (url, json, elapsed) = await Orchestrator.GetCrossReferencesAsync(_sourceFilterInput, _idInput);
                 break;
             case "get-item":
-                (url, json, elapsed) = await Orchestrator.GetItemHttpAsync(_sourceFilterInput, _idInput);
+                (url, json, elapsed) = await Orchestrator.GetItemAsync(_sourceFilterInput, _idInput);
                 break;
             case "get-snapshot":
-                (url, json, elapsed) = await Orchestrator.GetSnapshotHttpAsync(_sourceFilterInput, _idInput);
+                (url, json, elapsed) = await Orchestrator.GetSnapshotAsync(_sourceFilterInput, _idInput);
                 break;
             case "get-content":
-                (url, json, elapsed) = await Orchestrator.GetContentHttpAsync(_sourceFilterInput, _idInput);
+                (url, json, elapsed) = await Orchestrator.GetContentAsync(_sourceFilterInput, _idInput);
                 break;
             case "get-services-status":
-                (url, json, elapsed) = await Orchestrator.GetServicesStatusHttpAsync();
+                (url, json, elapsed) = await Orchestrator.GetServicesStatusAsync();
                 break;
             case "get-stats":
-                (url, json, elapsed) = await Orchestrator.GetStatsHttpAsync();
+                (url, json, elapsed) = await Orchestrator.GetStatsAsync();
                 break;
             case "rebuild-index":
-                (url, json, elapsed) = await Orchestrator.RebuildIndexHttpAsync(_typeInput);
+                (url, json, elapsed) = await Orchestrator.RebuildIndexTimedAsync(_typeInput);
                 break;
             case "trigger-sync":
-                (url, json, elapsed) = await Orchestrator.TriggerSyncHttpAsync(_typeInput);
+                (url, json, elapsed) = await Orchestrator.TriggerSyncAsync(_typeInput);
                 break;
             default:
                 return;
@@ -594,7 +435,37 @@
         _resultJson = json;
         _requestInfo = $"{(SelectedApi is "rebuild-index" or "trigger-sync" ? "POST" : "GET")} {url}";
         _elapsedMs = elapsed;
+        TryParseSearchResults(json);
     }
+
+    private void TryParseSearchResults(string json)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("results", out JsonElement results) && results.ValueKind == JsonValueKind.Array)
+            {
+                _parsedTotalResults = doc.RootElement.TryGetProperty("total", out JsonElement total) ? total.GetInt32() : results.GetArrayLength();
+                _parsedResults = [];
+                foreach (JsonElement r in results.EnumerateArray())
+                {
+                    string id = GetStr(r, "id") ?? GetStr(r, "key") ?? "";
+                    _parsedResults.Add(new ParsedSearchResult(
+                        Source: GetStr(r, "source") ?? "",
+                        Id: id,
+                        Title: GetStr(r, "title") ?? "",
+                        Score: r.TryGetProperty("score", out JsonElement scoreEl) && scoreEl.ValueKind == JsonValueKind.Number ? scoreEl.GetDouble() : 0,
+                        Snippet: GetStr(r, "snippet"),
+                        Url: GetStr(r, "url")
+                    ));
+                }
+            }
+        }
+        catch { /* not a search response, table view will be hidden */ }
+    }
+
+    private static string? GetStr(JsonElement el, string name) =>
+        el.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     // ── Helpers ──────────────────────────────────────────────────
 
@@ -607,7 +478,7 @@
         _resultJson = null;
         _requestInfo = null;
         _elapsedMs = null;
-        _searchResults = null;
+        _parsedResults = null;
     }
 
     private void ToggleRaw() => _showRaw = !_showRaw;
@@ -637,5 +508,6 @@
                 ? text
                 : string.Concat(text.AsSpan(0, maxLength), "…");
 
-    private sealed record SourceEndpointInfo(string Name, string GrpcAddress, string HttpAddress);
+    private sealed record SourceEndpointInfo(string Name, string Address);
+    private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);
 }

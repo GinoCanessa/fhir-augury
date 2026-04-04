@@ -1,8 +1,6 @@
 using System.ComponentModel;
 using System.Text;
-using Fhiraugury;
-using Grpc.Core;
-using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json;
 using ModelContextProtocol.Server;
 
 namespace FhirAugury.McpShared.Tools;
@@ -12,7 +10,7 @@ public static class ZulipTools
 {
     [McpServerTool, Description("Search Zulip chat messages.")]
     public static async Task<string> SearchZulip(
-        [FromKeyedServices("zulip")] SourceService.SourceServiceClient zulipSource,
+        IHttpClientFactory httpClientFactory,
         [Description("Search query")] string query,
         [Description("Filter to specific stream name")] string? stream = null,
         [Description("Maximum results (default 20)")] int limit = 20,
@@ -20,16 +18,13 @@ public static class ZulipTools
     {
         try
         {
-            SearchRequest request = new SearchRequest { Query = query, Limit = limit };
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            StringBuilder url = new($"/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}");
             if (!string.IsNullOrEmpty(stream))
-                request.Filters.Add("stream", stream);
+                url.Append($"&stream={Uri.EscapeDataString(stream)}");
 
-            SearchResponse response = await zulipSource.SearchAsync(request, cancellationToken: cancellationToken);
-            return UnifiedTools.FormatSearchResults(response, query);
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
+            return UnifiedTools.FormatSearchResults(root, query);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -39,7 +34,7 @@ public static class ZulipTools
 
     [McpServerTool, Description("Get a full Zulip topic thread with all messages.")]
     public static async Task<string> GetZulipThread(
-        ZulipService.ZulipServiceClient zulip,
+        IHttpClientFactory httpClientFactory,
         [Description("Stream name")] string stream,
         [Description("Topic name")] string topic,
         [Description("Maximum messages (default 100)")] int limit = 100,
@@ -47,47 +42,60 @@ public static class ZulipTools
     {
         try
         {
-            ZulipThread response = await zulip.GetThreadAsync(
-                new ZulipGetThreadRequest { StreamName = stream, Topic = topic, Limit = limit },
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            string url = $"/api/v1/threads/{Uri.EscapeDataString(stream)}/{Uri.EscapeDataString(topic)}?limit={limit}";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
-            if (response.Messages.Count == 0)
+            JsonElement messages = root.GetProperty("messages");
+            if (messages.GetArrayLength() == 0)
                 return $"No messages found in stream '{stream}', topic '{topic}'.";
 
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"# {response.StreamName} > {response.Topic}");
+            string streamName = UnifiedTools.GetNullableString(root, "stream") ?? stream;
+            string topicName = UnifiedTools.GetNullableString(root, "topic") ?? topic;
+
+            StringBuilder sb = new();
+            sb.AppendLine($"# {streamName} > {topicName}");
             sb.AppendLine();
-            sb.AppendLine($"**Messages:** {response.Messages.Count}");
+            sb.AppendLine($"**Messages:** {messages.GetArrayLength()}");
 
-            ZulipMessage first = response.Messages[0];
-            ZulipMessage last = response.Messages[^1];
-            sb.AppendLine($"**First message:** {first.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-            sb.AppendLine($"**Last message:** {last.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
+            // First and last message timestamps
+            JsonElement first = messages[0];
+            JsonElement last = messages[messages.GetArrayLength() - 1];
+            string? firstTs = UnifiedTools.GetNullableString(first, "timestamp");
+            string? lastTs = UnifiedTools.GetNullableString(last, "timestamp");
+            if (firstTs is not null) sb.AppendLine($"**First message:** {firstTs}");
+            if (lastTs is not null) sb.AppendLine($"**Last message:** {lastTs}");
 
-            List<string> participants = response.Messages.Select(m => m.SenderName).Distinct().ToList();
-            sb.AppendLine($"**Participants:** {string.Join(", ", participants)}");
+            // Participants
+            HashSet<string> participants = [];
+            foreach (JsonElement msg in messages.EnumerateArray())
+            {
+                string? sender = UnifiedTools.GetNullableString(msg, "sender");
+                if (sender is not null) participants.Add(sender);
+            }
+            if (participants.Count > 0)
+                sb.AppendLine($"**Participants:** {string.Join(", ", participants)}");
             sb.AppendLine();
 
             sb.AppendLine("## Messages");
             sb.AppendLine();
-            foreach (ZulipMessage? msg in response.Messages)
+            foreach (JsonElement msg in messages.EnumerateArray())
             {
-                sb.AppendLine($"### {msg.SenderName} — {msg.Timestamp?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                sb.AppendLine(msg.Content);
+                string sender = UnifiedTools.GetString(msg, "sender");
+                string? ts = UnifiedTools.GetNullableString(msg, "timestamp");
+                sb.AppendLine($"### {sender} — {ts}");
+                sb.AppendLine(UnifiedTools.GetNullableString(msg, "content") ?? "");
                 sb.AppendLine();
             }
 
-            if (!string.IsNullOrEmpty(response.Url))
+            string? threadUrl = UnifiedTools.GetNullableString(root, "url");
+            if (!string.IsNullOrEmpty(threadUrl))
             {
                 sb.AppendLine("---");
-                sb.AppendLine($"*URL: {response.Url}*");
+                sb.AppendLine($"*URL: {threadUrl}*");
             }
 
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -97,7 +105,7 @@ public static class ZulipTools
 
     [McpServerTool, Description("Query Zulip messages with structured filters (streams, topics, senders, dates).")]
     public static async Task<string> QueryZulipMessages(
-        ZulipService.ZulipServiceClient zulip,
+        IHttpClientFactory httpClientFactory,
         [Description("Filter by stream names (comma-separated)")] string? streams = null,
         [Description("Filter by topic name")] string? topic = null,
         [Description("Filter by topic keyword (partial match)")] string? topicKeyword = null,
@@ -110,53 +118,47 @@ public static class ZulipTools
     {
         try
         {
-            ZulipQueryRequest request = new ZulipQueryRequest
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            object body = new
             {
-                Topic = topic ?? "",
-                TopicKeyword = topicKeyword ?? "",
-                Query = query ?? "",
-                SortBy = sortBy,
-                SortOrder = sortOrder,
-                Limit = limit,
+                streamNames = ParseCsv(streams),
+                senderNames = ParseCsv(senders),
+                topic = topic ?? "",
+                topicKeyword = topicKeyword ?? "",
+                query = query ?? "",
+                sortBy,
+                sortOrder,
+                limit,
             };
 
-            if (!string.IsNullOrWhiteSpace(streams))
-            {
-                foreach (string s in streams.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.StreamNames.Add(s);
-            }
+            JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/query", body, cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(senders))
-            {
-                foreach (string s in senders.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    request.SenderNames.Add(s);
-            }
+            JsonElement results = root.TryGetProperty("results", out JsonElement rEl) ? rEl : root;
+            if (results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
+                return "No Zulip messages matched the query.";
 
-            using AsyncServerStreamingCall<ZulipMessageSummary> call = zulip.QueryMessages(request, cancellationToken: cancellationToken);
-
-            StringBuilder sb = new StringBuilder();
+            StringBuilder sb = new();
             sb.AppendLine("## Zulip Query Results");
             sb.AppendLine();
 
-            int count = 0;
-            await foreach (ZulipMessageSummary? msg in call.ResponseStream.ReadAllAsync(cancellationToken))
+            foreach (JsonElement msg in results.EnumerateArray())
             {
-                sb.AppendLine($"- **{msg.StreamName} > {msg.Topic}** [{msg.SenderName}]");
-                if (!string.IsNullOrEmpty(msg.Snippet))
-                    sb.AppendLine($"  {msg.Snippet}");
-                if (msg.Timestamp is not null)
-                    sb.AppendLine($"  {msg.Timestamp.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                count++;
+                string streamName = UnifiedTools.GetNullableString(msg, "streamName")
+                                    ?? UnifiedTools.GetString(msg, "stream");
+                string msgTopic = UnifiedTools.GetString(msg, "topic");
+                string sender = UnifiedTools.GetNullableString(msg, "senderName")
+                                ?? UnifiedTools.GetString(msg, "sender");
+                sb.AppendLine($"- **{streamName} > {msgTopic}** [{sender}]");
+
+                string? snippet = UnifiedTools.GetNullableString(msg, "snippet");
+                if (!string.IsNullOrEmpty(snippet))
+                    sb.AppendLine($"  {snippet}");
+                string? ts = UnifiedTools.GetNullableString(msg, "timestamp");
+                if (!string.IsNullOrEmpty(ts))
+                    sb.AppendLine($"  {ts}");
             }
 
-            if (count == 0)
-                return "No Zulip messages matched the query.";
-
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -166,35 +168,33 @@ public static class ZulipTools
 
     [McpServerTool, Description("List available Zulip streams.")]
     public static async Task<string> ListZulipStreams(
-        ZulipService.ZulipServiceClient zulip,
+        IHttpClientFactory httpClientFactory,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            using AsyncServerStreamingCall<ZulipStream> call = zulip.ListStreams(new ZulipListStreamsRequest(),
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, "/api/v1/streams", cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
+            JsonElement streams = root.TryGetProperty("streams", out JsonElement sEl) ? sEl : root;
+            if (streams.ValueKind != JsonValueKind.Array || streams.GetArrayLength() == 0)
+                return "No Zulip streams found.";
+
+            StringBuilder sb = new();
             sb.AppendLine("## Zulip Streams");
             sb.AppendLine();
 
-            int count = 0;
-            await foreach (ZulipStream? stream in call.ResponseStream.ReadAllAsync(cancellationToken))
+            foreach (JsonElement s in streams.EnumerateArray())
             {
-                sb.AppendLine($"- **{stream.Name}** ({stream.MessageCount} messages)");
-                if (!string.IsNullOrEmpty(stream.Description))
-                    sb.AppendLine($"  {stream.Description}");
-                count++;
+                string name = UnifiedTools.GetString(s, "name");
+                int msgCount = s.TryGetProperty("messageCount", out JsonElement mcEl) ? mcEl.GetInt32() : 0;
+                sb.AppendLine($"- **{name}** ({msgCount} messages)");
+                string? desc = UnifiedTools.GetNullableString(s, "description");
+                if (!string.IsNullOrEmpty(desc))
+                    sb.AppendLine($"  {desc}");
             }
 
-            if (count == 0)
-                return "No Zulip streams found.";
-
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -204,38 +204,36 @@ public static class ZulipTools
 
     [McpServerTool, Description("List topics in a Zulip stream.")]
     public static async Task<string> ListZulipTopics(
-        ZulipService.ZulipServiceClient zulip,
+        IHttpClientFactory httpClientFactory,
         [Description("Stream name")] string stream,
         [Description("Maximum topics (default 50)")] int limit = 50,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            using AsyncServerStreamingCall<ZulipTopic> call = zulip.ListTopics(
-                new ZulipListTopicsRequest { StreamName = stream, Limit = limit },
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            string url = $"/api/v1/streams/{Uri.EscapeDataString(stream)}/topics?limit={limit}";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
+            JsonElement topics = root.TryGetProperty("topics", out JsonElement tEl) ? tEl : root;
+            if (topics.ValueKind != JsonValueKind.Array || topics.GetArrayLength() == 0)
+                return $"No topics found in stream '{stream}'.";
+
+            StringBuilder sb = new();
             sb.AppendLine($"## Topics in {stream}");
             sb.AppendLine();
 
-            int count = 0;
-            await foreach (ZulipTopic? topic in call.ResponseStream.ReadAllAsync(cancellationToken))
+            foreach (JsonElement t in topics.EnumerateArray())
             {
-                sb.AppendLine($"- **{topic.Topic}** ({topic.MessageCount} messages)");
-                if (topic.LastMessageAt is not null)
-                    sb.AppendLine($"  Last message: {topic.LastMessageAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                count++;
+                string topicName = UnifiedTools.GetString(t, "topic");
+                int msgCount = t.TryGetProperty("messageCount", out JsonElement mcEl) ? mcEl.GetInt32() : 0;
+                sb.AppendLine($"- **{topicName}** ({msgCount} messages)");
+                string? lastMsg = UnifiedTools.GetNullableString(t, "lastMessageAt");
+                if (!string.IsNullOrEmpty(lastMsg))
+                    sb.AppendLine($"  Last message: {lastMsg}");
             }
 
-            if (count == 0)
-                return $"No topics found in stream '{stream}'.";
-
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -245,25 +243,25 @@ public static class ZulipTools
 
     [McpServerTool, Description("Get a detailed markdown snapshot of a Zulip topic thread.")]
     public static async Task<string> SnapshotZulipThread(
-        ZulipService.ZulipServiceClient zulip,
-        [Description("Stream name")] string stream,
-        [Description("Topic name")] string topic,
+        IHttpClientFactory httpClientFactory,
+        [Description("Item identifier (message ID or thread key)")] string id,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            SnapshotResponse response = await zulip.GetThreadSnapshotAsync(
-                new ZulipSnapshotRequest { StreamName = stream, Topic = topic, IncludeInternalRefs = true },
-                cancellationToken: cancellationToken);
-            return response.Markdown;
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+            HttpClient client = httpClientFactory.CreateClient("zulip");
+            string url = $"/api/v1/items/{Uri.EscapeDataString(id)}/snapshot";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
+            return UnifiedTools.GetString(root, "markdown");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return $"Error: {ex.Message}";
         }
     }
+
+    private static List<string> ParseCsv(string? csv) =>
+        string.IsNullOrWhiteSpace(csv)
+            ? []
+            : [.. csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
 }

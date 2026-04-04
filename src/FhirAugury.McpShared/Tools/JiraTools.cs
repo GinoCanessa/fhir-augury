@@ -1,9 +1,7 @@
 using System.ComponentModel;
 using System.Text;
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Common.Text;
-using Grpc.Core;
-using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
 namespace FhirAugury.McpShared.Tools;
@@ -13,7 +11,7 @@ public static class JiraTools
 {
     [McpServerTool, Description("Search Jira issues using full-text search.")]
     public static async Task<string> SearchJira(
-        [FromKeyedServices("jira")] SourceService.SourceServiceClient jiraSource,
+        IHttpClientFactory httpClientFactory,
         [Description("Search query")] string query,
         [Description("Filter by status (e.g., Open, Closed)")] string? status = null,
         [Description("Maximum results (default 20)")] int limit = 20,
@@ -21,16 +19,13 @@ public static class JiraTools
     {
         try
         {
-            SearchRequest request = new SearchRequest { Query = query, Limit = limit };
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            StringBuilder url = new($"/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}");
             if (!string.IsNullOrEmpty(status))
-                request.Filters.Add("status", status);
+                url.Append($"&status={Uri.EscapeDataString(status)}");
 
-            SearchResponse response = await jiraSource.SearchAsync(request, cancellationToken: cancellationToken);
-            return UnifiedTools.FormatSearchResults(response, query);
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
+            return UnifiedTools.FormatSearchResults(root, query);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -40,57 +35,71 @@ public static class JiraTools
 
     [McpServerTool, Description("Get full details of a Jira issue by its key.")]
     public static async Task<string> GetJiraIssue(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
+        IHttpClientFactory httpClientFactory,
         [Description("Issue key, e.g. FHIR-43499")] string key,
         [Description("Include comments")] bool includeComments = true,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            ItemResponse response = await orchestrator.GetItemAsync(
-                new GetItemRequest { Id = key, IncludeContent = true, IncludeComments = includeComments },
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            string url = $"/api/v1/items/jira/{Uri.EscapeDataString(key)}";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"# {response.Id}: {response.Title}");
+            StringBuilder sb = new();
+            string id = UnifiedTools.GetNullableString(root, "id") ?? UnifiedTools.GetNullableString(root, "key") ?? key;
+            string title = UnifiedTools.GetString(root, "title");
+            sb.AppendLine($"# {id}: {title}");
             sb.AppendLine();
 
-            foreach ((string? k, string? v) in response.Metadata)
-                sb.AppendLine($"- **{FormatKey(k)}:** {v}");
+            if (root.TryGetProperty("metadata", out JsonElement metaEl) && metaEl.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty kv in metaEl.EnumerateObject())
+                    sb.AppendLine($"- **{FormatKey(kv.Name)}:** {kv.Value.GetString()}");
+            }
 
-            if (response.CreatedAt is not null)
-                sb.AppendLine($"- **Created:** {response.CreatedAt.ToDateTimeOffset():yyyy-MM-dd}");
-            if (response.UpdatedAt is not null)
-                sb.AppendLine($"- **Updated:** {response.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd}");
+            // Inline fields when metadata is absent
+            AppendField(sb, root, "status", "Status");
+            AppendField(sb, root, "type", "Type");
+            AppendField(sb, root, "priority", "Priority");
+            AppendField(sb, root, "workGroup", "Work Group");
+            AppendField(sb, root, "specification", "Specification");
+            AppendField(sb, root, "assignee", "Assignee");
+            AppendField(sb, root, "reporter", "Reporter");
 
-            if (!string.IsNullOrEmpty(response.Content))
+            AppendField(sb, root, "createdAt", "Created");
+            AppendField(sb, root, "updatedAt", "Updated");
+
+            string? content = UnifiedTools.GetNullableString(root, "content")
+                              ?? UnifiedTools.GetNullableString(root, "description");
+            if (!string.IsNullOrEmpty(content))
             {
                 sb.AppendLine();
                 sb.AppendLine("## Description");
-                sb.AppendLine(response.Content);
+                sb.AppendLine(content);
             }
 
-            if (response.Comments.Count > 0)
+            if (includeComments && root.TryGetProperty("comments", out JsonElement commentsEl)
+                && commentsEl.ValueKind == JsonValueKind.Array && commentsEl.GetArrayLength() > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine($"## Comments ({response.Comments.Count})");
+                sb.AppendLine($"## Comments ({commentsEl.GetArrayLength()})");
                 sb.AppendLine();
-                foreach (Comment? c in response.Comments)
+                foreach (JsonElement c in commentsEl.EnumerateArray())
                 {
-                    sb.AppendLine($"### {c.Author} — {c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                    sb.AppendLine(c.Body);
+                    string author = UnifiedTools.GetString(c, "author");
+                    string? date = UnifiedTools.GetNullableString(c, "createdAt");
+                    sb.AppendLine($"### {author} — {date}");
+                    sb.AppendLine(UnifiedTools.GetString(c, "body"));
                     sb.AppendLine();
                 }
             }
 
-            if (!string.IsNullOrEmpty(response.Url))
-                sb.AppendLine($"**URL:** {response.Url}");
+            string? itemUrl = UnifiedTools.GetNullableString(root, "url");
+            if (!string.IsNullOrEmpty(itemUrl))
+                sb.AppendLine($"**URL:** {itemUrl}");
 
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -100,42 +109,41 @@ public static class JiraTools
 
     [McpServerTool, Description("Get comments on a Jira issue.")]
     public static async Task<string> GetJiraComments(
-        JiraService.JiraServiceClient jira,
+        IHttpClientFactory httpClientFactory,
         [Description("Issue key")] string key,
         [Description("Maximum comments (default 50)")] int limit = 50,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            using AsyncServerStreamingCall<JiraComment> call = jira.GetIssueComments(new JiraGetCommentsRequest { IssueKey = key },
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            string url = $"/api/v1/items/{Uri.EscapeDataString(key)}/comments?limit={limit}";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
-            List<JiraComment> comments = new List<JiraComment>();
-            await foreach (JiraComment? comment in call.ResponseStream.ReadAllAsync(cancellationToken))
-            {
-                comments.Add(comment);
-                if (comments.Count >= limit) break;
-            }
+            JsonElement comments = root.TryGetProperty("comments", out JsonElement cEl)
+                ? cEl
+                : root;
 
-            if (comments.Count == 0)
+            if (comments.ValueKind != JsonValueKind.Array || comments.GetArrayLength() == 0)
                 return $"No comments on {key}.";
 
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"## Comments on {key} ({comments.Count})");
+            StringBuilder sb = new();
+            sb.AppendLine($"## Comments on {key} ({comments.GetArrayLength()})");
             sb.AppendLine();
 
-            foreach (JiraComment c in comments)
+            int count = 0;
+            foreach (JsonElement c in comments.EnumerateArray())
             {
-                sb.AppendLine($"### {c.Author} — {c.CreatedAt?.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                sb.AppendLine(c.Body);
+                if (count >= limit) break;
+                string author = UnifiedTools.GetString(c, "author");
+                string? date = UnifiedTools.GetNullableString(c, "createdAt");
+                sb.AppendLine($"### {author} — {date}");
+                sb.AppendLine(UnifiedTools.GetString(c, "body"));
                 sb.AppendLine();
+                count++;
             }
 
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -145,7 +153,7 @@ public static class JiraTools
 
     [McpServerTool, Description("Query Jira issues with structured filters (status, work group, specification, etc).")]
     public static async Task<string> QueryJiraIssues(
-        JiraService.JiraServiceClient jira,
+        IHttpClientFactory httpClientFactory,
         [Description("Filter by statuses (comma-separated)")] string? statuses = null,
         [Description("Filter by work groups (comma-separated)")] string? workGroups = null,
         [Description("Filter by specifications (comma-separated)")] string? specifications = null,
@@ -159,49 +167,51 @@ public static class JiraTools
     {
         try
         {
-            JiraQueryRequest request = new JiraQueryRequest
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            object body = new
             {
-                Query = query ?? "",
-                SortBy = sortBy,
-                SortOrder = sortOrder,
-                Limit = limit,
+                statuses = ParseCsv(statuses),
+                workGroups = ParseCsv(workGroups),
+                specifications = ParseCsv(specifications),
+                types = ParseCsv(types),
+                priorities = ParseCsv(priorities),
+                query = query ?? "",
+                sortBy,
+                sortOrder,
+                limit,
             };
 
-            AddItems(request.Statuses, statuses);
-            AddItems(request.WorkGroups, workGroups);
-            AddItems(request.Specifications, specifications);
-            AddItems(request.Types_, types);
-            AddItems(request.Priorities, priorities);
+            JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/query", body, cancellationToken);
 
-            using AsyncServerStreamingCall<JiraIssueSummary> call = jira.QueryIssues(request, cancellationToken: cancellationToken);
-
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("## Jira Query Results");
-            sb.AppendLine();
-
-            int count = 0;
-            await foreach (JiraIssueSummary? issue in call.ResponseStream.ReadAllAsync(cancellationToken))
-            {
-                sb.AppendLine($"- **{issue.Key}** [{issue.Status}] {issue.Title}");
-                if (!string.IsNullOrEmpty(issue.WorkGroup))
-                    sb.Append($"  WG: {issue.WorkGroup}");
-                if (!string.IsNullOrEmpty(issue.Specification))
-                    sb.Append($"  Spec: {issue.Specification}");
-                if (issue.UpdatedAt is not null)
-                    sb.Append($"  Updated: {issue.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd}");
-                sb.AppendLine();
-                count++;
-            }
-
-            if (count == 0)
+            JsonElement results = root.TryGetProperty("results", out JsonElement rEl) ? rEl : root;
+            if (results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
                 return "No Jira issues matched the query.";
 
-            sb.Insert(sb.ToString().IndexOf('\n') + 1, $"({count} results)\n\n");
+            StringBuilder sb = new();
+            sb.AppendLine("## Jira Query Results");
+            sb.AppendLine($"({results.GetArrayLength()} results)");
+            sb.AppendLine();
+
+            foreach (JsonElement issue in results.EnumerateArray())
+            {
+                string issueKey = UnifiedTools.GetNullableString(issue, "key") ?? UnifiedTools.GetString(issue, "id");
+                string issueStatus = UnifiedTools.GetString(issue, "status");
+                string issueTitle = UnifiedTools.GetString(issue, "title");
+                sb.Append($"- **{issueKey}** [{issueStatus}] {issueTitle}");
+
+                string? wg = UnifiedTools.GetNullableString(issue, "workGroup");
+                if (!string.IsNullOrEmpty(wg))
+                    sb.Append($"  WG: {wg}");
+                string? spec = UnifiedTools.GetNullableString(issue, "specification");
+                if (!string.IsNullOrEmpty(spec))
+                    sb.Append($"  Spec: {spec}");
+                string? updated = UnifiedTools.GetNullableString(issue, "updatedAt");
+                if (!string.IsNullOrEmpty(updated))
+                    sb.Append($"  Updated: {updated}");
+                sb.AppendLine();
+            }
+
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -211,21 +221,17 @@ public static class JiraTools
 
     [McpServerTool, Description("Get a detailed markdown snapshot of a Jira issue including metadata, description, comments, and cross-references.")]
     public static async Task<string> SnapshotJiraIssue(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
+        IHttpClientFactory httpClientFactory,
         [Description("Issue key")] string key,
         [Description("Include comments (default true)")] bool includeComments = true,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            SnapshotResponse response = await orchestrator.GetSnapshotAsync(
-                new GetSnapshotRequest { Id = key, IncludeComments = includeComments, IncludeInternalRefs = true },
-                cancellationToken: cancellationToken);
-            return response.Markdown;
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            string url = $"/api/v1/items/jira/{Uri.EscapeDataString(key)}/snapshot";
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
+            return UnifiedTools.GetString(root, "markdown");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -235,7 +241,7 @@ public static class JiraTools
 
     [McpServerTool, Description("List Jira issues with optional filters and sorting.")]
     public static async Task<string> ListJiraIssues(
-        [FromKeyedServices("jira")] SourceService.SourceServiceClient jiraSource,
+        IHttpClientFactory httpClientFactory,
         [Description("Sort by field (default updated_at)")] string sortBy = "updated_at",
         [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
         [Description("Maximum results (default 20)")] int limit = 20,
@@ -245,42 +251,36 @@ public static class JiraTools
     {
         try
         {
-            ListItemsRequest request = new ListItemsRequest
-            {
-                Limit = limit,
-                SortBy = sortBy,
-                SortOrder = sortOrder,
-            };
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            StringBuilder url = new($"/api/v1/items?limit={limit}");
             if (!string.IsNullOrEmpty(status))
-                request.Filters.Add("status", status);
+                url.Append($"&status={Uri.EscapeDataString(status)}");
             if (!string.IsNullOrEmpty(workGroup))
-                request.Filters.Add("work_group", workGroup);
+                url.Append($"&work_group={Uri.EscapeDataString(workGroup)}");
 
-            using AsyncServerStreamingCall<ItemSummary> call = jiraSource.ListItems(request, cancellationToken: cancellationToken);
+            JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
+            JsonElement items = root.TryGetProperty("items", out JsonElement iEl) ? iEl : root;
+            if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
+                return "No Jira issues found.";
+
+            StringBuilder sb = new();
             sb.AppendLine("## Jira Issues");
             sb.AppendLine();
 
-            int count = 0;
-            await foreach (ItemSummary? item in call.ResponseStream.ReadAllAsync(cancellationToken))
+            foreach (JsonElement item in items.EnumerateArray())
             {
-                sb.AppendLine($"- **{item.Id}** {item.Title}");
-                if (item.UpdatedAt is not null)
-                    sb.AppendLine($"  Updated: {item.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd}");
-                if (!string.IsNullOrEmpty(item.Url))
-                    sb.AppendLine($"  URL: {item.Url}");
-                count++;
+                string id = UnifiedTools.GetNullableString(item, "key") ?? UnifiedTools.GetString(item, "id");
+                sb.AppendLine($"- **{id}** {UnifiedTools.GetString(item, "title")}");
+                string? updated = UnifiedTools.GetNullableString(item, "updatedAt");
+                if (!string.IsNullOrEmpty(updated))
+                    sb.AppendLine($"  Updated: {updated}");
+                string? itemUrl = UnifiedTools.GetNullableString(item, "url");
+                if (!string.IsNullOrEmpty(itemUrl))
+                    sb.AppendLine($"  URL: {itemUrl}");
             }
 
-            if (count == 0)
-                return "No Jira issues found.";
-
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -288,8 +288,17 @@ public static class JiraTools
         }
     }
 
-    private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string? csv) =>
-        CsvParser.AddItemsToRepeatedField(field, csv);
+    private static List<string> ParseCsv(string? csv) =>
+        string.IsNullOrWhiteSpace(csv)
+            ? []
+            : [.. csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+    private static void AppendField(StringBuilder sb, JsonElement el, string prop, string label)
+    {
+        string? value = UnifiedTools.GetNullableString(el, prop);
+        if (!string.IsNullOrEmpty(value))
+            sb.AppendLine($"- **{label}:** {value}");
+    }
 
     private static string FormatKey(string key) => FormatHelpers.FormatKey(key);
 }
