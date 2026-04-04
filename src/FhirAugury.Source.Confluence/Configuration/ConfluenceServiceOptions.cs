@@ -25,8 +25,8 @@ public class ConfluenceServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
-    /// <summary>gRPC address of the orchestrator service for ingestion notifications.</summary>
-    public string? OrchestratorGrpcAddress { get; set; }
+    /// <summary>HTTP address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorAddress { get; set; }
 
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
@@ -40,7 +40,7 @@ public class ConfluenceServiceOptions
     public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     public int PageSize { get; set; } = 25;
-    public PortConfiguration Ports { get; set; } = new() { Http = 5180, Grpc = 5181 };
+    public PortConfiguration Ports { get; set; } = new() { Http = 5180 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();

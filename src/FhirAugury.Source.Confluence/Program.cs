@@ -1,4 +1,3 @@
-using Fhiraugury;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
@@ -8,7 +7,6 @@ using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
 using FhirAugury.Source.Confluence.Ingestion;
 using FhirAugury.Source.Confluence.Workers;
-using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -34,16 +32,13 @@ builder.AddServiceDefaults();
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{ConfluenceServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5180);
-int grpcPort = portsSection.GetValue<int>("Grpc", 5181);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
-builder.Services.AddGrpc();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -99,17 +94,17 @@ FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
 builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
 builder.Services.AddSingleton(indexTracker);
 
-// Orchestrator client (optional — for ingestion notifications)
-#pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
-builder.Services.AddSingleton(sp =>
+// Orchestrator HTTP client (optional — for ingestion notifications)
 {
-    ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
-    if (string.IsNullOrWhiteSpace(opts.OrchestratorGrpcAddress))
-        return (OrchestratorService.OrchestratorServiceClient?)null;
-    GrpcChannel channel = GrpcChannel.ForAddress(opts.OrchestratorGrpcAddress);
-    return (OrchestratorService.OrchestratorServiceClient?)new OrchestratorService.OrchestratorServiceClient(channel);
-});
-#pragma warning restore CS8634, CS8621
+    ConfluenceServiceOptions opts = builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName).Get<ConfluenceServiceOptions>()!;
+    if (!string.IsNullOrWhiteSpace(opts.OrchestratorAddress))
+    {
+        builder.Services.AddHttpClient("orchestrator", client =>
+        {
+            client.BaseAddress = new Uri(opts.OrchestratorAddress);
+        });
+    }
+}
 
 builder.Services.AddSingleton<ConfluenceIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
@@ -147,10 +142,6 @@ tracker.RegisterIndex("page-links", "Internal page link graph", () =>
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
-
-// ── gRPC services ────────────────────────────────────────────────
-app.MapGrpcService<ConfluenceGrpcService>();
-app.MapGrpcService<ConfluenceSpecificGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapConfluenceHttpApi();

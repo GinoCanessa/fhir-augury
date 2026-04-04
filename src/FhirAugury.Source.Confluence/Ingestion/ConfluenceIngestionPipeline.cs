@@ -1,13 +1,12 @@
-using Fhiraugury;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using FhirAugury.Source.Confluence.Indexing;
-using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Json;
 
 namespace FhirAugury.Source.Confluence.Ingestion;
 
@@ -19,7 +18,7 @@ public class ConfluenceIngestionPipeline(
     ConfluenceDatabase database,
     ConfluenceIndexer indexer,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
-    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
+    IHttpClientFactory httpClientFactory,
     IOptions<ConfluenceServiceOptions> optionsAccessor,
     ILogger<ConfluenceIngestionPipeline> logger)
     : IIngestionPipeline
@@ -232,16 +231,17 @@ public class ConfluenceIngestionPipeline(
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
     {
-        if (orchestratorClient is null) return;
+        if (string.IsNullOrWhiteSpace(optionsAccessor.Value.OrchestratorAddress)) return;
 
         try
         {
-            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            await client.PostAsJsonAsync("/api/v1/notify-ingestion", new
             {
-                Source = ConfluenceSource.SourceName,
-                Type = runType,
-                ItemsIngested = result.ItemsProcessed,
-                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+                source = ConfluenceSource.SourceName,
+                type = runType,
+                itemsIngested = result.ItemsProcessed,
+                completedAt = result.CompletedAt,
             });
         }
         catch (Exception ex)
