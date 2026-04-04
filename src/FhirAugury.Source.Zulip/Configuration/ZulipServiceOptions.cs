@@ -23,8 +23,8 @@ public class ZulipServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
-    /// <summary>gRPC address of the orchestrator service for ingestion notifications.</summary>
-    public string? OrchestratorGrpcAddress { get; set; }
+    /// <summary>HTTP address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorAddress { get; set; }
 
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
@@ -53,7 +53,7 @@ public class ZulipServiceOptions
 
     public bool OnlyWebPublic { get; set; } = true;
     public int BatchSize { get; set; } = 1000;
-    public PortConfiguration Ports { get; set; } = new() { Http = 5170, Grpc = 5171 };
+    public PortConfiguration Ports { get; set; } = new() { Http = 5170 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();

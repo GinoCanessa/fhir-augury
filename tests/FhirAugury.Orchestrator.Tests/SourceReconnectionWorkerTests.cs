@@ -19,18 +19,19 @@ public class SourceReconnectionWorkerTests
             ReconnectIntervalSeconds = reconnectInterval,
             Services = services ?? new Dictionary<string, SourceServiceConfig>
             {
-                ["TestSource"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+                ["TestSource"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
             },
         });
     }
 
-    private static (ServiceHealthMonitor monitor, SourceRouter router) CreateMonitorAndRouter(
+    private static (ServiceHealthMonitor monitor, SourceHttpClient httpClient) CreateMonitorAndHttpClient(
         IOptions<OrchestratorOptions>? options = null)
     {
         options ??= CreateOptions();
-        SourceRouter router = new(options, NullLogger<SourceRouter>.Instance);
-        ServiceHealthMonitor monitor = new(router, options, NullLogger<ServiceHealthMonitor>.Instance);
-        return (monitor, router);
+        IHttpClientFactory httpClientFactory = new TestHttpClientFactory();
+        SourceHttpClient httpClient = new(httpClientFactory, options, NullLogger<SourceHttpClient>.Instance);
+        ServiceHealthMonitor monitor = new(httpClient, options, NullLogger<ServiceHealthMonitor>.Instance);
+        return (monitor, httpClient);
     }
 
     [Fact]
@@ -53,7 +54,7 @@ public class SourceReconnectionWorkerTests
     [Fact]
     public async Task TryReconnect_NoOfflineSources_DoesNothing()
     {
-        (ServiceHealthMonitor monitor, SourceRouter router) = CreateMonitorAndRouter();
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient();
 
         SourceReconnectionWorker worker = new(
             monitor,
@@ -73,9 +74,9 @@ public class SourceReconnectionWorkerTests
     {
         IOptions<OrchestratorOptions> options = CreateOptions(services: new Dictionary<string, SourceServiceConfig>
         {
-            ["Offline"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+            ["Offline"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
         });
-        (ServiceHealthMonitor monitor, SourceRouter router) = CreateMonitorAndRouter(options);
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
         // Seed the monitor with an "unavailable" status via a health check
         await monitor.CheckAllAsync(CancellationToken.None);
@@ -103,9 +104,9 @@ public class SourceReconnectionWorkerTests
     {
         IOptions<OrchestratorOptions> options = CreateOptions(services: new Dictionary<string, SourceServiceConfig>
         {
-            ["TestSvc"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+            ["TestSvc"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
         });
-        (ServiceHealthMonitor monitor, SourceRouter router) = CreateMonitorAndRouter(options);
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
         // Initially no cached status
         Assert.Null(monitor.GetServiceStatus("TestSvc"));
@@ -127,11 +128,11 @@ public class SourceReconnectionWorkerTests
     {
         IOptions<OrchestratorOptions> options = CreateOptions(services: new Dictionary<string, SourceServiceConfig>
         {
-            ["Configured"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+            ["Configured"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
         });
-        (ServiceHealthMonitor monitor, SourceRouter router) = CreateMonitorAndRouter(options);
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
-        // Check a source that doesn't exist in the router
+        // Check a source that doesn't exist in the options
         ServiceHealthInfo info = await monitor.CheckAndUpdateServiceAsync("NonExistent", CancellationToken.None);
 
         Assert.Equal("not_configured", info.Status);
@@ -142,23 +143,17 @@ public class SourceReconnectionWorkerTests
     {
         IOptions<OrchestratorOptions> options = CreateOptions(services: new Dictionary<string, SourceServiceConfig>
         {
-            ["DownSvc"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+            ["DownSvc"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
         });
-        (ServiceHealthMonitor monitor, SourceRouter _) = CreateMonitorAndRouter(options);
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
-        // Seed with healthy status via CheckAllAsync, then manually verify the
-        // worker only targets offline sources. Since localhost:9999 is unreachable,
-        // the initial check will mark it as offline.
         await monitor.CheckAllAsync(CancellationToken.None);
 
-        // Manually insert a "healthy" entry to simulate a working source
         await monitor.CheckAndUpdateServiceAsync("DownSvc", CancellationToken.None);
         ServiceHealthInfo? status = monitor.GetServiceStatus("DownSvc");
         Assert.NotNull(status);
 
         // If the source were somehow "healthy", the worker should skip it.
-        // Since we can't make a real gRPC server healthy in a unit test, we verify
-        // the OfflineStatuses filter logic: "healthy" is NOT in OfflineStatuses
         Assert.DoesNotContain("healthy", SourceReconnectionWorker.OfflineStatuses);
     }
 
@@ -167,9 +162,9 @@ public class SourceReconnectionWorkerTests
     {
         IOptions<OrchestratorOptions> options = CreateOptions(services: new Dictionary<string, SourceServiceConfig>
         {
-            ["Svc1"] = new SourceServiceConfig { GrpcAddress = "http://localhost:9999", Enabled = true },
+            ["Svc1"] = new SourceServiceConfig { HttpAddress = "http://localhost:9999", Enabled = true },
         });
-        (ServiceHealthMonitor monitor, SourceRouter _) = CreateMonitorAndRouter(options);
+        (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
         // Seed offline status
         await monitor.CheckAllAsync(CancellationToken.None);
@@ -191,5 +186,13 @@ public class SourceReconnectionWorkerTests
     {
         OrchestratorOptions options = new();
         Assert.Equal(30, options.ReconnectIntervalSeconds);
+    }
+
+    /// <summary>
+    /// A simple IHttpClientFactory for tests that returns default HttpClients.
+    /// </summary>
+    private class TestHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

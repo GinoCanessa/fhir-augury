@@ -1,13 +1,12 @@
-using Fhiraugury;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
-using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Json;
 
 namespace FhirAugury.Source.Zulip.Ingestion;
 
@@ -19,7 +18,7 @@ public class ZulipIngestionPipeline(
     ZulipDatabase database,
     ZulipIndexer indexer,
     ZulipXRefRebuilder xrefRebuilder,
-    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
+    HttpClient? orchestratorClient,
     IOptions<ZulipServiceOptions> optionsAccessor,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
@@ -243,12 +242,12 @@ public class ZulipIngestionPipeline(
 
         try
         {
-            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            await orchestratorClient.PostAsJsonAsync("/api/v1/notify-ingestion", new
             {
-                Source = ZulipSource.SourceName,
-                Type = runType,
-                ItemsIngested = result.ItemsProcessed,
-                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+                source = ZulipSource.SourceName,
+                type = runType,
+                itemsIngested = result.ItemsProcessed,
+                completedAt = result.CompletedAt,
             });
         }
         catch (Exception ex)

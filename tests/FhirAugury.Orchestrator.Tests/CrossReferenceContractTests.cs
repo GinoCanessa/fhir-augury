@@ -1,60 +1,87 @@
-using Fhiraugury;
 using FhirAugury.Common;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Orchestrator.Tests;
 
 /// <summary>
-/// Verifies the cross-reference protobuf contract exposes expected fields
+/// Verifies the cross-reference API contract types expose expected fields
 /// and the HTTP API signature accepts targetSources filtering.
 /// </summary>
 public class CrossReferenceContractTests
 {
     [Fact]
-    public void CrossReference_HasTargetTitleField()
+    public void SourceCrossReference_HasTargetTitleField()
     {
-        CrossReference xref = new CrossReference { TargetTitle = "Example Title" };
+        SourceCrossReference xref = new SourceCrossReference(
+            SourceType: SourceSystems.Confluence,
+            SourceId: "page-1",
+            TargetType: SourceSystems.Jira,
+            TargetId: "FHIR-123",
+            LinkType: "mentions",
+            Context: null,
+            SourceContentType: null,
+            TargetTitle: "Example Title",
+            TargetUrl: null);
 
         Assert.Equal("Example Title", xref.TargetTitle);
     }
 
     [Fact]
-    public void CrossReference_HasTargetUrlField()
+    public void SourceCrossReference_HasTargetUrlField()
     {
-        CrossReference xref = new CrossReference { TargetUrl = "https://example.com/item/1" };
+        SourceCrossReference xref = new SourceCrossReference(
+            SourceType: SourceSystems.Confluence,
+            SourceId: "page-1",
+            TargetType: SourceSystems.Jira,
+            TargetId: "FHIR-123",
+            LinkType: "mentions",
+            Context: null,
+            SourceContentType: null,
+            TargetTitle: null,
+            TargetUrl: "https://example.com/item/1");
 
         Assert.Equal("https://example.com/item/1", xref.TargetUrl);
     }
 
     [Fact]
-    public void CrossReference_TargetFieldsDefaultToEmpty()
+    public void SourceCrossReference_TargetFieldsDefaultToNull()
     {
-        CrossReference xref = new CrossReference();
+        SourceCrossReference xref = new SourceCrossReference(
+            SourceType: "",
+            SourceId: "",
+            TargetType: "",
+            TargetId: "",
+            LinkType: "",
+            Context: null,
+            SourceContentType: null,
+            TargetTitle: null,
+            TargetUrl: null);
 
-        Assert.Equal("", xref.TargetTitle);
-        Assert.Equal("", xref.TargetUrl);
+        Assert.Null(xref.TargetTitle);
+        Assert.Null(xref.TargetUrl);
     }
 
     [Fact]
-    public void CrossReference_AllFieldsRoundTrip()
+    public void SourceCrossReference_AllFieldsRoundTrip()
     {
-        CrossReference xref = new CrossReference
-        {
-            SourceType = SourceSystems.Confluence,
-            SourceId = "page-1",
-            TargetType = SourceSystems.Jira,
-            TargetId = "FHIR-123",
-            LinkType = "mentions",
-            Context = "See ticket FHIR-123",
-            TargetTitle = "Fix patient resource validation",
-            TargetUrl = "https://jira.example.com/browse/FHIR-123",
-        };
+        SourceCrossReference xref = new SourceCrossReference(
+            SourceType: SourceSystems.GitHub,
+            SourceId: "HL7/fhir#4006",
+            TargetType: SourceSystems.Jira,
+            TargetId: "FHIR-55001",
+            LinkType: "mentions",
+            Context: "Referenced in PR",
+            SourceContentType: "pull_request",
+            TargetTitle: "Fix patient resource validation",
+            TargetUrl: "https://jira.example.com/browse/FHIR-123");
 
-        Assert.Equal(SourceSystems.Confluence, xref.SourceType);
-        Assert.Equal("page-1", xref.SourceId);
+        Assert.Equal(SourceSystems.GitHub, xref.SourceType);
+        Assert.Equal("HL7/fhir#4006", xref.SourceId);
         Assert.Equal(SourceSystems.Jira, xref.TargetType);
-        Assert.Equal("FHIR-123", xref.TargetId);
+        Assert.Equal("FHIR-55001", xref.TargetId);
         Assert.Equal("mentions", xref.LinkType);
-        Assert.Equal("See ticket FHIR-123", xref.Context);
+        Assert.Equal("Referenced in PR", xref.Context);
+        Assert.Equal("pull_request", xref.SourceContentType);
         Assert.Equal("Fix patient resource validation", xref.TargetTitle);
         Assert.Equal("https://jira.example.com/browse/FHIR-123", xref.TargetUrl);
     }
@@ -62,8 +89,6 @@ public class CrossReferenceContractTests
     [Fact]
     public void HttpRelatedEndpoint_CsvParserParseSourceList_ParsesCommaSeparatedSources()
     {
-        // Verify the CsvParser.ParseSourceList method used by the HTTP endpoint
-        // correctly parses comma-separated source names.
         List<string>? result = FhirAugury.Common.Text.CsvParser.ParseSourceList($"{SourceSystems.Jira},{SourceSystems.Confluence},{SourceSystems.Zulip}");
 
         Assert.NotNull(result);
@@ -82,64 +107,48 @@ public class CrossReferenceContractTests
     }
 
     [Fact]
-    public void SourceCrossReference_AllFieldsRoundTrip()
+    public void CrossReferenceResponse_AllFieldsRoundTrip()
     {
-        SourceCrossReference xref = new SourceCrossReference
-        {
-            SourceType = SourceSystems.GitHub,
-            SourceId = "HL7/fhir#4006",
-            TargetType = SourceSystems.Jira,
-            TargetId = "FHIR-55001",
-            LinkType = "mentions",
-            Context = "Referenced in PR",
-            SourceTitle = "Fix validation",
-            SourceUrl = "https://github.com/HL7/fhir/pull/4006",
-        };
+        CrossReferenceResponse response = new CrossReferenceResponse(
+            Source: SourceSystems.Jira,
+            Id: "FHIR-55001",
+            Direction: "both",
+            References: [
+                new SourceCrossReference(
+                    SourceType: SourceSystems.GitHub,
+                    SourceId: "HL7/fhir#4006",
+                    TargetType: SourceSystems.Jira,
+                    TargetId: "FHIR-55001",
+                    LinkType: "mentions",
+                    Context: "Referenced in PR",
+                    SourceContentType: null,
+                    TargetTitle: "Fix validation",
+                    TargetUrl: "https://github.com/HL7/fhir/pull/4006")
+            ]);
 
-        Assert.Equal(SourceSystems.GitHub, xref.SourceType);
-        Assert.Equal("HL7/fhir#4006", xref.SourceId);
-        Assert.Equal(SourceSystems.Jira, xref.TargetType);
-        Assert.Equal("FHIR-55001", xref.TargetId);
-        Assert.Equal("mentions", xref.LinkType);
-        Assert.Equal("Referenced in PR", xref.Context);
-        Assert.Equal("Fix validation", xref.SourceTitle);
-        Assert.Equal("https://github.com/HL7/fhir/pull/4006", xref.SourceUrl);
+        Assert.Equal(SourceSystems.Jira, response.Source);
+        Assert.Equal("FHIR-55001", response.Id);
+        Assert.Equal("both", response.Direction);
+        Assert.Single(response.References);
     }
 
     [Fact]
-    public void GetItemXRefRequest_FieldsRoundTrip()
+    public void FindRelatedResponse_HasSeedFields()
     {
-        GetItemXRefRequest request = new GetItemXRefRequest
-        {
-            Source = SourceSystems.Jira,
-            Id = "FHIR-55001",
-            Direction = "both",
-        };
+        FindRelatedResponse response = new FindRelatedResponse(
+            SeedSource: SourceSystems.Jira,
+            SeedId: "FHIR-55001",
+            SeedTitle: "Test",
+            Items: []);
 
-        Assert.Equal(SourceSystems.Jira, request.Source);
-        Assert.Equal("FHIR-55001", request.Id);
-        Assert.Equal("both", request.Direction);
+        Assert.Equal(SourceSystems.Jira, response.SeedSource);
+        Assert.Equal("FHIR-55001", response.SeedId);
     }
 
     [Fact]
-    public void GetRelatedRequest_HasSeedFields()
+    public void PeerIngestionAck_HasAcknowledgedField()
     {
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            Id = "FHIR-55001",
-            Limit = 20,
-            SeedSource = SourceSystems.Jira,
-            SeedId = "FHIR-55001",
-        };
-
-        Assert.Equal(SourceSystems.Jira, request.SeedSource);
-        Assert.Equal("FHIR-55001", request.SeedId);
-    }
-
-    [Fact]
-    public void IngestionCompleteAck_HasAcknowledgedField()
-    {
-        IngestionCompleteAck ack = new IngestionCompleteAck { Acknowledged = true };
+        PeerIngestionAck ack = new PeerIngestionAck(Acknowledged: true);
         Assert.True(ack.Acknowledged);
     }
 }

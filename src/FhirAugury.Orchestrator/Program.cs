@@ -37,11 +37,9 @@ builder.Configuration.GetSection(OrchestratorOptions.SectionName).Bind(orchestra
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.ListenAnyIP(orchestratorOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(orchestratorOptions.Ports.Grpc, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
-builder.Services.AddGrpc();
 
 // Database
 builder.Services.AddSingleton<OrchestratorDatabase>(sp =>
@@ -53,13 +51,20 @@ builder.Services.AddSingleton<OrchestratorDatabase>(sp =>
 });
 builder.Services.AddHostedService<DatabaseInitializer>();
 
+// Named HttpClients for each enabled source service
+foreach (KeyValuePair<string, SourceServiceConfig> entry in orchestratorOptions.Services.Where(s => s.Value.Enabled))
+{
+    builder.Services.AddHttpClient($"source-{entry.Key.ToLowerInvariant()}", client =>
+    {
+        client.BaseAddress = new Uri(entry.Value.HttpAddress);
+    });
+}
+
 // Routing
-builder.Services.AddSingleton<SourceRouter>();
+builder.Services.AddSingleton<SourceHttpClient>();
 
 // Health monitoring
 builder.Services.AddSingleton<ServiceHealthMonitor>();
-
-// Cross-reference — removed (fan-out architecture)
 
 // Search
 builder.Services.AddSingleton<FreshnessDecay>();
@@ -67,9 +72,6 @@ builder.Services.AddSingleton<UnifiedSearchService>();
 
 // Related
 builder.Services.AddSingleton<RelatedItemFinder>();
-
-// gRPC service aggregate
-builder.Services.AddSingleton<OrchestratorServices>();
 
 // Background workers
 builder.Services.AddHostedService<HealthCheckWorker>();
@@ -88,9 +90,6 @@ WebApplication app = builder.Build();
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
-
-// ── gRPC services ────────────────────────────────────────────────
-app.MapGrpcService<OrchestratorGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapOrchestratorHttpApi();

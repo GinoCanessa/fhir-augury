@@ -23,12 +23,10 @@ public class OrchestratorOptions
 public class PortConfiguration
 {
     public int Http { get; set; } = 5150;
-    public int Grpc { get; set; } = 5151;
 }
 
 public class SourceServiceConfig
 {
-    public string GrpcAddress { get; set; } = "";
     public string HttpAddress { get; set; } = "";
     public bool Enabled { get; set; } = true;
 }

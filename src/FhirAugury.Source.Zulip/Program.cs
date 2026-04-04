@@ -1,4 +1,3 @@
-using Fhiraugury;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
@@ -8,7 +7,6 @@ using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using FhirAugury.Source.Zulip.Workers;
-using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -34,16 +32,13 @@ builder.AddServiceDefaults();
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{ZulipServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5170);
-int grpcPort = portsSection.GetValue<int>("Grpc", 5171);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
-builder.Services.AddGrpc();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -109,17 +104,15 @@ FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
 builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
 builder.Services.AddSingleton(indexTracker);
 
-// Orchestrator client (optional — for ingestion notifications)
-#pragma warning disable CS8634, CS8621 // Nullable type as generic type argument
+// Orchestrator HTTP client (optional — for ingestion notifications)
 builder.Services.AddSingleton(sp =>
 {
     ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-    if (string.IsNullOrWhiteSpace(opts.OrchestratorGrpcAddress))
-        return (OrchestratorService.OrchestratorServiceClient?)null;
-    GrpcChannel channel = GrpcChannel.ForAddress(opts.OrchestratorGrpcAddress);
-    return (OrchestratorService.OrchestratorServiceClient?)new OrchestratorService.OrchestratorServiceClient(channel);
+    if (string.IsNullOrWhiteSpace(opts.OrchestratorAddress))
+        return (HttpClient?)null;
+    HttpClient client = new HttpClient { BaseAddress = new Uri(opts.OrchestratorAddress) };
+    return (HttpClient?)client;
 });
-#pragma warning restore CS8634, CS8621
 
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
@@ -153,10 +146,6 @@ tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
-
-// ── gRPC services ────────────────────────────────────────────────
-app.MapGrpcService<ZulipGrpcService>();
-app.MapGrpcService<ZulipSpecificGrpcService>();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapZulipHttpApi();

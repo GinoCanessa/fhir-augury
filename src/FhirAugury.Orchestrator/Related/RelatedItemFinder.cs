@@ -1,5 +1,5 @@
-using Fhiraugury;
-using FhirAugury.Common.Grpc;
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Http;
 using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
@@ -13,7 +13,7 @@ namespace FhirAugury.Orchestrator.Related;
 /// cross-source GetRelated, BM25 similarity, and shared metadata.
 /// </summary>
 public class RelatedItemFinder(
-    SourceRouter router,
+    SourceHttpClient httpClient,
     IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<RelatedItemFinder> logger)
 {
@@ -40,11 +40,10 @@ public class RelatedItemFinder(
         ItemResponse? seedItem = await FetchSeedItem(seedSource, seedId, ct);
 
         // Signal A: Cross-source fan-out GetRelated
-        List<Task<(string Source, SearchResponse Response)>> relatedTasks = [];
+        List<Task<(string Source, SearchResponse? Response)>> relatedTasks = [];
         foreach (string source in sources)
         {
-            SourceService.SourceServiceClient? client = router.GetSourceClient(source);
-            if (client is null) continue;
+            if (!httpClient.IsSourceEnabled(source)) continue;
 
             string s = source;
             relatedTasks.Add(Task.Run(async () =>
@@ -53,36 +52,33 @@ public class RelatedItemFinder(
                 timeoutCts.CancelAfter(PerSourceTimeout);
                 try
                 {
-                    SearchResponse resp = await client.GetRelatedAsync(new GetRelatedRequest
-                    {
-                        SeedSource = seedSource,
-                        SeedId = seedId,
-                        Limit = effectiveLimit,
-                    }, cancellationToken: timeoutCts.Token);
+                    SearchResponse? resp = await httpClient.GetRelatedAsync(
+                        s, seedSource, seedId, effectiveLimit, timeoutCts.Token);
                     return (s, resp);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     logger.LogWarning("GetRelated timed out for {Source}", s);
-                    return (s, new SearchResponse());
+                    return (s, (SearchResponse?)null);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    if (ex.IsTransientGrpcError(out string status))
-                        logger.LogWarning("GetRelated failed for {Source} ({GrpcStatus})", s, status);
+                    if (ex.IsTransientHttpError(out string statusDescription))
+                        logger.LogWarning("GetRelated failed for {Source} ({HttpStatus})", s, statusDescription);
                     else
                         logger.LogWarning(ex, "GetRelated failed for {Source}", s);
-                    return (s, new SearchResponse());
+                    return (s, (SearchResponse?)null);
                 }
             }, ct));
         }
 
-        (string Source, SearchResponse Response)[] relatedResults =
+        (string Source, SearchResponse? Response)[] relatedResults =
             await Task.WhenAll(relatedTasks);
 
-        foreach ((string source, SearchResponse relatedResp) in relatedResults)
+        foreach ((string source, SearchResponse? relatedResp) in relatedResults)
         {
-            foreach (SearchResultItem result in relatedResp.Results)
+            if (relatedResp is null) continue;
+            foreach (SearchResult result in relatedResp.Results)
             {
                 if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
@@ -116,19 +112,19 @@ public class RelatedItemFinder(
             string searchTerms = ExtractKeyTerms(seedItem);
             if (!string.IsNullOrEmpty(searchTerms))
             {
-                List<Task<SearchResponse>> searchTasks = [];
+                List<Task<SearchResponse?>> searchTasks = [];
                 foreach (string source in sources)
                 {
-                    SourceService.SourceServiceClient? client = router.GetSourceClient(source);
-                    if (client is null) continue;
+                    if (!httpClient.IsSourceEnabled(source)) continue;
 
-                    searchTasks.Add(SearchSourceAsync(client, searchTerms, effectiveLimit, ct));
+                    searchTasks.Add(SearchSourceAsync(source, searchTerms, effectiveLimit, ct));
                 }
 
-                SearchResponse[] searchResults = await Task.WhenAll(searchTasks);
-                foreach (SearchResponse searchResponse in searchResults)
+                SearchResponse?[] searchResults = await Task.WhenAll(searchTasks);
+                foreach (SearchResponse? searchResponse in searchResults)
                 {
-                    foreach (SearchResultItem result in searchResponse.Results)
+                    if (searchResponse is null) continue;
+                    foreach (SearchResult result in searchResponse.Results)
                     {
                         if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
@@ -150,13 +146,13 @@ public class RelatedItemFinder(
             }
 
             // Signal C: Shared metadata (parallel fan-out with per-source timeout)
-            if (seedItem.Metadata.TryGetValue("work_group", out string? workGroup) && !string.IsNullOrEmpty(workGroup))
+            if (seedItem.Metadata is not null &&
+                seedItem.Metadata.TryGetValue("work_group", out string? workGroup) && !string.IsNullOrEmpty(workGroup))
             {
-                List<Task<(string Source, SearchResponse Response)>> metaTasks = [];
+                List<Task<(string Source, SearchResponse? Response)>> metaTasks = [];
                 foreach (string source in sources)
                 {
-                    SourceService.SourceServiceClient? client = router.GetSourceClient(source);
-                    if (client is null) continue;
+                    if (!httpClient.IsSourceEnabled(source)) continue;
 
                     string s = source;
                     metaTasks.Add(Task.Run(async () =>
@@ -165,35 +161,35 @@ public class RelatedItemFinder(
                         timeoutCts.CancelAfter(PerSourceTimeout);
                         try
                         {
-                            SearchResponse resp = await client.SearchAsync(
-                                new SearchRequest { Query = workGroup, Limit = effectiveLimit },
-                                cancellationToken: timeoutCts.Token);
+                            SearchResponse? resp = await httpClient.SearchAsync(s, workGroup, effectiveLimit, timeoutCts.Token);
                             return (s, resp);
                         }
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                         {
                             logger.LogWarning("Shared metadata search timed out for {Source}", s);
-                            return (s, new SearchResponse());
+                            return (s, (SearchResponse?)null);
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException)
                         {
-                            if (ex.IsTransientGrpcError(out string status))
-                                logger.LogWarning("Shared metadata search failed for {Source} ({GrpcStatus})", s, status);
+                            if (ex.IsTransientHttpError(out string statusDescription))
+                                logger.LogWarning("Shared metadata search failed for {Source} ({HttpStatus})", s, statusDescription);
                             else
                                 logger.LogWarning(ex, "Shared metadata search failed for {Source}", s);
-                            return (s, new SearchResponse());
+                            return (s, (SearchResponse?)null);
                         }
                     }, ct));
                 }
 
-                (string Source, SearchResponse Response)[] metaResults = await Task.WhenAll(metaTasks);
-                foreach ((string source, SearchResponse metaResp) in metaResults)
+                (string Source, SearchResponse? Response)[] metaResults = await Task.WhenAll(metaTasks);
+                foreach ((string source, SearchResponse? metaResp) in metaResults)
                 {
-                    foreach (SearchResultItem result in metaResp.Results)
+                    if (metaResp is null) continue;
+                    foreach (SearchResult result in metaResp.Results)
                     {
                         if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
                         bool hasSharedMetadata =
+                            result.Metadata is not null &&
                             result.Metadata.TryGetValue("work_group", out string? rWg) && rWg == workGroup;
                         if (!hasSharedMetadata) continue;
 
@@ -217,8 +213,7 @@ public class RelatedItemFinder(
         List<Task> enrichTasks = [];
         foreach (RelatedCandidate candidate in candidates.Values.Where(c => string.IsNullOrEmpty(c.Title)))
         {
-            SourceService.SourceServiceClient? client = router.GetSourceClient(candidate.Source);
-            if (client is null) continue;
+            if (!httpClient.IsSourceEnabled(candidate.Source)) continue;
 
             RelatedCandidate c = candidate;
             enrichTasks.Add(Task.Run(async () =>
@@ -227,10 +222,12 @@ public class RelatedItemFinder(
                 timeoutCts.CancelAfter(PerSourceTimeout);
                 try
                 {
-                    ItemResponse item = await client.GetItemAsync(
-                        new GetItemRequest { Id = c.Id }, cancellationToken: timeoutCts.Token);
-                    c.Title = item.Title;
-                    c.Url = item.Url;
+                    ItemResponse? item = await httpClient.GetItemAsync(c.Source, c.Id, timeoutCts.Token);
+                    if (item is not null)
+                    {
+                        c.Title = item.Title;
+                        c.Url = item.Url;
+                    }
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -238,8 +235,8 @@ public class RelatedItemFinder(
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    if (ex.IsTransientGrpcError(out string status))
-                        logger.LogWarning("Failed to enrich related item {Source}/{Id} ({GrpcStatus})", c.Source, c.Id, status);
+                    if (ex.IsTransientHttpError(out string statusDescription))
+                        logger.LogWarning("Failed to enrich related item {Source}/{Id} ({HttpStatus})", c.Source, c.Id, statusDescription);
                     else
                         logger.LogWarning(ex, "Failed to enrich related item {Source}/{Id}", c.Source, c.Id);
                 }
@@ -248,12 +245,7 @@ public class RelatedItemFinder(
         await Task.WhenAll(enrichTasks);
 
         // Build response
-        FindRelatedResponse response = new FindRelatedResponse
-        {
-            SeedSource = seedSource,
-            SeedId = seedId,
-            SeedTitle = seedItem?.Title ?? "",
-        };
+        List<RelatedItem> items = [];
 
         IEnumerable<RelatedCandidate> sorted = candidates.Values
             .OrderByDescending(c => c.Score)
@@ -261,7 +253,7 @@ public class RelatedItemFinder(
 
         foreach (RelatedCandidate candidate in sorted)
         {
-            response.Items.Add(new RelatedItem
+            items.Add(new RelatedItem
             {
                 Source = candidate.Source,
                 Id = candidate.Id,
@@ -274,20 +266,22 @@ public class RelatedItemFinder(
             });
         }
 
-        return response;
+        return new FindRelatedResponse(
+            SeedSource: seedSource,
+            SeedId: seedId,
+            SeedTitle: seedItem?.Title ?? "",
+            Items: items);
     }
 
     private async Task<ItemResponse?> FetchSeedItem(string seedSource, string seedId, CancellationToken ct)
     {
-        SourceService.SourceServiceClient? seedClient = router.GetSourceClient(seedSource);
-        if (seedClient is null) return null;
+        if (!httpClient.IsSourceEnabled(seedSource)) return null;
 
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(PerSourceTimeout);
         try
         {
-            return await seedClient.GetItemAsync(
-                new GetItemRequest { Id = seedId, IncludeContent = true }, cancellationToken: timeoutCts.Token);
+            return await httpClient.GetItemAsync(seedSource, seedId, timeoutCts.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -296,37 +290,35 @@ public class RelatedItemFinder(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (ex.IsTransientGrpcError(out string status))
-                logger.LogWarning("Failed to fetch seed item {Source}/{Id} ({GrpcStatus})", seedSource, seedId, status);
+            if (ex.IsTransientHttpError(out string statusDescription))
+                logger.LogWarning("Failed to fetch seed item {Source}/{Id} ({HttpStatus})", seedSource, seedId, statusDescription);
             else
                 logger.LogWarning(ex, "Failed to fetch seed item {Source}/{Id}", seedSource, seedId);
             return null;
         }
     }
 
-    private async Task<SearchResponse> SearchSourceAsync(
-        SourceService.SourceServiceClient client, string query, int limit, CancellationToken ct)
+    private async Task<SearchResponse?> SearchSourceAsync(
+        string sourceName, string query, int limit, CancellationToken ct)
     {
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(PerSourceTimeout);
         try
         {
-            return await client.SearchAsync(
-                new SearchRequest { Query = query, Limit = limit },
-                cancellationToken: timeoutCts.Token);
+            return await httpClient.SearchAsync(sourceName, query, limit, timeoutCts.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             logger.LogWarning("Related search timed out for source via BM25 similarity");
-            return new SearchResponse();
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (ex.IsTransientGrpcError(out string status))
-                logger.LogWarning("Related search failed for source via BM25 similarity ({GrpcStatus})", status);
+            if (ex.IsTransientHttpError(out string statusDescription))
+                logger.LogWarning("Related search failed for source via BM25 similarity ({HttpStatus})", statusDescription);
             else
                 logger.LogWarning(ex, "Related search failed for source via BM25 similarity");
-            return new SearchResponse();
+            return null;
         }
     }
 

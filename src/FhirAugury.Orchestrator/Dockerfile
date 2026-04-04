@@ -9,7 +9,6 @@ COPY src/Directory.Build.props src/Directory.Build.props
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
 COPY src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj src/FhirAugury.Orchestrator/
-COPY protos/ protos/
 
 RUN dotnet restore src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj
 
@@ -29,7 +28,7 @@ RUN adduser --disabled-password --no-create-home appuser \
     && mkdir -p /app/data \
     && chown -R appuser:appuser /app
 
-EXPOSE 5150 5151
+EXPOSE 5150
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD wget --spider -q http://localhost:5150/health || exit 1

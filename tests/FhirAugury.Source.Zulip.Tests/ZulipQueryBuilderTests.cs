@@ -1,4 +1,3 @@
-using Fhiraugury;
 using FhirAugury.Source.Zulip.Indexing;
 
 namespace FhirAugury.Source.Zulip.Tests;
@@ -8,7 +7,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_EmptyRequest_ReturnsDefaultQuery()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest();
+        ZulipQueryRequest request = new ZulipQueryRequest();
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = ZulipQueryBuilder.Build(request);
 
@@ -22,9 +21,10 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_StreamNameFilter_AddsInClause()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest();
-        request.StreamNames.Add("implementers");
-        request.StreamNames.Add("committers");
+        ZulipQueryRequest request = new ZulipQueryRequest
+        {
+            StreamNames = ["implementers", "committers"],
+        };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -34,8 +34,10 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_StreamIdFilter_UsesSubquery()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest();
-        request.StreamIds.Add(123);
+        ZulipQueryRequest request = new ZulipQueryRequest
+        {
+            StreamIds = [123],
+        };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -45,7 +47,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_TopicExactMatch_AddsEqualsClause()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { Topic = "R5 ballot" };
+        ZulipQueryRequest request = new ZulipQueryRequest { Topic = "R5 ballot" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = ZulipQueryBuilder.Build(request);
 
@@ -56,7 +58,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_TopicKeyword_UsesLike()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { TopicKeyword = "ballot" };
+        ZulipQueryRequest request = new ZulipQueryRequest { TopicKeyword = "ballot" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = ZulipQueryBuilder.Build(request);
 
@@ -67,8 +69,10 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_SenderNameFilter_AddsInClause()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest();
-        request.SenderNames.Add("Grahame Grieve");
+        ZulipQueryRequest request = new ZulipQueryRequest
+        {
+            SenderNames = ["Grahame Grieve"],
+        };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -78,7 +82,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_FtsQuery_AddsFtsSubquery()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { Query = "patient resource" };
+        ZulipQueryRequest request = new ZulipQueryRequest { Query = "patient resource" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -88,7 +92,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_AllowedSortColumn_UsesThatColumn()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { SortBy = "stream_name" };
+        ZulipQueryRequest request = new ZulipQueryRequest { SortBy = "stream_name" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -98,7 +102,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_DisallowedSortColumn_DefaultsToTimestamp()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { SortBy = "malicious_column" };
+        ZulipQueryRequest request = new ZulipQueryRequest { SortBy = "malicious_column" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -108,14 +112,14 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_CombinedFilters_AllPresent()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest
+        ZulipQueryRequest request = new ZulipQueryRequest
         {
             Topic = "test-topic",
             TopicKeyword = "key",
             Query = "search term",
+            StreamNames = ["general"],
+            SenderNames = ["Alice"],
         };
-        request.StreamNames.Add("general");
-        request.SenderNames.Add("Alice");
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
 
@@ -129,7 +133,7 @@ public class ZulipQueryBuilderTests
     [Fact]
     public void Build_LimitOverMax_CappedAt1000()
     {
-        ZulipQueryRequest request = new Fhiraugury.ZulipQueryRequest { Limit = 9999 };
+        ZulipQueryRequest request = new ZulipQueryRequest { Limit = 9999 };
 
         (string _, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = ZulipQueryBuilder.Build(request);
 
