@@ -1,5 +1,6 @@
 using System.Text;
 using FhirAugury.Common.Text;
+using FhirAugury.Source.Jira.Api;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Source.Jira.Indexing;
@@ -20,10 +21,10 @@ public static class JiraQueryBuilder
     /// Builds a SELECT query with parameterized WHERE clause from the given query request.
     /// Returns the SQL string and a list of parameters to bind.
     /// </summary>
-    public static (string Sql, List<SqliteParameter> Parameters) Build(Fhiraugury.JiraQueryRequest request)
+    public static (string Sql, List<SqliteParameter> Parameters) Build(JiraQueryRequest request)
     {
         StringBuilder sb = new StringBuilder("SELECT * FROM jira_issues WHERE 1=1");
-        List<SqliteParameter> parameters = new List<SqliteParameter>();
+        List<SqliteParameter> parameters = [];
         int paramIdx = 0;
 
         AddInClause(sb, parameters, "Status", request.Statuses, ref paramIdx);
@@ -32,13 +33,13 @@ public static class JiraQueryBuilder
         AddInClause(sb, parameters, "Specification", request.Specifications, ref paramIdx);
         AddInClause(sb, parameters, "ProjectKey", request.Projects, ref paramIdx);
         AddNotInClause(sb, parameters, "ProjectKey", request.ExcludeProjects, ref paramIdx);
-        AddInClause(sb, parameters, "Type", request.Types_, ref paramIdx);
+        AddInClause(sb, parameters, "Type", request.Types, ref paramIdx);
         AddInClause(sb, parameters, "Priority", request.Priorities, ref paramIdx);
         AddInClause(sb, parameters, "Assignee", request.Assignees, ref paramIdx);
         AddInClause(sb, parameters, "Reporter", request.Reporters, ref paramIdx);
 
         // Labels use LIKE matching since labels are comma-separated
-        foreach (string? label in request.Labels)
+        foreach (string label in request.Labels)
         {
             string name = $"@lbl{paramIdx++}";
             sb.Append($" AND Labels LIKE {name}");
@@ -50,28 +51,28 @@ public static class JiraQueryBuilder
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND CreatedAt >= {name}");
-            parameters.Add(new SqliteParameter(name, request.CreatedAfter.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.CreatedAfter.Value.ToString("o")));
         }
 
         if (request.CreatedBefore is not null)
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND CreatedAt <= {name}");
-            parameters.Add(new SqliteParameter(name, request.CreatedBefore.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.CreatedBefore.Value.ToString("o")));
         }
 
         if (request.UpdatedAfter is not null)
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND UpdatedAt >= {name}");
-            parameters.Add(new SqliteParameter(name, request.UpdatedAfter.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.UpdatedAfter.Value.ToString("o")));
         }
 
         if (request.UpdatedBefore is not null)
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND UpdatedAt <= {name}");
-            parameters.Add(new SqliteParameter(name, request.UpdatedBefore.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.UpdatedBefore.Value.ToString("o")));
         }
 
         // FTS5 subquery
@@ -83,7 +84,7 @@ public static class JiraQueryBuilder
         }
 
         // Sorting
-        string sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "UpdatedAt";
+        string sortBy = AllowedSortColumns.Contains(request.SortBy ?? "") ? ToColumnName(request.SortBy!) : "UpdatedAt";
         string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
         sb.Append($" ORDER BY {sortBy} {sortOrder}");
 
@@ -98,11 +99,11 @@ public static class JiraQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, Google.Protobuf.Collections.RepeatedField<string> values, ref int paramIdx)
+        string column, List<string> values, ref int paramIdx)
     {
         if (values.Count == 0) return;
 
-        List<string> names = new List<string>();
+        List<string> names = [];
         foreach (string v in values)
         {
             string name = $"@p{paramIdx++}";
@@ -115,11 +116,11 @@ public static class JiraQueryBuilder
 
     private static void AddNotInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, Google.Protobuf.Collections.RepeatedField<string> values, ref int paramIdx)
+        string column, List<string> values, ref int paramIdx)
     {
         if (values.Count == 0) return;
 
-        List<string> names = new List<string>();
+        List<string> names = [];
         foreach (string v in values)
         {
             string name = $"@p{paramIdx++}";

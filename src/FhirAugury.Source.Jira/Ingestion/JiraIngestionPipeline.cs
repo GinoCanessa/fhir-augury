@@ -1,14 +1,13 @@
-using Fhiraugury;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
-using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Json;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -21,7 +20,7 @@ public class JiraIngestionPipeline(
     JiraIndexer indexer,
     JiraIndexBuilder indexBuilder,
     JiraXRefRebuilder xrefRebuilder,
-    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
+    IHttpClientFactory httpClientFactory,
     IOptions<JiraServiceOptions> optionsAccessor,
     IIndexTracker tracker,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
@@ -234,16 +233,17 @@ public class JiraIngestionPipeline(
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
     {
-        if (orchestratorClient is null) return;
+        if (string.IsNullOrWhiteSpace(_options.OrchestratorAddress)) return;
 
         try
         {
-            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            await client.PostAsJsonAsync("/api/v1/notify-ingestion", new
             {
-                Source = JiraSource.SourceName,
-                Type = runType,
-                ItemsIngested = result.ItemsProcessed,
-                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+                source = JiraSource.SourceName,
+                type = runType,
+                itemsIngested = result.ItemsProcessed,
+                completedAt = result.CompletedAt,
             });
         }
         catch (Exception ex)
