@@ -102,7 +102,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5190:5190"
-      - "5191:5191"
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - FHIR_AUGURY_GITHUB__GitHub__CachePath=/app/cache
@@ -143,7 +142,7 @@ services:
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress=http://source-zulip:5171
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress=http://source-confluence:5181
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__GrpcAddress=http://source-github:5191
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__HttpAddress=http://source-github:5190
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5150/health"]
       interval: 30s

@@ -44,8 +44,8 @@ public class GitHubServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
-    /// <summary>gRPC address of the orchestrator service for ingestion notifications.</summary>
-    public string? OrchestratorGrpcAddress { get; set; }
+    /// <summary>HTTP address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorAddress { get; set; }
 
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
@@ -58,7 +58,7 @@ public class GitHubServiceOptions
     /// </summary>
     public bool ReloadFromCacheOnStartup { get; set; } = false;
 
-    public PortConfiguration Ports { get; set; } = new() { Http = 5190, Grpc = 5191 };
+    public PortConfiguration Ports { get; set; } = new() { Http = 5190 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();

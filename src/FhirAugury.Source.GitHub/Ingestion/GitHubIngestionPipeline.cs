@@ -1,10 +1,9 @@
-using Fhiraugury;
+using System.Net.Http.Json;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
-using Google.Protobuf.WellKnownTypes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -23,7 +22,7 @@ public class GitHubIngestionPipeline(
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
     GitHubXRefRebuilder xrefRebuilder,
-    OrchestratorService.OrchestratorServiceClient? orchestratorClient,
+    IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
     ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
@@ -286,16 +285,17 @@ public class GitHubIngestionPipeline(
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
     {
-        if (orchestratorClient is null) return;
+        if (string.IsNullOrWhiteSpace(_options.OrchestratorAddress)) return;
 
         try
         {
-            await orchestratorClient.NotifyIngestionCompleteAsync(new IngestionCompleteNotification
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            await client.PostAsJsonAsync("/api/v1/notify-ingestion", new
             {
-                Source = IGitHubDataProvider.SourceName,
-                Type = runType,
-                ItemsIngested = result.ItemsProcessed,
-                CompletedAt = Timestamp.FromDateTimeOffset(result.CompletedAt),
+                source = IGitHubDataProvider.SourceName,
+                type = runType,
+                itemsIngested = result.ItemsProcessed,
+                completedAt = result.CompletedAt,
             });
         }
         catch (Exception ex)
