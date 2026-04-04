@@ -18,11 +18,12 @@ public class ZulipIngestionPipeline(
     ZulipDatabase database,
     ZulipIndexer indexer,
     ZulipXRefRebuilder xrefRebuilder,
-    HttpClient? orchestratorClient,
+    IHttpClientFactory httpClientFactory,
     IOptions<ZulipServiceOptions> optionsAccessor,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
+    private readonly ZulipServiceOptions _options = optionsAccessor.Value;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private volatile string _currentStatus = "idle";
 
@@ -215,7 +216,6 @@ public class ZulipIngestionPipeline(
 
         ZulipSyncStateRecord? existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName, SubSource: runType);
 
-        ZulipServiceOptions options = optionsAccessor.Value;
         ZulipSyncStateRecord syncState = new ZulipSyncStateRecord
         {
             Id = existing?.Id ?? ZulipSyncStateRecord.GetIndex(),
@@ -224,8 +224,8 @@ public class ZulipIngestionPipeline(
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
-            SyncSchedule = options.SyncSchedule,
-            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(options.SyncSchedule)),
+            SyncSchedule = _options.SyncSchedule,
+            NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(_options.SyncSchedule)),
             Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
             LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
         };
@@ -238,11 +238,12 @@ public class ZulipIngestionPipeline(
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
     {
-        if (orchestratorClient is null) return;
+        if (string.IsNullOrWhiteSpace(_options.OrchestratorAddress)) return;
 
         try
         {
-            await orchestratorClient.PostAsJsonAsync("/api/v1/notify-ingestion", new
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            await client.PostAsJsonAsync("/api/v1/notify-ingestion", new
             {
                 source = ZulipSource.SourceName,
                 type = runType,

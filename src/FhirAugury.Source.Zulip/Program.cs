@@ -4,12 +4,14 @@ using FhirAugury.Common.Database;
 using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
+using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using FhirAugury.Source.Zulip.Workers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -105,14 +107,16 @@ builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTra
 builder.Services.AddSingleton(indexTracker);
 
 // Orchestrator HTTP client (optional — for ingestion notifications)
-builder.Services.AddSingleton(sp =>
 {
-    ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-    if (string.IsNullOrWhiteSpace(opts.OrchestratorAddress))
-        return (HttpClient?)null;
-    HttpClient client = new HttpClient { BaseAddress = new Uri(opts.OrchestratorAddress) };
-    return (HttpClient?)client;
-});
+    ZulipServiceOptions opts = builder.Configuration.GetSection(ZulipServiceOptions.SectionName).Get<ZulipServiceOptions>()!;
+    if (!string.IsNullOrWhiteSpace(opts.OrchestratorAddress))
+    {
+        builder.Services.AddHttpClient("orchestrator", client =>
+        {
+            client.BaseAddress = new Uri(opts.OrchestratorAddress);
+        });
+    }
+}
 
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
@@ -129,18 +133,18 @@ FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredServic
 ZulipDatabase zulipDatabase = app.Services.GetRequiredService<ZulipDatabase>();
 tracker.RegisterIndex("bm25", "BM25 keyword scoring index", () =>
 {
-    using Microsoft.Data.Sqlite.SqliteConnection c = zulipDatabase.OpenConnection();
-    using Microsoft.Data.Sqlite.SqliteCommand cmd = new("SELECT COUNT(*) FROM index_keywords", c);
+    using SqliteConnection c = zulipDatabase.OpenConnection();
+    using SqliteCommand cmd = new("SELECT COUNT(*) FROM index_keywords", c);
     return Convert.ToInt32(cmd.ExecuteScalar());
 });
 tracker.RegisterIndex("fts", "FTS5 full-text search index", () =>
 {
-    using Microsoft.Data.Sqlite.SqliteConnection c = zulipDatabase.OpenConnection();
-    return FhirAugury.Source.Zulip.Database.Records.ZulipMessageRecord.SelectCount(c);
+    using SqliteConnection c = zulipDatabase.OpenConnection();
+    return ZulipMessageRecord.SelectCount(c);
 });
 tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
 {
-    using Microsoft.Data.Sqlite.SqliteConnection c = zulipDatabase.OpenConnection();
+    using SqliteConnection c = zulipDatabase.OpenConnection();
     return FhirAugury.Common.Database.Records.JiraXRefRecord.SelectCount(c);
 });
 
