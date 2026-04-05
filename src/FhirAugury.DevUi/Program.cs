@@ -19,7 +19,7 @@ builder.AddServiceDefaults();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-// ── gRPC client ──────────────────────────────────────────────────
+// ── HTTP clients ─────────────────────────────────────────────────
 builder.Services.AddSingleton<OrchestratorClient>();
 builder.Services.AddSingleton<SourceDirectClient>();
 

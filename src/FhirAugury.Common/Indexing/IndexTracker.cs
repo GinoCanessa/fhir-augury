@@ -4,7 +4,7 @@ namespace FhirAugury.Common.Indexing;
 
 /// <summary>
 /// In-memory singleton that tracks index rebuild state within a source service.
-/// Thread-safe for concurrent access from ingestion pipelines and gRPC handlers.
+/// Thread-safe for concurrent access from ingestion pipelines and HTTP handlers.
 /// </summary>
 public class IndexTracker : IIndexTracker
 {

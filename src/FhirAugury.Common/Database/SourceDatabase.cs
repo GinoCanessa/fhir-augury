@@ -36,7 +36,7 @@ public abstract class SourceDatabase : IDisposable
 
     /// <summary>Opens a new SQLite connection with WAL mode and performance pragmas.</summary>
     /// <remarks>
-    /// Ideally protected, but kept public because composed services (gRPC, HTTP, indexers)
+    /// Ideally protected, but kept public because composed services (HTTP endpoints, indexers)
     /// need direct connection access. A future refactor could introduce a connection factory.
     /// </remarks>
     public SqliteConnection OpenConnection()

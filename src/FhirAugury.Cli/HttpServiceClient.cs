@@ -5,7 +5,6 @@ namespace FhirAugury.Cli;
 
 /// <summary>
 /// HTTP client for communicating with the orchestrator and source services.
-/// Replaces the former gRPC-based GrpcClientFactory.
 /// </summary>
 public sealed class HttpServiceClient : IDisposable
 {

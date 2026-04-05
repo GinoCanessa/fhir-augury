@@ -32,7 +32,7 @@ public sealed class OrchestratorClient : IDisposable
             {
                 Name = GetStr(svc, "name"),
                 Status = GetStr(svc, "status"),
-                Address = GetNullStr(svc, "grpcAddress") ?? GetNullStr(svc, "httpAddress"),
+                Address = GetNullStr(svc, "httpAddress"),
                 ItemCount = svc.TryGetProperty("itemCount", out JsonElement icEl) ? icEl.GetInt32() : 0,
                 DbSizeBytes = svc.TryGetProperty("dbSizeBytes", out JsonElement dbEl) ? dbEl.GetInt64() : 0,
                 LastSyncAt = GetNullStr(svc, "lastSyncAt"),

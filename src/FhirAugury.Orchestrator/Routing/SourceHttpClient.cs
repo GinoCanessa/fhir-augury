@@ -8,7 +8,6 @@ namespace FhirAugury.Orchestrator.Routing;
 
 /// <summary>
 /// Routes proxied calls to source services via named HttpClients.
-/// Replaces gRPC-based SourceRouter with HTTP-only communication.
 /// </summary>
 public class SourceHttpClient
 {
@@ -42,6 +41,34 @@ public class SourceHttpClient
         return _httpClientFactory.CreateClient($"source-{sourceName.ToLowerInvariant()}");
     }
 
+    // Source-aware path building: Confluence uses /pages/, GitHub uses
+    // inverted routes (/items/action/{*key}) due to catch-all constraints.
+    private static string ItemBase(string source) => source.ToLowerInvariant() switch
+    {
+        "confluence" => "pages",
+        _ => "items",
+    };
+
+    private static string EncodeId(string source, string id)
+    {
+        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
+            return id.Replace("#", "%23");
+
+        return Uri.EscapeDataString(id);
+    }
+
+    private static string BuildItemPath(string source, string id) =>
+        $"{ItemBase(source)}/{EncodeId(source, id)}";
+
+    private static string BuildSubItemPath(string source, string id, string action)
+    {
+        string encoded = EncodeId(source, id);
+        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
+            return $"items/{action}/{encoded}";
+
+        return $"{ItemBase(source)}/{encoded}/{action}";
+    }
+
     public async Task<SearchResponse?> SearchAsync(string sourceName, string query, int limit, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
@@ -52,29 +79,32 @@ public class SourceHttpClient
     public async Task<ItemResponse?> GetItemAsync(string sourceName, string id, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        return await client.GetFromJsonAsync<ItemResponse>($"/api/v1/items/{Uri.EscapeDataString(id)}", ct);
+        string path = BuildItemPath(sourceName, id);
+        return await client.GetFromJsonAsync<ItemResponse>($"/api/v1/{path}", ct);
     }
 
     public async Task<SearchResponse?> GetRelatedAsync(
         string sourceName, string seedSource, string seedId, int limit, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
+        string path = BuildSubItemPath(sourceName, seedId, "related");
         return await client.GetFromJsonAsync<SearchResponse>(
-            $"/api/v1/items/{Uri.EscapeDataString(seedId)}/related?limit={limit}", ct);
+            $"/api/v1/{path}?limit={limit}", ct);
     }
 
     public async Task<SnapshotResponse?> GetSnapshotAsync(string sourceName, string id, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        return await client.GetFromJsonAsync<SnapshotResponse>(
-            $"/api/v1/items/{Uri.EscapeDataString(id)}/snapshot", ct);
+        string path = BuildSubItemPath(sourceName, id, "snapshot");
+        return await client.GetFromJsonAsync<SnapshotResponse>($"/api/v1/{path}", ct);
     }
 
     public async Task<ContentResponse?> GetContentAsync(string sourceName, string id, string format, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
+        string path = BuildSubItemPath(sourceName, id, "content");
         return await client.GetFromJsonAsync<ContentResponse>(
-            $"/api/v1/items/{Uri.EscapeDataString(id)}/content?format={Uri.EscapeDataString(format)}", ct);
+            $"/api/v1/{path}?format={Uri.EscapeDataString(format)}", ct);
     }
 
     public async Task<CrossReferenceResponse?> GetCrossReferencesAsync(
