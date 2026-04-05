@@ -1,10 +1,4 @@
-using Fhiraugury;
-using FhirAugury.Common;
 using FhirAugury.McpShared.Tools;
-using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
-using Grpc.Core.Testing;
-using NSubstitute;
 
 namespace FhirAugury.McpShared.Tests;
 
@@ -13,20 +7,18 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraIssue_ReturnsFormattedIssue()
     {
-        ItemResponse mockResponse = McpTestHelper.CreateItemResponse(SourceSystems.Jira, "FHIR-123", "Test Issue Title");
+        string json = """
+            {
+                "id": "FHIR-123",
+                "title": "Test Issue Title",
+                "content": "Test content",
+                "url": "https://jira.hl7.org/browse/FHIR-123",
+                "metadata": { "status": "Open", "type": "Bug" }
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<ItemResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.GetItemAsync(Arg.Any<GetItemRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await JiraTools.GetJiraIssue(client, "FHIR-123");
+        string result = await JiraTools.GetJiraIssue(factory, "FHIR-123");
 
         Assert.Contains("FHIR-123", result);
         Assert.Contains("Test Issue Title", result);
@@ -36,26 +28,17 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraComments_ReturnsFormattedComments()
     {
-        JiraComment[] comments = new[]
-        {
-            new JiraComment
+        string json = """
             {
-                Id = "1", IssueKey = "FHIR-100", Author = "User1",
-                Body = "First comment", CreatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-            },
-            new JiraComment
-            {
-                Id = "2", IssueKey = "FHIR-100", Author = "User2",
-                Body = "Second comment", CreatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-            },
-        };
+                "comments": [
+                    { "author": "User1", "body": "First comment", "createdAt": "2024-01-01T00:00:00Z" },
+                    { "author": "User2", "body": "Second comment", "createdAt": "2024-01-02T00:00:00Z" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        AsyncServerStreamingCall<JiraComment> streamCall = McpTestHelper.CreateStreamingCall(comments);
-        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
-        client.GetIssueComments(Arg.Any<JiraGetCommentsRequest>(), null, null, default)
-            .Returns(streamCall);
-
-        string result = await JiraTools.GetJiraComments(client, "FHIR-100");
+        string result = await JiraTools.GetJiraComments(factory, "FHIR-100");
 
         Assert.Contains("Comments on FHIR-100", result);
         Assert.Contains("User1", result);
@@ -66,12 +49,10 @@ public class JiraToolsTests
     [Fact]
     public async Task GetJiraComments_NoComments_ReturnsMessage()
     {
-        AsyncServerStreamingCall<JiraComment> streamCall = McpTestHelper.CreateStreamingCall<JiraComment>();
-        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
-        client.GetIssueComments(Arg.Any<JiraGetCommentsRequest>(), null, null, default)
-            .Returns(streamCall);
+        string json = """{ "comments": [] }""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        string result = await JiraTools.GetJiraComments(client, "FHIR-999");
+        string result = await JiraTools.GetJiraComments(factory, "FHIR-999");
 
         Assert.Contains("No comments", result);
     }
@@ -79,25 +60,14 @@ public class JiraToolsTests
     [Fact]
     public async Task SnapshotJiraIssue_ReturnsMarkdown()
     {
-        SnapshotResponse mockResponse = new SnapshotResponse
-        {
-            Id = "FHIR-123",
-            Source = SourceSystems.Jira,
-            Markdown = "# FHIR-123: Test Issue\n\nFull snapshot content...",
-        };
+        string json = """
+            {
+                "markdown": "# FHIR-123: Test Issue\n\nFull snapshot content..."
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<SnapshotResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.GetSnapshotAsync(Arg.Any<GetSnapshotRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await JiraTools.SnapshotJiraIssue(client, "FHIR-123");
+        string result = await JiraTools.SnapshotJiraIssue(factory, "FHIR-123");
 
         Assert.Contains("FHIR-123", result);
         Assert.Contains("Test Issue", result);
@@ -106,22 +76,18 @@ public class JiraToolsTests
     [Fact]
     public async Task SearchJira_ReturnsFormattedResults()
     {
-        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            (SourceSystems.Jira, "FHIR-100", "Issue One", 0.9),
-            (SourceSystems.Jira, "FHIR-200", "Issue Two", 0.8));
+        string json = """
+            {
+                "results": [
+                    { "source": "jira", "id": "FHIR-100", "title": "Issue One", "score": 0.9 },
+                    { "source": "jira", "id": "FHIR-200", "title": "Issue Two", "score": 0.8 }
+                ],
+                "total": 2
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
-        client.SearchAsync(Arg.Any<SearchRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await JiraTools.SearchJira(client, "test query");
+        string result = await JiraTools.SearchJira(factory, "test query");
 
         Assert.Contains("Search Results", result);
         Assert.Contains("FHIR-100", result);
@@ -131,23 +97,16 @@ public class JiraToolsTests
     [Fact]
     public async Task QueryJiraIssues_ReturnsFormattedResults()
     {
-        JiraIssueSummary[] issues = new[]
-        {
-            new JiraIssueSummary
+        string json = """
             {
-                Key = "FHIR-100", Title = "Test Issue",
-                Status = "Open", Type = "Bug",
-                WorkGroup = "FHIR-I",
-                UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-            },
-        };
+                "results": [
+                    { "key": "FHIR-100", "title": "Test Issue", "status": "Open", "type": "Bug", "workGroup": "FHIR-I", "updatedAt": "2024-01-01T00:00:00Z" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        AsyncServerStreamingCall<JiraIssueSummary> streamCall = McpTestHelper.CreateStreamingCall(issues);
-        JiraService.JiraServiceClient client = Substitute.For<JiraService.JiraServiceClient>();
-        client.QueryIssues(Arg.Any<JiraQueryRequest>(), null, null, default)
-            .Returns(streamCall);
-
-        string result = await JiraTools.QueryJiraIssues(client, statuses: "Open");
+        string result = await JiraTools.QueryJiraIssues(factory, statuses: "Open");
 
         Assert.Contains("Jira Query Results", result);
         Assert.Contains("FHIR-100", result);
@@ -157,22 +116,16 @@ public class JiraToolsTests
     [Fact]
     public async Task ListJiraIssues_ReturnsFormattedList()
     {
-        ItemSummary[] items = new[]
-        {
-            new ItemSummary
+        string json = """
             {
-                Id = "FHIR-100", Title = "Test Issue",
-                UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-                Url = "https://jira.hl7.org/browse/FHIR-100",
-            },
-        };
+                "items": [
+                    { "key": "FHIR-100", "title": "Test Issue", "updatedAt": "2024-01-01T00:00:00Z", "url": "https://jira.hl7.org/browse/FHIR-100" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        AsyncServerStreamingCall<ItemSummary> streamCall = McpTestHelper.CreateStreamingCall(items);
-        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
-        client.ListItems(Arg.Any<ListItemsRequest>(), null, null, default)
-            .Returns(streamCall);
-
-        string result = await JiraTools.ListJiraIssues(client);
+        string result = await JiraTools.ListJiraIssues(factory);
 
         Assert.Contains("Jira Issues", result);
         Assert.Contains("FHIR-100", result);

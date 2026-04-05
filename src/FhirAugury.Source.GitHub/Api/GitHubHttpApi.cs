@@ -3,6 +3,7 @@ using System.Text;
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;

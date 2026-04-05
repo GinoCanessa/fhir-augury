@@ -1,7 +1,5 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
-using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
@@ -9,55 +7,46 @@ public static class QueryJiraHandler
 {
     public static async Task<object> HandleAsync(QueryJiraRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        JiraQueryRequest grpcRequest = new()
+        using HttpServiceClient client = new(orchestratorAddr);
+
+        object queryBody = new
         {
-            Query = request.Query ?? "",
-            SortBy = request.SortBy,
-            SortOrder = request.SortOrder,
-            Limit = request.Limit,
+            query = request.Query ?? "",
+            statuses = request.Statuses,
+            workGroups = request.WorkGroups,
+            specifications = request.Specifications,
+            types = request.Types,
+            priorities = request.Priorities,
+            labels = request.Labels,
+            assignees = request.Assignees,
+            sortBy = request.SortBy,
+            sortOrder = request.SortOrder,
+            limit = request.Limit,
+            updatedAfter = request.UpdatedAfter,
         };
 
-        AddItems(grpcRequest.Statuses, request.Statuses);
-        AddItems(grpcRequest.WorkGroups, request.WorkGroups);
-        AddItems(grpcRequest.Specifications, request.Specifications);
-        AddItems(grpcRequest.Types_, request.Types);
-        AddItems(grpcRequest.Priorities, request.Priorities);
-        AddItems(grpcRequest.Labels, request.Labels);
-        AddItems(grpcRequest.Assignees, request.Assignees);
-
-        if (!string.IsNullOrEmpty(request.UpdatedAfter) &&
-            DateTimeOffset.TryParse(request.UpdatedAfter, out DateTimeOffset updatedAfter))
-        {
-            grpcRequest.UpdatedAfter = Timestamp.FromDateTimeOffset(updatedAfter);
-        }
-
-        using AsyncServerStreamingCall<JiraIssueSummary> call = clients.Jira.QueryIssues(grpcRequest, cancellationToken: ct);
+        JsonElement response = await client.QueryJiraViaOrchestratorAsync(queryBody, ct);
 
         List<object> results = [];
-        await foreach (JiraIssueSummary issue in call.ResponseStream.ReadAllAsync(ct))
+        if (response.TryGetProperty("results", out JsonElement resultsEl) && resultsEl.ValueKind == JsonValueKind.Array)
         {
-            results.Add(new
+            foreach (JsonElement issue in resultsEl.EnumerateArray())
             {
-                key = issue.Key,
-                projectKey = issue.ProjectKey,
-                title = issue.Title,
-                type = issue.Type,
-                status = issue.Status,
-                priority = issue.Priority,
-                workGroup = issue.WorkGroup,
-                specification = issue.Specification,
-                updatedAt = issue.UpdatedAt?.ToDateTimeOffset().ToString("o"),
-            });
+                results.Add(new
+                {
+                    key = issue.GetStringOrNull("key"),
+                    projectKey = issue.GetStringOrNull("projectKey"),
+                    title = issue.GetStringOrNull("title"),
+                    type = issue.GetStringOrNull("type"),
+                    status = issue.GetStringOrNull("status"),
+                    priority = issue.GetStringOrNull("priority"),
+                    workGroup = issue.GetStringOrNull("workGroup"),
+                    specification = issue.GetStringOrNull("specification"),
+                    updatedAt = issue.GetStringOrNull("updatedAt"),
+                });
+            }
         }
 
         return new { results };
-    }
-
-    private static void AddItems(Google.Protobuf.Collections.RepeatedField<string> field, string[]? items)
-    {
-        if (items is null) return;
-        foreach (string item in items)
-            field.Add(item);
     }
 }

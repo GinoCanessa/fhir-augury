@@ -1,6 +1,5 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
-using Grpc.Core;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
@@ -8,38 +7,37 @@ public static class GetHandler
 {
     public static async Task<object> HandleAsync(GetRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        Metadata headers = new() { { "x-source", request.Source } };
-        ItemResponse response = await clients.Orchestrator.GetItemAsync(
-            new GetItemRequest
+        using HttpServiceClient client = new(orchestratorAddr);
+        JsonElement response = await client.GetItemAsync(request.Source, request.Id, ct);
+
+        List<object> comments = [];
+        if (response.TryGetProperty("comments", out JsonElement commentsEl) && commentsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement c in commentsEl.EnumerateArray())
             {
-                Id = request.Id,
-                IncludeContent = true,
-                IncludeComments = request.IncludeComments,
-                SourceName = request.Source,
-            },
-            headers: headers,
-            cancellationToken: ct);
+                comments.Add(new
+                {
+                    id = c.GetStringOrNull("id"),
+                    author = c.GetStringOrNull("author"),
+                    body = c.GetStringOrNull("body"),
+                    createdAt = c.GetStringOrNull("createdAt"),
+                    url = c.GetStringOrNull("url"),
+                });
+            }
+        }
 
         return new
         {
-            source = response.Source,
-            contentType = response.ContentType,
-            id = response.Id,
-            title = response.Title,
-            content = response.Content,
-            url = response.Url,
-            createdAt = response.CreatedAt?.ToDateTimeOffset().ToString("o"),
-            updatedAt = response.UpdatedAt?.ToDateTimeOffset().ToString("o"),
-            metadata = new Dictionary<string, string>(response.Metadata),
-            comments = response.Comments.Select(c => new
-            {
-                id = c.Id,
-                author = c.Author,
-                body = c.Body,
-                createdAt = c.CreatedAt?.ToDateTimeOffset().ToString("o"),
-                url = c.Url,
-            }).ToArray(),
+            source = response.GetStringOrNull("source"),
+            contentType = response.GetStringOrNull("contentType"),
+            id = response.GetStringOrNull("id"),
+            title = response.GetStringOrNull("title"),
+            content = response.GetStringOrNull("content"),
+            url = response.GetStringOrNull("url"),
+            createdAt = response.GetStringOrNull("createdAt"),
+            updatedAt = response.GetStringOrNull("updatedAt"),
+            metadata = response.GetStringDictionary("metadata"),
+            comments = comments.ToArray(),
         };
     }
 }

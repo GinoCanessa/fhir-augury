@@ -1,9 +1,4 @@
-using Fhiraugury;
-using FhirAugury.Common;
 using FhirAugury.McpShared.Tools;
-using Grpc.Core;
-using Grpc.Core.Testing;
-using NSubstitute;
 
 namespace FhirAugury.McpShared.Tests;
 
@@ -12,22 +7,18 @@ public class UnifiedToolsTests
     [Fact]
     public async Task Search_ReturnsFormattedResults()
     {
-        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            (SourceSystems.Jira, "FHIR-123", "Test Issue", 0.95),
-            (SourceSystems.Zulip, "general:topic1", "Test Topic", 0.85));
+        string json = """
+            {
+                "results": [
+                    { "source": "jira", "id": "FHIR-123", "title": "Test Issue", "score": 0.95, "url": "https://example.com/jira/FHIR-123" },
+                    { "source": "zulip", "id": "general:topic1", "title": "Test Topic", "score": 0.85 }
+                ],
+                "total": 2
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.UnifiedSearchAsync(Arg.Any<UnifiedSearchRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.Search(client, "test query");
+        string result = await UnifiedTools.Search(factory, "test query");
 
         Assert.Contains("Search Results", result);
         Assert.Contains("FHIR-123", result);
@@ -38,20 +29,10 @@ public class UnifiedToolsTests
     [Fact]
     public async Task Search_WithNoResults_ReturnsMessage()
     {
-        SearchResponse emptyResponse = new SearchResponse { TotalResults = 0 };
+        string json = """{ "results": [], "total": 0 }""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(emptyResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.UnifiedSearchAsync(Arg.Any<UnifiedSearchRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.Search(client, "nonexistent");
+        string result = await UnifiedTools.Search(factory, "nonexistent");
 
         Assert.Contains("No results found", result);
     }
@@ -59,21 +40,16 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetCrossReferences_ReturnsFormattedRefs()
     {
-        GetXRefResponse mockResponse = McpTestHelper.CreateXRefResponse(
-            (SourceSystems.Jira, "FHIR-100", SourceSystems.Zulip, "stream:topic", "mentions"));
+        string json = """
+            {
+                "references": [
+                    { "sourceType": "jira", "sourceId": "FHIR-100", "targetType": "zulip", "targetId": "stream:topic", "linkType": "mentions" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<GetXRefResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.GetCrossReferences(client, SourceSystems.Jira, "FHIR-100");
+        string result = await UnifiedTools.GetCrossReferences(factory, "jira", "FHIR-100");
 
         Assert.Contains("Cross-References", result);
         Assert.Contains("FHIR-100", result);
@@ -83,20 +59,10 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetCrossReferences_NoRefs_ReturnsMessage()
     {
-        GetXRefResponse emptyResponse = new GetXRefResponse();
+        string json = """{ "references": [] }""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<GetXRefResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(emptyResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.GetCrossReferencesAsync(Arg.Any<GetXRefRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.GetCrossReferences(client, SourceSystems.Jira, "FHIR-999");
+        string result = await UnifiedTools.GetCrossReferences(factory, "jira", "FHIR-999");
 
         Assert.Contains("No cross-references found", result);
     }
@@ -104,69 +70,58 @@ public class UnifiedToolsTests
     [Fact]
     public async Task GetStats_ReturnsFormattedStatus()
     {
-        ServicesStatusResponse mockResponse = McpTestHelper.CreateServicesStatus();
+        string json = """
+            {
+                "services": [
+                    { "name": "jira", "status": "healthy", "itemCount": 1000, "dbSizeBytes": 10000000 },
+                    { "name": "zulip", "status": "healthy", "itemCount": 5000, "dbSizeBytes": 50000000 }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<ServicesStatusResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.GetServicesStatusAsync(Arg.Any<ServicesStatusRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.GetStats(client);
+        string result = await UnifiedTools.GetStats(factory);
 
         Assert.Contains("Services Status", result);
-        Assert.Contains(SourceSystems.Jira, result);
-        Assert.Contains(SourceSystems.Zulip, result);
+        Assert.Contains("jira", result);
+        Assert.Contains("zulip", result);
     }
 
     [Fact]
     public async Task TriggerSync_ReturnsFormattedStatus()
     {
-        TriggerSyncResponse mockResponse = new TriggerSyncResponse();
-        mockResponse.Statuses.Add(new SourceSyncStatus { Source = SourceSystems.Jira, Status = "started", Message = "Incremental sync started" });
+        string json = """
+            {
+                "statuses": [
+                    { "source": "jira", "status": "started", "message": "Incremental sync started" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<TriggerSyncResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.TriggerSyncAsync(Arg.Any<TriggerSyncRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.TriggerSync(client);
+        string result = await UnifiedTools.TriggerSync(factory);
 
         Assert.Contains("Sync Triggered", result);
-        Assert.Contains(SourceSystems.Jira, result);
+        Assert.Contains("jira", result);
         Assert.Contains("started", result);
     }
 
     [Fact]
     public async Task FindRelated_ReturnsFormattedRelated()
     {
-        FindRelatedResponse mockResponse = McpTestHelper.CreateRelatedResponse(
-            SourceSystems.Jira, "FHIR-100", "Test Jira Issue",
-            (SourceSystems.Zulip, "stream:topic", "Related Thread", 8.5, "explicit_xref"));
+        string json = """
+            {
+                "seedSource": "jira",
+                "seedId": "FHIR-100",
+                "seedTitle": "Test Jira Issue",
+                "items": [
+                    { "source": "zulip", "id": "stream:topic", "title": "Related Thread", "relevanceScore": 8.5, "relationship": "explicit_xref", "url": "https://example.com/zulip/stream:topic" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
-        AsyncUnaryCall<FindRelatedResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        OrchestratorService.OrchestratorServiceClient client = Substitute.For<OrchestratorService.OrchestratorServiceClient>();
-        client.FindRelatedAsync(Arg.Any<FindRelatedRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await UnifiedTools.FindRelated(client, SourceSystems.Jira, "FHIR-100");
+        string result = await UnifiedTools.FindRelated(factory, "jira", "FHIR-100");
 
         Assert.Contains("Related Items", result);
         Assert.Contains("FHIR-100", result);

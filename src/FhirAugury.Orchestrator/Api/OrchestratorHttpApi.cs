@@ -347,7 +347,7 @@ public static class OrchestratorHttpApi
             CancellationToken ct) =>
         {
             await monitor.CheckAllAsync(ct);
-            Dictionary<string, ServiceHealthInfo> status = monitor.GetCurrentStatus();
+            Dictionary<string, Health.ServiceHealthInfo> status = monitor.GetCurrentStatus();
 
             return Results.Ok(new
             {

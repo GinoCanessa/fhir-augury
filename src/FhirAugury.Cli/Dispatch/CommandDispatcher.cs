@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
 using FhirAugury.Cli.Dispatch.Handlers;
@@ -74,7 +75,7 @@ public static class CommandDispatcher
 
         string orchestratorAddr = request.Orchestrator
             ?? Environment.GetEnvironmentVariable("FHIR_AUGURY_ORCHESTRATOR")
-            ?? "http://localhost:5151";
+            ?? "http://localhost:5150";
 
         string version = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -101,11 +102,17 @@ public static class CommandDispatcher
             object responseData = data is IHasWarnings hw ? hw.GetData() : data;
             return OutputEnvelope.Ok(commandName, responseData, metadata, warnings);
         }
-        catch (Grpc.Core.RpcException ex)
+        catch (HttpRequestException ex) when (ex.StatusCode is null)
         {
             return OutputEnvelope.Fail(commandName, "CONNECTION_FAILED",
                 $"Cannot connect to orchestrator at {orchestratorAddr}",
-                $"StatusCode={ex.StatusCode}, Detail={ex.Status.Detail}");
+                ex.Message);
+        }
+        catch (HttpRequestException ex)
+        {
+            return OutputEnvelope.Fail(commandName, "HTTP_ERROR",
+                $"HTTP request failed with status {ex.StatusCode}",
+                ex.Message);
         }
         catch (ArgumentException ex)
         {

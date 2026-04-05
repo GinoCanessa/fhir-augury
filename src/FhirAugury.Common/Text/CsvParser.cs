@@ -23,22 +23,22 @@ public static class CsvParser
     }
 
     /// <summary>
-    /// Adds each token from a comma-separated string into a protobuf repeated field, lowercased.
+    /// Adds each token from a comma-separated string into a list, lowercased.
     /// </summary>
-    public static void AddToRepeatedField(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
+    public static void AddToList(List<string> list, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
         foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            field.Add(item.ToLowerInvariant());
+            list.Add(item.ToLowerInvariant());
     }
 
     /// <summary>
-    /// Adds each token from a comma-separated string into a protobuf repeated field without case conversion.
+    /// Adds each token from a comma-separated string into a list without case conversion.
     /// </summary>
-    public static void AddItemsToRepeatedField(Google.Protobuf.Collections.RepeatedField<string> field, string? csv)
+    public static void AddItemsToList(List<string> list, string? csv)
     {
         if (string.IsNullOrWhiteSpace(csv)) return;
         foreach (string item in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            field.Add(item);
+            list.Add(item);
     }
 }

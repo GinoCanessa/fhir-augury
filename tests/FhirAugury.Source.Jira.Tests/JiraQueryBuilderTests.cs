@@ -1,4 +1,4 @@
-using Fhiraugury;
+using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Indexing;
 
 namespace FhirAugury.Source.Jira.Tests;
@@ -8,7 +8,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_EmptyRequest_ReturnsDefaultQuery()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest();
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -22,7 +22,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_StatusFilter_AddsInClause()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest();
         request.Statuses.Add("Open");
         request.Statuses.Add("In Progress");
 
@@ -34,7 +34,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_MultipleFilters_CombinesWithAnd()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest();
         request.Statuses.Add("Open");
         request.WorkGroups.Add("FHIR-I");
         request.Priorities.Add("Critical");
@@ -49,7 +49,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_ExcludeProjects_AddsNotInClause()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest();
         request.ExcludeProjects.Add("FHIR-TEST");
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
@@ -60,7 +60,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_Labels_UsesLikeMatching()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest();
         request.Labels.Add("bug");
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
@@ -72,8 +72,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_FtsQuery_AddsFtsSubquery()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
-        request.Query = "patient resource";
+        JiraQueryRequest request = new JiraQueryRequest() { Query = "patient resource" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -83,7 +82,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_AllowedSortColumn_UsesThatColumn()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { SortBy = "created_at" };
+        JiraQueryRequest request = new JiraQueryRequest { SortBy = "created_at" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -93,7 +92,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_DisallowedSortColumn_DefaultsToUpdatedAt()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { SortBy = "DROP TABLE" };
+        JiraQueryRequest request = new JiraQueryRequest { SortBy = "DROP TABLE" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -103,7 +102,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_AscSortOrder_UsesAsc()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { SortOrder = "asc" };
+        JiraQueryRequest request = new JiraQueryRequest { SortOrder = "asc" };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -113,7 +112,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_LimitOverMax_CappedAt1000()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { Limit = 5000 };
+        JiraQueryRequest request = new JiraQueryRequest { Limit = 5000 };
 
         (string _, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -123,7 +122,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_CustomPagination_SetsLimitAndOffset()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { Limit = 25, Offset = 50 };
+        JiraQueryRequest request = new JiraQueryRequest { Limit = 25, Offset = 50 };
 
         (string _, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -134,7 +133,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_NegativeOffset_ClampedToZero()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest { Offset = -10 };
+        JiraQueryRequest request = new JiraQueryRequest { Offset = -10 };
 
         (string _, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -144,10 +143,9 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_AllParametersAreParameterized()
     {
-        JiraQueryRequest request = new Fhiraugury.JiraQueryRequest();
+        JiraQueryRequest request = new JiraQueryRequest() { Query = "test" };
         request.Statuses.Add("Open");
         request.WorkGroups.Add("FHIR-I");
-        request.Query = "test";
         request.Labels.Add("bug");
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);

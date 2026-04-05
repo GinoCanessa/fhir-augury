@@ -1,7 +1,5 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
-using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
@@ -9,49 +7,39 @@ public static class QueryZulipHandler
 {
     public static async Task<object> HandleAsync(QueryZulipRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        ZulipQueryRequest grpcRequest = new()
+        using HttpServiceClient client = new(orchestratorAddr);
+
+        object queryBody = new
         {
-            Topic = request.Topic ?? "",
-            TopicKeyword = request.TopicKeyword ?? "",
-            Query = request.Query ?? "",
-            SortBy = request.SortBy,
-            SortOrder = request.SortOrder,
-            Limit = request.Limit,
+            query = request.Query ?? "",
+            streams = request.Streams,
+            topic = request.Topic ?? "",
+            topicKeyword = request.TopicKeyword ?? "",
+            senders = request.Senders,
+            sortBy = request.SortBy,
+            sortOrder = request.SortOrder,
+            limit = request.Limit,
+            after = request.After,
+            before = request.Before,
         };
 
-        if (request.Streams is { Length: > 0 })
-        {
-            foreach (string stream in request.Streams)
-                grpcRequest.StreamNames.Add(stream);
-        }
-
-        if (request.Senders is { Length: > 0 })
-        {
-            foreach (string sender in request.Senders)
-                grpcRequest.SenderNames.Add(sender);
-        }
-
-        if (!string.IsNullOrEmpty(request.After) && DateTimeOffset.TryParse(request.After, out DateTimeOffset after))
-            grpcRequest.After = Timestamp.FromDateTimeOffset(after);
-
-        if (!string.IsNullOrEmpty(request.Before) && DateTimeOffset.TryParse(request.Before, out DateTimeOffset before))
-            grpcRequest.Before = Timestamp.FromDateTimeOffset(before);
-
-        using AsyncServerStreamingCall<ZulipMessageSummary> call = clients.Zulip.QueryMessages(grpcRequest, cancellationToken: ct);
+        JsonElement response = await client.QueryZulipViaOrchestratorAsync(queryBody, ct);
 
         List<object> results = [];
-        await foreach (ZulipMessageSummary msg in call.ResponseStream.ReadAllAsync(ct))
+        if (response.TryGetProperty("results", out JsonElement resultsEl) && resultsEl.ValueKind == JsonValueKind.Array)
         {
-            results.Add(new
+            foreach (JsonElement msg in resultsEl.EnumerateArray())
             {
-                id = msg.Id,
-                streamName = msg.StreamName,
-                topic = msg.Topic,
-                senderName = msg.SenderName,
-                snippet = msg.Snippet,
-                timestamp = msg.Timestamp?.ToDateTimeOffset().ToString("o"),
-            });
+                results.Add(new
+                {
+                    id = msg.GetStringOrNull("id"),
+                    streamName = msg.GetStringOrNull("streamName"),
+                    topic = msg.GetStringOrNull("topic"),
+                    senderName = msg.GetStringOrNull("senderName"),
+                    snippet = msg.GetStringOrNull("snippet"),
+                    timestamp = msg.GetStringOrNull("timestamp"),
+                });
+            }
         }
 
         return new { results };

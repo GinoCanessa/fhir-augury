@@ -1,7 +1,5 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
-using FhirAugury.Common.Text;
-using Grpc.Core;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
@@ -22,93 +20,98 @@ public static class IngestHandler
 
     private static async Task<object> HandleTriggerAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        TriggerSyncRequest grpcRequest = new() { Type = request.Type };
-        AddSources(grpcRequest, request.Sources);
+        using HttpServiceClient client = new(orchestratorAddr);
+        string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;
 
-        TriggerSyncResponse response = await clients.Orchestrator.TriggerSyncAsync(grpcRequest, cancellationToken: ct);
+        JsonElement response = await client.TriggerSyncAsync(request.Type, sources, ct);
 
-        return new
+        List<object> statuses = [];
+        if (response.TryGetProperty("statuses", out JsonElement statusesEl) && statusesEl.ValueKind == JsonValueKind.Array)
         {
-            statuses = response.Statuses.Select(s => new
+            foreach (JsonElement s in statusesEl.EnumerateArray())
             {
-                source = s.Source,
-                status = s.Status,
-                message = s.Message,
-            }).ToArray(),
-        };
+                statuses.Add(new
+                {
+                    source = s.GetStringOrNull("source"),
+                    status = s.GetStringOrNull("status"),
+                    message = s.GetStringOrNull("message"),
+                });
+            }
+        }
+
+        return new { statuses = statuses.ToArray() };
     }
 
     private static async Task<object> HandleStatusAsync(string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        ServicesStatusResponse response = await clients.Orchestrator.GetServicesStatusAsync(
-            new ServicesStatusRequest(), cancellationToken: ct);
+        using HttpServiceClient client = new(orchestratorAddr);
+        JsonElement response = await client.GetServicesStatusAsync(ct);
 
-        return new
+        List<object> services = [];
+        if (response.TryGetProperty("services", out JsonElement servicesEl) && servicesEl.ValueKind == JsonValueKind.Array)
         {
-            services = response.Services.Select(s => new
+            foreach (JsonElement s in servicesEl.EnumerateArray())
             {
-                name = s.Name,
-                status = s.Status,
-                lastSyncAt = s.LastSyncAt?.ToDateTimeOffset().ToString("o"),
-                itemCount = s.ItemCount,
-            }).ToArray(),
-        };
+                services.Add(new
+                {
+                    name = s.GetStringOrNull("name"),
+                    status = s.GetStringOrNull("status"),
+                    lastSyncAt = s.GetStringOrNull("lastSyncAt"),
+                    itemCount = s.TryGetProperty("itemCount", out JsonElement icEl) ? icEl.GetInt32() : 0,
+                });
+            }
+        }
+
+        return new { services = services.ToArray() };
     }
 
     private static async Task<object> HandleRebuildAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        TriggerSyncRequest grpcRequest = new() { Type = "rebuild" };
-        AddSources(grpcRequest, request.Sources);
+        using HttpServiceClient client = new(orchestratorAddr);
+        string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;
 
-        TriggerSyncResponse response = await clients.Orchestrator.TriggerSyncAsync(grpcRequest, cancellationToken: ct);
+        JsonElement response = await client.TriggerSyncAsync("rebuild", sources, ct);
 
-        return new
+        List<object> statuses = [];
+        if (response.TryGetProperty("statuses", out JsonElement statusesEl) && statusesEl.ValueKind == JsonValueKind.Array)
         {
-            statuses = response.Statuses.Select(s => new
+            foreach (JsonElement s in statusesEl.EnumerateArray())
             {
-                source = s.Source,
-                status = s.Status,
-                message = s.Message,
-            }).ToArray(),
-        };
+                statuses.Add(new
+                {
+                    source = s.GetStringOrNull("source"),
+                    status = s.GetStringOrNull("status"),
+                    message = s.GetStringOrNull("message"),
+                });
+            }
+        }
+
+        return new { statuses = statuses.ToArray() };
     }
 
     private static async Task<object> HandleIndexAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        OrchestratorRebuildIndexRequest grpcRequest = new() { IndexType = request.IndexType };
-        AddSources(grpcRequest, request.Sources);
+        using HttpServiceClient client = new(orchestratorAddr);
+        string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;
 
-        OrchestratorRebuildIndexResponse response =
-            await clients.Orchestrator.RebuildIndexAsync(grpcRequest, cancellationToken: ct);
+        JsonElement response = await client.RebuildIndexAsync(request.IndexType, sources, ct);
 
-        return new
+        List<object> results = [];
+        if (response.TryGetProperty("results", out JsonElement resultsEl) && resultsEl.ValueKind == JsonValueKind.Array)
         {
-            results = response.Results.Select(r => new
+            foreach (JsonElement r in resultsEl.EnumerateArray())
             {
-                source = r.Source,
-                success = r.Success,
-                actionTaken = r.ActionTaken,
-                elapsedSeconds = r.ElapsedSeconds,
-                error = r.Error,
-            }).ToArray(),
-        };
-    }
+                results.Add(new
+                {
+                    source = r.GetStringOrNull("source"),
+                    success = r.TryGetProperty("success", out JsonElement succEl) && succEl.GetBoolean(),
+                    actionTaken = r.GetStringOrNull("actionTaken"),
+                    elapsedSeconds = r.TryGetProperty("elapsedSeconds", out JsonElement esEl) ? esEl.GetDouble() : (double?)null,
+                    error = r.GetStringOrNull("error"),
+                });
+            }
+        }
 
-    private static void AddSources(TriggerSyncRequest grpcRequest, string[]? sources)
-    {
-        if (sources is null) return;
-        foreach (string s in sources)
-            grpcRequest.Sources.Add(s.ToLowerInvariant());
-    }
-
-    private static void AddSources(OrchestratorRebuildIndexRequest grpcRequest, string[]? sources)
-    {
-        if (sources is null) return;
-        foreach (string s in sources)
-            grpcRequest.Sources.Add(s.ToLowerInvariant());
+        return new { results = results.ToArray() };
     }
 }

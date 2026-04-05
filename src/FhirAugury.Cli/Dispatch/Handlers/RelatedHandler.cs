@@ -1,4 +1,4 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
@@ -7,38 +7,36 @@ public static class RelatedHandler
 {
     public static async Task<object> HandleAsync(RelatedRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        FindRelatedRequest grpcRequest = new()
-        {
-            Source = request.Source,
-            Id = request.Id,
-            Limit = request.Limit,
-        };
+        using HttpServiceClient client = new(orchestratorAddr);
+        string? targetSources = request.TargetSources is { Length: > 0 } ? string.Join(",", request.TargetSources) : null;
 
-        if (request.TargetSources is { Length: > 0 })
+        JsonElement response = await client.FindRelatedAsync(request.Source, request.Id, request.Limit, targetSources, ct);
+
+        List<object> items = [];
+        if (response.TryGetProperty("items", out JsonElement itemsEl) && itemsEl.ValueKind == JsonValueKind.Array)
         {
-            foreach (string source in request.TargetSources)
-                grpcRequest.TargetSources.Add(source);
+            foreach (JsonElement i in itemsEl.EnumerateArray())
+            {
+                items.Add(new
+                {
+                    source = i.GetStringOrNull("source"),
+                    id = i.GetStringOrNull("id"),
+                    title = i.GetStringOrNull("title"),
+                    snippet = i.GetStringOrNull("snippet"),
+                    url = i.GetStringOrNull("url"),
+                    relevanceScore = i.TryGetProperty("relevanceScore", out JsonElement scoreEl) ? scoreEl.GetDouble() : 0.0,
+                    relationship = i.GetStringOrNull("relationship"),
+                    context = i.GetStringOrNull("context"),
+                });
+            }
         }
-
-        FindRelatedResponse response = await clients.Orchestrator.FindRelatedAsync(grpcRequest, cancellationToken: ct);
 
         return new
         {
-            seedSource = response.SeedSource,
-            seedId = response.SeedId,
-            seedTitle = response.SeedTitle,
-            items = response.Items.Select(i => new
-            {
-                source = i.Source,
-                id = i.Id,
-                title = i.Title,
-                snippet = i.Snippet,
-                url = i.Url,
-                relevanceScore = i.RelevanceScore,
-                relationship = i.Relationship,
-                context = i.Context,
-            }).ToArray(),
+            seedSource = response.GetStringOrNull("seedSource"),
+            seedId = response.GetStringOrNull("seedId"),
+            seedTitle = response.GetStringOrNull("seedTitle"),
+            items = items.ToArray(),
         };
     }
 }

@@ -56,8 +56,8 @@ public static class SchemaGenerator
             ["orchestrator"] = new
             {
                 type = "string",
-                description = "Orchestrator gRPC address",
-                defaultValue = "http://localhost:5151",
+                description = "Orchestrator HTTP address",
+                defaultValue = "http://localhost:5150",
             },
             ["verbose"] = new
             {

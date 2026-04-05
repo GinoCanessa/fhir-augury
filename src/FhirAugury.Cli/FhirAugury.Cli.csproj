@@ -6,12 +6,8 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fhir-augury</ToolCommandName>
     <PackageId>FhirAugury.Cli</PackageId>
-    <Description>FHIR Augury — unified knowledge platform CLI for searching HL7 FHIR community data sources via gRPC.</Description>
+    <Description>FHIR Augury — unified knowledge platform CLI for searching HL7 FHIR community data sources via HTTP.</Description>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Grpc.Net.Client" Version="2.*" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />

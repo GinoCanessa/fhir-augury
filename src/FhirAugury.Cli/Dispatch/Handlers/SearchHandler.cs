@@ -1,4 +1,4 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Dispatch;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
@@ -7,18 +7,42 @@ public static class SearchHandler
 {
     public static async Task<object> HandleAsync(Models.SearchRequest request, string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        UnifiedSearchRequest grpcRequest = new() { Query = request.Query, Limit = request.Limit };
+        using HttpServiceClient client = new(orchestratorAddr);
+        string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources) : null;
 
-        if (request.Sources is { Length: > 0 })
+        JsonElement response = await client.UnifiedSearchAsync(request.Query, sources, request.Limit, ct);
+
+        List<string> warnings = [];
+        if (response.TryGetProperty("warnings", out JsonElement warningsEl) && warningsEl.ValueKind == JsonValueKind.Array)
         {
-            foreach (string source in request.Sources)
-                grpcRequest.Sources.Add(source);
+            foreach (JsonElement w in warningsEl.EnumerateArray())
+            {
+                string? val = w.GetString();
+                if (val is not null)
+                    warnings.Add(val);
+            }
         }
 
-        SearchResponse response = await clients.Orchestrator.UnifiedSearchAsync(grpcRequest, cancellationToken: ct);
-
-        List<string> warnings = [.. response.Warnings];
+        int totalResults = response.TryGetProperty("total", out JsonElement totalEl) ? totalEl.GetInt32() : 0;
+        List<object> results = [];
+        if (response.TryGetProperty("results", out JsonElement resultsEl) && resultsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement r in resultsEl.EnumerateArray())
+            {
+                results.Add(new
+                {
+                    source = r.GetStringOrNull("source"),
+                    contentType = r.GetStringOrNull("contentType"),
+                    id = r.GetStringOrNull("id"),
+                    title = r.GetStringOrNull("title"),
+                    snippet = r.GetStringOrNull("snippet"),
+                    score = r.TryGetProperty("score", out JsonElement scoreEl) ? scoreEl.GetDouble() : 0.0,
+                    url = r.GetStringOrNull("url"),
+                    updatedAt = r.GetStringOrNull("updatedAt"),
+                    metadata = r.GetStringDictionary("metadata"),
+                });
+            }
+        }
 
         return new SearchResultWithWarnings
         {
@@ -26,19 +50,8 @@ public static class SearchHandler
             Result = new
             {
                 query = request.Query,
-                totalResults = response.TotalResults,
-                results = response.Results.Select(r => new
-                {
-                    source = r.Source,
-                    contentType = r.ContentType,
-                    id = r.Id,
-                    title = r.Title,
-                    snippet = r.Snippet,
-                    score = r.Score,
-                    url = r.Url,
-                    updatedAt = r.UpdatedAt?.ToDateTimeOffset().ToString("o"),
-                    metadata = new Dictionary<string, string>(r.Metadata),
-                }).ToArray(),
+                totalResults,
+                results = results.ToArray(),
             },
         };
     }

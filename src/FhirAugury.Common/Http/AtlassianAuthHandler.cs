@@ -1,7 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 
-namespace FhirAugury.Common.Grpc;
+namespace FhirAugury.Common.Http;
 
 /// <summary>
 /// Shared base delegating handler for Atlassian-style authentication (Basic with email/apitoken, or cookie).

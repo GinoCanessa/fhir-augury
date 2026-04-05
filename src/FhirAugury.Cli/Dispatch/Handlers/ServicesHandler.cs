@@ -1,6 +1,5 @@
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Cli.Models;
-using FhirAugury.Common.Text;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
@@ -19,73 +18,103 @@ public static class ServicesHandler
 
     private static async Task<object> HandleStatusAsync(string orchestratorAddr, CancellationToken ct)
     {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-        ServicesStatusResponse response = await clients.Orchestrator.GetServicesStatusAsync(
-            new ServicesStatusRequest(), cancellationToken: ct);
+        using HttpServiceClient client = new(orchestratorAddr);
+        JsonElement response = await client.GetServicesStatusAsync(ct);
 
-        return new
+        List<object> services = [];
+        if (response.TryGetProperty("services", out JsonElement servicesEl) && servicesEl.ValueKind == JsonValueKind.Array)
         {
-            lastXrefScanAt = response.LastXrefScanAt?.ToDateTimeOffset().ToString("o"),
-            services = response.Services.Select(s => new
+            foreach (JsonElement s in servicesEl.EnumerateArray())
             {
-                name = s.Name,
-                status = s.Status,
-                grpcAddress = s.GrpcAddress,
-                itemCount = s.ItemCount,
-                dbSizeBytes = s.DbSizeBytes,
-                lastSyncAt = s.LastSyncAt?.ToDateTimeOffset().ToString("o"),
-                lastError = s.LastError,
-                indexes = s.Indexes.Select(i => new
+                List<object> indexes = [];
+                if (s.TryGetProperty("indexes", out JsonElement indexesEl) && indexesEl.ValueKind == JsonValueKind.Array)
                 {
-                    name = i.Name,
-                    description = i.Description,
-                    isRebuilding = i.IsRebuilding,
-                    lastRebuildStartedAt = i.LastRebuildStartedAt?.ToDateTimeOffset().ToString("o"),
-                    lastRebuildCompletedAt = i.LastRebuildCompletedAt?.ToDateTimeOffset().ToString("o"),
-                    recordCount = i.RecordCount,
-                    lastError = i.LastError,
-                }).ToArray(),
-            }).ToArray(),
-        };
-    }
+                    foreach (JsonElement i in indexesEl.EnumerateArray())
+                    {
+                        indexes.Add(new
+                        {
+                            name = i.GetStringOrNull("name"),
+                            description = i.GetStringOrNull("description"),
+                            isRebuilding = i.TryGetProperty("isRebuilding", out JsonElement irEl) && irEl.GetBoolean(),
+                            lastRebuildStartedAt = i.GetStringOrNull("lastRebuildStartedAt"),
+                            lastRebuildCompletedAt = i.GetStringOrNull("lastRebuildCompletedAt"),
+                            recordCount = i.TryGetProperty("recordCount", out JsonElement rcEl) ? rcEl.GetInt32() : 0,
+                            lastError = i.GetStringOrNull("lastError"),
+                        });
+                    }
+                }
 
-    private static async Task<object> HandleStatsAsync(string orchestratorAddr, CancellationToken ct)
-    {
-        using GrpcClientFactory clients = new(orchestratorAddr);
-
-        ServicesStatusResponse statusResponse = await clients.Orchestrator.GetServicesStatusAsync(
-            new ServicesStatusRequest(), cancellationToken: ct);
-
-        List<object> sources = [];
-        foreach (ServiceHealth svc in statusResponse.Services)
-        {
-            try
-            {
-                SourceService.SourceServiceClient sourceClient = new(
-                    Grpc.Net.Client.GrpcChannel.ForAddress(svc.GrpcAddress));
-                StatsResponse stats = await sourceClient.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
-                sources.Add(new
+                services.Add(new
                 {
-                    source = stats.Source,
-                    totalItems = stats.TotalItems,
-                    totalComments = stats.TotalComments,
-                    databaseSizeBytes = stats.DatabaseSizeBytes,
-                    cacheSizeBytes = stats.CacheSizeBytes,
-                    lastSyncAt = stats.LastSyncAt?.ToDateTimeOffset().ToString("o"),
-                    oldestItem = stats.OldestItem?.ToDateTimeOffset().ToString("o"),
-                    newestItem = stats.NewestItem?.ToDateTimeOffset().ToString("o"),
-                    additionalCounts = new Dictionary<string, int>(stats.AdditionalCounts),
+                    name = s.GetStringOrNull("name"),
+                    status = s.GetStringOrNull("status"),
+                    httpAddress = s.GetStringOrNull("httpAddress"),
+                    itemCount = s.TryGetProperty("itemCount", out JsonElement icEl) ? icEl.GetInt32() : 0,
+                    dbSizeBytes = s.TryGetProperty("dbSizeBytes", out JsonElement dbEl) ? dbEl.GetInt64() : 0L,
+                    lastSyncAt = s.GetStringOrNull("lastSyncAt"),
+                    lastError = s.GetStringOrNull("lastError"),
+                    indexes = indexes.ToArray(),
                 });
-            }
-            catch
-            {
-                // Service may be unreachable — skip it
             }
         }
 
         return new
         {
-            lastXrefScanAt = statusResponse.LastXrefScanAt?.ToDateTimeOffset().ToString("o"),
+            lastXrefScanAt = response.GetStringOrNull("lastXrefScanAt"),
+            services = services.ToArray(),
+        };
+    }
+
+    private static async Task<object> HandleStatsAsync(string orchestratorAddr, CancellationToken ct)
+    {
+        using HttpServiceClient client = new(orchestratorAddr);
+        JsonElement statusResponse = await client.GetServicesStatusAsync(ct);
+
+        List<object> sources = [];
+        if (statusResponse.TryGetProperty("services", out JsonElement servicesEl) && servicesEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement svc in servicesEl.EnumerateArray())
+            {
+                string? httpAddress = svc.GetStringOrNull("httpAddress");
+                if (httpAddress is null)
+                    continue;
+
+                try
+                {
+                    JsonElement stats = await client.GetSourceStatsAsync(httpAddress, ct);
+                    Dictionary<string, int> additionalCounts = [];
+                    if (stats.TryGetProperty("additionalCounts", out JsonElement acEl) && acEl.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (JsonProperty prop in acEl.EnumerateObject())
+                        {
+                            if (prop.Value.TryGetInt32(out int val))
+                                additionalCounts[prop.Name] = val;
+                        }
+                    }
+
+                    sources.Add(new
+                    {
+                        source = stats.GetStringOrNull("source"),
+                        totalItems = stats.TryGetProperty("totalItems", out JsonElement tiEl) ? tiEl.GetInt32() : 0,
+                        totalComments = stats.TryGetProperty("totalComments", out JsonElement tcEl) ? tcEl.GetInt32() : 0,
+                        databaseSizeBytes = stats.TryGetProperty("databaseSizeBytes", out JsonElement dsbEl) ? dsbEl.GetInt64() : 0L,
+                        cacheSizeBytes = stats.TryGetProperty("cacheSizeBytes", out JsonElement csbEl) ? csbEl.GetInt64() : 0L,
+                        lastSyncAt = stats.GetStringOrNull("lastSyncAt"),
+                        oldestItem = stats.GetStringOrNull("oldestItem"),
+                        newestItem = stats.GetStringOrNull("newestItem"),
+                        additionalCounts,
+                    });
+                }
+                catch
+                {
+                    // Service may be unreachable — skip it
+                }
+            }
+        }
+
+        return new
+        {
+            lastXrefScanAt = statusResponse.GetStringOrNull("lastXrefScanAt"),
             sources,
         };
     }
