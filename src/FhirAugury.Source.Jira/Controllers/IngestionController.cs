@@ -42,6 +42,20 @@ public class IngestionController(
         }
     }
 
+    [HttpPost("ingest/trigger")]
+    public IActionResult QueueIngestion([FromQuery] string? type)
+    {
+        string ingestionType = (type ?? "incremental").ToLowerInvariant();
+
+        workQueue.Enqueue(ct => ingestionType switch
+        {
+            "full" => pipeline.RunFullIngestionAsync(ct: ct),
+            _ => pipeline.RunIncrementalIngestionAsync(ct),
+        }, $"jira-{ingestionType}");
+
+        return Accepted(new { status = "queued", type = ingestionType });
+    }
+
     [HttpPost("rebuild")]
     public async Task<IActionResult> RebuildFromCache()
     {

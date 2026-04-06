@@ -180,15 +180,19 @@ public class ItemsController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
         if (message is null)
             return NotFound(new { error = $"Message {id} not found" });
 
-        string content = format?.Equals("html", StringComparison.OrdinalIgnoreCase) == true
+        string content = format?.Equals(ContentFormats.Html, StringComparison.OrdinalIgnoreCase) == true
             ? (message.ContentHtml ?? "")
             : (message.ContentPlain ?? "");
+
+        string resolvedFormat = format?.Equals(ContentFormats.Html, StringComparison.OrdinalIgnoreCase) == true
+            ? ContentFormats.Html
+            : ContentFormats.Text;
 
         return Ok(new ContentResponse(
             id,
             SourceSystems.Zulip,
             content,
-            string.IsNullOrEmpty(format) ? "text" : format,
+            resolvedFormat,
             ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId),
             null, null));
     }

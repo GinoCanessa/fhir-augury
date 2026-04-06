@@ -41,13 +41,7 @@ public class SourceHttpClient
         return _httpClientFactory.CreateClient($"source-{sourceName.ToLowerInvariant()}");
     }
 
-    // Source-aware path building: Confluence uses /pages/, GitHub uses
-    // inverted routes (/items/action/{*key}) due to catch-all constraints.
-    private static string ItemBase(string source) => source.ToLowerInvariant() switch
-    {
-        "confluence" => "pages",
-        _ => "items",
-    };
+    private static string ItemBase() => "items";
 
     private static string EncodeId(string source, string id)
     {
@@ -58,7 +52,7 @@ public class SourceHttpClient
     }
 
     private static string BuildItemPath(string source, string id) =>
-        $"{ItemBase(source)}/{EncodeId(source, id)}";
+        $"{ItemBase()}/{EncodeId(source, id)}";
 
     private static string BuildSubItemPath(string source, string id, string action)
     {
@@ -66,7 +60,7 @@ public class SourceHttpClient
         if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
             return $"items/{action}/{encoded}";
 
-        return $"{ItemBase(source)}/{encoded}/{action}";
+        return $"{ItemBase()}/{encoded}/{action}";
     }
 
     public async Task<SearchResponse?> SearchAsync(string sourceName, string query, int limit, CancellationToken ct)

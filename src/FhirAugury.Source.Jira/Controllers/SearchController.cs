@@ -14,7 +14,7 @@ namespace FhirAugury.Source.Jira.Controllers;
 public class SearchController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
     [HttpGet("search")]
-    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit)
+    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset)
     {
         JiraServiceOptions options = optionsAccessor.Value;
         if (string.IsNullOrWhiteSpace(q))
@@ -26,6 +26,7 @@ public class SearchController(JiraDatabase db, IOptions<JiraServiceOptions> opti
             return Ok(new SearchResponse(q, 0, [], null));
 
         int maxResults = Math.Min(limit ?? 20, 200);
+        int skip = Math.Max(offset ?? 0, 0);
 
         string sql = """
             SELECT ji.Key, ji.Title,
@@ -35,12 +36,13 @@ public class SearchController(JiraDatabase db, IOptions<JiraServiceOptions> opti
             JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
             WHERE jira_issues_fts MATCH @query
             ORDER BY jira_issues_fts.rank
-            LIMIT @limit
+            LIMIT @limit OFFSET @offset
             """;
 
         using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", maxResults);
+        cmd.Parameters.AddWithValue("@offset", skip);
 
         List<SearchResult> results = [];
         using SqliteDataReader reader = cmd.ExecuteReader();

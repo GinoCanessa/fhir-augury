@@ -30,7 +30,8 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
             0,
             syncState?.LastError,
             pipeline.IsRunning ? pipeline.CurrentStatus : null,
-            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()));
+            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()),
+            ["bm25", "cross-refs", "fts", "lookup-tables", "all"]);
 
         return Ok(status);
     }

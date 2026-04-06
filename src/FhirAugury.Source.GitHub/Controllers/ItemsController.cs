@@ -182,7 +182,7 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
 
         return Ok(new ContentResponse(
             issue.UniqueKey, SourceSystems.GitHub,
-            issue.Body ?? "", format ?? "markdown",
+            issue.Body ?? "", format ?? ContentFormats.Text,
             GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey), null, null));
     }
 

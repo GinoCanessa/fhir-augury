@@ -25,7 +25,7 @@ public class LifecycleController(
     IOptions<ZulipServiceOptions> optsAccessor) : ControllerBase
 {
     [HttpGet("status")]
-    public IActionResult GetIngestionStatus()
+    public IActionResult GetStatus()
     {
         ZulipServiceOptions options = optsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
@@ -39,11 +39,12 @@ public class LifecycleController(
             0,
             syncState?.LastError,
             options.SyncSchedule,
-            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses())));
+            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()),
+            ["bm25", "cross-refs", "fts", "all"]));
     }
 
     [HttpGet("stats")]
-    public IActionResult GetStatistics()
+    public IActionResult GetStats()
     {
         using SqliteConnection connection = db.OpenConnection();
         int messageCount = ZulipMessageRecord.SelectCount(connection);
@@ -67,7 +68,7 @@ public class LifecycleController(
     }
 
     [HttpGet("health")]
-    public IActionResult GetHealthCheck()
+    public IActionResult GetHealth()
     {
         return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline));
     }

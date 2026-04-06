@@ -8,7 +8,7 @@ namespace FhirAugury.Orchestrator.Controllers;
 [Route("api/v1/items")]
 public class ItemsController(SourceHttpClient httpClient) : ControllerBase
 {
-    [HttpGet("{source}/{id}")]
+    [HttpGet("{source}/{*id}")]
     public async Task<IActionResult> GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -35,7 +35,7 @@ public class ItemsController(SourceHttpClient httpClient) : ControllerBase
         }
     }
 
-    [HttpGet("{source}/{id}/snapshot")]
+    [HttpGet("{source}/snapshot/{*id}")]
     public async Task<IActionResult> GetSnapshot(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -58,7 +58,7 @@ public class ItemsController(SourceHttpClient httpClient) : ControllerBase
         }
     }
 
-    [HttpGet("{source}/{id}/content")]
+    [HttpGet("{source}/content/{*id}")]
     public async Task<IActionResult> GetContent(
         [FromRoute] string source,
         [FromRoute] string id,

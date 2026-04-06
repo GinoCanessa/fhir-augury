@@ -39,7 +39,8 @@ public class LifecycleController(
             ItemsProcessed: syncState?.ItemsIngested ?? 0,
             LastError: syncState?.LastError,
             SyncSchedule: options.SyncSchedule,
-            Indexes: HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses())));
+            Indexes: HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()),
+            SupportedIndexTypes: ["bm25", "commits", "cross-refs", "file-contents", "artifact-map", "fts", "all"]));
     }
 
     [HttpGet("stats")]

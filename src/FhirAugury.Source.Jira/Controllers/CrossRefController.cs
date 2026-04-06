@@ -15,7 +15,7 @@ namespace FhirAugury.Source.Jira.Controllers;
 public class CrossRefController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
     [HttpGet("xref/{key}")]
-    public IActionResult GetCrossReferences([FromRoute] string key, [FromQuery] string? direction)
+    public IActionResult GetCrossReferences([FromRoute] string key, [FromQuery] string? source, [FromQuery] string? direction)
     {
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
@@ -43,63 +43,78 @@ public class CrossRefController(JiraDatabase db, IOptions<JiraServiceOptions> op
             List<JiraIssueLinkRecord> links = JiraIssueLinkRecord.SelectList(connection, TargetKey: key);
             foreach (JiraIssueLinkRecord link in links)
             {
-                JiraIssueRecord? source = JiraIssueRecord.SelectSingle(connection, Key: link.SourceKey);
+                JiraIssueRecord? sourceIssue = JiraIssueRecord.SelectSingle(connection, Key: link.SourceKey);
                 references.Add(new SourceCrossReference(
                     SourceSystems.Jira, link.SourceKey,
                     SourceSystems.Jira, key,
                     "linked_issue", null, "issue",
-                    source?.Title, $"{options.BaseUrl}/browse/{link.SourceKey}"));
+                    sourceIssue?.Title, $"{options.BaseUrl}/browse/{link.SourceKey}"));
             }
         }
 
-        // Cross-source outgoing references
+        // Cross-source outgoing references (filtered by source when provided)
         if (dir is "outgoing" or "both")
         {
-            foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: key))
+            if (source is null || source.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
             {
-                references.Add(new SourceCrossReference(
-                    SourceSystems.Jira, key,
-                    SourceSystems.Zulip, r.TargetId,
-                    "mentions", r.Context, "issue", null, null));
+                foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: key))
+                {
+                    references.Add(new SourceCrossReference(
+                        SourceSystems.Jira, key,
+                        SourceSystems.Zulip, r.TargetId,
+                        "mentions", r.Context, "issue", null, null));
+                }
             }
 
-            foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: key))
+            if (source is null || source.Equals(SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
             {
-                references.Add(new SourceCrossReference(
-                    SourceSystems.Jira, key,
-                    SourceSystems.GitHub, r.TargetId,
-                    "mentions", r.Context, "issue", null, null));
+                foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: key))
+                {
+                    references.Add(new SourceCrossReference(
+                        SourceSystems.Jira, key,
+                        SourceSystems.GitHub, r.TargetId,
+                        "mentions", r.Context, "issue", null, null));
+                }
             }
 
-            foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: key))
+            if (source is null || source.Equals(SourceSystems.Confluence, StringComparison.OrdinalIgnoreCase))
             {
-                references.Add(new SourceCrossReference(
-                    SourceSystems.Jira, key,
-                    SourceSystems.Confluence, r.TargetId,
-                    "mentions", r.Context, "issue", null, null));
+                foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: key))
+                {
+                    references.Add(new SourceCrossReference(
+                        SourceSystems.Jira, key,
+                        SourceSystems.Confluence, r.TargetId,
+                        "mentions", r.Context, "issue", null, null));
+                }
             }
 
-            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: key))
+            if (source is null || source.Equals(SourceSystems.Fhir, StringComparison.OrdinalIgnoreCase))
             {
-                references.Add(new SourceCrossReference(
-                    SourceSystems.Jira, key,
-                    SourceSystems.Fhir, r.TargetId,
-                    "mentions", r.Context, "issue", null, null));
+                foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: key))
+                {
+                    references.Add(new SourceCrossReference(
+                        SourceSystems.Jira, key,
+                        SourceSystems.Fhir, r.TargetId,
+                        "mentions", r.Context, "issue", null, null));
+                }
             }
         }
 
-        // Spec artifact links
-        JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
-        if (issue?.Specification is not null)
+        // Spec artifact links (GitHub-targeted)
+        if (source is null || source.Equals(SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
         {
-            JiraSpecArtifactRecord? specArtifact = JiraSpecArtifactRecord.SelectSingle(connection, SpecKey: issue.Specification);
-            if (specArtifact?.GitUrl is not null)
+            JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
+            if (issue?.Specification is not null)
             {
-                references.Add(new SourceCrossReference(
-                    SourceSystems.Jira, key,
-                    SourceSystems.GitHub, specArtifact.GitUrl,
-                    "spec_artifact", $"{specArtifact.SpecName} ({specArtifact.Family})",
-                    "issue", issue.Title, $"{options.BaseUrl}/browse/{key}"));
+                JiraSpecArtifactRecord? specArtifact = JiraSpecArtifactRecord.SelectSingle(connection, SpecKey: issue.Specification);
+                if (specArtifact?.GitUrl is not null)
+                {
+                    references.Add(new SourceCrossReference(
+                        SourceSystems.Jira, key,
+                        SourceSystems.GitHub, specArtifact.GitUrl,
+                        "spec_artifact", $"{specArtifact.SpecName} ({specArtifact.Family})",
+                        "issue", issue.Title, $"{options.BaseUrl}/browse/{key}"));
+                }
             }
         }
 

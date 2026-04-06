@@ -9,7 +9,8 @@ public record IngestionStatusResponse(
     int ItemsProcessed,
     string? LastError,
     string? SyncSchedule,
-    List<IndexStatusInfo> Indexes);
+    List<IndexStatusInfo> Indexes,
+    List<string>? SupportedIndexTypes = null);
 
 /// <summary>Status of a single index within a source service.</summary>
 public record IndexStatusInfo(

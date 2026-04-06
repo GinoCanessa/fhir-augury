@@ -1,4 +1,5 @@
-using System.Text;
+using FhirAugury.Common;
+using FhirAugury.Common.Api;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
@@ -24,21 +25,7 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
         List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection, PageId: page.Id);
         List<ConfluencePageLinkRecord> outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: page.ConfluenceId);
 
-        return Ok(new
-        {
-            page.ConfluenceId,
-            page.SpaceKey,
-            page.Title,
-            bodyPlain = page.BodyPlain,
-            page.Labels,
-            page.VersionNumber,
-            page.LastModifiedBy,
-            page.LastModifiedAt,
-            page.ParentId,
-            url = page.Url ?? $"{options.BaseUrl}/pages/{pageId}",
-            comments = comments.Select(c => new { c.Author, c.Body, c.CreatedAt }),
-            links = outLinks.Select(l => new { l.TargetPageId, l.LinkType }),
-        });
+        return Ok(BuildItemResponse(options, page, comments, outLinks));
     }
 
     [HttpGet("pages/{pageId}/related")]
@@ -52,30 +39,8 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
         if (page is null)
             return NotFound(new { error = $"Page {pageId} not found" });
 
-        List<ConfluencePageLinkRecord> outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: pageId);
-        List<ConfluencePageLinkRecord> inLinks = ConfluencePageLinkRecord.SelectList(connection, TargetPageId: pageId);
-
-        List<string> relatedIds = outLinks.Select(l => l.TargetPageId)
-            .Concat(inLinks.Select(l => l.SourcePageId))
-            .Distinct()
-            .Take(maxResults)
-            .ToList();
-
-        List<object> results = [];
-        foreach (string relId in relatedIds)
-        {
-            ConfluencePageRecord? related = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: relId);
-            if (related is null) continue;
-            results.Add(new
-            {
-                pageId = related.ConfluenceId,
-                title = related.Title,
-                spaceKey = related.SpaceKey,
-                url = related.Url ?? $"{options.BaseUrl}/pages/{related.ConfluenceId}",
-            });
-        }
-
-        return Ok(new { sourceKey = pageId, related = results });
+        List<RelatedItem> results = BuildRelatedItems(connection, options, pageId, maxResults);
+        return Ok(new FindRelatedResponse(SourceSystems.Confluence, pageId, page.Title, results));
     }
 
     [HttpGet("pages/{pageId}/snapshot")]
@@ -87,46 +52,33 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
         if (page is null)
             return NotFound(new { error = $"Page {pageId} not found" });
 
-        StringBuilder md = new StringBuilder();
-        md.AppendLine($"# {page.Title}");
-        md.AppendLine();
-        md.AppendLine($"**Space:** {page.SpaceKey}  ");
-        md.AppendLine($"**Version:** {page.VersionNumber}  ");
-        if (page.LastModifiedBy is not null) md.AppendLine($"**Last Modified By:** {page.LastModifiedBy}  ");
-        md.AppendLine($"**Last Modified:** {page.LastModifiedAt:yyyy-MM-dd}  ");
-        if (page.Labels is not null) md.AppendLine($"**Labels:** {page.Labels}  ");
-        md.AppendLine();
-        if (!string.IsNullOrEmpty(page.BodyPlain))
-        {
-            md.AppendLine("## Content");
-            md.AppendLine();
-            md.AppendLine(page.BodyPlain);
-            md.AppendLine();
-        }
-
         List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection, PageId: page.Id);
-        if (comments.Count > 0)
-        {
-            md.AppendLine("## Comments");
-            foreach (ConfluenceCommentRecord c in comments) { md.AppendLine($"**{c.Author}** ({c.CreatedAt:yyyy-MM-dd}): {c.Body}"); md.AppendLine(); }
-        }
+        string md = ConfluenceUrlHelper.BuildMarkdownSnapshot(page, comments);
 
-        return Ok(new { key = pageId, markdown = md.ToString(), url = page.Url ?? $"{options.BaseUrl}/pages/{pageId}" });
+        return Ok(new SnapshotResponse(
+            pageId, SourceSystems.Confluence, md,
+            ConfluenceUrlHelper.BuildPageUrl(options, pageId, page.Url), "page"));
     }
 
     [HttpGet("pages/{pageId}/content")]
     public IActionResult GetPageContent([FromRoute] string pageId, [FromQuery] string? format)
     {
+        ConfluenceServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
         ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
         if (page is null)
             return NotFound(new { error = $"Page {pageId} not found" });
 
-        string content = format?.Equals("storage", StringComparison.OrdinalIgnoreCase) == true
-            ? (page.BodyStorage ?? "")
-            : (page.BodyPlain ?? "");
+        string resolvedFormat = ResolveFormat(format);
+        string content = resolvedFormat switch
+        {
+            "raw" => page.BodyStorage ?? "",
+            _ => page.BodyPlain ?? "",
+        };
 
-        return Ok(new { key = pageId, content, format = format ?? "text" });
+        return Ok(new ContentResponse(
+            pageId, SourceSystems.Confluence, content, resolvedFormat,
+            ConfluenceUrlHelper.BuildPageUrl(options, pageId, page.Url), null, "page"));
     }
 
     [HttpGet("pages/{pageId}/comments")]
@@ -303,10 +255,97 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
     [HttpGet("pages")]
     public IActionResult GetPages([FromQuery] int? limit, [FromQuery] int? offset, [FromQuery] string? spaceKey)
     {
+        ConfluenceServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
         int maxResults = Math.Min(limit ?? 50, 500);
         int skip = Math.Max(offset ?? 0, 0);
 
+        List<ItemSummary> items = ListPageSummaries(connection, options, maxResults, skip, spaceKey);
+        return Ok(new ItemListResponse(items.Count, items));
+    }
+
+    // --- Shared helpers used by both PagesController and ItemsController ---
+
+    internal static ItemListResponse BuildItemList(
+        SqliteConnection connection, ConfluenceServiceOptions options, int maxResults, int skip, string? spaceKey)
+    {
+        List<ItemSummary> items = ListPageSummaries(connection, options, maxResults, skip, spaceKey);
+        return new ItemListResponse(items.Count, items);
+    }
+
+    internal static ItemResponse BuildItemResponse(
+        ConfluenceServiceOptions options,
+        ConfluencePageRecord page,
+        List<ConfluenceCommentRecord> comments,
+        List<ConfluencePageLinkRecord> outLinks)
+    {
+        Dictionary<string, string> metadata = new()
+        {
+            ["space_key"] = page.SpaceKey,
+            ["version"] = page.VersionNumber.ToString(),
+        };
+        if (page.Labels is not null) metadata["labels"] = page.Labels;
+        if (page.ParentId is not null) metadata["parent_id"] = page.ParentId;
+        if (page.LastModifiedBy is not null) metadata["last_modified_by"] = page.LastModifiedBy;
+
+        return new ItemResponse
+        {
+            Source = SourceSystems.Confluence,
+            ContentType = "page",
+            Id = page.ConfluenceId,
+            Title = page.Title,
+            Content = page.BodyPlain,
+            Url = ConfluenceUrlHelper.BuildPageUrl(options, page.ConfluenceId, page.Url),
+            UpdatedAt = page.LastModifiedAt,
+            Metadata = metadata,
+            Comments = comments.Select(c => new CommentInfo(
+                c.Id.ToString(), c.Author, c.Body ?? "", c.CreatedAt, null)).ToList(),
+        };
+    }
+
+    internal static List<RelatedItem> BuildRelatedItems(
+        SqliteConnection connection, ConfluenceServiceOptions options, string pageId, int maxResults)
+    {
+        List<ConfluencePageLinkRecord> outLinks = ConfluencePageLinkRecord.SelectList(connection, SourcePageId: pageId);
+        List<ConfluencePageLinkRecord> inLinks = ConfluencePageLinkRecord.SelectList(connection, TargetPageId: pageId);
+
+        List<string> relatedIds = outLinks.Select(l => l.TargetPageId)
+            .Concat(inLinks.Select(l => l.SourcePageId))
+            .Distinct()
+            .Take(maxResults)
+            .ToList();
+
+        List<RelatedItem> results = [];
+        foreach (string relId in relatedIds)
+        {
+            ConfluencePageRecord? related = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: relId);
+            if (related is null) continue;
+            results.Add(new RelatedItem
+            {
+                Source = SourceSystems.Confluence,
+                Id = related.ConfluenceId,
+                Title = related.Title,
+                Url = ConfluenceUrlHelper.BuildPageUrl(options, related.ConfluenceId, related.Url),
+                Relationship = "page_link",
+            });
+        }
+
+        return results;
+    }
+
+    internal static string ResolveFormat(string? format)
+    {
+        return format?.ToLowerInvariant() switch
+        {
+            "raw" or "storage" => "raw",
+            "html" => "html",
+            _ => "text",
+        };
+    }
+
+    private static List<ItemSummary> ListPageSummaries(
+        SqliteConnection connection, ConfluenceServiceOptions options, int maxResults, int skip, string? spaceKey)
+    {
         string sql = "SELECT ConfluenceId, Title, SpaceKey, LastModifiedAt FROM confluence_pages";
         List<SqliteParameter> parameters = [];
 
@@ -323,19 +362,24 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
         using SqliteCommand cmd = new SqliteCommand(sql, connection);
         foreach (SqliteParameter p in parameters) cmd.Parameters.Add(p);
 
-        List<object> items = [];
+        List<ItemSummary> items = [];
         using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            items.Add(new
+            string pageId = reader.GetString(0);
+            items.Add(new ItemSummary
             {
-                pageId = reader.GetString(0),
-                title = reader.GetString(1),
-                spaceKey = reader.IsDBNull(2) ? null : reader.GetString(2),
-                lastModifiedAt = reader.IsDBNull(3) ? null : reader.GetString(3),
+                Id = pageId,
+                Title = reader.GetString(1),
+                Url = ConfluenceUrlHelper.BuildPageUrl(options, pageId, null),
+                UpdatedAt = ConfluenceUrlHelper.ParseTimestamp(reader.IsDBNull(3) ? null : reader.GetString(3)),
+                Metadata = new Dictionary<string, string>
+                {
+                    ["space_key"] = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                },
             });
         }
 
-        return Ok(new { total = items.Count, items });
+        return items;
     }
 }

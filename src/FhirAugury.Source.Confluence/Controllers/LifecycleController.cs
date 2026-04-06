@@ -34,7 +34,8 @@ public class LifecycleController(
             0,
             syncState?.LastError,
             pipeline.IsRunning ? pipeline.CurrentStatus : null,
-            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()));
+            HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()),
+            ["bm25", "cross-refs", "page-links", "fts", "all"]);
 
         return Ok(status);
     }

@@ -12,7 +12,7 @@ namespace FhirAugury.Source.Confluence.Controllers;
 public class SearchController(ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) : ControllerBase
 {
     [HttpGet("search")]
-    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit)
+    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset)
     {
         ConfluenceServiceOptions options = optionsAccessor.Value;
         if (string.IsNullOrWhiteSpace(q))
@@ -24,6 +24,7 @@ public class SearchController(ConfluenceDatabase db, IOptions<ConfluenceServiceO
             return Ok(new { query = q, results = Array.Empty<object>() });
 
         int maxResults = Math.Min(limit ?? 20, 200);
+        int skip = Math.Max(offset ?? 0, 0);
 
         string sql = """
             SELECT cp.ConfluenceId, cp.Title,
@@ -33,12 +34,13 @@ public class SearchController(ConfluenceDatabase db, IOptions<ConfluenceServiceO
             JOIN confluence_pages cp ON cp.Id = confluence_pages_fts.rowid
             WHERE confluence_pages_fts MATCH @query
             ORDER BY confluence_pages_fts.rank
-            LIMIT @limit
+            LIMIT @limit OFFSET @offset
             """;
 
         using SqliteCommand cmd = new SqliteCommand(sql, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
         cmd.Parameters.AddWithValue("@limit", maxResults);
+        cmd.Parameters.AddWithValue("@offset", skip);
 
         List<object> results = [];
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -52,7 +54,7 @@ public class SearchController(ConfluenceDatabase db, IOptions<ConfluenceServiceO
                 snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
                 score = -reader.GetDouble(3),
                 spaceKey = reader.IsDBNull(4) ? null : reader.GetString(4),
-                url = $"{options.BaseUrl}/pages/{pageId}",
+                url = ConfluenceUrlHelper.BuildPageUrl(options, pageId, null),
             });
         }
 

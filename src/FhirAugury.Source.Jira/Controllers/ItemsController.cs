@@ -63,7 +63,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
     }
 
     [HttpGet("items")]
-    public IActionResult ListItems([FromQuery] int? limit, [FromQuery] int? offset, [FromQuery] string? sortBy, [FromQuery] string? sortOrder)
+    public IActionResult ListItems([FromQuery] int? limit, [FromQuery] int? offset)
     {
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
@@ -197,7 +197,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             return NotFound(new { error = $"Issue {key} not found" });
 
         return Ok(new ContentResponse(issue.Key, SourceSystems.Jira,
-            issue.Description ?? "", format ?? "text",
+            issue.Description ?? "", format ?? ContentFormats.Text,
             $"{options.BaseUrl}/browse/{issue.Key}", null, "issue"));
     }
 

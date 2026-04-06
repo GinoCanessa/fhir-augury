@@ -13,7 +13,7 @@ namespace FhirAugury.Source.GitHub.Controllers;
 public class SearchController(GitHubDatabase db) : ControllerBase
 {
     [HttpGet("search")]
-    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset)
+    public IActionResult Search([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset, [FromQuery] string? contentType)
     {
         if (string.IsNullOrWhiteSpace(q))
             return BadRequest(new { error = "Query parameter 'q' is required" });
@@ -28,83 +28,95 @@ public class SearchController(GitHubDatabase db) : ControllerBase
 
         List<SearchResult> results = [];
 
-        // Search issues
-        string issueSql = """
-            SELECT gi.UniqueKey, gi.Title,
-                   snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
-                   github_issues_fts.rank, gi.State, gi.UpdatedAt
-            FROM github_issues_fts
-            JOIN github_issues gi ON gi.Id = github_issues_fts.rowid
-            WHERE github_issues_fts MATCH @query
-            ORDER BY github_issues_fts.rank
-            LIMIT @limit OFFSET @offset
-            """;
+        bool searchCommits = string.Equals(contentType, "commit", StringComparison.OrdinalIgnoreCase);
+        bool searchDefault = contentType is null;
 
-        using (SqliteCommand cmd = new SqliteCommand(issueSql, connection))
+        if (searchDefault)
         {
-            cmd.Parameters.AddWithValue("@query", ftsQuery);
-            cmd.Parameters.AddWithValue("@limit", maxResults);
-            cmd.Parameters.AddWithValue("@offset", skip);
+            // Search issues
+            string issueSql = """
+                SELECT gi.UniqueKey, gi.Title,
+                       snippet(github_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
+                       github_issues_fts.rank, gi.State, gi.UpdatedAt
+                FROM github_issues_fts
+                JOIN github_issues gi ON gi.Id = github_issues_fts.rowid
+                WHERE github_issues_fts MATCH @query
+                ORDER BY github_issues_fts.rank
+                LIMIT @limit OFFSET @offset
+                """;
 
-            using SqliteDataReader reader = cmd.ExecuteReader();
-            while (reader.Read())
+            using (SqliteCommand cmd = new SqliteCommand(issueSql, connection))
             {
-                string uniqueKey = reader.GetString(0);
-                results.Add(new SearchResult
+                cmd.Parameters.AddWithValue("@query", ftsQuery);
+                cmd.Parameters.AddWithValue("@limit", maxResults);
+                cmd.Parameters.AddWithValue("@offset", skip);
+
+                using SqliteDataReader reader = cmd.ExecuteReader();
+                while (reader.Read())
                 {
-                    Source = SourceSystems.GitHub,
-                    Id = uniqueKey,
-                    Title = reader.GetString(1),
-                    Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
-                    Score = -reader.GetDouble(3),
-                    Url = GitHubUrlHelper.BuildIssueUrl(uniqueKey),
-                    UpdatedAt = GitHubUrlHelper.ParseTimestamp(reader, 5),
-                });
+                    string uniqueKey = reader.GetString(0);
+                    results.Add(new SearchResult
+                    {
+                        Source = SourceSystems.GitHub,
+                        Id = uniqueKey,
+                        Title = reader.GetString(1),
+                        Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
+                        Score = -reader.GetDouble(3),
+                        Url = GitHubUrlHelper.BuildIssueUrl(uniqueKey),
+                        UpdatedAt = GitHubUrlHelper.ParseTimestamp(reader, 5),
+                    });
+                }
+            }
+
+            // Search file contents
+            string fileSql = """
+                SELECT fc.RepoFullName, fc.FilePath,
+                       snippet(github_file_contents_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
+                       github_file_contents_fts.rank,
+                       fc.FileExtension, fc.ParserType
+                FROM github_file_contents_fts
+                JOIN github_file_contents fc ON fc.Id = github_file_contents_fts.rowid
+                WHERE github_file_contents_fts MATCH @query
+                ORDER BY github_file_contents_fts.rank
+                LIMIT @limit OFFSET @offset
+                """;
+
+            using (SqliteCommand cmd = new SqliteCommand(fileSql, connection))
+            {
+                cmd.Parameters.AddWithValue("@query", ftsQuery);
+                cmd.Parameters.AddWithValue("@limit", maxResults);
+                cmd.Parameters.AddWithValue("@offset", skip);
+
+                using SqliteDataReader reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string repo = reader.GetString(0);
+                    string filePath = reader.GetString(1);
+                    string fileId = $"{repo}:{filePath}";
+
+                    results.Add(new SearchResult
+                    {
+                        Source = SourceSystems.GitHub,
+                        ContentType = ContentTypes.File,
+                        Id = fileId,
+                        Title = filePath,
+                        Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
+                        Score = -reader.GetDouble(3),
+                        Url = $"https://github.com/{repo}/blob/main/{filePath}",
+                    });
+                }
             }
         }
 
-        // Search file contents
-        string fileSql = """
-            SELECT fc.RepoFullName, fc.FilePath,
-                   snippet(github_file_contents_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
-                   github_file_contents_fts.rank,
-                   fc.FileExtension, fc.ParserType
-            FROM github_file_contents_fts
-            JOIN github_file_contents fc ON fc.Id = github_file_contents_fts.rowid
-            WHERE github_file_contents_fts MATCH @query
-            ORDER BY github_file_contents_fts.rank
-            LIMIT @limit OFFSET @offset
-            """;
-
-        using (SqliteCommand cmd = new SqliteCommand(fileSql, connection))
+        if (searchCommits)
         {
-            cmd.Parameters.AddWithValue("@query", ftsQuery);
-            cmd.Parameters.AddWithValue("@limit", maxResults);
-            cmd.Parameters.AddWithValue("@offset", skip);
-
-            using SqliteDataReader reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                string repo = reader.GetString(0);
-                string filePath = reader.GetString(1);
-                string fileId = $"{repo}:{filePath}";
-
-                results.Add(new SearchResult
-                {
-                    Source = SourceSystems.GitHub,
-                    ContentType = ContentTypes.File,
-                    Id = fileId,
-                    Title = filePath,
-                    Snippet = reader.IsDBNull(2) ? null : reader.GetString(2),
-                    Score = -reader.GetDouble(3),
-                    Url = $"https://github.com/{repo}/blob/main/{filePath}",
-                });
-            }
+            SearchCommitsInto(connection, ftsQuery, maxResults, skip, results);
         }
 
         return Ok(new SearchResponse(q, results.Count, results, null));
     }
 
+    /// <summary>Dedicated commit search endpoint (kept for backward compatibility).</summary>
     [HttpGet("commits/search")]
     public IActionResult SearchCommits([FromQuery] string? q, [FromQuery] int? limit, [FromQuery] int? offset)
     {
@@ -119,6 +131,15 @@ public class SearchController(GitHubDatabase db) : ControllerBase
         int maxResults = Math.Min(limit ?? 20, 200);
         int skip = Math.Max(offset ?? 0, 0);
 
+        List<SearchResult> results = [];
+        SearchCommitsInto(connection, ftsQuery, maxResults, skip, results);
+
+        return Ok(new SearchResponse(q, results.Count, results, null));
+    }
+
+    private static void SearchCommitsInto(
+        SqliteConnection connection, string ftsQuery, int maxResults, int skip, List<SearchResult> results)
+    {
         string sql = """
             SELECT gc.Sha, gc.Message, gc.Author, gc.Date, gc.Url,
                    github_commits_fts.rank
@@ -134,7 +155,6 @@ public class SearchController(GitHubDatabase db) : ControllerBase
         cmd.Parameters.AddWithValue("@limit", maxResults);
         cmd.Parameters.AddWithValue("@offset", skip);
 
-        List<SearchResult> results = [];
         using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
@@ -149,7 +169,5 @@ public class SearchController(GitHubDatabase db) : ControllerBase
                 UpdatedAt = GitHubUrlHelper.ParseTimestamp(reader, 3),
             });
         }
-
-        return Ok(new SearchResponse(q, results.Count, results, null));
     }
 }

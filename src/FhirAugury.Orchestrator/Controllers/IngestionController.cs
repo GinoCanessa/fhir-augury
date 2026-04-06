@@ -91,12 +91,8 @@ public class IngestionController(
     }
 
     [HttpPost("notify-ingestion")]
-    public async Task<IActionResult> NotifyIngestion(CancellationToken ct)
+    public async Task<IActionResult> NotifyIngestion([FromBody] PeerIngestionNotification notification, CancellationToken ct)
     {
-        PeerIngestionNotification? notification = await Request.ReadFromJsonAsync<PeerIngestionNotification>(ct);
-        if (notification is null)
-            return BadRequest(new { error = "Invalid notification body" });
-
         _logger.LogInformation("Ingestion complete from {Source}", notification.Source);
 
         using SqliteConnection connection = database.OpenConnection();
