@@ -54,6 +54,19 @@ public class CrossRefController(GitHubDatabase db) : ControllerBase
             }
         }
 
+        // FHIR element incoming references (find GitHub items that mention a FHIR element)
+        if (string.Equals(sourceType, SourceSystems.Fhir, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
+        {
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: key))
+            {
+                GitHubUrlHelper.ResolvedItem? resolved = GitHubUrlHelper.ResolveXRef(connection, r);
+                refs.Add(new SourceCrossReference(
+                    SourceSystems.GitHub, r.SourceId,
+                    SourceSystems.Fhir, r.ElementPath,
+                    "mentions", r.Context, r.ContentType, resolved?.Title, resolved?.Url));
+            }
+        }
+
         if (string.Equals(sourceType, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
         {
             foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, JiraKey: key))

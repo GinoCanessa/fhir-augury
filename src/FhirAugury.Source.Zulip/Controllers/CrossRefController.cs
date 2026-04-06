@@ -69,6 +69,24 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
             }
         }
 
+        // FHIR element incoming references (find Zulip messages that mention a FHIR element)
+        if (string.Equals(src, SourceSystems.Fhir, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
+        {
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: id))
+            {
+                if (int.TryParse(r.SourceId, out int msgId))
+                {
+                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    refs.Add(new SourceCrossReference(
+                        SourceSystems.Zulip, r.SourceId,
+                        SourceSystems.Fhir, r.ElementPath,
+                        "mentions", r.Context, r.ContentType,
+                        message is not null ? $"{message.StreamName} > {message.Topic}" : null,
+                        message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null));
+                }
+            }
+        }
+
         if (string.Equals(src, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
         {
             List<JiraXRefRecord> jiraRefs = JiraXRefRecord.SelectList(connection, JiraKey: id);

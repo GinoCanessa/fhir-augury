@@ -102,6 +102,20 @@ public class CrossRefController(JiraDatabase db, IOptions<JiraServiceOptions> op
             }
         }
 
+        // FHIR element incoming references (find Jira items that mention a FHIR element)
+        if ((source is null || string.Equals(source, SourceSystems.Fhir, StringComparison.OrdinalIgnoreCase)) && dir is "incoming" or "both")
+        {
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: id))
+            {
+                JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: r.SourceId);
+                references.Add(new SourceCrossReference(
+                    SourceSystems.Jira, r.SourceId,
+                    SourceSystems.Fhir, r.ElementPath,
+                    "mentions", r.Context, r.ContentType,
+                    issue?.Title, issue is not null ? $"{options.BaseUrl}/browse/{r.SourceId}" : null));
+            }
+        }
+
         // Spec artifact links (GitHub-targeted)
         if (source is null || source.Equals(SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
         {

@@ -66,6 +66,20 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
             }
         }
 
+        // FHIR element incoming references (find Confluence pages that mention a FHIR element)
+        if (string.Equals(src, SourceSystems.Fhir, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
+        {
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: id))
+            {
+                ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: r.SourceId);
+                refs.Add(new SourceCrossReference(
+                    SourceSystems.Confluence, r.SourceId,
+                    SourceSystems.Fhir, r.ElementPath,
+                    "mentions", r.Context, r.ContentType,
+                    page?.Title, page?.Url));
+            }
+        }
+
         if (string.Equals(src, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase) && dir is "incoming" or "both")
         {
             List<JiraXRefRecord> jiraRefs = JiraXRefRecord.SelectList(connection, JiraKey: id);
