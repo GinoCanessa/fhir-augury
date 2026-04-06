@@ -264,14 +264,10 @@
                                     <td><code>@item.SourceId</code></td>
                                     <td><span class="badge bg-primary">@item.LinkType</span></td>
                                     <td><span class="badge bg-secondary">@item.TargetType</span></td>
-                                    <td>
-                                        <a href="@ItemViewerUrl.For(item.TargetType, item.TargetId)">
-                                            <code>@item.TargetId</code>
-                                        </a>
-                                    </td>
+                                    <td><code>@item.TargetId</code></td>
                                     <td title="@item.TargetTitle">@Truncate(item.TargetTitle ?? "", 60)</td>
                                     <td>
-                                        <a href="@ItemViewerUrl.For(item.TargetType, item.TargetId)"
+                                        <a href="@ItemViewerUrl.For(item.ViewType, item.ViewId)"
                                            class="btn btn-sm btn-outline-info" title="View locally cached item">
                                             <i class="bi bi-eye"></i>
                                         </a>
@@ -377,6 +373,8 @@
     private int _parsedTotalResults;
 
     private List<ParsedCrossRef>? _parsedCrossRefs;
+    private string _xrefQueriedSource = "";
+    private string _xrefQueriedId = "";
 
     private List<ParsedRelatedItem>? _parsedRelatedItems;
 
@@ -465,6 +463,8 @@
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
+        _xrefQueriedSource = "";
+        _xrefQueriedId = "";
         _parsedRelatedItems = null;
         _showRaw = false;
         StateHasChanged();
@@ -614,19 +614,39 @@
             using JsonDocument doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("references", out JsonElement refs) && refs.ValueKind == JsonValueKind.Array)
             {
+                _xrefQueriedSource = GetStr(doc.RootElement, "source") ?? "";
+                _xrefQueriedId = GetStr(doc.RootElement, "id") ?? "";
+
                 _parsedCrossRefs = [];
                 foreach (JsonElement r in refs.EnumerateArray())
                 {
+                    string sourceType = GetStr(r, "sourceType") ?? "";
+                    string sourceId = GetStr(r, "sourceId") ?? "";
+                    string targetType = GetStr(r, "targetType") ?? "";
+                    string targetId = GetStr(r, "targetId") ?? "";
+                    string? targetTitle = GetStr(r, "targetTitle");
+                    string? targetUrl = GetStr(r, "targetUrl");
+
+                    // Determine the "view" item: the side that is NOT the queried item.
+                    // Source controllers populate TargetTitle/TargetUrl with their own
+                    // item's info, so the external link already points to the "other" item.
+                    bool targetIsQueried = string.Equals(targetType, _xrefQueriedSource, StringComparison.OrdinalIgnoreCase)
+                                        && string.Equals(targetId, _xrefQueriedId, StringComparison.OrdinalIgnoreCase);
+                    string viewType = targetIsQueried ? sourceType : targetType;
+                    string viewId = targetIsQueried ? sourceId : targetId;
+
                     _parsedCrossRefs.Add(new ParsedCrossRef(
-                        SourceType: GetStr(r, "sourceType") ?? "",
-                        SourceId: GetStr(r, "sourceId") ?? "",
-                        TargetType: GetStr(r, "targetType") ?? "",
-                        TargetId: GetStr(r, "targetId") ?? "",
+                        SourceType: sourceType,
+                        SourceId: sourceId,
+                        TargetType: targetType,
+                        TargetId: targetId,
                         LinkType: GetStr(r, "linkType") ?? "",
                         Context: GetStr(r, "context"),
                         SourceContentType: GetStr(r, "sourceContentType"),
-                        TargetTitle: GetStr(r, "targetTitle"),
-                        TargetUrl: GetStr(r, "targetUrl")
+                        TargetTitle: targetTitle,
+                        TargetUrl: targetUrl,
+                        ViewType: viewType,
+                        ViewId: viewId
                     ));
                 }
             }
@@ -679,6 +699,8 @@
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
+        _xrefQueriedSource = "";
+        _xrefQueriedId = "";
         _parsedRelatedItems = null;
     }
 
@@ -711,7 +733,7 @@
 
     private sealed record SourceEndpointInfo(string Name, string Address);
     private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);
-    private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl);
+    private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl, string ViewType, string ViewId);
     private sealed record ParsedRelatedItem(
         string Source, string Id, string Title, double RelevanceScore,
         string? Relationship, string? Snippet, string? Url, string? Context);

@@ -19,7 +19,7 @@
                         <table class="table table-sm table-striped mb-0">
                             <thead>
                                 <tr>
-                                    <th>Target</th>
+                                    <th>Source</th>
                                     <th>ID</th>
                                     <th>Link</th>
                                     <th>Title</th>
@@ -28,9 +28,13 @@
                             <tbody>
                                 @foreach (SourceCrossReference xref in CrossRefs.References)
                                 {
+                                    bool targetIsQueried = string.Equals(xref.TargetType, CrossRefs.Source, StringComparison.OrdinalIgnoreCase)
+                                                        && string.Equals(xref.TargetId, CrossRefs.Id, StringComparison.OrdinalIgnoreCase);
+                                    string viewType = targetIsQueried ? xref.SourceType : xref.TargetType;
+                                    string viewId = targetIsQueried ? xref.SourceId : xref.TargetId;
                                     <tr>
-                                        <td><span class="badge @SourceBadgeHelper.SourceBadgeClass(xref.TargetType)">@xref.TargetType</span></td>
-                                        <td><a href="@ItemViewerUrl.For(xref.TargetType, xref.TargetId)"><code>@xref.TargetId</code></a></td>
+                                        <td><span class="badge @SourceBadgeHelper.SourceBadgeClass(viewType)">@viewType</span></td>
+                                        <td><a href="@ItemViewerUrl.For(viewType, viewId)"><code>@viewId</code></a></td>
                                         <td><span class="badge bg-primary">@xref.LinkType</span></td>
                                         <td title="@xref.TargetTitle">@Truncate(xref.TargetTitle ?? "", 40)</td>
                                     </tr>
