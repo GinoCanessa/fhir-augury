@@ -78,6 +78,7 @@ public class RelatedItemFinder(
         foreach ((string source, SearchResponse? relatedResp) in relatedResults)
         {
             if (relatedResp is null) continue;
+            if (relatedResp.Results is null) continue;
             foreach (SearchResult result in relatedResp.Results)
             {
                 if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
@@ -123,7 +124,7 @@ public class RelatedItemFinder(
                 SearchResponse?[] searchResults = await Task.WhenAll(searchTasks);
                 foreach (SearchResponse? searchResponse in searchResults)
                 {
-                    if (searchResponse is null) continue;
+                    if (searchResponse?.Results is null) continue;
                     foreach (SearchResult result in searchResponse.Results)
                     {
                         if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
@@ -183,7 +184,7 @@ public class RelatedItemFinder(
                 (string Source, SearchResponse? Response)[] metaResults = await Task.WhenAll(metaTasks);
                 foreach ((string source, SearchResponse? metaResp) in metaResults)
                 {
-                    if (metaResp is null) continue;
+                    if (metaResp?.Results is null) continue;
                     foreach (SearchResult result in metaResp.Results)
                     {
                         if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
