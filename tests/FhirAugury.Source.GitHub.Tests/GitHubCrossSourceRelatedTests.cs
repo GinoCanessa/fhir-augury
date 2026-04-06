@@ -1,6 +1,6 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Database.Records;
-using FhirAugury.Source.GitHub.Api.Controllers;
+using FhirAugury.Source.GitHub.Controllers;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
