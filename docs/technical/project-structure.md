@@ -59,8 +59,9 @@ FhirAugury.Common/
 ├── Api/                      # Shared HTTP API contracts (SearchContracts,
 │                             #   ItemContracts, CrossReferenceContracts,
 │                             #   IngestionContracts, ServiceContracts, ContentFormats)
-├── Grpc/                     # Legacy gRPC helpers, AtlassianAuthHandler,
-│                             #   SourceServiceLifecycle
+├── Http/                     # HTTP helpers: AtlassianAuthHandler,
+│                             #   HttpServiceLifecycle, HttpErrorMapper,
+│                             #   TransientHttpExtensions
 ├── Ingestion/                # IIngestionPipeline, IngestionWorkQueue,
 │                             #   ScheduledIngestionWorker<T>
 ├── Text/                     # CrossRefPatterns, FhirVocabulary (100+ resources,
