@@ -40,7 +40,7 @@ public class RelatedItemFinder(
         ItemResponse? seedItem = await FetchSeedItem(seedSource, seedId, ct);
 
         // Signal A: Cross-source fan-out GetRelated
-        List<Task<(string Source, SearchResponse? Response)>> relatedTasks = [];
+        List<Task<(string Source, FindRelatedResponse? Response)>> relatedTasks = [];
         foreach (string source in sources)
         {
             if (!httpClient.IsSourceEnabled(source)) continue;
@@ -52,14 +52,14 @@ public class RelatedItemFinder(
                 timeoutCts.CancelAfter(PerSourceTimeout);
                 try
                 {
-                    SearchResponse? resp = await httpClient.GetRelatedAsync(
+                    FindRelatedResponse? resp = await httpClient.GetRelatedAsync(
                         s, seedSource, seedId, effectiveLimit, timeoutCts.Token);
                     return (s, resp);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     logger.LogWarning("GetRelated timed out for {Source}", s);
-                    return (s, (SearchResponse?)null);
+                    return (s, (FindRelatedResponse?)null);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -67,19 +67,18 @@ public class RelatedItemFinder(
                         logger.LogWarning("GetRelated failed for {Source} ({HttpStatus})", s, statusDescription);
                     else
                         logger.LogWarning(ex, "GetRelated failed for {Source}", s);
-                    return (s, (SearchResponse?)null);
+                    return (s, (FindRelatedResponse?)null);
                 }
             }, ct));
         }
 
-        (string Source, SearchResponse? Response)[] relatedResults =
+        (string Source, FindRelatedResponse? Response)[] relatedResults =
             await Task.WhenAll(relatedTasks);
 
-        foreach ((string source, SearchResponse? relatedResp) in relatedResults)
+        foreach ((string source, FindRelatedResponse? relatedResp) in relatedResults)
         {
-            if (relatedResp is null) continue;
-            if (relatedResp.Results is null) continue;
-            foreach (SearchResult result in relatedResp.Results)
+            if (relatedResp?.Items is null) continue;
+            foreach (RelatedItem result in relatedResp.Items)
             {
                 if (string.Equals(result.Source, seedSource, StringComparison.OrdinalIgnoreCase) && result.Id == seedId) continue;
 
@@ -93,17 +92,16 @@ public class RelatedItemFinder(
                     candidates[key] = candidate;
                 }
 
-                double score = result.Score > 0 ? result.Score : 1.0;
+                double score = result.RelevanceScore > 0 ? result.RelevanceScore : 1.0;
                 candidate.Score += options.Related.CrossSourceWeight * score;
                 if (string.IsNullOrEmpty(candidate.Relationship))
-                    candidate.Relationship = "cross_reference";
+                    candidate.Relationship = result.Relationship ?? "cross_reference";
                 if (!string.IsNullOrEmpty(result.Title))
                     candidate.Title = result.Title;
                 if (!string.IsNullOrEmpty(result.Url))
                     candidate.Url = result.Url;
-                if (!string.IsNullOrEmpty(result.Snippet) &&
-                    string.IsNullOrEmpty(candidate.Context))
-                    candidate.Context = result.Snippet;
+                if (string.IsNullOrEmpty(candidate.Context))
+                    candidate.Context = result.Context ?? result.Snippet;
             }
         }
 

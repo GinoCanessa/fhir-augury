@@ -172,7 +172,11 @@
                 {
                     <span class="badge bg-info">@_parsedCrossRefs.Count references</span>
                 }
-                @if (_parsedResults is not null || _parsedCrossRefs is not null)
+                @if (_parsedRelatedItems is not null)
+                {
+                    <span class="badge bg-info">@_parsedRelatedItems.Count related items</span>
+                }
+                @if (_parsedResults is not null || _parsedCrossRefs is not null || _parsedRelatedItems is not null)
                 {
                     <button class="btn btn-sm btn-outline-secondary" @onclick="ToggleRaw">
                         <i class="bi @(_showRaw ? "bi-table" : "bi-code-slash")"></i>
@@ -274,6 +278,53 @@
                 </div>
             }
         }
+        else if (_parsedRelatedItems is not null && !_showRaw)
+        {
+            @if (_parsedRelatedItems.Count == 0)
+            {
+                <div class="alert alert-info">No related items found.</div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover table-sm align-middle">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Source</th>
+                                <th>ID</th>
+                                <th>Title</th>
+                                <th class="text-end">Score</th>
+                                <th>Relationship</th>
+                                <th>Context</th>
+                                <th>URL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (ParsedRelatedItem item in _parsedRelatedItems)
+                            {
+                                <tr>
+                                    <td><span class="badge bg-secondary">@item.Source</span></td>
+                                    <td><code>@item.Id</code></td>
+                                    <td title="@item.Title">@Truncate(item.Title, 60)</td>
+                                    <td class="text-end fw-semibold">@item.RelevanceScore.ToString("F2")</td>
+                                    <td><span class="badge bg-primary">@(item.Relationship ?? "")</span></td>
+                                    <td title="@item.Context">@Truncate(item.Context ?? item.Snippet ?? "", 50)</td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(item.Url))
+                                        {
+                                            <a href="@item.Url" target="_blank" rel="noopener"
+                                               class="btn btn-sm btn-outline-primary" title="Open in new tab">
+                                                <i class="bi bi-box-arrow-up-right"></i>
+                                            </a>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
         else
         {
             <pre class="bg-body-secondary border rounded p-3 overflow-auto"
@@ -306,6 +357,8 @@
     private int _parsedTotalResults;
 
     private List<ParsedCrossRef>? _parsedCrossRefs;
+
+    private List<ParsedRelatedItem>? _parsedRelatedItems;
 
     private List<SourceEndpointInfo> _endpoints = [];
     private List<string> _targetSources = [];
@@ -392,6 +445,7 @@
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
+        _parsedRelatedItems = null;
         _showRaw = false;
         StateHasChanged();
 
@@ -504,6 +558,7 @@
         _elapsedMs = elapsed;
         TryParseSearchResults(json);
         TryParseCrossRefResults(json);
+        TryParseRelatedResults(json);
     }
 
     private void TryParseSearchResults(string json)
@@ -559,6 +614,35 @@
         catch { /* not a cross-ref response, table view will be hidden */ }
     }
 
+    private void TryParseRelatedResults(string json)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("items", out JsonElement items)
+                && items.ValueKind == JsonValueKind.Array
+                && doc.RootElement.TryGetProperty("seedSource", out _))
+            {
+                _parsedRelatedItems = [];
+                foreach (JsonElement r in items.EnumerateArray())
+                {
+                    _parsedRelatedItems.Add(new ParsedRelatedItem(
+                        Source: GetStr(r, "source") ?? "",
+                        Id: GetStr(r, "id") ?? "",
+                        Title: GetStr(r, "title") ?? "",
+                        RelevanceScore: r.TryGetProperty("relevanceScore", out JsonElement s)
+                            && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : 0,
+                        Relationship: GetStr(r, "relationship"),
+                        Snippet: GetStr(r, "snippet"),
+                        Url: GetStr(r, "url"),
+                        Context: GetStr(r, "context")
+                    ));
+                }
+            }
+        }
+        catch { /* not a related response */ }
+    }
+
     private static string? GetStr(JsonElement el, string name) =>
         el.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
@@ -575,6 +659,7 @@
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
+        _parsedRelatedItems = null;
     }
 
     private void ToggleRaw() => _showRaw = !_showRaw;
@@ -607,4 +692,7 @@
     private sealed record SourceEndpointInfo(string Name, string Address);
     private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);
     private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl);
+    private sealed record ParsedRelatedItem(
+        string Source, string Id, string Title, double RelevanceScore,
+        string? Relationship, string? Snippet, string? Url, string? Context);
 }

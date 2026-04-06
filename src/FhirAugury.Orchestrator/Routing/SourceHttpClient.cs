@@ -77,13 +77,13 @@ public class SourceHttpClient
         return await client.GetFromJsonAsync<ItemResponse>($"/api/v1/{path}", ct);
     }
 
-    public async Task<SearchResponse?> GetRelatedAsync(
+    public async Task<FindRelatedResponse?> GetRelatedAsync(
         string sourceName, string seedSource, string seedId, int limit, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
         string path = BuildSubItemPath(sourceName, seedId, "related");
-        return await client.GetFromJsonAsync<SearchResponse>(
-            $"/api/v1/{path}?limit={limit}", ct);
+        return await client.GetFromJsonAsync<FindRelatedResponse>(
+            $"/api/v1/{path}?limit={limit}&seedSource={Uri.EscapeDataString(seedSource)}&seedId={Uri.EscapeDataString(seedId)}", ct);
     }
 
     public async Task<SnapshotResponse?> GetSnapshotAsync(string sourceName, string id, CancellationToken ct)
