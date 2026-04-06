@@ -1,7 +1,6 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
-using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -41,6 +40,8 @@ builder.WebHost.ConfigureKestrel(k =>
 });
 
 // ── Services ─────────────────────────────────────────────────────
+
+builder.Services.AddControllers();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -152,7 +153,7 @@ tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
-app.MapZulipHttpApi();
+app.MapControllers();
 
 // ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

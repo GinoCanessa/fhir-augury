@@ -1,4 +1,3 @@
-using FhirAugury.Orchestrator.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
@@ -38,6 +37,9 @@ builder.WebHost.ConfigureKestrel(k =>
 {
     k.ListenAnyIP(orchestratorOptions.Ports.Http, o => o.Protocols = HttpProtocols.Http1AndHttp2);
 });
+
+// ── Controllers ──────────────────────────────────────────────────
+builder.Services.AddControllers();
 
 // ── Services ─────────────────────────────────────────────────────
 
@@ -92,7 +94,7 @@ WebApplication app = builder.Build();
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
-app.MapOrchestratorHttpApi();
+app.MapControllers();
 
 app.Run();
 

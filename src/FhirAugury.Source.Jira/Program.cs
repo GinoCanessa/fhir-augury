@@ -1,7 +1,6 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
-using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
@@ -41,6 +40,9 @@ builder.WebHost.ConfigureKestrel(k =>
 });
 
 // ── Services ─────────────────────────────────────────────────────
+
+// Controllers
+builder.Services.AddControllers();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -163,7 +165,7 @@ tracker.RegisterIndex("lookup-tables", "Facet/filter indexes", () =>
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
-app.MapJiraHttpApi();
+app.MapControllers();
 
 // ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

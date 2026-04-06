@@ -1,7 +1,6 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
-using FhirAugury.Source.Confluence.Api;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
@@ -39,6 +38,8 @@ builder.WebHost.ConfigureKestrel(k =>
 });
 
 // ── Services ─────────────────────────────────────────────────────
+
+builder.Services.AddControllers();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -144,7 +145,7 @@ tracker.RegisterIndex("page-links", "Internal page link graph", () =>
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
-app.MapConfluenceHttpApi();
+app.MapControllers();
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

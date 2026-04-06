@@ -1,6 +1,6 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Database.Records;
-using FhirAugury.Source.GitHub.Api;
+using FhirAugury.Source.GitHub.Api.Controllers;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
@@ -74,16 +74,16 @@ public class GitHubCrossSourceRelatedTests : IDisposable
     /// Simulates the cross-source related resolution logic from the HTTP API.
     /// Given a Jira key, finds all GitHub items referencing it via xref records.
     /// </summary>
-    private List<GitHubHttpApi.ResolvedItem> FindRelatedViaJiraSeed(string jiraKey, int limit = 10)
+    private List<GitHubUrlHelper.ResolvedItem> FindRelatedViaJiraSeed(string jiraKey, int limit = 10)
     {
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, JiraKey: jiraKey);
-        List<GitHubHttpApi.ResolvedItem> results = [];
+        List<GitHubUrlHelper.ResolvedItem> results = [];
         HashSet<string> seen = [];
 
         foreach (JiraXRefRecord jiraRef in refs)
         {
-            GitHubHttpApi.ResolvedItem? resolved = GitHubHttpApi.ResolveXRef(conn, jiraRef);
+            GitHubUrlHelper.ResolvedItem? resolved = GitHubUrlHelper.ResolveXRef(conn, jiraRef);
             if (resolved is null || !seen.Add(resolved.Id)) continue;
             results.Add(resolved);
             if (results.Count >= limit) break;
@@ -95,12 +95,12 @@ public class GitHubCrossSourceRelatedTests : IDisposable
     /// <summary>
     /// Simulates intra-source related resolution (same-source, via shared Jira keys).
     /// </summary>
-    private List<GitHubHttpApi.ResolvedItem> FindRelatedIntraSource(string key, int limit = 10)
+    private List<GitHubUrlHelper.ResolvedItem> FindRelatedIntraSource(string key, int limit = 10)
     {
         using SqliteConnection conn = _db.OpenConnection();
         List<JiraXRefRecord> sourceRefs = JiraXRefRecord.SelectList(conn, SourceId: key);
         HashSet<string> relatedIds = [];
-        List<GitHubHttpApi.ResolvedItem> results = [];
+        List<GitHubUrlHelper.ResolvedItem> results = [];
 
         foreach (JiraXRefRecord jiraRef in sourceRefs)
         {
@@ -108,7 +108,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
             foreach (JiraXRefRecord r in sameKeyRefs)
             {
                 if (r.SourceId == key) continue;
-                GitHubHttpApi.ResolvedItem? resolved = GitHubHttpApi.ResolveXRef(conn, r);
+                GitHubUrlHelper.ResolvedItem? resolved = GitHubUrlHelper.ResolveXRef(conn, r);
                 if (resolved is null || !relatedIds.Add(resolved.Id)) continue;
                 results.Add(resolved);
                 if (results.Count >= limit) break;
@@ -134,7 +134,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#100", "FHIR-55001"));
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#200", "FHIR-55001"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55001");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55001");
 
         Assert.Equal(2, results.Count);
         Assert.Contains(results, r => r.Id == "HL7/fhir#100");
@@ -152,7 +152,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         // Comment source ID format: "repo#issueNum:commentId"
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Comment, "HL7/fhir#42:12345", "FHIR-55002"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55002");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55002");
 
         Assert.Single(results);
         Assert.Equal("HL7/fhir#42", results[0].Id);
@@ -170,7 +170,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Commit, "abc123def", "FHIR-55003"));
         GitHubCommitPrLinkRecord.Insert(conn, CreateCommitPrLink("abc123def", "HL7/fhir", 300));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55003");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55003");
 
         Assert.Single(results);
         Assert.Equal("HL7/fhir#300", results[0].Id);
@@ -180,7 +180,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
     [Fact]
     public void GetRelated_WithJiraSeed_NoMatches_ReturnsEmpty()
     {
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-99999");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-99999");
 
         Assert.Empty(results);
     }
@@ -197,7 +197,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#50", "FHIR-55004"));
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Comment, "HL7/fhir#50:99999", "FHIR-55004"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55004");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55004");
 
         Assert.Single(results);
         Assert.Equal("HL7/fhir#50", results[0].Id);
@@ -216,7 +216,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#10", "FHIR-77001"));
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#20", "FHIR-77001"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedIntraSource("HL7/fhir#10");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedIntraSource("HL7/fhir#10");
 
         Assert.Single(results);
         Assert.Equal("HL7/fhir#20", results[0].Id);
@@ -234,7 +234,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
             JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, $"HL7/fhir#{400 + i}", "FHIR-55005"));
         }
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55005", limit: 3);
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55005", limit: 3);
 
         Assert.Equal(3, results.Count);
     }
@@ -248,7 +248,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue);
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#777", "FHIR-55006"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55006");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55006");
 
         Assert.Single(results);
         Assert.Equal("https://github.com/HL7/fhir/issues/777", results[0].Url);
@@ -267,7 +267,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue);
         JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#888", "FHIR-55007"));
 
-        List<GitHubHttpApi.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55007");
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55007");
 
         Assert.Single(results);
         Assert.Equal("HL7/fhir#888", results[0].Id);
@@ -276,7 +276,7 @@ public class GitHubCrossSourceRelatedTests : IDisposable
     [Fact]
     public void BuildIssueUrl_FormatsCorrectly()
     {
-        Assert.Equal("https://github.com/HL7/fhir/issues/42", GitHubHttpApi.BuildIssueUrl("HL7/fhir#42"));
-        Assert.Equal("https://github.com/HL7/fhir", GitHubHttpApi.BuildIssueUrl("HL7/fhir"));
+        Assert.Equal("https://github.com/HL7/fhir/issues/42", GitHubUrlHelper.BuildIssueUrl("HL7/fhir#42"));
+        Assert.Equal("https://github.com/HL7/fhir", GitHubUrlHelper.BuildIssueUrl("HL7/fhir"));
     }
 }

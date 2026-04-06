@@ -1,7 +1,6 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
-using FhirAugury.Source.GitHub.Api;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Indexing;
@@ -39,6 +38,8 @@ builder.WebHost.ConfigureKestrel(k =>
 });
 
 // ── Services ─────────────────────────────────────────────────────
+
+builder.Services.AddControllers();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -170,7 +171,7 @@ tracker.RegisterIndex("file-contents", "Repository file content indexing", () =>
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
-app.MapGitHubHttpApi();
+app.MapControllers();
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
