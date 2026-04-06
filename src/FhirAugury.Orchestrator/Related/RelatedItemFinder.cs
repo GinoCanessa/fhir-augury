@@ -246,9 +246,11 @@ public class RelatedItemFinder(
         // Build response
         List<RelatedItem> items = [];
 
+        // Apply limit per-source so no single source dominates the result window
         IEnumerable<RelatedCandidate> sorted = candidates.Values
-            .OrderByDescending(c => c.Score)
-            .Take(effectiveLimit);
+            .GroupBy(c => c.Source)
+            .SelectMany(g => g.OrderByDescending(c => c.Score).Take(effectiveLimit))
+            .OrderByDescending(c => c.Score);
 
         foreach (RelatedCandidate candidate in sorted)
         {

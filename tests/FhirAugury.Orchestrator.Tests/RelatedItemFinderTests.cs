@@ -188,6 +188,94 @@ public class RelatedItemFinderTests
         Assert.Equal("cross_reference", githubItem.Relationship);
     }
 
+    // ── Test: Per-source limiting ensures each source contributes up to limit ──
+
+    [Fact]
+    public async Task FindRelatedAsync_LimitsPerSource_NotGlobally()
+    {
+        // Seed item
+        ItemResponse seedItem = new()
+        {
+            Source = "jira",
+            Id = "FHIR-100",
+            Title = "Seed Issue",
+            Content = "",
+        };
+        string seedJson = JsonSerializer.Serialize(seedItem, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        // GitHub returns 5 cross-ref items with high scores
+        FindRelatedResponse githubRelated = new(
+            SeedSource: "jira",
+            SeedId: "FHIR-100",
+            SeedTitle: "Seed Issue",
+            Items: Enumerable.Range(1, 5).Select(i => new RelatedItem
+            {
+                Source = "github",
+                Id = $"HL7/fhir#{i}",
+                Title = $"GitHub PR {i}",
+                Url = $"https://github.com/HL7/fhir/pull/{i}",
+                RelevanceScore = 1.0 - (i * 0.01),
+                Relationship = "cross_reference",
+            }).ToList());
+        string githubRelatedJson = JsonSerializer.Serialize(githubRelated, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        // Zulip returns 5 cross-ref items with very high scores (would dominate without per-source limit)
+        FindRelatedResponse zulipRelated = new(
+            SeedSource: "jira",
+            SeedId: "FHIR-100",
+            SeedTitle: "Seed Issue",
+            Items: Enumerable.Range(1, 5).Select(i => new RelatedItem
+            {
+                Source = "zulip",
+                Id = $"zulip-msg-{i}",
+                Title = $"Zulip Message {i}",
+                Url = $"https://chat.example.com/{i}",
+                RelevanceScore = 2.0 - (i * 0.01),
+                Relationship = "cross_reference",
+            }).ToList());
+        string zulipRelatedJson = JsonSerializer.Serialize(zulipRelated, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        string emptySearchJson = JsonSerializer.Serialize(
+            new SearchResponse("", 0, [], null),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        IHttpClientFactory factory = Substitute.For<IHttpClientFactory>();
+
+        // Jira: seed item + empty related + empty search
+        MockHttpHandler jiraHandler = new(seedJson);
+        HttpClient jiraClient = new(jiraHandler) { BaseAddress = new Uri("http://localhost") };
+        factory.CreateClient("source-jira").Returns(jiraClient);
+
+        // GitHub: related response + empty search
+        MultiResponseHandler githubHandler = new([githubRelatedJson, emptySearchJson]);
+        HttpClient githubClient = new(githubHandler) { BaseAddress = new Uri("http://localhost") };
+        factory.CreateClient("source-github").Returns(githubClient);
+
+        // Zulip: related response + empty search
+        MultiResponseHandler zulipHandler = new([zulipRelatedJson, emptySearchJson]);
+        HttpClient zulipClient = new(zulipHandler) { BaseAddress = new Uri("http://localhost") };
+        factory.CreateClient("source-zulip").Returns(zulipClient);
+
+        OrchestratorOptions opts = DefaultOptions("jira", "github", "zulip");
+        opts.Related.DefaultLimit = 3; // limit 3 per source
+        SourceHttpClient httpClient = new(factory, Options.Create(opts), NullLogger<SourceHttpClient>.Instance);
+        RelatedItemFinder finder = new(httpClient, Options.Create(opts), NullLogger<RelatedItemFinder>.Instance);
+
+        FindRelatedResponse result = await finder.FindRelatedAsync("jira", "FHIR-100", 3, null, CancellationToken.None);
+
+        // Each source should have at most 3 items despite Zulip having higher scores
+        int githubCount = result.Items.Count(i => i.Source == "github");
+        int zulipCount = result.Items.Count(i => i.Source == "zulip");
+
+        Assert.True(githubCount <= 3, $"Expected at most 3 github items, got {githubCount}");
+        Assert.True(zulipCount <= 3, $"Expected at most 3 zulip items, got {zulipCount}");
+        // Both sources should be represented
+        Assert.True(githubCount > 0, "Expected at least 1 github item");
+        Assert.True(zulipCount > 0, "Expected at least 1 zulip item");
+        // Total should be more than 3 (i.e., we're not capping globally at 3)
+        Assert.True(result.Items.Count > 3, $"Expected more than 3 total items (per-source limit), got {result.Items.Count}");
+    }
+
     // ── Test 4: Signal A skips null responses without crashing ──
 
     [Fact]

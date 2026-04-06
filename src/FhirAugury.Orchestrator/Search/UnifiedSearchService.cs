@@ -86,10 +86,14 @@ public class UnifiedSearchService(
             }
         }
 
-        // Pipeline: normalize → decay → sort → limit
+        // Pipeline: normalize → decay → limit per-source → sort
         List<ScoredItem> normalized = ScoreNormalizer.Normalize(allItems);
         List<ScoredItem> decayed = freshnessDecay.Apply(normalized);
-        List<ScoredItem> sorted = decayed.OrderByDescending(i => i.Score).Take(effectiveLimit).ToList();
+        List<ScoredItem> sorted = decayed
+            .GroupBy(i => i.Source)
+            .SelectMany(g => g.OrderByDescending(i => i.Score).Take(effectiveLimit))
+            .OrderByDescending(i => i.Score)
+            .ToList();
 
         return (sorted, warnings);
     }
