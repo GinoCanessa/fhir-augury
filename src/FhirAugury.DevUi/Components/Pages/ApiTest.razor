@@ -93,9 +93,9 @@
                         <label class="form-label">Target Source</label>
                         <select class="form-select" @bind="_sourceFilterInput">
                             <option value="">— Select —</option>
-                            @foreach (SourceEndpointInfo ep in _endpoints.Where(e => e.Name != "orchestrator"))
+                            @foreach (string src in _targetSources)
                             {
-                                <option value="@ep.Name.ToLowerInvariant()">@ep.Name</option>
+                                <option value="@src">@src</option>
                             }
                         </select>
                     </div>
@@ -252,6 +252,7 @@
     private int _parsedTotalResults;
 
     private List<SourceEndpointInfo> _endpoints = [];
+    private List<string> _targetSources = [];
     private SourceEndpointInfo? _selectedEndpoint =>
         _endpoints.FirstOrDefault(e => string.Equals(e.Name, SelectedSource, StringComparison.OrdinalIgnoreCase));
 
@@ -283,6 +284,7 @@
         "github" => "e.g. HL7/fhir#4006",
         "zulip" => "e.g. 12345",
         "confluence" => "e.g. 12345",
+        "fhir" => "e.g. Patient.name",
         _ => "e.g. FHIR-55001",
     };
 
@@ -308,6 +310,14 @@
         }
         _endpoints = sources.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
         _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.Address));
+
+        // Target sources: endpoint names (excluding orchestrator) plus any
+        // additional source systems that have no standalone HTTP service.
+        HashSet<string> targetSet = new(
+            _endpoints.Where(e => e.Name != "orchestrator").Select(e => e.Name.ToLowerInvariant()),
+            StringComparer.OrdinalIgnoreCase);
+        targetSet.Add(FhirAugury.Common.SourceSystems.Fhir);
+        _targetSources = [.. targetSet.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
 
         if (!string.IsNullOrEmpty(DefaultSource))
             SelectedSource = DefaultSource;
