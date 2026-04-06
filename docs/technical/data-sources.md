@@ -32,7 +32,7 @@ contract for the Orchestrator:
 | `GetRelated` | Find related items within the source |
 | `GetSnapshot` | Point-in-time snapshot of an item |
 | `GetContent` | Retrieve full content for an item |
-| `StreamSearchableText` | Server-streaming RPC — streams all searchable text for cross-reference scanning |
+| `StreamSearchableText` | Streams all searchable text for cross-reference scanning |
 | `TriggerIngestion` | Trigger a full or incremental ingestion run |
 | `GetIngestionStatus` | Get current ingestion status |
 | `GetStats` | Return service statistics (item counts, DB size, last sync) |

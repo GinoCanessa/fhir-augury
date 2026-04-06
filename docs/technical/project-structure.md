@@ -16,15 +16,6 @@ fhir-augury/
 │   ├── user/                      # User-facing documentation
 │   └── technical/                 # Developer documentation
 ├── mcp-config-examples/           # Example MCP client configurations
-├── plan/                          # Implementation plans
-├── proposal/                      # Design proposals
-├── protos/                        # Protocol Buffer definitions (6 files)
-│   ├── source_service.proto       # SourceService — common contract for all sources
-│   ├── orchestrator.proto         # OrchestratorService — unified API
-│   ├── jira.proto                 # JiraService — Jira-specific operations
-│   ├── zulip.proto                # ZulipService — Zulip-specific operations
-│   ├── confluence.proto           # ConfluenceService — Confluence-specific operations
-│   └── github.proto               # GitHubService — GitHub-specific operations
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
@@ -34,57 +25,27 @@ fhir-augury/
     └── (7 test projects)
 ```
 
-## Proto Files
+## API Contracts
 
-Six Protocol Buffer files define the gRPC service contracts:
+Shared HTTP API contract classes are defined in `FhirAugury.Common/Api/` and
+used by all services for inter-service communication:
 
-### `source_service.proto`
+- **`SearchContracts`** — Search request/response types
+- **`ItemContracts`** — Item retrieval contracts
+- **`CrossReferenceContracts`** — Cross-reference query/response types
+- **`IngestionContracts`** — Ingestion trigger and status contracts
+- **`ServiceContracts`** — Service status, health, and endpoint contracts
+- **`ContentFormats`** — Content format definitions
 
-Common contract implemented by all source services:
-
-- `Search`, `GetItem`, `ListItems`, `GetRelated` — query operations
-- `GetSnapshot`, `GetContent` — content retrieval
-- `StreamSearchableText` — streams text for cross-reference scanning
-- `TriggerIngestion`, `GetIngestionStatus`, `RebuildFromCache` — ingestion control
-- `GetStats`, `HealthCheck` — monitoring
-- `GetItemCrossReferences` — cross-references for a specific item
-- `NotifyPeerIngestionComplete` — peer notification for cross-reference updates
-- `RebuildIndex` — rebuild specific indexes
-
-### `orchestrator.proto`
-
-Orchestrator's unified API:
-
-- `UnifiedSearch`, `FindRelated`, `GetCrossReferences` — aggregated queries
-- `GetItem`, `GetSnapshot`, `GetContent` — proxied to appropriate source
-- `TriggerSync`, `GetServicesStatus` — service management
-- `NotifyIngestionComplete` — cross-reference system
-- `GetServiceEndpoints` — service discovery for direct access
-- `RebuildIndex` — fan-out index rebuild to sources
-
-### Source-Specific Protos
-
-- **`jira.proto`** (`JiraService`) — `GetIssueComments`, `GetIssueLinks`,
-  `ListByWorkGroup`, `ListBySpecification`, `QueryIssues`, `ListSpecArtifacts`,
-  `GetIssueNumbers`, `GetIssueSnapshot`
-- **`zulip.proto`** (`ZulipService`) — `GetThread`, `ListStreams`, `GetStream`,
-  `UpdateStream`, `ListTopics`, `GetMessagesByUser`, `QueryMessages`,
-  `GetThreadSnapshot`
-- **`confluence.proto`** (`ConfluenceService`) — `GetPageComments`,
-  `GetPageChildren`, `GetPageAncestors`, `ListSpaces`, `GetLinkedPages`,
-  `GetPagesByLabel`, `GetPageSnapshot`
-- **`github.proto`** (`GitHubService`) — `GetIssueComments`,
-  `GetPullRequestDetails`, `GetRelatedCommits`, `GetPullRequestForCommit`,
-  `GetCommitsForPullRequest`, `SearchCommits`, `GetJiraReferences`,
-  `ListRepositories`, `ListByLabel`, `ListByMilestone`, `QueryByArtifact`,
-  `GetIssueSnapshot`
+These contracts define the HTTP API surface that all source services implement
+and that the orchestrator uses for fan-out communication.
 
 ## Source Projects
 
 ### `FhirAugury.Common`
 
-Shared library compiled by all other projects. Compiles the proto files and
-provides reusable infrastructure.
+Shared library compiled by all other projects. Provides shared API contracts
+and reusable infrastructure.
 
 ```
 FhirAugury.Common/
@@ -95,8 +56,11 @@ FhirAugury.Common/
 │                             #   AuxiliaryDatabase: read-only stop words, lemmas,
 │                             #   FHIR vocab loader;
 │                             #   DictionaryDatabase: compiled dictionary builder
-├── Grpc/                     # gRPC client helpers, GrpcErrorMapper,
-│                             #   AtlassianAuthHandler, SourceServiceLifecycle
+├── Api/                      # Shared HTTP API contracts (SearchContracts,
+│                             #   ItemContracts, CrossReferenceContracts,
+│                             #   IngestionContracts, ServiceContracts, ContentFormats)
+├── Grpc/                     # Legacy gRPC helpers, AtlassianAuthHandler,
+│                             #   SourceServiceLifecycle
 ├── Ingestion/                # IIngestionPipeline, IngestionWorkQueue,
 │                             #   ScheduledIngestionWorker<T>
 ├── Text/                     # CrossRefPatterns, FhirVocabulary (100+ resources,
@@ -111,25 +75,25 @@ FhirAugury.Common/
 
 ### `FhirAugury.Source.Jira`
 
-Jira source service (HTTP :5160, gRPC :5161).
+Jira source service (HTTP :5160).
 
 ```
 FhirAugury.Source.Jira/
-├── Api/                      # JiraGrpcService (SourceService + JiraService impl)
+├── Api/                      # HTTP API controllers (common + Jira-specific endpoints)
 ├── Cache/                    # Jira-specific cache configuration
 ├── Configuration/            # JiraSourceOptions, auth settings
 ├── Database/                 # SQLite schema, record types, source-generated CRUD
 ├── Indexing/                 # FTS5 search and indexing
 ├── Ingestion/                # Download pipeline: fetch → cache → parse → store
 ├── Workers/                  # ScheduledIngestionWorker
-├── Program.cs                # Dual-port Kestrel (HTTP + gRPC), DI registration
+├── Program.cs                # Kestrel HTTP server, DI registration
 ├── appsettings.json          # Default configuration
 └── Dockerfile                # Service container image
 ```
 
 ### `FhirAugury.Source.Zulip`
 
-Zulip source service (HTTP :5170, gRPC :5171). Same internal structure as
+Zulip source service (HTTP :5170). Same internal structure as
 Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 `Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
 
@@ -141,26 +105,26 @@ Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 
 ### `FhirAugury.Source.GitHub`
 
-GitHub source service (HTTP :5190, gRPC :5191). Same internal structure as
+GitHub source service (HTTP :5190). Same internal structure as
 Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 `Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
 
 ### `FhirAugury.Orchestrator`
 
-Central coordinator (HTTP :5150, gRPC :5151).
+Central coordinator (HTTP :5150).
 
 ```
 FhirAugury.Orchestrator/
-├── Api/                      # OrchestratorGrpcService, OrchestratorHttpApi
+├── Api/                      # OrchestratorController (HTTP API)
 ├── Configuration/            # Orchestrator settings, source endpoints
 ├── Database/                 # Orchestrator SQLite DB (scan state)
 ├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
 ├── Related/                  # RelatedItemFinder (multi-signal ranking)
-├── Routing/                  # SourceRouter — creates gRPC channels to sources
+├── Routing/                  # SourceRouter — creates HTTP clients to sources
 ├── Search/                   # UnifiedSearchService, FreshnessDecay,
 │                             #   ScoreNormalizer
 ├── Workers/                  # HealthCheckWorker
-├── Program.cs                # Dual-port Kestrel, DI registration
+├── Program.cs                # Kestrel HTTP server, DI registration
 ├── appsettings.json          # Default configuration
 └── Dockerfile                # Service container image
 ```
@@ -173,7 +137,7 @@ registration logic.
 ```
 FhirAugury.McpShared/
 ├── Tools/                    # UnifiedTools.cs, JiraTools.cs, ZulipTools.cs
-├── McpServiceRegistration.cs # Shared DI registration for MCP tools and gRPC clients
+├── McpServiceRegistration.cs # Shared DI registration for MCP tools and HTTP clients
 └── FhirAugury.McpShared.csproj
 ```
 
@@ -204,7 +168,7 @@ FhirAugury.McpHttp/
 
 ### `FhirAugury.Cli`
 
-Command-line interface (13 commands via JSON-in/JSON-out, gRPC to orchestrator).
+Command-line interface (13 commands via JSON-in/JSON-out, HTTP to orchestrator).
 
 ```
 FhirAugury.Cli/
@@ -212,7 +176,7 @@ FhirAugury.Cli/
 │   └── Handlers/             # Per-command handlers (SearchHandler, GetHandler, etc.)
 ├── Models/                   # Request/response models and OutputEnvelope
 ├── Schemas/                  # SchemaGenerator for JSON schema output
-├── GrpcClientFactory.cs      # Creates gRPC channel to orchestrator
+├── HttpServiceClient.cs      # Creates HTTP connection to orchestrator
 ├── Program.cs                # Entry point: JSON-in/JSON-out with --json, --input, --help
 └── FhirAugury.Cli.csproj
 ```
@@ -220,12 +184,12 @@ FhirAugury.Cli/
 ### `FhirAugury.DevUi`
 
 Blazor Server operational dashboard (HTTP :5210). Connects to the orchestrator
-via gRPC to display service status, trigger index rebuilds, and browse data.
+via HTTP to display service status, trigger index rebuilds, and browse data.
 
 ```
 FhirAugury.DevUi/
 ├── Components/               # App.razor, Layout, Pages, Routes.razor
-├── Services/                 # OrchestratorClient (gRPC wrapper)
+├── Services/                 # OrchestratorClient (HTTP wrapper)
 ├── Program.cs                # Entry point: Blazor Server with ServiceDefaults
 ├── appsettings.json          # Default configuration
 └── FhirAugury.DevUi.csproj
@@ -247,7 +211,7 @@ FhirAugury.ServiceDefaults/
 Key capabilities:
 
 - **OpenTelemetry** — Logging (formatted messages, scopes), metrics (ASP.NET
-  Core, HTTP client, runtime), tracing (ASP.NET Core, gRPC, HTTP) with OTLP
+  Core, HTTP client, runtime), tracing (ASP.NET Core, HTTP) with OTLP
   export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 - **Health endpoints** — `/health` (readiness) and `/alive` (liveness)
 - **Service discovery** — Aspire `AddServiceDiscovery()` for HTTP clients
@@ -262,7 +226,7 @@ and must be started manually from the dashboard.
 
 ```
 FhirAugury.AppHost/
-├── AppHost.cs                       # Registers all projects with fixed HTTP/gRPC ports
+├── AppHost.cs                       # Registers all projects with fixed HTTP ports
 ├── aspire.config.json               # Points to AppHost project
 ├── appsettings.json                 # Logging overrides (suppresses Aspire.Hosting.Dcp)
 ├── Properties/
@@ -271,7 +235,7 @@ FhirAugury.AppHost/
 ```
 
 Uses `Aspire.AppHost.Sdk`. Registers each service project with pinned
-HTTP/gRPC ports (`isProxied: false`) and configures the orchestrator to
+HTTP ports (`isProxied: false`) and configures the orchestrator to
 `WaitFor()` Jira, Zulip, and GitHub source services. Zulip and GitHub
 also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`.
 
@@ -280,12 +244,12 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | Project | Description |
 |---------|-------------|
 | `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
-| `FhirAugury.Source.Jira.Tests` | Jira source service: ingestion, indexing, gRPC API |
-| `FhirAugury.Source.Zulip.Tests` | Zulip source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Jira.Tests` | Jira source service: ingestion, indexing, HTTP API |
+| `FhirAugury.Source.Zulip.Tests` | Zulip source service: ingestion, indexing, HTTP API |
 | `FhirAugury.Source.Confluence.Tests` | Confluence source service: ingestion, indexing, HTTP API |
-| `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, HTTP API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
-| `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |
+| `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute) |
 
 ## Build Configuration
 
