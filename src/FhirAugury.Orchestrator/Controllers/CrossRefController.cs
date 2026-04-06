@@ -26,7 +26,7 @@ public class CrossRefController(
         List<Task<CrossReferenceResponse?>> tasks = [];
         foreach (string srcName in httpClient.GetEnabledSourceNames())
         {
-            tasks.Add(httpClient.GetCrossReferencesAsync(srcName, id, dir, ct));
+            tasks.Add(httpClient.GetCrossReferencesAsync(srcName, id, source, dir, ct));
         }
 
         foreach (Task<CrossReferenceResponse?> task in tasks)

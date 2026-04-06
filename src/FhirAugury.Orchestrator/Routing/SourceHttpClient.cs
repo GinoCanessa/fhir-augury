@@ -102,11 +102,11 @@ public class SourceHttpClient
     }
 
     public async Task<CrossReferenceResponse?> GetCrossReferencesAsync(
-        string sourceName, string id, string direction, CancellationToken ct)
+        string sourceName, string id, string source, string direction, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
         return await client.GetFromJsonAsync<CrossReferenceResponse>(
-            $"/api/v1/xref/{Uri.EscapeDataString(id)}?direction={Uri.EscapeDataString(direction)}", ct);
+            $"/api/v1/xref/{Uri.EscapeDataString(id)}?source={Uri.EscapeDataString(source)}&direction={Uri.EscapeDataString(direction)}", ct);
     }
 
     public async Task<StatsResponse?> GetStatsAsync(string sourceName, CancellationToken ct)
