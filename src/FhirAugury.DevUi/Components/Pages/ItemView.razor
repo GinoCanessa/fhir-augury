@@ -1,0 +1,303 @@
+@page "/item/{Source}/{**Id}"
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+@using System.Text.Json
+@inject OrchestratorClient Orchestrator
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>@(_item?.Title ?? "Item Viewer") — FHIR Augury Dev UI</PageTitle>
+
+@if (_loading)
+{
+    <div class="d-flex justify-content-center align-items-center" style="min-height: 300px;">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+        <span class="ms-3 text-muted">Loading item…</span>
+    </div>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger d-flex align-items-center" role="alert">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+        <div>
+            <strong>Error loading item.</strong> @_error
+        </div>
+    </div>
+    <button class="btn btn-outline-primary me-2" @onclick="ReloadAsync">
+        <i class="bi bi-arrow-clockwise"></i> Retry
+    </button>
+    <a href="/api-test" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Back to API Tests
+    </a>
+}
+else if (_item is null)
+{
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+        <i class="bi bi-question-circle-fill me-2"></i>
+        <div>
+            <strong>Item not found.</strong>
+            No item with source <code>@Source</code> and ID <code>@Id</code> was found.
+        </div>
+    </div>
+    <a href="/api-test" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Back to API Tests
+    </a>
+}
+else
+{
+    @* ── Back Button ─────────────────────────────────────────────── *@
+    <div class="mb-3">
+        <button class="btn btn-sm btn-outline-secondary" @onclick="GoBack">
+            <i class="bi bi-arrow-left"></i> Back
+        </button>
+    </div>
+
+    @* ── Content Tabs ────────────────────────────────────────────── *@
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link @(_activeTab == "content" ? "active" : "")"
+                    @onclick='() => SetTabAsync("content")'>Content</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link @(_activeTab == "snapshot" ? "active" : "")"
+                    @onclick='() => SetTabAsync("snapshot")'>Snapshot</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link @(_activeTab == "raw" ? "active" : "")"
+                    @onclick='() => SetTabAsync("raw")'>Raw JSON</button>
+        </li>
+    </ul>
+
+    @if (_activeTab == "content")
+    {
+        @* ── Source-specific content view ────────────────────────────── *@
+        @switch (_item.Source.ToLowerInvariant())
+        {
+            case "jira":
+                <JiraItemView Item="_item" CrossRefs="_crossRefs"
+                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                break;
+            case "zulip":
+                <ZulipItemView Item="_item" CrossRefs="_crossRefs"
+                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync"
+                    LoadSnapshotAsync="GetSnapshotAsync" />
+                break;
+            case "github":
+                @if (_item.ContentType == "file")
+                {
+                    <GitHubFileView Item="_item" CrossRefs="_crossRefs"
+                        RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                        RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                }
+                else
+                {
+                    <GitHubIssueView Item="_item" CrossRefs="_crossRefs"
+                        RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                        RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                }
+                break;
+            case "confluence":
+                <ConfluenceItemView Item="_item" CrossRefs="_crossRefs"
+                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                break;
+            default:
+                <GenericItemView Item="_item" CrossRefs="_crossRefs"
+                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
+                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                break;
+        }
+    }
+    else if (_activeTab == "snapshot")
+    {
+        @* ── Snapshot Tab ────────────────────────────────────────────── *@
+        <div class="card">
+            <div class="card-body">
+                @if (_loadingSnapshot)
+                {
+                    <div class="text-center py-3">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <span class="ms-2 text-muted">Loading snapshot…</span>
+                    </div>
+                }
+                else if (_snapshotError is not null)
+                {
+                    <div class="alert alert-warning">@_snapshotError</div>
+                }
+                else if (_snapshot is not null)
+                {
+                    <div class="item-viewer-content">
+                        @MarkdownRenderer.ToHtml(_snapshot.Markdown)
+                    </div>
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No snapshot available.</span>
+                }
+            </div>
+        </div>
+    }
+    else if (_activeTab == "raw")
+    {
+        @* ── Raw JSON Tab ────────────────────────────────────────────── *@
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="fw-semibold"><i class="bi bi-code-slash"></i> Raw JSON</span>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="CopyJsonAsync">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+            </div>
+            <div class="card-body">
+                <pre class="bg-body-secondary border rounded p-3 overflow-auto"
+                     style="max-height: 600px;"><code>@_rawJson</code></pre>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public string Source { get; set; } = "";
+    [Parameter] public string Id { get; set; } = "";
+
+    private bool _loading = true;
+    private string? _error;
+    private ItemResponse? _item;
+    private CrossReferenceResponse? _crossRefs;
+    private string? _rawJson;
+
+    // Snapshot tab state
+    private string _activeTab = "content";
+    private bool _loadingSnapshot;
+    private string? _snapshotError;
+    private SnapshotResponse? _snapshot;
+
+    // Related items state
+    private bool _loadingRelated;
+    private string? _relatedError;
+    private FindRelatedResponse? _relatedItems;
+
+    private static readonly JsonSerializerOptions PrettyJsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _error = null;
+        _item = null;
+        _crossRefs = null;
+        _rawJson = null;
+        _snapshot = null;
+        _snapshotError = null;
+        _relatedItems = null;
+        _relatedError = null;
+        _activeTab = "content";
+        StateHasChanged();
+
+        try
+        {
+            Task<ItemResponse?> itemTask = Orchestrator.GetItemTypedAsync(Source, Id);
+            Task<CrossReferenceResponse?> xrefTask = Orchestrator.GetCrossReferencesTypedAsync(Source, Id);
+
+            await Task.WhenAll(itemTask, xrefTask);
+
+            _item = await itemTask;
+            _crossRefs = await xrefTask;
+
+            if (_item is not null)
+            {
+                _rawJson = JsonSerializer.Serialize(_item, PrettyJsonOptions);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SetTabAsync(string tab)
+    {
+        _activeTab = tab;
+        if (tab == "snapshot" && _snapshot is null && _snapshotError is null)
+        {
+            await LoadSnapshotAsync();
+        }
+    }
+
+    private async Task<SnapshotResponse?> GetSnapshotAsync()
+    {
+        if (_snapshot is not null)
+            return _snapshot;
+
+        _snapshot = await Orchestrator.GetSnapshotTypedAsync(Source, Id);
+        return _snapshot;
+    }
+
+    private async Task LoadSnapshotAsync()
+    {
+        _loadingSnapshot = true;
+        _snapshotError = null;
+        StateHasChanged();
+
+        try
+        {
+            _snapshot = await GetSnapshotAsync();
+            if (_snapshot is null)
+                _snapshotError = "No snapshot available for this item.";
+        }
+        catch (Exception ex)
+        {
+            _snapshotError = $"Failed to load snapshot: {ex.Message}";
+        }
+        finally
+        {
+            _loadingSnapshot = false;
+        }
+    }
+
+    private async Task LoadRelatedAsync()
+    {
+        _loadingRelated = true;
+        _relatedError = null;
+        StateHasChanged();
+
+        try
+        {
+            _relatedItems = await Orchestrator.GetRelatedTypedAsync(Source, Id);
+        }
+        catch (Exception ex)
+        {
+            _relatedError = $"Failed to load related items: {ex.Message}";
+        }
+        finally
+        {
+            _loadingRelated = false;
+        }
+    }
+
+    private async Task CopyJsonAsync()
+    {
+        if (_rawJson is not null)
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _rawJson);
+        }
+    }
+
+    private void GoBack() => JS.InvokeVoidAsync("history.back");
+}

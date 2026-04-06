@@ -203,7 +203,7 @@
                                 <th>Title</th>
                                 <th class="text-end">Score</th>
                                 <th>Snippet</th>
-                                <th>URL</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -216,10 +216,14 @@
                                     <td class="text-end fw-semibold">@item.Score.ToString("F2")</td>
                                     <td title="@item.Snippet">@Truncate(item.Snippet ?? "", 50)</td>
                                     <td>
+                                        <a href="@ItemViewerUrl.For(item.Source, item.Id)"
+                                           class="btn btn-sm btn-outline-info" title="View locally cached item">
+                                            <i class="bi bi-eye"></i>
+                                        </a>
                                         @if (!string.IsNullOrEmpty(item.Url))
                                         {
                                             <a href="@item.Url" target="_blank" rel="noopener"
-                                               class="btn btn-sm btn-outline-primary" title="Open in new tab">
+                                               class="btn btn-sm btn-outline-secondary ms-1" title="Open in external system">
                                                 <i class="bi bi-box-arrow-up-right"></i>
                                             </a>
                                         }
@@ -249,7 +253,7 @@
                                 <th>Target</th>
                                 <th>Target ID</th>
                                 <th>Title</th>
-                                <th>URL</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -260,13 +264,21 @@
                                     <td><code>@item.SourceId</code></td>
                                     <td><span class="badge bg-primary">@item.LinkType</span></td>
                                     <td><span class="badge bg-secondary">@item.TargetType</span></td>
-                                    <td><code>@item.TargetId</code></td>
+                                    <td>
+                                        <a href="@ItemViewerUrl.For(item.TargetType, item.TargetId)">
+                                            <code>@item.TargetId</code>
+                                        </a>
+                                    </td>
                                     <td title="@item.TargetTitle">@Truncate(item.TargetTitle ?? "", 60)</td>
                                     <td>
+                                        <a href="@ItemViewerUrl.For(item.TargetType, item.TargetId)"
+                                           class="btn btn-sm btn-outline-info" title="View locally cached item">
+                                            <i class="bi bi-eye"></i>
+                                        </a>
                                         @if (!string.IsNullOrEmpty(item.TargetUrl))
                                         {
                                             <a href="@item.TargetUrl" target="_blank" rel="noopener"
-                                               class="btn btn-sm btn-outline-primary" title="Open in new tab">
+                                               class="btn btn-sm btn-outline-secondary ms-1" title="Open in external system">
                                                 <i class="bi bi-box-arrow-up-right"></i>
                                             </a>
                                         }
@@ -296,7 +308,7 @@
                                 <th class="text-end">Score</th>
                                 <th>Relationship</th>
                                 <th>Context</th>
-                                <th>URL</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -304,16 +316,24 @@
                             {
                                 <tr>
                                     <td><span class="badge bg-secondary">@item.Source</span></td>
-                                    <td><code>@item.Id</code></td>
+                                    <td>
+                                        <a href="@ItemViewerUrl.For(item.Source, item.Id)">
+                                            <code>@item.Id</code>
+                                        </a>
+                                    </td>
                                     <td title="@item.Title">@Truncate(item.Title, 60)</td>
                                     <td class="text-end fw-semibold">@item.RelevanceScore.ToString("F2")</td>
                                     <td><span class="badge bg-primary">@(item.Relationship ?? "")</span></td>
                                     <td title="@item.Context">@Truncate(item.Context ?? item.Snippet ?? "", 50)</td>
                                     <td>
+                                        <a href="@ItemViewerUrl.For(item.Source, item.Id)"
+                                           class="btn btn-sm btn-outline-info" title="View locally cached item">
+                                            <i class="bi bi-eye"></i>
+                                        </a>
                                         @if (!string.IsNullOrEmpty(item.Url))
                                         {
                                             <a href="@item.Url" target="_blank" rel="noopener"
-                                               class="btn btn-sm btn-outline-primary" title="Open in new tab">
+                                               class="btn btn-sm btn-outline-secondary ms-1" title="Open in external system">
                                                 <i class="bi bi-box-arrow-up-right"></i>
                                             </a>
                                         }

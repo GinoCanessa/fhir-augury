@@ -1,0 +1,129 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item">
+    @if (Item.Metadata?.TryGetValue("stream_name", out string? stream) == true)
+    {
+        <span class="badge bg-success me-2">@stream</span>
+    }
+    @if (Item.Metadata?.TryGetValue("topic", out string? topic) == true)
+    {
+        <span class="badge bg-secondary me-2">@topic</span>
+    }
+</ItemHeader>
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="zulip"
+            DisplayOrder="_displayOrder" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-chat-dots"></i> Message</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    <div class="zulip-bubble">
+                        @((MarkupString)Item.Content)
+                    </div>
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No message content available.</span>
+                }
+            </div>
+        </div>
+
+        @* Thread context via snapshot *@
+        @if (_showThread)
+        {
+            <div class="card mt-3">
+                <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+                    <span><i class="bi bi-chat-square-text"></i> Thread Context</span>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => _showThread = false">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+                <div class="card-body item-viewer-content">
+                    @if (_loadingThread)
+                    {
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                            <span class="ms-2 text-muted">Loading thread…</span>
+                        </div>
+                    }
+                    else if (_threadError is not null)
+                    {
+                        <div class="alert alert-warning">@_threadError</div>
+                    }
+                    else if (_threadMarkdown is not null)
+                    {
+                        @MarkdownRenderer.ToHtml(_threadMarkdown)
+                    }
+                </div>
+            </div>
+        }
+        else
+        {
+            <button class="btn btn-outline-primary btn-sm mt-2" @onclick="LoadThreadAsync">
+                <i class="bi bi-chat-square-text"></i> View Thread
+            </button>
+        }
+    </div>
+</div>
+
+<ItemCrossRefs CrossRefs="CrossRefs" RelatedItems="RelatedItems"
+    LoadingRelated="LoadingRelated" RelatedError="RelatedError"
+    OnLoadRelated="OnLoadRelated" />
+
+@code {
+    [Parameter, EditorRequired] public ItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
+    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
+    [Parameter] public bool LoadingRelated { get; set; }
+    [Parameter] public string? RelatedError { get; set; }
+    [Parameter] public EventCallback OnLoadRelated { get; set; }
+    [Parameter] public Func<Task<SnapshotResponse?>>? LoadSnapshotAsync { get; set; }
+
+    private bool _showThread;
+    private bool _loadingThread;
+    private string? _threadError;
+    private string? _threadMarkdown;
+
+    private static readonly List<string> _displayOrder =
+    [
+        "stream_name", "topic", "sender_name", "sender_email", "sender_id"
+    ];
+
+    private async Task LoadThreadAsync()
+    {
+        _showThread = true;
+        _loadingThread = true;
+        _threadError = null;
+        StateHasChanged();
+
+        try
+        {
+            if (LoadSnapshotAsync is not null)
+            {
+                SnapshotResponse? snapshot = await LoadSnapshotAsync();
+                _threadMarkdown = snapshot?.Markdown;
+                if (_threadMarkdown is null)
+                    _threadError = "No thread context available.";
+            }
+            else
+            {
+                _threadError = "Snapshot loader not available.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _threadError = $"Failed to load thread: {ex.Message}";
+        }
+        finally
+        {
+            _loadingThread = false;
+        }
+    }
+}

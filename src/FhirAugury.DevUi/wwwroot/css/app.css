@@ -34,3 +34,32 @@ pre code {
         margin-bottom: 0.5rem;
     }
 }
+
+/* ── Item Viewer ───────────────────────────────────────── */
+.item-viewer-header { border-bottom: 1px solid var(--bs-border-color); }
+
+.item-viewer-content {
+    min-height: 200px;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+.item-viewer-content img { max-width: 100%; height: auto; }
+
+.item-viewer-sidebar dl { margin-bottom: 0; }
+.item-viewer-sidebar dt { font-weight: 600; font-size: 0.85rem; }
+.item-viewer-sidebar dd { margin-bottom: 0.5rem; font-size: 0.9rem; }
+
+.item-viewer-comments .comment-card { border-left: 3px solid var(--bs-primary); }
+
+.zulip-bubble {
+    background-color: var(--bs-tertiary-bg);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    border-left: 4px solid var(--bs-success);
+}
+
+.text-bg-purple {
+    background-color: #8250df !important;
+    color: #fff !important;
+}

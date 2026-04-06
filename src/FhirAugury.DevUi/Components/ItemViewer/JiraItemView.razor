@@ -1,0 +1,64 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item">
+    @if (Item.Metadata?.TryGetValue("status", out string? status) == true)
+    {
+        <span class="badge @SourceBadgeHelper.JiraStatusBadgeClass(status) me-2">@status</span>
+    }
+    @if (Item.Metadata?.TryGetValue("type", out string? issueType) == true)
+    {
+        <span class="badge bg-secondary me-2">@issueType</span>
+    }
+    @if (Item.Metadata?.TryGetValue("priority", out string? priority) == true)
+    {
+        <span class="badge bg-warning text-dark me-2">@priority</span>
+    }
+</ItemHeader>
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="jira"
+            DisplayOrder="_displayOrder" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-file-text"></i> Description</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    @((MarkupString)Item.Content)
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No description available.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (Item.Comments is { Count: > 0 })
+{
+    <ItemComments Comments="Item.Comments" />
+}
+
+<ItemCrossRefs CrossRefs="CrossRefs" RelatedItems="RelatedItems"
+    LoadingRelated="LoadingRelated" RelatedError="RelatedError"
+    OnLoadRelated="OnLoadRelated" />
+
+@code {
+    [Parameter, EditorRequired] public ItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
+    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
+    [Parameter] public bool LoadingRelated { get; set; }
+    [Parameter] public string? RelatedError { get; set; }
+    [Parameter] public EventCallback OnLoadRelated { get; set; }
+
+    private static readonly List<string> _displayOrder =
+    [
+        "status", "type", "priority", "resolution", "resolution_description",
+        "assignee", "reporter", "work_group", "specification", "labels"
+    ];
+}

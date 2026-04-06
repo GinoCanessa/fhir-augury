@@ -1,0 +1,44 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item" />
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="@Item.Source" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-file-text"></i> Content</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    <pre><code>@Item.Content</code></pre>
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No content available.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (Item.Comments is { Count: > 0 })
+{
+    <ItemComments Comments="Item.Comments" />
+}
+
+<ItemCrossRefs CrossRefs="CrossRefs" RelatedItems="RelatedItems"
+    LoadingRelated="LoadingRelated" RelatedError="RelatedError"
+    OnLoadRelated="OnLoadRelated" />
+
+@code {
+    [Parameter, EditorRequired] public ItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
+    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
+    [Parameter] public bool LoadingRelated { get; set; }
+    [Parameter] public string? RelatedError { get; set; }
+    [Parameter] public EventCallback OnLoadRelated { get; set; }
+}

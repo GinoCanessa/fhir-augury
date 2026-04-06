@@ -103,6 +103,69 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
         return await PostTimedJsonAsync(url, ct);
     }
 
+    // ── Typed methods (used by Item Viewer) ─────────────────────
+
+    private static readonly JsonSerializerOptions TypedJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    public async Task<ItemResponse?> GetItemTypedAsync(
+        string source, string id, CancellationToken ct = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?includeContent=true&includeComments=true";
+        HttpResponseMessage response = await client.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ItemResponse>(TypedJsonOptions, ct);
+    }
+
+    public async Task<SnapshotResponse?> GetSnapshotTypedAsync(
+        string source, string id, CancellationToken ct = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/snapshot/{EncodeId(source, id)}";
+        HttpResponseMessage response = await client.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<SnapshotResponse>(TypedJsonOptions, ct);
+    }
+
+    public async Task<CrossReferenceResponse?> GetCrossReferencesTypedAsync(
+        string source, string id, CancellationToken ct = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string url = $"{Address.TrimEnd('/')}/api/v1/xref/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}";
+        HttpResponseMessage response = await client.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<CrossReferenceResponse>(TypedJsonOptions, ct);
+    }
+
+    public async Task<FindRelatedResponse?> GetRelatedTypedAsync(
+        string source, string id, int limit = 10, CancellationToken ct = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string url = $"{Address.TrimEnd('/')}/api/v1/related/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?limit={limit}";
+        HttpResponseMessage response = await client.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<FindRelatedResponse>(TypedJsonOptions, ct);
+    }
+
+    internal static string EncodeId(string source, string id)
+    {
+        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
+            return id.Replace("#", "%23");
+        return Uri.EscapeDataString(id);
+    }
+
     // ── Formatting ───────────────────────────────────────────────
 
     public static string PrettyPrint(string json)

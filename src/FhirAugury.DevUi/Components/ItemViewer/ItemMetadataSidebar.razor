@@ -1,0 +1,85 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+
+<div class="card item-viewer-sidebar">
+    <div class="card-header fw-semibold"><i class="bi bi-info-circle"></i> Metadata</div>
+    <div class="card-body">
+        @if (Metadata is { Count: > 0 })
+        {
+            <dl>
+                @foreach (string key in DisplayOrder)
+                {
+                    @if (Metadata.TryGetValue(key, out string? value) && !string.IsNullOrEmpty(value))
+                    {
+                        <dt>@FormatKey(key)</dt>
+                        <dd>@RenderValue(key, value)</dd>
+                    }
+                }
+                @* Show remaining keys not in display order *@
+                @foreach (KeyValuePair<string, string> kv in Metadata.Where(kv => !DisplayOrder.Contains(kv.Key)))
+                {
+                    <dt>@FormatKey(kv.Key)</dt>
+                    <dd>@RenderValue(kv.Key, kv.Value)</dd>
+                }
+            </dl>
+        }
+        else
+        {
+            <span class="text-muted">No metadata available.</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public Dictionary<string, string>? Metadata { get; set; }
+    [Parameter] public List<string> DisplayOrder { get; set; } = [];
+    [Parameter] public string Source { get; set; } = "";
+
+    private static string FormatKey(string key)
+    {
+        string spaced = key.Replace('_', ' ');
+        return char.ToUpperInvariant(spaced[0]) + spaced[1..];
+    }
+
+    private RenderFragment RenderValue(string key, string value) => builder =>
+    {
+        if (key is "labels" or "assignees")
+        {
+            int seq = 0;
+            foreach (string label in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                builder.OpenElement(seq++, "span");
+                builder.AddAttribute(seq++, "class", "badge bg-info text-dark me-1");
+                builder.AddContent(seq++, label);
+                builder.CloseElement();
+            }
+        }
+        else if (key == "parent_id" && Source.Equals("confluence", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.OpenElement(0, "a");
+            builder.AddAttribute(1, "href", ItemViewerUrl.For("confluence", value));
+            builder.OpenElement(2, "code");
+            builder.AddContent(3, value);
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+        else if (key == "jira_refs")
+        {
+            int seq = 0;
+            foreach (string jiraRef in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                builder.OpenElement(seq++, "a");
+                builder.AddAttribute(seq++, "href", ItemViewerUrl.For("jira", jiraRef));
+                builder.AddAttribute(seq++, "class", "me-1");
+                builder.OpenElement(seq++, "code");
+                builder.AddContent(seq++, jiraRef);
+                builder.CloseElement();
+                builder.CloseElement();
+            }
+        }
+        else
+        {
+            builder.AddContent(0, value);
+        }
+    };
+}
