@@ -11,7 +11,7 @@
         "--source", "jira"
       ],
       "env": {
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
+        "FHIR_AUGURY_JIRA": "http://localhost:5160"
       }
     }
   }

@@ -5,26 +5,27 @@ service's implementation details, and guidance for adding new data sources.
 
 ## Architecture Overview
 
-In v2, each data source is an **independent microservice** with its own gRPC
-server, SQLite database, FTS5 indexes, file-system cache, ingestion pipeline,
-and scheduled sync worker. The Orchestrator (`:5150/5151`) coordinates all
+In v2, each data source is an **independent microservice** with its own HTTP
+API, SQLite database, FTS5 indexes, file-system cache, ingestion pipeline,
+and scheduled sync worker. The Orchestrator (`:5150`) coordinates all
 source services, aggregating search results and managing cross-references.
 
 ```
-Orchestrator (:5150 HTTP / :5151 gRPC)
-├── Source.Jira       (:5160 HTTP / :5161 gRPC)
-├── Source.Zulip      (:5170 HTTP / :5171 gRPC)
+Orchestrator (:5150 HTTP)
+├── Source.Jira       (:5160 HTTP)
+├── Source.Zulip      (:5170 HTTP)
 ├── Source.Confluence  (:5180 HTTP)
-└── Source.GitHub     (:5190 HTTP / :5191 gRPC)
+└── Source.GitHub     (:5190 HTTP)
 ```
 
-## Common gRPC Contract — `SourceService`
+## Common HTTP API Contract
 
-Every source service implements the `SourceService` gRPC service defined in
-`protos/`. This provides a uniform contract for the Orchestrator:
+Every source service implements a common set of HTTP API endpoints defined by
+shared contract classes in `FhirAugury.Common/Api/`. This provides a uniform
+contract for the Orchestrator:
 
-| RPC | Description |
-|-----|-------------|
+| Endpoint | Description |
+|----------|-------------|
 | `Search` | FTS5 full-text search within the source, returns scored results with snippets |
 | `GetItem` | Retrieve a single item by ID |
 | `ListItems` | List items with optional filters and pagination |
@@ -41,13 +42,13 @@ Every source service implements the `SourceService` gRPC service defined in
 | `RebuildIndex` | Rebuild specific indexes (BM25, FTS, cross-refs, lookup tables, etc.) |
 | `HealthCheck` | Liveness/readiness probe |
 
-## Source-Specific gRPC Services
+## Source-Specific HTTP API Endpoints
 
-Each source also exposes a source-specific gRPC service for domain queries:
+Each source also exposes source-specific HTTP API endpoints for domain queries:
 
-### `JiraService`
+### Jira Endpoints
 
-| RPC | Description |
+| Endpoint | Description |
 |-----|-------------|
 | `GetIssueComments` | Comments for a specific issue |
 | `GetIssueLinks` | Cross-reference links for an issue |
@@ -58,9 +59,9 @@ Each source also exposes a source-specific gRPC service for domain queries:
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
 
-### `ZulipService`
+### Zulip Endpoints
 
-| RPC | Description |
+| Endpoint | Description |
 |-----|-------------|
 | `GetThread` | Full message thread for a topic |
 | `ListStreams` | Available streams |
@@ -71,9 +72,9 @@ Each source also exposes a source-specific gRPC service for domain queries:
 | `QueryMessages` | Arbitrary message query |
 | `GetThreadSnapshot` | Thread snapshot with context |
 
-### `ConfluenceService`
+### Confluence Endpoints
 
-| RPC | Description |
+| Endpoint | Description |
 |-----|-------------|
 | `GetPageComments` | Comments on a page |
 | `GetPageChildren` | Child pages in the hierarchy |
@@ -83,9 +84,9 @@ Each source also exposes a source-specific gRPC service for domain queries:
 | `GetPagesByLabel` | Pages filtered by label |
 | `GetPageSnapshot` | Full page snapshot |
 
-### `GitHubService`
+### GitHub Endpoints
 
-| RPC | Description |
+| Endpoint | Description |
 |-----|-------------|
 | `GetIssueComments` | Comments on an issue/PR |
 | `GetPullRequestDetails` | PR-specific details (branches, merge state) |
@@ -105,21 +106,21 @@ Each source also exposes a source-specific gRPC service for domain queries:
 Each source service follows the same internal pattern:
 
 ```
-Source Service (gRPC server)
+Source Service (HTTP API)
 ├── Database            — Source-specific SourceDatabase subclass (own SQLite file)
 ├── Ingestion Pipeline  — Fetches from upstream API, upserts into DB
 ├── FTS5 Index          — Content-synced FTS5 virtual tables with auto-triggers
 ├── BM25 Index          — Pre-computed keyword index (index_keywords, index_corpus, index_doc_stats)
 ├── Sync State          — sync_state + ingestion_log tables for scheduling
 ├── Cache               — FileSystemResponseCache for raw API responses
-├── gRPC Services       — SourceService + source-specific service implementations
+├── HTTP API Controllers — Common + source-specific endpoint implementations
 └── Scheduled Worker    — Background worker for periodic sync
 ```
 
 ### Shared Infrastructure (FhirAugury.Common)
 
-The `FhirAugury.Common` shared library compiles the proto definitions and
-provides:
+The `FhirAugury.Common` shared library provides shared API contract classes and
+reusable infrastructure:
 
 - **`Database/SourceDatabase`** — Abstract base class for per-source SQLite
   databases. Opens with WAL mode + performance pragmas. Provides
@@ -151,13 +152,16 @@ provides:
   count-and-classify with stop-word filtering and lemmatization),
   `Lemmatizer` (inflection→lemma normalization with `Empty` singleton
   fallback).
-- **`Grpc/`** — `GrpcClientExtensions`, `GrpcErrorMapper`.
+- **`Grpc/`** — `GrpcErrorMapper` (legacy), `AtlassianAuthHandler`.
+- **`Api/`** — Shared HTTP API contracts: `SearchContracts`, `ItemContracts`,
+  `CrossReferenceContracts`, `IngestionContracts`, `ServiceContracts`,
+  `ContentFormats`.
 - **`HttpRetryHelper`** — Exponential backoff ±20% jitter, max 30s delay,
   respects `Retry-After` headers. Fails immediately on 401/403.
 
 ## Source Service Details
 
-### Jira (`Source.Jira` — `:5160/5161`)
+### Jira (`Source.Jira` — `:5160`)
 
 | Property | Value |
 |----------|-------|
@@ -165,7 +169,7 @@ provides:
 | **Auth methods** | Session cookie or API token (HTTP Basic) |
 | **Data types** | Issues + comments |
 | **Database** | `jira.db` |
-| **gRPC services** | `SourceService`, `JiraService` |
+| **API** | HTTP API controllers |
 | **Page size** | 100 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
@@ -204,7 +208,7 @@ mode is used; otherwise Cookie mode.
 
 ---
 
-### Zulip (`Source.Zulip` — `:5170/5171`)
+### Zulip (`Source.Zulip` — `:5170`)
 
 | Property | Value |
 |----------|-------|
@@ -212,7 +216,7 @@ mode is used; otherwise Cookie mode.
 | **Auth methods** | HTTP Basic (email + API key), `.zuliprc` file |
 | **Data types** | Streams + messages |
 | **Database** | `zulip.db` |
-| **gRPC services** | `SourceService`, `ZulipService` |
+| **API** | HTTP API controllers |
 | **Batch size** | 1000 |
 | **HTTP timeout** | 10 minutes |
 | **Cache support** | Yes |
@@ -228,7 +232,7 @@ The `ExcludedStreamIds` configuration option allows excluding specific streams
 from ingestion. During stream sync, excluded streams have their `IncludeStream`
 column set to `0` in the `zulip_streams` table; only streams with
 `IncludeStream = 1` are ingested for messages. The `IncludeStream` flag can
-also be toggled per-stream via the `UpdateStream` gRPC RPC.
+also be toggled per-stream via the `UpdateStream` HTTP API endpoint.
 
 **Data model:**
 
@@ -302,7 +306,7 @@ by `ConfluenceContentParser`, which handles macros, images, and attachments.
 
 ---
 
-### GitHub (`Source.GitHub` — `:5190/5191`)
+### GitHub (`Source.GitHub` — `:5190`)
 
 | Property | Value |
 |----------|-------|
@@ -310,7 +314,7 @@ by `ConfluenceContentParser`, which handles macros, images, and attachments.
 | **Auth methods** | Bearer token (Personal Access Token) |
 | **Data types** | Repositories + issues/PRs + comments |
 | **Database** | `github.db` |
-| **gRPC services** | `SourceService`, `GitHubService` |
+| **API** | HTTP API controllers |
 | **Page size** | 100 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
@@ -375,13 +379,12 @@ To add a new data source in the v2 architecture, follow these steps:
 Create a new project `Source.NewSource` as an independent microservice. The
 project should reference `FhirAugury.Common` for shared infrastructure.
 
-### 2. Define Proto Definitions
+### 2. Define API Contracts
 
-In `protos/`, add the gRPC service definitions:
-
-- Implement the common `SourceService` RPCs (Search, GetItem, ListItems, etc.)
-- Define a source-specific service (e.g., `NewSourceService`) with
-  domain-specific RPCs
+In `FhirAugury.Common/Api/`, add any new contract classes needed for the source.
+The common contracts (`SearchContracts`, `ItemContracts`, etc.) should be
+reusable. Add source-specific request/response types if domain-specific
+endpoints are needed.
 
 ### 3. Define the Database Schema
 
@@ -415,18 +418,18 @@ Build the ingestion pipeline within the source service:
 - `FileSystemResponseCache` for caching raw responses
 - Scheduled worker for periodic sync using `sync_state` and `ingestion_log`
 
-### 5. Implement the gRPC Services
+### 5. Implement the HTTP API Controllers
 
-Implement both the common `SourceService` and the source-specific gRPC service:
+Implement HTTP API controllers for both common operations and source-specific
+endpoints:
 
 - `Search`: FTS5 MATCH query with BM25 scoring and snippet extraction
-- `StreamSearchableText`: Stream all content for cross-reference scanning
 - `TriggerIngestion`: Full and incremental ingestion support
-- Source-specific RPCs for domain queries
+- Source-specific endpoints for domain queries
 
 ### 6. Register in Docker and Orchestrator
 
-- Add the service to `docker-compose.yml` with appropriate ports
+- Add the service to `docker-compose.yml` with appropriate HTTP port
 - Register the source in the Orchestrator so it is included in fan-out search,
   cross-reference scanning, and aggregated results
 - Add cross-reference patterns to `CrossRefPatterns` in `FhirAugury.Common`
@@ -441,7 +444,7 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 
 | Feature | Jira | Zulip | Confluence | GitHub |
 |---------|------|-------|------------|--------|
-| **Ports** | 5160/5161 | 5170/5171 | 5180 | 5190/5191 |
+| **Ports** | 5160 | 5170 | 5180 | 5190 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
 | **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
 | **Pagination** | Offset | Anchor | Offset | Page number |

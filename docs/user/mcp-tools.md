@@ -3,7 +3,7 @@
 FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
-others. The MCP server connects via gRPC to the orchestrator and source
+others. The MCP server connects via HTTP to the orchestrator and source
 services, providing 18 tools across 3 categories (Unified, Jira, Zulip).
 
 > **Note:** Confluence and GitHub tools are not yet implemented. The client
@@ -31,16 +31,16 @@ The MCP server is split into three projects:
 
 ### Configuration
 
-Both MCP servers (`McpStdio` and `McpHttp`) register gRPC clients via
+Both MCP servers (`McpStdio` and `McpHttp`) register HTTP clients via
 environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
-| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
-| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence source HTTP address |
-| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
+| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
+| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
+| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
+| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### Stdio Transport (Claude Desktop, etc.)
 
@@ -66,11 +66,11 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
         "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
-        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
-        "FHIR_AUGURY_CONFLUENCE_HTTP": "http://localhost:5180",
-        "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
+        "FHIR_AUGURY_JIRA": "http://localhost:5160",
+        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
+        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
+        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
       }
     }
   }
@@ -91,7 +91,7 @@ To connect directly to a single source service, bypassing the orchestrator:
         "--", "--mode", "direct", "--source", "jira"
       ],
       "env": {
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
+        "FHIR_AUGURY_JIRA": "http://localhost:5160"
       }
     }
   }

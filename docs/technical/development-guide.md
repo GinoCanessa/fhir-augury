@@ -90,12 +90,12 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 | Project | What It Tests |
 |---------|---------------|
 | `FhirAugury.Common.Tests` | Shared library: caching, database helpers, text utilities |
-| `FhirAugury.Source.Jira.Tests` | Jira source: ingestion, indexing, gRPC API |
-| `FhirAugury.Source.Zulip.Tests` | Zulip source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.Jira.Tests` | Jira source: ingestion, indexing, HTTP API |
+| `FhirAugury.Source.Zulip.Tests` | Zulip source: ingestion, indexing, HTTP API |
 | `FhirAugury.Source.Confluence.Tests` | Confluence source: ingestion, indexing, HTTP API |
-| `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, gRPC API |
+| `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, HTTP API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
-| `FhirAugury.McpShared.Tests` | MCP server tool functions (xUnit + NSubstitute + Grpc.Core.Testing) |
+| `FhirAugury.McpShared.Tests` | MCP server tool functions (xUnit + NSubstitute) |
 
 ### Test Infrastructure
 
@@ -113,26 +113,26 @@ Each source service runs independently with its own SQLite database:
 ```bash
 # Run a single source service
 dotnet run --project src/FhirAugury.Source.Jira
-# Starts on HTTP :5160, gRPC :5161
+# Starts on HTTP :5160
 
 dotnet run --project src/FhirAugury.Source.Zulip
-# Starts on HTTP :5170, gRPC :5171
+# Starts on HTTP :5170
 
 dotnet run --project src/FhirAugury.Source.Confluence
 # Starts on HTTP :5180
 
 dotnet run --project src/FhirAugury.Source.GitHub
-# Starts on HTTP :5190, gRPC :5191
+# Starts on HTTP :5190
 ```
 
 ### Orchestrator
 
 The orchestrator requires source services to be running. It connects to them
-via gRPC:
+via HTTP:
 
 ```bash
 dotnet run --project src/FhirAugury.Orchestrator
-# Starts on HTTP :5150, gRPC :5151
+# Starts on HTTP :5150
 ```
 
 ### All Services with .NET Aspire
@@ -154,7 +154,7 @@ fixed ports as when running individually.
 
 ### MCP Server (Stdio)
 
-The stdio MCP server connects to the orchestrator via gRPC. Configure the
+The stdio MCP server connects to the orchestrator via HTTP. Configure the
 orchestrator endpoint via environment variables:
 
 ```bash
@@ -180,7 +180,7 @@ McpHttp includes Aspire ServiceDefaults and is registered in the AppHost.
 
 ### CLI
 
-The CLI connects to the orchestrator via gRPC and uses a JSON-in/JSON-out
+The CLI connects to the orchestrator via HTTP and uses a JSON-in/JSON-out
 interface:
 
 ```bash
@@ -272,7 +272,7 @@ Each v2 service registers its own components via standard ASP.NET Core DI in
 - Source-specific database (SQLite connection, schema init)
 - Indexer (FTS5 setup and search)
 - Ingestion pipeline (downloader, mapper, cache)
-- gRPC services (`SourceService` + source-specific service)
+- HTTP API controllers (common + source-specific endpoints)
 - Hosted workers (`ScheduledIngestionWorker`)
 - `IResponseCache` (file-system cache)
 - `IHttpClientFactory` (for source API HTTP clients)
@@ -280,15 +280,15 @@ Each v2 service registers its own components via standard ASP.NET Core DI in
 The orchestrator registers:
 
 - Orchestrator database (cross-reference scan state)
-- `SourceRouter` (gRPC channels to sources)
+- `SourceRouter` (HTTP clients to sources)
 - `UnifiedSearchService`, `RelatedItemFinder`
 - `ServiceHealthMonitor`, `HealthCheckWorker`
-- gRPC service (`OrchestratorService`)
+- HTTP API controllers (`OrchestratorController`)
 
 ### Error Handling
 
-- **gRPC:** `GrpcErrorMapper` in `FhirAugury.Common` maps exceptions to gRPC
-  status codes (NotFound, Unavailable, Internal, etc.)
+- **HTTP errors:** Standard HTTP status codes for error responses (404, 503,
+  500, etc.)
 - **HTTP:** `HttpRetryHelper` retries transient failures (429/5xx) with
   exponential backoff + jitter. Respects `Retry-After` headers.
 - **Logging:** Structured logging via `ILogger` throughout
@@ -303,22 +303,22 @@ The orchestrator registers:
 
 To add a new data source (e.g., `Source.Slack`):
 
-1. **Create proto** — Add `slack.proto` to `protos/` defining `SlackService`
-   with source-specific RPCs
+1. **Define API contracts** — Add source-specific request/response types in
+   `FhirAugury.Common/Api/` if needed (common contracts are reusable)
 2. **Create project** — Add `src/FhirAugury.Source.Slack/` following the
    standard structure: `Api/`, `Cache/`, `Configuration/`, `Database/`,
    `Indexing/`, `Ingestion/`, `Workers/`, `Program.cs`
-3. **Implement SourceService** — Implement the common `SourceService` gRPC
-   contract (Search, GetItem, ListItems, etc.)
-4. **Implement SlackService** — Implement source-specific RPCs
+3. **Implement HTTP API controllers** — Implement controllers for common
+   operations (Search, GetItem, ListItems, etc.) and source-specific endpoints
+4. **Implement source-specific endpoints** — Implement domain-specific endpoints
 5. **Add Dockerfile** — Copy from an existing source and adjust
-6. **Add to docker-compose.yml** — Define the service with HTTP/gRPC ports,
+6. **Add to docker-compose.yml** — Define the service with HTTP port,
    cache and data volumes, health check
 7. **Add to AppHost** — Register the project in `src/FhirAugury.AppHost/AppHost.cs`
-   with `AddProject<>()`, HTTP/gRPC endpoints, and add it to the orchestrator's
+   with `AddProject<>()`, HTTP endpoint, and add it to the orchestrator's
    `WaitFor()` chain
 8. **Register in orchestrator** — Add the source endpoint to the orchestrator's
-   configuration so `SourceRouter` can create a gRPC channel to it
+   configuration so `SourceRouter` can create an HTTP client for it
 9. **Add tests** — Create `tests/FhirAugury.Source.Slack.Tests/`
 
 ## Versioning

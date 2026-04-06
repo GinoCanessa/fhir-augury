@@ -1,57 +1,24 @@
 # API Reference
 
-FHIR Augury v2 uses a microservices architecture. The **primary API is gRPC**,
-used by the CLI and MCP tools to communicate with the orchestrator. Each service
-also exposes a lightweight HTTP API for health checks and basic operations.
+FHIR Augury v2 uses a microservices architecture with HTTP/REST APIs for all
+communication. The CLI and MCP tools connect to the orchestrator via HTTP. Each
+service exposes an HTTP API for health checks, search, and management operations.
 
 ## Architecture
 
-| Service | HTTP Port | gRPC Port | Description |
-|---------|-----------|-----------|-------------|
-| Orchestrator | 5150 | 5151 | Central hub — routes queries to sources |
-| Jira | 5160 | 5161 | Indexes jira.hl7.org |
-| Zulip | 5170 | 5171 | Indexes chat.fhir.org |
-| Confluence | 5180 | — | Indexes confluence.hl7.org |
-| GitHub | 5190 | 5191 | Indexes HL7 GitHub repos |
-| MCP HTTP | 5200 | — | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
+| Service | Port | Description |
+|---------|------|-------------|
+| Orchestrator | 5150 | Central hub — routes queries to sources |
+| Jira | 5160 | Indexes jira.hl7.org |
+| Zulip | 5170 | Indexes chat.fhir.org |
+| Confluence | 5180 | Indexes confluence.hl7.org |
+| GitHub | 5190 | Indexes HL7 GitHub repos |
+| MCP HTTP | 5200 | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 
-> **Note:** The CLI and MCP stdio server connect to the orchestrator's gRPC port
-> (5151). The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on
-> port 5200 that provides the same MCP tools via HTTP/SSE transport. The HTTP
-> endpoints documented here are primarily for health checks, diagnostics, and
-> lightweight integrations. For full functionality, use the CLI or MCP tools.
-
----
-
-## gRPC API
-
-The gRPC service definitions are in the [`protos/`](../../protos/) directory.
-The orchestrator exposes gRPC services for:
-
-- **Search** — unified full-text search across all sources
-- **Get** — retrieve full item details from any source
-- **Related** — find related items using keyword similarity and cross-references
-- **Snapshot** — generate Markdown snapshots of items
-- **CrossReference** — query cross-reference links between items
-- **Ingestion** — trigger syncs, check status, rebuild indexes
-- **Services** — health checks, statistics, cross-reference scanning
-- **GetServiceEndpoints** — discover registered source service endpoints
-- **Query** — structured queries for Jira and Zulip with typed filters
-- **List** — list items with filtering and sorting
-
-### Zulip-Specific gRPC RPCs
-
-The `ZulipService` (defined in [`protos/zulip.proto`](../../protos/zulip.proto))
-includes stream management RPCs:
-
-| RPC | Request | Response | Description |
-|-----|---------|----------|-------------|
-| `ListStreams` | `ZulipListStreamsRequest` | stream `ZulipStream` | List all streams (includes `include_stream` field) |
-| `GetStream` | `GetStreamRequest` | `ZulipStreamInfo` | Get a single stream by Zulip stream ID |
-| `UpdateStream` | `UpdateStreamRequest` | `ZulipStreamInfo` | Update stream properties (`include_stream`) |
-
-The CLI (`FhirAugury.Cli`) is the recommended way to interact with the gRPC API.
-See the [CLI Reference](cli-reference.md) for all available commands.
+> **Note:** The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on
+> port 5200 that provides the same MCP tools via HTTP/SSE transport. The CLI
+> (`FhirAugury.Cli`) is the recommended way to interact with the API. See the
+> [CLI Reference](cli-reference.md) for all available commands.
 
 ---
 
@@ -196,7 +163,7 @@ Structured Zulip message query (proxied to Zulip source).
 
 The MCP HTTP server (`FhirAugury.McpHttp`) is a separate ASP.NET Core service
 that exposes MCP tools via HTTP/SSE transport. It is distinct from the
-orchestrator — it connects to the orchestrator and source services via gRPC as
+orchestrator — it connects to the orchestrator and source services via HTTP as
 a client. The server provides 18 MCP tools (6 unified, 6 Jira, 6 Zulip).
 
 > **Note:** Confluence and GitHub do not yet have dedicated MCP tools.

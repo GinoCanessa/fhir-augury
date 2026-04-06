@@ -11,16 +11,16 @@ In v2, search is **distributed across microservices**:
 1. Each **source service** (Jira, Zulip, Confluence, GitHub) maintains its own
    FTS5 indexes and BM25 keyword index in its local SQLite database
 2. The **Orchestrator** fans out search requests to all enabled sources via
-   gRPC, then aggregates, normalizes, boosts, and ranks the combined results
+   HTTP, then aggregates, normalizes, boosts, and ranks the combined results
 3. Cross-references are **source-owned** — each source service extracts and
    stores references to other sources in its own database using shared extractors
 
 ```
 User Query → Orchestrator
-              ├── gRPC Search → Source.Jira    (local FTS5 MATCH)
-              ├── gRPC Search → Source.Zulip   (local FTS5 MATCH)
+              ├── HTTP Search → Source.Jira    (local FTS5 MATCH)
+              ├── HTTP Search → Source.Zulip   (local FTS5 MATCH)
               ├── HTTP Search → Source.Confluence (local FTS5 MATCH)
-              └── gRPC Search → Source.GitHub  (local FTS5 MATCH)
+              └── HTTP Search → Source.GitHub  (local FTS5 MATCH)
               ↓
          Score Normalization (per-source min-max)
               ↓
@@ -76,7 +76,7 @@ Each source service handles search queries locally:
    and stored as a positive value
 4. **Snippet extraction** — The FTS5 `snippet()` function extracts context with
    `<b>`/`</b>` highlighting, up to 20 tokens of surrounding context
-5. **Return via gRPC** — Scored results with snippets are returned to the
+5. **Return via HTTP** — Scored results with snippets are returned as JSON to the
    Orchestrator
 
 ### Source Filters
@@ -97,7 +97,7 @@ The Orchestrator coordinates search across all source services:
 ### 1. Fan-Out
 
 Search requests are sent to all enabled source services **in parallel** via
-gRPC `Search` RPCs.
+HTTP `Search` API calls.
 
 ### 2. Score Normalization
 
@@ -306,7 +306,7 @@ references to items in other sources within its own database.
    per-target-type tables (`xref_jira`, `xref_zulip`, `xref_confluence`,
    `xref_github`, `xref_fhir_element`)
 4. When a source completes ingestion, it notifies peers via the
-   `NotifyPeerIngestionComplete` gRPC RPC so they can re-scan for new
+   `NotifyPeerIngestionComplete` HTTP API call so they can re-scan for new
    references to the updated source
 5. The orchestrator queries cross-references by fanning out
    `GetItemCrossReferences` calls to all source services and merging results

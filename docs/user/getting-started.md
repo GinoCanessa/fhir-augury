@@ -7,15 +7,15 @@ credentials, starting the microservices, and running your first search.
 
 FHIR Augury v2 uses a microservices architecture:
 
-- **Orchestrator** — central hub (HTTP :5150 / gRPC :5151) that coordinates
-  queries across sources
-- **Jira source** — (HTTP :5160 / gRPC :5161) indexes jira.hl7.org
-- **Zulip source** — (HTTP :5170 / gRPC :5171) indexes chat.fhir.org
-- **Confluence source** — (HTTP :5180) indexes confluence.hl7.org
-- **GitHub source** — (HTTP :5190 / gRPC :5191) indexes HL7 GitHub repos
+- **Orchestrator** — central hub (`:5150`) that coordinates queries across
+  sources
+- **Jira source** — (`:5160`) indexes jira.hl7.org
+- **Zulip source** — (`:5170`) indexes chat.fhir.org
+- **Confluence source** — (`:5180`) indexes confluence.hl7.org
+- **GitHub source** — (`:5190`) indexes HL7 GitHub repos
 
 Each source service maintains its own SQLite database, FTS5 indexes, and
-response cache. The CLI and MCP tools connect to the orchestrator via gRPC.
+response cache. The CLI and MCP tools connect to the orchestrator via HTTP.
 
 ## Prerequisites
 
@@ -431,7 +431,7 @@ for setup instructions and available tools.
 ## Next Steps
 
 - [CLI Reference](cli-reference.md) — all commands and options
-- [API Reference](api-reference.md) — HTTP and gRPC API details
+- [API Reference](api-reference.md) — HTTP API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
 - [Configuration](configuration.md) — full configuration reference
 - [Docker Deployment](docker.md) — advanced Docker Compose options

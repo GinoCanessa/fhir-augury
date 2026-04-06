@@ -1,7 +1,7 @@
 # CLI Reference
 
 The FHIR Augury CLI (`fhir-augury`) connects to the orchestrator service via
-gRPC to search, browse, and manage FHIR community data across all source
+HTTP to search, browse, and manage FHIR community data across all source
 services. All input and output uses JSON.
 
 ## Usage
@@ -28,7 +28,7 @@ fhir-augury --json @- [--pretty] [--output <file>]
 
 | Variable | Description |
 |----------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | Default orchestrator gRPC endpoint (default: `http://localhost:5151`) |
+| `FHIR_AUGURY_ORCHESTRATOR` | Orchestrator HTTP endpoint (default: `http://localhost:5150`) |
 
 The orchestrator address can also be set per-request via the `orchestrator`
 field in the JSON input.
@@ -57,7 +57,7 @@ All responses use a consistent envelope:
   "success": true,
   "command": "search",
   "data": { /* command-specific */ },
-  "metadata": { "elapsedMs": 142, "orchestrator": "http://localhost:5151", "version": "1.2.0" },
+  "metadata": { "elapsedMs": 142, "orchestrator": "http://localhost:5150", "version": "1.2.0" },
   "warnings": []
 }
 
@@ -66,7 +66,7 @@ All responses use a consistent envelope:
   "success": false,
   "command": "search",
   "error": { "code": "CONNECTION_FAILED", "message": "...", "details": "..." },
-  "metadata": { "orchestrator": "http://localhost:5151", "version": "1.2.0" }
+  "metadata": { "orchestrator": "http://localhost:5150", "version": "1.2.0" }
 }
 ```
 

@@ -25,7 +25,7 @@ pattern.
 ## Jira Source Service
 
 **Prefix:** `FHIR_AUGURY_JIRA_`
-**Ports:** HTTP 5160, gRPC 5161
+**Port:** 5160
 
 ### appsettings.json
 
@@ -41,11 +41,10 @@ pattern.
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
     "DefaultJql": null,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
     "Ports": {
-      "Http": 5160,
-      "Grpc": 5161
+      "Http": 5160
     },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
@@ -87,10 +86,9 @@ pattern.
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `DefaultProject` | string | `FHIR` | Default Jira project |
 | `DefaultJql` | string? | `null` | Custom JQL query to use instead of the default |
-| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5160` | HTTP listen port |
-| `Ports.Grpc` | int | `5161` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
@@ -109,7 +107,7 @@ pattern.
 ## Zulip Source Service
 
 **Prefix:** `FHIR_AUGURY_ZULIP_`
-**Ports:** HTTP 5170, gRPC 5171
+**Port:** 5170
 
 ### appsettings.json
 
@@ -127,11 +125,10 @@ pattern.
     "ExcludedStreamIds": [],
     "OnlyWebPublic": true,
     "StreamBaselineValues": {},
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
     "Ports": {
-      "Http": 5170,
-      "Grpc": 5171
+      "Http": 5170
     },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
@@ -174,10 +171,9 @@ pattern.
 | `ExcludedStreamIds` | int[] | `[]` | Zulip stream IDs to exclude from ingestion |
 | `OnlyWebPublic` | bool | `true` | Restrict ingestion to web-public streams only |
 | `StreamBaselineValues` | Dictionary | `{}` | Per-stream baseline multipliers for search ranking (stream name → value 0–10, default 5). Scores are multiplied by `value / 5.0`. |
-| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5170` | HTTP listen port |
-| `Ports.Grpc` | int | `5171` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
@@ -211,7 +207,7 @@ pattern.
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
     "Ports": {
       "Http": 5180
@@ -255,7 +251,7 @@ pattern.
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
-| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5180` | HTTP listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
@@ -276,7 +272,7 @@ pattern.
 ## GitHub Source Service
 
 **Prefix:** `FHIR_AUGURY_GITHUB_`
-**Ports:** HTTP 5190, gRPC 5191
+**Port:** 5190
 
 ### appsettings.json
 
@@ -304,11 +300,10 @@ pattern.
     "SyncSchedule": "02:00:00",
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
     "Ports": {
-      "Http": 5190,
-      "Grpc": 5191
+      "Http": 5190
     },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
@@ -372,10 +367,9 @@ pattern.
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
-| `OrchestratorGrpcAddress` | string? | `null` | Orchestrator gRPC address for ingestion notifications |
+| `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `Ports.Http` | int | `5190` | HTTP listen port |
-| `Ports.Grpc` | int | `5191` | gRPC listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.MaxConcurrentRequests` | int | `1` | Maximum concurrent API requests |
 | `RateLimiting.RespectRateLimitHeaders` | bool | `true` | Honor GitHub rate headers |
@@ -402,7 +396,7 @@ pattern.
 ## Orchestrator Service
 
 **Prefix:** `FHIR_AUGURY_ORCHESTRATOR_`
-**Ports:** HTTP 5150, gRPC 5151
+**Port:** 5150
 
 ### appsettings.json
 
@@ -411,14 +405,13 @@ pattern.
   "Orchestrator": {
     "DatabasePath": "./data/orchestrator.db",
     "Ports": {
-      "Http": 5150,
-      "Grpc": 5151
+      "Http": 5150
     },
     "Services": {
-      "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
-      "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
+      "Jira": { "HttpAddress": "http://localhost:5160", "Enabled": true },
+      "Zulip": { "HttpAddress": "http://localhost:5170", "Enabled": true },
       "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
-      "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
+      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true }
     },
     "Search": {
       "DefaultLimit": 20,
@@ -454,8 +447,7 @@ pattern.
 |-----|------|---------|-------------|
 | `DatabasePath` | string | `./data/orchestrator.db` | SQLite database path |
 | `Ports.Http` | int | `5150` | HTTP listen port |
-| `Ports.Grpc` | int | `5151` | gRPC listen port |
-| `Services.{Name}.GrpcAddress` | string | varies | gRPC endpoint for source |
+| `Services.{Name}.HttpAddress` | string | varies | HTTP endpoint for source |
 | `Services.{Name}.Enabled` | bool | `true` | Enable/disable source |
 | `Search.DefaultLimit` | int | `20` | Default search result limit |
 | `Search.MaxLimit` | int | `100` | Maximum search result limit |
@@ -475,18 +467,18 @@ pattern.
 
 ## MCP Server (Stdio) — `FhirAugury.McpStdio`
 
-The stdio MCP server connects to services via gRPC and is configured through
+The stdio MCP server connects to services via HTTP and is configured through
 environment variables. It is packaged as the `fhir-augury-mcp` dotnet tool.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
-| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
-| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
+| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
+| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
+| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
+| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### CLI Arguments
 
@@ -509,11 +501,11 @@ on port 5200.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
-| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira gRPC address |
-| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub gRPC address |
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
+| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
+| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
+| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
+| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### appsettings.json
 
@@ -534,8 +526,8 @@ environment:
   - FHIR_AUGURY_JIRA__Jira__CachePath=/app/cache
   - FHIR_AUGURY_JIRA__Jira__DatabasePath=/app/data/jira.db
 
-  # Override orchestrator gRPC addresses to use container names
-  - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
+  # Override orchestrator addresses to use container names
+  - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__HttpAddress=http://source-jira:5160
 
   # BM25 tuning (optional)
   - FHIR_AUGURY_JIRA__Jira__Bm25__K1=1.2

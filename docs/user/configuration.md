@@ -45,7 +45,7 @@ Double underscores (`__`) separate nested keys.
 
 Each source service runs independently with its own database, cache, and ports.
 
-### Jira Source (`:5160` HTTP / `:5161` gRPC)
+### Jira Source (`:5160`)
 
 ```json
 {
@@ -62,9 +62,9 @@ Each source service runs independently with its own database, cache, and ports.
     "ReloadFromCacheOnStartup": false,
     "DefaultProject": "FHIR",
     "DefaultJql": null,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
-    "Ports": { "Http": 5160, "Grpc": 5161 },
+    "Ports": { "Http": 5160 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
       "BackoffBaseSeconds": 2,
@@ -101,7 +101,7 @@ FHIR_AUGURY_JIRA__Jira__Email=you@example.com
 FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
 ```
 
-### Zulip Source (`:5170` HTTP / `:5171` gRPC)
+### Zulip Source (`:5170`)
 
 ```json
 {
@@ -119,9 +119,9 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "ExcludedStreamIds": [],
     "OnlyWebPublic": true,
     "StreamBaselineValues": {},
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
-    "Ports": { "Http": 5170, "Grpc": 5171 },
+    "Ports": { "Http": 5170 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 5,
       "BackoffBaseSeconds": 2,
@@ -165,7 +165,7 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
     "Ports": { "Http": 5180 },
     "RateLimiting": {
@@ -203,7 +203,7 @@ FHIR_AUGURY_CONFLUENCE__Confluence__Username=username
 FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
 ```
 
-### GitHub Source (`:5190` HTTP / `:5191` gRPC)
+### GitHub Source (`:5190`)
 
 ```json
 {
@@ -229,9 +229,9 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
     "SyncSchedule": "02:00:00",
     "MinSyncAge": "04:00:00",
     "ReloadFromCacheOnStartup": false,
-    "OrchestratorGrpcAddress": null,
+    "OrchestratorAddress": null,
     "IngestionPaused": false,
-    "Ports": { "Http": 5190, "Grpc": 5191 },
+    "Ports": { "Http": 5190 },
     "RateLimiting": {
       "MaxRequestsPerSecond": 10,
       "BackoffBaseSeconds": 5,
@@ -281,7 +281,7 @@ The `GhCli` section configures the `gh` CLI provider:
 
 ---
 
-## Orchestrator (`:5150` HTTP / `:5151` gRPC)
+## Orchestrator (`:5150`)
 
 The orchestrator aggregates results from source services and provides unified
 search, cross-references, and related-item discovery.
@@ -290,12 +290,12 @@ search, cross-references, and related-item discovery.
 {
   "Orchestrator": {
     "DatabasePath": "./data/orchestrator.db",
-    "Ports": { "Http": 5150, "Grpc": 5151 },
+    "Ports": { "Http": 5150 },
     "Services": {
-      "Jira": { "GrpcAddress": "http://localhost:5161", "Enabled": true },
-      "Zulip": { "GrpcAddress": "http://localhost:5171", "Enabled": true },
+      "Jira": { "HttpAddress": "http://localhost:5160", "Enabled": true },
+      "Zulip": { "HttpAddress": "http://localhost:5170", "Enabled": true },
       "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
-      "GitHub": { "GrpcAddress": "http://localhost:5191", "Enabled": true }
+      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true }
     },
     "Search": {
       "DefaultLimit": 20,
@@ -321,9 +321,9 @@ search, cross-references, and related-item discovery.
 Configure which source services the orchestrator connects to:
 
 ```bash
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://localhost:5161
+FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__HttpAddress=http://localhost:5160
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__Enabled=true
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress=http://localhost:5171
+FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://localhost:5170
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 ```
 
@@ -333,16 +333,16 @@ FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 
 The MCP tools are provided by two server projects (`FhirAugury.McpStdio` and
 `FhirAugury.McpHttp`) that share a common library (`FhirAugury.McpShared`).
-Both connect to the orchestrator and source services via gRPC using the same
+Both connect to the orchestrator and source services via HTTP using the same
 environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5151` | Orchestrator gRPC address |
-| `FHIR_AUGURY_JIRA_GRPC` | `http://localhost:5161` | Jira source gRPC address |
-| `FHIR_AUGURY_ZULIP_GRPC` | `http://localhost:5171` | Zulip source gRPC address |
-| `FHIR_AUGURY_CONFLUENCE_HTTP` | `http://localhost:5180` | Confluence source HTTP address |
-| `FHIR_AUGURY_GITHUB_GRPC` | `http://localhost:5191` | GitHub source gRPC address |
+| `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
+| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
+| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
+| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
+| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### McpStdio
 
@@ -362,7 +362,7 @@ dotnet run --project src/FhirAugury.McpStdio -- --mode direct --source jira
 ### McpHttp
 
 The HTTP-based server (`FhirAugury.McpHttp`) is an ASP.NET Core application
-that exposes the MCP endpoint via HTTP/SSE. It uses the same gRPC environment
+that exposes the MCP endpoint via HTTP/SSE. It uses the same HTTP environment
 variables as `McpStdio`, plus standard ASP.NET Core configuration:
 
 - **Port:** 5200 (configurable via `ASPNETCORE_URLS` or `--urls`)
@@ -380,8 +380,8 @@ See [MCP Tools](mcp-tools.md) for client configuration and tool documentation.
 
 The CLI connects to the orchestrator for queries. Configure the endpoint with:
 
-- **Flag:** `--orchestrator http://localhost:5151`
-- **Environment variable:** `FHIR_AUGURY_ORCHESTRATOR=http://localhost:5151`
+- **Flag:** `--orchestrator http://localhost:5150`
+- **Environment variable:** `FHIR_AUGURY_ORCHESTRATOR=http://localhost:5150`
 
 The flag takes precedence over the environment variable.
 
