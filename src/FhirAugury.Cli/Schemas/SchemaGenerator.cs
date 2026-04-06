@@ -209,7 +209,7 @@ public static class SchemaGenerator
             InputSchema(["command", "source", "id"], new()
             {
                 ["command"] = Const("xref"),
-                ["source"] = Prop("string", "Source system"),
+                ["source"] = Prop("string", "Source system (jira, zulip, confluence, github, fhir)"),
                 ["id"] = Prop("string", "Item identifier"),
                 ["direction"] = new { type = "string", description = "Direction: outgoing, incoming, or both", defaultValue = "both" },
             }),
