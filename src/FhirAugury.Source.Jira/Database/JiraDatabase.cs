@@ -119,7 +119,6 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_index_priorities;
             DROP TABLE IF EXISTS jira_index_statuses;
             DROP TABLE IF EXISTS jira_index_resolutions;
-            DROP TABLE IF EXISTS jira_zulip_refs;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_github;
             DROP TABLE IF EXISTS xref_confluence;

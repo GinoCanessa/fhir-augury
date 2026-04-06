@@ -5,6 +5,5 @@ namespace FhirAugury.Common.Indexing;
 /// Sources populate this with knowledge specific to their data.
 /// </summary>
 public record CrossRefExtractionContext(
-    HashSet<int>? ValidJiraNumbers = null,
-    HashSet<int>? KnownGitHubIssueIds = null
+    HashSet<int>? ValidJiraNumbers = null
 );

@@ -17,6 +17,7 @@ public class ConfluenceIngestionPipeline(
     ConfluenceSource source,
     ConfluenceDatabase database,
     ConfluenceIndexer indexer,
+    ConfluenceXRefRebuilder xrefRebuilder,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IHttpClientFactory httpClientFactory,
     IOptions<ConfluenceServiceOptions> optionsAccessor,
@@ -142,6 +143,19 @@ public class ConfluenceIngestionPipeline(
         catch (Exception ex)
         {
             tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
+
+        logger.LogInformation("Rebuilding cross-reference index");
+        tracker.MarkStarted("cross-refs");
+        try
+        {
+            xrefRebuilder.RebuildAll(ct);
+            tracker.MarkCompleted("cross-refs");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("cross-refs", ex.Message);
             throw;
         }
 

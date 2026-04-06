@@ -34,8 +34,8 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Confluence, id,
                     SourceSystems.Jira, r.JiraKey,
-                    "mentions", r.Context ?? "",
-                    null, sourceTitle, sourceUrl));
+                    "mentions", r.Context,
+                    r.ContentType, sourceTitle, sourceUrl));
             }
 
             foreach (ZulipXRefRecord r in ZulipXRefRecord.SelectList(connection, SourceId: id))
@@ -43,8 +43,8 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Confluence, id,
                     SourceSystems.Zulip, r.TargetId,
-                    "mentions", r.Context ?? "",
-                    null, sourceTitle, sourceUrl));
+                    "mentions", r.Context,
+                    r.ContentType, sourceTitle, sourceUrl));
             }
 
             foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: id))
@@ -52,8 +52,8 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Confluence, id,
                     SourceSystems.GitHub, r.TargetId,
-                    "mentions", r.Context ?? "",
-                    null, sourceTitle, sourceUrl));
+                    "mentions", r.Context,
+                    r.ContentType, sourceTitle, sourceUrl));
             }
 
             foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: id))
@@ -61,8 +61,8 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Confluence, id,
                     SourceSystems.Fhir, r.TargetId,
-                    "mentions", r.Context ?? "",
-                    null, sourceTitle, sourceUrl));
+                    "mentions", r.Context,
+                    r.ContentType, sourceTitle, sourceUrl));
             }
         }
 
@@ -79,8 +79,8 @@ public class CrossRefController(ConfluenceDatabase db, IOptions<ConfluenceServic
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Confluence, jiraRef.SourceId,
                     SourceSystems.Jira, id,
-                    "mentions", jiraRef.Context ?? "",
-                    null, page.Title, page.Url ?? ""));
+                    "mentions", jiraRef.Context,
+                    jiraRef.ContentType, page.Title, page.Url));
             }
         }
 

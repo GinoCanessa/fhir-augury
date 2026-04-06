@@ -30,44 +30,63 @@ public class ConfluenceXRefRebuilder(
             cmd.ExecuteNonQuery();
         }
 
-        List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
         int refCount = 0;
 
+        // Scan pages
+        List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
         foreach (ConfluencePageRecord page in pages)
         {
             ct.ThrowIfCancellationRequested();
             string pageText = $"{page.Title} {page.BodyPlain}";
-
-            foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, null, pageText))
-            {
-                r.Id = JiraXRefRecord.GetIndex();
-                JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-                refCount++;
-            }
-
-            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
-            {
-                r.Id = ZulipXRefRecord.GetIndex();
-                ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-                refCount++;
-            }
-
-            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
-            {
-                r.Id = GitHubXRefRecord.GetIndex();
-                GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-                refCount++;
-            }
-
-            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Page, page.ConfluenceId, pageText))
-            {
-                r.Id = FhirElementXRefRecord.GetIndex();
-                FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-                refCount++;
-            }
+            refCount += ExtractAndInsertAll(connection, page.ConfluenceId, ContentTypes.Page, pageText);
         }
 
-        logger.LogInformation("Rebuilt cross-references: {RefCount} refs from {PageCount} pages",
-            refCount, pages.Count);
+        // Scan comments (xrefs keyed to parent page ID, matching how Jira maps comment xrefs to the parent issue)
+        List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection);
+        foreach (ConfluenceCommentRecord comment in comments)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(comment.Body)) continue;
+            refCount += ExtractAndInsertAll(connection, comment.ConfluencePageId, ContentTypes.Comment, comment.Body);
+        }
+
+        logger.LogInformation("Rebuilt cross-references: {RefCount} refs from {PageCount} pages and {CommentCount} comments",
+            refCount, pages.Count, comments.Count);
+    }
+
+    private static int ExtractAndInsertAll(SqliteConnection connection, string sourceId, string contentType, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return 0;
+        int count = 0;
+
+        foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(contentType, sourceId, null, text))
+        {
+            r.Id = JiraXRefRecord.GetIndex();
+            JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(contentType, sourceId, text))
+        {
+            r.Id = ZulipXRefRecord.GetIndex();
+            ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(contentType, sourceId, text))
+        {
+            r.Id = GitHubXRefRecord.GetIndex();
+            GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(contentType, sourceId, text))
+        {
+            r.Id = FhirElementXRefRecord.GetIndex();
+            FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+            count++;
+        }
+
+        return count;
     }
 }

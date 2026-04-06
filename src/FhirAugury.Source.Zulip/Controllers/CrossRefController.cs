@@ -36,8 +36,8 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
                     refs.Add(new SourceCrossReference(
                         SourceSystems.Zulip, id,
                         SourceSystems.Jira, r.JiraKey,
-                        "mentions", r.Context ?? "",
-                        null, sourceTitle, sourceUrl));
+                        "mentions", r.Context,
+                        r.ContentType, sourceTitle, sourceUrl));
                 }
 
                 foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: id))
@@ -45,8 +45,8 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
                     refs.Add(new SourceCrossReference(
                         SourceSystems.Zulip, id,
                         SourceSystems.GitHub, r.TargetId,
-                        "mentions", r.Context ?? "",
-                        null, sourceTitle, sourceUrl));
+                        "mentions", r.Context,
+                        r.ContentType, sourceTitle, sourceUrl));
                 }
 
                 foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: id))
@@ -54,8 +54,8 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
                     refs.Add(new SourceCrossReference(
                         SourceSystems.Zulip, id,
                         SourceSystems.Confluence, r.TargetId,
-                        "mentions", r.Context ?? "",
-                        null, sourceTitle, sourceUrl));
+                        "mentions", r.Context,
+                        r.ContentType, sourceTitle, sourceUrl));
                 }
 
                 foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: id))
@@ -63,8 +63,8 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
                     refs.Add(new SourceCrossReference(
                         SourceSystems.Zulip, id,
                         SourceSystems.Fhir, r.TargetId,
-                        "mentions", r.Context ?? "",
-                        null, sourceTitle, sourceUrl));
+                        "mentions", r.Context,
+                        r.ContentType, sourceTitle, sourceUrl));
                 }
             }
         }
@@ -84,8 +84,8 @@ public class CrossRefController(ZulipDatabase db, IOptions<ZulipServiceOptions> 
                 refs.Add(new SourceCrossReference(
                     SourceSystems.Zulip, jiraRef.SourceId,
                     SourceSystems.Jira, id,
-                    "mentions", jiraRef.Context ?? "",
-                    null,
+                    "mentions", jiraRef.Context,
+                    jiraRef.ContentType,
                     $"{message.StreamName} > {message.Topic}",
                     ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId)));
             }

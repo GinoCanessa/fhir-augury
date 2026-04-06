@@ -105,7 +105,6 @@ public class ZulipDatabase : SourceDatabase
         cmd.CommandText = """
             DROP TABLE IF EXISTS zulip_messages_fts;
             DROP TABLE IF EXISTS zulip_thread_tickets;
-            DROP TABLE IF EXISTS zulip_message_tickets;
             DROP TABLE IF EXISTS zulip_messages;
             DROP TABLE IF EXISTS zulip_streams;
             DROP TABLE IF EXISTS sync_state;

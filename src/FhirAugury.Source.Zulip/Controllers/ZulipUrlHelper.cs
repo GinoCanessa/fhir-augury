@@ -57,7 +57,7 @@ internal static class ZulipUrlHelper
             : null;
     }
 
-    internal static SearchResponse GetCrossSourceRelated(string seedSource, string seedId, int? limit, ZulipDatabase db, ZulipServiceOptions options)
+    internal static FindRelatedResponse GetCrossSourceRelated(string seedSource, string seedId, int? limit, ZulipDatabase db, ZulipServiceOptions options)
     {
         int maxResults = Math.Min(limit ?? 10, 50);
 
@@ -85,7 +85,7 @@ internal static class ZulipUrlHelper
             cmd.Parameters.AddWithValue("@jiraKey", seedId);
             cmd.Parameters.AddWithValue("@limit", maxResults);
 
-            List<SearchResult> results = [];
+            List<RelatedItem> results = [];
             using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
             {
@@ -97,25 +97,26 @@ internal static class ZulipUrlHelper
                 if (latestMsgId == 0)
                     continue;
 
-                results.Add(new SearchResult
+                results.Add(new RelatedItem
                 {
                     Source = SourceSystems.Zulip,
+                    ContentType = ContentTypes.Message,
                     Id = latestMsgId.ToString(),
                     Title = $"[{streamName}] {topic}",
-                    Score = 1.0 * (baselineValue / 5.0),
+                    RelevanceScore = 1.0 * (baselineValue / 5.0),
                     Url = BuildMessageUrl(options, streamName, topic, latestMsgId),
-                    UpdatedAt = ParseTimestamp(reader, 4),
+                    Relationship = "mentioned_in",
                 });
             }
 
-            return new SearchResponse("", results.Count, results, null);
+            return new FindRelatedResponse(seedSource, seedId, null, results);
         }
 
         // Unknown seed source: fall back to FTS with seedId as keyword, reduced score
         using SqliteConnection conn = db.OpenConnection();
         string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(seedId);
         if (string.IsNullOrEmpty(ftsQuery))
-            return new SearchResponse("", 0, [], null);
+            return new FindRelatedResponse(seedSource, seedId, null, []);
 
         string ftsSql = """
             SELECT zm.ZulipMessageId, zm.StreamName, zm.Topic,
@@ -134,7 +135,7 @@ internal static class ZulipUrlHelper
         ftsCmd.Parameters.AddWithValue("@query", ftsQuery);
         ftsCmd.Parameters.AddWithValue("@limit", maxResults);
 
-        List<SearchResult> ftsResults = [];
+        List<RelatedItem> ftsResults = [];
         using SqliteDataReader ftsReader = ftsCmd.ExecuteReader();
         while (ftsReader.Read())
         {
@@ -144,18 +145,18 @@ internal static class ZulipUrlHelper
             double rawRank = ftsReader.GetDouble(4);
             int baselineValue = ftsReader.GetInt32(6);
 
-            ftsResults.Add(new SearchResult
+            ftsResults.Add(new RelatedItem
             {
                 Source = SourceSystems.Zulip,
+                ContentType = ContentTypes.Message,
                 Id = msgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = ftsReader.IsDBNull(3) ? null : ftsReader.GetString(3),
-                Score = (-rawRank * 0.5) * (baselineValue / 5.0),
+                RelevanceScore = (-rawRank * 0.5) * (baselineValue / 5.0),
                 Url = BuildMessageUrl(options, streamName, topic, msgId),
-                UpdatedAt = ParseTimestamp(ftsReader, 5),
             });
         }
 
-        return new SearchResponse("", ftsResults.Count, ftsResults, null);
+        return new FindRelatedResponse(seedSource, seedId, null, ftsResults);
     }
 }

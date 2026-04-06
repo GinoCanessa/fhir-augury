@@ -41,7 +41,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
         {
             ct.ThrowIfCancellationRequested();
             string text = $"{issue.Title} {issue.Body}";
-            refCount += ExtractAndInsertAll(connection, text, "issue", issue.UniqueKey, validJiraNumbers);
+            refCount += ExtractAndInsertAll(connection, text, ContentTypes.Issue, issue.UniqueKey, validJiraNumbers);
         }
 
         // Scan comments
@@ -50,7 +50,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
         {
             ct.ThrowIfCancellationRequested();
             string sourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
-            refCount += ExtractAndInsertAll(connection, comment.Body, "comment", sourceId, validJiraNumbers);
+            refCount += ExtractAndInsertAll(connection, comment.Body, ContentTypes.Comment, sourceId, validJiraNumbers);
         }
 
         // Scan commits
@@ -58,7 +58,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
         foreach (GitHubCommitRecord commit in allCommits)
         {
             ct.ThrowIfCancellationRequested();
-            refCount += ExtractAndInsertAll(connection, commit.Message, "commit", commit.Sha, validJiraNumbers);
+            refCount += ExtractAndInsertAll(connection, commit.Message, ContentTypes.Commit, commit.Sha, validJiraNumbers);
         }
 
         // Scan file contents
@@ -69,7 +69,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
             if (!string.IsNullOrEmpty(file.ContentText))
             {
                 string sourceId = $"{file.RepoFullName}:{file.FilePath}";
-                refCount += ExtractAndInsertAll(connection, file.ContentText, "file", sourceId, validJiraNumbers);
+                refCount += ExtractAndInsertAll(connection, file.ContentText, ContentTypes.File, sourceId, validJiraNumbers);
             }
         }
 

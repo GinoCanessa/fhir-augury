@@ -85,7 +85,6 @@ public class ConfluenceDatabase : SourceDatabase
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;
             DROP TABLE IF EXISTS index_doc_stats;
-            DROP TABLE IF EXISTS confluence_jira_refs;
             DROP TABLE IF EXISTS xref_jira;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_github;

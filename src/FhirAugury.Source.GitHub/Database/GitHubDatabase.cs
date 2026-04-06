@@ -127,7 +127,6 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_commits;
             DROP TABLE IF EXISTS github_commit_files;
             DROP TABLE IF EXISTS github_commit_pr_links;
-            DROP TABLE IF EXISTS github_jira_refs;
             DROP TABLE IF EXISTS xref_jira;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_confluence;

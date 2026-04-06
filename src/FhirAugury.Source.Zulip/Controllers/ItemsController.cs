@@ -96,19 +96,21 @@ public class ItemsController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
         // Cross-source related: use seed source/id if provided
         if (!string.IsNullOrEmpty(seedSource) && !string.Equals(seedSource, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
         {
-            SearchResponse response = ZulipUrlHelper.GetCrossSourceRelated(seedSource, seedId ?? id, limit, db, options);
+            FindRelatedResponse response = ZulipUrlHelper.GetCrossSourceRelated(seedSource, seedId ?? id, limit, db, options);
             return Ok(response);
         }
 
         if (!int.TryParse(id, out int msgId))
-            return Ok(new SearchResponse("", 0, [], null));
+            return Ok(new FindRelatedResponse(SourceSystems.Zulip, id, null, []));
 
         using SqliteConnection connection = db.OpenConnection();
         int maxResults = Math.Min(limit ?? 10, 50);
 
         ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
         if (message is null)
-            return Ok(new SearchResponse("", 0, [], null));
+            return Ok(new FindRelatedResponse(SourceSystems.Zulip, id, null, []));
+
+        string seedTitle = $"[{message.StreamName}] {message.Topic}";
 
         string sql = """
             SELECT ZulipMessageId, StreamName, Topic, SenderName, Timestamp, substr(ContentPlain, 1, 200)
@@ -124,26 +126,27 @@ public class ItemsController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
         cmd.Parameters.AddWithValue("@msgId", msgId);
         cmd.Parameters.AddWithValue("@limit", maxResults);
 
-        List<SearchResult> results = [];
+        List<RelatedItem> results = [];
         using SqliteDataReader reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             int relMsgId = reader.GetInt32(0);
             string streamName = reader.GetString(1);
             string topic = reader.GetString(2);
-            results.Add(new SearchResult
+            results.Add(new RelatedItem
             {
                 Source = SourceSystems.Zulip,
+                ContentType = ContentTypes.Message,
                 Id = relMsgId.ToString(),
                 Title = $"[{streamName}] {topic}",
                 Snippet = reader.IsDBNull(5) ? null : reader.GetString(5),
-                Score = 0,
+                RelevanceScore = 0,
                 Url = ZulipUrlHelper.BuildMessageUrl(options, streamName, topic, relMsgId),
-                UpdatedAt = ZulipUrlHelper.ParseTimestamp(reader, 4),
+                Relationship = "same_thread",
             });
         }
 
-        return Ok(new SearchResponse("", results.Count, results, null));
+        return Ok(new FindRelatedResponse(SourceSystems.Zulip, id, seedTitle, results));
     }
 
     [HttpGet("items/{id}/snapshot")]
