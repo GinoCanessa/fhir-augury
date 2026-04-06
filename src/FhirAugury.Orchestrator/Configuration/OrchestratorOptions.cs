@@ -8,7 +8,7 @@ public class OrchestratorOptions
 
     public string DatabasePath { get; set; } = "./data/orchestrator.db";
     public PortConfiguration Ports { get; set; } = new();
-    public Dictionary<string, SourceServiceConfig> Services { get; set; } = new();
+    public Dictionary<string, SourceServiceConfig> Services { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public SearchOptions Search { get; set; } = new();
     public RelatedOptions Related { get; set; } = new();
     public FhirAugury.Common.Configuration.DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
