@@ -1,4 +1,5 @@
 @page "/"
+@using FhirAugury.Common.Api
 @using FhirAugury.DevUi.Services
 @inject OrchestratorClient Orchestrator
 
@@ -64,18 +65,17 @@ else
                     </td>
                 </tr>
 
-                @foreach (OrchestratorClient.ServiceInfo service in _services)
+                @foreach (ServiceHealthInfo service in _services)
                 {
                     <tr>
                         <td><strong>@service.Name</strong></td>
-                        <td><code>@(service.Address ?? "—")</code></td>
+                        <td><code>@(service.HttpAddress ?? "—")</code></td>
                         <td>
                             <span class="badge @GetStatusBadgeClass(service.Status)">@service.Status</span>
                         </td>
                         <td class="text-end">@service.ItemCount.ToString("N0")</td>
                         <td class="text-end">@FormatBytes(service.DbSizeBytes)</td>
-                        <td>@FormatTimestamp(service.LastSyncAt)</td>
-                        <td>
+                        <td>@FormatTimestamp(service.LastSyncAt)</td>                        <td>
                             @if (!string.IsNullOrEmpty(service.LastError))
                             {
                                 <span class="text-danger" title="@service.LastError">
@@ -88,7 +88,7 @@ else
                             }
                         </td>
                         <td>
-                            @if (service.Indexes.Count > 0)
+                            @if (service.Indexes is { Count: > 0 })
                             {
                                 int rebuilding = service.Indexes.Count(i => i.IsRebuilding);
                                 <button class="btn btn-sm btn-outline-info"
@@ -113,7 +113,7 @@ else
                         </td>
                     </tr>
 
-                    @if (_expandedIndexes.Contains(service.Name) && service.Indexes.Count > 0)
+                    @if (_expandedIndexes.Contains(service.Name) && service.Indexes is { Count: > 0 })
                     {
                         <tr>
                             <td colspan="9" class="bg-body-secondary p-0">
@@ -152,7 +152,7 @@ else
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            @foreach (OrchestratorClient.IndexInfo idx in service.Indexes)
+                                            @foreach (IndexStatusInfo idx in service.Indexes)
                                             {
                                                 string rebuildKey = RebuildKey(service.Name, idx.Name);
                                                 bool isRebuildRequested = _rebuildingKeys.Contains(rebuildKey);
@@ -217,7 +217,7 @@ else
 @code {
     private bool _loading = true;
     private string? _error;
-    private List<OrchestratorClient.ServiceInfo> _services = [];
+    private List<ServiceHealthInfo> _services = [];
     private HashSet<string> _expandedIndexes = [];
     private HashSet<string> _rebuildingKeys = [];
 
@@ -296,18 +296,14 @@ else
         return $"{size:F1} {units[unit]}";
     }
 
-    private static string FormatTimestamp(string? ts)
+    private static string FormatTimestamp(DateTimeOffset? dto)
     {
-        if (string.IsNullOrEmpty(ts)) return "—";
-        if (DateTimeOffset.TryParse(ts, out DateTimeOffset dto))
-        {
-            TimeSpan ago = DateTimeOffset.UtcNow - dto;
-            if (ago.TotalMinutes < 1) return "just now";
-            if (ago.TotalHours < 1) return $"{(int)ago.TotalMinutes}m ago";
-            if (ago.TotalDays < 1) return $"{(int)ago.TotalHours}h ago";
-            return dto.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
-        }
-        return ts;
+        if (dto is null) return "—";
+        TimeSpan ago = DateTimeOffset.UtcNow - dto.Value;
+        if (ago.TotalMinutes < 1) return "just now";
+        if (ago.TotalHours < 1) return $"{(int)ago.TotalMinutes}m ago";
+        if (ago.TotalDays < 1) return $"{(int)ago.TotalHours}h ago";
+        return dto.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
     }
 
     private static string Truncate(string text, int maxLength) =>

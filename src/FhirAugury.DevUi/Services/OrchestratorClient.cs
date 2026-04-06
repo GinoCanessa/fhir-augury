@@ -1,52 +1,33 @@
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Text.Json;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.DevUi.Services;
 
-public sealed class OrchestratorClient : IDisposable
+public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, IConfiguration configuration)
 {
-    private readonly HttpClient _httpClient = new();
     private static readonly JsonSerializerOptions PrettyJsonOptions = new() { WriteIndented = true };
 
-    public string Address { get; }
-
-    public OrchestratorClient(IConfiguration configuration)
-    {
-        Address = configuration["DevUi:OrchestratorAddress"] ?? "http://localhost:5150";
-    }
+    public string Address { get; } = configuration["DevUi:OrchestratorAddress"] ?? "http://localhost:5150";
 
     // ── Untimed methods (used by dashboard) ──────────────────────
 
-    public async Task<List<ServiceInfo>> GetServicesAsync(CancellationToken ct = default)
+    public async Task<List<ServiceHealthInfo>> GetServicesAsync(CancellationToken ct = default)
     {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         string url = $"{Address.TrimEnd('/')}/api/v1/services";
-        using HttpResponseMessage response = await _httpClient.GetAsync(url, ct);
+        using HttpResponseMessage response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(ct);
-        using JsonDocument doc = JsonDocument.Parse(json);
-
-        List<ServiceInfo> services = [];
-        foreach (JsonElement svc in doc.RootElement.GetProperty("services").EnumerateArray())
-        {
-            services.Add(new ServiceInfo
-            {
-                Name = GetStr(svc, "name"),
-                Status = GetStr(svc, "status"),
-                Address = GetNullStr(svc, "httpAddress"),
-                ItemCount = svc.TryGetProperty("itemCount", out JsonElement icEl) ? icEl.GetInt32() : 0,
-                DbSizeBytes = svc.TryGetProperty("dbSizeBytes", out JsonElement dbEl) ? dbEl.GetInt64() : 0,
-                LastSyncAt = GetNullStr(svc, "lastSyncAt"),
-                LastError = GetNullStr(svc, "lastError"),
-                Indexes = ParseIndexes(svc),
-            });
-        }
-        return services;
+        ServicesStatusResponse? result = await response.Content.ReadFromJsonAsync<ServicesStatusResponse>(ct);
+        return result?.Services ?? [];
     }
 
     public async Task RebuildIndexAsync(string source, string indexType = "all", CancellationToken ct = default)
     {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         string url = $"{Address.TrimEnd('/')}/api/v1/rebuild-index?type={Uri.EscapeDataString(indexType)}&sources={Uri.EscapeDataString(source)}";
-        using HttpResponseMessage response = await _httpClient.PostAsync(url, null, ct);
+        using HttpResponseMessage response = await client.PostAsync(url, null, ct);
         response.EnsureSuccessStatusCode();
     }
 
@@ -83,14 +64,14 @@ public sealed class OrchestratorClient : IDisposable
     public async Task<(string Url, string Json, long ElapsedMs)> GetSnapshotAsync(
         string source, string id, CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}/snapshot";
+        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/snapshot/{Uri.EscapeDataString(id)}";
         return await GetTimedJsonAsync(url, ct);
     }
 
     public async Task<(string Url, string Json, long ElapsedMs)> GetContentAsync(
         string source, string id, CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}/content";
+        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/content/{Uri.EscapeDataString(id)}";
         return await GetTimedJsonAsync(url, ct);
     }
 
@@ -142,8 +123,9 @@ public sealed class OrchestratorClient : IDisposable
     private async Task<(string Url, string Json, long ElapsedMs)> GetTimedJsonAsync(
         string url, CancellationToken ct)
     {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         Stopwatch sw = Stopwatch.StartNew();
-        HttpResponseMessage response = await _httpClient.GetAsync(url, ct);
+        HttpResponseMessage response = await client.GetAsync(url, ct);
         string body = await response.Content.ReadAsStringAsync(ct);
         long elapsed = sw.ElapsedMilliseconds;
 
@@ -156,8 +138,9 @@ public sealed class OrchestratorClient : IDisposable
     private async Task<(string Url, string Json, long ElapsedMs)> PostTimedJsonAsync(
         string url, CancellationToken ct)
     {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         Stopwatch sw = Stopwatch.StartNew();
-        HttpResponseMessage response = await _httpClient.PostAsync(url, null, ct);
+        HttpResponseMessage response = await client.PostAsync(url, null, ct);
         string body = await response.Content.ReadAsStringAsync(ct);
         long elapsed = sw.ElapsedMilliseconds;
 
@@ -165,58 +148,5 @@ public sealed class OrchestratorClient : IDisposable
             throw new HttpRequestException($"HTTP {(int)response.StatusCode}: {body}");
 
         return (url, PrettyPrint(body), elapsed);
-    }
-
-    private static List<IndexInfo> ParseIndexes(JsonElement svc)
-    {
-        if (!svc.TryGetProperty("indexes", out JsonElement idxs) || idxs.ValueKind != JsonValueKind.Array)
-            return [];
-
-        List<IndexInfo> result = [];
-        foreach (JsonElement idx in idxs.EnumerateArray())
-        {
-            result.Add(new IndexInfo
-            {
-                Name = GetStr(idx, "name"),
-                Description = GetStr(idx, "description"),
-                IsRebuilding = idx.TryGetProperty("isRebuilding", out JsonElement rebEl) && rebEl.GetBoolean(),
-                LastRebuildCompletedAt = GetNullStr(idx, "lastRebuildCompletedAt"),
-                RecordCount = idx.TryGetProperty("recordCount", out JsonElement rcEl) ? rcEl.GetInt32() : 0,
-                LastError = GetNullStr(idx, "lastError"),
-            });
-        }
-        return result;
-    }
-
-    private static string GetStr(JsonElement el, string name) =>
-        el.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-
-    private static string? GetNullStr(JsonElement el, string name) =>
-        el.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    public void Dispose() => _httpClient.Dispose();
-
-    // ── DTOs ──────────────────────────────────────────────────────
-
-    public record ServiceInfo
-    {
-        public string Name { get; init; } = "";
-        public string Status { get; init; } = "";
-        public string? Address { get; init; }
-        public int ItemCount { get; init; }
-        public long DbSizeBytes { get; init; }
-        public string? LastSyncAt { get; init; }
-        public string? LastError { get; init; }
-        public List<IndexInfo> Indexes { get; init; } = [];
-    }
-
-    public record IndexInfo
-    {
-        public string Name { get; init; } = "";
-        public string Description { get; init; } = "";
-        public bool IsRebuilding { get; init; }
-        public string? LastRebuildCompletedAt { get; init; }
-        public int RecordCount { get; init; }
-        public string? LastError { get; init; }
     }
 }

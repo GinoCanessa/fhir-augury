@@ -6,9 +6,8 @@ namespace FhirAugury.DevUi.Services;
 /// <summary>
 /// Calls source services directly via HTTP, bypassing the orchestrator.
 /// </summary>
-public sealed class SourceDirectClient : IDisposable
+public sealed class SourceDirectClient(IHttpClientFactory httpClientFactory)
 {
-    private readonly HttpClient _httpClient = new();
     private static readonly JsonSerializerOptions PrettyJsonOptions = new() { WriteIndented = true };
 
     // ── HTTP operations ──────────────────────────────────────────
@@ -93,12 +92,7 @@ public sealed class SourceDirectClient : IDisposable
         return Uri.EscapeDataString(id);
     }
 
-    private static string ItemBase(string source) => source.ToLowerInvariant() switch
-    {
-        "zulip" => "messages",
-        "confluence" => "pages",
-        _ => "items",
-    };
+    private static string ItemBase(string source) => "items";
 
     private static string BuildItemPath(string source, string id) =>
         $"{ItemBase(source)}/{EncodeId(source, id)}";
@@ -135,8 +129,9 @@ public sealed class SourceDirectClient : IDisposable
     private async Task<(string Url, string Json, long ElapsedMs)> GetJsonAsync(
         string url, CancellationToken ct)
     {
+        HttpClient client = httpClientFactory.CreateClient("source-direct");
         Stopwatch sw = Stopwatch.StartNew();
-        HttpResponseMessage response = await _httpClient.GetAsync(url, ct);
+        HttpResponseMessage response = await client.GetAsync(url, ct);
         string body = await response.Content.ReadAsStringAsync(ct);
         long elapsed = sw.ElapsedMilliseconds;
 
@@ -145,6 +140,4 @@ public sealed class SourceDirectClient : IDisposable
 
         return (url, PrettyPrint(body), elapsed);
     }
-
-    public void Dispose() => _httpClient.Dispose();
 }

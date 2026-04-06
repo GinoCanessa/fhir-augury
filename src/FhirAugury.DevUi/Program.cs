@@ -20,6 +20,8 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 // ── HTTP clients ─────────────────────────────────────────────────
+builder.Services.AddHttpClient("orchestrator");
+builder.Services.AddHttpClient("source-direct");
 builder.Services.AddSingleton<OrchestratorClient>();
 builder.Services.AddSingleton<SourceDirectClient>();
 
