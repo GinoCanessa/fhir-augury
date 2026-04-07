@@ -45,6 +45,22 @@ public record CrossReferenceHit
 
     /// <summary>Optional context snippet showing the reference in text.</summary>
     public string? Context { get; init; }
+
+    /// <summary>Relevance score (higher = more relevant). Default 1.0.</summary>
+    public double Score { get; init; } = 1.0;
+
+    /// <summary>When the source or target item was last updated.</summary>
+    public DateTimeOffset? UpdatedAt { get; init; }
+}
+
+/// <summary>Sort order for query results.</summary>
+public enum ResultSortOrder
+{
+    /// <summary>Sort by computed score (relevance × freshness). Default.</summary>
+    Score,
+
+    /// <summary>Sort by UpdatedAt descending (newest first).</summary>
+    Date,
 }
 
 /// <summary>Response for refers-to, referred-by, and cross-referenced queries.</summary>

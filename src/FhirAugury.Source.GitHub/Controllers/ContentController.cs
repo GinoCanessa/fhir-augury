@@ -39,6 +39,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
 
         string sourceId = issue.UniqueKey;
         string sourceUrl = GitHubUrlHelper.BuildIssueUrl(sourceId);
+        DateTimeOffset? issueUpdatedAt = issue.UpdatedAt;
 
         // Query outgoing xref tables where SourceId = value
         if (sourceType is null || string.Equals(sourceType, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
@@ -56,6 +57,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.JiraKey,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -77,6 +79,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -98,6 +101,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.PageId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -119,6 +123,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.ElementPath,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -165,6 +170,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.JiraKey,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = resolved?.UpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -186,10 +192,14 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.ElementPath,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = resolved?.UpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
         }
+
+        // Phase 2: Keyword relevance scoring
+        ApplyKeywordScores(connection, hits, value);
 
         return Ok(new CrossReferenceQueryResponse
         {
@@ -220,6 +230,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
         {
             string sourceId = issue.UniqueKey;
             string sourceUrl = GitHubUrlHelper.BuildIssueUrl(sourceId);
+            DateTimeOffset? issueUpdatedAt = issue.UpdatedAt;
 
             foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: sourceId))
             {
@@ -236,6 +247,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.JiraKey,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -257,6 +269,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                         TargetId = r.TargetId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = issueUpdatedAt,
                     });
                     if (hits.Count >= maxResults) break;
                 }
@@ -279,6 +292,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                         TargetId = r.PageId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = issueUpdatedAt,
                     });
                     if (hits.Count >= maxResults) break;
                 }
@@ -301,6 +315,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                         TargetId = r.ElementPath,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = issueUpdatedAt,
                     });
                     if (hits.Count >= maxResults) break;
                 }
@@ -326,6 +341,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.JiraKey,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = resolved?.UpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -349,6 +365,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                     TargetId = r.ElementPath,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = resolved?.UpdatedAt,
                 });
                 if (hits.Count >= maxResults) break;
             }
@@ -658,6 +675,42 @@ public class ContentController(GitHubDatabase db) : ControllerBase
                 UpdatedAt = GitHubUrlHelper.ParseTimestamp(reader, 3),
                 MatchedValue = matchedValue,
             });
+        }
+    }
+
+    private static void ApplyKeywordScores(SqliteConnection connection, List<CrossReferenceHit> hits, string queryValue)
+    {
+        if (hits.Count == 0) return;
+
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(queryValue);
+        if (string.IsNullOrEmpty(ftsQuery)) return;
+
+        // Score issues (most common xref type for GitHub)
+        using SqliteCommand issueCmd = new("""
+            SELECT gi.UniqueKey, -github_issues_fts.rank as Score
+            FROM github_issues_fts
+            JOIN github_issues gi ON gi.Id = github_issues_fts.rowid
+            WHERE github_issues_fts MATCH @query
+            """, connection);
+        issueCmd.Parameters.AddWithValue("@query", ftsQuery);
+
+        Dictionary<string, double> scores = [];
+        using (SqliteDataReader reader = issueCmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                string key = reader.GetString(0);
+                double score = reader.GetDouble(1);
+                scores[key] = score;
+            }
+        }
+
+        if (scores.Count == 0) return;
+
+        for (int i = 0; i < hits.Count; i++)
+        {
+            if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
+                hits[i] = hits[i] with { Score = hits[i].Score * keywordScore };
         }
     }
 }

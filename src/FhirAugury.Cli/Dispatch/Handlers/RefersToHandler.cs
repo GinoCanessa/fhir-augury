@@ -29,6 +29,9 @@ public static class RefersToHandler
                     targetTitle = h.GetStringOrNull("targetTitle"),
                     linkType = h.GetStringOrNull("linkType"),
                     context = h.GetStringOrNull("context"),
+                    score = h.TryGetProperty("score", out JsonElement scoreEl) && scoreEl.ValueKind == JsonValueKind.Number
+                        ? scoreEl.GetDouble() : 1.0,
+                    updatedAt = h.GetStringOrNull("updatedAt"),
                 });
             }
         }

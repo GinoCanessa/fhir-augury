@@ -250,6 +250,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
             return hits;
 
         string issueUrl = $"{options.BaseUrl}/browse/{issue.Key}";
+        DateTimeOffset? issueUpdatedAt = issue.UpdatedAt;
 
         // Jira-to-Jira links via issue_links table
         if (sourceType is null || string.Equals(sourceType, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase))
@@ -271,6 +272,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetTitle = target?.Title,
                     TargetUrl = $"{options.BaseUrl}/browse/{link.TargetKey}",
                     LinkType = link.LinkType,
+                    UpdatedAt = issueUpdatedAt,
                 });
             }
         }
@@ -292,6 +294,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
             }
         }
@@ -313,6 +316,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
             }
         }
@@ -334,6 +338,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
             }
         }
@@ -355,6 +360,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = issueUpdatedAt,
                 });
             }
         }
@@ -389,6 +395,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetTitle = null,
                     TargetUrl = $"{options.BaseUrl}/browse/{value}",
                     LinkType = link.LinkType,
+                    UpdatedAt = sourceIssue is not null ? sourceIssue.UpdatedAt : null,
                 });
             }
         }
@@ -422,6 +429,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = sourceIssue is not null ? sourceIssue.UpdatedAt : null,
                 });
             }
         }
@@ -448,6 +456,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                         TargetId = r.TargetId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = sourceIssue is not null ? sourceIssue.UpdatedAt : null,
                     });
                 }
             }
@@ -475,6 +484,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = sourceIssue is not null ? sourceIssue.UpdatedAt : null,
                 });
             }
         }
@@ -498,10 +508,48 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = sourceIssue is not null ? sourceIssue.UpdatedAt : null,
                 });
             }
         }
 
+        // Phase 2: Keyword relevance scoring — score source items against the query value via FTS5
+        ApplyKeywordScores(connection, hits, value);
+
         return hits;
+    }
+
+    private static void ApplyKeywordScores(SqliteConnection connection, List<CrossReferenceHit> hits, string queryValue)
+    {
+        if (hits.Count == 0) return;
+
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(queryValue);
+        if (string.IsNullOrEmpty(ftsQuery)) return;
+
+        // Batch-query FTS5 for all source items matching the query value
+        using SqliteCommand cmd = new("""
+            SELECT ji.Key, -jira_issues_fts.rank as Score
+            FROM jira_issues_fts
+            JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
+            WHERE jira_issues_fts MATCH @query
+            """, connection);
+        cmd.Parameters.AddWithValue("@query", ftsQuery);
+
+        Dictionary<string, double> scores = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            string key = reader.GetString(0);
+            double score = reader.GetDouble(1);
+            scores[key] = score;
+        }
+
+        if (scores.Count == 0) return;
+
+        for (int i = 0; i < hits.Count; i++)
+        {
+            if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
+                hits[i] = hits[i] with { Score = hits[i].Score * keywordScore };
+        }
     }
 }

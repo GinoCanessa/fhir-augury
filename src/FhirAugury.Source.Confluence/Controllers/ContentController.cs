@@ -243,6 +243,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         string sourceUrl = page is not null
             ? ConfluenceUrlHelper.BuildPageUrl(options, value, page.Url)
             : "";
+        DateTimeOffset? pageUpdatedAt = page?.LastModifiedAt;
 
         List<CrossReferenceHit> hits = [];
 
@@ -261,6 +262,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = pageUpdatedAt,
                 });
             }
         }
@@ -280,6 +282,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = pageUpdatedAt,
                 });
             }
         }
@@ -299,6 +302,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = pageUpdatedAt,
                 });
             }
         }
@@ -318,6 +322,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = pageUpdatedAt,
                 });
             }
         }
@@ -337,6 +342,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = pageUpdatedAt,
                 });
             }
         }
@@ -371,6 +377,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                         TargetId = value,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = page?.LastModifiedAt,
                     });
                 }
             }
@@ -397,6 +404,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                         TargetId = value,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = page?.LastModifiedAt,
                     });
                 }
             }
@@ -423,6 +431,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                         TargetId = value,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        UpdatedAt = page?.LastModifiedAt,
                     });
                 }
             }
@@ -447,10 +456,47 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
                     TargetId = value,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    UpdatedAt = page?.LastModifiedAt,
                 });
             }
         }
 
+        // Phase 2: Keyword relevance scoring
+        ApplyKeywordScores(connection, hits, value);
+
         return hits.Take(maxResults).ToList();
+    }
+
+    private static void ApplyKeywordScores(SqliteConnection connection, List<CrossReferenceHit> hits, string queryValue)
+    {
+        if (hits.Count == 0) return;
+
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(queryValue);
+        if (string.IsNullOrEmpty(ftsQuery)) return;
+
+        using SqliteCommand cmd = new("""
+            SELECT cp.ConfluenceId, -confluence_pages_fts.rank as Score
+            FROM confluence_pages_fts
+            JOIN confluence_pages cp ON cp.Id = confluence_pages_fts.rowid
+            WHERE confluence_pages_fts MATCH @query
+            """, connection);
+        cmd.Parameters.AddWithValue("@query", ftsQuery);
+
+        Dictionary<string, double> scores = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            string id = reader.GetString(0);
+            double score = reader.GetDouble(1);
+            scores[id] = score;
+        }
+
+        if (scores.Count == 0) return;
+
+        for (int i = 0; i < hits.Count; i++)
+        {
+            if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
+                hits[i] = hits[i] with { Score = hits[i].Score * keywordScore };
+        }
     }
 }

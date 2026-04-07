@@ -50,7 +50,7 @@ public class ContentToolsTests
                 "direction": "refers-to",
                 "total": 1,
                 "hits": [
-                    { "sourceType": "jira", "sourceId": "FHIR-123", "targetType": "zulip", "targetId": "179:topic", "linkType": "mentions" }
+                    { "sourceType": "jira", "sourceId": "FHIR-123", "targetType": "zulip", "targetId": "179:topic", "linkType": "mentions", "score": 0.85, "updatedAt": "2025-01-15T10:00:00Z" }
                 ]
             }
             """;
@@ -62,6 +62,8 @@ public class ContentToolsTests
         Assert.Contains("FHIR-123", result);
         Assert.Contains("179:topic", result);
         Assert.Contains("mentions", result);
+        Assert.Contains("**Score:** 0.85", result);
+        Assert.Contains("**Updated:**", result);
     }
 
     [Fact]
@@ -91,7 +93,7 @@ public class ContentToolsTests
                 "direction": "referred-by",
                 "total": 1,
                 "hits": [
-                    { "sourceType": "zulip", "sourceId": "179:topic", "targetType": "fhir", "targetId": "Patient.birthDate", "linkType": "mentions", "sourceTitle": "Discussion Thread" }
+                    { "sourceType": "zulip", "sourceId": "179:topic", "targetType": "fhir", "targetId": "Patient.birthDate", "linkType": "mentions", "sourceTitle": "Discussion Thread", "score": 1.20, "updatedAt": "2025-03-01T14:30:00Z" }
                 ]
             }
             """;
@@ -103,6 +105,8 @@ public class ContentToolsTests
         Assert.Contains("Patient.birthDate", result);
         Assert.Contains("179:topic", result);
         Assert.Contains("Discussion Thread", result);
+        Assert.Contains("**Score:** 1.20", result);
+        Assert.Contains("**Updated:**", result);
     }
 
     [Fact]
@@ -114,8 +118,8 @@ public class ContentToolsTests
                 "direction": "cross-referenced",
                 "total": 2,
                 "hits": [
-                    { "sourceType": "jira", "sourceId": "FHIR-456", "targetType": "github", "targetId": "HL7/fhir#100", "linkType": "linked_issue" },
-                    { "sourceType": "zulip", "sourceId": "200:review", "targetType": "jira", "targetId": "FHIR-456", "linkType": "mentions" }
+                    { "sourceType": "jira", "sourceId": "FHIR-456", "targetType": "github", "targetId": "HL7/fhir#100", "linkType": "linked_issue", "score": 0.92 },
+                    { "sourceType": "zulip", "sourceId": "200:review", "targetType": "jira", "targetId": "FHIR-456", "linkType": "mentions", "score": 0.75 }
                 ]
             }
             """;
@@ -127,6 +131,30 @@ public class ContentToolsTests
         Assert.Contains("FHIR-456", result);
         Assert.Contains("HL7/fhir#100", result);
         Assert.Contains("linked_issue", result);
+        Assert.Contains("**Score:**", result);
+    }
+
+    [Fact]
+    public async Task XRef_WithoutScoreOrUpdatedAt_RendersCorrectly()
+    {
+        string json = """
+            {
+                "value": "FHIR-789",
+                "direction": "refers-to",
+                "total": 1,
+                "hits": [
+                    { "sourceType": "jira", "sourceId": "FHIR-789", "targetType": "zulip", "targetId": "100:topic", "linkType": "mentions" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+
+        string result = await ContentTools.RefersTo(factory, "FHIR-789");
+
+        Assert.Contains("Refers To", result);
+        Assert.Contains("FHIR-789", result);
+        Assert.DoesNotContain("**Score:**", result);
+        Assert.DoesNotContain("**Updated:**", result);
     }
 
     [Fact]

@@ -163,6 +163,16 @@ public static class ContentTools
             string? context = UnifiedTools.GetNullableString(hit, "context");
             if (!string.IsNullOrEmpty(context))
                 sb.AppendLine($"  **Context:** {context}");
+
+            if (hit.TryGetProperty("score", out JsonElement scoreEl) && scoreEl.ValueKind == JsonValueKind.Number)
+                sb.AppendLine($"  **Score:** {scoreEl.GetDouble():F2}");
+
+            if (hit.TryGetProperty("updatedAt", out JsonElement updatedEl) && updatedEl.ValueKind == JsonValueKind.String)
+            {
+                string? updatedStr = updatedEl.GetString();
+                if (!string.IsNullOrEmpty(updatedStr))
+                    sb.AppendLine($"  **Updated:** {updatedStr}");
+            }
         }
 
         AppendWarnings(sb, root);

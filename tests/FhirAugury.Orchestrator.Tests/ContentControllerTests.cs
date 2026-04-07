@@ -82,13 +82,15 @@ public class ContentControllerTests
 
     private static CrossReferenceHit MakeXRefHit(
         string sourceType, string sourceId, string targetType, string targetId,
-        string linkType = "mentions") => new()
+        string linkType = "mentions", double score = 1.0, DateTimeOffset? updatedAt = null) => new()
     {
         SourceType = sourceType,
         SourceId = sourceId,
         TargetType = targetType,
         TargetId = targetId,
         LinkType = linkType,
+        Score = score,
+        UpdatedAt = updatedAt,
     };
 
     // ── Cross-reference fan-out tests ───────────────────────────────────
@@ -116,7 +118,7 @@ public class ContentControllerTests
 
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
-        IActionResult result = await controller.RefersTo("FHIR-123", null, null, CancellationToken.None);
+        IActionResult result = await controller.RefersTo("FHIR-123", null, null, null, CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Single(jiraHandler.SentRequests);
@@ -153,7 +155,7 @@ public class ContentControllerTests
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            await controller.RefersTo("FHIR-123", null, null, CancellationToken.None));
+            await controller.RefersTo("FHIR-123", null, null, null, CancellationToken.None));
         CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
 
         Assert.Equal(2, response.Total);
@@ -163,20 +165,21 @@ public class ContentControllerTests
     }
 
     [Fact]
-    public async Task RefersTo_DeduplicatesHits()
+    public async Task RefersTo_DeduplicatesHits_KeepsHighestScore()
     {
-        CrossReferenceHit duplicate = MakeXRefHit(SourceSystems.Jira, "J-1", SourceSystems.Fhir, "FHIR-123");
+        CrossReferenceHit lowScore = MakeXRefHit(SourceSystems.Jira, "J-1", SourceSystems.Fhir, "FHIR-123", score: 0.5);
+        CrossReferenceHit highScore = MakeXRefHit(SourceSystems.Jira, "J-1", SourceSystems.Fhir, "FHIR-123", score: 2.0);
 
         MockHttpMessageHandler jiraHandler = new();
         jiraHandler.RespondWith(new CrossReferenceQueryResponse
         {
-            Value = "FHIR-123", Direction = "refers-to", Total = 1, Hits = [duplicate],
+            Value = "FHIR-123", Direction = "refers-to", Total = 1, Hits = [lowScore],
         });
 
         MockHttpMessageHandler zulipHandler = new();
         zulipHandler.RespondWith(new CrossReferenceQueryResponse
         {
-            Value = "FHIR-123", Direction = "refers-to", Total = 1, Hits = [duplicate],
+            Value = "FHIR-123", Direction = "refers-to", Total = 1, Hits = [highScore],
         });
 
         Dictionary<string, MockHttpMessageHandler> handlers = new()
@@ -188,7 +191,7 @@ public class ContentControllerTests
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            await controller.RefersTo("FHIR-123", null, null, CancellationToken.None));
+            await controller.RefersTo("FHIR-123", null, null, null, CancellationToken.None));
         CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
 
         Assert.Equal(1, response.Total);
@@ -219,13 +222,147 @@ public class ContentControllerTests
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            await controller.ReferredBy("FHIR-123", null, null, CancellationToken.None));
+            await controller.ReferredBy("FHIR-123", null, null, null, CancellationToken.None));
         CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
 
         Assert.Equal(1, response.Total);
         Assert.Single(response.Hits);
         Assert.NotNull(response.Warnings);
         Assert.Contains(response.Warnings, w => w.Contains(SourceSystems.Zulip));
+    }
+
+    // ── Scoring pipeline tests ──────────────────────────────────────────
+
+    [Fact]
+    public async Task RefersTo_AppliesScoringPipeline()
+    {
+        DateTimeOffset recent = DateTimeOffset.UtcNow;
+        DateTimeOffset old = DateTimeOffset.UtcNow.AddYears(-3);
+
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123",
+            Direction = "refers-to",
+            Total = 1,
+            Hits = [MakeXRefHit(SourceSystems.Jira, "J-1", SourceSystems.Fhir, "FHIR-123", score: 1.0, updatedAt: recent)],
+        });
+
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123",
+            Direction = "refers-to",
+            Total = 1,
+            Hits = [MakeXRefHit(SourceSystems.Zulip, "Z-1", SourceSystems.Fhir, "FHIR-123", score: 1.0, updatedAt: old)],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        SearchOptions searchOptions = new()
+        {
+            FreshnessWeights = new Dictionary<string, double>
+            {
+                [SourceSystems.Jira] = 1.0,
+                [SourceSystems.Zulip] = 1.0,
+            },
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources(), searchOptions);
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            await controller.RefersTo("FHIR-123", null, null, null, CancellationToken.None));
+        CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
+
+        Assert.Equal(2, response.Hits.Count);
+
+        CrossReferenceHit recentHit = response.Hits.Single(h => h.SourceId == "J-1");
+        CrossReferenceHit oldHit = response.Hits.Single(h => h.SourceId == "Z-1");
+
+        Assert.True(recentHit.Score > oldHit.Score,
+            $"Recent item ({recentHit.Score:F4}) should score higher than old item ({oldHit.Score:F4})");
+    }
+
+    [Fact]
+    public async Task RefersTo_SortByDate_OrdersByUpdatedAt()
+    {
+        DateTimeOffset older = DateTimeOffset.UtcNow.AddDays(-30);
+        DateTimeOffset newer = DateTimeOffset.UtcNow.AddDays(-1);
+
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123",
+            Direction = "refers-to",
+            Total = 1,
+            Hits = [MakeXRefHit(SourceSystems.Jira, "J-old", SourceSystems.Fhir, "FHIR-123", score: 5.0, updatedAt: older)],
+        });
+
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123",
+            Direction = "refers-to",
+            Total = 1,
+            Hits = [MakeXRefHit(SourceSystems.Zulip, "Z-new", SourceSystems.Fhir, "FHIR-123", score: 1.0, updatedAt: newer)],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources());
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            await controller.RefersTo("FHIR-123", null, null, "date", CancellationToken.None));
+        CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
+
+        Assert.Equal(2, response.Hits.Count);
+        Assert.Equal("Z-new", response.Hits[0].SourceId);
+        Assert.Equal("J-old", response.Hits[1].SourceId);
+    }
+
+    [Fact]
+    public async Task RefersTo_HitsIncludeScoreAndUpdatedAt()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123",
+            Direction = "refers-to",
+            Total = 1,
+            Hits = [MakeXRefHit(SourceSystems.Jira, "J-1", SourceSystems.Fhir, "FHIR-123", score: 1.0, updatedAt: now)],
+        });
+
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new CrossReferenceQueryResponse
+        {
+            Value = "FHIR-123", Direction = "refers-to", Total = 0, Hits = [],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources());
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            await controller.RefersTo("FHIR-123", null, null, null, CancellationToken.None));
+        CrossReferenceQueryResponse response = Assert.IsType<CrossReferenceQueryResponse>(ok.Value);
+
+        CrossReferenceHit hit = Assert.Single(response.Hits);
+        Assert.True(hit.Score > 0, "Score should be populated");
+        Assert.NotNull(hit.UpdatedAt);
     }
 
     // ── Search fan-out tests ────────────────────────────────────────────
@@ -253,7 +390,7 @@ public class ContentControllerTests
 
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
-        IActionResult result = await controller.Search(["test"], null, null, CancellationToken.None);
+        IActionResult result = await controller.Search(["test"], null, null, null, CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Single(jiraHandler.SentRequests);
@@ -313,7 +450,7 @@ public class ContentControllerTests
         ContentController controller = CreateController(handlers, TwoEnabledSources(), searchOptions);
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            await controller.Search(["test"], null, null, CancellationToken.None));
+            await controller.Search(["test"], null, null, null, CancellationToken.None));
         ContentSearchResponse response = Assert.IsType<ContentSearchResponse>(ok.Value);
 
         Assert.Equal(2, response.Hits.Count);
@@ -351,11 +488,64 @@ public class ContentControllerTests
         ContentController controller = CreateController(handlers, TwoEnabledSources());
 
         IActionResult result = await controller.Search(
-            ["test"], [SourceSystems.Jira], null, CancellationToken.None);
+            ["test"], [SourceSystems.Jira], null, null, CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Single(jiraHandler.SentRequests);
         Assert.Empty(zulipHandler.SentRequests);
+    }
+
+    [Fact]
+    public async Task Search_SortByDate_OrdersByUpdatedAt()
+    {
+        DateTimeOffset older = DateTimeOffset.UtcNow.AddDays(-30);
+        DateTimeOffset newer = DateTimeOffset.UtcNow.AddDays(-1);
+
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new ContentSearchResponse
+        {
+            Values = ["test"],
+            Total = 1,
+            Hits =
+            [
+                new ContentSearchHit
+                {
+                    Source = SourceSystems.Jira, Id = "J-old", Title = "Old Item",
+                    Score = 50.0, UpdatedAt = older,
+                },
+            ],
+        });
+
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new ContentSearchResponse
+        {
+            Values = ["test"],
+            Total = 1,
+            Hits =
+            [
+                new ContentSearchHit
+                {
+                    Source = SourceSystems.Zulip, Id = "Z-new", Title = "New Item",
+                    Score = 50.0, UpdatedAt = newer,
+                },
+            ],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources());
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            await controller.Search(["test"], null, null, "date", CancellationToken.None));
+        ContentSearchResponse response = Assert.IsType<ContentSearchResponse>(ok.Value);
+
+        Assert.Equal(2, response.Hits.Count);
+        Assert.Equal("Z-new", response.Hits[0].Id);
+        Assert.Equal("J-old", response.Hits[1].Id);
     }
 
     // ── Item routing tests ──────────────────────────────────────────────

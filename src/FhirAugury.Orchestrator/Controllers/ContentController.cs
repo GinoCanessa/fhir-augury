@@ -24,6 +24,7 @@ public class ContentController(
         [FromQuery] string value,
         [FromQuery] string? sourceType,
         [FromQuery] int? limit,
+        [FromQuery] string? sort,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -33,7 +34,8 @@ public class ContentController(
             (sourceName, c) => httpClient.ContentRefersToAsync(sourceName, value, sourceType, limit, c), ct);
 
         int effectiveLimit = Math.Min(limit ?? 200, 500);
-        List<CrossReferenceHit> limited = DeduplicateHits(hits).Take(effectiveLimit).ToList();
+        ResultSortOrder sortOrder = ParseSortOrder(sort);
+        List<CrossReferenceHit> limited = ScoreAndSort(hits, effectiveLimit, sortOrder);
 
         return Ok(new CrossReferenceQueryResponse
         {
@@ -51,6 +53,7 @@ public class ContentController(
         [FromQuery] string value,
         [FromQuery] string? sourceType,
         [FromQuery] int? limit,
+        [FromQuery] string? sort,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -60,7 +63,8 @@ public class ContentController(
             (sourceName, c) => httpClient.ContentReferredByAsync(sourceName, value, sourceType, limit, c), ct);
 
         int effectiveLimit = Math.Min(limit ?? 200, 500);
-        List<CrossReferenceHit> limited = DeduplicateHits(hits).Take(effectiveLimit).ToList();
+        ResultSortOrder sortOrder = ParseSortOrder(sort);
+        List<CrossReferenceHit> limited = ScoreAndSort(hits, effectiveLimit, sortOrder);
 
         return Ok(new CrossReferenceQueryResponse
         {
@@ -78,6 +82,7 @@ public class ContentController(
         [FromQuery] string value,
         [FromQuery] string? sourceType,
         [FromQuery] int? limit,
+        [FromQuery] string? sort,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -87,7 +92,8 @@ public class ContentController(
             (sourceName, c) => httpClient.ContentCrossReferencedAsync(sourceName, value, sourceType, limit, c), ct);
 
         int effectiveLimit = Math.Min(limit ?? 200, 500);
-        List<CrossReferenceHit> limited = DeduplicateHits(hits).Take(effectiveLimit).ToList();
+        ResultSortOrder sortOrder = ParseSortOrder(sort);
+        List<CrossReferenceHit> limited = ScoreAndSort(hits, effectiveLimit, sortOrder);
 
         return Ok(new CrossReferenceQueryResponse
         {
@@ -105,6 +111,7 @@ public class ContentController(
         [FromQuery] List<string> values,
         [FromQuery] List<string>? sources,
         [FromQuery] int? limit,
+        [FromQuery] string? sort,
         CancellationToken ct)
     {
         if (values is not { Count: > 0 })
@@ -176,12 +183,23 @@ public class ContentController(
         // Pipeline: normalize → decay → limit per-source → sort
         List<ScoredItem> normalized = ScoreNormalizer.Normalize(allItems);
         List<ScoredItem> decayed = freshnessDecay.Apply(normalized);
-        List<ScoredItem> sorted = decayed
-            .GroupBy(i => i.Source)
-            .SelectMany(g => g.OrderByDescending(i => i.Score).Take(effectiveLimit))
-            .OrderByDescending(i => i.Score)
-            .Take(effectiveLimit)
-            .ToList();
+
+        ResultSortOrder sortOrder = ParseSortOrder(sort);
+        List<ScoredItem> sorted = sortOrder switch
+        {
+            ResultSortOrder.Date => decayed
+                .GroupBy(i => i.Source)
+                .SelectMany(g => g.OrderByDescending(i => i.UpdatedAt ?? DateTimeOffset.MinValue).Take(effectiveLimit))
+                .OrderByDescending(i => i.UpdatedAt ?? DateTimeOffset.MinValue)
+                .Take(effectiveLimit)
+                .ToList(),
+            _ => decayed
+                .GroupBy(i => i.Source)
+                .SelectMany(g => g.OrderByDescending(i => i.Score).Take(effectiveLimit))
+                .OrderByDescending(i => i.Score)
+                .Take(effectiveLimit)
+                .ToList(),
+        };
 
         List<ContentSearchHit> hits = sorted.Select(i => new ContentSearchHit
         {
@@ -272,14 +290,58 @@ public class ContentController(
         return (allHits, warnings);
     }
 
-    private static IEnumerable<CrossReferenceHit> DeduplicateHits(List<CrossReferenceHit> hits)
+    private List<CrossReferenceHit> ScoreAndSort(
+        List<CrossReferenceHit> hits, int effectiveLimit,
+        ResultSortOrder sortOrder = ResultSortOrder.Score)
     {
-        HashSet<string> seen = [];
+        List<CrossReferenceHit> deduplicated = DeduplicateHits(hits);
+
+        List<ScoredItem> items = deduplicated.Select(h => new ScoredItem
+        {
+            Source = h.SourceType,
+            ContentType = h.ContentType,
+            Id = h.SourceId,
+            Title = h.SourceTitle ?? "",
+            Snippet = h.Context ?? "",
+            Score = h.Score,
+            Url = h.SourceUrl ?? "",
+            UpdatedAt = h.UpdatedAt,
+        }).ToList();
+
+        List<ScoredItem> normalized = ScoreNormalizer.Normalize(items);
+        List<ScoredItem> decayed = freshnessDecay.Apply(normalized);
+
+        List<CrossReferenceHit> scored = new(deduplicated.Count);
+        for (int i = 0; i < deduplicated.Count; i++)
+            scored.Add(deduplicated[i] with { Score = decayed[i].Score });
+
+        return sortOrder switch
+        {
+            ResultSortOrder.Date => scored
+                .OrderByDescending(h => h.UpdatedAt ?? DateTimeOffset.MinValue)
+                .Take(effectiveLimit)
+                .ToList(),
+            _ => scored
+                .OrderByDescending(h => h.Score)
+                .Take(effectiveLimit)
+                .ToList(),
+        };
+    }
+
+    private static List<CrossReferenceHit> DeduplicateHits(List<CrossReferenceHit> hits)
+    {
+        Dictionary<string, CrossReferenceHit> best = new();
         foreach (CrossReferenceHit hit in hits)
         {
             string key = $"{hit.SourceType}|{hit.SourceId}|{hit.TargetType}|{hit.TargetId}";
-            if (seen.Add(key))
-                yield return hit;
+            if (!best.TryGetValue(key, out CrossReferenceHit? existing) || hit.Score > existing.Score)
+                best[key] = hit;
         }
+        return best.Values.ToList();
     }
+
+    private static ResultSortOrder ParseSortOrder(string? sort) =>
+        string.Equals(sort, "date", StringComparison.OrdinalIgnoreCase)
+            ? ResultSortOrder.Date
+            : ResultSortOrder.Score;
 }

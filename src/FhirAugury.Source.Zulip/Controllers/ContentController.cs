@@ -44,6 +44,16 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
             ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId)
             : "";
 
+        // Compute per-source score factor from stream baseline
+        double score = 1.0;
+        DateTimeOffset? messageUpdatedAt = message?.Timestamp;
+        if (message is not null)
+        {
+            ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
+            int baseline = stream?.BaselineValue ?? 5;
+            score = baseline / 5.0;
+        }
+
         List<CrossReferenceHit> hits = [];
 
         if (sourceType is null or SourceSystems.Jira)
@@ -61,6 +71,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    Score = score,
+                    UpdatedAt = messageUpdatedAt,
                 });
             }
         }
@@ -80,6 +92,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    Score = score,
+                    UpdatedAt = messageUpdatedAt,
                 });
             }
         }
@@ -99,6 +113,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    Score = score,
+                    UpdatedAt = messageUpdatedAt,
                 });
             }
         }
@@ -118,6 +134,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     TargetId = r.TargetId,
                     LinkType = r.LinkType,
                     Context = r.Context,
+                    Score = score,
+                    UpdatedAt = messageUpdatedAt,
                 });
             }
         }
@@ -160,6 +178,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     if (!int.TryParse(r.SourceId, out int msgId)) continue;
 
                     ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    double score = 1.0;
+                    if (message is not null)
+                    {
+                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
+                        score = (stream?.BaselineValue ?? 5) / 5.0;
+                    }
                     hits.Add(new CrossReferenceHit
                     {
                         SourceType = SourceSystems.Zulip,
@@ -171,6 +195,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                         TargetId = r.TargetId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        Score = score,
+                        UpdatedAt = message?.Timestamp,
                     });
                 }
             }
@@ -187,6 +213,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     if (!int.TryParse(r.SourceId, out int msgId)) continue;
 
                     ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    double score = 1.0;
+                    if (message is not null)
+                    {
+                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
+                        score = (stream?.BaselineValue ?? 5) / 5.0;
+                    }
                     hits.Add(new CrossReferenceHit
                     {
                         SourceType = SourceSystems.Zulip,
@@ -198,6 +230,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                         TargetId = r.TargetId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        Score = score,
+                        UpdatedAt = message?.Timestamp,
                     });
                 }
             }
@@ -214,6 +248,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                     if (!int.TryParse(r.SourceId, out int msgId)) continue;
 
                     ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    double score = 1.0;
+                    if (message is not null)
+                    {
+                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
+                        score = (stream?.BaselineValue ?? 5) / 5.0;
+                    }
                     hits.Add(new CrossReferenceHit
                     {
                         SourceType = SourceSystems.Zulip,
@@ -225,6 +265,8 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
                         TargetId = r.TargetId,
                         LinkType = r.LinkType,
                         Context = r.Context,
+                        Score = score,
+                        UpdatedAt = message?.Timestamp,
                     });
                 }
             }
@@ -232,6 +274,9 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
 
         if (hits.Count > maxResults)
             hits = hits.GetRange(0, maxResults);
+
+        // Phase 2: Keyword relevance scoring
+        ApplyKeywordScores(connection, hits, value);
 
         return Ok(new CrossReferenceQueryResponse
         {
@@ -476,5 +521,40 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         if (a is not null) combined.AddRange(a);
         if (b is not null) combined.AddRange(b);
         return combined.Count > 0 ? combined : null;
+    }
+
+    private static void ApplyKeywordScores(SqliteConnection connection, List<CrossReferenceHit> hits, string queryValue)
+    {
+        if (hits.Count == 0) return;
+
+        string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(queryValue);
+        if (string.IsNullOrEmpty(ftsQuery)) return;
+
+        // Score messages via FTS5, applying BaselineValue multiplier
+        using SqliteCommand cmd = new("""
+            SELECT zm.ZulipMessageId, -(zulip_messages_fts.rank) * COALESCE(zs.BaselineValue, 5) / 5.0 as Score
+            FROM zulip_messages_fts
+            JOIN zulip_messages zm ON zm.Id = zulip_messages_fts.rowid
+            LEFT JOIN zulip_streams zs ON zs.Id = zm.StreamId
+            WHERE zulip_messages_fts MATCH @query
+            """, connection);
+        cmd.Parameters.AddWithValue("@query", ftsQuery);
+
+        Dictionary<string, double> scores = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            string messageId = reader.GetInt32(0).ToString();
+            double score = reader.GetDouble(1);
+            scores[messageId] = score;
+        }
+
+        if (scores.Count == 0) return;
+
+        for (int i = 0; i < hits.Count; i++)
+        {
+            if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
+                hits[i] = hits[i] with { Score = keywordScore };
+        }
     }
 }
