@@ -90,43 +90,50 @@ All responses use a consistent envelope:
 ```jsonc
 {
   "command": "get",
-  "source": "jira",          // required
-  "id": "FHIR-43499",       // required
-  "includeComments": true    // optional (default: true)
-}
-```
-
-### `snapshot` — Markdown snapshot
-
-```jsonc
-{
-  "command": "snapshot",
-  "source": "jira",          // required
-  "id": "FHIR-43499",       // required
-  "includeComments": true    // optional (default: true)
-}
-```
-
-### `related` — Find related items
-
-```jsonc
-{
-  "command": "related",
   "source": "jira",              // required
   "id": "FHIR-43499",           // required
-  "targetSources": ["zulip"],   // optional
-  "limit": 20                   // optional (default: 20)
+  "includeComments": true,       // optional (default: true)
+  "includeContent": false,       // optional (default: false)
+  "includeSnapshot": false       // optional (default: false)
 }
 ```
 
-### `xref` — Cross-references
+### `refers-to` — Outgoing cross-references
+
+Returns items that the specified item refers to (outgoing links).
 
 ```jsonc
 {
-  "command": "xref",
-  "source": "jira",         // required
-  "id": "FHIR-43499",      // required
-  "direction": "both"       // optional: "outgoing", "incoming", "both" (default: "both")
+  "command": "refers-to",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
+}
+```
+
+### `referred-by` — Incoming cross-references
+
+Returns items that refer to the specified item (incoming links).
+
+```jsonc
+{
+  "command": "referred-by",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
+}
+```
+
+### `cross-referenced` — All cross-references
+
+Returns both outgoing and incoming cross-references for the specified item.
+
+```jsonc
+{
+  "command": "cross-referenced",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
 }
 ```
 

@@ -391,23 +391,23 @@ dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"
 dotnet run --project src/FhirAugury.Cli -- --json '{"command":"get","source":"jira","id":"FHIR-43499"}' --pretty
 ```
 
-### Find related items
+### Find cross-references
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- --json '{"command":"related","source":"jira","id":"FHIR-43499"}' --pretty
-dotnet run --project src/FhirAugury.Cli -- --json '{"command":"related","source":"jira","id":"FHIR-43499","targetSources":["zulip"]}' --pretty
+# Outgoing references from an item
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"refers-to","value":"FHIR-43499"}' --pretty
+
+# Incoming references to an item
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"referred-by","value":"FHIR-43499"}' --pretty
+
+# Both directions at once
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"cross-referenced","value":"FHIR-43499"}' --pretty
 ```
 
-### View cross-references
+### Get a Markdown snapshot
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- --json '{"command":"xref","source":"jira","id":"FHIR-43499"}' --pretty
-```
-
-### Generate a Markdown snapshot
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- --json '{"command":"snapshot","source":"jira","id":"FHIR-43499","includeComments":true}' --pretty
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"get","source":"jira","id":"FHIR-43499","includeSnapshot":true}' --pretty
 ```
 
 ### Check service health
