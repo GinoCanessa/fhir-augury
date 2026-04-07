@@ -33,45 +33,47 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
 
     // ── Timed HTTP operations (used by API test page) ────────────
 
-    public async Task<(string Url, string Json, long ElapsedMs)> UnifiedSearchAsync(
-        string query, int limit, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> ContentSearchAsync(
+        string valuesInput, int limit, CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}";
+        string[] values = valuesInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string valuesQuery = string.Join("&", values.Select(v => $"values={Uri.EscapeDataString(v)}"));
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/search?{valuesQuery}&limit={limit}";
         return await GetTimedJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> FindRelatedAsync(
-        string source, string id, int limit, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> RefersToAsync(
+        string value, string? sourceType, int limit, CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/related/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}?limit={limit}";
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/refers-to?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
         return await GetTimedJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> GetCrossReferencesAsync(
-        string source, string id, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> ReferredByAsync(
+        string value, string? sourceType, int limit, CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/xref/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}";
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/referred-by?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
+        return await GetTimedJsonAsync(url, ct);
+    }
+
+    public async Task<(string Url, string Json, long ElapsedMs)> CrossReferencedAsync(
+        string value, string? sourceType, int limit, CancellationToken ct = default)
+    {
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/cross-referenced?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
         return await GetTimedJsonAsync(url, ct);
     }
 
     public async Task<(string Url, string Json, long ElapsedMs)> GetItemAsync(
-        string source, string id, CancellationToken ct = default)
+        string source, string id, bool includeContent, bool includeComments, bool includeSnapshot,
+        CancellationToken ct = default)
     {
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}";
-        return await GetTimedJsonAsync(url, ct);
-    }
-
-    public async Task<(string Url, string Json, long ElapsedMs)> GetSnapshotAsync(
-        string source, string id, CancellationToken ct = default)
-    {
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/snapshot/{Uri.EscapeDataString(id)}";
-        return await GetTimedJsonAsync(url, ct);
-    }
-
-    public async Task<(string Url, string Json, long ElapsedMs)> GetContentAsync(
-        string source, string id, CancellationToken ct = default)
-    {
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/content/{Uri.EscapeDataString(id)}";
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/item/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?includeContent={includeContent}&includeComments={includeComments}&includeSnapshot={includeSnapshot}";
         return await GetTimedJsonAsync(url, ct);
     }
 
@@ -111,52 +113,33 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    public async Task<ItemResponse?> GetItemTypedAsync(
-        string source, string id, CancellationToken ct = default)
+    public async Task<ContentItemResponse?> GetItemTypedAsync(
+        string source, string id, bool includeContent = true, bool includeComments = true,
+        bool includeSnapshot = false, CancellationToken ct = default)
     {
         HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?includeContent=true&includeComments=true";
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/item/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?includeContent={includeContent}&includeComments={includeComments}&includeSnapshot={includeSnapshot}";
         HttpResponseMessage response = await client.GetAsync(url, ct);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             return null;
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<ItemResponse>(TypedJsonOptions, ct);
+        return await response.Content.ReadFromJsonAsync<ContentItemResponse>(TypedJsonOptions, ct);
     }
 
-    public async Task<SnapshotResponse?> GetSnapshotTypedAsync(
-        string source, string id, CancellationToken ct = default)
+    public async Task<CrossReferenceQueryResponse?> GetCrossReferencedTypedAsync(
+        string value, string? sourceType = null, int? limit = null, CancellationToken ct = default)
     {
         HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string url = $"{Address.TrimEnd('/')}/api/v1/items/{Uri.EscapeDataString(source)}/snapshot/{EncodeId(source, id)}";
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/cross-referenced?value={Uri.EscapeDataString(value)}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
+        if (limit.HasValue)
+            url += $"&limit={limit.Value}";
         HttpResponseMessage response = await client.GetAsync(url, ct);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             return null;
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<SnapshotResponse>(TypedJsonOptions, ct);
-    }
-
-    public async Task<CrossReferenceResponse?> GetCrossReferencesTypedAsync(
-        string source, string id, CancellationToken ct = default)
-    {
-        HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string url = $"{Address.TrimEnd('/')}/api/v1/xref/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}";
-        HttpResponseMessage response = await client.GetAsync(url, ct);
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-            return null;
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<CrossReferenceResponse>(TypedJsonOptions, ct);
-    }
-
-    public async Task<FindRelatedResponse?> GetRelatedTypedAsync(
-        string source, string id, int limit = 10, CancellationToken ct = default)
-    {
-        HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string url = $"{Address.TrimEnd('/')}/api/v1/related/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?limit={limit}";
-        HttpResponseMessage response = await client.GetAsync(url, ct);
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-            return null;
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<FindRelatedResponse>(TypedJsonOptions, ct);
+        return await response.Content.ReadFromJsonAsync<CrossReferenceQueryResponse>(TypedJsonOptions, ct);
     }
 
     internal static string EncodeId(string source, string id)

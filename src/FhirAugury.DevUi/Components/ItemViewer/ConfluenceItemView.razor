@@ -40,17 +40,11 @@
     <ItemComments Comments="Item.Comments" />
 }
 
-<ItemCrossRefs CrossRefs="CrossRefs" RelatedItems="RelatedItems"
-    LoadingRelated="LoadingRelated" RelatedError="RelatedError"
-    OnLoadRelated="OnLoadRelated" />
+<ItemCrossRefs CrossRefs="CrossRefs" />
 
 @code {
-    [Parameter, EditorRequired] public ItemResponse Item { get; set; } = default!;
-    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
-    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
-    [Parameter] public bool LoadingRelated { get; set; }
-    [Parameter] public string? RelatedError { get; set; }
-    [Parameter] public EventCallback OnLoadRelated { get; set; }
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
 
     private static readonly List<string> _displayOrder =
     [

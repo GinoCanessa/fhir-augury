@@ -77,39 +77,27 @@ else
         @switch (_item.Source.ToLowerInvariant())
         {
             case "jira":
-                <JiraItemView Item="_item" CrossRefs="_crossRefs"
-                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                <JiraItemView Item="_item" CrossRefs="_crossRefs" />
                 break;
             case "zulip":
                 <ZulipItemView Item="_item" CrossRefs="_crossRefs"
-                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync"
-                    LoadSnapshotAsync="GetSnapshotAsync" />
+                    LoadSnapshotAsync="GetSnapshotMarkdownAsync" />
                 break;
             case "github":
                 @if (_item.ContentType == "file")
                 {
-                    <GitHubFileView Item="_item" CrossRefs="_crossRefs"
-                        RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                        RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                    <GitHubFileView Item="_item" CrossRefs="_crossRefs" />
                 }
                 else
                 {
-                    <GitHubIssueView Item="_item" CrossRefs="_crossRefs"
-                        RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                        RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                    <GitHubIssueView Item="_item" CrossRefs="_crossRefs" />
                 }
                 break;
             case "confluence":
-                <ConfluenceItemView Item="_item" CrossRefs="_crossRefs"
-                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                <ConfluenceItemView Item="_item" CrossRefs="_crossRefs" />
                 break;
             default:
-                <GenericItemView Item="_item" CrossRefs="_crossRefs"
-                    RelatedItems="_relatedItems" LoadingRelated="_loadingRelated"
-                    RelatedError="_relatedError" OnLoadRelated="LoadRelatedAsync" />
+                <GenericItemView Item="_item" CrossRefs="_crossRefs" />
                 break;
         }
     }
@@ -129,10 +117,10 @@ else
                 {
                     <div class="alert alert-warning">@_snapshotError</div>
                 }
-                else if (_snapshot is not null)
+                else if (_snapshotMarkdown is not null)
                 {
                     <div class="item-viewer-content">
-                        @MarkdownRenderer.ToHtml(_snapshot.Markdown)
+                        @MarkdownRenderer.ToHtml(_snapshotMarkdown)
                     </div>
                 }
                 else
@@ -166,20 +154,15 @@ else
 
     private bool _loading = true;
     private string? _error;
-    private ItemResponse? _item;
-    private CrossReferenceResponse? _crossRefs;
+    private ContentItemResponse? _item;
+    private CrossReferenceQueryResponse? _crossRefs;
     private string? _rawJson;
 
     // Snapshot tab state
     private string _activeTab = "content";
     private bool _loadingSnapshot;
     private string? _snapshotError;
-    private SnapshotResponse? _snapshot;
-
-    // Related items state
-    private bool _loadingRelated;
-    private string? _relatedError;
-    private FindRelatedResponse? _relatedItems;
+    private string? _snapshotMarkdown;
 
     private static readonly JsonSerializerOptions PrettyJsonOptions = new()
     {
@@ -199,17 +182,15 @@ else
         _item = null;
         _crossRefs = null;
         _rawJson = null;
-        _snapshot = null;
+        _snapshotMarkdown = null;
         _snapshotError = null;
-        _relatedItems = null;
-        _relatedError = null;
         _activeTab = "content";
         StateHasChanged();
 
         try
         {
-            Task<ItemResponse?> itemTask = Orchestrator.GetItemTypedAsync(Source, Id);
-            Task<CrossReferenceResponse?> xrefTask = Orchestrator.GetCrossReferencesTypedAsync(Source, Id);
+            Task<ContentItemResponse?> itemTask = Orchestrator.GetItemTypedAsync(Source, Id);
+            Task<CrossReferenceQueryResponse?> xrefTask = Orchestrator.GetCrossReferencedTypedAsync(Id, Source);
 
             await Task.WhenAll(itemTask, xrefTask);
 
@@ -234,19 +215,20 @@ else
     private async Task SetTabAsync(string tab)
     {
         _activeTab = tab;
-        if (tab == "snapshot" && _snapshot is null && _snapshotError is null)
+        if (tab == "snapshot" && _snapshotMarkdown is null && _snapshotError is null)
         {
             await LoadSnapshotAsync();
         }
     }
 
-    private async Task<SnapshotResponse?> GetSnapshotAsync()
+    private async Task<string?> GetSnapshotMarkdownAsync()
     {
-        if (_snapshot is not null)
-            return _snapshot;
+        if (_snapshotMarkdown is not null)
+            return _snapshotMarkdown;
 
-        _snapshot = await Orchestrator.GetSnapshotTypedAsync(Source, Id);
-        return _snapshot;
+        ContentItemResponse? snapshotItem = await Orchestrator.GetItemTypedAsync(Source, Id, includeSnapshot: true);
+        _snapshotMarkdown = snapshotItem?.Snapshot;
+        return _snapshotMarkdown;
     }
 
     private async Task LoadSnapshotAsync()
@@ -257,8 +239,8 @@ else
 
         try
         {
-            _snapshot = await GetSnapshotAsync();
-            if (_snapshot is null)
+            _snapshotMarkdown = await GetSnapshotMarkdownAsync();
+            if (_snapshotMarkdown is null)
                 _snapshotError = "No snapshot available for this item.";
         }
         catch (Exception ex)
@@ -268,26 +250,6 @@ else
         finally
         {
             _loadingSnapshot = false;
-        }
-    }
-
-    private async Task LoadRelatedAsync()
-    {
-        _loadingRelated = true;
-        _relatedError = null;
-        StateHasChanged();
-
-        try
-        {
-            _relatedItems = await Orchestrator.GetRelatedTypedAsync(Source, Id);
-        }
-        catch (Exception ex)
-        {
-            _relatedError = $"Failed to load related items: {ex.Message}";
-        }
-        finally
-        {
-            _loadingRelated = false;
         }
     }
 

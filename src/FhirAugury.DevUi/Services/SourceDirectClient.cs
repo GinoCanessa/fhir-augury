@@ -12,42 +12,47 @@ public sealed class SourceDirectClient(IHttpClientFactory httpClientFactory)
 
     // ── HTTP operations ──────────────────────────────────────────
 
-    public async Task<(string Url, string Json, long ElapsedMs)> SearchAsync(
-        string httpBase, string query, int limit, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> ContentSearchAsync(
+        string httpBase, string valuesInput, int limit, CancellationToken ct = default)
     {
-        string url = $"{httpBase.TrimEnd('/')}/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}";
+        string[] values = valuesInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string valuesQuery = string.Join("&", values.Select(v => $"values={Uri.EscapeDataString(v)}"));
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/search?{valuesQuery}&limit={limit}";
         return await GetJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> GetItemAsync(
-        string httpBase, string source, string id, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> RefersToAsync(
+        string httpBase, string value, string? sourceType, int limit, CancellationToken ct = default)
     {
-        string path = BuildItemPath(source, id);
-        string url = $"{httpBase.TrimEnd('/')}/api/v1/{path}";
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/refers-to?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
         return await GetJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> GetRelatedAsync(
-        string httpBase, string source, string id, int limit, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> ReferredByAsync(
+        string httpBase, string value, string? sourceType, int limit, CancellationToken ct = default)
     {
-        string path = BuildRelatedPath(source, id);
-        string url = $"{httpBase.TrimEnd('/')}/api/v1/{path}?limit={limit}";
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/referred-by?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
         return await GetJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> GetSnapshotAsync(
-        string httpBase, string source, string id, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> CrossReferencedAsync(
+        string httpBase, string value, string? sourceType, int limit, CancellationToken ct = default)
     {
-        string path = BuildSnapshotPath(source, id);
-        string url = $"{httpBase.TrimEnd('/')}/api/v1/{path}";
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/cross-referenced?value={Uri.EscapeDataString(value)}&limit={limit}";
+        if (!string.IsNullOrEmpty(sourceType))
+            url += $"&sourceType={Uri.EscapeDataString(sourceType)}";
         return await GetJsonAsync(url, ct);
     }
 
-    public async Task<(string Url, string Json, long ElapsedMs)> GetContentAsync(
-        string httpBase, string source, string id, CancellationToken ct = default)
+    public async Task<(string Url, string Json, long ElapsedMs)> ContentItemAsync(
+        string httpBase, string source, string id, bool includeContent, bool includeComments,
+        bool includeSnapshot, CancellationToken ct = default)
     {
-        string path = BuildContentPath(source, id);
-        string url = $"{httpBase.TrimEnd('/')}/api/v1/{path}";
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/item/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?includeContent={includeContent}&includeComments={includeComments}&includeSnapshot={includeSnapshot}";
         return await GetJsonAsync(url, ct);
     }
 
@@ -80,48 +85,13 @@ public sealed class SourceDirectClient(IHttpClientFactory httpClientFactory)
         }
     }
 
-    // ── URL path builders (source-specific patterns) ─────────────
+    // ── URL helpers ─────────────────────────────────────────────
 
     private static string EncodeId(string source, string id)
     {
-        // GitHub keys contain slashes (e.g. "HL7/fhir#4006"); the catch-all
-        // route expects raw slashes but needs '#' encoded.
         if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
             return id.Replace("#", "%23");
-
         return Uri.EscapeDataString(id);
-    }
-
-    private static string ItemBase(string source) => "items";
-
-    private static string BuildItemPath(string source, string id) =>
-        $"{ItemBase(source)}/{EncodeId(source, id)}";
-
-    private static string BuildRelatedPath(string source, string id)
-    {
-        string encoded = EncodeId(source, id);
-        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
-            return $"items/related/{encoded}";
-
-        return $"{ItemBase(source)}/{encoded}/related";
-    }
-
-    private static string BuildSnapshotPath(string source, string id)
-    {
-        string encoded = EncodeId(source, id);
-        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
-            return $"items/snapshot/{encoded}";
-
-        return $"{ItemBase(source)}/{encoded}/snapshot";
-    }
-
-    private static string BuildContentPath(string source, string id)
-    {
-        string encoded = EncodeId(source, id);
-        if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
-            return $"items/content/{encoded}";
-
-        return $"{ItemBase(source)}/{encoded}/content";
     }
 
     // ── Internals ────────────────────────────────────────────────

@@ -73,18 +73,12 @@
     </div>
 </div>
 
-<ItemCrossRefs CrossRefs="CrossRefs" RelatedItems="RelatedItems"
-    LoadingRelated="LoadingRelated" RelatedError="RelatedError"
-    OnLoadRelated="OnLoadRelated" />
+<ItemCrossRefs CrossRefs="CrossRefs" />
 
 @code {
-    [Parameter, EditorRequired] public ItemResponse Item { get; set; } = default!;
-    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
-    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
-    [Parameter] public bool LoadingRelated { get; set; }
-    [Parameter] public string? RelatedError { get; set; }
-    [Parameter] public EventCallback OnLoadRelated { get; set; }
-    [Parameter] public Func<Task<SnapshotResponse?>>? LoadSnapshotAsync { get; set; }
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
+    [Parameter] public Func<Task<string?>>? LoadSnapshotAsync { get; set; }
 
     private bool _showThread;
     private bool _loadingThread;
@@ -107,8 +101,7 @@
         {
             if (LoadSnapshotAsync is not null)
             {
-                SnapshotResponse? snapshot = await LoadSnapshotAsync();
-                _threadMarkdown = snapshot?.Markdown;
+                _threadMarkdown = await LoadSnapshotAsync();
                 if (_threadMarkdown is null)
                     _threadError = "No thread context available.";
             }

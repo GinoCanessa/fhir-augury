@@ -3,17 +3,17 @@
 
 <div class="row mt-4">
     @* Cross-References *@
-    <div class="col-md-6 mb-3">
+    <div class="col-12 mb-3">
         <div class="card">
             <div class="card-header fw-semibold">
                 <i class="bi bi-link-45deg"></i> Cross-References
-                @if (CrossRefs?.References is not null)
+                @if (CrossRefs?.Hits is not null)
                 {
-                    <span class="badge bg-secondary ms-1">@CrossRefs.References.Count</span>
+                    <span class="badge bg-secondary ms-1">@CrossRefs.Hits.Count</span>
                 }
             </div>
             <div class="card-body">
-                @if (CrossRefs?.References is { Count: > 0 })
+                @if (CrossRefs?.Hits is { Count: > 0 })
                 {
                     <div class="table-responsive">
                         <table class="table table-sm table-striped mb-0">
@@ -26,17 +26,17 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                @foreach (SourceCrossReference xref in CrossRefs.References)
+                                @foreach (CrossReferenceHit hit in CrossRefs.Hits)
                                 {
-                                    bool targetIsQueried = string.Equals(xref.TargetType, CrossRefs.Source, StringComparison.OrdinalIgnoreCase)
-                                                        && string.Equals(xref.TargetId, CrossRefs.Id, StringComparison.OrdinalIgnoreCase);
-                                    string viewType = targetIsQueried ? xref.SourceType : xref.TargetType;
-                                    string viewId = targetIsQueried ? xref.SourceId : xref.TargetId;
+                                    bool targetIsQueried = string.Equals(hit.TargetId, CrossRefs.Value, StringComparison.OrdinalIgnoreCase);
+                                    string viewType = targetIsQueried ? hit.SourceType : hit.TargetType;
+                                    string viewId = targetIsQueried ? hit.SourceId : hit.TargetId;
+                                    string viewTitle = targetIsQueried ? (hit.SourceTitle ?? "") : (hit.TargetTitle ?? "");
                                     <tr>
                                         <td><span class="badge @SourceBadgeHelper.SourceBadgeClass(viewType)">@viewType</span></td>
                                         <td><a href="@ItemViewerUrl.For(viewType, viewId)"><code>@viewId</code></a></td>
-                                        <td><span class="badge bg-primary">@xref.LinkType</span></td>
-                                        <td title="@xref.TargetTitle">@Truncate(xref.TargetTitle ?? "", 40)</td>
+                                        <td><span class="badge bg-primary">@hit.LinkType</span></td>
+                                        <td title="@viewTitle">@Truncate(viewTitle, 40)</td>
                                     </tr>
                                 }
                             </tbody>
@@ -50,87 +50,10 @@
             </div>
         </div>
     </div>
-
-    @* Related Items *@
-    <div class="col-md-6 mb-3">
-        <div class="card">
-            <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
-                <span>
-                    <i class="bi bi-diagram-3"></i> Related Items
-                    @if (RelatedItems?.Items is not null)
-                    {
-                        <span class="badge bg-secondary ms-1">@RelatedItems.Items.Count</span>
-                    }
-                </span>
-                @if (RelatedItems is null && !LoadingRelated)
-                {
-                    <button class="btn btn-sm btn-outline-primary" @onclick="OnLoadRelated">
-                        <i class="bi bi-search"></i> Load
-                    </button>
-                }
-            </div>
-            <div class="card-body">
-                @if (LoadingRelated)
-                {
-                    <div class="text-center py-2">
-                        <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
-                        <span class="ms-2 text-muted small">Loading…</span>
-                    </div>
-                }
-                else if (RelatedError is not null)
-                {
-                    <div class="alert alert-warning small mb-0">
-                        @RelatedError
-                        <button class="btn btn-sm btn-outline-warning ms-2" @onclick="OnLoadRelated">
-                            <i class="bi bi-arrow-clockwise"></i> Retry
-                        </button>
-                    </div>
-                }
-                else if (RelatedItems?.Items is { Count: > 0 })
-                {
-                    <div class="table-responsive">
-                        <table class="table table-sm table-striped mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Source</th>
-                                    <th>ID</th>
-                                    <th>Title</th>
-                                    <th class="text-end">Score</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                @foreach (RelatedItem rel in RelatedItems.Items)
-                                {
-                                    <tr>
-                                        <td><span class="badge @SourceBadgeHelper.SourceBadgeClass(rel.Source)">@rel.Source</span></td>
-                                        <td><a href="@ItemViewerUrl.For(rel.Source, rel.Id)"><code>@rel.Id</code></a></td>
-                                        <td title="@rel.Title">@Truncate(rel.Title, 40)</td>
-                                        <td class="text-end">@rel.RelevanceScore.ToString("F2")</td>
-                                    </tr>
-                                }
-                            </tbody>
-                        </table>
-                    </div>
-                }
-                else if (RelatedItems is not null)
-                {
-                    <span class="text-muted">No related items found.</span>
-                }
-                else
-                {
-                    <span class="text-muted small">Click "Load" to fetch related items.</span>
-                }
-            </div>
-        </div>
-    </div>
 </div>
 
 @code {
-    [Parameter] public CrossReferenceResponse? CrossRefs { get; set; }
-    [Parameter] public FindRelatedResponse? RelatedItems { get; set; }
-    [Parameter] public bool LoadingRelated { get; set; }
-    [Parameter] public string? RelatedError { get; set; }
-    [Parameter] public EventCallback OnLoadRelated { get; set; }
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
 
     private static string Truncate(string text, int maxLength) =>
         string.IsNullOrEmpty(text) ? "" : text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");

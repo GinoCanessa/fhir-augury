@@ -26,12 +26,11 @@
             <option value="">— Select API —</option>
             @if (_isOrchestrator)
             {
-                <option value="unified-search">Unified Search</option>
-                <option value="find-related">Find Related</option>
-                <option value="get-xref">Get Cross-References</option>
-                <option value="get-item">Get Item (proxied)</option>
-                <option value="get-snapshot">Get Snapshot (proxied)</option>
-                <option value="get-content">Get Content (proxied)</option>
+                <option value="content-search">Content Search</option>
+                <option value="refers-to">Refers To</option>
+                <option value="referred-by">Referred By</option>
+                <option value="cross-referenced">Cross-Referenced</option>
+                <option value="get-item">Get Item</option>
                 <option value="get-services-status">Services Status</option>
                 <option value="get-stats">Aggregate Stats</option>
                 <option value="rebuild-index">Rebuild Index</option>
@@ -39,13 +38,13 @@
             }
             else
             {
-                <option value="search">Search</option>
-                <option value="get-item">GetItem</option>
-                <option value="get-related">GetRelated</option>
-                <option value="get-snapshot">GetSnapshot</option>
-                <option value="get-content">GetContent</option>
-                <option value="get-stats">GetStats</option>
-                <option value="health-check">HealthCheck</option>
+                <option value="content-search">Content Search</option>
+                <option value="refers-to">Refers To</option>
+                <option value="referred-by">Referred By</option>
+                <option value="cross-referenced">Cross-Referenced</option>
+                <option value="get-item">Get Item</option>
+                <option value="get-stats">Get Stats</option>
+                <option value="health-check">Health Check</option>
             }
         </select>
     </div>
@@ -67,9 +66,9 @@
                 @if (NeedsQuery)
                 {
                     <div class="col-md-4">
-                        <label class="form-label">Query</label>
+                        <label class="form-label">@QueryLabel</label>
                         <input type="text" class="form-control" @bind="_queryInput"
-                               @bind:event="oninput" placeholder="e.g. patient resource" />
+                               @bind:event="oninput" placeholder="@QueryPlaceholder" />
                     </div>
                 }
                 @if (NeedsId)
@@ -90,9 +89,9 @@
                 @if (NeedsSourceFilter)
                 {
                     <div class="col-md-2">
-                        <label class="form-label">Target Source</label>
+                        <label class="form-label">@SourceFilterLabel</label>
                         <select class="form-select" @bind="_sourceFilterInput">
-                            <option value="">— Select —</option>
+                            <option value="">— @(SourceFilterRequired ? "Select" : "Any") —</option>
                             @foreach (string src in _targetSources)
                             {
                                 <option value="@src">@src</option>
@@ -119,6 +118,26 @@
                                 <option value="full">full</option>
                             }
                         </select>
+                    </div>
+                }
+                @if (NeedsItemFlags)
+                {
+                    <div class="col-md-3">
+                        <label class="form-label">Include</label>
+                        <div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" @bind="_includeContent" id="chkContent" />
+                                <label class="form-check-label" for="chkContent">Content</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" @bind="_includeComments" id="chkComments" />
+                                <label class="form-check-label" for="chkComments">Comments</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" @bind="_includeSnapshot" id="chkSnapshot" />
+                                <label class="form-check-label" for="chkSnapshot">Snapshot</label>
+                            </div>
+                        </div>
                     </div>
                 }
                 <div class="col-md-2">
@@ -172,11 +191,7 @@
                 {
                     <span class="badge bg-info">@_parsedCrossRefs.Count references</span>
                 }
-                @if (_parsedRelatedItems is not null)
-                {
-                    <span class="badge bg-info">@_parsedRelatedItems.Count related items</span>
-                }
-                @if (_parsedResults is not null || _parsedCrossRefs is not null || _parsedRelatedItems is not null)
+                @if (_parsedResults is not null || _parsedCrossRefs is not null)
                 {
                     <button class="btn btn-sm btn-outline-secondary" @onclick="ToggleRaw">
                         <i class="bi @(_showRaw ? "bi-table" : "bi-code-slash")"></i>
@@ -286,61 +301,6 @@
                 </div>
             }
         }
-        else if (_parsedRelatedItems is not null && !_showRaw)
-        {
-            @if (_parsedRelatedItems.Count == 0)
-            {
-                <div class="alert alert-info">No related items found.</div>
-            }
-            else
-            {
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover table-sm align-middle">
-                        <thead class="table-dark">
-                            <tr>
-                                <th>Source</th>
-                                <th>ID</th>
-                                <th>Title</th>
-                                <th class="text-end">Score</th>
-                                <th>Relationship</th>
-                                <th>Context</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            @foreach (ParsedRelatedItem item in _parsedRelatedItems)
-                            {
-                                <tr>
-                                    <td><span class="badge bg-secondary">@item.Source</span></td>
-                                    <td>
-                                        <a href="@ItemViewerUrl.For(item.Source, item.Id)">
-                                            <code>@item.Id</code>
-                                        </a>
-                                    </td>
-                                    <td title="@item.Title">@Truncate(item.Title, 60)</td>
-                                    <td class="text-end fw-semibold">@item.RelevanceScore.ToString("F2")</td>
-                                    <td><span class="badge bg-primary">@(item.Relationship ?? "")</span></td>
-                                    <td title="@item.Context">@Truncate(item.Context ?? item.Snippet ?? "", 50)</td>
-                                    <td>
-                                        <a href="@ItemViewerUrl.For(item.Source, item.Id)"
-                                           class="btn btn-sm btn-outline-info" title="View locally cached item">
-                                            <i class="bi bi-eye"></i>
-                                        </a>
-                                        @if (!string.IsNullOrEmpty(item.Url))
-                                        {
-                                            <a href="@item.Url" target="_blank" rel="noopener"
-                                               class="btn btn-sm btn-outline-secondary ms-1" title="Open in external system">
-                                                <i class="bi bi-box-arrow-up-right"></i>
-                                            </a>
-                                        }
-                                    </td>
-                                </tr>
-                            }
-                        </tbody>
-                    </table>
-                </div>
-            }
-        }
         else
         {
             <pre class="bg-body-secondary border rounded p-3 overflow-auto"
@@ -361,6 +321,9 @@
     private int _limitInput = 20;
     private string _sourceFilterInput = "";
     private string _typeInput = "all";
+    private bool _includeContent = true;
+    private bool _includeComments;
+    private bool _includeSnapshot;
 
     private bool _running;
     private string? _error;
@@ -373,10 +336,6 @@
     private int _parsedTotalResults;
 
     private List<ParsedCrossRef>? _parsedCrossRefs;
-    private string _xrefQueriedSource = "";
-    private string _xrefQueriedId = "";
-
-    private List<ParsedRelatedItem>? _parsedRelatedItems;
 
     private List<SourceEndpointInfo> _endpoints = [];
     private List<string> _targetSources = [];
@@ -387,23 +346,29 @@
 
     // ── Input field visibility ───────────────────────────────────
 
-    private bool NeedsQuery => _isOrchestrator
-        ? SelectedApi == "unified-search"
-        : SelectedApi == "search";
+    private bool NeedsQuery => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced";
 
-    private bool NeedsId => _isOrchestrator
-        ? SelectedApi is "find-related" or "get-xref" or "get-item" or "get-snapshot" or "get-content"
-        : SelectedApi is "get-item" or "get-related" or "get-snapshot" or "get-content";
+    private bool NeedsId => SelectedApi == "get-item";
 
-    private bool NeedsLimit => _isOrchestrator
-        ? SelectedApi is "unified-search" or "find-related"
-        : SelectedApi is "search" or "get-related";
+    private bool NeedsLimit => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced";
 
-    private bool NeedsSourceFilter => _isOrchestrator
-        && SelectedApi is "find-related" or "get-xref" or "get-item" or "get-snapshot" or "get-content";
+    private bool NeedsSourceFilter => (_isOrchestrator && SelectedApi is "get-item" or "refers-to" or "referred-by" or "cross-referenced")
+        || (!_isOrchestrator && SelectedApi is "refers-to" or "referred-by" or "cross-referenced");
+
+    private bool SourceFilterRequired => _isOrchestrator && SelectedApi == "get-item";
+
+    private bool NeedsItemFlags => SelectedApi == "get-item";
 
     private bool NeedsType => _isOrchestrator
         && SelectedApi is "rebuild-index" or "trigger-sync";
+
+    private string QueryLabel => SelectedApi == "content-search" ? "Values (comma-separated)" : "Value";
+
+    private string QueryPlaceholder => SelectedApi == "content-search"
+        ? "e.g. patient resource, FHIR-50783"
+        : "e.g. FHIR-50783";
+
+    private string SourceFilterLabel => SelectedApi == "get-item" ? "Target Source" : "Source Type (optional)";
 
     private string IdPlaceholder => (_isOrchestrator ? _sourceFilterInput : SelectedSource)?.ToLowerInvariant() switch
     {
@@ -420,7 +385,7 @@
         && !string.IsNullOrEmpty(SelectedApi)
         && (!NeedsQuery || !string.IsNullOrWhiteSpace(_queryInput))
         && (!NeedsId || !string.IsNullOrWhiteSpace(_idInput))
-        && (!NeedsSourceFilter || !string.IsNullOrWhiteSpace(_sourceFilterInput));
+        && (!SourceFilterRequired || !string.IsNullOrWhiteSpace(_sourceFilterInput));
 
     // ── Initialization ───────────────────────────────────────────
 
@@ -463,9 +428,6 @@
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
-        _xrefQueriedSource = "";
-        _xrefQueriedId = "";
-        _parsedRelatedItems = null;
         _showRaw = false;
         StateHasChanged();
 
@@ -500,20 +462,24 @@
 
         switch (SelectedApi)
         {
-            case "search":
-                (url, json, elapsed) = await SourceClient.SearchAsync(httpBase, _queryInput, _limitInput);
+            case "content-search":
+                (url, json, elapsed) = await SourceClient.ContentSearchAsync(httpBase, _queryInput, _limitInput);
+                break;
+            case "refers-to":
+                (url, json, elapsed) = await SourceClient.RefersToAsync(httpBase, _queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
+                break;
+            case "referred-by":
+                (url, json, elapsed) = await SourceClient.ReferredByAsync(httpBase, _queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
+                break;
+            case "cross-referenced":
+                (url, json, elapsed) = await SourceClient.CrossReferencedAsync(httpBase, _queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
                 break;
             case "get-item":
-                (url, json, elapsed) = await SourceClient.GetItemAsync(httpBase, endpoint.Name, _idInput);
-                break;
-            case "get-related":
-                (url, json, elapsed) = await SourceClient.GetRelatedAsync(httpBase, endpoint.Name, _idInput, _limitInput);
-                break;
-            case "get-snapshot":
-                (url, json, elapsed) = await SourceClient.GetSnapshotAsync(httpBase, endpoint.Name, _idInput);
-                break;
-            case "get-content":
-                (url, json, elapsed) = await SourceClient.GetContentAsync(httpBase, endpoint.Name, _idInput);
+                (url, json, elapsed) = await SourceClient.ContentItemAsync(httpBase, endpoint.Name, _idInput,
+                    _includeContent, _includeComments, _includeSnapshot);
                 break;
             case "get-stats":
                 (url, json, elapsed) = await SourceClient.GetStatsAsync(httpBase);
@@ -528,7 +494,8 @@
         _resultJson = json;
         _requestInfo = $"GET {url}";
         _elapsedMs = elapsed;
-        TryParseSearchResults(json);
+        TryParseSearchHits(json);
+        TryParseCrossRefHits(json);
     }
 
     private async Task ExecuteOrchestratorAsync()
@@ -539,23 +506,24 @@
 
         switch (SelectedApi)
         {
-            case "unified-search":
-                (url, json, elapsed) = await Orchestrator.UnifiedSearchAsync(_queryInput, _limitInput);
+            case "content-search":
+                (url, json, elapsed) = await Orchestrator.ContentSearchAsync(_queryInput, _limitInput);
                 break;
-            case "find-related":
-                (url, json, elapsed) = await Orchestrator.FindRelatedAsync(_sourceFilterInput, _idInput, _limitInput);
+            case "refers-to":
+                (url, json, elapsed) = await Orchestrator.RefersToAsync(_queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
                 break;
-            case "get-xref":
-                (url, json, elapsed) = await Orchestrator.GetCrossReferencesAsync(_sourceFilterInput, _idInput);
+            case "referred-by":
+                (url, json, elapsed) = await Orchestrator.ReferredByAsync(_queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
+                break;
+            case "cross-referenced":
+                (url, json, elapsed) = await Orchestrator.CrossReferencedAsync(_queryInput,
+                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
                 break;
             case "get-item":
-                (url, json, elapsed) = await Orchestrator.GetItemAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-snapshot":
-                (url, json, elapsed) = await Orchestrator.GetSnapshotAsync(_sourceFilterInput, _idInput);
-                break;
-            case "get-content":
-                (url, json, elapsed) = await Orchestrator.GetContentAsync(_sourceFilterInput, _idInput);
+                (url, json, elapsed) = await Orchestrator.GetItemAsync(_sourceFilterInput, _idInput,
+                    _includeContent, _includeComments, _includeSnapshot);
                 break;
             case "get-services-status":
                 (url, json, elapsed) = await Orchestrator.GetServicesStatusAsync();
@@ -576,26 +544,26 @@
         _resultJson = json;
         _requestInfo = $"{(SelectedApi is "rebuild-index" or "trigger-sync" ? "POST" : "GET")} {url}";
         _elapsedMs = elapsed;
-        TryParseSearchResults(json);
-        TryParseCrossRefResults(json);
-        TryParseRelatedResults(json);
+        TryParseSearchHits(json);
+        TryParseCrossRefHits(json);
     }
 
-    private void TryParseSearchResults(string json)
+    private void TryParseSearchHits(string json)
     {
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("results", out JsonElement results) && results.ValueKind == JsonValueKind.Array)
+            if (doc.RootElement.TryGetProperty("hits", out JsonElement hits)
+                && hits.ValueKind == JsonValueKind.Array
+                && doc.RootElement.TryGetProperty("values", out _))
             {
-                _parsedTotalResults = doc.RootElement.TryGetProperty("total", out JsonElement total) ? total.GetInt32() : results.GetArrayLength();
+                _parsedTotalResults = doc.RootElement.TryGetProperty("total", out JsonElement total) ? total.GetInt32() : hits.GetArrayLength();
                 _parsedResults = [];
-                foreach (JsonElement r in results.EnumerateArray())
+                foreach (JsonElement r in hits.EnumerateArray())
                 {
-                    string id = GetStr(r, "id") ?? GetStr(r, "key") ?? "";
                     _parsedResults.Add(new ParsedSearchResult(
                         Source: GetStr(r, "source") ?? "",
-                        Id: id,
+                        Id: GetStr(r, "id") ?? "",
                         Title: GetStr(r, "title") ?? "",
                         Score: r.TryGetProperty("score", out JsonElement scoreEl) && scoreEl.ValueKind == JsonValueKind.Number ? scoreEl.GetDouble() : 0,
                         Snippet: GetStr(r, "snippet"),
@@ -607,18 +575,19 @@
         catch { /* not a search response, table view will be hidden */ }
     }
 
-    private void TryParseCrossRefResults(string json)
+    private void TryParseCrossRefHits(string json)
     {
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("references", out JsonElement refs) && refs.ValueKind == JsonValueKind.Array)
+            if (doc.RootElement.TryGetProperty("hits", out JsonElement hits)
+                && hits.ValueKind == JsonValueKind.Array
+                && doc.RootElement.TryGetProperty("direction", out _))
             {
-                _xrefQueriedSource = GetStr(doc.RootElement, "source") ?? "";
-                _xrefQueriedId = GetStr(doc.RootElement, "id") ?? "";
+                string queriedValue = GetStr(doc.RootElement, "value") ?? "";
 
                 _parsedCrossRefs = [];
-                foreach (JsonElement r in refs.EnumerateArray())
+                foreach (JsonElement r in hits.EnumerateArray())
                 {
                     string sourceType = GetStr(r, "sourceType") ?? "";
                     string sourceId = GetStr(r, "sourceId") ?? "";
@@ -627,11 +596,7 @@
                     string? targetTitle = GetStr(r, "targetTitle");
                     string? targetUrl = GetStr(r, "targetUrl");
 
-                    // Determine the "view" item: the side that is NOT the queried item.
-                    // Source controllers populate TargetTitle/TargetUrl with their own
-                    // item's info, so the external link already points to the "other" item.
-                    bool targetIsQueried = string.Equals(targetType, _xrefQueriedSource, StringComparison.OrdinalIgnoreCase)
-                                        && string.Equals(targetId, _xrefQueriedId, StringComparison.OrdinalIgnoreCase);
+                    bool targetIsQueried = string.Equals(targetId, queriedValue, StringComparison.OrdinalIgnoreCase);
                     string viewType = targetIsQueried ? sourceType : targetType;
                     string viewId = targetIsQueried ? sourceId : targetId;
 
@@ -642,7 +607,7 @@
                         TargetId: targetId,
                         LinkType: GetStr(r, "linkType") ?? "",
                         Context: GetStr(r, "context"),
-                        SourceContentType: GetStr(r, "sourceContentType"),
+                        SourceContentType: GetStr(r, "contentType"),
                         TargetTitle: targetTitle,
                         TargetUrl: targetUrl,
                         ViewType: viewType,
@@ -652,35 +617,6 @@
             }
         }
         catch { /* not a cross-ref response, table view will be hidden */ }
-    }
-
-    private void TryParseRelatedResults(string json)
-    {
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("items", out JsonElement items)
-                && items.ValueKind == JsonValueKind.Array
-                && doc.RootElement.TryGetProperty("seedSource", out _))
-            {
-                _parsedRelatedItems = [];
-                foreach (JsonElement r in items.EnumerateArray())
-                {
-                    _parsedRelatedItems.Add(new ParsedRelatedItem(
-                        Source: GetStr(r, "source") ?? "",
-                        Id: GetStr(r, "id") ?? "",
-                        Title: GetStr(r, "title") ?? "",
-                        RelevanceScore: r.TryGetProperty("relevanceScore", out JsonElement s)
-                            && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : 0,
-                        Relationship: GetStr(r, "relationship"),
-                        Snippet: GetStr(r, "snippet"),
-                        Url: GetStr(r, "url"),
-                        Context: GetStr(r, "context")
-                    ));
-                }
-            }
-        }
-        catch { /* not a related response */ }
     }
 
     private static string? GetStr(JsonElement el, string name) =>
@@ -693,31 +629,28 @@
         SelectedApi = "";
         _sourceFilterInput = "";
         _typeInput = "all";
+        _includeContent = true;
+        _includeComments = false;
+        _includeSnapshot = false;
         _error = null;
         _resultJson = null;
         _requestInfo = null;
         _elapsedMs = null;
         _parsedResults = null;
         _parsedCrossRefs = null;
-        _xrefQueriedSource = "";
-        _xrefQueriedId = "";
-        _parsedRelatedItems = null;
     }
 
     private void ToggleRaw() => _showRaw = !_showRaw;
 
     private static string ApiDisplayName(string api) => api switch
     {
-        "search" => "Search",
+        "content-search" => "Content Search",
+        "refers-to" => "Refers To",
+        "referred-by" => "Referred By",
+        "cross-referenced" => "Cross-Referenced",
         "get-item" => "Get Item",
-        "get-related" => "Get Related",
-        "get-snapshot" => "Get Snapshot",
-        "get-content" => "Get Content",
         "get-stats" => "Get Stats",
         "health-check" => "Health Check",
-        "unified-search" => "Unified Search",
-        "find-related" => "Find Related",
-        "get-xref" => "Get Cross-References",
         "get-services-status" => "Services Status",
         "rebuild-index" => "Rebuild Index",
         "trigger-sync" => "Trigger Sync",
@@ -734,7 +667,4 @@
     private sealed record SourceEndpointInfo(string Name, string Address);
     private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);
     private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl, string ViewType, string ViewId);
-    private sealed record ParsedRelatedItem(
-        string Source, string Id, string Title, double RelevanceScore,
-        string? Relationship, string? Snippet, string? Url, string? Context);
 }
