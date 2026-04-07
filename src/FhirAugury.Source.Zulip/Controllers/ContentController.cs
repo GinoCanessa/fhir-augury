@@ -1,0 +1,480 @@
+using FhirAugury.Common;
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Text;
+using FhirAugury.Source.Zulip.Configuration;
+using FhirAugury.Source.Zulip.Database;
+using FhirAugury.Source.Zulip.Database.Records;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+
+namespace FhirAugury.Source.Zulip.Controllers;
+
+[ApiController]
+[Route("api/v1/content")]
+public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) : ControllerBase
+{
+    [HttpGet("refers-to")]
+    public IActionResult RefersTo([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return BadRequest(new { error = "Query parameter 'value' is required" });
+
+        int maxResults = Math.Min(limit ?? 50, 200);
+        ZulipServiceOptions options = optsAccessor.Value;
+
+        if (!int.TryParse(value, out int msgId))
+        {
+            return Ok(new CrossReferenceQueryResponse
+            {
+                Value = value,
+                SourceType = sourceType,
+                Direction = "refers-to",
+                Total = 0,
+                Hits = [],
+                Warnings = [$"Value '{value}' is not a valid Zulip message ID"],
+            });
+        }
+
+        using SqliteConnection connection = db.OpenConnection();
+        ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+        string sourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : "";
+        string sourceUrl = message is not null
+            ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId)
+            : "";
+
+        List<CrossReferenceHit> hits = [];
+
+        if (sourceType is null or SourceSystems.Jira)
+        {
+            foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: value))
+            {
+                hits.Add(new CrossReferenceHit
+                {
+                    SourceType = SourceSystems.Zulip,
+                    ContentType = r.ContentType,
+                    SourceId = value,
+                    SourceTitle = sourceTitle,
+                    SourceUrl = sourceUrl,
+                    TargetType = r.TargetType,
+                    TargetId = r.TargetId,
+                    LinkType = r.LinkType,
+                    Context = r.Context,
+                });
+            }
+        }
+
+        if (sourceType is null or SourceSystems.GitHub)
+        {
+            foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, SourceId: value))
+            {
+                hits.Add(new CrossReferenceHit
+                {
+                    SourceType = SourceSystems.Zulip,
+                    ContentType = r.ContentType,
+                    SourceId = value,
+                    SourceTitle = sourceTitle,
+                    SourceUrl = sourceUrl,
+                    TargetType = r.TargetType,
+                    TargetId = r.TargetId,
+                    LinkType = r.LinkType,
+                    Context = r.Context,
+                });
+            }
+        }
+
+        if (sourceType is null or SourceSystems.Confluence)
+        {
+            foreach (ConfluenceXRefRecord r in ConfluenceXRefRecord.SelectList(connection, SourceId: value))
+            {
+                hits.Add(new CrossReferenceHit
+                {
+                    SourceType = SourceSystems.Zulip,
+                    ContentType = r.ContentType,
+                    SourceId = value,
+                    SourceTitle = sourceTitle,
+                    SourceUrl = sourceUrl,
+                    TargetType = r.TargetType,
+                    TargetId = r.TargetId,
+                    LinkType = r.LinkType,
+                    Context = r.Context,
+                });
+            }
+        }
+
+        if (sourceType is null or SourceSystems.Fhir)
+        {
+            foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, SourceId: value))
+            {
+                hits.Add(new CrossReferenceHit
+                {
+                    SourceType = SourceSystems.Zulip,
+                    ContentType = r.ContentType,
+                    SourceId = value,
+                    SourceTitle = sourceTitle,
+                    SourceUrl = sourceUrl,
+                    TargetType = r.TargetType,
+                    TargetId = r.TargetId,
+                    LinkType = r.LinkType,
+                    Context = r.Context,
+                });
+            }
+        }
+
+        if (hits.Count > maxResults)
+            hits = hits.GetRange(0, maxResults);
+
+        return Ok(new CrossReferenceQueryResponse
+        {
+            Value = value,
+            SourceType = sourceType,
+            Direction = "refers-to",
+            Total = hits.Count,
+            Hits = hits,
+        });
+    }
+
+    [HttpGet("referred-by")]
+    public IActionResult ReferredBy([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return BadRequest(new { error = "Query parameter 'value' is required" });
+
+        int maxResults = Math.Min(limit ?? 50, 200);
+        ZulipServiceOptions options = optsAccessor.Value;
+
+        using SqliteConnection connection = db.OpenConnection();
+        List<CrossReferenceHit> hits = [];
+
+        string? detectedType = sourceType ?? ValueFormatDetector.DetectSourceType(value);
+
+        if (detectedType is null or SourceSystems.Jira)
+        {
+            if (ValueFormatDetector.IsJiraKey(value))
+            {
+                HashSet<string> seen = [];
+                foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, JiraKey: value))
+                {
+                    if (!seen.Add(r.SourceId)) continue;
+                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
+
+                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    hits.Add(new CrossReferenceHit
+                    {
+                        SourceType = SourceSystems.Zulip,
+                        ContentType = r.ContentType,
+                        SourceId = r.SourceId,
+                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
+                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
+                        TargetType = r.TargetType,
+                        TargetId = r.TargetId,
+                        LinkType = r.LinkType,
+                        Context = r.Context,
+                    });
+                }
+            }
+        }
+
+        if (detectedType is null or SourceSystems.GitHub)
+        {
+            if (ValueFormatDetector.TryParseGitHubIssue(value, out string repoFullName, out int issueNumber))
+            {
+                HashSet<string> seen = [];
+                foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, RepoFullName: repoFullName, IssueNumber: issueNumber))
+                {
+                    if (!seen.Add(r.SourceId)) continue;
+                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
+
+                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    hits.Add(new CrossReferenceHit
+                    {
+                        SourceType = SourceSystems.Zulip,
+                        ContentType = r.ContentType,
+                        SourceId = r.SourceId,
+                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
+                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
+                        TargetType = r.TargetType,
+                        TargetId = r.TargetId,
+                        LinkType = r.LinkType,
+                        Context = r.Context,
+                    });
+                }
+            }
+        }
+
+        if (detectedType is null or SourceSystems.Fhir)
+        {
+            if (ValueFormatDetector.IsFhirElement(value))
+            {
+                HashSet<string> seen = [];
+                foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: value))
+                {
+                    if (!seen.Add(r.SourceId)) continue;
+                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
+
+                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+                    hits.Add(new CrossReferenceHit
+                    {
+                        SourceType = SourceSystems.Zulip,
+                        ContentType = r.ContentType,
+                        SourceId = r.SourceId,
+                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
+                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
+                        TargetType = r.TargetType,
+                        TargetId = r.TargetId,
+                        LinkType = r.LinkType,
+                        Context = r.Context,
+                    });
+                }
+            }
+        }
+
+        if (hits.Count > maxResults)
+            hits = hits.GetRange(0, maxResults);
+
+        return Ok(new CrossReferenceQueryResponse
+        {
+            Value = value,
+            SourceType = sourceType,
+            Direction = "referred-by",
+            Total = hits.Count,
+            Hits = hits,
+        });
+    }
+
+    [HttpGet("cross-referenced")]
+    public IActionResult CrossReferenced([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return BadRequest(new { error = "Query parameter 'value' is required" });
+
+        int maxResults = Math.Min(limit ?? 50, 200);
+
+        // Gather both directions
+        CrossReferenceQueryResponse refersToResponse = (CrossReferenceQueryResponse)((OkObjectResult)RefersTo(value, sourceType, maxResults)).Value!;
+        CrossReferenceQueryResponse referredByResponse = (CrossReferenceQueryResponse)((OkObjectResult)ReferredBy(value, sourceType, maxResults)).Value!;
+
+        // Merge and deduplicate
+        HashSet<string> seen = [];
+        List<CrossReferenceHit> merged = [];
+
+        foreach (CrossReferenceHit hit in refersToResponse.Hits)
+        {
+            string key = $"{hit.SourceType}|{hit.SourceId}|{hit.TargetType}|{hit.TargetId}";
+            if (seen.Add(key))
+                merged.Add(hit);
+        }
+
+        foreach (CrossReferenceHit hit in referredByResponse.Hits)
+        {
+            string key = $"{hit.SourceType}|{hit.SourceId}|{hit.TargetType}|{hit.TargetId}";
+            if (seen.Add(key))
+                merged.Add(hit);
+        }
+
+        if (merged.Count > maxResults)
+            merged = merged.GetRange(0, maxResults);
+
+        List<string>? warnings = CombineWarnings(refersToResponse.Warnings, referredByResponse.Warnings);
+
+        return Ok(new CrossReferenceQueryResponse
+        {
+            Value = value,
+            SourceType = sourceType,
+            Direction = "cross-referenced",
+            Total = merged.Count,
+            Hits = merged,
+            Warnings = warnings,
+        });
+    }
+
+    [HttpGet("search")]
+    public IActionResult Search([FromQuery] string? values, [FromQuery] string? sources, [FromQuery] int? limit)
+    {
+        if (string.IsNullOrWhiteSpace(values))
+            return BadRequest(new { error = "Query parameter 'values' is required" });
+
+        List<string> valueList = [.. values.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        List<string>? sourceList = sources is not null
+            ? [.. sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]
+            : null;
+
+        // If source filter is provided and doesn't include zulip, return empty
+        if (sourceList is not null && !sourceList.Any(s => s.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Ok(new ContentSearchResponse
+            {
+                Values = valueList,
+                Total = 0,
+                Hits = [],
+            });
+        }
+
+        int maxResults = Math.Min(limit ?? 20, 200);
+        ZulipServiceOptions options = optsAccessor.Value;
+
+        using SqliteConnection connection = db.OpenConnection();
+        List<ContentSearchHit> allHits = [];
+
+        foreach (string searchValue in valueList)
+        {
+            string ftsQuery = FtsQueryHelper.SanitizeFtsQuery(searchValue);
+            if (string.IsNullOrEmpty(ftsQuery))
+                continue;
+
+            string sql = """
+                SELECT zm.ZulipMessageId, zm.StreamName, zm.Topic,
+                       snippet(zulip_messages_fts, 0, '<b>', '</b>', '...', 20) as Snippet,
+                       zulip_messages_fts.rank, zm.SenderName, zm.Timestamp,
+                       COALESCE(zs.BaselineValue, 5) as BaselineValue
+                FROM zulip_messages_fts
+                JOIN zulip_messages zm ON zm.Id = zulip_messages_fts.rowid
+                LEFT JOIN zulip_streams zs ON zs.Id = zm.StreamId
+                WHERE zulip_messages_fts MATCH @query
+                ORDER BY (zulip_messages_fts.rank * COALESCE(zs.BaselineValue, 5) / 5.0)
+                LIMIT @limit
+                """;
+
+            using SqliteCommand cmd = new SqliteCommand(sql, connection);
+            cmd.Parameters.AddWithValue("@query", ftsQuery);
+            cmd.Parameters.AddWithValue("@limit", maxResults);
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int msgId = reader.GetInt32(0);
+                string streamName = reader.GetString(1);
+                string topic = reader.GetString(2);
+                double rawRank = reader.GetDouble(4);
+                int baselineValue = reader.GetInt32(7);
+
+                allHits.Add(new ContentSearchHit
+                {
+                    Source = SourceSystems.Zulip,
+                    ContentType = ContentTypes.Message,
+                    Id = msgId.ToString(),
+                    Title = $"[{streamName}] {topic}",
+                    Snippet = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Score = -rawRank * (baselineValue / 5.0),
+                    Url = ZulipUrlHelper.BuildMessageUrl(options, streamName, topic, msgId),
+                    UpdatedAt = ZulipUrlHelper.ParseTimestamp(reader, 6),
+                    Metadata = new Dictionary<string, string>
+                    {
+                        ["sender_name"] = reader.GetString(5),
+                        ["stream_name"] = streamName,
+                        ["topic"] = topic,
+                    },
+                    MatchedValue = searchValue,
+                });
+            }
+        }
+
+        // Deduplicate by message ID, keeping highest score
+        List<ContentSearchHit> deduped = [.. allHits
+            .GroupBy(h => h.Id)
+            .Select(g => g.OrderByDescending(h => h.Score).First())
+            .OrderByDescending(h => h.Score)
+            .Take(maxResults)];
+
+        return Ok(new ContentSearchResponse
+        {
+            Values = valueList,
+            Total = deduped.Count,
+            Hits = deduped,
+        });
+    }
+
+    [HttpGet("item/{source}/{*id}")]
+    public IActionResult GetItem(
+        [FromRoute] string source,
+        [FromRoute] string id,
+        [FromQuery] bool? includeContent,
+        [FromQuery] bool? includeComments,
+        [FromQuery] bool? includeSnapshot)
+    {
+        if (!source.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"Source '{source}' is not served by this service" });
+
+        if (!int.TryParse(id, out int msgId))
+            return BadRequest(new { error = "ID must be a Zulip message ID integer" });
+
+        ZulipServiceOptions options = optsAccessor.Value;
+        using SqliteConnection connection = db.OpenConnection();
+
+        ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
+        if (message is null)
+            return NotFound(new { error = $"Message {id} not found" });
+
+        Dictionary<string, string> metadata = new()
+        {
+            ["stream_name"] = message.StreamName,
+            ["topic"] = message.Topic,
+            ["sender_name"] = message.SenderName,
+            ["sender_id"] = message.SenderId.ToString(),
+        };
+        if (message.SenderEmail is not null) metadata["sender_email"] = message.SenderEmail;
+
+        string? content = null;
+        if (includeContent ?? false)
+            content = message.ContentHtml ?? message.ContentPlain ?? "";
+
+        // Thread messages as comments (other messages in the same topic)
+        List<CommentInfo>? comments = null;
+        if (includeComments ?? false)
+        {
+            comments = [];
+            string commentSql = """
+                SELECT ZulipMessageId, SenderName, ContentPlain, Timestamp
+                FROM zulip_messages
+                WHERE StreamName = @streamName AND Topic = @topic AND ZulipMessageId != @msgId
+                ORDER BY Timestamp ASC
+                """;
+
+            using SqliteCommand cmd = new SqliteCommand(commentSql, connection);
+            cmd.Parameters.AddWithValue("@streamName", message.StreamName);
+            cmd.Parameters.AddWithValue("@topic", message.Topic);
+            cmd.Parameters.AddWithValue("@msgId", msgId);
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                int commentMsgId = reader.GetInt32(0);
+                comments.Add(new CommentInfo(
+                    Id: commentMsgId.ToString(),
+                    Author: reader.GetString(1),
+                    Body: reader.IsDBNull(2) ? "" : reader.GetString(2),
+                    CreatedAt: ZulipUrlHelper.ParseTimestamp(reader, 3),
+                    Url: ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, commentMsgId)));
+            }
+        }
+
+        string? snapshot = null;
+        if (includeSnapshot ?? false)
+            snapshot = ZulipUrlHelper.BuildThreadMarkdownSnapshot(connection, message.StreamName, message.Topic);
+
+        return Ok(new ContentItemResponse
+        {
+            Source = SourceSystems.Zulip,
+            ContentType = ContentTypes.Message,
+            Id = message.ZulipMessageId.ToString(),
+            Title = $"[{message.StreamName}] {message.Topic}",
+            Content = content,
+            Url = ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, message.ZulipMessageId),
+            CreatedAt = message.Timestamp,
+            UpdatedAt = message.Timestamp,
+            Metadata = metadata,
+            Comments = comments,
+            Snapshot = snapshot,
+        });
+    }
+
+    private static List<string>? CombineWarnings(List<string>? a, List<string>? b)
+    {
+        if (a is null && b is null) return null;
+        List<string> combined = [];
+        if (a is not null) combined.AddRange(a);
+        if (b is not null) combined.AddRange(b);
+        return combined.Count > 0 ? combined : null;
+    }
+}

@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text;
 using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using Microsoft.Extensions.Logging;
@@ -162,5 +163,66 @@ public class SourceHttpClient
             $"/api/v1/rebuild-index?type={Uri.EscapeDataString(indexType)}", null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<RebuildIndexResponse>(ct);
+    }
+
+    // ── Content Query API ───────────────────────────────────────────────
+
+    public async Task<CrossReferenceQueryResponse?> ContentRefersToAsync(
+        string sourceName, string value, string? sourceType, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        StringBuilder url = new($"/api/v1/content/refers-to?value={Uri.EscapeDataString(value)}");
+        if (!string.IsNullOrEmpty(sourceType)) url.Append($"&sourceType={Uri.EscapeDataString(sourceType)}");
+        if (limit.HasValue) url.Append($"&limit={limit.Value}");
+        return await client.GetFromJsonAsync<CrossReferenceQueryResponse>(url.ToString(), ct);
+    }
+
+    public async Task<CrossReferenceQueryResponse?> ContentReferredByAsync(
+        string sourceName, string value, string? sourceType, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        StringBuilder url = new($"/api/v1/content/referred-by?value={Uri.EscapeDataString(value)}");
+        if (!string.IsNullOrEmpty(sourceType)) url.Append($"&sourceType={Uri.EscapeDataString(sourceType)}");
+        if (limit.HasValue) url.Append($"&limit={limit.Value}");
+        return await client.GetFromJsonAsync<CrossReferenceQueryResponse>(url.ToString(), ct);
+    }
+
+    public async Task<CrossReferenceQueryResponse?> ContentCrossReferencedAsync(
+        string sourceName, string value, string? sourceType, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        StringBuilder url = new($"/api/v1/content/cross-referenced?value={Uri.EscapeDataString(value)}");
+        if (!string.IsNullOrEmpty(sourceType)) url.Append($"&sourceType={Uri.EscapeDataString(sourceType)}");
+        if (limit.HasValue) url.Append($"&limit={limit.Value}");
+        return await client.GetFromJsonAsync<CrossReferenceQueryResponse>(url.ToString(), ct);
+    }
+
+    public async Task<ContentSearchResponse?> ContentSearchAsync(
+        string sourceName, List<string> values, List<string>? sources, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        StringBuilder url = new("/api/v1/content/search?");
+        foreach (string v in values)
+            url.Append($"values={Uri.EscapeDataString(v)}&");
+        if (sources is { Count: > 0 })
+        {
+            foreach (string s in sources)
+                url.Append($"sources={Uri.EscapeDataString(s)}&");
+        }
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await client.GetFromJsonAsync<ContentSearchResponse>(url.ToString().TrimEnd('&'), ct);
+    }
+
+    public async Task<ContentItemResponse?> ContentGetItemAsync(
+        string sourceName, string source, string id,
+        bool includeContent, bool includeComments, bool includeSnapshot, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        string encodedId = EncodeId(source, id);
+        StringBuilder url = new($"/api/v1/content/item/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (includeContent) url.Append("includeContent=true&");
+        if (includeComments) url.Append("includeComments=true&");
+        if (includeSnapshot) url.Append("includeSnapshot=true&");
+        return await client.GetFromJsonAsync<ContentItemResponse>(url.ToString().TrimEnd('&', '?'), ct);
     }
 }

@@ -8,7 +8,9 @@ public static class GetHandler
     public static async Task<object> HandleAsync(GetRequest request, string orchestratorAddr, CancellationToken ct)
     {
         using HttpServiceClient client = new(orchestratorAddr);
-        JsonElement response = await client.GetItemAsync(request.Source, request.Id, ct);
+        JsonElement response = await client.ContentGetItemAsync(
+            request.Source, request.Id,
+            request.IncludeContent, request.IncludeComments, request.IncludeSnapshot, ct);
 
         List<object> comments = [];
         if (response.TryGetProperty("comments", out JsonElement commentsEl) && commentsEl.ValueKind == JsonValueKind.Array)
@@ -38,6 +40,7 @@ public static class GetHandler
             updatedAt = response.GetStringOrNull("updatedAt"),
             metadata = response.GetStringDictionary("metadata"),
             comments = comments.ToArray(),
+            snapshot = response.GetStringOrNull("snapshot"),
         };
     }
 }

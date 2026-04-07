@@ -5,25 +5,6 @@ namespace FhirAugury.McpShared.Tests;
 public class ZulipToolsTests
 {
     [Fact]
-    public async Task SearchZulip_ReturnsFormattedResults()
-    {
-        string json = """
-            {
-                "results": [
-                    { "source": "zulip", "id": "general:test-topic", "title": "Test Topic", "score": 0.9 }
-                ],
-                "total": 1
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
-
-        string result = await ZulipTools.SearchZulip(factory, "test query");
-
-        Assert.Contains("Search Results", result);
-        Assert.Contains("test-topic", result);
-    }
-
-    [Fact]
     public async Task GetZulipThread_ReturnsFormattedThread()
     {
         string json = """
@@ -102,20 +83,5 @@ public class ZulipToolsTests
         Assert.Contains("Topics in general", result);
         Assert.Contains("topic-1", result);
         Assert.Contains("10 messages", result);
-    }
-
-    [Fact]
-    public async Task SnapshotZulipThread_ReturnsMarkdown()
-    {
-        string json = """
-            {
-                "markdown": "# general > test-topic\n\nFull thread content..."
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
-
-        string result = await ZulipTools.SnapshotZulipThread(factory, "general:test-topic");
-
-        Assert.Contains("general > test-topic", result);
     }
 }

@@ -22,6 +22,9 @@ public sealed class SearchRequest : CliRequest
     [JsonPropertyName("query")]
     public string Query { get; set; } = "";
 
+    [JsonPropertyName("values")]
+    public List<string>? Values { get; set; }
+
     [JsonPropertyName("sources")]
     public string[]? Sources { get; set; }
 
@@ -37,47 +40,14 @@ public sealed class GetRequest : CliRequest
     [JsonPropertyName("id")]
     public string Id { get; set; } = "";
 
-    [JsonPropertyName("includeComments")]
-    public bool IncludeComments { get; set; } = true;
-}
-
-public sealed class SnapshotRequest : CliRequest
-{
-    [JsonPropertyName("source")]
-    public string Source { get; set; } = "";
-
-    [JsonPropertyName("id")]
-    public string Id { get; set; } = "";
+    [JsonPropertyName("includeContent")]
+    public bool IncludeContent { get; set; }
 
     [JsonPropertyName("includeComments")]
     public bool IncludeComments { get; set; } = true;
-}
 
-public sealed class RelatedRequest : CliRequest
-{
-    [JsonPropertyName("source")]
-    public string Source { get; set; } = "";
-
-    [JsonPropertyName("id")]
-    public string Id { get; set; } = "";
-
-    [JsonPropertyName("targetSources")]
-    public string[]? TargetSources { get; set; }
-
-    [JsonPropertyName("limit")]
-    public int Limit { get; set; } = 20;
-}
-
-public sealed class XrefRequest : CliRequest
-{
-    [JsonPropertyName("source")]
-    public string Source { get; set; } = "";
-
-    [JsonPropertyName("id")]
-    public string Id { get; set; } = "";
-
-    [JsonPropertyName("direction")]
-    public string Direction { get; set; } = "both";
+    [JsonPropertyName("includeSnapshot")]
+    public bool IncludeSnapshot { get; set; }
 }
 
 public sealed class ListRequest : CliRequest
@@ -199,4 +169,40 @@ public sealed class SaveSchemasRequest : CliRequest
 {
     [JsonPropertyName("outputDirectory")]
     public string OutputDirectory { get; set; } = "";
+}
+
+public sealed class RefersToRequest : CliRequest
+{
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = "";
+
+    [JsonPropertyName("sourceType")]
+    public string? SourceType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+}
+
+public sealed class ReferredByRequest : CliRequest
+{
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = "";
+
+    [JsonPropertyName("sourceType")]
+    public string? SourceType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+}
+
+public sealed class CrossReferencedRequest : CliRequest
+{
+    [JsonPropertyName("value")]
+    public string Value { get; set; } = "";
+
+    [JsonPropertyName("sourceType")]
+    public string? SourceType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
 }

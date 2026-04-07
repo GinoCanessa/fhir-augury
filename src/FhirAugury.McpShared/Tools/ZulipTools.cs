@@ -8,30 +8,6 @@ namespace FhirAugury.McpShared.Tools;
 [McpServerToolType]
 public static class ZulipTools
 {
-    [McpServerTool, Description("Search Zulip chat messages.")]
-    public static async Task<string> SearchZulip(
-        IHttpClientFactory httpClientFactory,
-        [Description("Search query")] string query,
-        [Description("Filter to specific stream name")] string? stream = null,
-        [Description("Maximum results (default 20)")] int limit = 20,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            HttpClient client = httpClientFactory.CreateClient("zulip");
-            StringBuilder url = new($"/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}");
-            if (!string.IsNullOrEmpty(stream))
-                url.Append($"&stream={Uri.EscapeDataString(stream)}");
-
-            JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
-            return UnifiedTools.FormatSearchResults(root, query);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
     [McpServerTool, Description("Get a full Zulip topic thread with all messages.")]
     public static async Task<string> GetZulipThread(
         IHttpClientFactory httpClientFactory,
@@ -234,25 +210,6 @@ public static class ZulipTools
             }
 
             return sb.ToString();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
-    [McpServerTool, Description("Get a detailed markdown snapshot of a Zulip topic thread.")]
-    public static async Task<string> SnapshotZulipThread(
-        IHttpClientFactory httpClientFactory,
-        [Description("Item identifier (message ID or thread key)")] string id,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            HttpClient client = httpClientFactory.CreateClient("zulip");
-            string url = $"/api/v1/items/{Uri.EscapeDataString(id)}/snapshot";
-            JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
-            return UnifiedTools.GetString(root, "markdown");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

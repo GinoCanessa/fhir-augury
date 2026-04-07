@@ -8,9 +8,15 @@ public static class SearchHandler
     public static async Task<object> HandleAsync(Models.SearchRequest request, string orchestratorAddr, CancellationToken ct)
     {
         using HttpServiceClient client = new(orchestratorAddr);
+
+        // Support both old "query" field and new "values" array
+        List<string> values = request.Values is { Count: > 0 }
+            ? request.Values
+            : [request.Query];
+
         string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources) : null;
 
-        JsonElement response = await client.UnifiedSearchAsync(request.Query, sources, request.Limit, ct);
+        JsonElement response = await client.ContentSearchAsync(values, sources, request.Limit, ct);
 
         List<string> warnings = [];
         if (response.TryGetProperty("warnings", out JsonElement warningsEl) && warningsEl.ValueKind == JsonValueKind.Array)
@@ -25,21 +31,26 @@ public static class SearchHandler
 
         int totalResults = response.TryGetProperty("total", out JsonElement totalEl) ? totalEl.GetInt32() : 0;
         List<object> results = [];
-        if (response.TryGetProperty("results", out JsonElement resultsEl) && resultsEl.ValueKind == JsonValueKind.Array)
+        JsonElement hitsEl = response.TryGetProperty("hits", out JsonElement h) ? h
+            : response.TryGetProperty("results", out JsonElement r) ? r
+            : default;
+
+        if (hitsEl.ValueKind == JsonValueKind.Array)
         {
-            foreach (JsonElement r in resultsEl.EnumerateArray())
+            foreach (JsonElement item in hitsEl.EnumerateArray())
             {
                 results.Add(new
                 {
-                    source = r.GetStringOrNull("source"),
-                    contentType = r.GetStringOrNull("contentType"),
-                    id = r.GetStringOrNull("id"),
-                    title = r.GetStringOrNull("title"),
-                    snippet = r.GetStringOrNull("snippet"),
-                    score = r.TryGetProperty("score", out JsonElement scoreEl) ? scoreEl.GetDouble() : 0.0,
-                    url = r.GetStringOrNull("url"),
-                    updatedAt = r.GetStringOrNull("updatedAt"),
-                    metadata = r.GetStringDictionary("metadata"),
+                    source = item.GetStringOrNull("source"),
+                    contentType = item.GetStringOrNull("contentType"),
+                    id = item.GetStringOrNull("id"),
+                    title = item.GetStringOrNull("title"),
+                    snippet = item.GetStringOrNull("snippet"),
+                    score = item.TryGetProperty("score", out JsonElement scoreEl) ? scoreEl.GetDouble() : 0.0,
+                    url = item.GetStringOrNull("url"),
+                    updatedAt = item.GetStringOrNull("updatedAt"),
+                    matchedValue = item.GetStringOrNull("matchedValue"),
+                    metadata = item.GetStringDictionary("metadata"),
                 });
             }
         }
@@ -49,7 +60,7 @@ public static class SearchHandler
             Warnings = warnings,
             Result = new
             {
-                query = request.Query,
+                values,
                 totalResults,
                 results = results.ToArray(),
             },

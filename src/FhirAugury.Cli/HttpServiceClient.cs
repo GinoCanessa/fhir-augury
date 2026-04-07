@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace FhirAugury.Cli;
@@ -128,6 +129,43 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> QueryZulipViaOrchestratorAsync(object queryParams, CancellationToken ct)
     {
         return await PostJsonAsync(_orchestratorClient, "/api/v1/zulip/query", queryParams, ct);
+    }
+
+    // ── Content Query API ──────────────────────────────────────────────
+
+    public async Task<JsonElement> ContentSearchAsync(List<string> values, string? sources, int? limit, CancellationToken ct)
+    {
+        StringBuilder url = new("/api/v1/content/search?");
+        foreach (string v in values)
+            url.Append($"values={Uri.EscapeDataString(v)}&");
+        if (!string.IsNullOrEmpty(sources))
+        {
+            foreach (string s in sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                url.Append($"sources={Uri.EscapeDataString(s)}&");
+        }
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await GetJsonAsync(_orchestratorClient, url.ToString().TrimEnd('&'), ct);
+    }
+
+    public async Task<JsonElement> ContentGetItemAsync(string source, string id,
+        bool includeContent, bool includeComments, bool includeSnapshot, CancellationToken ct)
+    {
+        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
+            ? id.Replace("#", "%23")
+            : Uri.EscapeDataString(id);
+        StringBuilder url = new($"/api/v1/content/item/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (includeContent) url.Append("includeContent=true&");
+        if (includeComments) url.Append("includeComments=true&");
+        if (includeSnapshot) url.Append("includeSnapshot=true&");
+        return await GetJsonAsync(_orchestratorClient, url.ToString().TrimEnd('&', '?'), ct);
+    }
+
+    public async Task<JsonElement> ContentXRefAsync(string direction, string value, string? sourceType, int? limit, CancellationToken ct)
+    {
+        StringBuilder url = new($"/api/v1/content/{direction}?value={Uri.EscapeDataString(value)}");
+        if (!string.IsNullOrEmpty(sourceType)) url.Append($"&sourceType={Uri.EscapeDataString(sourceType)}");
+        if (limit.HasValue) url.Append($"&limit={limit.Value}");
+        return await GetJsonAsync(_orchestratorClient, url.ToString(), ct);
     }
 
     // ── Source-direct calls ─────────────────────────────────────────────

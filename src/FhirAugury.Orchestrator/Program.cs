@@ -1,7 +1,6 @@
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
-using FhirAugury.Orchestrator.Related;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Orchestrator.Search;
 using FhirAugury.Orchestrator.Workers;
@@ -70,10 +69,6 @@ builder.Services.AddSingleton<ServiceHealthMonitor>();
 
 // Search
 builder.Services.AddSingleton<FreshnessDecay>();
-builder.Services.AddSingleton<UnifiedSearchService>();
-
-// Related
-builder.Services.AddSingleton<RelatedItemFinder>();
 
 // Background workers
 builder.Services.AddHostedService<HealthCheckWorker>();

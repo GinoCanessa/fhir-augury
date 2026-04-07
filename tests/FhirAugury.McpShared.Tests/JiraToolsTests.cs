@@ -5,27 +5,6 @@ namespace FhirAugury.McpShared.Tests;
 public class JiraToolsTests
 {
     [Fact]
-    public async Task GetJiraIssue_ReturnsFormattedIssue()
-    {
-        string json = """
-            {
-                "id": "FHIR-123",
-                "title": "Test Issue Title",
-                "content": "Test content",
-                "url": "https://jira.hl7.org/browse/FHIR-123",
-                "metadata": { "status": "Open", "type": "Bug" }
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
-
-        string result = await JiraTools.GetJiraIssue(factory, "FHIR-123");
-
-        Assert.Contains("FHIR-123", result);
-        Assert.Contains("Test Issue Title", result);
-        Assert.Contains("Test content", result);
-    }
-
-    [Fact]
     public async Task GetJiraComments_ReturnsFormattedComments()
     {
         string json = """
@@ -55,43 +34,6 @@ public class JiraToolsTests
         string result = await JiraTools.GetJiraComments(factory, "FHIR-999");
 
         Assert.Contains("No comments", result);
-    }
-
-    [Fact]
-    public async Task SnapshotJiraIssue_ReturnsMarkdown()
-    {
-        string json = """
-            {
-                "markdown": "# FHIR-123: Test Issue\n\nFull snapshot content..."
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
-
-        string result = await JiraTools.SnapshotJiraIssue(factory, "FHIR-123");
-
-        Assert.Contains("FHIR-123", result);
-        Assert.Contains("Test Issue", result);
-    }
-
-    [Fact]
-    public async Task SearchJira_ReturnsFormattedResults()
-    {
-        string json = """
-            {
-                "results": [
-                    { "source": "jira", "id": "FHIR-100", "title": "Issue One", "score": 0.9 },
-                    { "source": "jira", "id": "FHIR-200", "title": "Issue Two", "score": 0.8 }
-                ],
-                "total": 2
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
-
-        string result = await JiraTools.SearchJira(factory, "test query");
-
-        Assert.Contains("Search Results", result);
-        Assert.Contains("FHIR-100", result);
-        Assert.Contains("FHIR-200", result);
     }
 
     [Fact]
