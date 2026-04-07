@@ -23,6 +23,9 @@ public static class JiraFieldMapper
         ["customfield_14910"] = nameof(JiraIssueRecord.ChangeType),
         ["customfield_10001"] = nameof(JiraIssueRecord.Impact),
         ["customfield_10510"] = nameof(JiraIssueRecord.Vote),
+        ["customfield_11402"] = nameof(JiraIssueRecord.Labels),
+        ["customfield_10512"] = nameof(JiraIssueRecord.ChangeCategory),
+        ["customfield_10511"] = nameof(JiraIssueRecord.ChangeImpact),
     };
 
     private static readonly Regex VotePattern = new(
@@ -113,6 +116,8 @@ public static class JiraFieldMapper
             DuplicateOf = null,
             AppliedVersions = null,
             ChangeType = null,
+            ChangeCategory = null,
+            ChangeImpact = null,
             Impact = null,
             Vote = null,
             VoteMover = null,
@@ -125,8 +130,11 @@ public static class JiraFieldMapper
         foreach ((string? fieldId, string? propertyName) in CustomFieldMap)
         {
             string? value = CleanFieldValue(ExtractCustomFieldValue(fields, fieldId));
+
             if (value is null)
+            {
                 continue;
+            }
 
             switch (propertyName)
             {
@@ -142,6 +150,9 @@ public static class JiraFieldMapper
                 case nameof(JiraIssueRecord.ChangeType): record.ChangeType = value; break;
                 case nameof(JiraIssueRecord.Impact): record.Impact = value; break;
                 case nameof(JiraIssueRecord.Vote): record.Vote = value; break;
+                case nameof(JiraIssueRecord.Labels): record.Labels = value; break;
+                case nameof(JiraIssueRecord.ChangeCategory): record.ChangeCategory = value; break;
+                case nameof(JiraIssueRecord.ChangeImpact): record.ChangeImpact = value; break;
             }
         }
 
@@ -270,6 +281,9 @@ public static class JiraFieldMapper
 
         if (obj.TryGetProperty("displayName", out JsonElement displayName) && displayName.ValueKind == JsonValueKind.String)
             return displayName.GetString();
+
+        if (obj.TryGetProperty("label", out JsonElement label) && label.ValueKind == JsonValueKind.String)
+            return label.GetString();
 
         return obj.ToString();
     }

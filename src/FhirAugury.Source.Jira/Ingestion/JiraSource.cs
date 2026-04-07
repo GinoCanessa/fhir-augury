@@ -324,8 +324,15 @@ public class JiraSource(
 
         foreach ((string source, string key) in MergeAndSortCacheEntries())
         {
-            if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream)) continue;
+            if (ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream))
+            {
+                continue;
+            }
 
             using (stream)
             {
@@ -508,7 +515,9 @@ public class JiraSource(
     private static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseCachedFile(Stream stream, string key)
     {
         if (key.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+        {
             return JiraXmlParser.ParseExport(stream);
+        }
 
         return ParseJsonCacheFile(stream);
     }
