@@ -59,10 +59,10 @@ Ports (HTTP only):
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
 | **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, and comments |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: all 18 tool implementations (UnifiedTools, JiraTools, ZulipTools) and McpServiceRegistration |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 15 tool implementations (UnifiedTools, ContentTools, JiraTools, ZulipTools) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
-| **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, HTTP to orchestrator) |
+| **CLI** | `FhirAugury.Cli` | Command-line interface (13 commands, HTTP to orchestrator) |
 | **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, HTTP to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
@@ -139,8 +139,8 @@ configurable `Bm25Options` (K1/B/UseLemmatization parameters).
 ### Search Pipeline
 
 1. **Query** — User provides a search query via CLI, MCP tool, or direct HTTP API
-2. **Route** — The orchestrator's `UnifiedSearchService` receives the request
-3. **Fan-out** — `SourceRouter` sends parallel `Search` HTTP calls to all
+2. **Route** — The orchestrator's `ContentController` receives the request
+3. **Fan-out** — `SourceHttpClient` sends parallel content search HTTP calls to all
    healthy source services
 4. **Per-source search** — Each source executes an FTS5 MATCH query against its
    own database and returns scored results

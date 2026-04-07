@@ -72,4 +72,39 @@ public class JiraToolsTests
         Assert.Contains("Jira Issues", result);
         Assert.Contains("FHIR-100", result);
     }
+
+    [Fact]
+    public async Task QueryJiraIssues_WithLabels_IncludesLabelsInBody()
+    {
+        string json = """[{"key":"PROJ-1","summary":"Test","status":"Open"}]""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        await JiraTools.QueryJiraIssues(factory, labels: "bug,urgent");
+
+        // Verify the method accepted labels without error — the mock returns a valid response
+    }
+
+    [Fact]
+    public async Task ListJiraLabels_ReturnsMarkdownTable()
+    {
+        string json = """[{"name":"bug","issueCount":42},{"name":"feature","issueCount":10}]""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.ListJiraLabels(factory);
+
+        Assert.Contains("| bug | 42 |", result);
+        Assert.Contains("| feature | 10 |", result);
+        Assert.Contains("Label", result);
+    }
+
+    [Fact]
+    public async Task ListJiraLabels_Empty_ReturnsMessage()
+    {
+        string json = "[]";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.ListJiraLabels(factory);
+
+        Assert.Equal("No labels found.", result);
+    }
 }

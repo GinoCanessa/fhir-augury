@@ -152,7 +152,6 @@ reusable infrastructure:
   count-and-classify with stop-word filtering and lemmatization),
   `Lemmatizer` (inflection→lemma normalization with `Empty` singleton
   fallback).
-- **`Grpc/`** — `GrpcErrorMapper` (legacy), `AtlassianAuthHandler`.
 - **`Api/`** — Shared HTTP API contracts: `SearchContracts`, `ItemContracts`,
   `CrossReferenceContracts`, `IngestionContracts`, `ServiceContracts`,
   `ContentFormats`.
@@ -272,7 +271,7 @@ Continues until `found_newest` is true.
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
 | **Data types** | Spaces + pages + comments |
 | **Database** | `confluence.db` |
-| **API** | HTTP Minimal API |
+| **API** | HTTP API controllers |
 | **Page size** | 25 |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |

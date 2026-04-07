@@ -38,12 +38,24 @@ public static class JiraQueryBuilder
         AddInClause(sb, parameters, "Assignee", request.Assignees, ref paramIdx);
         AddInClause(sb, parameters, "Reporter", request.Reporters, ref paramIdx);
 
-        // Labels use LIKE matching since labels are comma-separated
-        foreach (string label in request.Labels)
+        if (request.Labels.Count > 0)
         {
-            string name = $"@lbl{paramIdx++}";
-            sb.Append($" AND Labels LIKE {name}");
-            parameters.Add(new SqliteParameter(name, $"%{label}%"));
+            List<string> labelParamNames = [];
+            foreach (string label in request.Labels)
+            {
+                string name = $"@lbl{paramIdx++}";
+                labelParamNames.Add(name);
+                parameters.Add(new SqliteParameter(name, label));
+            }
+
+            // AND semantics: every requested label must be present on the issue.
+            foreach (string paramName in labelParamNames)
+            {
+                sb.Append($@" AND EXISTS (
+            SELECT 1 FROM jira_issue_labels jil
+            INNER JOIN jira_index_labels jlab ON jil.LabelId = jlab.Id
+            WHERE jil.IssueId = jira_issues.Id AND jlab.Name = {paramName})");
+            }
         }
 
         // Timestamp filters

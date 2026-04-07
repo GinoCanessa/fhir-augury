@@ -61,6 +61,7 @@ public static class JiraTools
         [Description("Filter by specifications (comma-separated)")] string? specifications = null,
         [Description("Filter by types (comma-separated)")] string? types = null,
         [Description("Filter by priorities (comma-separated)")] string? priorities = null,
+        [Description("Filter by labels (comma-separated, exact match, AND logic)")] string? labels = null,
         [Description("Text query for additional filtering")] string? query = null,
         [Description("Sort by field (default updated_at)")] string sortBy = "updated_at",
         [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
@@ -77,6 +78,7 @@ public static class JiraTools
                 specifications = ParseCsv(specifications),
                 types = ParseCsv(types),
                 priorities = ParseCsv(priorities),
+                labels = ParseCsv(labels),
                 query = query ?? "",
                 sortBy,
                 sortOrder,
@@ -162,6 +164,41 @@ public static class JiraTools
                     sb.AppendLine($"  URL: {itemUrl}");
             }
 
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    [McpServerTool, Description("List all available Jira labels with issue counts.")]
+    public static async Task<string> ListJiraLabels(
+        IHttpClientFactory httpClientFactory,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            JsonElement root = await UnifiedTools.GetJsonAsync(
+                client, "/api/v1/labels", cancellationToken);
+
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+            {
+                return "No labels found.";
+            }
+
+            StringBuilder sb = new();
+            sb.AppendLine("| Label | Issues |");
+            sb.AppendLine("|-------|--------|");
+            foreach (JsonElement item in root.EnumerateArray())
+            {
+                string name = UnifiedTools.GetString(item, "name");
+                string count = item.TryGetProperty("issueCount", out JsonElement countEl)
+                    ? countEl.ToString()
+                    : "";
+                sb.AppendLine($"| {name} | {count} |");
+            }
             return sb.ToString();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

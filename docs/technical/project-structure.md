@@ -116,15 +116,14 @@ Central coordinator (HTTP :5150).
 
 ```
 FhirAugury.Orchestrator/
-├── Api/                      # OrchestratorController (HTTP API)
+├── Api/                      # ContentController, IngestionController, ServicesController, SourceProxyController (HTTP API)
 ├── Configuration/            # Orchestrator settings, source endpoints
 ├── Database/                 # Orchestrator SQLite DB (scan state)
 ├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
 ├── Related/                  # RelatedItemFinder (multi-signal ranking)
-├── Routing/                  # SourceRouter — creates HTTP clients to sources
-├── Search/                   # UnifiedSearchService, FreshnessDecay,
-│                             #   ScoreNormalizer
-├── Workers/                  # HealthCheckWorker
+├── Routing/                  # SourceHttpClient — named HTTP clients to source services
+├── Search/                   # FreshnessDecay, ScoreNormalizer
+├── Workers/                  # HealthCheckWorker, SourceReconnectionWorker
 ├── Program.cs                # Kestrel HTTP server, DI registration
 ├── appsettings.json          # Default configuration
 └── Dockerfile                # Service container image
@@ -132,13 +131,12 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing all 18 tool implementations and service
-registration logic.
+Shared MCP library containing 15 tool implementations in 4 tool classes.
 
 ```
 FhirAugury.McpShared/
-├── Tools/                    # UnifiedTools.cs, JiraTools.cs, ZulipTools.cs
-├── McpServiceRegistration.cs # Shared DI registration for MCP tools and HTTP clients
+├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs, ZulipTools.cs
+├── McpHttpRegistration.cs    # Shared DI registration for MCP HTTP clients
 └── FhirAugury.McpShared.csproj
 ```
 

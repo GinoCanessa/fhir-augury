@@ -2,6 +2,7 @@ using System.Globalization;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
+using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -51,5 +52,15 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         }
 
         return Ok(results);
+    }
+
+    [HttpGet("labels")]
+    public IActionResult ListLabels()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexLabelRecord> labels = JiraIndexLabelRecord.SelectList(connection);
+        return Ok(labels
+            .Select(l => new { l.Name, l.IssueCount })
+            .OrderByDescending(l => l.IssueCount));
     }
 }
