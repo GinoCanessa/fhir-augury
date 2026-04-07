@@ -42,77 +42,103 @@ Returns orchestrator health status.
 }
 ```
 
-### Search
+### Services
 
-#### `GET /api/v1/search`
+#### `GET /api/v1/services`
 
-Unified search across all sources.
+Get health status of all connected services with index information.
+
+#### `GET /api/v1/endpoints`
+
+List configured source service addresses.
+
+#### `GET /api/v1/stats`
+
+Get aggregated item counts and database sizes across all source services.
+
+### Content Search
+
+#### `GET /api/v1/content/search`
+
+Unified multi-value content search across all sources.
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `q` | string | Yes | Search query text |
-| `sources` | string | No | Comma-separated source filter (omit for all) |
+| `values[]` | string | Yes | Search values (repeatable) |
+| `sources[]` | string | No | Source filter (repeatable, omit for all) |
 | `limit` | int | No | Maximum results (default: 20) |
 
-**Example:** `GET /api/v1/search?q=patient+matching&sources=jira,zulip&limit=10`
+**Example:** `GET /api/v1/content/search?values[]=patient+matching&sources[]=jira&sources[]=zulip&limit=10`
 
-### Related Items
+### Cross-References
 
-#### `GET /api/v1/related/{source}/{id}`
+#### `GET /api/v1/content/refers-to`
 
-Find items related to a given item.
+Find outgoing cross-references (what a specific item refers to).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `value` | string | Yes | Item identifier |
+| `sourceType` | string | No | Filter by source type |
+| `limit` | int | No | Maximum results (default: 50) |
+
+**Example:** `GET /api/v1/content/refers-to?value=FHIR-43499&limit=10`
+
+#### `GET /api/v1/content/referred-by`
+
+Find incoming cross-references (what refers to a specific item).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `value` | string | Yes | Item identifier |
+| `sourceType` | string | No | Filter by source type |
+| `limit` | int | No | Maximum results (default: 50) |
+
+**Example:** `GET /api/v1/content/referred-by?value=FHIR-43499&sourceType=zulip`
+
+#### `GET /api/v1/content/cross-referenced`
+
+Find all cross-references for an item (both incoming and outgoing).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `value` | string | Yes | Item identifier |
+| `sourceType` | string | No | Filter by source type |
+| `limit` | int | No | Maximum results (default: 50) |
+
+**Example:** `GET /api/v1/content/cross-referenced?value=FHIR-43499`
+
+### Items
+
+#### `GET /api/v1/content/item/{source}/{*id}`
+
+Get full details of a content item from any source, with optional content body,
+comments, and markdown snapshot.
 
 **Path Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `source` | string | Source type (jira, zulip, confluence, github) |
-| `id` | string | Item identifier |
+| `*id` | string | Item identifier (catch-all path segment) |
 
 **Query Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `targetSources` | string | No | Comma-separated target sources |
-| `limit` | int | No | Maximum results (default: 20) |
+| `includeContent` | bool | No | Include the full content body |
+| `includeComments` | bool | No | Include item comments |
+| `includeSnapshot` | bool | No | Include a markdown snapshot |
 
-**Example:** `GET /api/v1/related/jira/FHIR-43499?targetSources=zulip&limit=5`
-
-### Cross-References
-
-#### `GET /api/v1/xref/{source}/{id}`
-
-Get cross-references for an item.
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `direction` | string | `both` | `outgoing`, `incoming`, or `both` |
-
-**Example:** `GET /api/v1/xref/jira/FHIR-43499?direction=both`
-
-### Items
-
-#### `GET /api/v1/items/{source}/{id}`
-
-Get full details of an item from a source service.
-
-**Example:** `GET /api/v1/items/jira/FHIR-43499`
-
-#### `GET /api/v1/items/{source}/{id}/snapshot`
-
-Get a rich Markdown snapshot of an item.
-
-**Example:** `GET /api/v1/items/jira/FHIR-43499/snapshot`
-
-#### `GET /api/v1/items/{source}/{id}/content`
-
-Get the full content of an item.
-
-**Example:** `GET /api/v1/items/jira/FHIR-43499/content`
+**Example:** `GET /api/v1/content/item/jira/FHIR-43499?includeComments=true&includeSnapshot=true`
 
 ### Ingestion
 
@@ -124,7 +150,7 @@ Trigger an ingestion sync on source services.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | No | `full` or `incremental` (default: `incremental`) |
+| `type` | string | No | `full`, `incremental`, or `rebuild` (default: `incremental`) |
 | `sources` | string | No | Comma-separated sources to sync (omit for all) |
 
 **Example:** `POST /api/v1/ingest/trigger?type=incremental&sources=jira,zulip`
@@ -135,25 +161,45 @@ Trigger an ingestion sync on source services.
 
 Rebuild specific indexes on source services.
 
-### Services
+**Query Parameters:**
 
-#### `GET /api/v1/services`
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | string | No | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` (default: `all`) |
+| `sources` | string | No | Comma-separated sources to rebuild (omit for all) |
 
-Get health status of all connected services.
+### Internal Notification
 
-#### `GET /api/v1/stats`
+#### `POST /api/v1/notify-ingestion`
 
-Get aggregate statistics across all source services.
+Internal peer notification endpoint. Used by source services to notify the
+orchestrator of ingestion events.
 
-### Structured Queries
+**Request Body:** `PeerIngestionNotification` object.
+
+### Source Proxy
 
 #### `POST /api/v1/jira/query`
 
-Structured Jira issue query (proxied to Jira source).
+Proxy structured Jira issue query to the Jira source service.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | No | Text query |
+| `limit` | int | No | Maximum results |
 
 #### `POST /api/v1/zulip/query`
 
-Structured Zulip message query (proxied to Zulip source).
+Proxy structured Zulip message query to the Zulip source service.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | No | Text query |
+| `limit` | int | No | Maximum results |
 
 ---
 
@@ -164,18 +210,15 @@ Structured Zulip message query (proxied to Zulip source).
 The MCP HTTP server (`FhirAugury.McpHttp`) is a separate ASP.NET Core service
 that exposes MCP tools via HTTP/SSE transport. It is distinct from the
 orchestrator — it connects to the orchestrator and source services via HTTP as
-a client. The server provides 18 MCP tools (6 unified, 6 Jira, 6 Zulip).
-
-> **Note:** Confluence and GitHub do not yet have dedicated MCP tools.
-> They are accessible via the unified Search, FindRelated, and
-> GetCrossReferences tools.
+a client. The server provides 15 MCP tools across 4 categories (Unified,
+Content, Jira, Zulip).
 
 ### MCP Endpoint
 
 #### `GET /mcp` (SSE) / `POST /mcp` (HTTP)
 
 The Model Context Protocol endpoint. MCP clients (VS Code, Copilot, etc.)
-connect to this endpoint to discover and invoke the 18 MCP tools.
+connect to this endpoint to discover and invoke the 15 MCP tools.
 
 **Example client configuration:**
 

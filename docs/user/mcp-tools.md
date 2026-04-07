@@ -4,10 +4,7 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via HTTP to the orchestrator and source
-services, providing 18 tools across 3 categories (Unified, Jira, Zulip).
-
-> **Note:** Confluence and GitHub tools are not yet implemented. The client
-> configuration for those services is present but no MCP tools expose them yet.
+services, providing 15 tools across 4 categories (Unified, Content, Jira, Zulip).
 
 ## Setup
 
@@ -132,68 +129,21 @@ connect to the McpHttp server:
 
 Cross-source tools provided through the orchestrator.
 
-### `Search`
-
-Unified cross-source search using full-text search.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | Yes | | Search query |
-| `sources` | string | No | all | Comma-separated source filter (e.g., `jira,zulip`) |
-| `limit` | int | No | `20` | Maximum results |
-
-**Example:** Search for patient matching across Jira and Zulip:
-```
-Search(query: "patient matching", sources: "jira,zulip", limit: 10)
-```
-
-### `FindRelated`
-
-Find items related to a given item using keyword similarity and cross-reference
-boosting.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | string | Yes | | Source type (e.g., `jira`) |
-| `id` | string | Yes | | Item identifier (e.g., `FHIR-43499`) |
-| `targetSources` | string | No | all | Comma-separated target sources to search |
-| `limit` | int | No | `20` | Maximum results |
-
-**Example:** Find Zulip discussions related to a Jira issue:
-```
-FindRelated(source: "jira", id: "FHIR-43499", targetSources: "zulip", limit: 5)
-```
-
-### `GetCrossReferences`
-
-Get explicit cross-references (mentions and links) for an item.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `source` | string | Yes | | Source type |
-| `id` | string | Yes | | Item identifier |
-| `direction` | string | No | `both` | `outgoing`, `incoming`, or `both` |
-
-**Example:** Get all references pointing to a Jira issue:
-```
-GetCrossReferences(source: "jira", id: "FHIR-43499", direction: "incoming")
-```
-
 ### `GetStats`
 
-Get service status and statistics — item counts, sync times, and service
-health.
+Get status and statistics of all connected services — item counts, database
+sizes, sync times, and service health.
 
-No required parameters.
+No parameters.
 
 ### `TriggerSync`
 
-Trigger a data sync for one or more sources.
+Trigger synchronization/ingestion across source services.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | string | No | all | Comma-separated sources to sync |
-| `type` | string | No | `incremental` | `full` or `incremental` |
+| `sources` | string | No | all | Comma-separated sources to sync (e.g., `jira,zulip`) |
+| `type` | string | No | `incremental` | Sync type: `incremental`, `full`, or `rebuild` |
 
 **Example:** Trigger a full re-sync of Jira data:
 ```
@@ -206,7 +156,7 @@ Rebuild specific indexes on source services without re-downloading data.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `sources` | string | No | all | Comma-separated sources to rebuild |
+| `sources` | string | No | all | Comma-separated sources: `jira`, `zulip`, `github`, `confluence` |
 | `indexType` | string | No | `all` | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` |
 
 **Example:** Rebuild BM25 indexes on Jira:
@@ -216,36 +166,102 @@ RebuildIndex(sources: "jira", indexType: "bm25")
 
 ---
 
-## Jira Tools
+## Content Tools
 
-Source-specific tools for Jira issue tracking data.
+Cross-source content search and cross-reference tools provided through the
+orchestrator.
 
-### `SearchJira`
+### `ContentSearch`
 
-Full-text search across Jira issues.
+Search across all FHIR community sources using multi-value content search.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `query` | string | Yes | | Search query |
-| `status` | string | No | | Filter by status |
+| `values` | string | Yes | | Comma-separated search values |
+| `sources` | string | No | all | Comma-separated source filter (e.g., `jira,zulip`) |
 | `limit` | int | No | `20` | Maximum results |
 
-### `GetJiraIssue`
+**Example:** Search for patient matching across Jira and Zulip:
+```
+ContentSearch(values: "patient matching", sources: "jira,zulip", limit: 10)
+```
 
-Get full details of a Jira issue including metadata, description, and comments.
+### `RefersTo`
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `key` | string | Yes | Issue key (e.g., `FHIR-43499`) |
-| `includeComments` | bool | No | `true` | Include issue comments |
+Find what a specific item refers to (outgoing cross-references).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `value` | string | Yes | | Item identifier (e.g., `FHIR-43499`) |
+| `sourceType` | string | No | | Filter by source type |
+| `limit` | int | No | `50` | Maximum results |
+
+**Example:** Find what a Jira issue links to:
+```
+RefersTo(value: "FHIR-43499", limit: 10)
+```
+
+### `ReferredBy`
+
+Find what refers to a specific item (incoming cross-references).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `value` | string | Yes | | Item identifier |
+| `sourceType` | string | No | | Filter by source type |
+| `limit` | int | No | `50` | Maximum results |
+
+**Example:** Find all items that reference a Jira issue:
+```
+ReferredBy(value: "FHIR-43499", sourceType: "zulip")
+```
+
+### `CrossReferenced`
+
+Find all cross-references for a value (both incoming and outgoing).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `value` | string | Yes | | Item identifier |
+| `sourceType` | string | No | | Filter by source type |
+| `limit` | int | No | `50` | Maximum results |
+
+**Example:** Get all references for a Jira issue:
+```
+CrossReferenced(value: "FHIR-43499")
+```
+
+### `GetItem`
+
+Get full details of a content item from any source, with optional content body,
+comments, and markdown snapshot.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `source` | string | Yes | | Source type (e.g., `jira`, `zulip`, `confluence`, `github`) |
+| `id` | string | Yes | | Item identifier (e.g., `FHIR-43499`) |
+| `includeContent` | bool | No | `false` | Include the full content body |
+| `includeComments` | bool | No | `false` | Include item comments |
+| `includeSnapshot` | bool | No | `false` | Include a markdown snapshot |
+
+**Example:** Get a Jira issue with comments and snapshot:
+```
+GetItem(source: "jira", id: "FHIR-43499", includeComments: true, includeSnapshot: true)
+```
+
+---
+
+## Jira Tools
+
+Source-specific tools that talk to the Jira service directly.
 
 ### `GetJiraComments`
 
-Get streaming comments on a Jira issue.
+Get comments on a Jira issue.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `key` | string | Yes | | Issue key |
+| `key` | string | Yes | | Issue key (e.g., `FHIR-43499`) |
 | `limit` | int | No | `50` | Maximum comments |
 
 ### `QueryJiraIssues`
@@ -264,19 +280,9 @@ Query Jira issues with structured filters.
 | `sortOrder` | string | No | `desc` | Sort order: asc or desc |
 | `limit` | int | No | `20` | Maximum results |
 
-### `SnapshotJiraIssue`
-
-Generate a rich markdown snapshot of a Jira issue with metadata, description,
-comments, and cross-references.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `key` | string | Yes | | Issue key |
-| `includeComments` | bool | No | `true` | Include issue comments |
-
 ### `ListJiraIssues`
 
-List Jira issues with sorting and filters.
+List Jira issues with optional filters and sorting.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -290,21 +296,11 @@ List Jira issues with sorting and filters.
 
 ## Zulip Tools
 
-Source-specific tools for Zulip chat data.
-
-### `SearchZulip`
-
-Full-text search across Zulip messages.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `query` | string | Yes | | Search query |
-| `stream` | string | No | | Filter to a specific stream |
-| `limit` | int | No | `20` | Maximum results |
+Source-specific tools that talk to the Zulip service directly.
 
 ### `GetZulipThread`
 
-Get a full Zulip topic thread with participants and timestamps.
+Get a full Zulip topic thread with all messages.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -329,7 +325,7 @@ Query Zulip messages with structured filters.
 
 ### `ListZulipStreams`
 
-List all available Zulip streams. No parameters.
+List available Zulip streams. No parameters.
 
 ### `ListZulipTopics`
 
@@ -342,31 +338,22 @@ List topics in a Zulip stream.
 
 Returns topic names with message counts and last activity.
 
-### `SnapshotZulipThread`
-
-Generate a rich markdown snapshot of a Zulip topic thread with cross-references.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `stream` | string | Yes | | Stream name |
-| `topic` | string | Yes | | Topic name |
-
 ---
 
 ## Recommended Workflow for LLM Agents
 
 The tools are designed for a progressive discovery pattern:
 
-1. **Search** — Use `Search` for broad cross-source queries, or
-   `SearchJira`/`SearchZulip` for source-specific full-text search
-2. **Snapshot** — Use `SnapshotJiraIssue` or `SnapshotZulipThread` to get rich
-   markdown views of interesting items
-3. **Explore** — Use `FindRelated` and `GetCrossReferences` to discover
-   connected items across sources
-4. **Deep dive** — Use `GetJiraIssue`, `GetJiraComments`, `GetZulipThread` for
-   full item details
-5. **Browse** — Use `ListZulipStreams`, `ListZulipTopics`, `ListJiraIssues`,
-   and `QueryJiraIssues`/`QueryZulipMessages` for structured browsing
+1. **Search** — Use `ContentSearch` for broad cross-source queries, or
+   `QueryJiraIssues`/`QueryZulipMessages` for source-specific structured search
+2. **Cross-references** — Use `RefersTo`, `ReferredBy`, or `CrossReferenced`
+   to discover connected items across sources
+3. **Deep dive** — Use `GetItem` for full item details from any source, or
+   `GetJiraComments` and `GetZulipThread` for source-specific detail
+4. **Browse** — Use `ListZulipStreams`, `ListZulipTopics`, and `ListJiraIssues`
+   for structured browsing
+5. **Admin** — Use `GetStats` to check service health, `TriggerSync` to refresh
+   data, and `RebuildIndex` to rebuild search indexes
 
 This pattern lets agents efficiently navigate the FHIR community knowledge base
 without needing to understand the underlying data structure.
