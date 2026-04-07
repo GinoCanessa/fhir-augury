@@ -27,7 +27,7 @@ public class RelatedController(RelatedItemFinder finder) : ControllerBase
             seedTitle = response.SeedTitle,
             items = response.Items.Select(i => new
             {
-                i.Source, i.Id, i.Title, i.Snippet, i.Url,
+                i.Source, i.ContentType, i.Id, i.Title, i.Snippet, i.Url,
                 relevanceScore = i.RelevanceScore,
                 i.Relationship, i.Context,
             }),

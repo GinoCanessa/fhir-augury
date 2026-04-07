@@ -12,6 +12,8 @@ public class ItemsController(SourceHttpClient httpClient) : ControllerBase
     public async Task<IActionResult> GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
+        [FromQuery] bool? includeContent,
+        [FromQuery] bool? includeComments,
         CancellationToken ct)
     {
         if (!httpClient.IsSourceEnabled(source))
@@ -19,13 +21,16 @@ public class ItemsController(SourceHttpClient httpClient) : ControllerBase
 
         try
         {
-            ItemResponse? item = await httpClient.GetItemAsync(source, id, ct);
+            ItemResponse? item = await httpClient.GetItemAsync(
+                source, id, ct,
+                includeContent: includeContent ?? false,
+                includeComments: includeComments ?? false);
             if (item is null)
                 return NotFound(new { error = $"Item '{id}' not found in source '{source}'" });
 
             return Ok(new
             {
-                item.Source, item.Id, item.Title, item.Content, item.Url,
+                item.Source, item.ContentType, item.Id, item.Title, item.Content, item.Url,
                 item.CreatedAt, item.UpdatedAt, item.Metadata, item.Comments,
             });
         }

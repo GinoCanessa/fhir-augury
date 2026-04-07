@@ -79,7 +79,12 @@
                 }
                 else if (RelatedError is not null)
                 {
-                    <div class="alert alert-warning small mb-0">@RelatedError</div>
+                    <div class="alert alert-warning small mb-0">
+                        @RelatedError
+                        <button class="btn btn-sm btn-outline-warning ms-2" @onclick="OnLoadRelated">
+                            <i class="bi bi-arrow-clockwise"></i> Retry
+                        </button>
+                    </div>
                 }
                 else if (RelatedItems?.Items is { Count: > 0 })
                 {

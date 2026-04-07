@@ -41,7 +41,7 @@ public class ItemsController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
             Source = SourceSystems.Zulip,
             Id = message.ZulipMessageId.ToString(),
             Title = $"[{message.StreamName}] {message.Topic}",
-            Content = (includeContent ?? false) ? (message.ContentPlain ?? "") : null,
+            Content = (includeContent ?? false) ? (message.ContentHtml ?? message.ContentPlain ?? "") : null,
             Url = ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, message.ZulipMessageId),
             CreatedAt = message.Timestamp,
             UpdatedAt = message.Timestamp,

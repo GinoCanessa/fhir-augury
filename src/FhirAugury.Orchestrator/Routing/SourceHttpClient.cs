@@ -70,11 +70,19 @@ public class SourceHttpClient
             $"/api/v1/search?q={Uri.EscapeDataString(query)}&limit={limit}", ct);
     }
 
-    public async Task<ItemResponse?> GetItemAsync(string sourceName, string id, CancellationToken ct)
+    public async Task<ItemResponse?> GetItemAsync(
+        string sourceName, string id, CancellationToken ct,
+        bool includeContent = false, bool includeComments = false)
     {
         HttpClient client = GetClientForSource(sourceName);
         string path = BuildItemPath(sourceName, id);
-        return await client.GetFromJsonAsync<ItemResponse>($"/api/v1/{path}", ct);
+        string query = "";
+        if (includeContent) query += "includeContent=true&";
+        if (includeComments) query += "includeComments=true&";
+        string url = string.IsNullOrEmpty(query)
+            ? $"/api/v1/{path}"
+            : $"/api/v1/{path}?{query.TrimEnd('&')}";
+        return await client.GetFromJsonAsync<ItemResponse>(url, ct);
     }
 
     public async Task<FindRelatedResponse?> GetRelatedAsync(
