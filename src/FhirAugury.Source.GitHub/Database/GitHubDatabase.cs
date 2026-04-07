@@ -35,6 +35,7 @@ public class GitHubDatabase : SourceDatabase
         GitHubCorpusKeywordRecord.CreateTable(connection);
         GitHubDocStatsRecord.CreateTable(connection);
         GitHubFileContentRecord.CreateTable(connection);
+        GitHubFileTagRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
@@ -133,6 +134,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS xref_fhir_element;
             DROP TABLE IF EXISTS github_spec_file_map;
             DROP TABLE IF EXISTS github_file_contents;
+            DROP TABLE IF EXISTS github_file_tags;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

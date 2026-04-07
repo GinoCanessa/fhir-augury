@@ -21,6 +21,7 @@ public class GitHubIngestionPipeline(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
+    RepoFileTagger repoFileTagger,
     GitHubXRefRebuilder xrefRebuilder,
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
@@ -158,6 +159,9 @@ public class GitHubIngestionPipeline(
 
                     _currentStatus = $"indexing_files:{repo}";
                     fileContentIndexer.IndexRepositoryFiles(repo, clonePath, ct);
+
+                    _currentStatus = $"tagging_files:{repo}";
+                    repoFileTagger.ApplyTags(repo, clonePath, ct);
                 }
                 catch (Exception ex)
                 {

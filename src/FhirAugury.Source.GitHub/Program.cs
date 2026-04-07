@@ -105,6 +105,12 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<ArtifactFileMapper>();
 
+// File tagging
+builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));
+builder.Services.AddSingleton<TagWeightResolver>();
+builder.Services.AddSingleton<IRepoDiscoveryPattern, FhirCoreDiscoveryPattern>();
+builder.Services.AddSingleton<RepoFileTagger>();
+
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
 builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
