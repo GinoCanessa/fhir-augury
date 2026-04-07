@@ -58,15 +58,52 @@ public class JiraQueryBuilderTests
     }
 
     [Fact]
-    public void Build_Labels_UsesLikeMatching()
+    public void Build_Labels_UsesJoinTableFiltering()
     {
         JiraQueryRequest request = new JiraQueryRequest();
         request.Labels.Add("bug");
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
-        Assert.Contains("AND Labels LIKE", sql);
-        Assert.Contains(parameters, p => p.Value!.ToString() == "%bug%");
+        // Should use EXISTS subquery against join tables, not LIKE
+        Assert.Contains("jira_issue_labels", sql);
+        Assert.Contains("jira_index_labels", sql);
+        Assert.DoesNotContain("LIKE", sql);
+        // Parameter should be exact value, not wildcard
+        Assert.Contains(parameters, p => p.Value!.ToString() == "bug");
+        Assert.DoesNotContain(parameters, p => p.Value!.ToString() == "%bug%");
+    }
+
+    [Fact]
+    public void Build_MultipleLabels_GeneratesExistsPerLabel()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+        request.Labels.Add("bug");
+        request.Labels.Add("urgent");
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
+
+        // Should have two EXISTS subqueries (one per label)
+        int existsCount = sql!.Split("EXISTS").Length - 1;
+        Assert.Equal(2, existsCount);
+        // Both labels as exact parameters
+        Assert.Contains(parameters, p => p.Value!.ToString() == "bug");
+        Assert.Contains(parameters, p => p.Value!.ToString() == "urgent");
+    }
+
+    [Fact]
+    public void Build_LabelsAndOtherFilters_CombinesCorrectly()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+        request.Labels.Add("bug");
+        request.Statuses.Add("Open");
+        request.WorkGroups.Add("TeamA");
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? _) = JiraQueryBuilder.Build(request);
+
+        Assert.Contains("jira_issue_labels", sql);
+        Assert.Contains("Status IN", sql);
+        Assert.Contains("WorkGroup IN", sql);
     }
 
     [Fact]

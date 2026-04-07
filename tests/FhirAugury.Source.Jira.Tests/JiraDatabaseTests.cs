@@ -205,6 +205,8 @@ public class JiraDatabaseTests : IDisposable
         Vote = null,
         Labels = labels,
         CommentCount = 0,
+        ChangeCategory = null,
+        ChangeImpact = null,
     };
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
