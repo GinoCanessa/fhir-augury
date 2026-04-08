@@ -29,6 +29,9 @@ public static partial class JiraTicketExtractor
     [GeneratedRegex(@"\bGF#(\d+)\b")]
     private static partial Regex GfHashPattern();
 
+    [GeneratedRegex(@"\bFHIR#(\d+)\b")]
+    private static partial Regex FhirHashPattern();
+
     [GeneratedRegex(@"https?://jira\.hl7\.org/browse/(FHIR-\d+)")]
     private static partial Regex JiraUrlPattern();
 
@@ -84,6 +87,18 @@ public static partial class JiraTicketExtractor
 
         // 6. Shorthand: GF#N → FHIR-N
         foreach (Match match in GfHashPattern().Matches(text))
+        {
+            string num = match.Groups[1].Value;
+            if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
+                continue;
+
+            string jiraKey = $"FHIR-{num}";
+            if (seen.Add(jiraKey))
+                results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
+        }
+
+        // 7. Hashed: FHIR#N → FHIR-N
+        foreach (Match match in FhirHashPattern().Matches(text))
         {
             string num = match.Groups[1].Value;
             if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
