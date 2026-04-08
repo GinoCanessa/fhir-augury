@@ -174,6 +174,13 @@ public class GitHubIngestionPipeline(
                         priorityPaths,
                         additionalIgnorePatterns is { Count: > 0 } ? additionalIgnorePatterns : null);
 
+                    // Clean up stale file content records outside priority paths
+                    // (from pre-filtering syncs that indexed the full tree)
+                    if (priorityPaths is { Count: > 0 })
+                    {
+                        CleanupStaleFileContents(repo, priorityPaths);
+                    }
+
                     _currentStatus = $"tagging_files:{repo}";
                     ApplyTags(repo, clonePath, strategy, ct);
 
@@ -396,6 +403,42 @@ public class GitHubIngestionPipeline(
             first.ItemsFailed + second.ItemsFailed,
             [.. first.Errors, .. second.Errors],
             first.StartedAt);
+    }
+
+    /// <summary>
+    /// Removes <c>github_file_contents</c> rows for files outside the given priority paths.
+    /// This cleans up stale records from pre-filtering syncs that indexed the full tree.
+    /// </summary>
+    internal void CleanupStaleFileContents(string repoFullName, List<string> priorityPaths)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+
+        using SqliteCommand cmd = connection.CreateCommand();
+
+        // Build WHERE clause: FilePath NOT LIKE 'path1/%' AND FilePath NOT LIKE 'path2/%' ...
+        List<string> conditions = [];
+        for (int i = 0; i < priorityPaths.Count; i++)
+        {
+            string paramName = $"@path{i}";
+            string normalizedPath = priorityPaths[i].Replace('\\', '/').TrimEnd('/') + "/";
+            cmd.Parameters.AddWithValue(paramName, normalizedPath + "%");
+            conditions.Add($"FilePath NOT LIKE {paramName}");
+        }
+
+        cmd.CommandText = $"""
+            DELETE FROM github_file_contents
+            WHERE RepoFullName = @repo
+            AND {string.Join(" AND ", conditions)}
+            """;
+        cmd.Parameters.AddWithValue("@repo", repoFullName);
+
+        int removed = cmd.ExecuteNonQuery();
+        if (removed > 0)
+        {
+            logger.LogInformation(
+                "Cleaned up {Count} stale file content records outside priority paths for {Repo}",
+                removed, repoFullName);
+        }
     }
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)

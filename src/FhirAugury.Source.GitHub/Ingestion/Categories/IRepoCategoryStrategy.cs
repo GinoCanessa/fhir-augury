@@ -29,12 +29,20 @@ public interface IRepoCategoryStrategy
     List<GitHubFileTagRecord> DiscoverTags(string repoFullName, string clonePath, CancellationToken ct);
 
     /// <summary>
-    /// Returns priority paths to focus file content indexing on, or null for default behavior.
+    /// Returns the only paths that should be included in file content indexing.
+    /// Files outside these paths are completely excluded from the <c>github_file_contents</c> table.
+    /// Returns null to index all files (not recommended for structured repos).
+    /// Paths are relative to the clone root and should use forward slashes with a trailing slash
+    /// (e.g., <c>"source/"</c>, <c>"input/definitions/"</c>).
     /// </summary>
     List<string>? GetPriorityPaths(string repoFullName, string clonePath);
 
     /// <summary>
     /// Returns additional gitignore-style patterns to exclude from file content indexing.
+    /// These are merged with global <see cref="FileContentIndexingOptions.IgnorePatterns"/>
+    /// and any <c>.augury-index-ignore</c> file in the repository root.
+    /// Applied after <see cref="GetPriorityPaths"/> filtering (only files within
+    /// priority paths are candidates for ignore pattern matching).
     /// </summary>
     List<string> GetAdditionalIgnorePatterns();
 
