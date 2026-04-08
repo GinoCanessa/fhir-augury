@@ -1,25 +1,27 @@
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion.Parsing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
-namespace FhirAugury.Source.GitHub.Ingestion;
+namespace FhirAugury.Source.GitHub.Ingestion.Categories;
 
 /// <summary>
-/// Discovery pattern for FHIR Core repositories (e.g., HL7/fhir).
+/// Strategy for FHIR Core repositories (e.g., HL7/fhir).
 /// Parses source/fhir.ini and maps artifacts to files in the clone.
 /// </summary>
-public class FhirCoreDiscoveryPattern(ILogger<FhirCoreDiscoveryPattern> logger) : IRepoDiscoveryPattern
+public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryStrategy
 {
-    public string PatternName => "fhir-core";
+    public RepoCategory Category => RepoCategory.FhirCore;
+    public string StrategyName => "fhir-core";
 
-    public bool AppliesTo(string repoFullName, string clonePath)
+    public bool Validate(string repoFullName, string clonePath)
     {
         string iniPath = Path.Combine(clonePath, "source", "fhir.ini");
         return File.Exists(iniPath);
     }
 
-    public List<GitHubFileTagRecord> DiscoverTags(
-        string repoFullName, string clonePath, CancellationToken ct)
+    public List<GitHubFileTagRecord> DiscoverTags(string repoFullName, string clonePath, CancellationToken ct)
     {
         string iniPath = Path.Combine(clonePath, "source", "fhir.ini");
         if (!File.Exists(iniPath))
@@ -45,7 +47,6 @@ public class FhirCoreDiscoveryPattern(ILogger<FhirCoreDiscoveryPattern> logger) 
             }
             else if (artifact.Category == "type")
             {
-                // Fallback: scan source/datatypes/ for files matching the type name
                 string datatypesDir = Path.Combine(clonePath, "source", "datatypes");
                 if (Directory.Exists(datatypesDir))
                 {
@@ -56,6 +57,70 @@ public class FhirCoreDiscoveryPattern(ILogger<FhirCoreDiscoveryPattern> logger) 
 
         logger.LogInformation("Discovered {Count} file tags for {Repo}", tags.Count, repoFullName);
         return tags;
+    }
+
+    public List<string>? GetPriorityPaths(string repoFullName, string clonePath)
+    {
+        return ["source/"];
+    }
+
+    public List<string> GetAdditionalIgnorePatterns()
+    {
+        return [];
+    }
+
+    public void BuildArtifactMappings(string repoFullName, string clonePath, SqliteConnection connection, CancellationToken ct)
+    {
+        // Clear existing mappings
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM github_spec_file_map WHERE RepoFullName = @repo";
+            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            cmd.ExecuteNonQuery();
+        }
+
+        int mapCount = 0;
+
+        // Map directories under source/ (core FHIR repo convention)
+        string sourceDir = Path.Combine(clonePath, "source");
+        if (Directory.Exists(sourceDir))
+        {
+            foreach (string dir in Directory.GetDirectories(sourceDir))
+            {
+                ct.ThrowIfCancellationRequested();
+                string dirName = Path.GetFileName(dir);
+                string relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
+
+                GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+                {
+                    Id = GitHubSpecFileMapRecord.GetIndex(),
+                    RepoFullName = repoFullName,
+                    ArtifactKey = dirName,
+                    FilePath = relativePath,
+                    MapType = "directory",
+                }, ignoreDuplicates: true);
+                mapCount++;
+            }
+
+            foreach (string file in Directory.GetFiles(sourceDir, "*.xml", SearchOption.AllDirectories))
+            {
+                ct.ThrowIfCancellationRequested();
+                string fileName = Path.GetFileNameWithoutExtension(file);
+                string relativePath = Path.GetRelativePath(clonePath, file).Replace('\\', '/');
+
+                GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+                {
+                    Id = GitHubSpecFileMapRecord.GetIndex(),
+                    RepoFullName = repoFullName,
+                    ArtifactKey = fileName,
+                    FilePath = relativePath,
+                    MapType = "file",
+                }, ignoreDuplicates: true);
+                mapCount++;
+            }
+        }
+
+        logger.LogInformation("Built {Count} artifact-file mappings for {Repo}", mapCount, repoFullName);
     }
 
     private static void ScanDirectory(
@@ -80,7 +145,6 @@ public class FhirCoreDiscoveryPattern(ILogger<FhirCoreDiscoveryPattern> logger) 
                 TagModifier = modifier,
             });
 
-            // Check for FHIR resource type in XML filenames
             if (Path.GetExtension(file).Equals(".xml", StringComparison.OrdinalIgnoreCase))
             {
                 string? resourceType = FhirResourceTypes.TryGetFromFilename(Path.GetFileName(file));
@@ -127,7 +191,6 @@ public class FhirCoreDiscoveryPattern(ILogger<FhirCoreDiscoveryPattern> logger) 
                     TagModifier = modifier,
                 });
 
-                // Check for FHIR resource type in XML filenames
                 if (Path.GetExtension(file).Equals(".xml", StringComparison.OrdinalIgnoreCase))
                 {
                     string? resourceType = FhirResourceTypes.TryGetFromFilename(fileName);

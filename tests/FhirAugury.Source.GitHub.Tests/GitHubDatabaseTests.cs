@@ -68,6 +68,7 @@ public class GitHubDatabaseTests : IDisposable
             Description = "FHIR Core Specification",
             HasIssues = false,
             LastFetchedAt = DateTimeOffset.UtcNow,
+            Category = "FhirCore",
         };
 
         GitHubRepoRecord.Insert(conn, repo);

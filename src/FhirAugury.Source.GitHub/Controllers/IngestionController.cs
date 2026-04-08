@@ -81,7 +81,7 @@ public class IngestionController(
 
         workQueue.Enqueue(async ct =>
         {
-            List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+            List<string> repos = options.GetAllRepositoryNames();
             switch (indexType)
             {
                 case "commits":
@@ -200,7 +200,7 @@ public class IngestionController(
         GitHubServiceOptions options = optionsAccessor.Value;
         workQueue.Enqueue(async ct =>
         {
-            List<string> repos = [.. options.Repositories, .. options.AdditionalRepositories];
+            List<string> repos = options.GetAllRepositoryNames();
             foreach (string repo in repos)
                 xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
         }, "rebuild-xrefs");

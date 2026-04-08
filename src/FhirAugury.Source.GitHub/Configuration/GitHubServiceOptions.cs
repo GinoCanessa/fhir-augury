@@ -9,14 +9,20 @@ public class GitHubServiceOptions
 {
     public const string SectionName = "GitHub";
 
-    /// <summary>Repository discovery mode: core, explicit, or all.</summary>
-    public string RepoMode { get; set; } = "core";
+    /// <summary>Repositories in the FhirCore category (e.g., HL7/fhir).</summary>
+    public List<string> FhirCoreRepositories { get; set; } = ["HL7/fhir"];
 
-    /// <summary>Explicit repositories to track (owner/repo format).</summary>
-    public List<string> Repositories { get; set; } = ["HL7/fhir"];
+    /// <summary>Repositories in the UTG category (e.g., HL7/UTG).</summary>
+    public List<string> UtgRepositories { get; set; } = ["HL7/UTG"];
 
-    /// <summary>Additional repositories beyond the mode-selected set.</summary>
-    public List<string> AdditionalRepositories { get; set; } = [];
+    /// <summary>Repositories in the FHIR Extensions Pack category.</summary>
+    public List<string> FhirExtensionsPackRepositories { get; set; } = ["HL7/fhir-extensions"];
+
+    /// <summary>Repositories in the Incubator category.</summary>
+    public List<string> IncubatorRepositories { get; set; } = [];
+
+    /// <summary>Repositories in the IG category.</summary>
+    public List<string> IgRepositories { get; set; } = [];
 
     /// <summary>Manual cross-reference links.</summary>
     public List<string> ManualLinks { get; set; } = [];
@@ -64,6 +70,41 @@ public class GitHubServiceOptions
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
     public FileContentIndexingOptions FileContentIndexing { get; set; } = new();
+
+    /// <summary>
+    /// Returns all configured repositories paired with their category.
+    /// </summary>
+    public IReadOnlyList<(string Name, RepoCategory Category)> GetAllRepositories()
+    {
+        List<(string Name, RepoCategory Category)> repos = [];
+
+        foreach (string repo in FhirCoreRepositories)
+            repos.Add((repo, RepoCategory.FhirCore));
+        foreach (string repo in UtgRepositories)
+            repos.Add((repo, RepoCategory.Utg));
+        foreach (string repo in FhirExtensionsPackRepositories)
+            repos.Add((repo, RepoCategory.FhirExtensionsPack));
+        foreach (string repo in IncubatorRepositories)
+            repos.Add((repo, RepoCategory.Incubator));
+        foreach (string repo in IgRepositories)
+            repos.Add((repo, RepoCategory.Ig));
+
+        return repos;
+    }
+
+    /// <summary>
+    /// Returns all repository names as a flat list (for backward compatibility).
+    /// </summary>
+    public List<string> GetAllRepositoryNames()
+    {
+        List<string> repos = [];
+        repos.AddRange(FhirCoreRepositories);
+        repos.AddRange(UtgRepositories);
+        repos.AddRange(FhirExtensionsPackRepositories);
+        repos.AddRange(IncubatorRepositories);
+        repos.AddRange(IgRepositories);
+        return repos;
+    }
 }
 
 /// <summary>Configuration for repository file content indexing.</summary>

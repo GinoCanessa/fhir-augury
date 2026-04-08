@@ -5,6 +5,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
+using FhirAugury.Source.GitHub.Ingestion.Categories;
 using FhirAugury.Source.GitHub.Workers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -108,8 +109,11 @@ builder.Services.AddSingleton<ArtifactFileMapper>();
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));
 builder.Services.AddSingleton<TagWeightResolver>();
-builder.Services.AddSingleton<IRepoDiscoveryPattern, FhirCoreDiscoveryPattern>();
-builder.Services.AddSingleton<RepoFileTagger>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, FhirCoreStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, UtgStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, FhirExtensionsPackStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, IncubatorStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, IgStrategy>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -217,7 +221,7 @@ else
     {
         startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
         GitHubXRefRebuilder xrefRebuilder = app.Services.GetRequiredService<GitHubXRefRebuilder>();
-        List<string> repos = [.. githubOpts.Repositories, .. githubOpts.AdditionalRepositories];
+        List<string> repos = githubOpts.GetAllRepositoryNames();
         foreach (string repo in repos)
         {
             xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, CancellationToken.None);

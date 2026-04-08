@@ -38,6 +38,7 @@ public class ReposController(GitHubDatabase db) : ControllerBase
             {
                 repo.FullName,
                 repo.Description,
+                repo.Category,
                 issueCount,
                 prCount,
                 url = $"https://github.com/{repo.FullName}",

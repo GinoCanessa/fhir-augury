@@ -454,9 +454,7 @@ public class GitHubCliProvider(
 
     private List<string> GetEffectiveRepositories()
     {
-        List<string> repos = new List<string>(_options.Repositories);
-        repos.AddRange(_options.AdditionalRepositories);
-        return repos;
+        return _options.GetAllRepositoryNames();
     }
 
     private enum ProcessOutcome { New, Updated, Failed }

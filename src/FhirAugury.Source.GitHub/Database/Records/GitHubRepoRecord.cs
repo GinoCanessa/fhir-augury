@@ -18,4 +18,7 @@ public partial record class GitHubRepoRecord
     public required string? Description { get; set; }
     public required bool HasIssues { get; set; }
     public required DateTimeOffset LastFetchedAt { get; set; }
+
+    /// <summary>Repository category (e.g., "FhirCore", "Utg"). Stored as the enum string name.</summary>
+    public required string Category { get; set; }
 }

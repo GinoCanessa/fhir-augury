@@ -4,6 +4,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
+using FhirAugury.Source.GitHub.Ingestion.Categories;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -21,7 +22,8 @@ public class GitHubIngestionPipeline(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
-    RepoFileTagger repoFileTagger,
+    IEnumerable<IRepoCategoryStrategy> categoryStrategies,
+    TagWeightResolver weightResolver,
     GitHubXRefRebuilder xrefRebuilder,
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
@@ -134,20 +136,22 @@ public class GitHubIngestionPipeline(
         }
     }
 
+    private readonly Dictionary<RepoCategory, IRepoCategoryStrategy> _strategyMap =
+        categoryStrategies.ToDictionary(s => s.Category);
+
     private async Task PostIngestionAsync(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         // Clone repos and extract commit data
-        List<string> repos = new List<string>(_options.Repositories);
-        repos.AddRange(_options.AdditionalRepositories);
+        IReadOnlyList<(string Name, RepoCategory Category)> repos = _options.GetAllRepositories();
 
         tracker.MarkStarted("commits");
         tracker.MarkStarted("file-contents");
         tracker.MarkStarted("cross-refs");
         try
         {
-            foreach (string repo in repos)
+            foreach ((string repo, RepoCategory category) in repos)
             {
                 try
                 {
@@ -157,11 +161,25 @@ public class GitHubIngestionPipeline(
                     _currentStatus = $"extracting_commits:{repo}";
                     await commitExtractor.ExtractAsync(clonePath, repo, ct);
 
+                    // Resolve strategy for this repo's category
+                    IRepoCategoryStrategy? strategy = _strategyMap.GetValueOrDefault(category);
+                    List<string>? priorityPaths = strategy?.GetPriorityPaths(repo, clonePath);
+                    List<string>? additionalIgnorePatterns = strategy?.GetAdditionalIgnorePatterns();
+
                     _currentStatus = $"indexing_files:{repo}";
-                    fileContentIndexer.IndexRepositoryFiles(repo, clonePath, ct);
+                    fileContentIndexer.IndexRepositoryFiles(repo, clonePath, ct,
+                        priorityPaths,
+                        additionalIgnorePatterns is { Count: > 0 } ? additionalIgnorePatterns : null);
 
                     _currentStatus = $"tagging_files:{repo}";
-                    repoFileTagger.ApplyTags(repo, clonePath, ct);
+                    ApplyTags(repo, clonePath, strategy, ct);
+
+                    _currentStatus = $"mapping_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        using SqliteConnection connection = database.OpenConnection();
+                        strategy.BuildArtifactMappings(repo, clonePath, connection, ct);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -211,6 +229,60 @@ public class GitHubIngestionPipeline(
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
+    }
+
+    /// <summary>
+    /// Applies category-specific tags to a repository using the strategy pattern.
+    /// Replaces the previous RepoFileTagger logic.
+    /// </summary>
+    private void ApplyTags(string repoFullName, string clonePath, IRepoCategoryStrategy? strategy, CancellationToken ct)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+
+        // Clear existing tags for this repo
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM github_file_tags WHERE RepoFullName = @repo";
+            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            cmd.ExecuteNonQuery();
+        }
+
+        if (strategy is null)
+        {
+            logger.LogDebug("No strategy for {Repo}, skipping tags", repoFullName);
+            return;
+        }
+
+        if (!strategy.Validate(repoFullName, clonePath))
+        {
+            logger.LogWarning("Strategy {Strategy} validation failed for {Repo}, skipping tags",
+                strategy.StrategyName, repoFullName);
+            return;
+        }
+
+        logger.LogInformation("Applying {Strategy} strategy to {Repo}",
+            strategy.StrategyName, repoFullName);
+
+        List<GitHubFileTagRecord> tags = strategy.DiscoverTags(repoFullName, clonePath, ct);
+
+        // Apply weights from configuration
+        foreach (GitHubFileTagRecord tag in tags)
+        {
+            tag.Weight = weightResolver.ResolveWeight(tag.TagCategory, tag.TagName, tag.TagModifier);
+        }
+
+        if (tags.Count > 0)
+        {
+            const int batchSize = 1000;
+            for (int i = 0; i < tags.Count; i += batchSize)
+            {
+                List<GitHubFileTagRecord> batch = tags.GetRange(i, Math.Min(batchSize, tags.Count - i));
+                batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            }
+
+            logger.LogInformation("Applied {Count} tags via {Strategy}",
+                tags.Count, strategy.StrategyName);
+        }
     }
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)

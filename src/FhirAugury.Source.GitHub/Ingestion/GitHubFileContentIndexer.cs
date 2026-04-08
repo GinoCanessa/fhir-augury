@@ -32,7 +32,10 @@ public class GitHubFileContentIndexer(
     /// <summary>
     /// Performs a full index of all files in the given clone directory.
     /// </summary>
-    public FileIndexingResult IndexRepositoryFiles(string repoFullName, string clonePath, CancellationToken ct = default)
+    public FileIndexingResult IndexRepositoryFiles(
+        string repoFullName, string clonePath, CancellationToken ct = default,
+        List<string>? priorityPaths = null,
+        List<string>? additionalIgnorePatterns = null)
     {
         if (!_config.Enabled)
         {
@@ -40,13 +43,18 @@ public class GitHubFileContentIndexer(
             return new FileIndexingResult(0, 0, 0, 0, 0);
         }
 
-        IgnorePatternMatcher ignoreMatcher = BuildIgnoreMatcher(clonePath);
+        IgnorePatternMatcher ignoreMatcher = BuildIgnoreMatcher(clonePath, additionalIgnorePatterns);
         HashSet<string> additionalSkipExts = _config.AdditionalSkipExtensions.Count > 0
             ? new HashSet<string>(_config.AdditionalSkipExtensions, StringComparer.OrdinalIgnoreCase)
             : null!;
         HashSet<string> additionalSkipDirs = _config.AdditionalSkipDirectories.Count > 0
             ? new HashSet<string>(_config.AdditionalSkipDirectories, StringComparer.OrdinalIgnoreCase)
             : null!;
+
+        // Merge priority paths with global IncludeOnlyPaths
+        List<string> effectiveIncludeOnlyPaths = priorityPaths is not null
+            ? [.. _config.IncludeOnlyPaths, .. priorityPaths]
+            : _config.IncludeOnlyPaths;
 
         int indexed = 0, skippedByType = 0, skippedByPattern = 0, skippedBySize = 0, failed = 0;
         List<GitHubFileContentRecord> batch = new(500);
@@ -72,10 +80,10 @@ public class GitHubFileContentIndexer(
             }
 
             // Check include-only paths
-            if (_config.IncludeOnlyPaths.Count > 0)
+            if (effectiveIncludeOnlyPaths.Count > 0)
             {
                 bool included = false;
-                foreach (string includePath in _config.IncludeOnlyPaths)
+                foreach (string includePath in effectiveIncludeOnlyPaths)
                 {
                     string normalizedInclude = includePath.Replace('\\', '/').TrimEnd('/');
                     if (relativePath.StartsWith(normalizedInclude + "/", StringComparison.OrdinalIgnoreCase) ||
@@ -242,11 +250,15 @@ public class GitHubFileContentIndexer(
             repoFullName, updated, removed);
     }
 
-    private IgnorePatternMatcher BuildIgnoreMatcher(string clonePath)
+    private IgnorePatternMatcher BuildIgnoreMatcher(string clonePath, List<string>? additionalIgnorePatterns = null)
     {
+        List<string> allPatterns = additionalIgnorePatterns is not null
+            ? [.. _config.IgnorePatterns, .. additionalIgnorePatterns]
+            : _config.IgnorePatterns;
+
         string repoIgnoreFile = Path.Combine(clonePath, ".augury-index-ignore");
         return new IgnorePatternMatcher(
-            _config.IgnorePatterns,
+            allPatterns,
             File.Exists(repoIgnoreFile) ? repoIgnoreFile : null);
     }
 

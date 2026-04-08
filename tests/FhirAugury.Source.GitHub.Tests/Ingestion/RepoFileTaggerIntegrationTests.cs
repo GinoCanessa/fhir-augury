@@ -1,7 +1,7 @@
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
-using FhirAugury.Source.GitHub.Ingestion;
+using FhirAugury.Source.GitHub.Ingestion.Categories;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -11,14 +11,15 @@ namespace FhirAugury.Source.GitHub.Tests.Ingestion;
 /// <summary>
 /// Integration test that exercises the full tagging pipeline:
 /// INI parsing → directory scanning → resource type extraction → weight resolution → DB persistence.
+/// Migrated from RepoFileTagger to the new strategy + inline tag logic pattern.
 /// </summary>
-public class RepoFileTaggerIntegrationTests : IDisposable
+public class TaggingIntegrationTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly string _dbPath;
     private readonly GitHubDatabase _database;
 
-    public RepoFileTaggerIntegrationTests()
+    public TaggingIntegrationTests()
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "tagger-int-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempDir);
@@ -31,7 +32,6 @@ public class RepoFileTaggerIntegrationTests : IDisposable
     public void Dispose()
     {
         _database.Dispose();
-        // Clear SQLite connection pool to release file locks
         SqliteConnection.ClearAllPools();
         if (Directory.Exists(_tempDir))
             Directory.Delete(_tempDir, true);
@@ -62,19 +62,27 @@ public class RepoFileTaggerIntegrationTests : IDisposable
             },
         };
 
-        FhirCoreDiscoveryPattern pattern = new(NullLogger<FhirCoreDiscoveryPattern>.Instance);
+        FhirCoreStrategy strategy = new(NullLogger<FhirCoreStrategy>.Instance);
         TagWeightResolver resolver = new(Options.Create(weightOptions));
-        RepoFileTagger tagger = new(
-            [pattern],
-            resolver,
-            _database,
-            NullLogger<RepoFileTagger>.Instance);
 
-        // Act
-        tagger.ApplyTags("HL7/fhir", clonePath, CancellationToken.None);
+        // Act — replicate the pipeline's inline ApplyTags logic
+        using SqliteConnection connection = _database.OpenConnection();
+        ClearTags(connection, "HL7/fhir");
+
+        List<GitHubFileTagRecord> tags = strategy.DiscoverTags("HL7/fhir", clonePath, CancellationToken.None);
+        foreach (GitHubFileTagRecord tag in tags)
+        {
+            tag.Weight = resolver.ResolveWeight(tag.TagCategory, tag.TagName, tag.TagModifier);
+        }
+
+        const int batchSize = 1000;
+        for (int i = 0; i < tags.Count; i += batchSize)
+        {
+            List<GitHubFileTagRecord> batch = tags.GetRange(i, Math.Min(batchSize, tags.Count - i));
+            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
 
         // Assert
-        using SqliteConnection connection = _database.OpenConnection();
         List<GitHubFileTagRecord> allTags = GitHubFileTagRecord.SelectList(connection);
 
         Assert.NotEmpty(allTags);
@@ -83,7 +91,7 @@ public class RepoFileTaggerIntegrationTests : IDisposable
         List<GitHubFileTagRecord> patientTags = allTags
             .Where(t => t.TagCategory == "resource" && t.TagName == "Patient")
             .ToList();
-        Assert.Equal(3, patientTags.Count); // patient-intro.xml, structuredefinition-patient.xml, example.json
+        Assert.Equal(3, patientTags.Count);
         Assert.All(patientTags, t => Assert.Equal(1.0, t.Weight));
 
         // AdverseEvent tagged with draft modifier
@@ -91,7 +99,7 @@ public class RepoFileTaggerIntegrationTests : IDisposable
             .Where(t => t.TagName == "AdverseEvent" && t.TagModifier == "draft")
             .ToList();
         Assert.Single(draftTags);
-        Assert.Equal(0.7, draftTags[0].Weight, 5); // 1.0 * 0.7
+        Assert.Equal(0.7, draftTags[0].Weight, 5);
 
         // CodeableConcept type via datatypes fallback
         List<GitHubFileTagRecord> typeTags = allTags
@@ -126,7 +134,7 @@ public class RepoFileTaggerIntegrationTests : IDisposable
             .Where(t => t.TagName == "Animal" && t.TagModifier == "removed")
             .ToList();
         Assert.Single(removedTags);
-        Assert.Equal(0.3, removedTags[0].Weight, 5); // 1.0 * 0.3
+        Assert.Equal(0.3, removedTags[0].Weight, 5);
 
         // Removed resource (BodySite) — no directory, no tags
         Assert.DoesNotContain(allTags, t => t.TagName == "BodySite");
@@ -138,17 +146,12 @@ public class RepoFileTaggerIntegrationTests : IDisposable
         string clonePath = Path.Combine(_tempDir, "clone2");
         SetupMinimalRepoLayout(clonePath);
 
-        FhirCoreDiscoveryPattern pattern = new(NullLogger<FhirCoreDiscoveryPattern>.Instance);
+        FhirCoreStrategy strategy = new(NullLogger<FhirCoreStrategy>.Instance);
         TagWeightResolver resolver = new(Options.Create(new TagWeightOptions()));
-        RepoFileTagger tagger = new(
-            [pattern],
-            resolver,
-            _database,
-            NullLogger<RepoFileTagger>.Instance);
 
         // Apply tags twice
-        tagger.ApplyTags("HL7/fhir", clonePath, CancellationToken.None);
-        tagger.ApplyTags("HL7/fhir", clonePath, CancellationToken.None);
+        ApplyTagsViaStrategy(strategy, resolver, "HL7/fhir", clonePath);
+        ApplyTagsViaStrategy(strategy, resolver, "HL7/fhir", clonePath);
 
         using SqliteConnection connection = _database.OpenConnection();
         List<GitHubFileTagRecord> allTags = GitHubFileTagRecord.SelectList(connection);
@@ -156,6 +159,31 @@ public class RepoFileTaggerIntegrationTests : IDisposable
         // Should not have duplicates — second run clears first
         int patientCount = allTags.Count(t => t.TagName == "Patient" && t.TagCategory == "resource");
         Assert.Equal(1, patientCount);
+    }
+
+    private void ApplyTagsViaStrategy(FhirCoreStrategy strategy, TagWeightResolver resolver, string repoFullName, string clonePath)
+    {
+        using SqliteConnection connection = _database.OpenConnection();
+        ClearTags(connection, repoFullName);
+
+        List<GitHubFileTagRecord> tags = strategy.DiscoverTags(repoFullName, clonePath, CancellationToken.None);
+        foreach (GitHubFileTagRecord tag in tags)
+        {
+            tag.Weight = resolver.ResolveWeight(tag.TagCategory, tag.TagName, tag.TagModifier);
+        }
+
+        if (tags.Count > 0)
+        {
+            tags.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
+    }
+
+    private static void ClearTags(SqliteConnection connection, string repoFullName)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM github_file_tags WHERE RepoFullName = @repo";
+        cmd.Parameters.AddWithValue("@repo", repoFullName);
+        cmd.ExecuteNonQuery();
     }
 
     private static void SetupFhirRepoLayout(string clonePath)
@@ -186,28 +214,14 @@ public class RepoFileTaggerIntegrationTests : IDisposable
             """;
 
         CreateFile(clonePath, "source/fhir.ini", ini);
-
-        // Patient directory with various files
         CreateFile(clonePath, "source/patient/patient-introduction.xml", "<div/>");
         CreateFile(clonePath, "source/patient/structuredefinition-patient.xml", "<StructureDefinition/>");
         CreateFile(clonePath, "source/patient/example.json", "{}");
-
-        // AdverseEvent directory
         CreateFile(clonePath, "source/adverseevent/valueset-example.xml", "<ValueSet/>");
-
-        // Extension (infrastructure)
         CreateFile(clonePath, "source/extension/extension.xml", "<Extension/>");
-
-        // Logical model
         CreateFile(clonePath, "source/fivews/fivews.xml", "<StructureDefinition/>");
-
-        // Removed resource (Animal has directory, BodySite does not)
         CreateFile(clonePath, "source/animal/animal.xml", "<removed/>");
-
-        // Datatypes fallback for CodeableConcept
         CreateFile(clonePath, "source/datatypes/CodeableConcept.xml", "<type/>");
-
-        // resource-infrastructure
         CreateFile(clonePath, "source/resource/resource.xml", "<Resource/>");
     }
 
