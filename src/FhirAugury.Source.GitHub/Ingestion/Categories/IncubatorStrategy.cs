@@ -1,3 +1,4 @@
+using FhirAugury.Parsing.Fsh;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
@@ -79,5 +80,22 @@ public class IncubatorStrategy(
 
         logger.LogDebug("Discovered {Count} StructureDefinition files for {Repo}", sdFiles.Count, repoFullName);
         return sdFiles;
+    }
+
+    public (IReadOnlyList<string> FshFiles, SushiConfig? Config) DiscoverFshContent(
+        string repoFullName, string clonePath, CancellationToken ct)
+    {
+        string configPath = Path.Combine(clonePath, "sushi-config.yaml");
+        SushiConfig? config = SushiConfigParser.TryParse(configPath);
+
+        string fshDir = Path.Combine(clonePath, "input", "fsh");
+        if (!Directory.Exists(fshDir))
+            return ([], config);
+
+        List<string> fshFiles = Directory.EnumerateFiles(fshDir, "*.fsh", SearchOption.AllDirectories)
+            .ToList();
+
+        logger.LogInformation("Discovered {Count} FSH files in Incubator {Repo}", fshFiles.Count, repoFullName);
+        return (fshFiles, config);
     }
 }

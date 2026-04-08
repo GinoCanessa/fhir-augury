@@ -1,3 +1,4 @@
+using FhirAugury.Parsing.Fsh;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
@@ -55,4 +56,12 @@ public interface IRepoCategoryStrategy
     /// </summary>
     List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)
         => [];
+
+    /// <summary>
+    /// Discovers FSH files and sushi-config.yaml for this repository.
+    /// Default implementation returns empty list for categories without FSH content.
+    /// </summary>
+    (IReadOnlyList<string> FshFiles, SushiConfig? Config) DiscoverFshContent(
+        string repoFullName, string clonePath, CancellationToken ct)
+        => ([], null);
 }

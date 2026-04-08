@@ -87,6 +87,7 @@ public static class FileTypeClassifier
         ".sql", ".r", ".m", ".pl", ".lua",
         ".groovy", ".gradle", ".cmake",
         ".makefile", ".dockerfile",
+        ".fsh",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Classifies a file by its path and extension.</summary>

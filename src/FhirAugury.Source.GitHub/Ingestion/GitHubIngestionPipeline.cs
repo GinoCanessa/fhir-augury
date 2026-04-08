@@ -24,6 +24,7 @@ public class GitHubIngestionPipeline(
     GitHubFileContentIndexer fileContentIndexer,
     CanonicalArtifactIndexer canonicalArtifactIndexer,
     StructureDefinitionIndexer structureDefinitionIndexer,
+    FshArtifactIndexer fshArtifactIndexer,
     IEnumerable<IRepoCategoryStrategy> categoryStrategies,
     TagWeightResolver weightResolver,
     GitHubXRefRebuilder xrefRebuilder,
@@ -202,6 +203,20 @@ public class GitHubIngestionPipeline(
                         {
                             using SqliteConnection sdConnection = database.OpenConnection();
                             structureDefinitionIndexer.IndexStructureDefinitions(repo, sdFiles, clonePath, sdConnection, ct);
+                        }
+                    }
+
+                    _currentStatus = $"indexing_fsh_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        (IReadOnlyList<string> fshFiles, FhirAugury.Parsing.Fsh.SushiConfig? sushiConfig) =
+                            strategy.DiscoverFshContent(repo, clonePath, ct);
+
+                        if (fshFiles.Count > 0)
+                        {
+                            int indexed = fshArtifactIndexer.IndexFshFiles(
+                                repo, clonePath, fshFiles, sushiConfig, ct);
+                            logger.LogInformation("Indexed {Count} FSH artifacts for {Repo}", indexed, repo);
                         }
                     }
                 }
