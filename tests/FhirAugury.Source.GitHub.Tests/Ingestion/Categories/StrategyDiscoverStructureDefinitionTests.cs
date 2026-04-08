@@ -68,7 +68,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
         CreateFile("input/definitions/datatypes/StructureDefinition-iso21090-EN.xml", "<SD/>");
         CreateFile("input/definitions/extensions/CodeSystem-example.xml", "<CS/>"); // not an SD
 
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/fhir-extensions", _tempDir, CancellationToken.None);
 
         Assert.Equal(2, files.Count);
@@ -78,7 +78,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
     [Fact]
     public void ExtensionsPack_ReturnsEmpty_WhenNoDefinitionsDir()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/fhir-extensions", _tempDir, CancellationToken.None);
 
         Assert.Empty(files);
@@ -94,7 +94,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
         CreateFile("input/resources/StructureDefinition-example.xml", "<SD/>");
         CreateFile("input/resources/CodeSystem-example.xml", "<CS/>"); // not an SD
 
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/UTG", _tempDir, CancellationToken.None);
 
         Assert.Single(files);
@@ -104,7 +104,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
     [Fact]
     public void Utg_ReturnsEmpty_WhenNoResourcesDir()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/UTG", _tempDir, CancellationToken.None);
 
         Assert.Empty(files);
@@ -120,7 +120,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
         CreateFile("input/resources/profiles/StructureDefinition-example.xml", "<SD/>");
         CreateFile("input/resources/StructureDefinition-direct.xml", "<SD/>");
 
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/some-incubator", _tempDir, CancellationToken.None);
 
         Assert.Equal(2, files.Count);
@@ -131,7 +131,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
     {
         CreateFile("input/StructureDefinition-fallback.xml", "<SD/>");
 
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/some-incubator", _tempDir, CancellationToken.None);
 
         Assert.Single(files);
@@ -140,7 +140,7 @@ public class StrategyDiscoverStructureDefinitionTests : IDisposable
     [Fact]
     public void Incubator_ReturnsEmpty_WhenNoInputDir()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         List<string> files = strategy.DiscoverStructureDefinitionFiles("HL7/some-incubator", _tempDir, CancellationToken.None);
 
         Assert.Empty(files);

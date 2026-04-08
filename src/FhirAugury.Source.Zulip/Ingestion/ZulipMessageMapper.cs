@@ -80,6 +80,11 @@ public static class ZulipMessageMapper
     /// <summary>Maps a <see cref="MessageObject"/> to a ZulipMessageRecord.</summary>
     public static ZulipMessageRecord MapMessage(MessageObject msgObj, string streamName, int streamDbId)
     {
+        if (msgObj.Content is null)
+        {
+            throw new ArgumentNullException(nameof(msgObj.Content));
+        }
+
         string contentHtml = msgObj.Content;
         string contentPlain = TextSanitizer.StripHtml(contentHtml) ?? string.Empty;
         DateTimeOffset messageTimestamp = DateTimeOffset.FromUnixTimeSeconds(msgObj.Timestamp);

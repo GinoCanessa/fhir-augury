@@ -243,7 +243,7 @@ public class FhirContentParserTests
         ElementInfo gp = result.DifferentialElements[2];
         Assert.Equal("Reference", gp.Types[0].Code);
         Assert.NotNull(gp.Types[0].TargetProfiles);
-        Assert.Equal(2, gp.Types[0].TargetProfiles.Count);
+        Assert.Equal(2, gp.Types[0].TargetProfiles?.Count);
     }
 
     // ────────────────────────────────────────────────────────

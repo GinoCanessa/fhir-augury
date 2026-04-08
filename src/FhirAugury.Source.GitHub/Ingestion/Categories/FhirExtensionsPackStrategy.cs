@@ -1,5 +1,4 @@
 using FhirAugury.Source.GitHub.Configuration;
-using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -12,7 +11,6 @@ namespace FhirAugury.Source.GitHub.Ingestion.Categories;
 /// target resource context from the parent directory name.
 /// </summary>
 public class FhirExtensionsPackStrategy(
-    GitHubDatabase database,
     ILogger<FhirExtensionsPackStrategy> logger) : IRepoCategoryStrategy
 {
     public RepoCategory Category => RepoCategory.FhirExtensionsPack;

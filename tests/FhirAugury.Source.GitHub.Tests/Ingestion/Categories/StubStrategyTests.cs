@@ -39,14 +39,14 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Utg_Category_IsCorrect()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         Assert.Equal(RepoCategory.Utg, strategy.Category);
     }
 
     [Fact]
     public void Utg_GetPriorityPaths_ReturnsPaths()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         List<string>? paths = strategy.GetPriorityPaths("HL7/UTG", _tempDir);
         Assert.NotNull(paths);
         Assert.Equal(2, paths.Count);
@@ -57,7 +57,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Utg_GetAdditionalIgnorePatterns_ReturnsPatterns()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         List<string> patterns = strategy.GetAdditionalIgnorePatterns();
         Assert.Equal(3, patterns.Count);
         Assert.Contains("input/sourceOfTruth/history/", patterns);
@@ -69,21 +69,21 @@ public class StubStrategyTests : IDisposable
     public void Utg_Validate_TrueWhenSourceOfTruthExists()
     {
         Directory.CreateDirectory(Path.Combine(_tempDir, "input", "sourceOfTruth"));
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         Assert.True(strategy.Validate("HL7/UTG", _tempDir));
     }
 
     [Fact]
     public void Utg_Validate_FalseWhenNoSourceOfTruth()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         Assert.False(strategy.Validate("HL7/UTG", _tempDir));
     }
 
     [Fact]
     public void Utg_DiscoverTags_VocabularyFamily()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         CreateFile("input/sourceOfTruth/fhir/codeSystems/CodeSystem-example.xml", "<CodeSystem xmlns=\"http://hl7.org/fhir\"><id value=\"example\"/></CodeSystem>");
         CreateFile("input/sourceOfTruth/v2/cs/cs-v2-0001.xml", "<CodeSystem xmlns=\"http://hl7.org/fhir\"><id value=\"v2-0001\"/></CodeSystem>");
 
@@ -97,7 +97,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Utg_DiscoverTags_RetiredArtifacts()
     {
-        UtgStrategy strategy = new(_database, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(NullLogger<UtgStrategy>.Instance);
         CreateFile("input/sourceOfTruth/retired/codeSystems/old.xml", "<CodeSystem xmlns=\"http://hl7.org/fhir\"/>");
 
         List<GitHubFileTagRecord> tags = strategy.DiscoverTags("HL7/UTG", _tempDir, CancellationToken.None);
@@ -133,14 +133,14 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void ExtPack_Category_IsCorrect()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         Assert.Equal(RepoCategory.FhirExtensionsPack, strategy.Category);
     }
 
     [Fact]
     public void ExtPack_GetPriorityPaths_ReturnsDefinitionsPath()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         List<string>? paths = strategy.GetPriorityPaths("HL7/fhir-extensions", _tempDir);
         Assert.NotNull(paths);
         Assert.Single(paths);
@@ -151,21 +151,21 @@ public class StubStrategyTests : IDisposable
     public void ExtPack_Validate_TrueWhenDefinitionsExist()
     {
         Directory.CreateDirectory(Path.Combine(_tempDir, "input", "definitions"));
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         Assert.True(strategy.Validate("HL7/fhir-extensions", _tempDir));
     }
 
     [Fact]
     public void ExtPack_Validate_FalseWhenNoDefinitions()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         Assert.False(strategy.Validate("HL7/fhir-extensions", _tempDir));
     }
 
     [Fact]
     public void ExtPack_DiscoverTags_ResourceTypeAndTargetResource()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         CreateFile("input/definitions/Patient/StructureDefinition-patient-birthPlace.xml", "<StructureDefinition/>");
         CreateFile("input/definitions/datatypes/CodeSystem-example.xml", "<CodeSystem/>");
 
@@ -180,7 +180,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void ExtPack_GetAdditionalIgnorePatterns_ReturnsEmpty()
     {
-        FhirExtensionsPackStrategy strategy = new(_database, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(NullLogger<FhirExtensionsPackStrategy>.Instance);
         Assert.Empty(strategy.GetAdditionalIgnorePatterns());
     }
 
@@ -189,14 +189,14 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Incubator_Category_IsCorrect()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         Assert.Equal(RepoCategory.Incubator, strategy.Category);
     }
 
     [Fact]
     public void Incubator_GetPriorityPaths_ReturnsPaths()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         List<string>? paths = strategy.GetPriorityPaths("HL7/test", _tempDir);
         Assert.NotNull(paths);
         Assert.Equal(2, paths.Count);
@@ -207,7 +207,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Incubator_GetAdditionalIgnorePatterns_ReturnsPatterns()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         List<string> patterns = strategy.GetAdditionalIgnorePatterns();
         Assert.Equal(2, patterns.Count);
         Assert.Contains("input/fsh/fsh-index.txt", patterns);
@@ -218,7 +218,7 @@ public class StubStrategyTests : IDisposable
     public void Incubator_Validate_TrueWhenSushiConfig()
     {
         File.WriteAllText(Path.Combine(_tempDir, "sushi-config.yaml"), "id: test");
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         Assert.True(strategy.Validate("HL7/test", _tempDir));
     }
 
@@ -226,21 +226,21 @@ public class StubStrategyTests : IDisposable
     public void Incubator_Validate_TrueWhenIgIni()
     {
         File.WriteAllText(Path.Combine(_tempDir, "ig.ini"), "[ig]");
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         Assert.True(strategy.Validate("HL7/test", _tempDir));
     }
 
     [Fact]
     public void Incubator_Validate_FalseWhenNoMarkers()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         Assert.False(strategy.Validate("HL7/test", _tempDir));
     }
 
     [Fact]
     public void Incubator_DiscoverTags_XmlArtifacts()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         CreateFile("sushi-config.yaml", "id: test\ncanonical: http://example.org");
         CreateFile("input/resources/StructureDefinition-example.xml", "<StructureDefinition/>");
 
@@ -253,7 +253,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Incubator_DiscoverTags_CoreNamespaceTag()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         CreateFile("sushi-config.yaml", "id: test\ncanonical: http://example.org\nspecial-url-base: http://hl7.org/fhir");
         CreateFile("input/resources/StructureDefinition-example.xml", "<StructureDefinition/>");
 
@@ -265,7 +265,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Incubator_DiscoverTags_NoCoreNamespaceWithoutSpecialUrl()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         CreateFile("sushi-config.yaml", "id: test\ncanonical: http://example.org");
         CreateFile("input/resources/StructureDefinition-example.xml", "<StructureDefinition/>");
 
@@ -277,7 +277,7 @@ public class StubStrategyTests : IDisposable
     [Fact]
     public void Incubator_DiscoverTags_FshFiles()
     {
-        IncubatorStrategy strategy = new(_database, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(NullLogger<IncubatorStrategy>.Instance);
         CreateFile("sushi-config.yaml", "id: test\ncanonical: http://example.org");
         CreateFile("input/fsh/example.fsh", "Profile: TestProfile\nParent: Patient");
 

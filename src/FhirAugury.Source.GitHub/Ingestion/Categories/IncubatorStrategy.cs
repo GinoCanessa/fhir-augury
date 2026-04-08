@@ -1,6 +1,5 @@
 using FhirAugury.Parsing.Fsh;
 using FhirAugury.Source.GitHub.Configuration;
-using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion.Common;
 using Microsoft.Data.Sqlite;
@@ -14,7 +13,6 @@ namespace FhirAugury.Source.GitHub.Ingestion.Categories;
 /// and handles the special-url-base convention for core-namespace incubated resources.
 /// </summary>
 public class IncubatorStrategy(
-    GitHubDatabase database,
     ILogger<IncubatorStrategy> logger) : IRepoCategoryStrategy
 {
     public RepoCategory Category => RepoCategory.Incubator;

@@ -1,6 +1,5 @@
 using System.Xml;
 using FhirAugury.Source.GitHub.Configuration;
-using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -13,7 +12,6 @@ namespace FhirAugury.Source.GitHub.Ingestion.Categories;
 /// tags with vocabulary family, and handles retired artifacts.
 /// </summary>
 public class UtgStrategy(
-    GitHubDatabase database,
     ILogger<UtgStrategy> logger) : IRepoCategoryStrategy
 {
     public RepoCategory Category => RepoCategory.Utg;
