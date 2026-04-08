@@ -99,6 +99,7 @@ registered: four sources, the orchestrator, the MCP HTTP server, the Dev UI,
 and the CLI tool. Confluence, Dev UI, the MCP HTTP server, and the CLI use
 `WithExplicitStart()` and must be started manually from the Aspire dashboard.
 The orchestrator waits for Jira, Zulip, and GitHub to be healthy before starting.
+Zulip and GitHub also wait for Jira.
 
 ### 3. Configure credentials
 

@@ -165,7 +165,7 @@ Rebuild specific indexes on source services.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | No | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` (default: `all`) |
+| `type` | string | No | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents` (default: `all`) |
 | `sources` | string | No | Comma-separated sources to rebuild (omit for all) |
 
 ### Internal Notification
@@ -210,7 +210,7 @@ Proxy structured Zulip message query to the Zulip source service.
 The MCP HTTP server (`FhirAugury.McpHttp`) is a separate ASP.NET Core service
 that exposes MCP tools via HTTP/SSE transport. It is distinct from the
 orchestrator — it connects to the orchestrator and source services via HTTP as
-a client. The server provides 15 MCP tools across 4 categories (Unified,
+a client. The server provides 16 MCP tools across 4 categories (Unified,
 Content, Jira, Zulip).
 
 ### MCP Endpoint
@@ -218,7 +218,7 @@ Content, Jira, Zulip).
 #### `GET /mcp` (SSE) / `POST /mcp` (HTTP)
 
 The Model Context Protocol endpoint. MCP clients (VS Code, Copilot, etc.)
-connect to this endpoint to discover and invoke the 15 MCP tools.
+connect to this endpoint to discover and invoke the 16 MCP tools.
 
 **Example client configuration:**
 

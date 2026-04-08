@@ -21,7 +21,7 @@ dotnet build fhir-augury.slnx
 
 ## Solution Structure
 
-The v2 architecture uses 13 independent projects:
+The v2 architecture uses 15 independent projects:
 
 | Project | Type | Description |
 |---------|------|-------------|
@@ -30,6 +30,8 @@ The v2 architecture uses 13 independent projects:
 | `FhirAugury.Source.Zulip` | Service | Zulip source (:5170) |
 | `FhirAugury.Source.Confluence` | Service | Confluence source (:5180) |
 | `FhirAugury.Source.GitHub` | Service | GitHub source (:5190) |
+| `FhirAugury.Parsing.Fhir` | Library | FHIR XML/JSON resource parsing (StructureDefinitions, canonical artifacts) |
+| `FhirAugury.Parsing.Fsh` | Library | FSH (FHIR Shorthand) and sushi-config.yaml parsing |
 | `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150) |
 | `FhirAugury.McpStdio` | CLI Tool | MCP server for LLM agents (stdio transport) |
 | `FhirAugury.McpHttp` | Service | MCP server for LLM agents (HTTP/SSE transport, :5200) |
@@ -195,6 +197,8 @@ dotnet test fhir-augury.slnx --verbosity normal
 | `FhirAugury.Source.GitHub.Tests` | GitHub service logic |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator, cross-ref, search |
 | `FhirAugury.McpShared.Tests` | MCP tool functions |
+| `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing |
+| `FhirAugury.Parsing.Fsh.Tests` | FSH parsing |
 
 ### Test Infrastructure
 

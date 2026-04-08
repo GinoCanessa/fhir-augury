@@ -4,7 +4,7 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via HTTP to the orchestrator and source
-services, providing 15 tools across 4 categories (Unified, Content, Jira, Zulip).
+services, providing 16 tools across 4 categories (Unified, Content, Jira, Zulip).
 
 ## Setup
 
@@ -157,7 +157,7 @@ Rebuild specific indexes on source services without re-downloading data.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `sources` | string | No | all | Comma-separated sources: `jira`, `zulip`, `github`, `confluence` |
-| `indexType` | string | No | `all` | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links` |
+| `indexType` | string | No | `all` | Index type: `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents` |
 
 **Example:** Rebuild BM25 indexes on Jira:
 ```
@@ -292,9 +292,13 @@ List Jira issues with optional filters and sorting.
 | `status` | string | No | | Filter by status |
 | `workGroup` | string | No | | Filter by work group |
 
----
+### `ListJiraLabels`
 
-## Zulip Tools
+List all available Jira labels with issue counts.
+
+No parameters.
+
+---
 
 Source-specific tools that talk to the Zulip service directly.
 

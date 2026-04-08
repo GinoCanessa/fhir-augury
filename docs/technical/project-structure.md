@@ -19,10 +19,10 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (13 projects)
+│   └── (15 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
-    └── (7 test projects)
+    └── (9 test projects)
 ```
 
 ## API Contracts
@@ -109,6 +109,48 @@ Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 GitHub source service (HTTP :5190). Same internal structure as
 Source.Jira: `Api/`, `Cache/`, `Configuration/`, `Database/`, `Indexing/`,
 `Ingestion/`, `Workers/`, `Program.cs`, `appsettings.json`, `Dockerfile`.
+Additionally includes FHIR artifact parsing (`StructureDefinitionIndexer`,
+`CanonicalArtifactIndexer`, `FshArtifactIndexer`) and file content indexing
+(`GitHubFileContentIndexer`, `GitHubRepoCloner`) using the Parsing.Fhir and
+Parsing.Fsh libraries.
+
+### `FhirAugury.Parsing.Fhir`
+
+FHIR resource parsing library using the Firely .NET SDK (Hl7.Fhir.R5).
+
+```
+FhirAugury.Parsing.Fhir/
+├── FhirContentParser.cs          # TryParseStructureDefinition, TryParseCanonicalArtifact,
+│                                 #   TryParseBundle — auto-detects XML/JSON format
+├── ArtifactClassifier.cs         # Classifies SDs by kind/derivation/type → PrimitiveType,
+│                                 #   LogicalModel, Extension, ComplexType, Profile, Resource
+├── Models/
+│   ├── StructureDefinitionInfo.cs # Full SD metadata (url, kind, elements, WG, FMM, etc.)
+│   ├── CanonicalArtifactInfo.cs   # CodeSystem, ValueSet, ConceptMap, SearchParameter, etc.
+│   ├── ElementInfo.cs             # Differential element details
+│   ├── ElementTypeInfo.cs         # Element type references
+│   └── ExtensionContext.cs        # Extension context metadata
+└── FhirAugury.Parsing.Fhir.csproj
+```
+
+### `FhirAugury.Parsing.Fsh`
+
+FSH (FHIR Shorthand) parsing library using ANTLR4 via the fsh-processor.
+
+```
+FhirAugury.Parsing.Fsh/
+├── FshContentParser.cs           # ParseFile/ParseContent — extracts Profile, Extension,
+│                                 #   Resource, Logical, CodeSystem, ValueSet, Instance defs;
+│                                 #   ConstructCanonicalUrl — builds URLs from def + config
+├── SushiConfigParser.cs          # TryParse — line-by-line YAML parser for sushi-config.yaml;
+│                                 #   extracts id, canonical, name, fhirVersion, resources
+├── Models/
+│   ├── FshDefinitionInfo.cs      # Kind, Name, Id, Parent, Title, Description, URL, etc.
+│   ├── FshDefinitionKind.cs      # Enum: Profile, Extension, Resource, Logical, CodeSystem,
+│   │                             #   ValueSet, DefinitionalInstance
+│   └── SushiConfig.cs            # Id, Canonical, Name, FhirVersion, PathResource, etc.
+└── FhirAugury.Parsing.Fsh.csproj
+```
 
 ### `FhirAugury.Orchestrator`
 
@@ -131,7 +173,7 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing 15 tool implementations in 4 tool classes.
+Shared MCP library containing 16 tool implementations in 4 tool classes.
 
 ```
 FhirAugury.McpShared/
@@ -249,6 +291,8 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | `FhirAugury.Source.GitHub.Tests` | GitHub source service: ingestion, indexing, HTTP API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
 | `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute) |
+| `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing: StructureDefinitions, canonical artifacts |
+| `FhirAugury.Parsing.Fsh.Tests` | FSH parsing: definitions, sushi-config, canonical URL construction |
 
 ## Build Configuration
 

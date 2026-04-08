@@ -243,14 +243,13 @@ HTML content is stripped to plain text via `TextSanitizer.StripHtml`.
 
 **Database tables:** `zulip_streams` (ZulipStreamId unique),
 `zulip_messages` (ZulipMessageId unique, StreamId FK), `zulip_messages_fts`
-(FTS5), `zulip_message_tickets` (message→Jira key links),
-`zulip_thread_tickets` (thread→Jira key aggregations with reference counts),
+(FTS5), `zulip_thread_tickets` (thread→Jira key aggregations with reference counts),
 `index_keywords`, `index_corpus`, `index_doc_stats`, `sync_state`,
 `ingestion_log`.
 
 **Jira ticket indexing:** After each ingestion (full, incremental, or cache
 rebuild), the `ZulipTicketIndexer` scans all messages for Jira ticket references
-(e.g., `FHIR-43499`, Jira URLs) and populates the message-ticket and
+(e.g., `FHIR-43499`, Jira URLs) and populates the thread-ticket link table.
 thread-ticket link tables. A standalone re-index can be triggered on startup via
 the `ReindexTicketsOnStartup` configuration option without requiring a full
 cache rebuild.
@@ -346,20 +345,54 @@ executable path, query limits, hostname, and process timeout.
 The GitHub Issues API returns both issues and PRs; the mapper detects PRs via
 the `pull_request` field.
 
+**FHIR artifact indexing:**
+
+The GitHub source also clones tracked repositories and parses their file
+contents to extract FHIR artifacts using the `FhirAugury.Parsing.Fhir` and
+`FhirAugury.Parsing.Fsh` libraries:
+
+- `GitHubStructureDefinitionRecord` — Indexed StructureDefinitions with url,
+  kind, derivation, artifact class, elements, work group, maturity level
+- `GitHubSdElementRecord` — Differential elements for each StructureDefinition
+- `GitHubCanonicalArtifactRecord` — CodeSystem, ValueSet, ConceptMap,
+  SearchParameter, etc. with url, version, status, and format (xml/json/fsh)
+- `GitHubFileContentRecord` — Indexed file contents from cloned repositories
+- `GitHubFileTagRecord` — File tags with weighted categories for search boosting
+- `GitHubSpecFileMapRecord` — Mapping between FHIR artifacts and file paths
+
+**Repository categories:** Repositories are organized by category, each with a
+specialized ingestion strategy:
+
+| Category | Strategy | Default Repos |
+|----------|----------|--------------|
+| FhirCore | `FhirCoreStrategy` | `HL7/fhir` |
+| Utg | `UtgStrategy` | `HL7/UTG` |
+| FhirExtensionsPack | `FhirExtensionsPackStrategy` | `HL7/fhir-extensions` |
+| Incubator | `IncubatorStrategy` | (configurable) |
+| Ig | `IgStrategy` | (configurable) |
+
 **Database tables:** `github_repos` (FullName unique), `github_issues`
 (UniqueKey unique, IsPullRequest, RepoFullName), `github_comments` (IssueId FK,
 IsReviewComment), `github_commits` (Sha, RepoFullName, Message, Body, Author, etc.),
 `github_commit_files` (CommitSha, FilePath, ChangeType), `github_commit_pr_links`
 (CommitSha, PrNumber, RepoFullName), `github_spec_file_map` (RepoFullName, ArtifactKey,
-FilePath, MapType), `github_issues_fts` (FTS5), `github_comments_fts` (FTS5),
-`github_commits_fts` (FTS5), `index_keywords`, `index_corpus`, `index_doc_stats`,
+FilePath, MapType), `github_structure_definitions` (Url, Name, Kind, ArtifactClass,
+Elements via github_sd_elements), `github_canonical_artifacts` (ResourceType, Url, Name,
+Format), `github_file_contents` (RepoFullName, FilePath, ContentText),
+`github_file_tags` (RepoFullName, FilePath, TagCategory, Weight),
+`github_issues_fts` (FTS5), `github_comments_fts` (FTS5),
+`github_commits_fts` (FTS5), `github_file_contents_fts` (FTS5),
+`github_structure_definitions_fts` (FTS5), `github_canonical_artifacts_fts` (FTS5),
+`index_keywords`, `index_corpus`, `index_doc_stats`,
 `sync_state`, `ingestion_log`.
 
 **Incremental sync:** Uses GitHub's `since` query parameter.
 
 **Pagination:** Page-based. Continues while returned array length ≥ PageSize.
 
-**Default repositories:** `["HL7/fhir"]`
+**Default repositories:** `HL7/fhir` (FhirCore), `HL7/UTG` (Utg),
+`HL7/fhir-extensions` (FhirExtensionsPack), plus configurable Incubator and IG
+repositories.
 
 **Cross-reference tables:** Each source database also maintains xref tables for
 references found in its content pointing to other sources (e.g., `xref_jira`,
@@ -451,5 +484,5 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 | **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |
 | **HTTP timeout** | 5 min | 10 min | 5 min | 5 min |
-| **FTS5 tables** | issues + comments | messages | pages | issues + comments + commits |
+| **FTS5 tables** | issues + comments | messages | pages | issues + comments + commits + file contents + structure definitions + canonical artifacts |
 | **Own database** | `jira.db` | `zulip.db` | `confluence.db` | `github.db` |

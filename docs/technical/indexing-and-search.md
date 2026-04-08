@@ -42,9 +42,12 @@ virtual tables for fast text search within its local database.
 | Jira | `jira_comments_fts` | `jira_comments` | BodyPlain |
 | Zulip | `zulip_messages_fts` | `zulip_messages` | ContentPlain, Topic |
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
-| GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
+| GitHub | `github_issues_fts` | `github_issues` | Title, Body |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
-| GitHub | `github_commits_fts` | `github_commits` | Message |
+| GitHub | `github_commits_fts` | `github_commits` | Message, Body |
+| GitHub | `github_file_contents_fts` | `github_file_contents` | ContentText, FilePath |
+| GitHub | `github_structure_definitions_fts` | `github_structure_definitions` | Name, Title, Description |
+| GitHub | `github_canonical_artifacts_fts` | `github_canonical_artifacts` | Name, Title, Description, Url |
 
 ### FTS5 Table Creation
 

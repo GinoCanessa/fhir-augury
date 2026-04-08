@@ -208,9 +208,11 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
 ```json
 {
   "GitHub": {
-    "RepoMode": "core",
-    "Repositories": ["HL7/fhir"],
-    "AdditionalRepositories": [],
+    "FhirCoreRepositories": ["HL7/fhir"],
+    "UtgRepositories": ["HL7/UTG"],
+    "FhirExtensionsPackRepositories": ["HL7/fhir-extensions"],
+    "IncubatorRepositories": [],
+    "IgRepositories": [],
     "ManualLinks": [],
     "Auth": {
       "Token": null,
@@ -221,8 +223,7 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00",
-      "MaxConcurrentProcesses": 1
+      "ProcessTimeout": "00:05:00"
     },
     "CachePath": "./cache",
     "DatabasePath": "./data/github.db",
@@ -247,6 +248,13 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
       "SourcePath": "./cache/dictionary",
       "DatabasePath": "./data/dictionary.db",
       "ForceRebuild": false
+    },
+    "FileContentIndexing": {
+      "Enabled": true,
+      "MaxFileSizeBytes": 524288,
+      "MaxExtractedTextLength": 65536,
+      "MaxFilesPerRepo": 50000,
+      "IgnorePatterns": ["**/test-data/**", "**/testdata/**", "**/*.generated.*", "**/vendor/**", "**/third_party/**"]
     }
   }
 }
@@ -277,7 +285,29 @@ The `GhCli` section configures the `gh` CLI provider:
 | `GhCli.Limit` | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | `00:05:00` | Timeout for gh CLI processes |
-| `GhCli.MaxConcurrentProcesses` | `1` | Maximum concurrent gh CLI processes |
+
+**Repository categories:** Repositories are organized by category, each with
+its own ingestion strategy:
+
+| Category | Default | Description |
+|----------|---------|-------------|
+| `FhirCoreRepositories` | `["HL7/fhir"]` | Core FHIR specification |
+| `UtgRepositories` | `["HL7/UTG"]` | Unified Terminology Governance |
+| `FhirExtensionsPackRepositories` | `["HL7/fhir-extensions"]` | FHIR Extensions Pack |
+| `IncubatorRepositories` | `[]` | Incubator projects |
+| `IgRepositories` | `[]` | Implementation Guides |
+
+**File content indexing:** The `FileContentIndexing` section controls cloning
+repositories and indexing file contents, FHIR StructureDefinitions, canonical
+artifacts, and FSH definitions:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `FileContentIndexing.Enabled` | `true` | Enable file content indexing |
+| `FileContentIndexing.MaxFileSizeBytes` | `524288` | Maximum file size (512 KB) |
+| `FileContentIndexing.MaxExtractedTextLength` | `65536` | Max extracted text per file (64 KB) |
+| `FileContentIndexing.MaxFilesPerRepo` | `50000` | Max files to index per repo |
+| `FileContentIndexing.IgnorePatterns` | (see config) | Gitignore-style patterns to exclude |
 
 ---
 

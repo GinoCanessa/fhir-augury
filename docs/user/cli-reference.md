@@ -206,7 +206,7 @@ Returns both outgoing and incoming cross-references for the specified item.
 
 **Actions:** `trigger`, `status`, `rebuild`, `index`
 
-**Index types:** `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`
+**Index types:** `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents`
 
 ### `services` — Service management
 

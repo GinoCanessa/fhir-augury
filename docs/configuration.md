@@ -279,17 +279,18 @@ pattern.
 ```json
 {
   "GitHub": {
-    "RepoMode": "core",
-    "Repositories": ["HL7/fhir"],
-    "AdditionalRepositories": [],
+    "FhirCoreRepositories": ["HL7/fhir"],
+    "UtgRepositories": ["HL7/UTG"],
+    "FhirExtensionsPackRepositories": ["HL7/fhir-extensions"],
+    "IncubatorRepositories": [],
+    "IgRepositories": [],
     "ManualLinks": [],
     "Provider": "gh-cli",
     "GhCli": {
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00",
-      "MaxConcurrentProcesses": 1
+      "ProcessTimeout": "00:05:00"
     },
     "Auth": {
       "Token": null,
@@ -350,16 +351,17 @@ pattern.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `RepoMode` | string | `core` | Repository selection mode |
-| `Repositories` | string[] | `["HL7/fhir"]` | Repositories to track |
-| `AdditionalRepositories` | string[] | `[]` | Extra repositories |
-| `ManualLinks` | object[] | `[]` | Manual link overrides |
+| `FhirCoreRepositories` | string[] | `["HL7/fhir"]` | Core FHIR specification repositories |
+| `UtgRepositories` | string[] | `["HL7/UTG"]` | Unified Terminology Governance repositories |
+| `FhirExtensionsPackRepositories` | string[] | `["HL7/fhir-extensions"]` | FHIR Extensions Pack repositories |
+| `IncubatorRepositories` | string[] | `[]` | Incubator project repositories |
+| `IgRepositories` | string[] | `[]` | Implementation Guide repositories |
+| `ManualLinks` | string[] | `[]` | Manual cross-reference link overrides |
 | `Provider` | string | `gh-cli` | Data provider: `rest` (REST API) or `gh-cli` (GitHub CLI) |
 | `GhCli.ExecutablePath` | string | `gh` | Path to the gh CLI executable |
 | `GhCli.Limit` | int | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | string? | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | TimeSpan | `00:05:00` | Timeout for gh CLI processes |
-| `GhCli.MaxConcurrentProcesses` | int | `1` | Maximum concurrent gh CLI processes |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
 | `CachePath` | string | `./cache` | File-system cache directory |
@@ -389,7 +391,7 @@ pattern.
 | `FileContentIndexing.AdditionalSkipExtensions` | string[] | `[]` | Additional file extensions to skip |
 | `FileContentIndexing.AdditionalSkipDirectories` | string[] | `[]` | Additional directory names to skip |
 | `FileContentIndexing.IncludeOnlyPaths` | string[] | `[]` | When non-empty, only index files under these paths |
-| `FileContentIndexing.IgnorePatterns` | string[] | (defaults) | Gitignore-style glob patterns for files/directories to exclude. Merged with `.augury-index-ignore` in the repo root. |
+| `FileContentIndexing.IgnorePatterns` | string[] | (defaults) | Gitignore-style glob patterns for files/directories to exclude |
 
 ---
 

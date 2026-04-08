@@ -364,15 +364,6 @@ Index: `(Name)`
 Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 `(StreamName, Topic)`
 
-#### `zulip_message_tickets` — Per-message Jira references
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `ZulipMessageId` | INTEGER | Zulip message ID |
-| `JiraKey` | TEXT | Referenced Jira issue key |
-| `Context` | TEXT? | Surrounding text context |
-
 #### `zulip_thread_tickets` — Aggregated Jira references per thread
 
 | Column | Type | Description |
@@ -561,7 +552,98 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `FilePath` | TEXT | File path in repository |
 | `MapType` | TEXT | Mapping type |
 
-#### FTS5 tables: `github_issues_fts`, `github_comments_fts`, `github_commits_fts`
+#### `github_structure_definitions` — Parsed FHIR StructureDefinitions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `FilePath` | TEXT | Source file path |
+| `Url` | TEXT | Canonical URL |
+| `Name` | TEXT | SD name |
+| `Title` | TEXT? | Human-readable title |
+| `Status` | TEXT? | Publication status |
+| `ArtifactClass` | TEXT | Classification (Profile, Extension, Resource, etc.) |
+| `Kind` | TEXT | SD kind (resource, complex-type, etc.) |
+| `IsAbstract` | INTEGER | Whether abstract |
+| `FhirType` | TEXT? | FHIR type name |
+| `BaseDefinition` | TEXT? | Base SD URL |
+| `Derivation` | TEXT? | Derivation (specialization, constraint) |
+| `FhirVersion` | TEXT? | FHIR version |
+| `Description` | TEXT? | Description |
+| `Publisher` | TEXT? | Publisher |
+| `WorkGroup` | TEXT? | HL7 work group |
+| `FhirMaturity` | TEXT? | Maturity level (FMM) |
+| `StandardsStatus` | TEXT? | Standards status |
+| `Category` | TEXT? | Category |
+| `Contexts` | TEXT? | Extension contexts (JSON) |
+
+#### `github_sd_elements` — StructureDefinition differential elements
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `StructureDefinitionId` | INTEGER FK | FK → `github_structure_definitions` |
+| `ElementId` | TEXT? | Element ID |
+| `Path` | TEXT | Element path (e.g., `Patient.name`) |
+| `Name` | TEXT? | Element name |
+| `Short` | TEXT? | Short description |
+| `Definition` | TEXT? | Full definition |
+| `MinCardinality` | INTEGER? | Minimum cardinality |
+| `MaxCardinality` | TEXT? | Maximum cardinality |
+| `Types` | TEXT? | Allowed types (JSON) |
+| `FieldOrder` | INTEGER | Order within the SD |
+
+#### `github_canonical_artifacts` — Parsed canonical FHIR artifacts
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `FilePath` | TEXT | Source file path |
+| `ResourceType` | TEXT | Resource type (CodeSystem, ValueSet, etc.) |
+| `Url` | TEXT | Canonical URL |
+| `Name` | TEXT? | Artifact name |
+| `Title` | TEXT? | Human-readable title |
+| `Version` | TEXT? | Version |
+| `Status` | TEXT? | Publication status |
+| `Description` | TEXT? | Description |
+| `Publisher` | TEXT? | Publisher |
+| `Format` | TEXT | Source format (xml, json, fsh) |
+
+#### `github_file_contents` — Indexed repository file contents
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `FilePath` | TEXT | File path relative to repo root |
+| `FileExtension` | TEXT | File extension |
+| `ParserType` | TEXT | Parser used for extraction |
+| `ContentText` | TEXT | Extracted text content |
+| `ContentLength` | INTEGER | Original file size |
+| `ExtractedLength` | INTEGER | Extracted text length |
+| `LastCommitSha` | TEXT? | SHA of last commit touching this file |
+| `LastModifiedAt` | TEXT? | Last modification timestamp |
+
+#### `github_file_tags` — File tags for search boosting
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT | Repository full name |
+| `FilePath` | TEXT | File path |
+| `TagCategory` | TEXT | Tag category |
+| `TagName` | TEXT | Tag name |
+| `TagModifier` | TEXT? | Tag modifier |
+| `Weight` | REAL | Tag weight for search scoring |
+
+#### FTS5 tables
+
+`github_issues_fts`, `github_comments_fts`, `github_commits_fts`,
+`github_file_contents_fts`, `github_structure_definitions_fts`,
+`github_canonical_artifacts_fts`
 
 ---
 
@@ -594,9 +676,12 @@ Each source service creates its FTS5 virtual tables using
 | Jira | `jira_comments_fts` | `jira_comments` | BodyPlain |
 | Zulip | `zulip_messages_fts` | `zulip_messages` | ContentPlain, Topic |
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
-| GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
+| GitHub | `github_issues_fts` | `github_issues` | Title, Body |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
 | GitHub | `github_commits_fts` | `github_commits` | Message, Body |
+| GitHub | `github_file_contents_fts` | `github_file_contents` | ContentText, FilePath |
+| GitHub | `github_structure_definitions_fts` | `github_structure_definitions` | Name, Title, Description |
+| GitHub | `github_canonical_artifacts_fts` | `github_canonical_artifacts` | Name, Title, Description, Url |
 
 See [Indexing and Search](indexing-and-search.md) for details on how FTS5
 triggers work, how queries are processed, and how the Orchestrator aggregates
@@ -663,7 +748,7 @@ Source.Jira (jira.db)
 
 Source.Zulip (zulip.db)
 ├── zulip_streams, zulip_messages       — Content tables
-├── zulip_message_tickets, zulip_thread_tickets — Jira reference tables
+├── zulip_thread_tickets — Jira reference tables
 ├── zulip_messages_fts                  — FTS5 virtual table (content-synced)
 ├── zulip_keywords, zulip_corpus_keywords, zulip_doc_stats — BM25 index
 └── zulip_sync_state, ingestion_log     — Sync infrastructure
@@ -679,7 +764,12 @@ Source.GitHub (github.db)
 ├── github_repos, github_issues, github_comments — Content tables
 ├── github_commits, github_commit_files, github_commit_pr_links — Commit tables
 ├── github_jira_refs, github_spec_file_maps — Reference/mapping tables
+├── github_structure_definitions, github_sd_elements — FHIR StructureDefinition data
+├── github_canonical_artifacts — Canonical FHIR artifacts (CodeSystem, ValueSet, etc.)
+├── github_file_contents, github_file_tags — Repository file contents and tags
 ├── github_issues_fts, github_comments_fts, github_commits_fts — FTS5 virtual tables
+├── github_file_contents_fts, github_structure_definitions_fts — FTS5 virtual tables
+├── github_canonical_artifacts_fts — FTS5 virtual table
 ├── github_keywords, github_corpus_keywords, github_doc_stats — BM25 index
 └── github_sync_state, ingestion_log    — Sync infrastructure
 

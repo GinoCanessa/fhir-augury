@@ -96,6 +96,8 @@ dotnet test fhir-augury.slnx --collect:"XPlat Code Coverage"
 | `FhirAugury.Source.GitHub.Tests` | GitHub source: ingestion, indexing, HTTP API |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator: unified search, cross-refs, related items |
 | `FhirAugury.McpShared.Tests` | MCP server tool functions (xUnit + NSubstitute) |
+| `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing (StructureDefinitions, canonical artifacts) |
+| `FhirAugury.Parsing.Fsh.Tests` | FSH parsing (definitions, sushi-config, canonical URLs) |
 
 ### Test Infrastructure
 

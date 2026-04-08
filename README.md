@@ -94,6 +94,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **Related items** — find similar content using BM25 keyword vectors
 - **FHIR-aware tokenization** — recognizes FHIR paths, operations, and terms
 - **Independent services** — each source runs standalone with its own database
+- **FHIR artifact parsing** — indexes StructureDefinitions, canonical artifacts, and FSH definitions from cloned repositories
 - **MCP servers** — stdio and HTTP/SSE transports for integration with LLM agents
 - **CLI tool** for searching and managing services via HTTP
 - **Docker Compose** deployment with profiles for subset stacks
@@ -184,8 +185,10 @@ docker compose --profile jira-only up -d   # Single source
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
-| GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits ingestion |
+| GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
 | Common | `src/FhirAugury.Common` | Shared types, API contracts, utilities |
+| Parsing (FHIR) | `src/FhirAugury.Parsing.Fhir` | FHIR XML/JSON StructureDefinition and canonical artifact parsing |
+| Parsing (FSH) | `src/FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) and sushi-config.yaml parsing |
 | MCP Server (stdio) | `src/FhirAugury.McpStdio` | MCP server for LLM agents (stdio transport, e.g., Claude Desktop) |
 | MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
 | MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and HTTP client registration |
