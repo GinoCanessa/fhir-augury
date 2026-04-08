@@ -37,6 +37,7 @@ public class GitHubDatabase : SourceDatabase
         GitHubFileContentRecord.CreateTable(connection);
         GitHubFileTagRecord.CreateTable(connection);
         GitHubStructureDefinitionRecord.CreateTable(connection);
+        GitHubSdElementRecord.CreateTable(connection);
         GitHubCanonicalArtifactRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
@@ -151,6 +152,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_commits_fts;
             DROP TABLE IF EXISTS github_file_contents_fts;
             DROP TABLE IF EXISTS github_structure_definitions_fts;
+            DROP TABLE IF EXISTS github_sd_elements;
             DROP TABLE IF EXISTS github_structure_definitions;
             DROP TABLE IF EXISTS github_canonical_artifacts_fts;
             DROP TABLE IF EXISTS github_repos;

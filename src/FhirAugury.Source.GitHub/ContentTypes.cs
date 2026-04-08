@@ -8,4 +8,5 @@ public static class ContentTypes
     public const string File = "file";
     public const string StructureDefinition = "structuredefinition";
     public const string CanonicalArtifact = "canonical-artifact";
+    public const string Element = "element";
 }

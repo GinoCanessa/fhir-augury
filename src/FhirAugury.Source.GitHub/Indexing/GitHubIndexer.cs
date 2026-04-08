@@ -189,6 +189,25 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
             }
         }
 
+        List<GitHubSdElementRecord> elements = GitHubSdElementRecord.SelectList(connection);
+        foreach (GitHubSdElementRecord element in elements)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = string.Join(" ",
+                new[] { element.Name, element.Short, element.Definition, element.Comment }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(new()
+                {
+                    ContentType = ContentTypes.Element,
+                    SourceId = $"{element.RepoFullName}:{element.Path}",
+                    Text = text,
+                });
+            }
+        }
+
         return documents;
     }
 

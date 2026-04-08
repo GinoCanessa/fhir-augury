@@ -57,14 +57,31 @@ public class ArtifactFileMapper(GitHubDatabase database, ILogger<ArtifactFileMap
 
         if (!string.IsNullOrEmpty(elementPath))
         {
+            // Precise resolution via github_sd_elements
             using SqliteCommand cmd = new SqliteCommand(
-                "SELECT FilePath FROM github_spec_file_map WHERE RepoFullName = @repo AND FilePath LIKE @pattern",
+                @"SELECT DISTINCT sd.FilePath
+                  FROM github_sd_elements e
+                  JOIN github_structure_definitions sd ON e.StructureDefinitionId = sd.Id
+                  WHERE sd.RepoFullName = @repo AND e.Path = @path",
                 connection);
             cmd.Parameters.AddWithValue("@repo", repoFullName);
-            cmd.Parameters.AddWithValue("@pattern", $"%{elementPath}%");
+            cmd.Parameters.AddWithValue("@path", elementPath);
             using SqliteDataReader reader = cmd.ExecuteReader();
             while (reader.Read())
                 paths.Add(reader.GetString(0));
+
+            // Fallback to LIKE-based search if no precise match
+            if (paths.Count == 0)
+            {
+                using SqliteCommand fallbackCmd = new SqliteCommand(
+                    "SELECT FilePath FROM github_spec_file_map WHERE RepoFullName = @repo AND FilePath LIKE @pattern",
+                    connection);
+                fallbackCmd.Parameters.AddWithValue("@repo", repoFullName);
+                fallbackCmd.Parameters.AddWithValue("@pattern", $"%{elementPath}%");
+                using SqliteDataReader fallbackReader = fallbackCmd.ExecuteReader();
+                while (fallbackReader.Read())
+                    paths.Add(fallbackReader.GetString(0));
+            }
         }
 
         return paths.Distinct().ToList();
