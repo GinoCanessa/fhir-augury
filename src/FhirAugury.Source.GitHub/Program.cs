@@ -105,6 +105,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILogger<GitHubIndexer>>());
 });
 builder.Services.AddSingleton<ArtifactFileMapper>();
+builder.Services.AddSingleton<CanonicalArtifactIndexer>();
+builder.Services.AddSingleton<StructureDefinitionIndexer>();
 
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));

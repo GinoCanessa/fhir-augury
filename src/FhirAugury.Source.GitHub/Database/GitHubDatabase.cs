@@ -36,11 +36,15 @@ public class GitHubDatabase : SourceDatabase
         GitHubDocStatsRecord.CreateTable(connection);
         GitHubFileContentRecord.CreateTable(connection);
         GitHubFileTagRecord.CreateTable(connection);
+        GitHubStructureDefinitionRecord.CreateTable(connection);
+        GitHubCanonicalArtifactRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
         CreateGitHubCommitsFts(connection);
         CreateGitHubFileContentsFts(connection);
+        CreateGitHubStructureDefinitionsFts(connection);
+        CreateGitHubCanonicalArtifactsFts(connection);
     }
 
     private void CreateGitHubIssuesFts(SqliteConnection connection)
@@ -87,6 +91,28 @@ public class GitHubDatabase : SourceDatabase
             tokenizer: _ftsTokenizer);
     }
 
+    private void CreateGitHubStructureDefinitionsFts(SqliteConnection connection)
+    {
+        CreateFts5Table(
+            connection,
+            ftsTableName: "github_structure_definitions_fts",
+            contentTable: "github_structure_definitions",
+            contentRowId: "Id",
+            indexedColumns: ["Name", "Title", "Description"],
+            tokenizer: _ftsTokenizer);
+    }
+
+    private void CreateGitHubCanonicalArtifactsFts(SqliteConnection connection)
+    {
+        CreateFts5Table(
+            connection,
+            ftsTableName: "github_canonical_artifacts_fts",
+            contentTable: "github_canonical_artifacts",
+            contentRowId: "Id",
+            indexedColumns: ["Name", "Title", "Description", "Url"],
+            tokenizer: _ftsTokenizer);
+    }
+
     /// <summary>Rebuilds all FTS5 indexes from their content tables.</summary>
     public void RebuildFtsIndexes()
     {
@@ -95,6 +121,8 @@ public class GitHubDatabase : SourceDatabase
         RebuildFts5(connection, "github_comments_fts");
         RebuildFts5(connection, "github_commits_fts");
         RebuildFts5(connection, "github_file_contents_fts");
+        RebuildFts5(connection, "github_structure_definitions_fts");
+        RebuildFts5(connection, "github_canonical_artifacts_fts");
     }
 
     /// <summary>
@@ -122,6 +150,9 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_comments_fts;
             DROP TABLE IF EXISTS github_commits_fts;
             DROP TABLE IF EXISTS github_file_contents_fts;
+            DROP TABLE IF EXISTS github_structure_definitions_fts;
+            DROP TABLE IF EXISTS github_structure_definitions;
+            DROP TABLE IF EXISTS github_canonical_artifacts_fts;
             DROP TABLE IF EXISTS github_repos;
             DROP TABLE IF EXISTS github_issues;
             DROP TABLE IF EXISTS github_comments;
@@ -135,6 +166,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_spec_file_map;
             DROP TABLE IF EXISTS github_file_contents;
             DROP TABLE IF EXISTS github_file_tags;
+            DROP TABLE IF EXISTS github_canonical_artifacts;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

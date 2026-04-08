@@ -84,8 +84,9 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
         List<GitHubCommentRecord> comments = GitHubCommentRecord.SelectList(connection);
         List<GitHubCommitRecord> commits = GitHubCommitRecord.SelectList(connection);
         List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection);
+        List<GitHubCanonicalArtifactRecord> canonicalArtifacts = GitHubCanonicalArtifactRecord.SelectList(connection);
 
-        List<IndexContent> documents = new(issues.Count + comments.Count + commits.Count + fileContents.Count);
+        List<IndexContent> documents = new(issues.Count + comments.Count + commits.Count + fileContents.Count + canonicalArtifacts.Count);
 
         foreach (GitHubIssueRecord issue in issues)
         {
@@ -147,6 +148,43 @@ public class GitHubIndexer(GitHubDatabase database, AuxiliaryDatabase auxiliaryD
                     ContentType = ContentTypes.File,
                     SourceId = $"{file.RepoFullName}:{file.FilePath}",
                     Text = file.ContentText,
+                });
+            }
+        }
+
+        foreach (GitHubCanonicalArtifactRecord artifact in canonicalArtifacts)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = string.Join(" ",
+                new[] { artifact.ResourceType, artifact.Name, artifact.Title, artifact.Description }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(new()
+                {
+                    ContentType = ContentTypes.CanonicalArtifact,
+                    SourceId = $"{artifact.RepoFullName}:{artifact.FilePath}",
+                    Text = text,
+                });
+            }
+        }
+
+        List<GitHubStructureDefinitionRecord> sds = GitHubStructureDefinitionRecord.SelectList(connection);
+        foreach (GitHubStructureDefinitionRecord sd in sds)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = string.Join(" ",
+                new[] { sd.Name, sd.Title, sd.Description }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(new()
+                {
+                    ContentType = ContentTypes.StructureDefinition,
+                    SourceId = $"{sd.RepoFullName}:{sd.FilePath}",
+                    Text = text,
                 });
             }
         }

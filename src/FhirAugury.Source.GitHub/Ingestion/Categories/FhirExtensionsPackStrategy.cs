@@ -41,4 +41,44 @@ public class FhirExtensionsPackStrategy(
     {
         artifactFileMapper.BuildMappings(repoFullName, clonePath, ct);
     }
+
+    public IReadOnlyList<string> DiscoverCanonicalArtifactFiles(
+        string repoFullName, string clonePath, CancellationToken ct)
+    {
+        string defsDir = Path.Combine(clonePath, "input", "definitions");
+        if (!Directory.Exists(defsDir))
+            return [];
+
+        List<string> files = [];
+        string[] prefixes = ["CodeSystem-", "ValueSet-", "SearchParameter-", "ConceptMap-"];
+
+        foreach (string xmlFile in Directory.EnumerateFiles(defsDir, "*.xml", SearchOption.AllDirectories))
+        {
+            string fileName = Path.GetFileName(xmlFile);
+            if (prefixes.Any(p => fileName.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            {
+                files.Add(xmlFile);
+            }
+        }
+
+        logger.LogInformation("Discovered {Count} canonical artifact files in Extensions Pack", files.Count);
+        return files;
+    }
+
+    public List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)
+    {
+        List<string> sdFiles = [];
+        string definitionsDir = Path.Combine(clonePath, "input", "definitions");
+        if (!Directory.Exists(definitionsDir))
+            return sdFiles;
+
+        foreach (string file in Directory.GetFiles(definitionsDir, "StructureDefinition-*.xml", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            sdFiles.Add(file);
+        }
+
+        logger.LogDebug("Discovered {Count} StructureDefinition files for {Repo}", sdFiles.Count, repoFullName);
+        return sdFiles;
+    }
 }

@@ -123,6 +123,61 @@ public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryS
         logger.LogInformation("Built {Count} artifact-file mappings for {Repo}", mapCount, repoFullName);
     }
 
+    public List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)
+    {
+        List<string> sdFiles = [];
+        string sourceDir = Path.Combine(clonePath, "source");
+        if (!Directory.Exists(sourceDir))
+            return sdFiles;
+
+        foreach (string file in Directory.GetFiles(sourceDir, "structuredefinition-*.xml", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            sdFiles.Add(file);
+        }
+
+        logger.LogDebug("Discovered {Count} StructureDefinition files for {Repo}", sdFiles.Count, repoFullName);
+        return sdFiles;
+    }
+
+    public IReadOnlyList<string> DiscoverCanonicalArtifactFiles(
+        string repoFullName, string clonePath, CancellationToken ct)
+    {
+        string sourceDir = Path.Combine(clonePath, "source");
+        if (!Directory.Exists(sourceDir))
+            return [];
+
+        List<string> files = [];
+
+        string[] prefixes = ["codesystem-", "valueset-", "conceptmap-",
+            "searchparameter-", "operationdefinition-", "namingsystem-",
+            "capabilitystatement-"];
+
+        foreach (string dir in Directory.GetDirectories(sourceDir))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Individual canonical artifact files
+            foreach (string xmlFile in Directory.EnumerateFiles(dir, "*.xml"))
+            {
+                string fileName = Path.GetFileName(xmlFile).ToLowerInvariant();
+                if (prefixes.Any(p => fileName.StartsWith(p)))
+                {
+                    files.Add(xmlFile);
+                }
+            }
+
+            // Bundle files containing SearchParameters
+            foreach (string bundleFile in Directory.EnumerateFiles(dir, "bundle-*-search-params.xml"))
+            {
+                files.Add(bundleFile);
+            }
+        }
+
+        logger.LogInformation("Discovered {Count} canonical artifact files in FHIR Core", files.Count);
+        return files;
+    }
+
     private static void ScanDirectory(
         string directory,
         string clonePath,

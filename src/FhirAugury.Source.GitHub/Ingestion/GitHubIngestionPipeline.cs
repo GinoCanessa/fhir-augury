@@ -22,6 +22,8 @@ public class GitHubIngestionPipeline(
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
+    CanonicalArtifactIndexer canonicalArtifactIndexer,
+    StructureDefinitionIndexer structureDefinitionIndexer,
     IEnumerable<IRepoCategoryStrategy> categoryStrategies,
     TagWeightResolver weightResolver,
     GitHubXRefRebuilder xrefRebuilder,
@@ -179,6 +181,28 @@ public class GitHubIngestionPipeline(
                     {
                         using SqliteConnection connection = database.OpenConnection();
                         strategy.BuildArtifactMappings(repo, clonePath, connection, ct);
+                    }
+
+                    _currentStatus = $"indexing_canonical_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        IReadOnlyList<string> artifactFiles = strategy.DiscoverCanonicalArtifactFiles(repo, clonePath, ct);
+                        if (artifactFiles.Count > 0)
+                        {
+                            int indexed = canonicalArtifactIndexer.IndexFiles(repo, clonePath, artifactFiles, ct);
+                            logger.LogInformation("Indexed {Count} canonical artifacts for {Repo}", indexed, repo);
+                        }
+                    }
+
+                    _currentStatus = $"indexing_structure_definitions:{repo}";
+                    if (strategy is not null)
+                    {
+                        List<string> sdFiles = strategy.DiscoverStructureDefinitionFiles(repo, clonePath, ct);
+                        if (sdFiles.Count > 0)
+                        {
+                            using SqliteConnection sdConnection = database.OpenConnection();
+                            structureDefinitionIndexer.IndexStructureDefinitions(repo, sdFiles, clonePath, sdConnection, ct);
+                        }
                     }
                 }
                 catch (Exception ex)

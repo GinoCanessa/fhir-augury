@@ -41,4 +41,18 @@ public interface IRepoCategoryStrategy
     /// Builds artifact-to-file mappings specific to this category.
     /// </summary>
     void BuildArtifactMappings(string repoFullName, string clonePath, SqliteConnection connection, CancellationToken ct);
+
+    /// <summary>
+    /// Returns absolute file paths to scan for canonical artifacts (CodeSystem, ValueSet, etc.).
+    /// Default implementation returns empty list for categories that don't have canonical artifacts.
+    /// </summary>
+    IReadOnlyList<string> DiscoverCanonicalArtifactFiles(string repoFullName, string clonePath, CancellationToken ct)
+        => [];
+
+    /// <summary>
+    /// Returns absolute file paths of StructureDefinition files to parse and index.
+    /// Default implementation returns empty list for categories that don't have SDs.
+    /// </summary>
+    List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)
+        => [];
 }

@@ -43,4 +43,25 @@ public class IgStrategy(
     {
         artifactFileMapper.BuildMappings(repoFullName, clonePath, ct);
     }
+
+    public IReadOnlyList<string> DiscoverCanonicalArtifactFiles(
+        string repoFullName, string clonePath, CancellationToken ct)
+    {
+        string resourcesDir = Path.Combine(clonePath, "input", "resources");
+        if (!Directory.Exists(resourcesDir))
+            return [];
+
+        List<string> files = Directory.EnumerateFiles(resourcesDir, "*.xml", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(resourcesDir, "*.json", SearchOption.AllDirectories))
+            .ToList();
+
+        logger.LogInformation("Discovered {Count} canonical artifact files in IG {Repo}", files.Count, repoFullName);
+        return files;
+    }
+
+    public List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)
+    {
+        // IG strategy returns empty — SDs in generic IGs aren't indexed by default
+        return [];
+    }
 }
