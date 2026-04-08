@@ -69,11 +69,13 @@ public static class FhirContentParser
         {
             Hl7.Fhir.Model.Resource resource = DeserializeResource(content, format);
             if (resource is not Hl7.Fhir.Model.StructureDefinition sd)
+            {
                 return null;
+            }
 
             return new StructureDefinitionInfo(
-                Url: sd.Url,
-                Name: sd.Name,
+                Url: sd.Url ?? sd.Id ?? throw new ArgumentNullException(nameof(sd.Url)),
+                Name: sd.Name ?? sd.Id ?? throw new ArgumentNullException(nameof(sd.Name)),
                 Title: sd.Title,
                 Status: sd.Status?.ToString()?.ToLowerInvariant(),
                 Kind: sd.Kind?.ToString()?.ToLowerInvariant() ?? "",
@@ -255,8 +257,8 @@ public static class FhirContentParser
                 {
                     types.Add(new ElementTypeInfo(
                         Code: typeRef.Code ?? "",
-                        Profiles: typeRef.Profile?.ToList(),
-                        TargetProfiles: typeRef.TargetProfile?.ToList()));
+                        Profiles: typeRef.Profile?.Where(v => v is not null)!.ToList<string>(),
+                        TargetProfiles: typeRef.TargetProfile?.Where(v => v is not null)!.ToList<string>()));
                 }
             }
 
