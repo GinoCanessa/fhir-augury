@@ -300,10 +300,16 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
 
                 paramNames[index] = $"@id{index}";
                 cmd.Parameters.AddWithValue(paramNames[index], content.SourceId);
+                index++;
             }
 
             // execute last batch
-            cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+            if (index == 0)
+            {
+                continue;
+            }
+
+            cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames.AsSpan(0, index))});";
             cmd.Parameters.AddWithValue("@type", sourceType);
             cmd.ExecuteNonQuery();
         }
