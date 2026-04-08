@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace FhirAugury.Common.Text;
 
 /// <summary>A Jira ticket reference extracted from text.</summary>
-/// <param name="JiraKey">Normalized Jira key (always FHIR-N form).</param>
+/// <param name="JiraKey">Normalized Jira key (e.g. FHIR-N, BALLOT-N, PSS-N, UP-N).</param>
 /// <param name="OriginalLiteral">The literal as it appeared in the source text.</param>
 /// <param name="Context">Surrounding text for context.</param>
 public record JiraTicketMatch(string JiraKey, string OriginalLiteral, string Context);
@@ -14,26 +14,22 @@ public record JiraTicketMatch(string JiraKey, string OriginalLiteral, string Con
 /// </summary>
 public static partial class JiraTicketExtractor
 {
-    [GeneratedRegex(@"\b(FHIR-\d+)\b")]
-    private static partial Regex FhirKeyPattern();
+    /// <summary>
+    /// Unified key/hash pattern. Named groups identify the canonical project.
+    /// Matches: FHIR-N, JF-N, GF-N, J-N (→ FHIR-N) | BALLOT-N | PSS-N | UP-N
+    /// Also matches hash variants: FHIR#N, JF#N, GF#N, J#N → FHIR-N, etc.
+    /// </summary>
+    [GeneratedRegex(@"(?<!/)\b(?:(?<fhir>FHIR|JF|GF|J)|(?<ballot>BALLOT)|(?<pss>PSS)|(?<up>UP))[-#](?<num>\d+)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex UnifiedKeyHashPattern();
 
-    [GeneratedRegex(@"\b(JF-(\d+))\b")]
-    private static partial Regex JfKeyPattern();
-
-    [GeneratedRegex(@"\b(GF-(\d+))\b")]
-    private static partial Regex GfKeyPattern();
-
-    [GeneratedRegex(@"\bJ#(\d+)\b")]
-    private static partial Regex JHashPattern();
-
-    [GeneratedRegex(@"\bGF#(\d+)\b")]
-    private static partial Regex GfHashPattern();
-
-    [GeneratedRegex(@"\bFHIR#(\d+)\b")]
-    private static partial Regex FhirHashPattern();
-
-    [GeneratedRegex(@"https?://jira\.hl7\.org/browse/(FHIR-\d+)")]
-    private static partial Regex JiraUrlPattern();
+    /// <summary>
+    /// Combined URL pattern covering /browse/ and /projects/.../issues/ formats
+    /// for all supported Jira projects.
+    /// </summary>
+    [GeneratedRegex(@"https?://jira\.hl7\.org/(?:browse/|projects/(?:FHIR|BALLOT|PSS|UP)/issues/)((?:FHIR|BALLOT|PSS|UP)-\d+)",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex UnifiedUrlPattern();
 
     /// <summary>
     /// Extracts all Jira ticket references from the given text.
@@ -43,7 +39,7 @@ public static partial class JiraTicketExtractor
         => ExtractTickets(text, validJiraNumbers: null);
 
     /// <summary>
-    /// Extracts all Jira ticket references, filtering J# and GF# patterns
+    /// Extracts all Jira ticket references, filtering FHIR hash-alias patterns
     /// against an optional allowlist of valid Jira issue numbers.
     /// </summary>
     public static List<JiraTicketMatch> ExtractTickets(string text, HashSet<int>? validJiraNumbers)
@@ -53,58 +49,31 @@ public static partial class JiraTicketExtractor
         List<JiraTicketMatch> results = [];
         HashSet<string> seen = [];
 
-        // 1. Jira URLs first (to avoid double-matching with key patterns)
-        foreach (Match match in JiraUrlPattern().Matches(text))
+        // Pass 1: URL matches (canonical PREFIX-N already in capture group)
+        foreach (Match match in UnifiedUrlPattern().Matches(text))
         {
-            string jiraKey = match.Groups[1].Value;
+            string jiraKey = match.Groups[1].Value.ToUpperInvariant();
             if (seen.Add(jiraKey))
                 results.Add(new JiraTicketMatch(jiraKey, jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
 
-        // 2. FHIR-N (already canonical)
-        AddKeyMatches(results, seen, FhirKeyPattern(), text,
-            m => m.Groups[1].Value, m => m.Groups[1].Value);
-
-        // 3. JF-N → normalized FHIR-N
-        AddKeyMatches(results, seen, JfKeyPattern(), text,
-            m => $"FHIR-{m.Groups[2].Value}", m => m.Groups[1].Value);
-
-        // 4. GF-N → normalized FHIR-N
-        AddKeyMatches(results, seen, GfKeyPattern(), text,
-            m => $"FHIR-{m.Groups[2].Value}", m => m.Groups[1].Value);
-
-        // 5. Shorthand: J#N → FHIR-N
-        foreach (Match match in JHashPattern().Matches(text))
+        // Pass 2: Key/hash matches
+        foreach (Match match in UnifiedKeyHashPattern().Matches(text))
         {
-            string num = match.Groups[1].Value;
-            if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
+            string? canonicalPrefix = GetCanonicalPrefix(match);
+            if (canonicalPrefix is null) continue;
+
+            string number = match.Groups["num"].Value;
+            bool isHash = match.Value.Contains('#');
+
+            // Validation filter: only FHIR hash aliases are filtered
+            if (canonicalPrefix == "FHIR" && isHash
+                && validJiraNumbers is not null
+                && int.TryParse(number, out int n)
+                && !validJiraNumbers.Contains(n))
                 continue;
 
-            string jiraKey = $"FHIR-{num}";
-            if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
-        }
-
-        // 6. Shorthand: GF#N → FHIR-N
-        foreach (Match match in GfHashPattern().Matches(text))
-        {
-            string num = match.Groups[1].Value;
-            if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
-                continue;
-
-            string jiraKey = $"FHIR-{num}";
-            if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
-        }
-
-        // 7. Hashed: FHIR#N → FHIR-N
-        foreach (Match match in FhirHashPattern().Matches(text))
-        {
-            string num = match.Groups[1].Value;
-            if (validJiraNumbers is not null && int.TryParse(num, out int n) && !validJiraNumbers.Contains(n))
-                continue;
-
-            string jiraKey = $"FHIR-{num}";
+            string jiraKey = $"{canonicalPrefix}-{number}";
             if (seen.Add(jiraKey))
                 results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
@@ -112,19 +81,12 @@ public static partial class JiraTicketExtractor
         return results;
     }
 
-    private static void AddKeyMatches(
-        List<JiraTicketMatch> results,
-        HashSet<string> seen,
-        Regex pattern,
-        string text,
-        Func<Match, string> extractKey,
-        Func<Match, string> extractOriginal)
+    private static string? GetCanonicalPrefix(Match match)
     {
-        foreach (Match match in pattern.Matches(text))
-        {
-            string jiraKey = extractKey(match);
-            if (seen.Add(jiraKey))
-                results.Add(new JiraTicketMatch(jiraKey, extractOriginal(match), CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
-        }
+        if (match.Groups["fhir"].Success) return "FHIR";
+        if (match.Groups["ballot"].Success) return "BALLOT";
+        if (match.Groups["pss"].Success) return "PSS";
+        if (match.Groups["up"].Success) return "UP";
+        return null;
     }
 }

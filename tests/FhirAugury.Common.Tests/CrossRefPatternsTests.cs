@@ -54,4 +54,57 @@ public class CrossRefPatternsTests
         List<CrossReference> links = CrossRefPatterns.ExtractLinks("No cross references here");
         Assert.Empty(links);
     }
+
+    // ── New Project Detection via Delegation ─────────────────────────
+
+    [Theory]
+    [InlineData("See BALLOT-100 here", "BALLOT-100")]
+    [InlineData("See PSS-50 here", "PSS-50")]
+    [InlineData("See UP-796 here", "UP-796")]
+    public void ExtractLinks_FindsNewProjectKeys(string text, string expectedId)
+    {
+        List<CrossReference> links = CrossRefPatterns.ExtractLinks(text);
+        Assert.Single(links);
+        Assert.Equal("jira", links[0].TargetType);
+        Assert.Equal(expectedId, links[0].TargetId);
+    }
+
+    // ── Alias Detection via Delegation ───────────────────────────────
+
+    [Theory]
+    [InlineData("See JF-1234 here", "FHIR-1234")]
+    [InlineData("See GF#5678 here", "FHIR-5678")]
+    public void ExtractLinks_FindsJiraAliases(string text, string expectedId)
+    {
+        List<CrossReference> links = CrossRefPatterns.ExtractLinks(text);
+        Assert.Single(links);
+        Assert.Equal("jira", links[0].TargetType);
+        Assert.Equal(expectedId, links[0].TargetId);
+    }
+
+    // ── New URL Formats via Delegation ───────────────────────────────
+
+    [Theory]
+    [InlineData("See https://jira.hl7.org/projects/FHIR/issues/FHIR-54988", "FHIR-54988")]
+    [InlineData("See https://jira.hl7.org/browse/BALLOT-42", "BALLOT-42")]
+    public void ExtractLinks_FindsNewJiraUrlFormats(string url, string expectedId)
+    {
+        List<CrossReference> links = CrossRefPatterns.ExtractLinks(url);
+        Assert.Single(links);
+        Assert.Equal("jira", links[0].TargetType);
+        Assert.Equal(expectedId, links[0].TargetId);
+    }
+
+    // ── Mixed Cross-System ───────────────────────────────────────────
+
+    [Fact]
+    public void ExtractLinks_MixedCrossSystems()
+    {
+        List<CrossReference> links = CrossRefPatterns.ExtractLinks(
+            "FHIR-100 and https://github.com/HL7/fhir/issues/42 and BALLOT-200");
+
+        Assert.Equal(3, links.Count);
+        Assert.Equal(2, links.Count(l => l.TargetType == "jira"));
+        Assert.Equal(1, links.Count(l => l.TargetType == "github"));
+    }
 }

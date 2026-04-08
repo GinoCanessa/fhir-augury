@@ -265,4 +265,159 @@ public class JiraTicketExtractorTests
         // Context should be roughly 160 chars + possible ellipsis markers (~6 chars)
         Assert.True(results[0].Context.Length <= 170, $"Context too long: {results[0].Context.Length}");
     }
+
+    // ── New Project Detection ────────────────────────────────────────
+
+    [Theory]
+    [InlineData("See BALLOT-100 here", "BALLOT-100", "BALLOT-100")]
+    [InlineData("See BALLOT#100 here", "BALLOT-100", "BALLOT#100")]
+    [InlineData("See PSS-50 here", "PSS-50", "PSS-50")]
+    [InlineData("See PSS#50 here", "PSS-50", "PSS#50")]
+    [InlineData("See UP-796 here", "UP-796", "UP-796")]
+    [InlineData("See UP#796 here", "UP-796", "UP#796")]
+    public void ExtractTickets_NewProjects_Detected(string text, string expectedKey, string expectedOriginal)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(text);
+
+        Assert.Single(results);
+        Assert.Equal(expectedKey, results[0].JiraKey);
+        Assert.Equal(expectedOriginal, results[0].OriginalLiteral);
+    }
+
+    // ── New URL Formats ──────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("https://jira.hl7.org/projects/FHIR/issues/FHIR-54988", "FHIR-54988")]
+    [InlineData("https://jira.hl7.org/projects/UP/issues/UP-796", "UP-796")]
+    [InlineData("https://jira.hl7.org/projects/BALLOT/issues/BALLOT-42", "BALLOT-42")]
+    [InlineData("https://jira.hl7.org/projects/PSS/issues/PSS-100", "PSS-100")]
+    [InlineData("https://jira.hl7.org/browse/BALLOT-42", "BALLOT-42")]
+    [InlineData("https://jira.hl7.org/browse/PSS-50", "PSS-50")]
+    [InlineData("https://jira.hl7.org/browse/UP-796", "UP-796")]
+    public void ExtractTickets_UrlFormats_Detected(string url, string expectedKey)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets($"See {url} for info");
+
+        Assert.Single(results);
+        Assert.Equal(expectedKey, results[0].JiraKey);
+    }
+
+    // ── Cross-Project & Deduplication ────────────────────────────────
+
+    [Fact]
+    public void ExtractTickets_CrossProject_NotDeduplicated()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("FHIR-100 and BALLOT-100");
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, r => r.JiraKey == "FHIR-100");
+        Assert.Contains(results, r => r.JiraKey == "BALLOT-100");
+    }
+
+    [Fact]
+    public void ExtractTickets_CrossProject_MixedText_AllExtracted()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "FHIR-100, BALLOT-200, PSS-300, UP-400 all referenced");
+
+        Assert.Equal(4, results.Count);
+        Assert.Contains(results, r => r.JiraKey == "FHIR-100");
+        Assert.Contains(results, r => r.JiraKey == "BALLOT-200");
+        Assert.Contains(results, r => r.JiraKey == "PSS-300");
+        Assert.Contains(results, r => r.JiraKey == "UP-400");
+    }
+
+    [Fact]
+    public void ExtractTickets_UrlAndKey_NewProject_Deduplicated()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "https://jira.hl7.org/browse/BALLOT-42 and BALLOT-42");
+
+        Assert.Single(results);
+        Assert.Equal("BALLOT-42", results[0].JiraKey);
+    }
+
+    // ── Word Boundary Edge Cases ─────────────────────────────────────
+
+    [Theory]
+    [InlineData("SETUP-100")]
+    [InlineData("UPON something")]
+    [InlineData("IMPRESS-5")]
+    [InlineData("JFUNCTION-3")]
+    public void ExtractTickets_WordBoundary_NoFalsePositives(string text)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(text);
+
+        Assert.Empty(results);
+    }
+
+    // ── Case Insensitivity ───────────────────────────────────────────
+
+    [Theory]
+    [InlineData("ballot-100", "BALLOT-100")]
+    [InlineData("up-796", "UP-796")]
+    [InlineData("pss-50", "PSS-50")]
+    [InlineData("fhir-42", "FHIR-42")]
+    public void ExtractTickets_CaseInsensitive_CanonicalUppercase(string text, string expectedKey)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(text);
+
+        Assert.Single(results);
+        Assert.Equal(expectedKey, results[0].JiraKey);
+    }
+
+    // ── Validation Filter Scoping ────────────────────────────────────
+
+    [Fact]
+    public void ExtractTickets_ValidJiraNumbers_DoesNotFilterNewProjects()
+    {
+        HashSet<int> valid = [42];
+
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "BALLOT-9999 and UP-9999 and PSS-9999", valid);
+
+        Assert.Equal(3, results.Count);
+    }
+
+    [Fact]
+    public void ExtractTickets_ValidJiraNumbers_StillFiltersJHash()
+    {
+        HashSet<int> valid = [42];
+
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("J#9999", valid);
+
+        Assert.Empty(results);
+    }
+
+    // ── Newly Matched Patterns (consolidation additions) ─────────────
+
+    [Fact]
+    public void ExtractTickets_JfHash_NormalizesToFhir()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("See JF#1234");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-1234", results[0].JiraKey);
+        Assert.Equal("JF#1234", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_JDash_NormalizesToFhir()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("See J-1234");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-1234", results[0].JiraKey);
+        Assert.Equal("J-1234", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_FhirHash_NormalizesToFhir()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("See FHIR#5678");
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-5678", results[0].JiraKey);
+        Assert.Equal("FHIR#5678", results[0].OriginalLiteral);
+    }
 }

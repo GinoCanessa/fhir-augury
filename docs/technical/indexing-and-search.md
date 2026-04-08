@@ -313,9 +313,15 @@ references to items in other sources within its own database.
 
 ### Extractors (`FhirAugury.Common.Indexing`)
 
+The `JiraReferenceExtractor` detects ticket references for multiple HL7 Jira
+projects (FHIR, BALLOT, PSS, UP) including alias forms (JF, GF, J for FHIR),
+both key (`PREFIX-N`) and hash (`PREFIX#N`) notation, and two URL formats
+(`/browse/` and `/projects/.../issues/`). All references are normalized to
+canonical `PREFIX-N` form.
+
 | Extractor | Target Type | Records | Example Match |
 |-----------|-------------|---------|---------------|
-| `JiraReferenceExtractor` | `jira` | `JiraXRefRecord` | `FHIR-43499`, Jira URLs |
+| `JiraReferenceExtractor` | `jira` | `JiraXRefRecord` | `FHIR-43499`, `BALLOT-100`, `PSS-50`, `UP-796`, Jira URLs |
 | `ZulipReferenceExtractor` | `zulip` | `ZulipXRefRecord` | Zulip topic/message URLs |
 | `GitHubReferenceExtractor` | `github` | `GitHubXRefRecord` | GitHub issue/PR URLs, `HL7/repo#123` |
 | `ConfluenceReferenceExtractor` | `confluence` | `ConfluenceXRefRecord` | Confluence page URLs |

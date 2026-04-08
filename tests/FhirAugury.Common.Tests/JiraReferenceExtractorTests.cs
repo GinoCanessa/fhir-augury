@@ -146,4 +146,29 @@ public class JiraReferenceExtractorTests
         Assert.Equal("p99", refs[0].SourceId);
         Assert.Equal("mentions", refs[0].LinkType);
     }
+
+    // ── New Project Extraction ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("See BALLOT-100 here", "BALLOT-100")]
+    [InlineData("See PSS-50 here", "PSS-50")]
+    [InlineData("See UP-796 here", "UP-796")]
+    public void NewProjectExtraction(string text, string expectedKey)
+    {
+        List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences("issue", "1", null, text);
+        Assert.Single(refs);
+        Assert.Equal(expectedKey, refs[0].JiraKey);
+        Assert.Equal(expectedKey, refs[0].TargetId);
+        Assert.Equal(SourceSystems.Jira, refs[0].TargetType);
+    }
+
+    [Fact]
+    public void CrossProjectInSameText()
+    {
+        List<JiraXRefRecord> refs = JiraReferenceExtractor.GetReferences(
+            "issue", "1", null, "FHIR-1 and BALLOT-2");
+        Assert.Equal(2, refs.Count);
+        Assert.Contains(refs, r => r.JiraKey == "FHIR-1");
+        Assert.Contains(refs, r => r.JiraKey == "BALLOT-2");
+    }
 }
