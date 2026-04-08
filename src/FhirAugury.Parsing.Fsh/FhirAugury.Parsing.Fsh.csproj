@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Parsing.Fsh</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Parsing.Fsh.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\brianpos-fsh-processor\fsh-processor\fsh-processor.csproj" />
+  </ItemGroup>
+
+</Project>
