@@ -12,4 +12,5 @@ public record SushiConfig(
     string? FhirVersion,
     string? Status,
     List<string> PathResource,
-    List<string> AdditionalResource);
+    List<string> AdditionalResource,
+    string? SpecialUrlBase = null);

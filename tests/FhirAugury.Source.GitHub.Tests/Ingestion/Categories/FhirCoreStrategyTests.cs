@@ -57,10 +57,14 @@ public class FhirCoreStrategyTests : IDisposable
     }
 
     [Fact]
-    public void GetAdditionalIgnorePatterns_ReturnsEmpty()
+    public void GetAdditionalIgnorePatterns_ReturnsExpectedPatterns()
     {
         List<string> patterns = _strategy.GetAdditionalIgnorePatterns();
-        Assert.Empty(patterns);
+        Assert.Equal(4, patterns.Count);
+        Assert.Contains("source/**/list-*.xml", patterns);
+        Assert.Contains("source/**/*.txt", patterns);
+        Assert.Contains("source/**/*.json", patterns);
+        Assert.Contains("source/**/implementationguide-*.xml", patterns);
     }
 
     [Fact]

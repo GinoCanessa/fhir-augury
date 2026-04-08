@@ -29,6 +29,7 @@ public static class SushiConfigParser
             string? title = null;
             string? fhirVersion = null;
             string? status = null;
+            string? specialUrlBase = null;
             List<string> pathResource = [];
             List<string> additionalResource = [];
 
@@ -62,6 +63,7 @@ public static class SushiConfigParser
                         case "status": status = value; break;
                         case "path-resource": pathResource = ParseInlineList(value); break;
                         case "additional-resource": additionalResource = ParseInlineList(value); break;
+                        case "special-url-base": specialUrlBase = value; break;
                     }
                 }
                 else if (line.TrimStart().StartsWith("- "))
@@ -77,7 +79,7 @@ public static class SushiConfigParser
                 }
             }
 
-            return new SushiConfig(id, canonical, name, title, fhirVersion, status, pathResource, additionalResource);
+            return new SushiConfig(id, canonical, name, title, fhirVersion, status, pathResource, additionalResource, specialUrlBase);
         }
         catch
         {

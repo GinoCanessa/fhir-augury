@@ -66,7 +66,13 @@ public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryS
 
     public List<string> GetAdditionalIgnorePatterns()
     {
-        return [];
+        return
+        [
+            "source/**/list-*.xml",
+            "source/**/*.txt",
+            "source/**/*.json",
+            "source/**/implementationguide-*.xml",
+        ];
     }
 
     public void BuildArtifactMappings(string repoFullName, string clonePath, SqliteConnection connection, CancellationToken ct)

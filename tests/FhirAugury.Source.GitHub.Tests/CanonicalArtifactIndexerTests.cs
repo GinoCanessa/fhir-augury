@@ -341,7 +341,7 @@ public class CanonicalArtifactIndexerTests : IDisposable
         File.WriteAllText(Path.Combine(sourceDir, "cs-v3-ActCode.xml"), "<x/>");
         File.WriteAllText(Path.Combine(sourceDir, "vs-v3-ActCode.xml"), "<x/>");
 
-        UtgStrategy strategy = new(null!, NullLogger<UtgStrategy>.Instance);
+        UtgStrategy strategy = new(_db, NullLogger<UtgStrategy>.Instance);
         IReadOnlyList<string> files = strategy.DiscoverCanonicalArtifactFiles("HL7/UTG", cloneDir, CancellationToken.None);
 
         Assert.Equal(2, files.Count);
@@ -360,7 +360,7 @@ public class CanonicalArtifactIndexerTests : IDisposable
         // Non-matching file
         File.WriteAllText(Path.Combine(defsDir, "StructureDefinition-example.xml"), "<x/>");
 
-        FhirExtensionsPackStrategy strategy = new(null!, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        FhirExtensionsPackStrategy strategy = new(_db, NullLogger<FhirExtensionsPackStrategy>.Instance);
         IReadOnlyList<string> files = strategy.DiscoverCanonicalArtifactFiles("HL7/fhir-extensions", cloneDir, CancellationToken.None);
 
         Assert.Equal(3, files.Count);
@@ -376,7 +376,7 @@ public class CanonicalArtifactIndexerTests : IDisposable
         File.WriteAllText(Path.Combine(resourcesDir, "ValueSet-example.xml"), "<x/>");
         File.WriteAllText(Path.Combine(resourcesDir, "CodeSystem-example.json"), "{}");
 
-        IncubatorStrategy strategy = new(null!, NullLogger<IncubatorStrategy>.Instance);
+        IncubatorStrategy strategy = new(_db, NullLogger<IncubatorStrategy>.Instance);
         IReadOnlyList<string> files = strategy.DiscoverCanonicalArtifactFiles("HL7/some-incubator", cloneDir, CancellationToken.None);
 
         Assert.Equal(2, files.Count);
@@ -406,8 +406,8 @@ public class CanonicalArtifactIndexerTests : IDisposable
         Directory.CreateDirectory(cloneDir);
 
         FhirCoreStrategy fhirCore = new(NullLogger<FhirCoreStrategy>.Instance);
-        UtgStrategy utg = new(null!, NullLogger<UtgStrategy>.Instance);
-        FhirExtensionsPackStrategy extensions = new(null!, NullLogger<FhirExtensionsPackStrategy>.Instance);
+        UtgStrategy utg = new(_db, NullLogger<UtgStrategy>.Instance);
+        FhirExtensionsPackStrategy extensions = new(_db, NullLogger<FhirExtensionsPackStrategy>.Instance);
 
         Assert.Empty(fhirCore.DiscoverCanonicalArtifactFiles("repo", cloneDir, CancellationToken.None));
         Assert.Empty(utg.DiscoverCanonicalArtifactFiles("repo", cloneDir, CancellationToken.None));
