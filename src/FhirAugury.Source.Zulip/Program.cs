@@ -63,13 +63,12 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
     return new FileSystemResponseCache(cachePath);
 });
 
-// HTTP client with auth and rate limiting
+// HTTP client with rate limiting (auth is handled by ZulipClient internally)
 builder.Services.AddTransient<ZulipRateLimiter>();
 builder.Services.AddHttpClient("zulip")
     .ConfigureHttpClient((sp, client) =>
     {
-        ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-        ZulipAuthHandler.ConfigureHttpClient(client, opts);
+        client.Timeout = TimeSpan.FromMinutes(10);
     })
     .AddHttpMessageHandler<ZulipRateLimiter>()
     .AddStandardResilienceHandler(options =>
@@ -85,6 +84,7 @@ builder.Services.AddHttpClient("zulip")
     });
 
 // Ingestion
+builder.Services.AddSingleton<ZulipClientFactory>();
 builder.Services.AddSingleton<ZulipSource>();
 builder.Services.AddSingleton(sp =>
 {

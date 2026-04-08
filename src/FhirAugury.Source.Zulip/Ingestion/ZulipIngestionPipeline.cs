@@ -1,3 +1,4 @@
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
@@ -167,19 +168,38 @@ public class ZulipIngestionPipeline(
             first.ItemsUpdated + second.ItemsUpdated,
             first.ItemsFailed + second.ItemsFailed,
             [.. first.Errors, .. second.Errors],
-            first.StartedAt);
+            first.StartedAt)
+        {
+            NewMessageIds = [.. first.NewMessageIds, .. second.NewMessageIds]
+        };
     }
 
     private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        // Rebuild BM25 keyword index
-        logger.LogInformation("Rebuilding BM25 index");
+        const int IncrementalThreshold = 5000;
+        bool useIncremental = runType == "incremental"
+            && result.NewMessageIds.Count > 0
+            && result.NewMessageIds.Count < IncrementalThreshold;
+
+        // BM25 keyword index
+        logger.LogInformation(useIncremental
+            ? "Updating BM25 index incrementally ({Count} new messages)"
+            : "Rebuilding BM25 index",
+            result.NewMessageIds.Count);
         tracker.MarkStarted("bm25");
         try
         {
-            indexer.RebuildFullIndex(ct);
+            if (useIncremental)
+            {
+                List<IndexContent> items = BuildIndexContent(result.NewMessageIds);
+                indexer.UpdateIndex(items, ct);
+            }
+            else
+            {
+                indexer.RebuildFullIndex(ct);
+            }
             tracker.MarkCompleted("bm25");
         }
         catch (Exception ex)
@@ -188,12 +208,18 @@ public class ZulipIngestionPipeline(
             throw;
         }
 
-        // Extract and index ticket references
-        logger.LogInformation("Indexing ticket references");
+        // Cross-references
+        logger.LogInformation(useIncremental
+            ? "Indexing ticket references incrementally ({Count} new messages)"
+            : "Indexing ticket references",
+            result.NewMessageIds.Count);
         tracker.MarkStarted("cross-refs");
         try
         {
-            xrefRebuilder.RebuildAll(ct);
+            if (useIncremental)
+                xrefRebuilder.IndexNewMessages(result.NewMessageIds, ct);
+            else
+                xrefRebuilder.RebuildAll(ct);
             tracker.MarkCompleted("cross-refs");
         }
         catch (Exception ex)
@@ -210,9 +236,50 @@ public class ZulipIngestionPipeline(
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
     }
 
+    /// <summary>
+    /// Converts Zulip message IDs into IndexContent items by querying the DB.
+    /// </summary>
+    private List<IndexContent> BuildIndexContent(IReadOnlyList<int> zulipMessageIds)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        List<IndexContent> items = [];
+        foreach (int msgId in zulipMessageIds)
+        {
+            ZulipMessageRecord? msg = ZulipMessageRecord.SelectSingle(
+                connection, ZulipMessageId: msgId);
+            if (msg is not null)
+            {
+                string text = string.Join(" ",
+                    new[] { msg.ContentPlain, msg.Topic, msg.SenderName }
+                        .Where(s => !string.IsNullOrEmpty(s)));
+                if (!string.IsNullOrWhiteSpace(text))
+                    items.Add(new IndexContent
+                    {
+                        ContentType = ContentTypes.Message,
+                        SourceId = msg.ZulipMessageId.ToString(),
+                        Text = text
+                    });
+            }
+        }
+        return items;
+    }
+
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
+
+        // Compute global max cursor from per-stream sync states
+        string? globalCursor = null;
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText =
+                "SELECT MAX(CAST(LastCursor AS INTEGER)) FROM sync_state " +
+                "WHERE SourceName = @source AND SubSource NOT IN ('full', 'incremental', 'rebuild')";
+            cmd.Parameters.AddWithValue("@source", ZulipSource.SourceName);
+            object? maxResult = cmd.ExecuteScalar();
+            if (maxResult is long maxId && maxId > 0)
+                globalCursor = maxId.ToString();
+        }
 
         ZulipSyncStateRecord? existing = ZulipSyncStateRecord.SelectSingle(connection, SourceName: ZulipSource.SourceName, SubSource: runType);
 
@@ -222,7 +289,7 @@ public class ZulipIngestionPipeline(
             SourceName = ZulipSource.SourceName,
             SubSource = runType,
             LastSyncAt = result.CompletedAt,
-            LastCursor = null,
+            LastCursor = globalCursor,
             ItemsIngested = result.ItemsProcessed,
             SyncSchedule = _options.SyncSchedule,
             NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(_options.SyncSchedule)),
