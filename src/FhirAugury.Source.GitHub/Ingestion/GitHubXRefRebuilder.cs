@@ -15,24 +15,48 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
 {
 
     /// <summary>
-    /// Extracts cross-references from all issues, comments, and commits in the database.
+    /// Rebuilds cross-references for all repos: clears all xref tables once, then
+    /// extracts from every repo. Use this when processing multiple repos to avoid
+    /// the clear-per-repo wipe bug.
     /// </summary>
-    public void RebuildAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
+    public void RebuildAllRepos(IReadOnlyList<string> repoNames, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        // Clear existing cross-reference tables
-        using (SqliteCommand cmd = connection.CreateCommand())
+        ClearAllXRefTables(connection);
+
+        int totalRefCount = 0;
+        foreach (string repo in repoNames)
         {
-            cmd.CommandText = """
-                DELETE FROM xref_jira;
-                DELETE FROM xref_zulip;
-                DELETE FROM xref_confluence;
-                DELETE FROM xref_fhir_element;
-                """;
-            cmd.ExecuteNonQuery();
+            totalRefCount += ExtractRepoRefs(connection, repo, validJiraNumbers, ct);
         }
 
+        logger.LogInformation("Extracted {Count} cross-references from {RepoCount} repos", totalRefCount, repoNames.Count);
+    }
+
+    /// <summary>
+    /// Rebuilds cross-references for a single repo: clears all xref tables, then
+    /// extracts from the specified repo only.
+    /// </summary>
+    public void RebuildAll(string repoFullName, HashSet<int>? validJiraNumbers = null, CancellationToken ct = default)
+    {
+        RebuildAllRepos([repoFullName], validJiraNumbers, ct);
+    }
+
+    private static void ClearAllXRefTables(SqliteConnection connection)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM xref_jira;
+            DELETE FROM xref_zulip;
+            DELETE FROM xref_confluence;
+            DELETE FROM xref_fhir_element;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    private int ExtractRepoRefs(SqliteConnection connection, string repoFullName, HashSet<int>? validJiraNumbers, CancellationToken ct)
+    {
         int refCount = 0;
 
         // Scan issues
@@ -74,6 +98,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
         }
 
         logger.LogInformation("Extracted {Count} cross-references from {Repo}", refCount, repoFullName);
+        return refCount;
     }
 
     /// <summary>

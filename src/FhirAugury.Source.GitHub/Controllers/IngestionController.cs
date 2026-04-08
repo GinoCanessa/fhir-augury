@@ -101,8 +101,7 @@ public class IngestionController(
                     indexTracker.MarkStarted("cross-refs");
                     try
                     {
-                        foreach (string repo in repos)
-                            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
+                        xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
                     }
                     catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
@@ -165,13 +164,13 @@ public class IngestionController(
                             string path = await cloner.EnsureCloneAsync(repo, ct);
                             await commitExtractor.ExtractAsync(path, repo, ct);
                             fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
-                            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
                             artifactFileMapper.BuildMappings(repo, path, ct);
                         }
                         indexTracker.MarkCompleted("commits");
                         indexTracker.MarkCompleted("file-contents");
-                        indexTracker.MarkCompleted("cross-refs");
                         indexTracker.MarkCompleted("artifact-map");
+                        xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
+                        indexTracker.MarkCompleted("cross-refs");
                         indexer.RebuildFullIndex(ct);
                         indexTracker.MarkCompleted("bm25");
                         database.RebuildFtsIndexes();
@@ -198,11 +197,11 @@ public class IngestionController(
     public IActionResult NotifyPeer([FromBody] Common.Api.PeerIngestionNotification notification)
     {
         GitHubServiceOptions options = optionsAccessor.Value;
-        workQueue.Enqueue(async ct =>
+        workQueue.Enqueue(ct =>
         {
             List<string> repos = options.GetAllRepositoryNames();
-            foreach (string repo in repos)
-                xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
+            xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
+            return Task.CompletedTask;
         }, "rebuild-xrefs");
 
         return Ok(new PeerIngestionAck(Acknowledged: true));

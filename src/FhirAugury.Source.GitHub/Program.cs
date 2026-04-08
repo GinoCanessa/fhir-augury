@@ -225,10 +225,7 @@ else
         startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
         GitHubXRefRebuilder xrefRebuilder = app.Services.GetRequiredService<GitHubXRefRebuilder>();
         List<string> repos = githubOpts.GetAllRepositoryNames();
-        foreach (string repo in repos)
-        {
-            xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, CancellationToken.None);
-        }
+        xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, CancellationToken.None);
     }
 
     if (githubDb.TableIsEmpty("index_keywords"))

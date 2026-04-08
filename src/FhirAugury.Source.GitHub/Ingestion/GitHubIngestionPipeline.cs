@@ -231,20 +231,22 @@ public class GitHubIngestionPipeline(
                 {
                     logger.LogWarning(ex, "Failed to clone/extract commits/index files for {Repo}", repo);
                 }
-
-                try
-                {
-                    _currentStatus = $"extracting_jira_refs:{repo}";
-                    xrefRebuilder.RebuildAll(repo, validJiraNumbers: null, ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Failed to extract Jira references for {Repo}", repo);
-                }
             }
             tracker.MarkCompleted("commits");
             tracker.MarkCompleted("file-contents");
-            tracker.MarkCompleted("cross-refs");
+
+            try
+            {
+                _currentStatus = "extracting_cross_refs";
+                List<string> allRepoNames = repos.Select(r => r.Name).ToList();
+                xrefRebuilder.RebuildAllRepos(allRepoNames, validJiraNumbers: null, ct);
+                tracker.MarkCompleted("cross-refs");
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to extract cross-references");
+                tracker.MarkFailed("cross-refs", ex.Message);
+            }
         }
         catch (Exception ex)
         {
