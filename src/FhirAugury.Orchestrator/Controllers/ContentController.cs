@@ -250,6 +250,92 @@ public class ContentController(
         }
     }
 
+    [HttpGet("keywords/{source}/{*id}")]
+    public async Task<IActionResult> GetKeywords(
+        [FromRoute] string source,
+        [FromRoute] string id,
+        [FromQuery] string? keywordType,
+        [FromQuery] int? limit,
+        CancellationToken ct = default)
+    {
+        if (!httpClient.IsSourceEnabled(source))
+            return NotFound(new { error = $"Source '{source}' not found or disabled" });
+
+        try
+        {
+            KeywordListResponse? response = await httpClient.ContentKeywordsAsync(
+                source, source, id, keywordType, limit, ct);
+            if (response is null)
+                return NotFound(new { error = $"Keywords not found for '{id}' in source '{source}'" });
+
+            return Ok(response);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("related-by-keyword/{source}/{*id}")]
+    public async Task<IActionResult> RelatedByKeyword(
+        [FromRoute] string source,
+        [FromRoute] string id,
+        [FromQuery] double? minScore,
+        [FromQuery] string? keywordType,
+        [FromQuery] int? limit,
+        CancellationToken ct = default)
+    {
+        if (!httpClient.IsSourceEnabled(source))
+            return NotFound(new { error = $"Source '{source}' not found or disabled" });
+
+        int effectiveLimit = Math.Min(limit ?? 20, 200);
+        List<string> warnings = [];
+
+        // Fan out to all enabled sources — related items can span sources
+        Dictionary<string, Task<RelatedByKeywordResponse?>> tasks = [];
+        foreach (string sourceName in httpClient.GetEnabledSourceNames())
+        {
+            tasks[sourceName] = httpClient.ContentRelatedByKeywordAsync(
+                sourceName, source, id, minScore, keywordType, effectiveLimit, ct);
+        }
+
+        List<RelatedByKeywordItem> allItems = [];
+        foreach ((string sourceName, Task<RelatedByKeywordResponse?> task) in tasks)
+        {
+            try
+            {
+                RelatedByKeywordResponse? response = await task;
+                if (response?.RelatedItems is not null)
+                    allItems.AddRange(response.RelatedItems);
+
+                if (response?.Warnings is { Count: > 0 })
+                    warnings.AddRange(response.Warnings);
+            }
+            catch (Exception ex)
+            {
+                if (ex.IsTransientHttpError(out string statusDescription))
+                    _logger.LogWarning("Related-by-keyword failed for source {Source} ({HttpStatus})", sourceName, statusDescription);
+                else
+                    _logger.LogDebug(ex, "Related-by-keyword failed for source {Source}", sourceName);
+                warnings.Add($"Related-by-keyword failed for source '{sourceName}': {ex.Message}");
+            }
+        }
+
+        // Sort by score descending and apply limit
+        List<RelatedByKeywordItem> sorted = allItems
+            .OrderByDescending(i => i.Score)
+            .Take(effectiveLimit)
+            .ToList();
+
+        return Ok(new RelatedByKeywordResponse
+        {
+            Source = source,
+            SourceId = id,
+            RelatedItems = sorted,
+            Warnings = warnings.Count > 0 ? warnings : null,
+        });
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     private async Task<(List<CrossReferenceHit> Hits, List<string> Warnings)> FanOutXRefAsync(

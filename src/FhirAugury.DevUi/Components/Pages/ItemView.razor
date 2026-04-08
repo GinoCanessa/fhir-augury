@@ -69,6 +69,16 @@ else
             <button class="nav-link @(_activeTab == "raw" ? "active" : "")"
                     @onclick='() => SetTabAsync("raw")'>Raw JSON</button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link @(_activeTab == "keywords" ? "active" : "")"
+                    @onclick='() => SetTabAsync("keywords")'>
+                Keywords
+                @if (_keywords?.Keywords is { Count: > 0 })
+                {
+                    <span class="badge bg-secondary ms-1">@_keywords.Keywords.Count</span>
+                }
+            </button>
+        </li>
     </ul>
 
     @if (_activeTab == "content")
@@ -146,6 +156,10 @@ else
             </div>
         </div>
     }
+    else if (_activeTab == "keywords")
+    {
+        <ItemKeywords Keywords="_keywords" />
+    }
 }
 
 @code {
@@ -156,6 +170,7 @@ else
     private string? _error;
     private ContentItemResponse? _item;
     private CrossReferenceQueryResponse? _crossRefs;
+    private KeywordListResponse? _keywords;
     private string? _rawJson;
 
     // Snapshot tab state
@@ -181,6 +196,7 @@ else
         _error = null;
         _item = null;
         _crossRefs = null;
+        _keywords = null;
         _rawJson = null;
         _snapshotMarkdown = null;
         _snapshotError = null;
@@ -191,11 +207,13 @@ else
         {
             Task<ContentItemResponse?> itemTask = Orchestrator.GetItemTypedAsync(Source, Id);
             Task<CrossReferenceQueryResponse?> xrefTask = Orchestrator.GetCrossReferencedTypedAsync(Id, Source);
+            Task<KeywordListResponse?> keywordsTask = Orchestrator.GetKeywordsTypedAsync(Source, Id);
 
-            await Task.WhenAll(itemTask, xrefTask);
+            await Task.WhenAll(itemTask, xrefTask, keywordsTask);
 
             _item = await itemTask;
             _crossRefs = await xrefTask;
+            _keywords = await keywordsTask;
 
             if (_item is not null)
             {

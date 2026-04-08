@@ -1,5 +1,6 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Database;
@@ -712,5 +713,86 @@ public class ContentController(GitHubDatabase db) : ControllerBase
             if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
                 hits[i] = hits[i] with { Score = hits[i].Score * keywordScore };
         }
+    }
+
+    // ── Keyword endpoints ────────────────────────────────────────
+
+    [HttpGet("keywords/{source}/{**id}")]
+    public IActionResult GetKeywords(
+        [FromRoute] string source, [FromRoute] string id,
+        [FromQuery] string? keywordType, [FromQuery] int? limit)
+    {
+        if (!string.Equals(source, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"Source '{source}' is not handled by this service" });
+
+        using SqliteConnection connection = db.OpenConnection();
+        int maxResults = Math.Min(limit ?? 50, 200);
+
+        List<KeywordEntry> keywords = SourceDatabase.GetKeywordsForItem(connection, id, keywordType, maxResults);
+        string contentType = keywords.Count > 0
+            ? SourceDatabase.GetContentTypeForItem(connection, id)
+            : "";
+
+        return Ok(new KeywordListResponse
+        {
+            Source = SourceSystems.GitHub,
+            SourceId = id,
+            ContentType = contentType,
+            Keywords = keywords,
+        });
+    }
+
+    [HttpGet("related-by-keyword/{source}/{**id}")]
+    public IActionResult RelatedByKeyword(
+        [FromRoute] string source, [FromRoute] string id,
+        [FromQuery] double? minScore, [FromQuery] string? keywordType, [FromQuery] int? limit)
+    {
+        if (!string.Equals(source, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"Source '{source}' is not handled by this service" });
+
+        using SqliteConnection connection = db.OpenConnection();
+        int maxResults = Math.Min(limit ?? 20, 200);
+        double threshold = minScore ?? 0.1;
+
+        var rawResults = SourceDatabase.GetRelatedByKeyword(connection, id, threshold, keywordType, maxResults);
+
+        List<RelatedByKeywordItem> items = rawResults.Select(r => new RelatedByKeywordItem
+        {
+            Source = SourceSystems.GitHub,
+            SourceId = r.SourceId,
+            ContentType = r.ContentType,
+            Title = ResolveTitle(connection, r.ContentType, r.SourceId),
+            Score = r.Score,
+            SharedKeywords = [.. r.SharedKeywords.Split(',', StringSplitOptions.RemoveEmptyEntries)],
+        }).ToList();
+
+        return Ok(new RelatedByKeywordResponse
+        {
+            Source = SourceSystems.GitHub,
+            SourceId = id,
+            RelatedItems = items,
+        });
+    }
+
+    private static string ResolveTitle(SqliteConnection connection, string contentType, string sourceId)
+    {
+        (string table, string titleColumn, string idColumn) = contentType switch
+        {
+            "issue" => ("github_issues", "Title", "UniqueKey"),
+            "commit" => ("github_commits", "Message", "UniqueKey"),
+            "file" => ("github_file_contents", "FilePath", "UniqueKey"),
+            "structure_definition" => ("github_structure_definitions", "Title", "UniqueKey"),
+            "canonical_artifact" => ("github_canonical_artifacts", "Title", "UniqueKey"),
+            "sd_element" => ("github_sd_elements", "Name", "UniqueKey"),
+            _ => ("", "", ""),
+        };
+
+        if (string.IsNullOrEmpty(table))
+            return sourceId;
+
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = $"SELECT {titleColumn} FROM {table} WHERE {idColumn} = @id LIMIT 1";
+        cmd.Parameters.AddWithValue("@id", sourceId);
+        return cmd.ExecuteScalar()?.ToString() ?? sourceId;
     }
 }

@@ -70,6 +70,24 @@ public sealed class SourceDirectClient(IHttpClientFactory httpClientFactory)
         return await GetJsonAsync(url, ct);
     }
 
+    public async Task<(string Url, string Json, long ElapsedMs)> KeywordsAsync(
+        string httpBase, string source, string id, string? keywordType, int limit, CancellationToken ct = default)
+    {
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?limit={limit}";
+        if (!string.IsNullOrEmpty(keywordType))
+            url += $"&keywordType={Uri.EscapeDataString(keywordType)}";
+        return await GetJsonAsync(url, ct);
+    }
+
+    public async Task<(string Url, string Json, long ElapsedMs)> RelatedByKeywordAsync(
+        string httpBase, string source, string id, double minScore, string? keywordType, int limit, CancellationToken ct = default)
+    {
+        string url = $"{httpBase.TrimEnd('/')}/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?minScore={minScore}&limit={limit}";
+        if (!string.IsNullOrEmpty(keywordType))
+            url += $"&keywordType={Uri.EscapeDataString(keywordType)}";
+        return await GetJsonAsync(url, ct);
+    }
+
     // ── Formatting ───────────────────────────────────────────────
 
     public static string PrettyPrint(string json)

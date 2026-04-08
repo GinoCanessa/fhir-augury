@@ -168,6 +168,30 @@ public sealed class HttpServiceClient : IDisposable
         return await GetJsonAsync(_orchestratorClient, url.ToString(), ct);
     }
 
+    public async Task<JsonElement> ContentKeywordsAsync(
+        string source, string id, string? keywordType, int? limit, CancellationToken ct = default)
+    {
+        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
+            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        StringBuilder url = new($"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await GetJsonAsync(_orchestratorClient, url.ToString().TrimEnd('&', '?'), ct);
+    }
+
+    public async Task<JsonElement> ContentRelatedByKeywordAsync(
+        string source, string id, double? minScore, string? keywordType, int? limit,
+        CancellationToken ct = default)
+    {
+        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
+            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        StringBuilder url = new($"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (minScore.HasValue) url.Append($"minScore={minScore.Value}&");
+        if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await GetJsonAsync(_orchestratorClient, url.ToString().TrimEnd('&', '?'), ct);
+    }
+
     // ── Source-direct calls ─────────────────────────────────────────────
 
     public async Task<JsonElement> ListItemsAsync(

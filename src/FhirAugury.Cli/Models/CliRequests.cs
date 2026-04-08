@@ -206,3 +206,36 @@ public sealed class CrossReferencedRequest : CliRequest
     [JsonPropertyName("limit")]
     public int? Limit { get; set; }
 }
+
+public sealed class KeywordsRequest : CliRequest
+{
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "";
+
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("keywordType")]
+    public string? KeywordType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+}
+
+public sealed class RelatedByKeywordRequest : CliRequest
+{
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "";
+
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("minScore")]
+    public double? MinScore { get; set; }
+
+    [JsonPropertyName("keywordType")]
+    public string? KeywordType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+}

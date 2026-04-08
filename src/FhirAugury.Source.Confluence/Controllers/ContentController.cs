@@ -1,5 +1,6 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Configuration;
@@ -498,5 +499,77 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
             if (scores.TryGetValue(hits[i].SourceId, out double keywordScore))
                 hits[i] = hits[i] with { Score = hits[i].Score * keywordScore };
         }
+    }
+
+    // ── Keyword endpoints ────────────────────────────────────────
+
+    [HttpGet("content/keywords/{source}/{**id}")]
+    public IActionResult GetKeywords(
+        [FromRoute] string source, [FromRoute] string id,
+        [FromQuery] string? keywordType, [FromQuery] int? limit)
+    {
+        if (!string.Equals(source, SourceSystems.Confluence, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"Source '{source}' is not handled by this service" });
+
+        using SqliteConnection connection = db.OpenConnection();
+        int maxResults = Math.Min(limit ?? 50, 200);
+
+        List<KeywordEntry> keywords = SourceDatabase.GetKeywordsForItem(connection, id, keywordType, maxResults);
+        string contentType = keywords.Count > 0
+            ? SourceDatabase.GetContentTypeForItem(connection, id)
+            : "";
+
+        return Ok(new KeywordListResponse
+        {
+            Source = SourceSystems.Confluence,
+            SourceId = id,
+            ContentType = contentType,
+            Keywords = keywords,
+        });
+    }
+
+    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    public IActionResult RelatedByKeyword(
+        [FromRoute] string source, [FromRoute] string id,
+        [FromQuery] double? minScore, [FromQuery] string? keywordType, [FromQuery] int? limit)
+    {
+        if (!string.Equals(source, SourceSystems.Confluence, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"Source '{source}' is not handled by this service" });
+
+        using SqliteConnection connection = db.OpenConnection();
+        int maxResults = Math.Min(limit ?? 20, 200);
+        double threshold = minScore ?? 0.1;
+
+        var rawResults = SourceDatabase.GetRelatedByKeyword(connection, id, threshold, keywordType, maxResults);
+
+        List<RelatedByKeywordItem> items = rawResults.Select(r => new RelatedByKeywordItem
+        {
+            Source = SourceSystems.Confluence,
+            SourceId = r.SourceId,
+            ContentType = r.ContentType,
+            Title = ResolveTitle(connection, r.ContentType, r.SourceId),
+            Score = r.Score,
+            SharedKeywords = [.. r.SharedKeywords.Split(',', StringSplitOptions.RemoveEmptyEntries)],
+        }).ToList();
+
+        return Ok(new RelatedByKeywordResponse
+        {
+            Source = SourceSystems.Confluence,
+            SourceId = id,
+            RelatedItems = items,
+        });
+    }
+
+    private static string ResolveTitle(SqliteConnection connection, string contentType, string sourceId)
+    {
+        if (contentType == "page")
+        {
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT Title FROM confluence_pages WHERE ConfluenceId = @id LIMIT 1";
+            cmd.Parameters.AddWithValue("@id", sourceId);
+            return cmd.ExecuteScalar()?.ToString() ?? sourceId;
+        }
+
+        return sourceId;
     }
 }

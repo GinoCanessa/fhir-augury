@@ -35,6 +35,8 @@
                 <option value="get-stats">Aggregate Stats</option>
                 <option value="rebuild-index">Rebuild Index</option>
                 <option value="trigger-sync">Trigger Sync</option>
+                <option value="keywords">Keywords</option>
+                <option value="related-by-keyword">Related by Keyword</option>
             }
             else
             {
@@ -45,6 +47,8 @@
                 <option value="get-item">Get Item</option>
                 <option value="get-stats">Get Stats</option>
                 <option value="health-check">Health Check</option>
+                <option value="keywords">Keywords</option>
+                <option value="related-by-keyword">Related by Keyword</option>
             }
         </select>
     </div>
@@ -268,6 +272,7 @@
                                 <th>Target</th>
                                 <th>Target ID</th>
                                 <th>Title</th>
+                                <th>Score</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -281,6 +286,7 @@
                                     <td><span class="badge bg-secondary">@item.TargetType</span></td>
                                     <td><code>@item.TargetId</code></td>
                                     <td title="@item.TargetTitle">@Truncate(item.TargetTitle ?? "", 60)</td>
+                                    <td>@item.Score.ToString("F2")</td>
                                     <td>
                                         <a href="@ItemViewerUrl.For(item.ViewType, item.ViewId)"
                                            class="btn btn-sm btn-outline-info" title="View locally cached item">
@@ -348,14 +354,14 @@
 
     private bool NeedsQuery => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced";
 
-    private bool NeedsId => SelectedApi == "get-item";
+    private bool NeedsId => SelectedApi is "get-item" or "keywords" or "related-by-keyword";
 
-    private bool NeedsLimit => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced";
+    private bool NeedsLimit => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced" or "keywords" or "related-by-keyword";
 
-    private bool NeedsSourceFilter => (_isOrchestrator && SelectedApi is "get-item" or "refers-to" or "referred-by" or "cross-referenced")
+    private bool NeedsSourceFilter => (_isOrchestrator && SelectedApi is "get-item" or "refers-to" or "referred-by" or "cross-referenced" or "keywords" or "related-by-keyword")
         || (!_isOrchestrator && SelectedApi is "refers-to" or "referred-by" or "cross-referenced");
 
-    private bool SourceFilterRequired => _isOrchestrator && SelectedApi == "get-item";
+    private bool SourceFilterRequired => _isOrchestrator && SelectedApi is "get-item" or "keywords" or "related-by-keyword";
 
     private bool NeedsItemFlags => SelectedApi == "get-item";
 
@@ -487,6 +493,12 @@
             case "health-check":
                 (url, json, elapsed) = await SourceClient.HealthCheckAsync(httpBase);
                 break;
+            case "keywords":
+                (url, json, elapsed) = await SourceClient.KeywordsAsync(httpBase, endpoint.Name, _idInput, null, _limitInput);
+                break;
+            case "related-by-keyword":
+                (url, json, elapsed) = await SourceClient.RelatedByKeywordAsync(httpBase, endpoint.Name, _idInput, 0.1, null, _limitInput);
+                break;
             default:
                 return;
         }
@@ -536,6 +548,12 @@
                 break;
             case "trigger-sync":
                 (url, json, elapsed) = await Orchestrator.TriggerSyncAsync(_typeInput);
+                break;
+            case "keywords":
+                (url, json, elapsed) = await Orchestrator.KeywordsAsync(_sourceFilterInput, _idInput, null, _limitInput);
+                break;
+            case "related-by-keyword":
+                (url, json, elapsed) = await Orchestrator.RelatedByKeywordAsync(_sourceFilterInput, _idInput, 0.1, null, _limitInput);
                 break;
             default:
                 return;
@@ -600,6 +618,8 @@
                     string viewType = targetIsQueried ? sourceType : targetType;
                     string viewId = targetIsQueried ? sourceId : targetId;
 
+                    double score = r.TryGetProperty("score", out JsonElement scoreProp) && scoreProp.TryGetDouble(out double s) ? s : 1.0;
+
                     _parsedCrossRefs.Add(new ParsedCrossRef(
                         SourceType: sourceType,
                         SourceId: sourceId,
@@ -610,6 +630,7 @@
                         SourceContentType: GetStr(r, "contentType"),
                         TargetTitle: targetTitle,
                         TargetUrl: targetUrl,
+                        Score: score,
                         ViewType: viewType,
                         ViewId: viewId
                     ));
@@ -654,6 +675,8 @@
         "get-services-status" => "Services Status",
         "rebuild-index" => "Rebuild Index",
         "trigger-sync" => "Trigger Sync",
+        "keywords" => "Keywords",
+        "related-by-keyword" => "Related by Keyword",
         _ => api,
     };
 
@@ -666,5 +689,5 @@
 
     private sealed record SourceEndpointInfo(string Name, string Address);
     private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);
-    private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl, string ViewType, string ViewId);
+    private sealed record ParsedCrossRef(string SourceType, string SourceId, string TargetType, string TargetId, string LinkType, string? Context, string? SourceContentType, string? TargetTitle, string? TargetUrl, double Score, string ViewType, string ViewId);
 }

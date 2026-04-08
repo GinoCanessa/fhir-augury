@@ -33,6 +33,8 @@ public static class CommandDispatcher
         ["version"] = j => j.Deserialize<VersionRequest>(DeserializeOptions)!,
         ["show-schemas"] = j => j.Deserialize<ShowSchemasRequest>(DeserializeOptions)!,
         ["save-schemas"] = j => j.Deserialize<SaveSchemasRequest>(DeserializeOptions)!,
+        ["keywords"] = j => j.Deserialize<KeywordsRequest>(DeserializeOptions)!,
+        ["related-by-keyword"] = j => j.Deserialize<RelatedByKeywordRequest>(DeserializeOptions)!,
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -140,6 +142,8 @@ public static class CommandDispatcher
             VersionRequest => VersionHandler.HandleAsync(),
             ShowSchemasRequest => Task.FromResult<object>(Schemas.SchemaGenerator.GenerateAll()),
             SaveSchemasRequest r => SaveSchemasHandler.HandleAsync(r),
+            KeywordsRequest r => KeywordsHandler.HandleAsync(r, orchestratorAddr, ct),
+            RelatedByKeywordRequest r => RelatedByKeywordHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
 }

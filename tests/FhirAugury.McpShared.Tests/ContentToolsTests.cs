@@ -215,4 +215,64 @@ public class ContentToolsTests
         // Reaching this point confirms "orchestrator" was used.
         factory.Received().CreateClient("orchestrator");
     }
+
+    // ── GetKeywords tests ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetKeywords_ReturnsFormattedTable()
+    {
+        string json = """
+            { "source": "github", "sourceId": "HL7/fhir#123", "contentType": "issue", "keywords": [
+                { "keyword": "patient", "keywordType": "word", "count": 5, "bm25Score": 4.5 },
+                { "keyword": "Patient.name", "keywordType": "fhir_path", "count": 3, "bm25Score": 3.2 }
+            ]}
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+        string result = await ContentTools.GetKeywords(factory, "github", "HL7/fhir#123");
+        Assert.Contains("Keywords for github:HL7/fhir#123", result);
+        Assert.Contains("patient", result);
+        Assert.Contains("Patient.name", result);
+        Assert.Contains("4.500", result);
+        Assert.Contains("fhir_path", result);
+    }
+
+    [Fact]
+    public async Task GetKeywords_NoKeywords_ReturnsMessage()
+    {
+        string json = """{ "source": "jira", "sourceId": "FHIR-123", "contentType": "issue", "keywords": [] }""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+        string result = await ContentTools.GetKeywords(factory, "jira", "FHIR-123");
+        Assert.Contains("No keywords found", result);
+    }
+
+    // ── RelatedByKeyword tests ──────────────────────────────────────────
+
+    [Fact]
+    public async Task RelatedByKeyword_ReturnsFormattedTable()
+    {
+        string json = """
+            { "source": "github", "sourceId": "HL7/fhir#123", "relatedItems": [
+                { "source": "github", "sourceId": "HL7/fhir#456", "contentType": "issue",
+                  "title": "Related Issue", "score": 0.85, "sharedKeywords": ["patient", "identifier"] },
+                { "source": "jira", "sourceId": "FHIR-789", "contentType": "issue",
+                  "title": "Jira Ticket", "score": 0.42, "sharedKeywords": ["patient"] }
+            ]}
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+        string result = await ContentTools.RelatedByKeyword(factory, "github", "HL7/fhir#123");
+        Assert.Contains("Related to github:HL7/fhir#123", result);
+        Assert.Contains("Related Issue", result);
+        Assert.Contains("0.850", result);
+        Assert.Contains("patient, identifier", result);
+        Assert.Contains("FHIR-789", result);
+    }
+
+    [Fact]
+    public async Task RelatedByKeyword_NoResults_ReturnsMessage()
+    {
+        string json = """{ "source": "github", "sourceId": "test", "relatedItems": [] }""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+        string result = await ContentTools.RelatedByKeyword(factory, "github", "test");
+        Assert.Contains("No related items found", result);
+    }
 }

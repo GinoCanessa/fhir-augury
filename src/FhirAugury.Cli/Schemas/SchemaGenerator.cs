@@ -371,6 +371,91 @@ public static class SchemaGenerator
                 },
             }
         ),
+
+        ["keywords"] = new(
+            "Get extracted keywords for an item, sorted by BM25 score",
+            InputSchema(["command", "source", "id"], new()
+            {
+                ["command"] = Const("keywords"),
+                ["source"] = Prop("string", "Source system (e.g., github, jira, zulip, confluence)"),
+                ["id"] = Prop("string", "Item ID within the source"),
+                ["keywordType"] = Prop("string", "Filter by keyword type: word, fhir_path, fhir_operation"),
+                ["limit"] = IntProp("Maximum keywords to return", 50),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["source"] = Prop("string", "Source system"),
+                    ["sourceId"] = Prop("string", "Item ID"),
+                    ["contentType"] = Prop("string", "Content type"),
+                    ["total"] = Prop("integer", "Total keyword count"),
+                    ["keywords"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "array",
+                        ["items"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object>
+                            {
+                                ["keyword"] = Prop("string", "The keyword text"),
+                                ["keywordType"] = Prop("string", "Keyword classification"),
+                                ["count"] = Prop("integer", "Occurrence count"),
+                                ["bm25Score"] = Prop("number", "BM25 relevance score"),
+                            },
+                        },
+                        ["description"] = "List of extracted keywords",
+                    },
+                },
+            }
+        ),
+
+        ["related-by-keyword"] = new(
+            "Find items related to a given item by shared keyword similarity",
+            InputSchema(["command", "source", "id"], new()
+            {
+                ["command"] = Const("related-by-keyword"),
+                ["source"] = Prop("string", "Source system (e.g., github, jira, zulip, confluence)"),
+                ["id"] = Prop("string", "Item ID within the source"),
+                ["minScore"] = Prop("number", "Minimum similarity score threshold (default 0.1)"),
+                ["keywordType"] = Prop("string", "Restrict to a specific keyword type"),
+                ["limit"] = IntProp("Maximum related items", 20),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["source"] = Prop("string", "Source system"),
+                    ["sourceId"] = Prop("string", "Item ID"),
+                    ["total"] = Prop("integer", "Number of related items"),
+                    ["relatedItems"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "array",
+                        ["items"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new Dictionary<string, object>
+                            {
+                                ["source"] = Prop("string", "Source system of related item"),
+                                ["sourceId"] = Prop("string", "Related item ID"),
+                                ["contentType"] = Prop("string", "Content type"),
+                                ["title"] = Prop("string", "Related item title"),
+                                ["score"] = Prop("number", "Similarity score"),
+                                ["sharedKeywords"] = new Dictionary<string, object>
+                                {
+                                    ["type"] = "array",
+                                    ["items"] = new Dictionary<string, object> { ["type"] = "string" },
+                                    ["description"] = "Keywords shared between the items",
+                                },
+                            },
+                        },
+                        ["description"] = "List of related items",
+                    },
+                },
+            }
+        ),
     };
 
     // Schema builder helpers

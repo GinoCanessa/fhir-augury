@@ -91,6 +91,24 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
         return await GetTimedJsonAsync(url, ct);
     }
 
+    public async Task<(string Url, string Json, long ElapsedMs)> KeywordsAsync(
+        string source, string id, string? keywordType, int limit, CancellationToken ct = default)
+    {
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?limit={limit}";
+        if (!string.IsNullOrEmpty(keywordType))
+            url += $"&keywordType={Uri.EscapeDataString(keywordType)}";
+        return await GetTimedJsonAsync(url, ct);
+    }
+
+    public async Task<(string Url, string Json, long ElapsedMs)> RelatedByKeywordAsync(
+        string source, string id, double minScore, string? keywordType, int limit, CancellationToken ct = default)
+    {
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}?minScore={minScore}&limit={limit}";
+        if (!string.IsNullOrEmpty(keywordType))
+            url += $"&keywordType={Uri.EscapeDataString(keywordType)}";
+        return await GetTimedJsonAsync(url, ct);
+    }
+
     public async Task<(string Url, string Json, long ElapsedMs)> RebuildIndexTimedAsync(
         string indexType, CancellationToken ct = default)
     {
@@ -140,6 +158,22 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
             return null;
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<CrossReferenceQueryResponse>(TypedJsonOptions, ct);
+    }
+
+    public async Task<KeywordListResponse?> GetKeywordsTypedAsync(
+        string source, string id, string? keywordType = null, int? limit = null, CancellationToken ct = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string url = $"{Address.TrimEnd('/')}/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{EncodeId(source, id)}";
+        List<string> queryParts = [];
+        if (!string.IsNullOrEmpty(keywordType)) queryParts.Add($"keywordType={Uri.EscapeDataString(keywordType)}");
+        if (limit.HasValue) queryParts.Add($"limit={limit.Value}");
+        if (queryParts.Count > 0) url += "?" + string.Join("&", queryParts);
+        HttpResponseMessage response = await client.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<KeywordListResponse>(TypedJsonOptions, ct);
     }
 
     internal static string EncodeId(string source, string id)

@@ -225,4 +225,29 @@ public class SourceHttpClient
         if (includeSnapshot) url.Append("includeSnapshot=true&");
         return await client.GetFromJsonAsync<ContentItemResponse>(url.ToString().TrimEnd('&', '?'), ct);
     }
+
+    public async Task<KeywordListResponse?> ContentKeywordsAsync(
+        string sourceName, string source, string id,
+        string? keywordType, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        string encodedId = EncodeId(source, id);
+        StringBuilder url = new($"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await client.GetFromJsonAsync<KeywordListResponse>(url.ToString().TrimEnd('&', '?'), ct);
+    }
+
+    public async Task<RelatedByKeywordResponse?> ContentRelatedByKeywordAsync(
+        string sourceName, string source, string id,
+        double? minScore, string? keywordType, int? limit, CancellationToken ct)
+    {
+        HttpClient client = GetClientForSource(sourceName);
+        string encodedId = EncodeId(source, id);
+        StringBuilder url = new($"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}?");
+        if (minScore.HasValue) url.Append($"minScore={minScore.Value}&");
+        if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
+        if (limit.HasValue) url.Append($"limit={limit.Value}&");
+        return await client.GetFromJsonAsync<RelatedByKeywordResponse>(url.ToString().TrimEnd('&', '?'), ct);
+    }
 }

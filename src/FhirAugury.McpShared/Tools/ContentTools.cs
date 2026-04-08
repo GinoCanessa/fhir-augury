@@ -105,6 +105,123 @@ public static class ContentTools
         }
     }
 
+    [McpServerTool, Description("Get extracted keywords for a specific item, sorted by BM25 relevance score. " +
+        "Shows keyword text, classification (word, fhir_path, fhir_operation), occurrence count, and BM25 score.")]
+    public static async Task<string> GetKeywords(
+        IHttpClientFactory httpClientFactory,
+        [Description("Source system (e.g., github, jira, zulip, confluence)")] string source,
+        [Description("Item ID within the source (e.g., HL7/fhir#4006, FHIR-55001)")] string id,
+        [Description("Filter by keyword type: word, fhir_path, fhir_operation. Omit for all types.")] string? keywordType = null,
+        [Description("Maximum keywords to return (default 50)")] int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
+            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string url = $"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}";
+        List<string> queryParts = [];
+        if (!string.IsNullOrEmpty(keywordType)) queryParts.Add($"keywordType={Uri.EscapeDataString(keywordType)}");
+        if (limit.HasValue) queryParts.Add($"limit={limit.Value}");
+        if (queryParts.Count > 0) url += "?" + string.Join("&", queryParts);
+
+        JsonElement json = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
+
+        string sourceVal = UnifiedTools.GetString(json, "source");
+        string sourceId = UnifiedTools.GetString(json, "sourceId");
+        string contentType = UnifiedTools.GetString(json, "contentType");
+
+        StringBuilder sb = new();
+        sb.AppendLine($"## Keywords for {sourceVal}:{sourceId}");
+        if (!string.IsNullOrEmpty(contentType))
+            sb.AppendLine($"Content type: {contentType}");
+        sb.AppendLine();
+
+        if (json.TryGetProperty("keywords", out JsonElement keywords) && keywords.GetArrayLength() > 0)
+        {
+            sb.AppendLine("| Keyword | Type | Count | BM25 Score |");
+            sb.AppendLine("|---------|------|------:|------------|");
+            foreach (JsonElement kw in keywords.EnumerateArray())
+            {
+                string keyword = UnifiedTools.GetString(kw, "keyword");
+                string kwType = UnifiedTools.GetString(kw, "keywordType");
+                int count = kw.TryGetProperty("count", out JsonElement c) ? c.GetInt32() : 0;
+                double score = kw.TryGetProperty("bm25Score", out JsonElement s) ? s.GetDouble() : 0;
+                sb.AppendLine($"| {keyword} | {kwType} | {count} | {score:F3} |");
+            }
+        }
+        else
+        {
+            sb.AppendLine("No keywords found for this item.");
+        }
+
+        return sb.ToString();
+    }
+
+    [McpServerTool, Description("Find items related to a given item by shared keyword similarity. " +
+        "Returns items ranked by BM25 keyword vector similarity, with shared keywords listed.")]
+    public static async Task<string> RelatedByKeyword(
+        IHttpClientFactory httpClientFactory,
+        [Description("Source system (e.g., github, jira, zulip, confluence)")] string source,
+        [Description("Item ID within the source (e.g., HL7/fhir#4006, FHIR-55001)")] string id,
+        [Description("Minimum similarity score threshold 0.0-1.0 (default 0.1)")] double? minScore = null,
+        [Description("Filter by keyword type: word, fhir_path, fhir_operation")] string? keywordType = null,
+        [Description("Maximum related items to return (default 20)")] int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
+        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
+            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string url = $"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}";
+        List<string> queryParts = [];
+        if (minScore.HasValue) queryParts.Add($"minScore={minScore.Value}");
+        if (!string.IsNullOrEmpty(keywordType)) queryParts.Add($"keywordType={Uri.EscapeDataString(keywordType)}");
+        if (limit.HasValue) queryParts.Add($"limit={limit.Value}");
+        if (queryParts.Count > 0) url += "?" + string.Join("&", queryParts);
+
+        JsonElement json = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
+
+        string sourceVal = UnifiedTools.GetString(json, "source");
+        string sourceId = UnifiedTools.GetString(json, "sourceId");
+
+        StringBuilder sb = new();
+        sb.AppendLine($"## Items Related to {sourceVal}:{sourceId} (by keyword similarity)");
+        sb.AppendLine();
+
+        if (json.TryGetProperty("relatedItems", out JsonElement items) && items.GetArrayLength() > 0)
+        {
+            sb.AppendLine("| Score | Source | ID | Title | Shared Keywords |");
+            sb.AppendLine("|------:|--------|-------|-------|-----------------|");
+            foreach (JsonElement item in items.EnumerateArray())
+            {
+                string itemSource = UnifiedTools.GetString(item, "source");
+                string itemId = UnifiedTools.GetString(item, "sourceId");
+                string title = UnifiedTools.GetString(item, "title");
+                double score = item.TryGetProperty("score", out JsonElement s) ? s.GetDouble() : 0;
+                List<string> sharedKws = [];
+                if (item.TryGetProperty("sharedKeywords", out JsonElement skws) && skws.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement skw in skws.EnumerateArray())
+                        sharedKws.Add(skw.GetString() ?? "");
+                }
+                string kwStr = string.Join(", ", sharedKws);
+                sb.AppendLine($"| {score:F3} | {itemSource} | {itemId} | {title} | {kwStr} |");
+            }
+        }
+        else
+        {
+            sb.AppendLine("No related items found.");
+        }
+
+        if (json.TryGetProperty("warnings", out JsonElement warnings) && warnings.ValueKind == JsonValueKind.Array)
+        {
+            sb.AppendLine();
+            foreach (JsonElement w in warnings.EnumerateArray())
+                sb.AppendLine($"⚠️ {w.GetString()}");
+        }
+
+        return sb.ToString();
+    }
+
     // ── Shared helpers ───────────────────────────────────────────────────
 
     private static async Task<string> XRefQuery(

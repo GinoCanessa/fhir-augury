@@ -609,4 +609,130 @@ public class ContentControllerTests
 
         Assert.Empty(jiraHandler.SentRequests);
     }
+
+    // ── Keyword tests ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetKeywords_RoutesToCorrectSource()
+    {
+        Dictionary<string, SourceServiceConfig> services = TwoEnabledSources();
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new KeywordListResponse
+        {
+            Source = "jira",
+            SourceId = "FHIR-123",
+            ContentType = "issue",
+            Keywords =
+            [
+                new KeywordEntry { Keyword = "patient", KeywordType = "word", Count = 5, Bm25Score = 4.5 },
+            ],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+        };
+
+        ContentController controller = CreateController(handlers, services);
+        IActionResult result = await controller.GetKeywords("jira", "FHIR-123", null, null);
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(result);
+        KeywordListResponse response = Assert.IsType<KeywordListResponse>(ok.Value);
+        Assert.Equal("jira", response.Source);
+        Assert.Single(response.Keywords);
+        Assert.Equal("patient", response.Keywords[0].Keyword);
+    }
+
+    [Fact]
+    public async Task GetKeywords_DisabledSource_Returns404()
+    {
+        Dictionary<string, SourceServiceConfig> services = TwoEnabledSources();
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = new MockHttpMessageHandler(),
+        };
+
+        ContentController controller = CreateController(handlers, services);
+        IActionResult result = await controller.GetKeywords("github", "test", null, null);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task RelatedByKeyword_FansOutToAllSources()
+    {
+        Dictionary<string, SourceServiceConfig> services = TwoEnabledSources();
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new RelatedByKeywordResponse
+        {
+            Source = "jira",
+            SourceId = "FHIR-123",
+            RelatedItems =
+            [
+                new RelatedByKeywordItem
+                {
+                    Source = "jira", SourceId = "FHIR-456", ContentType = "issue",
+                    Title = "Related Jira", Score = 0.8, SharedKeywords = ["patient"],
+                },
+            ],
+        });
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new RelatedByKeywordResponse
+        {
+            Source = "zulip",
+            SourceId = "FHIR-123",
+            RelatedItems =
+            [
+                new RelatedByKeywordItem
+                {
+                    Source = "zulip", SourceId = "456", ContentType = "message",
+                    Title = "Related Zulip", Score = 0.5, SharedKeywords = ["patient"],
+                },
+            ],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, services);
+        IActionResult result = await controller.RelatedByKeyword("jira", "FHIR-123", null, null, null);
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(result);
+        RelatedByKeywordResponse response = Assert.IsType<RelatedByKeywordResponse>(ok.Value);
+        Assert.Equal(2, response.RelatedItems.Count);
+        Assert.Equal(0.8, response.RelatedItems[0].Score);
+        Assert.Equal(0.5, response.RelatedItems[1].Score);
+    }
+
+    [Fact]
+    public async Task RelatedByKeyword_PartialFailure_ReturnsWarning()
+    {
+        Dictionary<string, SourceServiceConfig> services = TwoEnabledSources();
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new RelatedByKeywordResponse
+        {
+            Source = "jira",
+            SourceId = "test",
+            RelatedItems = [],
+        });
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.Throw(new HttpRequestException("Connection refused"));
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, services);
+        IActionResult result = await controller.RelatedByKeyword("jira", "test", null, null, null);
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(result);
+        RelatedByKeywordResponse response = Assert.IsType<RelatedByKeywordResponse>(ok.Value);
+        Assert.NotNull(response.Warnings);
+        Assert.Contains(response.Warnings, w => w.Contains("zulip"));
+    }
 }
