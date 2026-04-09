@@ -21,25 +21,27 @@ dotnet build fhir-augury.slnx
 
 ## Solution Structure
 
-The v2 architecture uses 12 independent projects:
+The v2 architecture uses 15 independent projects:
 
 | Project | Type | Description |
 |---------|------|-------------|
-| `FhirAugury.Common` | Library | Shared types, gRPC protobuf, utilities |
-| `FhirAugury.Source.Jira` | Service | Jira source (:5160/:5161) |
-| `FhirAugury.Source.Zulip` | Service | Zulip source (:5170/:5171) |
-| `FhirAugury.Source.Confluence` | Service | Confluence source (:5180/:5181) |
-| `FhirAugury.Source.GitHub` | Service | GitHub source (:5190/:5191) |
-| `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150/:5151) |
+| `FhirAugury.Common` | Library | Shared types, API contracts, utilities |
+| `FhirAugury.Source.Jira` | Service | Jira source (:5160) |
+| `FhirAugury.Source.Zulip` | Service | Zulip source (:5170) |
+| `FhirAugury.Source.Confluence` | Service | Confluence source (:5180) |
+| `FhirAugury.Source.GitHub` | Service | GitHub source (:5190) |
+| `FhirAugury.Parsing.Fhir` | Library | FHIR XML/JSON resource parsing (StructureDefinitions, canonical artifacts) |
+| `FhirAugury.Parsing.Fsh` | Library | FSH (FHIR Shorthand) and sushi-config.yaml parsing |
+| `FhirAugury.Orchestrator` | Service | Aggregator + cross-ref (:5150) |
 | `FhirAugury.McpStdio` | CLI Tool | MCP server for LLM agents (stdio transport) |
 | `FhirAugury.McpHttp` | Service | MCP server for LLM agents (HTTP/SSE transport, :5200) |
-| `FhirAugury.McpShared` | Library | Shared MCP tool implementations and gRPC client registration |
+| `FhirAugury.McpShared` | Library | Shared MCP tool implementations and HTTP client registration |
 | `FhirAugury.Cli` | CLI Tool | Command-line interface |
+| `FhirAugury.DevUi` | Blazor Server | Operational dashboard (:5210) |
 | `FhirAugury.ServiceDefaults` | Library | Shared Aspire defaults (OpenTelemetry, health, resilience) |
 | `FhirAugury.AppHost` | Aspire Host | Orchestrates all services for local development |
 
-Each service has its own SQLite database, file-system cache, and exposes both
-HTTP (REST/health) and gRPC endpoints.
+Each service has its own SQLite database, file-system cache, and HTTP API.
 
 ## Building
 
@@ -60,7 +62,7 @@ dotnet build fhir-augury.slnx -c Release
   timestamp-based versioning
 - **`src/Directory.Build.props`** — Imports `common.props`
 - **`tests/Directory.Build.props`** — Test project configuration
-- **`protos/`** — Protobuf service definitions, compiled by `FhirAugury.Common`
+
 
 ## Running Individual Services
 
@@ -69,23 +71,23 @@ Each source service can run independently:
 ```bash
 # Start Jira source service
 dotnet run --project src/FhirAugury.Source.Jira
-# → HTTP on :5160, gRPC on :5161
+# → HTTP on :5160
 
 # Start Zulip source service
 dotnet run --project src/FhirAugury.Source.Zulip
-# → HTTP on :5170, gRPC on :5171
+# → HTTP on :5170
 
 # Start Confluence source service
 dotnet run --project src/FhirAugury.Source.Confluence
-# → HTTP on :5180, gRPC on :5181
+# → HTTP on :5180
 
 # Start GitHub source service
 dotnet run --project src/FhirAugury.Source.GitHub
-# → HTTP on :5190, gRPC on :5191
+# → HTTP on :5190
 
 # Start the orchestrator (needs source services running)
 dotnet run --project src/FhirAugury.Orchestrator
-# → HTTP on :5150, gRPC on :5151
+# → HTTP on :5150
 ```
 
 ## Running All Services with .NET Aspire
@@ -101,9 +103,11 @@ dotnet workload install aspire
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The AppHost starts all source services and the orchestrator with their standard
-ports. The orchestrator automatically waits for all source services to be
-healthy. The Aspire dashboard (URL shown in the console) provides real-time
+The AppHost registers all source services, the orchestrator, the MCP HTTP
+server, the Dev UI, and the CLI tool with their standard ports. The orchestrator waits for
+Jira, Zulip, and GitHub to be healthy before starting. Confluence, Dev UI, MCP HTTP,
+and the CLI use explicit start and must be started manually from the Aspire
+dashboard. The Aspire dashboard (URL shown in the console) provides real-time
 logs, distributed traces, and metrics.
 
 ### Local Configuration
@@ -141,9 +145,9 @@ Each service uses its own prefix for environment variables:
 dotnet run --project src/FhirAugury.McpStdio
 
 # Override service addresses
-FHIR_AUGURY_ORCHESTRATOR=http://localhost:5151 \
-FHIR_AUGURY_JIRA_GRPC=http://localhost:5161 \
-FHIR_AUGURY_ZULIP_GRPC=http://localhost:5171 \
+FHIR_AUGURY_ORCHESTRATOR=http://localhost:5150 \
+FHIR_AUGURY_JIRA=http://localhost:5160 \
+FHIR_AUGURY_ZULIP=http://localhost:5170 \
 dotnet run --project src/FhirAugury.McpStdio
 ```
 
@@ -161,8 +165,11 @@ in the Aspire AppHost.
 
 ## Running the CLI
 
+The CLI uses a JSON-in/JSON-out interface via HTTP:
+
 ```bash
-dotnet run --project src/FhirAugury.Cli -- [command] [options]
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
+dotnet run --project src/FhirAugury.Cli -- --help --pretty
 ```
 
 ## Running Tests
@@ -190,6 +197,8 @@ dotnet test fhir-augury.slnx --verbosity normal
 | `FhirAugury.Source.GitHub.Tests` | GitHub service logic |
 | `FhirAugury.Orchestrator.Tests` | Orchestrator, cross-ref, search |
 | `FhirAugury.McpShared.Tests` | MCP tool functions |
+| `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing |
+| `FhirAugury.Parsing.Fsh.Tests` | FSH parsing |
 
 ### Test Infrastructure
 
@@ -229,13 +238,12 @@ documentation.
 ## Adding a New Source Service
 
 1. Create `src/FhirAugury.Source.{Name}/` with `Microsoft.NET.Sdk.Web`
-2. Add a protobuf definition in `protos/{name}.proto`
-3. Implement the gRPC service from `SourceService` base
-4. Add database schema, ingestion pipeline, and indexer
-5. Configure Kestrel with HTTP + gRPC ports
-6. Create `Dockerfile` following the existing pattern
-7. Add service to `docker-compose.yml` with volumes and health check
-8. Add the service to `src/FhirAugury.AppHost/AppHost.cs` with HTTP/gRPC endpoints
-9. Register the source in the Orchestrator's `appsettings.json`
-10. Add test project in `tests/FhirAugury.Source.{Name}.Tests/`
-11. Update documentation
+2. Add HTTP API controllers implementing the standard API endpoints
+3. Add database schema, ingestion pipeline, and indexer
+4. Configure Kestrel with an HTTP port
+5. Create `Dockerfile` following the existing pattern
+6. Add service to `docker-compose.yml` with volumes and health check
+7. Add the service to `src/FhirAugury.AppHost/AppHost.cs` with HTTP endpoint
+8. Register the source in the Orchestrator's `appsettings.json`
+9. Add test project in `tests/FhirAugury.Source.{Name}.Tests/`
+10. Update documentation

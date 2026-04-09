@@ -1,0 +1,77 @@
+@using FhirAugury.Common.Api
+
+<div class="row mt-4">
+    <div class="col-12 mb-3">
+        <div class="card">
+            <div class="card-header fw-semibold">
+                <i class="bi bi-tags"></i> Keywords
+                @if (Keywords?.Keywords is not null)
+                {
+                    <span class="badge bg-secondary ms-1">@Keywords.Keywords.Count</span>
+                }
+            </div>
+            <div class="card-body">
+                @if (Keywords?.Keywords is { Count: > 0 })
+                {
+                    <div class="mb-2">
+                        <button class="btn btn-sm @(_typeFilter is null ? "btn-primary" : "btn-outline-secondary") me-1"
+                                @onclick='() => _typeFilter = null'>All</button>
+                        <button class="btn btn-sm @(_typeFilter == "word" ? "btn-primary" : "btn-outline-secondary") me-1"
+                                @onclick='() => _typeFilter = "word"'>Word</button>
+                        <button class="btn btn-sm @(_typeFilter == "fhir_path" ? "btn-primary" : "btn-outline-secondary") me-1"
+                                @onclick='() => _typeFilter = "fhir_path"'>FHIR Path</button>
+                        <button class="btn btn-sm @(_typeFilter == "fhir_operation" ? "btn-primary" : "btn-outline-secondary") me-1"
+                                @onclick='() => _typeFilter = "fhir_operation"'>FHIR Operation</button>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Keyword</th>
+                                    <th>Type</th>
+                                    <th class="text-end">Count</th>
+                                    <th class="text-end">BM25 Score</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (KeywordEntry kw in FilteredKeywords)
+                                {
+                                    <tr>
+                                        <td><code>@kw.Keyword</code></td>
+                                        <td><span class="badge @TypeBadgeClass(kw.KeywordType)">@kw.KeywordType</span></td>
+                                        <td class="text-end">@kw.Count</td>
+                                        <td class="text-end fw-semibold">@kw.Bm25Score.ToString("F3")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <span class="text-muted">No keywords extracted for this item.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public KeywordListResponse? Keywords { get; set; }
+
+    private string? _typeFilter;
+
+    private IEnumerable<KeywordEntry> FilteredKeywords =>
+        _typeFilter is null
+            ? Keywords?.Keywords ?? []
+            : (Keywords?.Keywords ?? []).Where(k => k.KeywordType == _typeFilter);
+
+    private static string TypeBadgeClass(string keywordType) => keywordType switch
+    {
+        "fhir_path" => "bg-info",
+        "fhir_operation" => "bg-warning text-dark",
+        "word" => "bg-secondary",
+        _ => "bg-secondary",
+    };
+}

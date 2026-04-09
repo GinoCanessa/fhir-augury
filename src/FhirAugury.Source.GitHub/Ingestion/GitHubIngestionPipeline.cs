@@ -1,8 +1,10 @@
+using System.Net.Http.Json;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Indexing;
+using FhirAugury.Source.GitHub.Ingestion.Categories;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,7 +21,15 @@ public class GitHubIngestionPipeline(
     GitHubIndexer indexer,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
-    JiraRefExtractor jiraRefExtractor,
+    GitHubFileContentIndexer fileContentIndexer,
+    CanonicalArtifactIndexer canonicalArtifactIndexer,
+    StructureDefinitionIndexer structureDefinitionIndexer,
+    FshArtifactIndexer fshArtifactIndexer,
+    IEnumerable<IRepoCategoryStrategy> categoryStrategies,
+    TagWeightResolver weightResolver,
+    GitHubXRefRebuilder xrefRebuilder,
+    IHttpClientFactory httpClientFactory,
+    FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
     ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
 {
@@ -42,8 +52,11 @@ public class GitHubIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            IngestionResult result = await source.DownloadAllAsync(repoFilter, ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadAllAsync(repoFilter, ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             await PostIngestionAsync(result, "full", ct);
+            await NotifyOrchestratorAsync(result, "full");
 
             _currentStatus = "idle";
             return result;
@@ -73,8 +86,11 @@ public class GitHubIngestionPipeline(
             DateTimeOffset since = GetLastSyncTime();
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
-            IngestionResult result = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
+            IngestionResult result = MergeResults(cacheResult, downloadResult);
             await PostIngestionAsync(result, "incremental", ct);
+            await NotifyOrchestratorAsync(result, "incremental");
 
             _currentStatus = "idle";
             return result;
@@ -106,6 +122,7 @@ public class GitHubIngestionPipeline(
 
             IngestionResult result = await source.LoadFromCacheAsync(ct);
             await PostIngestionAsync(result, "rebuild", ct);
+            await NotifyOrchestratorAsync(result, "rebuild");
 
             _currentStatus = "idle";
             return result;
@@ -122,44 +139,137 @@ public class GitHubIngestionPipeline(
         }
     }
 
+    private readonly Dictionary<RepoCategory, IRepoCategoryStrategy> _strategyMap =
+        categoryStrategies.ToDictionary(s => s.Category);
+
     private async Task PostIngestionAsync(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
         // Clone repos and extract commit data
-        List<string> repos = new List<string>(_options.Repositories);
-        repos.AddRange(_options.AdditionalRepositories);
+        IReadOnlyList<(string Name, RepoCategory Category)> repos = _options.GetAllRepositories();
 
-        foreach (string repo in repos)
+        tracker.MarkStarted("commits");
+        tracker.MarkStarted("file-contents");
+        tracker.MarkStarted("cross-refs");
+        try
         {
+            foreach ((string repo, RepoCategory category) in repos)
+            {
+                try
+                {
+                    _currentStatus = $"cloning:{repo}";
+                    string clonePath = await cloner.EnsureCloneAsync(repo, ct);
+
+                    _currentStatus = $"extracting_commits:{repo}";
+                    await commitExtractor.ExtractAsync(clonePath, repo, ct);
+
+                    // Resolve strategy for this repo's category
+                    IRepoCategoryStrategy? strategy = _strategyMap.GetValueOrDefault(category);
+                    List<string>? priorityPaths = strategy?.GetPriorityPaths(repo, clonePath);
+                    List<string>? additionalIgnorePatterns = strategy?.GetAdditionalIgnorePatterns();
+
+                    _currentStatus = $"indexing_files:{repo}";
+                    fileContentIndexer.IndexRepositoryFiles(repo, clonePath, ct,
+                        priorityPaths,
+                        additionalIgnorePatterns is { Count: > 0 } ? additionalIgnorePatterns : null);
+
+                    // Clean up stale file content records outside priority paths
+                    // (from pre-filtering syncs that indexed the full tree)
+                    if (priorityPaths is { Count: > 0 })
+                    {
+                        CleanupStaleFileContents(repo, priorityPaths);
+                    }
+
+                    _currentStatus = $"tagging_files:{repo}";
+                    ApplyTags(repo, clonePath, strategy, ct);
+
+                    _currentStatus = $"mapping_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        using SqliteConnection connection = database.OpenConnection();
+                        strategy.BuildArtifactMappings(repo, clonePath, connection, ct);
+                    }
+
+                    _currentStatus = $"indexing_canonical_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        IReadOnlyList<string> artifactFiles = strategy.DiscoverCanonicalArtifactFiles(repo, clonePath, ct);
+                        if (artifactFiles.Count > 0)
+                        {
+                            int indexed = canonicalArtifactIndexer.IndexFiles(repo, clonePath, artifactFiles, ct);
+                            logger.LogInformation("Indexed {Count} canonical artifacts for {Repo}", indexed, repo);
+                        }
+                    }
+
+                    _currentStatus = $"indexing_structure_definitions:{repo}";
+                    if (strategy is not null)
+                    {
+                        List<string> sdFiles = strategy.DiscoverStructureDefinitionFiles(repo, clonePath, ct);
+                        if (sdFiles.Count > 0)
+                        {
+                            using SqliteConnection sdConnection = database.OpenConnection();
+                            structureDefinitionIndexer.IndexStructureDefinitions(repo, sdFiles, clonePath, sdConnection, ct);
+                        }
+                    }
+
+                    _currentStatus = $"indexing_fsh_artifacts:{repo}";
+                    if (strategy is not null)
+                    {
+                        (IReadOnlyList<string> fshFiles, FhirAugury.Parsing.Fsh.SushiConfig? sushiConfig) =
+                            strategy.DiscoverFshContent(repo, clonePath, ct);
+
+                        if (fshFiles.Count > 0)
+                        {
+                            int indexed = fshArtifactIndexer.IndexFshFiles(
+                                repo, clonePath, fshFiles, sushiConfig, ct);
+                            logger.LogInformation("Indexed {Count} FSH artifacts for {Repo}", indexed, repo);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to clone/extract commits/index files for {Repo}", repo);
+                }
+            }
+            tracker.MarkCompleted("commits");
+            tracker.MarkCompleted("file-contents");
+
             try
             {
-                _currentStatus = $"cloning:{repo}";
-                string clonePath = await cloner.EnsureCloneAsync(repo, ct);
-
-                _currentStatus = $"extracting_commits:{repo}";
-                await commitExtractor.ExtractAsync(clonePath, repo, ct);
+                _currentStatus = "extracting_cross_refs";
+                List<string> allRepoNames = repos.Select(r => r.Name).ToList();
+                xrefRebuilder.RebuildAllRepos(allRepoNames, validJiraNumbers: null, ct);
+                tracker.MarkCompleted("cross-refs");
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to clone/extract commits for {Repo}", repo);
+                logger.LogWarning(ex, "Failed to extract cross-references");
+                tracker.MarkFailed("cross-refs", ex.Message);
             }
-
-            try
-            {
-                _currentStatus = $"extracting_jira_refs:{repo}";
-                jiraRefExtractor.ExtractAll(repo, validJiraNumbers: null, ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to extract Jira references for {Repo}", repo);
-            }
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("commits", ex.Message);
+            tracker.MarkFailed("file-contents", ex.Message);
+            tracker.MarkFailed("cross-refs", ex.Message);
+            throw;
         }
 
         // Rebuild BM25 keyword index
         _currentStatus = "rebuilding_index";
         logger.LogInformation("Rebuilding BM25 index");
-        indexer.RebuildFullIndex(ct);
+        tracker.MarkStarted("bm25");
+        try
+        {
+            indexer.RebuildFullIndex(ct);
+            tracker.MarkCompleted("bm25");
+        }
+        catch (Exception ex)
+        {
+            tracker.MarkFailed("bm25", ex.Message);
+            throw;
+        }
 
         // Update sync state
         UpdateSyncState(result, runType, ct);
@@ -167,6 +277,60 @@ public class GitHubIngestionPipeline(
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
+    }
+
+    /// <summary>
+    /// Applies category-specific tags to a repository using the strategy pattern.
+    /// Replaces the previous RepoFileTagger logic.
+    /// </summary>
+    private void ApplyTags(string repoFullName, string clonePath, IRepoCategoryStrategy? strategy, CancellationToken ct)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+
+        // Clear existing tags for this repo
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM github_file_tags WHERE RepoFullName = @repo";
+            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            cmd.ExecuteNonQuery();
+        }
+
+        if (strategy is null)
+        {
+            logger.LogDebug("No strategy for {Repo}, skipping tags", repoFullName);
+            return;
+        }
+
+        if (!strategy.Validate(repoFullName, clonePath))
+        {
+            logger.LogWarning("Strategy {Strategy} validation failed for {Repo}, skipping tags",
+                strategy.StrategyName, repoFullName);
+            return;
+        }
+
+        logger.LogInformation("Applying {Strategy} strategy to {Repo}",
+            strategy.StrategyName, repoFullName);
+
+        List<GitHubFileTagRecord> tags = strategy.DiscoverTags(repoFullName, clonePath, ct);
+
+        // Apply weights from configuration
+        foreach (GitHubFileTagRecord tag in tags)
+        {
+            tag.Weight = weightResolver.ResolveWeight(tag.TagCategory, tag.TagName, tag.TagModifier);
+        }
+
+        if (tags.Count > 0)
+        {
+            const int batchSize = 1000;
+            for (int i = 0; i < tags.Count; i += batchSize)
+            {
+                List<GitHubFileTagRecord> batch = tags.GetRange(i, Math.Min(batchSize, tags.Count - i));
+                batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            }
+
+            logger.LogInformation("Applied {Count} tags via {Strategy}",
+                tags.Count, strategy.StrategyName);
+        }
     }
 
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
@@ -207,6 +371,97 @@ public class GitHubIngestionPipeline(
         using SqliteConnection connection = database.OpenConnection();
         GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
         return state?.LastSyncAt;
+    }
+
+    private async Task<IngestionResult?> LoadCacheIfDatabaseEmptyAsync(CancellationToken ct)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        int repoCount = GitHubRepoRecord.SelectCount(connection);
+
+        if (repoCount > 0)
+            return null;
+
+        logger.LogInformation("Database is empty; loading local cache before downloading");
+        IngestionResult cacheResult = await source.LoadFromCacheAsync(ct);
+
+        if (cacheResult.ItemsProcessed > 0)
+            logger.LogInformation("Pre-loaded {Count} items from cache ({New} new)",
+                cacheResult.ItemsProcessed, cacheResult.ItemsNew);
+        else
+            logger.LogInformation("No cached data found to pre-load");
+
+        return cacheResult;
+    }
+
+    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult second)
+    {
+        if (first is null)
+            return second;
+
+        return new IngestionResult(
+            first.ItemsProcessed + second.ItemsProcessed,
+            first.ItemsNew + second.ItemsNew,
+            first.ItemsUpdated + second.ItemsUpdated,
+            first.ItemsFailed + second.ItemsFailed,
+            [.. first.Errors, .. second.Errors],
+            first.StartedAt);
+    }
+
+    /// <summary>
+    /// Removes <c>github_file_contents</c> rows for files outside the given priority paths.
+    /// This cleans up stale records from pre-filtering syncs that indexed the full tree.
+    /// </summary>
+    internal void CleanupStaleFileContents(string repoFullName, List<string> priorityPaths)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+
+        using SqliteCommand cmd = connection.CreateCommand();
+
+        // Build WHERE clause: FilePath NOT LIKE 'path1/%' AND FilePath NOT LIKE 'path2/%' ...
+        List<string> conditions = [];
+        for (int i = 0; i < priorityPaths.Count; i++)
+        {
+            string paramName = $"@path{i}";
+            string normalizedPath = priorityPaths[i].Replace('\\', '/').TrimEnd('/') + "/";
+            cmd.Parameters.AddWithValue(paramName, normalizedPath + "%");
+            conditions.Add($"FilePath NOT LIKE {paramName}");
+        }
+
+        cmd.CommandText = $"""
+            DELETE FROM github_file_contents
+            WHERE RepoFullName = @repo
+            AND {string.Join(" AND ", conditions)}
+            """;
+        cmd.Parameters.AddWithValue("@repo", repoFullName);
+
+        int removed = cmd.ExecuteNonQuery();
+        if (removed > 0)
+        {
+            logger.LogInformation(
+                "Cleaned up {Count} stale file content records outside priority paths for {Repo}",
+                removed, repoFullName);
+        }
+    }
+
+    private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
+    {
+        if (string.IsNullOrWhiteSpace(_options.OrchestratorAddress)) return;
+
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            await client.PostAsJsonAsync("/api/v1/notify-ingestion", new
+            {
+                source = IGitHubDataProvider.SourceName,
+                type = runType,
+                itemsIngested = result.ItemsProcessed,
+                completedAt = result.CompletedAt,
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to notify orchestrator of ingestion completion");
+        }
     }
 
     async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)

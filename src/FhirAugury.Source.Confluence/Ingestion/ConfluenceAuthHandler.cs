@@ -1,4 +1,4 @@
-using FhirAugury.Common.Grpc;
+using FhirAugury.Common.Http;
 using FhirAugury.Source.Confluence.Configuration;
 using Microsoft.Extensions.Options;
 

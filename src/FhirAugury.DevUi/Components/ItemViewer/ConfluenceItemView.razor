@@ -1,0 +1,53 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item">
+    @if (Item.Metadata?.TryGetValue("space_key", out string? spaceKey) == true)
+    {
+        <span class="badge bg-warning text-dark me-2">@spaceKey</span>
+    }
+    @if (Item.Metadata?.TryGetValue("version", out string? version) == true)
+    {
+        <span class="text-muted me-2">v@version</span>
+    }
+</ItemHeader>
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="confluence"
+            DisplayOrder="_displayOrder" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-file-text"></i> Page Content</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    @((MarkupString)Item.Content)
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No page content available.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (Item.Comments is { Count: > 0 })
+{
+    <ItemComments Comments="Item.Comments" />
+}
+
+<ItemCrossRefs CrossRefs="CrossRefs" />
+
+@code {
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
+
+    private static readonly List<string> _displayOrder =
+    [
+        "space_key", "version", "labels", "parent_id", "last_modified_by"
+    ];
+}

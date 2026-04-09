@@ -1,6 +1,6 @@
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Database;
-using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -29,19 +29,22 @@ public class ConfluenceJiraRefTests : IDisposable
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord record = new ConfluenceJiraRefRecord
+        JiraXRefRecord record = new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "50001",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page,
+            SourceId = "50001",
+            LinkType = "mentions",
             JiraKey = "FHIR-12345",
+            OriginalLiteral = "FHIR-12345",
             Context = "See FHIR-12345 for patient resource details",
         };
 
-        ConfluenceJiraRefRecord.Insert(conn, record);
-        ConfluenceJiraRefRecord? result = ConfluenceJiraRefRecord.SelectSingle(conn, JiraKey: "FHIR-12345");
+        JiraXRefRecord.Insert(conn, record);
+        JiraXRefRecord? result = JiraXRefRecord.SelectSingle(conn, JiraKey: "FHIR-12345");
 
         Assert.NotNull(result);
-        Assert.Equal("50001", result.ConfluenceId);
+        Assert.Equal("50001", result.SourceId);
         Assert.Equal("FHIR-12345", result.JiraKey);
         Assert.Equal("See FHIR-12345 for patient resource details", result.Context);
     }
@@ -51,65 +54,71 @@ public class ConfluenceJiraRefTests : IDisposable
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "100",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "100", LinkType = "mentions",
             JiraKey = "FHIR-1001",
+            OriginalLiteral = "FHIR-1001",
             Context = "Referenced in page 100",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "200",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "200", LinkType = "mentions",
             JiraKey = "FHIR-1001",
+            OriginalLiteral = "FHIR-1001",
             Context = "Also referenced in page 200",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "300",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "300", LinkType = "mentions",
             JiraKey = "FHIR-9999",
+            OriginalLiteral = "FHIR-9999",
             Context = "Different ticket in page 300",
         });
 
-        List<ConfluenceJiraRefRecord> results = ConfluenceJiraRefRecord.SelectList(conn, JiraKey: "FHIR-1001");
+        List<JiraXRefRecord> results = JiraXRefRecord.SelectList(conn, JiraKey: "FHIR-1001");
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal("FHIR-1001", r.JiraKey));
     }
 
     [Fact]
-    public void JiraRefRecord_SelectByConfluenceId()
+    public void JiraRefRecord_SelectBySourceId()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "400",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
             JiraKey = "FHIR-2001",
+            OriginalLiteral = "FHIR-2001",
             Context = "First ref in page 400",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "400",
-            JiraKey = "GF-500",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "400", LinkType = "mentions",
+            JiraKey = "FHIR-500",
+            OriginalLiteral = "GF-500",
             Context = "Second ref in page 400",
         });
-        ConfluenceJiraRefRecord.Insert(conn, new ConfluenceJiraRefRecord
+        JiraXRefRecord.Insert(conn, new JiraXRefRecord
         {
-            Id = ConfluenceJiraRefRecord.GetIndex(),
-            ConfluenceId = "500",
+            Id = JiraXRefRecord.GetIndex(),
+            ContentType = ContentTypes.Page, SourceId = "500", LinkType = "mentions",
             JiraKey = "FHIR-3001",
+            OriginalLiteral = "FHIR-3001",
             Context = "Ref in different page",
         });
 
-        List<ConfluenceJiraRefRecord> results = ConfluenceJiraRefRecord.SelectList(conn, ConfluenceId: "400");
+        List<JiraXRefRecord> results = JiraXRefRecord.SelectList(conn, SourceId: "400");
 
         Assert.Equal(2, results.Count);
-        Assert.All(results, r => Assert.Equal("400", r.ConfluenceId));
+        Assert.All(results, r => Assert.Equal("400", r.SourceId));
     }
 
     [Fact]
@@ -127,9 +136,12 @@ public class ConfluenceJiraRefTests : IDisposable
 
         Assert.Contains("FHIR-55001", keys);
         Assert.Contains("FHIR-55002", keys);
-        Assert.Contains("GF-123", keys);
+        Assert.Contains("FHIR-123", keys);   // GF-123 → normalized FHIR-123
         Assert.Contains("FHIR-99999", keys); // J#99999 → FHIR-99999
         Assert.Equal(4, keys.Count);
+
+        Assert.Contains(tickets, t => t.OriginalLiteral == "GF-123");
+        Assert.Contains(tickets, t => t.OriginalLiteral == "FHIR-55001");
         Assert.All(tickets, t => Assert.False(string.IsNullOrWhiteSpace(t.Context)));
     }
 }

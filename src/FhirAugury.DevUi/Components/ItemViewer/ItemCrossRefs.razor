@@ -1,0 +1,60 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+
+<div class="row mt-4">
+    @* Cross-References *@
+    <div class="col-12 mb-3">
+        <div class="card">
+            <div class="card-header fw-semibold">
+                <i class="bi bi-link-45deg"></i> Cross-References
+                @if (CrossRefs?.Hits is not null)
+                {
+                    <span class="badge bg-secondary ms-1">@CrossRefs.Hits.Count</span>
+                }
+            </div>
+            <div class="card-body">
+                @if (CrossRefs?.Hits is { Count: > 0 })
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>ID</th>
+                                    <th>Link</th>
+                                    <th>Title</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (CrossReferenceHit hit in CrossRefs.Hits)
+                                {
+                                    bool targetIsQueried = string.Equals(hit.TargetId, CrossRefs.Value, StringComparison.OrdinalIgnoreCase);
+                                    string viewType = targetIsQueried ? hit.SourceType : hit.TargetType;
+                                    string viewId = targetIsQueried ? hit.SourceId : hit.TargetId;
+                                    string viewTitle = targetIsQueried ? (hit.SourceTitle ?? "") : (hit.TargetTitle ?? "");
+                                    <tr>
+                                        <td><span class="badge @SourceBadgeHelper.SourceBadgeClass(viewType)">@viewType</span></td>
+                                        <td><a href="@ItemViewerUrl.For(viewType, viewId)"><code>@viewId</code></a></td>
+                                        <td><span class="badge bg-primary">@hit.LinkType</span></td>
+                                        <td title="@viewTitle">@Truncate(viewTitle, 40)</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <span class="text-muted">No cross-references found.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
+
+    private static string Truncate(string text, int maxLength) =>
+        string.IsNullOrEmpty(text) ? "" : text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
+}

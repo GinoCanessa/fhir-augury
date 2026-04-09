@@ -1,137 +1,72 @@
-using Fhiraugury;
-using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
-using Grpc.Core.Testing;
+using System.Net;
+using System.Text;
+using NSubstitute;
 
 namespace FhirAugury.McpShared.Tests;
 
 /// <summary>
-/// Helper for creating mock gRPC responses for MCP tool testing.
+/// Test infrastructure for mocking HTTP calls made by MCP tools.
 /// </summary>
 internal static class McpTestHelper
 {
-    internal static SearchResponse CreateSearchResponse(params (string Source, string Id, string Title, double Score)[] items)
+    /// <summary>
+    /// Creates a mock <see cref="IHttpClientFactory"/> that returns an <see cref="HttpClient"/>
+    /// backed by a <see cref="MockHttpHandler"/> returning the given JSON for any request.
+    /// </summary>
+    internal static IHttpClientFactory CreateFactory(string clientName, string responseJson, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
-        SearchResponse response = new SearchResponse { TotalResults = items.Length };
-        foreach ((string? source, string? id, string? title, double score) in items)
+        MockHttpHandler handler = new(responseJson, statusCode);
+        HttpClient client = new(handler) { BaseAddress = new Uri("http://localhost") };
+
+        IHttpClientFactory factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(clientName).Returns(client);
+        return factory;
+    }
+
+    /// <summary>
+    /// Creates a mock <see cref="IHttpClientFactory"/> that serves multiple named HTTP clients,
+    /// each returning its own preconfigured JSON response.
+    /// </summary>
+    internal static IHttpClientFactory CreateFactory(params (string Name, string ResponseJson)[] clients)
+    {
+        IHttpClientFactory factory = Substitute.For<IHttpClientFactory>();
+        foreach ((string name, string json) in clients)
         {
-            response.Results.Add(new SearchResultItem
-            {
-                Source = source,
-                Id = id,
-                Title = title,
-                Score = score,
-                Url = $"https://example.com/{source}/{id}",
-                UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-            });
+            MockHttpHandler handler = new(json);
+            HttpClient client = new(handler) { BaseAddress = new Uri("http://localhost") };
+            factory.CreateClient(name).Returns(client);
         }
-        return response;
-    }
-
-    internal static FindRelatedResponse CreateRelatedResponse(
-        string seedSource, string seedId, string seedTitle,
-        params (string Source, string Id, string Title, double Score, string Relationship)[] items)
-    {
-        FindRelatedResponse response = new FindRelatedResponse
-        {
-            SeedSource = seedSource,
-            SeedId = seedId,
-            SeedTitle = seedTitle,
-        };
-        foreach ((string? source, string? id, string? title, double score, string? rel) in items)
-        {
-            response.Items.Add(new RelatedItem
-            {
-                Source = source,
-                Id = id,
-                Title = title,
-                RelevanceScore = score,
-                Relationship = rel,
-                Url = $"https://example.com/{source}/{id}",
-            });
-        }
-        return response;
-    }
-
-    internal static GetXRefResponse CreateXRefResponse(
-        params (string SourceType, string SourceId, string TargetType, string TargetId, string LinkType)[] refs)
-    {
-        GetXRefResponse response = new GetXRefResponse();
-        foreach ((string? st, string? si, string? tt, string? ti, string? lt) in refs)
-        {
-            response.References.Add(new CrossReference
-            {
-                SourceType = st,
-                SourceId = si,
-                TargetType = tt,
-                TargetId = ti,
-                LinkType = lt,
-            });
-        }
-        return response;
-    }
-
-    internal static ServicesStatusResponse CreateServicesStatus()
-    {
-        ServicesStatusResponse response = new ServicesStatusResponse();
-        response.Services.Add(new ServiceHealth
-        {
-            Name = "jira",
-            Status = "healthy",
-            GrpcAddress = "http://localhost:5161",
-            ItemCount = 1000,
-            DbSizeBytes = 10_000_000,
-        });
-        response.Services.Add(new ServiceHealth
-        {
-            Name = "zulip",
-            Status = "healthy",
-            GrpcAddress = "http://localhost:5171",
-            ItemCount = 5000,
-            DbSizeBytes = 50_000_000,
-        });
-        return response;
-    }
-
-    internal static ItemResponse CreateItemResponse(string source, string id, string title)
-    {
-        ItemResponse response = new ItemResponse
-        {
-            Source = source,
-            Id = id,
-            Title = title,
-            Content = "Test content",
-            Url = $"https://example.com/{source}/{id}",
-            CreatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow.AddDays(-30)),
-            UpdatedAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-        };
-        response.Metadata.Add("status", "Open");
-        response.Metadata.Add("type", "Bug");
-        return response;
-    }
-
-    internal static AsyncServerStreamingCall<T> CreateStreamingCall<T>(params T[] items)
-        where T : class
-    {
-        TestAsyncStreamReader<T> reader = new TestAsyncStreamReader<T>(items);
-        return new AsyncServerStreamingCall<T>(
-            reader,
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
+        return factory;
     }
 }
 
-internal class TestAsyncStreamReader<T> : IAsyncStreamReader<T>
+/// <summary>
+/// A mock <see cref="HttpMessageHandler"/> that returns a preconfigured JSON response
+/// for every request and records each request for later verification.
+/// </summary>
+internal class MockHttpHandler : HttpMessageHandler
 {
-    private readonly IEnumerator<T> _enumerator;
+    private readonly string _responseJson;
+    private readonly HttpStatusCode _statusCode;
 
-    public TestAsyncStreamReader(IEnumerable<T> items) =>
-        _enumerator = items.GetEnumerator();
+    public HttpRequestMessage? LastRequest { get; private set; }
+    public List<HttpRequestMessage> AllRequests { get; } = [];
 
-    public T Current => _enumerator.Current;
+    public MockHttpHandler(string responseJson, HttpStatusCode statusCode = HttpStatusCode.OK)
+    {
+        _responseJson = responseJson;
+        _statusCode = statusCode;
+    }
 
-    public Task<bool> MoveNext(CancellationToken cancellationToken) =>
-        Task.FromResult(_enumerator.MoveNext());
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        LastRequest = request;
+        AllRequests.Add(request);
+
+        HttpResponseMessage response = new(_statusCode)
+        {
+            Content = new StringContent(_responseJson, Encoding.UTF8, "application/json"),
+        };
+        return Task.FromResult(response);
+    }
 }

@@ -21,7 +21,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5160:5160"
-      - "5161:5161"
     environment:
       - FHIR_AUGURY_JIRA__Jira__BaseUrl=https://jira.hl7.org
       - FHIR_AUGURY_JIRA__Jira__AuthMode=cookie
@@ -48,7 +47,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5170:5170"
-      - "5171:5171"
     environment:
       - FHIR_AUGURY_ZULIP__Zulip__BaseUrl=https://chat.fhir.org
       - FHIR_AUGURY_ZULIP__Zulip__CachePath=/app/cache
@@ -75,7 +73,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5180:5180"
-      - "5181:5181"
     environment:
       - FHIR_AUGURY_CONFLUENCE__Confluence__BaseUrl=https://confluence.hl7.org
       - FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode=cookie
@@ -102,7 +99,6 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5190:5190"
-      - "5191:5191"
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - FHIR_AUGURY_GITHUB__GitHub__CachePath=/app/cache
@@ -137,13 +133,12 @@ services:
       - ./cache/dictionary:/app/cache/dictionary:ro
     ports:
       - "5150:5150"
-      - "5151:5151"
     environment:
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__DatabasePath=/app/data/orchestrator.db
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress=http://source-jira:5161
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress=http://source-zulip:5171
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress=http://source-confluence:5181
-      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__GrpcAddress=http://source-github:5191
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__HttpAddress=http://source-jira:5160
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://source-zulip:5170
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__HttpAddress=http://source-confluence:5180
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__HttpAddress=http://source-github:5190
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5150/health"]
       interval: 30s

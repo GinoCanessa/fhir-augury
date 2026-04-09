@@ -7,7 +7,7 @@ namespace FhirAugury.Common.Database;
 public interface IKeywordRecord
 {
     int Id { get; set; }
-    string SourceType { get; set; }
+    string ContentType { get; set; }
     string SourceId { get; set; }
     string Keyword { get; set; }
     int Count { get; set; }
@@ -33,7 +33,7 @@ public interface ICorpusKeywordRecord
 public interface IDocStatsRecord
 {
     int Id { get; set; }
-    string SourceType { get; set; }
+    string ContentType { get; set; }
     int TotalDocuments { get; set; }
     double AverageDocLength { get; set; }
 }

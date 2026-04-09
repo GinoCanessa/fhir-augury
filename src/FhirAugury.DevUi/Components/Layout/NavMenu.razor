@@ -1,0 +1,33 @@
+@inject IJSRuntime JS
+
+<div class="d-flex align-items-center gap-3">
+    <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
+        <i class="bi bi-speedometer2"></i> Dashboard
+    </NavLink>
+    <NavLink class="nav-link" href="/api-test">
+        <i class="bi bi-terminal"></i> API Tests
+    </NavLink>
+    <button class="btn btn-sm btn-outline-secondary ms-2" @onclick="ToggleThemeAsync" title="Toggle light/dark theme">
+        <i class="bi @(_isDark ? "bi-sun-fill" : "bi-moon-fill")"></i>
+    </button>
+</div>
+
+@code {
+    private bool _isDark;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            string theme = await JS.InvokeAsync<string>("getTheme");
+            _isDark = theme == "dark";
+            StateHasChanged();
+        }
+    }
+
+    private async Task ToggleThemeAsync()
+    {
+        _isDark = !_isDark;
+        await JS.InvokeVoidAsync("setTheme", _isDark ? "dark" : "light");
+    }
+}

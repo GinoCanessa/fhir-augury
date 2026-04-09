@@ -11,10 +11,6 @@ public class SourceServiceConfiguration
     [Range(1, 65535)]
     public int HttpPort { get; set; }
 
-    /// <summary>gRPC port for inter-service communication.</summary>
-    [Range(1, 65535)]
-    public int GrpcPort { get; set; }
-
     /// <summary>Path to the SQLite database file.</summary>
     [Required]
     public string DatabasePath { get; set; } = "./data/source.db";
@@ -33,6 +29,12 @@ public class SourceServiceConfiguration
     /// TimeSpan string (e.g., "04:00:00" = 4 hours). Default is 4 hours.
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
+
+    /// <summary>
+    /// HTTP address of the orchestrator service (e.g., "http://localhost:5150").
+    /// When set, the source will notify the orchestrator after ingestion completes.
+    /// </summary>
+    public string? OrchestratorAddress { get; set; }
 
     /// <summary>Rate limiting configuration.</summary>
     public RateLimitingConfiguration RateLimiting { get; set; } = new();

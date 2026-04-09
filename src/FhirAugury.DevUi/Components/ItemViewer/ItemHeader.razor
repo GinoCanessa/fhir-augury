@@ -1,0 +1,36 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+
+<div class="item-viewer-header pb-3 mb-3">
+    <div class="d-flex align-items-center mb-2">
+        <span class="badge @SourceBadgeHelper.SourceBadgeClass(Item.Source) me-2">@Item.Source</span>
+        @if (!string.IsNullOrEmpty(Item.ContentType))
+        {
+            <span class="badge bg-secondary me-2">@Item.ContentType</span>
+        }
+        @ChildContent
+        <h4 class="mb-0 flex-grow-1">@Item.Title</h4>
+    </div>
+    <div class="text-muted small">
+        <span class="me-3"><strong>ID:</strong> <code>@Item.Id</code></span>
+        @if (Item.CreatedAt.HasValue)
+        {
+            <span class="me-3"><strong>Created:</strong> @Item.CreatedAt.Value.ToString("yyyy-MM-dd")</span>
+        }
+        @if (Item.UpdatedAt.HasValue)
+        {
+            <span class="me-3"><strong>Updated:</strong> @Item.UpdatedAt.Value.ToString("yyyy-MM-dd")</span>
+        }
+        @if (!string.IsNullOrEmpty(Item.Url))
+        {
+            <a href="@Item.Url" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-box-arrow-up-right"></i> Open External
+            </a>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

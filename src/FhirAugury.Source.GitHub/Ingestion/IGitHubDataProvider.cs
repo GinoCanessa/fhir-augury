@@ -1,3 +1,5 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Source.GitHub.Ingestion;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 public interface IGitHubDataProvider
 {
     /// <summary>The source name used for sync-state tracking and cache layout.</summary>
-    static string SourceName => "github";
+    static string SourceName => SourceSystems.GitHub;
 
     /// <summary>Full download of all issues for configured repositories.</summary>
     Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default);

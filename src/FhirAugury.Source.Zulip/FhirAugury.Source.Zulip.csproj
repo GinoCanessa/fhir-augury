@@ -11,8 +11,8 @@
 
   <ItemGroup>
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.324.2022" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="Grpc.AspNetCore" Version="2.*" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="zulip-cs-lib" Version="0.0.1-beta.4" />
   </ItemGroup>
 
   <ItemGroup>

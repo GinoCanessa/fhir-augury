@@ -7,15 +7,15 @@ credentials, starting the microservices, and running your first search.
 
 FHIR Augury v2 uses a microservices architecture:
 
-- **Orchestrator** — central hub (HTTP :5150 / gRPC :5151) that coordinates
-  queries across sources
-- **Jira source** — (HTTP :5160 / gRPC :5161) indexes jira.hl7.org
-- **Zulip source** — (HTTP :5170 / gRPC :5171) indexes chat.fhir.org
-- **Confluence source** — (HTTP :5180 / gRPC :5181) indexes confluence.hl7.org
-- **GitHub source** — (HTTP :5190 / gRPC :5191) indexes HL7 GitHub repos
+- **Orchestrator** — central hub (`:5150`) that coordinates queries across
+  sources
+- **Jira source** — (`:5160`) indexes jira.hl7.org
+- **Zulip source** — (`:5170`) indexes chat.fhir.org
+- **Confluence source** — (`:5180`) indexes confluence.hl7.org
+- **GitHub source** — (`:5190`) indexes HL7 GitHub repos
 
 Each source service maintains its own SQLite database, FTS5 indexes, and
-response cache. The CLI and MCP tools connect to the orchestrator via gRPC.
+response cache. The CLI and MCP tools connect to the orchestrator via HTTP.
 
 ## Prerequisites
 
@@ -71,7 +71,7 @@ source.
 ### 4. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Option B: .NET Aspire (Recommended for Development)
@@ -94,10 +94,12 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. Six services are
-registered: four sources, the orchestrator, and the MCP HTTP server. Confluence
-uses `WithExplicitStart()` and must be started manually from the Aspire
-dashboard. The orchestrator waits for sources to be healthy before starting.
+The Aspire dashboard URL is shown in the console output. Eight projects are
+registered: four sources, the orchestrator, the MCP HTTP server, the Dev UI,
+and the CLI tool. Confluence, Dev UI, the MCP HTTP server, and the CLI use
+`WithExplicitStart()` and must be started manually from the Aspire dashboard.
+The orchestrator waits for Jira, Zulip, and GitHub to be healthy before starting.
+Zulip and GitHub also wait for Jira.
 
 ### 3. Configure credentials
 
@@ -110,7 +112,7 @@ source.
 ### 4. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Option C: Run from Source
@@ -185,7 +187,7 @@ for details.
 ### 6. Run your first search
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "patient"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
 
 ## Configure Credentials
@@ -375,52 +377,50 @@ services:
 ### Search across all sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "FHIR R5 patient resource"
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"FHIR R5 patient resource"}' --pretty
 ```
 
 ### Filter search to specific sources
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "subscription" --sources jira,zulip
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"subscription","sources":["jira","zulip"]}' --pretty
 ```
 
 ### Get full details of an item
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499 --comments
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"get","source":"jira","id":"FHIR-43499"}' --pretty
 ```
 
-### Find related items
+### Find cross-references
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499 --target-sources zulip
+# Outgoing references from an item
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"refers-to","value":"FHIR-43499"}' --pretty
+
+# Incoming references to an item
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"referred-by","value":"FHIR-43499"}' --pretty
+
+# Both directions at once
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"cross-referenced","value":"FHIR-43499"}' --pretty
 ```
 
-### View cross-references
+### Get a Markdown snapshot
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499 --direction both
-```
-
-### Generate a Markdown snapshot
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- snapshot jira FHIR-43499 --comments
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"get","source":"jira","id":"FHIR-43499","includeSnapshot":true}' --pretty
 ```
 
 ### Check service health
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- services status
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"services","action":"status"}' --pretty
 ```
 
-### Output as JSON
+### Pretty-print output
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- search "terminology" --format json
+dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"terminology"}' --pretty
 ```
 
 ## MCP Integration
@@ -432,7 +432,7 @@ for setup instructions and available tools.
 ## Next Steps
 
 - [CLI Reference](cli-reference.md) — all commands and options
-- [API Reference](api-reference.md) — HTTP and gRPC API details
+- [API Reference](api-reference.md) — HTTP API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
 - [Configuration](configuration.md) — full configuration reference
 - [Docker Deployment](docker.md) — advanced Docker Compose options

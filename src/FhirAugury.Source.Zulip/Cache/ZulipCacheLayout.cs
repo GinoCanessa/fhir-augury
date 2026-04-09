@@ -1,10 +1,12 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Source.Zulip.Cache;
 
 /// <summary>Constants for Zulip cache file layout and naming conventions.</summary>
 public static class ZulipCacheLayout
 {
     /// <summary>The source name used as the cache subdirectory.</summary>
-    public const string SourceName = "zulip";
+    public const string SourceName = SourceSystems.Zulip;
 
     /// <summary>Extension for JSON API responses.</summary>
     public const string JsonExtension = "json";

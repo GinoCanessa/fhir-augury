@@ -1,5 +1,6 @@
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -21,7 +22,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         using SqliteConnection connection = database.OpenConnection();
 
         ClearIndex(connection);
-        List<(string SourceType, string SourceId, string Text)> documents = CollectDocuments(connection, ct);
+        List<IndexContent> documents = CollectDocuments(connection, ct);
 
         if (documents.Count == 0)
         {
@@ -36,24 +37,21 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
     }
 
     /// <summary>Incrementally updates BM25 scores for specific items.</summary>
-    public void UpdateIndex(IReadOnlyList<(string SourceType, string SourceId, string Text)> items, CancellationToken ct = default)
+    public void UpdateIndex(IReadOnlyList<IndexContent> items, CancellationToken ct = default)
     {
         if (items.Count == 0) return;
 
         using SqliteConnection connection = database.OpenConnection();
 
-        foreach ((string? sourceType, string? sourceId, string _) in items)
+        ct.ThrowIfCancellationRequested();
+        DeleteKeywordsForItems(connection, items);
+
+        List<ZulipKeywordRecord> allRecords = new(items.Count);
+
+        foreach (IndexContent content in items)
         {
             ct.ThrowIfCancellationRequested();
-            DeleteKeywordsForItem(connection, sourceType, sourceId);
-        }
-
-        List<ZulipKeywordRecord> allRecords = new List<ZulipKeywordRecord>();
-
-        foreach ((string? sourceType, string? sourceId, string? text) in items)
-        {
-            ct.ThrowIfCancellationRequested();
-            List<string> tokens = Tokenizer.Tokenize(text);
+            List<string> tokens = Tokenizer.Tokenize(content.Text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
@@ -62,8 +60,8 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                 allRecords.Add(new ZulipKeywordRecord
                 {
                     Id = ZulipKeywordRecord.GetIndex(),
-                    SourceType = sourceType,
-                    SourceId = sourceId,
+                    ContentType = content.ContentType,
+                    SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
                     KeywordType = keywordType,
@@ -72,18 +70,18 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
             }
         }
 
-        foreach (ZulipKeywordRecord record in allRecords)
-            ZulipKeywordRecord.Insert(connection, record);
+        allRecords.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
         RecomputeCorpusStats(connection);
     }
 
-    private static List<(string SourceType, string SourceId, string Text)> CollectDocuments(
+    private static List<IndexContent> CollectDocuments(
         SqliteConnection connection, CancellationToken ct)
     {
-        List<(string, string, string)> documents = new List<(string, string, string)>();
-
         List<ZulipMessageRecord> messages = ZulipMessageRecord.SelectList(connection);
+
+        List<IndexContent> documents = new(messages.Count);
+
         foreach (ZulipMessageRecord message in messages)
         {
             ct.ThrowIfCancellationRequested();
@@ -92,7 +90,12 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                     .Where(s => !string.IsNullOrEmpty(s)));
 
             if (!string.IsNullOrWhiteSpace(text))
-                documents.Add(("zulip", message.ZulipMessageId.ToString(), text));
+                documents.Add(new()
+                { 
+                    ContentType = ContentTypes.Message,
+                    SourceId = message.ZulipMessageId.ToString(), 
+                    Text = text 
+                });
         }
 
         return documents;
@@ -100,23 +103,25 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
 
     private void BuildIndex(
         SqliteConnection connection,
-        List<(string SourceType, string SourceId, string Text)> documents,
+        List<IndexContent> documents,
         CancellationToken ct)
     {
-        foreach ((string? sourceType, string? sourceId, string? text) in documents)
+        List<ZulipKeywordRecord> toInsert = [];
+
+        foreach (IndexContent content in documents)
         {
             ct.ThrowIfCancellationRequested();
-            List<string> tokens = Tokenizer.Tokenize(text);
+            List<string> tokens = Tokenizer.Tokenize(content.Text);
             Dictionary<string, (int Count, string KeywordType)> keywords = TokenCounter.CountAndClassifyTokens(
                 tokens, _lemmatizer, auxiliaryDatabase.StopWords);
 
             foreach ((string? keyword, (int count, string? keywordType)) in keywords)
             {
-                ZulipKeywordRecord.Insert(connection, new ZulipKeywordRecord
+                toInsert.Add(new ZulipKeywordRecord
                 {
                     Id = ZulipKeywordRecord.GetIndex(),
-                    SourceType = sourceType,
-                    SourceId = sourceId,
+                    ContentType = content.ContentType,
+                    SourceId = content.SourceId,
                     Keyword = keyword,
                     Count = count,
                     KeywordType = keywordType,
@@ -124,6 +129,8 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                 });
             }
         }
+
+        toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
     }
 
     private void RecomputeCorpusStats(SqliteConnection connection)
@@ -138,22 +145,27 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT SourceType, COUNT(DISTINCT SourceId) as DocCount,
+                SELECT ContentType, COUNT(DISTINCT SourceId) as DocCount,
                        CAST(SUM(Count) AS REAL) / COUNT(DISTINCT SourceId) as AvgLen
                 FROM index_keywords
-                GROUP BY SourceType
+                GROUP BY ContentType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<ZulipDocStatsRecord> docStatsToInsert = [];
+
             while (reader.Read())
             {
-                ZulipDocStatsRecord.Insert(connection, new ZulipDocStatsRecord
+                docStatsToInsert.Add(new ZulipDocStatsRecord
                 {
                     Id = ZulipDocStatsRecord.GetIndex(),
-                    SourceType = reader.GetString(0),
+                    ContentType = reader.GetString(0),
                     TotalDocuments = reader.GetInt32(1),
                     AverageDocLength = reader.GetDouble(2),
                 });
             }
+
+            docStatsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Total doc count for IDF
@@ -170,17 +182,20 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         using (SqliteCommand cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT Keyword, KeywordType, COUNT(DISTINCT SourceType || ':' || SourceId) as DocFreq
+                SELECT Keyword, KeywordType, COUNT(DISTINCT ContentType || ':' || SourceId) as DocFreq
                 FROM index_keywords
                 GROUP BY Keyword, KeywordType
                 """;
             using SqliteDataReader reader = cmd.ExecuteReader();
+
+            List<ZulipCorpusKeywordRecord> keywordsToInsert = [];
+
             while (reader.Read())
             {
                 int df = reader.GetInt32(2);
                 double idf = Math.Log(1.0 + (totalDocCount - df + 0.5) / (df + 0.5));
 
-                ZulipCorpusKeywordRecord.Insert(connection, new ZulipCorpusKeywordRecord
+                keywordsToInsert.Add(new ZulipCorpusKeywordRecord
                 {
                     Id = ZulipCorpusKeywordRecord.GetIndex(),
                     Keyword = reader.GetString(0),
@@ -189,6 +204,8 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                     Idf = idf,
                 });
             }
+
+            keywordsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
         // Compute BM25 scores via bulk SQL UPDATE
@@ -197,7 +214,7 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         {
             cmd.CommandText = """
                 SELECT CAST(SUM(DocLen) AS REAL) / COUNT(*) FROM (
-                    SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY SourceType, SourceId
+                    SELECT SUM(Count) as DocLen FROM index_keywords GROUP BY ContentType, SourceId
                 )
                 """;
             object? scalar = cmd.ExecuteScalar();
@@ -214,10 +231,10 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
                         / (CAST(index_keywords.Count AS REAL) + @k1 * (1.0 - @b + @b * dl.DocLen / @avgDocLen))
                     FROM index_corpus c
                     JOIN (
-                        SELECT SourceType, SourceId, SUM(Count) as DocLen
+                        SELECT ContentType, SourceId, SUM(Count) as DocLen
                         FROM index_keywords
-                        GROUP BY SourceType, SourceId
-                    ) dl ON dl.SourceType = index_keywords.SourceType AND dl.SourceId = index_keywords.SourceId
+                        GROUP BY ContentType, SourceId
+                    ) dl ON dl.ContentType = index_keywords.ContentType AND dl.SourceId = index_keywords.SourceId
                     WHERE c.Keyword = index_keywords.Keyword
                     LIMIT 1
                 )
@@ -236,12 +253,50 @@ public class ZulipIndexer(ZulipDatabase database, AuxiliaryDatabase auxiliaryDat
         cmd.ExecuteNonQuery();
     }
 
-    private static void DeleteKeywordsForItem(SqliteConnection connection, string sourceType, string sourceId)
+    private static void DeleteKeywordsForItems(SqliteConnection connection, IReadOnlyList<IndexContent> contents)
     {
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = "DELETE FROM index_keywords WHERE SourceType = @type AND SourceId = @id;";
-        cmd.Parameters.AddWithValue("@type", sourceType);
-        cmd.Parameters.AddWithValue("@id", sourceId);
-        cmd.ExecuteNonQuery();
+        if (contents.Count == 0)
+        {
+            return;
+        }
+
+        const int batchSize = 500;
+
+        foreach (IGrouping<string, IndexContent> contentGroup in contents.GroupBy(c => c.ContentType))
+        {
+            string sourceType = contentGroup.Key;
+
+            int index = 0;
+            string[] paramNames = new string[500];
+
+            using SqliteCommand cmd = connection.CreateCommand();
+
+            foreach (IndexContent content in contentGroup)
+            {
+                if (index >= batchSize)
+                {
+                    cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames)});";
+                    cmd.Parameters.AddWithValue("@type", sourceType);
+                    cmd.ExecuteNonQuery();
+
+                    index = 0;
+                    cmd.Parameters.Clear();
+                }
+
+                paramNames[index] = $"@id{index}";
+                cmd.Parameters.AddWithValue(paramNames[index], content.SourceId);
+                index++;
+            }
+
+            // execute last batch
+            if (index == 0)
+            {
+                continue;
+            }
+
+            cmd.CommandText = $"DELETE FROM index_keywords WHERE ContentType = @type AND SourceId IN ({string.Join(", ", paramNames.AsSpan(0, index))});";
+            cmd.Parameters.AddWithValue("@type", sourceType);
+            cmd.ExecuteNonQuery();
+        }
     }
 }

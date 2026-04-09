@@ -1,7 +1,7 @@
 # Deployment Guide
 
 FHIR Augury v2 uses a microservices architecture with five independent services
-communicating via gRPC. This guide covers Docker Compose and .NET Aspire
+communicating via HTTP. This guide covers Docker Compose and .NET Aspire
 deployment options.
 
 ## Architecture Overview
@@ -12,7 +12,7 @@ deployment options.
 └──────────────────────────┬────────────────────────────┘
                            │
                     ┌──────▼──────┐
-                    │ Orchestrator│ :5150 (HTTP) / :5151 (gRPC)
+                    │ Orchestrator│ :5150
                     └──┬───┬───┬──┬──┘
                        │   │   │  │
        ┌───────────────┘   │   │  └──────────────────┐
@@ -20,7 +20,7 @@ deployment options.
        │         │                          │        │
  ┌─────▼───┐  ┌──▼─────┐  ┌──────▼──────┐  ┌──▼─────┐
  │  Jira   │  │ Zulip  │  │ Confluence  │  │ GitHub │
- │:5160/61 │  │:5170/71│  │  :5180/81   │  │:5190/91│
+ │  :5160  │  │ :5170  │  │   :5180     │  │ :5190  │
  └─────────┘  └────────┘  └─────────────┘  └────────┘
 ```
 
@@ -61,14 +61,14 @@ docker compose --profile jira-only up -d
 
 ## Service Ports
 
-| Service | HTTP Port | gRPC Port | Health Check |
-|---------|-----------|-----------|-------------|
-| Orchestrator | 5150 | 5151 | `GET /health` |
-| Jira | 5160 | 5161 | `GET /health` |
-| Zulip | 5170 | 5171 | `GET /health` |
-| Confluence | 5180 | 5181 | `GET /health` |
-| GitHub | 5190 | 5191 | `GET /health` |
-| MCP (HTTP) | 5200 | — | `/mcp` |
+| Service | Port | Health Check |
+|---------|------|-------------|
+| Orchestrator | 5150 | `GET /health` |
+| Jira | 5160 | `GET /health` |
+| Zulip | 5170 | `GET /health` |
+| Confluence | 5180 | `GET /health` |
+| GitHub | 5190 | `GET /health` |
+| MCP (HTTP) | 5200 | `/mcp` |
 
 ## Volume Management
 
@@ -186,10 +186,10 @@ docker run --rm -v fhir-augury_jira-cache:/data -v ./exported-jira-cache:/import
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__DatabasePath` | `./data/orchestrator.db` | Database path |
-| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__GrpcAddress` | `http://localhost:5161` | Jira gRPC |
-| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__GrpcAddress` | `http://localhost:5171` | Zulip gRPC |
-| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__GrpcAddress` | `http://localhost:5181` | Confluence gRPC |
-| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__GrpcAddress` | `http://localhost:5191` | GitHub gRPC |
+| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__HttpAddress` | `http://localhost:5160` | Jira HTTP |
+| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress` | `http://localhost:5170` | Zulip HTTP |
+| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__HttpAddress` | `http://localhost:5180` | Confluence HTTP |
+| `FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__HttpAddress` | `http://localhost:5190` | GitHub HTTP |
 
 > **Security note:** For production, use a `.env` file (gitignored) or Docker
 > secrets instead of hardcoding credentials in `docker-compose.yml`.
@@ -251,11 +251,12 @@ dotnet workload install aspire
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The AppHost starts six services (4 source services + orchestrator + MCP HTTP
-server on port 5200) with the same fixed ports as Docker Compose. The
-orchestrator waits for all source services to be healthy before accepting
-requests. The Confluence source uses `WithExplicitStart()` and must be started
-manually from the Aspire dashboard.
+The AppHost registers eight projects (4 source services + orchestrator + MCP
+HTTP server on port 5200 + Dev UI on port 5210 + CLI tool) with the same fixed ports as Docker
+Compose. The orchestrator waits for Jira, Zulip, and GitHub sources to be
+healthy before accepting requests. Zulip and GitHub also wait for Jira.
+Confluence, Dev UI, the MCP HTTP server, and the CLI use `WithExplicitStart()` and
+must be started manually from the Aspire dashboard.
 
 The Aspire dashboard is available at the URL shown in the console output
 (typically `https://localhost:17128`). It provides:
@@ -263,7 +264,7 @@ The Aspire dashboard is available at the URL shown in the console output
 - **Resources** — live status of all services
 - **Console logs** — aggregated, filterable log output
 - **Structured logs** — OpenTelemetry log records
-- **Traces** — distributed traces across gRPC calls
+- **Traces** — distributed traces across HTTP calls
 - **Metrics** — ASP.NET Core, HTTP client, and runtime metrics
 
 ### Aspire vs Docker Compose

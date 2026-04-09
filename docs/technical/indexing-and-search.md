@@ -11,20 +11,18 @@ In v2, search is **distributed across microservices**:
 1. Each **source service** (Jira, Zulip, Confluence, GitHub) maintains its own
    FTS5 indexes and BM25 keyword index in its local SQLite database
 2. The **Orchestrator** fans out search requests to all enabled sources via
-   gRPC, then aggregates, normalizes, boosts, and ranks the combined results
-3. Cross-references are managed by the Orchestrator's `CrossRefLinker`, which
-   streams searchable text from each source via the `StreamSearchableText` gRPC
+   HTTP, then aggregates, normalizes, boosts, and ranks the combined results
+3. Cross-references are **source-owned** — each source service extracts and
+   stores references to other sources in its own database using shared extractors
 
 ```
 User Query → Orchestrator
-              ├── gRPC Search → Source.Jira    (local FTS5 MATCH)
-              ├── gRPC Search → Source.Zulip   (local FTS5 MATCH)
-              ├── gRPC Search → Source.Confluence (local FTS5 MATCH)
-              └── gRPC Search → Source.GitHub  (local FTS5 MATCH)
+              ├── HTTP Search → Source.Jira    (local FTS5 MATCH)
+              ├── HTTP Search → Source.Zulip   (local FTS5 MATCH)
+              ├── HTTP Search → Source.Confluence (local FTS5 MATCH)
+              └── HTTP Search → Source.GitHub  (local FTS5 MATCH)
               ↓
          Score Normalization (per-source min-max)
-              ↓
-         Cross-Ref Boost (CrossRefBoostFactor = 0.5)
               ↓
          Freshness Decay (per-source weights)
               ↓
@@ -44,9 +42,12 @@ virtual tables for fast text search within its local database.
 | Jira | `jira_comments_fts` | `jira_comments` | BodyPlain |
 | Zulip | `zulip_messages_fts` | `zulip_messages` | ContentPlain, Topic |
 | Confluence | `confluence_pages_fts` | `confluence_pages` | Title, BodyPlain, Labels |
-| GitHub | `github_issues_fts` | `github_issues` | Title, Body, Labels |
+| GitHub | `github_issues_fts` | `github_issues` | Title, Body |
 | GitHub | `github_comments_fts` | `github_comments` | Body |
-| GitHub | `github_commits_fts` | `github_commits` | Message |
+| GitHub | `github_commits_fts` | `github_commits` | Message, Body |
+| GitHub | `github_file_contents_fts` | `github_file_contents` | ContentText, FilePath |
+| GitHub | `github_structure_definitions_fts` | `github_structure_definitions` | Name, Title, Description |
+| GitHub | `github_canonical_artifacts_fts` | `github_canonical_artifacts` | Name, Title, Description, Url |
 
 ### FTS5 Table Creation
 
@@ -78,7 +79,7 @@ Each source service handles search queries locally:
    and stored as a positive value
 4. **Snippet extraction** — The FTS5 `snippet()` function extracts context with
    `<b>`/`</b>` highlighting, up to 20 tokens of surrounding context
-5. **Return via gRPC** — Scored results with snippets are returned to the
+5. **Return via HTTP** — Scored results with snippets are returned as JSON to the
    Orchestrator
 
 ### Source Filters
@@ -99,7 +100,7 @@ The Orchestrator coordinates search across all source services:
 ### 1. Fan-Out
 
 Search requests are sent to all enabled source services **in parallel** via
-gRPC `Search` RPCs.
+HTTP `Search` API calls.
 
 ### 2. Score Normalization
 
@@ -113,13 +114,7 @@ normalized = (score - min) / (max - min)
 Normalization is applied per source group (e.g., all Jira results together)
 before merging, ensuring fair cross-source ranking.
 
-### 3. Cross-Reference Boost
-
-Items that have cross-references (links to/from other source items) get
-boosted. The `CrossRefBoostFactor` is `0.5` — items with cross-references
-receive a score increase proportional to their reference count.
-
-### 4. Freshness Decay
+### 3. Freshness Decay
 
 Scores are adjusted by recency with configurable per-source weight multipliers.
 Sources with more time-sensitive content (like chat messages) are weighted
@@ -132,10 +127,10 @@ higher:
 | Confluence | 1.0 |
 | Jira | 0.5 |
 
-### 5. Final Ranking
+### 4. Final Ranking
 
-Results are sorted by final score (after normalization, cross-ref boost, and
-freshness decay) and truncated to the requested limit.
+Results are sorted by final score (after normalization and freshness decay) and
+truncated to the requested limit.
 
 ## BM25 Keyword Scoring
 
@@ -300,48 +295,62 @@ definitions.
 
 ## Cross-Reference Linking
 
-Cross-references are managed by the **Orchestrator's `CrossRefLinker`**, which
-discovers mentions of items from one source within the text of another source.
+Cross-references are **source-owned**: each source service extracts and stores
+references to items in other sources within its own database.
 
 ### How It Works
 
-1. The Orchestrator streams searchable text from each source service via the
-   gRPC `StreamSearchableText` RPC (server-streaming)
-2. `CrossRefLinker` applies `CrossRefPatterns` (from `FhirAugury.Common.Text`)
-   to extract cross-source identifiers
-3. Discovered links are stored in the Orchestrator's `cross_ref_links` table
-4. Incremental scanning is tracked via `xref_scan_state` (cursor/timestamp-based)
-   so only new or updated content is processed
+1. During ingestion, each source service runs shared **extractors** from
+   `FhirAugury.Common.Indexing` against its content
+2. Extractors identify cross-source identifiers using regex patterns and
+   produce typed xref records (`JiraXRefRecord`, `ZulipXRefRecord`,
+   `ConfluenceXRefRecord`, `GitHubXRefRecord`, `FhirElementXRefRecord`)
+3. Extracted references are stored in the source's own database in
+   per-target-type tables (`xref_jira`, `xref_zulip`, `xref_confluence`,
+   `xref_github`, `xref_fhir_element`)
+4. When a source completes ingestion, it notifies peers via the
+   `NotifyPeerIngestionComplete` HTTP API call so they can re-scan for new
+   references to the updated source
+5. The orchestrator queries cross-references by fanning out
+   `GetItemCrossReferences` calls to all source services and merging results
 
-### Detection Patterns (`CrossRefPatterns`)
+### Extractors (`FhirAugury.Common.Indexing`)
 
-| Pattern | Target Type | Example Match |
-|---------|-------------|---------------|
-| `\b(FHIR-\d+)\b` | `jira` | `FHIR-43499` |
-| `https?://jira.hl7.org/browse/(FHIR-\d+)` | `jira` | Jira issue URLs |
-| `https?://chat.fhir.org/#narrow/stream/...` | `zulip` | Zulip topic URLs |
-| `https?://github.com/(HL7/[^/]+)/issues/(\d+)` | `github` | GitHub issue URLs |
-| `https?://github.com/(HL7/[^/]+)/pull/(\d+)` | `github` | GitHub PR URLs |
-| `\b(HL7/[a-zA-Z0-9._-]+#\d+)\b` | `github` | GitHub short refs (HL7/repo#123) |
-| `https?://confluence.hl7.org/.*?/(\d+)` | `confluence` | Confluence page URLs |
+The `JiraReferenceExtractor` detects ticket references for multiple HL7 Jira
+projects (FHIR, BALLOT, PSS, UP) including alias forms (JF, GF, J for FHIR),
+both key (`PREFIX-N`) and hash (`PREFIX#N`) notation, and two URL formats
+(`/browse/` and `/projects/.../issues/`). All references are normalized to
+canonical `PREFIX-N` form.
+
+| Extractor | Target Type | Records | Example Match |
+|-----------|-------------|---------|---------------|
+| `JiraReferenceExtractor` | `jira` | `JiraXRefRecord` | `FHIR-43499`, `BALLOT-100`, `PSS-50`, `UP-796`, Jira URLs |
+| `ZulipReferenceExtractor` | `zulip` | `ZulipXRefRecord` | Zulip topic/message URLs |
+| `GitHubReferenceExtractor` | `github` | `GitHubXRefRecord` | GitHub issue/PR URLs, `HL7/repo#123` |
+| `ConfluenceReferenceExtractor` | `confluence` | `ConfluenceXRefRecord` | Confluence page URLs |
+| `FhirElementReferenceExtractor` | `fhir_element` | `FhirElementXRefRecord` | FHIR paths like `Patient.name` |
+
+### Per-Source xref Tables
+
+Each source database creates xref tables for the OTHER sources it can reference:
+
+| Source DB | xref Tables Created |
+|-----------|-------------------|
+| Jira | `xref_zulip`, `xref_github`, `xref_confluence`, `xref_fhir_element` |
+| Zulip | `xref_jira`, `xref_github`, `xref_confluence`, `xref_fhir_element` |
+| Confluence | `xref_jira`, `xref_zulip`, `xref_github`, `xref_fhir_element` |
+| GitHub | `xref_jira`, `xref_zulip`, `xref_confluence`, `xref_fhir_element` |
 
 ### Link Storage
 
-Each link is stored in the Orchestrator's `cross_ref_links` table:
+Each xref record includes:
 
-- **SourceType/SourceId** — The item containing the reference
-- **TargetType/TargetId** — The referenced item
-- **LinkType** — Always `"mention"` currently
-- **Context** — ~100 characters of surrounding text
-
-Links are deduplicated. Self-links are excluded. Jira URLs are checked before
-bare Jira keys to avoid double-matching.
-
-### Scanning Modes
-
-- **Incremental** — Process only new/updated items since the last scan cursor;
-  tracked per source via `xref_scan_state`
-- **Full rebuild** — Clear all links and rescan all content from all sources
+- **SourceType/SourceId** — The item containing the reference (from this source)
+- **Target fields** — Target-type-specific fields (e.g., `JiraKey` for xref_jira,
+  `StreamName`/`TopicName` for xref_zulip, `RepoFullName`/`IssueNumber` for
+  xref_github)
+- **LinkType** — Reference type (e.g., `"mention"`)
+- **Context** — Surrounding text context
 
 ## Related Items
 
@@ -383,8 +392,11 @@ queries).
 | `AuxiliaryDatabase` | `FhirAugury.Common.Database` | Loads stop words, lemmas, and FHIR vocab from optional read-only SQLite databases |
 | `Bm25Options` | `FhirAugury.Common.Configuration` | Per-service BM25 K1/B/UseLemmatization/FtsTokenizer configuration |
 | `DictionaryDatabase` | `FhirAugury.Common.Database` | Compiles dictionary source files (*.words.txt, *.typo.txt) into a SQLite database |
-| `CrossRefPatterns` | `FhirAugury.Common.Text` | Regex patterns for cross-source identifier extraction |
+| `JiraReferenceExtractor` | `FhirAugury.Common.Indexing` | Extracts Jira ticket references from text |
+| `GitHubReferenceExtractor` | `FhirAugury.Common.Indexing` | Extracts GitHub issue/PR references from text |
+| `ZulipReferenceExtractor` | `FhirAugury.Common.Indexing` | Extracts Zulip topic/message references from text |
+| `ConfluenceReferenceExtractor` | `FhirAugury.Common.Indexing` | Extracts Confluence page references from text |
+| `FhirElementReferenceExtractor` | `FhirAugury.Common.Indexing` | Extracts FHIR element path references from text |
 | `TextSanitizer` | `FhirAugury.Common.Text` | HTML/Markdown stripping, NFC Unicode normalization |
-| `CrossRefLinker` | Orchestrator | Streams text from sources, extracts cross-references, stores in `cross_ref_links` |
 | `RelatedItemFinder` | Orchestrator | 4-signal related item ranking (xref + BM25 + boost + diversity) |
 | Per-source search impl | Each source service | FTS5 MATCH queries, BM25 index builds, snippet extraction |

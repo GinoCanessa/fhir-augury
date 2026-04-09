@@ -1,0 +1,34 @@
+@using FhirAugury.Common.Api
+
+<div class="item-viewer-comments mt-4">
+    <h5><i class="bi bi-chat-left-text"></i> Comments (@Comments.Count)</h5>
+    @foreach (CommentInfo comment in Comments)
+    {
+        <div class="card comment-card mb-2">
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong class="small">@comment.Author</strong>
+                    @if (comment.CreatedAt.HasValue)
+                    {
+                        <span class="text-muted small">@comment.CreatedAt.Value.ToString("yyyy-MM-dd HH:mm")</span>
+                    }
+                </div>
+                <div class="small">
+                    @if (RenderAsMarkdown)
+                    {
+                        @FhirAugury.DevUi.Services.MarkdownRenderer.ToHtml(comment.Body)
+                    }
+                    else
+                    {
+                        @((MarkupString)comment.Body)
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<CommentInfo> Comments { get; set; } = [];
+    [Parameter] public bool RenderAsMarkdown { get; set; }
+}

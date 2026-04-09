@@ -1,8 +1,7 @@
 using System.ComponentModel;
 using System.Text;
-using Fhiraugury;
+using System.Text.Json;
 using FhirAugury.Common.Text;
-using Grpc.Core;
 using ModelContextProtocol.Server;
 
 namespace FhirAugury.McpShared.Tools;
@@ -10,174 +9,51 @@ namespace FhirAugury.McpShared.Tools;
 [McpServerToolType]
 public static class UnifiedTools
 {
-    [McpServerTool, Description("Search across all FHIR community sources (Zulip, Jira, Confluence, GitHub) using unified search.")]
-    public static async Task<string> Search(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
-        [Description("Search query text")] string query,
-        [Description("Comma-separated source filter: zulip,jira,confluence,github")] string? sources = null,
-        [Description("Maximum results to return (default 20)")] int limit = 20,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            UnifiedSearchRequest request = new UnifiedSearchRequest { Query = query, Limit = limit };
-
-            if (!string.IsNullOrWhiteSpace(sources))
-                CsvParser.AddToRepeatedField(request.Sources, sources);
-
-            SearchResponse response = await orchestrator.UnifiedSearchAsync(request, cancellationToken: cancellationToken);
-            return FormatSearchResults(response, query);
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
-    [McpServerTool, Description("Find items across all sources related to a given item.")]
-    public static async Task<string> FindRelated(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
-        [Description("Source type (jira, zulip, confluence, github)")] string source,
-        [Description("Item identifier")] string id,
-        [Description("Maximum results (default 20)")] int limit = 20,
-        [Description("Comma-separated target sources to search")] string? targetSources = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            FindRelatedRequest request = new FindRelatedRequest { Source = source, Id = id, Limit = limit };
-
-            if (!string.IsNullOrWhiteSpace(targetSources))
-                CsvParser.AddToRepeatedField(request.TargetSources, targetSources);
-
-            FindRelatedResponse response = await orchestrator.FindRelatedAsync(request, cancellationToken: cancellationToken);
-
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"## Related Items for [{response.SeedSource}] {response.SeedId}");
-            if (!string.IsNullOrEmpty(response.SeedTitle))
-                sb.AppendLine($"**Seed:** {response.SeedTitle}");
-            sb.AppendLine();
-
-            if (response.Items.Count == 0)
-            {
-                sb.AppendLine("No related items found.");
-                return sb.ToString();
-            }
-
-            foreach (RelatedItem? item in response.Items)
-            {
-                sb.AppendLine($"### [{item.Source}] {item.Id} — {item.Title}");
-                sb.AppendLine($"- **Relevance:** {item.RelevanceScore:F2}");
-                if (!string.IsNullOrEmpty(item.Relationship))
-                    sb.AppendLine($"- **Relationship:** {item.Relationship}");
-                if (!string.IsNullOrEmpty(item.Url))
-                    sb.AppendLine($"- **URL:** {item.Url}");
-                if (!string.IsNullOrEmpty(item.Snippet))
-                    sb.AppendLine($"- **Snippet:** {item.Snippet}");
-                sb.AppendLine();
-            }
-
-            return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
-    [McpServerTool, Description("Get cross-references for a specific item showing links to other sources.")]
-    public static async Task<string> GetCrossReferences(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
-        [Description("Source type (jira, zulip, confluence, github)")] string source,
-        [Description("Item identifier")] string id,
-        [Description("Direction: outgoing, incoming, or both (default both)")] string direction = "both",
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            GetXRefResponse response = await orchestrator.GetCrossReferencesAsync(
-                new GetXRefRequest { Source = source, Id = id, Direction = direction },
-                cancellationToken: cancellationToken);
-
-            if (response.References.Count == 0)
-                return $"No cross-references found for [{source}] {id}.";
-
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine($"## Cross-References for [{source}] {id} ({response.References.Count})");
-            sb.AppendLine();
-
-            foreach (Fhiraugury.CrossReference? xref in response.References)
-            {
-                string arrow = xref.SourceType == source && xref.SourceId == id ? "→" : "←";
-                string otherType = arrow == "→" ? xref.TargetType : xref.SourceType;
-                string otherId = arrow == "→" ? xref.TargetId : xref.SourceId;
-
-                sb.AppendLine($"- {arrow} [{otherType}] {otherId}");
-                if (!string.IsNullOrEmpty(xref.TargetTitle))
-                    sb.AppendLine($"  **Title:** {xref.TargetTitle}");
-                if (!string.IsNullOrEmpty(xref.LinkType))
-                    sb.AppendLine($"  **Type:** {xref.LinkType}");
-                if (!string.IsNullOrEmpty(xref.Context))
-                    sb.AppendLine($"  **Context:** {xref.Context}");
-            }
-
-            return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
     [McpServerTool, Description("Get status and statistics of all connected services.")]
     public static async Task<string> GetStats(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
+        IHttpClientFactory httpClientFactory,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            ServicesStatusResponse response = await orchestrator.GetServicesStatusAsync(new ServicesStatusRequest(),
-                cancellationToken: cancellationToken);
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            JsonElement root = await GetJsonAsync(client, "/api/v1/services", cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
+            StringBuilder sb = new();
             sb.AppendLine("## Services Status");
             sb.AppendLine();
-            if (response.LastXrefScanAt is not null)
-                sb.AppendLine($"**Last Ingestion:** {response.LastXrefScanAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-            sb.AppendLine();
 
-            foreach (ServiceHealth? svc in response.Services)
+            foreach (JsonElement svc in root.GetProperty("services").EnumerateArray())
             {
-                sb.AppendLine($"### {svc.Name}");
-                sb.AppendLine($"- **Status:** {svc.Status}");
-                sb.AppendLine($"- **Address:** {svc.GrpcAddress}");
-                sb.AppendLine($"- **Items:** {svc.ItemCount}");
-                if (svc.DbSizeBytes > 0)
-                    sb.AppendLine($"- **DB Size:** {FormatBytes(svc.DbSizeBytes)}");
-                if (svc.LastSyncAt is not null)
-                    sb.AppendLine($"- **Last Sync:** {svc.LastSyncAt.ToDateTimeOffset():yyyy-MM-dd HH:mm}");
-                if (!string.IsNullOrEmpty(svc.LastError))
-                    sb.AppendLine($"- **Last Error:** {svc.LastError}");
+                sb.AppendLine($"### {GetString(svc, "name")}");
+                sb.AppendLine($"- **Status:** {GetString(svc, "status")}");
+                if (svc.TryGetProperty("itemCount", out JsonElement icEl))
+                    sb.AppendLine($"- **Items:** {icEl.GetInt32()}");
+                if (svc.TryGetProperty("dbSizeBytes", out JsonElement dbEl) && dbEl.GetInt64() > 0)
+                    sb.AppendLine($"- **DB Size:** {FormatBytes(dbEl.GetInt64())}");
+                AppendIfPresent(sb, svc, "lastSyncAt", "Last Sync");
+                AppendIfPresent(sb, svc, "lastError", "Last Error");
+
+                if (svc.TryGetProperty("indexes", out JsonElement idxsEl) && idxsEl.ValueKind == JsonValueKind.Array && idxsEl.GetArrayLength() > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("| Index | Status | Records | Last Rebuilt | Error |");
+                    sb.AppendLine("|-------|--------|---------|-------------|-------|");
+                    foreach (JsonElement idx in idxsEl.EnumerateArray())
+                    {
+                        string idxName = GetString(idx, "name");
+                        bool rebuilding = idx.TryGetProperty("isRebuilding", out JsonElement rebEl) && rebEl.GetBoolean();
+                        int records = idx.TryGetProperty("recordCount", out JsonElement rcEl) ? rcEl.GetInt32() : 0;
+                        string lastRebuilt = GetNullableString(idx, "lastRebuildCompletedAt") ?? "—";
+                        string error = GetNullableString(idx, "lastError") ?? "—";
+                        sb.AppendLine($"| {idxName} | {(rebuilding ? "rebuilding" : "idle")} | {records:N0} | {lastRebuilt} | {error} |");
+                    }
+                }
+
                 sb.AppendLine();
             }
 
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -187,36 +63,33 @@ public static class UnifiedTools
 
     [McpServerTool, Description("Trigger synchronization/ingestion across source services.")]
     public static async Task<string> TriggerSync(
-        OrchestratorService.OrchestratorServiceClient orchestrator,
+        IHttpClientFactory httpClientFactory,
         [Description("Comma-separated sources to sync (empty for all)")] string? sources = null,
         [Description("Sync type: incremental, full, rebuild (default incremental)")] string type = "incremental",
         CancellationToken cancellationToken = default)
     {
         try
         {
-            TriggerSyncRequest request = new TriggerSyncRequest { Type = type };
-
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            StringBuilder url = new($"/api/v1/ingest/trigger?type={Uri.EscapeDataString(type)}");
             if (!string.IsNullOrWhiteSpace(sources))
-                CsvParser.AddToRepeatedField(request.Sources, sources);
+                url.Append($"&sources={Uri.EscapeDataString(sources)}");
 
-            TriggerSyncResponse response = await orchestrator.TriggerSyncAsync(request, cancellationToken: cancellationToken);
+            JsonElement root = await PostJsonAsync(client, url.ToString(), cancellationToken);
 
-            StringBuilder sb = new StringBuilder();
+            StringBuilder sb = new();
             sb.AppendLine("## Sync Triggered");
             sb.AppendLine();
 
-            foreach (SourceSyncStatus? status in response.Statuses)
+            foreach (JsonElement status in root.GetProperty("statuses").EnumerateArray())
             {
-                sb.AppendLine($"- **{status.Source}:** {status.Status}");
-                if (!string.IsNullOrEmpty(status.Message))
-                    sb.AppendLine($"  {status.Message}");
+                sb.AppendLine($"- **{GetString(status, "source")}:** {GetString(status, "status")}");
+                string? message = GetNullableString(status, "message");
+                if (!string.IsNullOrEmpty(message))
+                    sb.AppendLine($"  {message}");
             }
 
             return sb.ToString();
-        }
-        catch (RpcException ex)
-        {
-            return $"Error: {ex.Status.Detail} (Status: {ex.StatusCode})";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -224,37 +97,139 @@ public static class UnifiedTools
         }
     }
 
-    internal static string FormatSearchResults(SearchResponse response, string query)
+    [McpServerTool, Description("Rebuild specific indexes on source services. Use this to refresh BM25 search indexes, FTS5 full-text indexes, cross-reference indexes, or other specialized indexes.")]
+    public static async Task<string> RebuildIndex(
+        IHttpClientFactory httpClientFactory,
+        [Description("Comma-separated sources to rebuild indexes on (empty for all): jira,zulip,github,confluence")] string? sources = null,
+        [Description("Index type: all, bm25, fts, cross-refs, lookup-tables, commits, artifact-map, page-links")] string indexType = "all",
+        CancellationToken cancellationToken = default)
     {
-        if (response.Results.Count == 0)
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            StringBuilder url = new($"/api/v1/rebuild-index?type={Uri.EscapeDataString(indexType)}");
+            if (!string.IsNullOrWhiteSpace(sources))
+                url.Append($"&sources={Uri.EscapeDataString(sources)}");
+
+            JsonElement root = await PostJsonAsync(client, url.ToString(), cancellationToken);
+
+            JsonElement results = root.GetProperty("results");
+            StringBuilder sb = new();
+            sb.AppendLine($"## Index Rebuild Results ({results.GetArrayLength()} sources)");
+            sb.AppendLine();
+
+            foreach (JsonElement status in results.EnumerateArray())
+            {
+                bool success = status.TryGetProperty("success", out JsonElement sucEl) && sucEl.GetBoolean();
+                string icon = success ? "✅" : "❌";
+                string detail = success
+                    ? GetNullableString(status, "actionTaken") ?? ""
+                    : GetNullableString(status, "error") ?? "";
+                sb.AppendLine($"- {icon} **{GetString(status, "source")}**: {detail}");
+            }
+
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    // ── Shared helpers ───────────────────────────────────────────
+
+    internal static string FormatSearchResults(JsonElement root, string query)
+    {
+        JsonElement results = root.GetProperty("results");
+        int total = root.TryGetProperty("total", out JsonElement totalEl) ? totalEl.GetInt32() : results.GetArrayLength();
+
+        if (results.GetArrayLength() == 0)
             return $"No results found for \"{query}\".";
 
-        StringBuilder sb = new StringBuilder();
-        sb.AppendLine($"## Search Results ({response.TotalResults} total, showing {response.Results.Count})");
+        StringBuilder sb = new();
+        sb.AppendLine($"## Search Results ({total} total, showing {results.GetArrayLength()})");
         sb.AppendLine();
 
-        foreach (SearchResultItem? r in response.Results)
+        foreach (JsonElement r in results.EnumerateArray())
         {
-            sb.AppendLine($"### [{r.Source}] {r.Id} — {r.Title}");
-            sb.AppendLine($"- **Score:** {r.Score:F2}");
-            if (r.UpdatedAt is not null)
-                sb.AppendLine($"- **Updated:** {r.UpdatedAt.ToDateTimeOffset():yyyy-MM-dd}");
-            if (!string.IsNullOrEmpty(r.Url))
-                sb.AppendLine($"- **URL:** {r.Url}");
-            if (!string.IsNullOrEmpty(r.Snippet))
-                sb.AppendLine($"- **Snippet:** {r.Snippet}");
+            string id = GetNullableString(r, "id") ?? GetNullableString(r, "key") ?? "?";
+            string title = GetString(r, "title");
+            string? source = GetNullableString(r, "source");
+
+            sb.AppendLine(source is not null ? $"### [{source}] {id} — {title}" : $"### {id} — {title}");
+
+            if (r.TryGetProperty("score", out JsonElement scoreEl) && scoreEl.ValueKind == JsonValueKind.Number)
+                sb.AppendLine($"- **Score:** {scoreEl.GetDouble():F2}");
+            AppendIfPresent(sb, r, "updatedAt", "Updated");
+            AppendIfPresent(sb, r, "status", "Status");
+            AppendIfPresent(sb, r, "url", "URL");
+            AppendIfPresent(sb, r, "snippet", "Snippet");
+
             sb.AppendLine();
         }
 
-        if (response.Warnings.Count > 0)
+        if (root.TryGetProperty("warnings", out JsonElement warningsEl)
+            && warningsEl.ValueKind == JsonValueKind.Array
+            && warningsEl.GetArrayLength() > 0)
         {
             sb.AppendLine("**Warnings:**");
-            foreach (string? w in response.Warnings)
-                sb.AppendLine($"- {w}");
+            foreach (JsonElement w in warningsEl.EnumerateArray())
+                sb.AppendLine($"- {w.GetString()}");
         }
 
         return sb.ToString();
     }
 
+    internal static async Task<JsonElement> GetJsonAsync(HttpClient client, string url, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await client.GetAsync(url, ct);
+        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync(ct);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
+    }
+
+    internal static async Task<JsonElement> PostJsonAsync(HttpClient client, string url, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await client.PostAsync(url, null, ct);
+        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync(ct);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
+    }
+
+    internal static async Task<JsonElement> PostJsonBodyAsync(HttpClient client, string url, object body, CancellationToken ct)
+    {
+        string bodyJson = JsonSerializer.Serialize(body, CamelCaseOptions);
+        using StringContent content = new(bodyJson, Encoding.UTF8, "application/json");
+        using HttpResponseMessage response = await client.PostAsync(url, content, ct);
+        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync(ct);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
+    }
+
+    internal static string GetString(JsonElement el, string name) =>
+        el.TryGetProperty(name, out JsonElement val) && val.ValueKind == JsonValueKind.String
+            ? val.GetString() ?? ""
+            : "";
+
+    internal static string? GetNullableString(JsonElement el, string name) =>
+        el.TryGetProperty(name, out JsonElement val) && val.ValueKind == JsonValueKind.String
+            ? val.GetString()
+            : null;
+
+    private static void AppendIfPresent(StringBuilder sb, JsonElement el, string prop, string label, string prefix = "- ")
+    {
+        string? value = GetNullableString(el, prop);
+        if (!string.IsNullOrEmpty(value))
+            sb.AppendLine($"{prefix}**{label}:** {value}");
+    }
+
     private static string FormatBytes(long bytes) => FormatHelpers.FormatBytes(bytes);
+
+    private static readonly JsonSerializerOptions CamelCaseOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 }

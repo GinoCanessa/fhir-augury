@@ -1,10 +1,12 @@
+using FhirAugury.Common;
+
 namespace FhirAugury.Source.Confluence.Cache;
 
 /// <summary>Constants for Confluence cache file layout and naming conventions.</summary>
 public static class ConfluenceCacheLayout
 {
     /// <summary>The source name used as the cache subdirectory.</summary>
-    public const string SourceName = "confluence";
+    public const string SourceName = SourceSystems.Confluence;
 
     /// <summary>Extension for JSON API responses.</summary>
     public const string JsonExtension = "json";

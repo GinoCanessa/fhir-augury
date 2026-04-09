@@ -39,10 +39,10 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
             lastSha = cmd.ExecuteScalar()?.ToString();
         }
 
-        string sinceArg = lastSha is not null ? $"{lastSha}..HEAD" : "HEAD~500..HEAD";
+        (string sinceArg, string limitArg) = BuildLogRange(lastSha);
 
         // Pass 1: metadata + name-status (change types)
-        string pass1Args = $"log {sinceArg} --name-status --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
+        string pass1Args = $"log {sinceArg}{limitArg} --name-status --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
         string pass1Output = await RunGitAsync(clonePath, pass1Args, ct);
 
         if (string.IsNullOrWhiteSpace(pass1Output)) return;
@@ -52,7 +52,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         if (commits.Count == 0) return;
 
         // Pass 2: numstat (per-file line counts → summed for commit-level totals)
-        string pass2Args = $"log {sinceArg} --format=%H --numstat";
+        string pass2Args = $"log {sinceArg}{limitArg} --format=%H --numstat";
         string pass2Output = await RunGitAsync(clonePath, pass2Args, ct);
 
         if (!string.IsNullOrWhiteSpace(pass2Output))
@@ -247,6 +247,19 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
                 commit.Deletions = s.Deletions;
             }
         }
+    }
+
+    /// <summary>
+    /// Builds the git log range and optional limit arguments.
+    /// When a previous SHA exists, uses "{sha}..HEAD" for incremental extraction.
+    /// Otherwise uses "HEAD" with a -n limit to cap initial extraction,
+    /// avoiding the HEAD~N crash when a repo has fewer than N commits.
+    /// </summary>
+    internal static (string SinceArg, string LimitArg) BuildLogRange(string? lastSha, int maxInitialCommits = 500)
+    {
+        if (lastSha is not null)
+            return ($"{lastSha}..HEAD", "");
+        return ("HEAD", $" -n {maxInitialCommits}");
     }
 
     private async Task<string> RunGitAsync(string workingDir, string arguments, CancellationToken ct)

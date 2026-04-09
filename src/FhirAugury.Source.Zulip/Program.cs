@@ -1,15 +1,16 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
-using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
+using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using FhirAugury.Source.Zulip.Workers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -32,16 +33,15 @@ builder.AddServiceDefaults();
 // ── Kestrel ports ────────────────────────────────────────────────
 IConfigurationSection portsSection = builder.Configuration.GetSection($"{ZulipServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5170);
-int grpcPort = portsSection.GetValue<int>("Grpc", 5171);
 
 builder.WebHost.ConfigureKestrel(k =>
 {
     k.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1AndHttp2);
-    k.ListenAnyIP(grpcPort, o => o.Protocols = HttpProtocols.Http2);
 });
 
 // ── Services ─────────────────────────────────────────────────────
-builder.Services.AddGrpc();
+
+builder.Services.AddControllers();
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -63,13 +63,12 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
     return new FileSystemResponseCache(cachePath);
 });
 
-// HTTP client with auth and rate limiting
+// HTTP client with rate limiting (auth is handled by ZulipClient internally)
 builder.Services.AddTransient<ZulipRateLimiter>();
 builder.Services.AddHttpClient("zulip")
     .ConfigureHttpClient((sp, client) =>
     {
-        ZulipServiceOptions opts = sp.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-        ZulipAuthHandler.ConfigureHttpClient(client, opts);
+        client.Timeout = TimeSpan.FromMinutes(10);
     })
     .AddHttpMessageHandler<ZulipRateLimiter>()
     .AddStandardResilienceHandler(options =>
@@ -85,6 +84,7 @@ builder.Services.AddHttpClient("zulip")
     });
 
 // Ingestion
+builder.Services.AddSingleton<ZulipClientFactory>();
 builder.Services.AddSingleton<ZulipSource>();
 builder.Services.AddSingleton(sp =>
 {
@@ -100,7 +100,25 @@ builder.Services.AddSingleton(sp =>
         opts.Bm25,
         sp.GetRequiredService<ILogger<ZulipIndexer>>());
 });
-builder.Services.AddSingleton<ZulipTicketIndexer>();
+builder.Services.AddSingleton<ZulipXRefRebuilder>();
+
+// Index tracker
+FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
+builder.Services.AddSingleton<FhirAugury.Common.Indexing.IIndexTracker>(indexTracker);
+builder.Services.AddSingleton(indexTracker);
+
+// Orchestrator HTTP client (optional — for ingestion notifications)
+{
+    ZulipServiceOptions opts = builder.Configuration.GetSection(ZulipServiceOptions.SectionName).Get<ZulipServiceOptions>()!;
+    if (!string.IsNullOrWhiteSpace(opts.OrchestratorAddress))
+    {
+        builder.Services.AddHttpClient("orchestrator", client =>
+        {
+            client.BaseAddress = new Uri(opts.OrchestratorAddress);
+        });
+    }
+}
+
 builder.Services.AddSingleton<ZulipIngestionPipeline>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
@@ -109,37 +127,65 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
 WebApplication app = builder.Build();
 
-// ── Rebuild from cache (optional) ────────────────────────────────
 ZulipServiceOptions options = app.Services.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
-if (options.RebuildFromCacheOnStartup)
-{
-    ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else if (options.ReindexTicketsOnStartup)
-{
-    // Standalone ticket re-index (skipped when RebuildFromCacheOnStartup
-    // is true because the cache rebuild already includes ticket indexing).
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-    startupLogger.LogInformation("Re-indexing Jira ticket references on startup");
-    ZulipTicketIndexer ticketIndexer = app.Services.GetRequiredService<ZulipTicketIndexer>();
-    ticketIndexer.RebuildFullIndex(CancellationToken.None);
-}
 
-// ── Ensure dictionary database ───────────────────────────────────
+// Register indexes with the tracker
+FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredService<FhirAugury.Common.Indexing.IndexTracker>();
+ZulipDatabase zulipDatabase = app.Services.GetRequiredService<ZulipDatabase>();
+tracker.RegisterIndex("bm25", "BM25 keyword scoring index", () =>
+{
+    using SqliteConnection c = zulipDatabase.OpenConnection();
+    using SqliteCommand cmd = new("SELECT COUNT(*) FROM index_keywords", c);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+});
+tracker.RegisterIndex("fts", "FTS5 full-text search index", () =>
+{
+    using SqliteConnection c = zulipDatabase.OpenConnection();
+    return ZulipMessageRecord.SelectCount(c);
+});
+tracker.RegisterIndex("cross-refs", "Cross-reference extraction", () =>
+{
+    using SqliteConnection c = zulipDatabase.OpenConnection();
+    return FhirAugury.Common.Database.Records.JiraXRefRecord.SelectCount(c);
+});
+
+// ── Health check ─────────────────────────────────────────────────
+app.MapDefaultEndpoints();
+
+// ── HTTP API ─────────────────────────────────────────────────────
+app.MapControllers();
+
+// ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     options.DictionaryDatabase,
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
     CancellationToken.None);
 
-// ── Health check ─────────────────────────────────────────────────
-app.MapDefaultEndpoints();
+// ── Rebuild from cache (optional) ────────────────────────────────
+if (options.ReloadFromCacheOnStartup ||
+    app.Services.GetRequiredService<ZulipDatabase>().PrimaryContentTableIsEmpty())
+{
+    ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
+    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+}
+else
+{
+    // Check individual index tables when not reloading from cache
+    ZulipDatabase zulipDb = app.Services.GetRequiredService<ZulipDatabase>();
+    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
 
-// ── gRPC services ────────────────────────────────────────────────
-app.MapGrpcService<ZulipGrpcService>();
-app.MapGrpcService<ZulipSpecificGrpcService>();
+    if (zulipDb.TableIsEmpty("index_keywords"))
+    {
+        startupLogger.LogInformation("BM25 index is empty — rebuilding");
+        app.Services.GetRequiredService<ZulipIndexer>().RebuildFullIndex(CancellationToken.None);
+    }
 
-// ── HTTP API ─────────────────────────────────────────────────────
-app.MapZulipHttpApi();
+    if (options.ReindexTicketsOnStartup || zulipDb.TableIsEmpty("xref_jira"))
+    {
+        startupLogger.LogInformation("Rebuilding cross-reference indexes");
+        app.Services.GetRequiredService<ZulipXRefRebuilder>().RebuildAll(CancellationToken.None);
+    }
+}
 
-await app.RunAsync();
+
+app.Run();

@@ -21,75 +21,78 @@ manages cross-references, and provides a unified API to clients.
 │ ┌────┴─────┐ ┌─────┴────┐ ┌───────┴──────┐ ┌───────┴──────┐       │
 │ │Source.Jira│ │Source.    │ │Source.       │ │Source.       │       │
 │ │ :5160    │ │Zulip     │ │Confluence   │ │GitHub       │       │
-│ │ :5161    │ │ :5170    │ │ :5180       │ │ :5190       │       │
-│ │[SQLite]  │ │ :5171    │ │ :5181       │ │ :5191       │       │
+│ │[SQLite]  │ │ :5170    │ │ :5180       │ │ :5190       │       │
 │ │[FTS5]    │ │[SQLite]  │ │[SQLite]     │ │[SQLite]     │       │
 │ │[Cache]   │ │[FTS5]    │ │[FTS5]       │ │[FTS5]       │       │
 │ └────┬─────┘ │[Cache]   │ │[Cache]      │ │[Cache]      │       │
 │      │       └─────┬────┘ └───────┬──────┘ └───────┬──────┘       │
-│      │  gRPC       │     gRPC     │       gRPC     │              │
+│      │  HTTP       │     HTTP     │       HTTP     │              │
 │      └─────────────┼──────────────┼────────────────┘              │
 │                    ▼              ▼                                │
 │           ┌────────────────────────────────┐                      │
-│           │      Orchestrator :5150/:5151  │                      │
-│           │  [UnifiedSearch] [CrossRefs]   │                      │
-│           │  [RelatedItems]  [SQLite]      │                      │
+│           │      Orchestrator :5150       │                      │
+│           │  [UnifiedSearch] [XRefFanout] │                      │
+│           │  [RelatedItems]  [SQLite]     │                      │
 │           └────────┬──────────┬────────────┘                      │
 │                    │          │                                    │
 │           ┌────────┴──┐  ┌───┴─────────┐  ┌────────────────┐     │
-│           │  CLI Tool │  │  MCP Server │  │ Direct gRPC    │     │
-│           │  (gRPC)   │  │  (gRPC)     │  │ Clients        │     │
+│           │  CLI Tool │  │  MCP Server │  │ Direct HTTP    │     │
+│           │  (HTTP)   │  │  (HTTP)     │  │ Clients        │     │
 │           └───────────┘  └─────────────┘  └────────────────┘     │
 └──────────────────────────────────────────────────────────────────────┘
 
-Ports: HTTP (even) / gRPC (odd)
-  Orchestrator  :5150 / :5151
-  Source.Jira   :5160 / :5161
-  Source.Zulip  :5170 / :5171
-  Source.Confluence :5180 / :5181
-  Source.GitHub  :5190 / :5191
+Ports (HTTP only):
+  Orchestrator     :5150
+  Source.Jira      :5160
+  Source.Zulip     :5170
+  Source.Confluence :5180
+  Source.GitHub     :5190
 ```
 
 ## Component Overview
 
 | Component | Project | Role |
 |-----------|---------|------|
-| **Common** | `FhirAugury.Common` | Shared library: compiled protos, caching, database helpers, text utilities, gRPC client helpers, auxiliary database loader, BM25 configuration |
+| **Common** | `FhirAugury.Common` | Shared library: API contracts, caching, database helpers, text utilities, HTTP client helpers, auxiliary database loader, BM25 configuration |
 | **Source.Jira** | `FhirAugury.Source.Jira` | Jira source service — downloads, indexes, and serves Jira issues and comments |
 | **Source.Zulip** | `FhirAugury.Source.Zulip` | Zulip source service — downloads, indexes, and serves Zulip streams and messages |
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
-| **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, and comments |
+| **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, commits, and FHIR artifacts (StructureDefinitions, canonical artifacts, FSH definitions) |
+| **Parsing.Fhir** | `FhirAugury.Parsing.Fhir` | FHIR XML/JSON parsing library — StructureDefinitions, canonical artifacts (CodeSystem, ValueSet, etc.), Bundles, artifact classification |
+| **Parsing.Fsh** | `FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) parsing library — Profile, Extension, Resource, Logical, CodeSystem, ValueSet, Instance definitions; sushi-config.yaml parsing |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: all 16 tool implementations (UnifiedTools, JiraTools, ZulipTools) and McpServiceRegistration |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 16 tool implementations (UnifiedTools, ContentTools, JiraTools, ZulipTools) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
-| **CLI** | `FhirAugury.Cli` | Command-line interface (10+ commands, gRPC to orchestrator) |
+| **CLI** | `FhirAugury.Cli` | Command-line interface (13 commands, HTTP to orchestrator) |
+| **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, HTTP to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
 
 ## Project Dependencies
 
 ```
-protos/                        ← 6 proto files (source, orchestrator, jira, zulip, confluence, github)
-    ↑
-FhirAugury.Common              ← Compiles protos; shared caching, database, text, gRPC helpers
+FhirAugury.Common              ← Shared API contracts, caching, database, text, HTTP client helpers
     ↑
 FhirAugury.ServiceDefaults     ← Aspire shared project: OpenTelemetry, health checks, resilience
     ↑
-FhirAugury.Source.Jira         ← Common + ServiceDefaults (implements SourceService + JiraService gRPC)
-FhirAugury.Source.Zulip        ← Common + ServiceDefaults (implements SourceService + ZulipService gRPC)
-FhirAugury.Source.Confluence   ← Common + ServiceDefaults (implements SourceService + ConfluenceService gRPC)
-FhirAugury.Source.GitHub       ← Common + ServiceDefaults (implements SourceService + GitHubService gRPC)
+FhirAugury.Source.Jira         ← Common + ServiceDefaults (HTTP API controllers)
+FhirAugury.Source.Zulip        ← Common + ServiceDefaults (HTTP API controllers)
+FhirAugury.Source.Confluence   ← Common + ServiceDefaults (HTTP API controllers)
+FhirAugury.Source.GitHub       ← Common + ServiceDefaults (HTTP API controllers)
     ↑
-FhirAugury.Orchestrator        ← Common + ServiceDefaults (consumes SourceService gRPC from all sources)
+FhirAugury.Parsing.Fhir       ← Standalone library (Hl7.Fhir.R5 SDK)
+FhirAugury.Parsing.Fsh        ← Standalone library (fsh-processor ANTLR4 parser)
+    ↑                            Both used by Source.GitHub for artifact indexing
+FhirAugury.Orchestrator        ← Common + ServiceDefaults (HTTP API, consumes source HTTP APIs)
     ↑
-FhirAugury.McpShared            ← Common (shared MCP tool implementations, gRPC clients)
+FhirAugury.McpShared            ← Common (shared MCP tool implementations, HTTP clients)
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
 FhirAugury.McpHttp              ← McpShared + ServiceDefaults (HTTP/SSE transport, ASP.NET Core)
-FhirAugury.Cli                  ← Common (gRPC client to Orchestrator)
+FhirAugury.Cli                  ← Common (HTTP client to Orchestrator)
+FhirAugury.DevUi                ← Common + ServiceDefaults (Blazor Server, HTTP to Orchestrator)
 
 FhirAugury.AppHost             ← Aspire AppHost (references all service projects for orchestration)
-```
 
 ## Source Service Architecture
 
@@ -98,18 +101,18 @@ Each source service (`Source.Jira`, `Source.Zulip`, `Source.Confluence`,
 
 | Directory | Purpose |
 |-----------|---------|
-| `Api/` | gRPC service implementations (SourceService + source-specific service) |
+| `Api/` | HTTP API controller implementations |
 | `Cache/` | File-system response cache for raw API responses |
 | `Configuration/` | Source-specific options (including `Bm25`, `AuxiliaryDatabase`, and `DictionaryDatabase` sub-options) |
 | `Database/` | SQLite schema, record types, source-generated CRUD |
 | `Indexing/` | FTS5 search and BM25 indexing logic (uses shared `TokenCounter` and `Lemmatizer`) |
 | `Ingestion/` | Download pipeline: fetch → cache → parse → store |
 | `Workers/` | Background workers (e.g., `ScheduledIngestionWorker`) |
-| `Program.cs` | Entry point: dual-port Kestrel (HTTP + gRPC), DI registration |
+| `Program.cs` | Entry point: Kestrel HTTP server, DI registration |
 
 Each service has its own SQLite database (WAL mode, FTS5 virtual tables) and
-file-system response cache. Services implement both the common `SourceService`
-gRPC contract and a source-specific gRPC service (e.g., `JiraService`).
+file-system response cache. Services expose HTTP API controllers for both
+common operations (search, get item, ingestion) and source-specific endpoints.
 
 At startup, each service registers an `AuxiliaryDatabase` singleton that loads
 optional external stop words, lemmatization data, and FHIR vocabulary from
@@ -123,7 +126,7 @@ configurable `Bm25Options` (K1/B/UseLemmatization parameters).
 ### Ingestion Pipeline (per source service)
 
 1. **Trigger** — `ScheduledIngestionWorker` runs on a timer, or an on-demand
-   trigger arrives via the `TriggerIngestion` gRPC call
+   trigger arrives via the `TriggerIngestion` HTTP API call
 2. **Fetch** — The ingestion pipeline fetches data from the remote API, handling
    authentication, pagination, and rate limiting
 3. **Cache** — Raw API responses are stored in the file-system cache
@@ -134,38 +137,40 @@ configurable `Bm25Options` (K1/B/UseLemmatization parameters).
    source-generated CRUD
 6. **FTS5 sync** — Triggers on content tables automatically update FTS5 virtual
    tables (no application code needed)
-7. **Notify** — The source service calls `NotifyIngestionComplete` on the
-   orchestrator, which triggers a cross-reference scan of new items
+7. **Notify** — The source service notifies peers via
+   `NotifyPeerIngestionComplete` so they can re-scan for new cross-references
 
 ### Search Pipeline
 
-1. **Query** — User provides a search query via CLI, MCP tool, or direct gRPC
-2. **Route** — The orchestrator's `UnifiedSearchService` receives the request
-3. **Fan-out** — `SourceRouter` sends parallel `Search` gRPC calls to all
+1. **Query** — User provides a search query via CLI, MCP tool, or direct HTTP API
+2. **Route** — The orchestrator's `ContentController` receives the request
+3. **Fan-out** — `SourceHttpClient` sends parallel content search HTTP calls to all
    healthy source services
 4. **Per-source search** — Each source executes an FTS5 MATCH query against its
    own database and returns scored results
 5. **Normalize** — Per-source min-max score normalization to `[0, 1]`
-6. **Cross-ref boost** — Items with cross-references to other results get a
-   score boost from the orchestrator's cross-reference database
-7. **Freshness decay** — Scores are adjusted based on item age
-8. **Sort & limit** — Results are sorted by final score and truncated to the
+6. **Freshness decay** — Scores are adjusted based on item age
+7. **Sort & limit** — Results are sorted by final score and truncated to the
    requested limit
-9. **Return** — Merged results are returned to the client
+8. **Return** — Merged results are returned to the client
 
 ### Cross-Reference System
 
-The orchestrator's `CrossRefLinker` builds and maintains a cross-reference
-graph across all sources:
+Cross-references are **source-owned**: each source service maintains its own
+set of xref tables that track references TO other sources found within its
+content.
 
-1. **Stream** — `StreamSearchableText` gRPC calls stream searchable text from
-   each source service
-2. **Extract** — Regex patterns in `CrossRefPatterns` identify cross-source
-   identifiers (Jira issue keys like `FHIR-12345`, URLs, GitHub references)
-3. **Store** — Extracted cross-references are persisted in the orchestrator's
-   own SQLite database
-4. **Scan schedule** — `XRefScanWorker` runs every 30 minutes to process new
-   content
+1. **Extract** — During ingestion, each source service runs shared extractors
+   from `FhirAugury.Common.Indexing` against its content to find references
+   to items in other sources
+2. **Store** — Extracted references are stored in the source's own database
+   in typed xref tables (`xref_jira`, `xref_zulip`, `xref_confluence`,
+   `xref_github`, `xref_fhir_element`)
+3. **Query** — The orchestrator fans out `GetItemCrossReferences` HTTP calls
+   to all sources and merges the results
+4. **Peer notification** — When a source completes ingestion, it notifies
+   peers via `NotifyPeerIngestionComplete` so they can re-scan for new
+   references
 
 ### Related Items
 
@@ -173,8 +178,7 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 | Signal | Weight | Description |
 |--------|--------|-------------|
-| Explicit cross-references | 10 | Direct xrefs from source item to target |
-| Reverse cross-references | 8 | Other items that reference the source item |
+| Cross-source references | 10 | Items linked via cross-references (outgoing + incoming) |
 | BM25 text similarity | 3 | Keyword overlap via BM25 scoring |
 | Shared metadata | 2 | Common labels, components, specifications, etc. |
 
@@ -184,18 +188,24 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 Each source service owns its own SQLite database. This provides process
 isolation, independent scaling, and eliminates cross-service write contention.
-The orchestrator has a separate SQLite database for cross-references. WAL mode
+The orchestrator has a separate SQLite database for scan state coordination. WAL mode
 enables concurrent reads within each service.
 
-### gRPC for Inter-Service Communication
+### HTTP/REST for Inter-Service Communication
 
-All service-to-service communication uses gRPC with Protocol Buffers. Six proto
-files define the service contracts:
+All service-to-service communication uses HTTP/REST with JSON. Shared API
+contract classes in `FhirAugury.Common/Api/` define the request/response types:
 
-- `source_service.proto` — Common contract all sources implement
-- `orchestrator.proto` — Orchestrator's unified API
-- `jira.proto`, `zulip.proto`, `confluence.proto`, `github.proto` —
-  Source-specific operations
+- `SearchContracts` — Common search request/response types
+- `ItemContracts` — Item retrieval contracts
+- `CrossReferenceContracts` — Cross-reference query/response types
+- `IngestionContracts` — Ingestion trigger and status contracts
+- `ServiceContracts` — Service status and health contracts
+- `ContentFormats` — Content format definitions
+
+Services use `IHttpClientFactory` with named clients for HTTP communication.
+The orchestrator communicates with source services via HTTP, and MCP/CLI
+clients connect to the orchestrator via HTTP.
 
 ### Source-Generated CRUD over ORM
 
@@ -228,30 +238,31 @@ modes via `CacheMode`:
 This enables `RebuildFromCache` — rebuilding the database entirely from cached
 API responses without hitting the remote API.
 
-### MCP and CLI as gRPC Clients
+### MCP and CLI as HTTP Clients
 
-Both MCP servers and the CLI are thin gRPC clients to the orchestrator. They
+Both MCP servers and the CLI are thin HTTP clients to the orchestrator. They
 contain no database access or business logic — all intelligence lives in the
-orchestrator and source services. McpHttp is also an ASP.NET Core web
-application (port 5200, `/mcp` endpoint) that participates in Aspire
-orchestration via ServiceDefaults.
+orchestrator and source services. The MCP servers use `IHttpClientFactory` with
+named clients ("orchestrator", "jira", "zulip", "confluence", "github"). The
+CLI uses `HttpServiceClient` for HTTP communication. McpHttp is also an
+ASP.NET Core web application (port 5200, `/mcp` endpoint) that participates
+in Aspire orchestration via ServiceDefaults.
 
 ## Concurrency Model
 
 - **Service independence:** Each source service runs as an independent process
   with its own database and ingestion pipeline
 - **WAL mode:** SQLite WAL mode enables concurrent reads within each service
-  (gRPC readers alongside the ingestion writer)
-- **Parallel fan-out:** The orchestrator sends gRPC requests to all source
+  (HTTP request handlers alongside the ingestion writer)
+- **Parallel fan-out:** The orchestrator sends HTTP requests to all source
   services in parallel using `Task.WhenAll`
 - **Health monitoring:** `ServiceHealthMonitor` polls source services every 60
   seconds; unhealthy sources are excluded from fan-out
 
 ## Error Handling
 
-- **gRPC status codes:** `GrpcErrorMapper` in `FhirAugury.Common` maps
-  exceptions to appropriate gRPC status codes (NotFound, Unavailable,
-  Internal, etc.)
+- **HTTP error handling:** Standard HTTP status codes (404 Not Found, 503
+  Service Unavailable, 500 Internal Server Error, etc.) for error responses
 - **Transient HTTP failures:** `HttpRetryHelper` retries on HTTP
   429/500/502/503/504 with exponential backoff + jitter (max 3 retries).
   Respects `Retry-After` headers.
@@ -277,7 +288,7 @@ The `FhirAugury.ServiceDefaults` project is a shared Aspire project
 (`IsAspireSharedProject`) referenced by all web services. It provides:
 
 - **OpenTelemetry** — Logging, metrics (ASP.NET Core, HTTP, runtime), and
-  distributed tracing (ASP.NET Core, gRPC, HTTP) with OTLP export when
+  distributed tracing (ASP.NET Core, HTTP) with OTLP export when
   `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
 - **Health checks** — Readiness (`/health`) and liveness (`/alive`) endpoints
 - **Service discovery** — Aspire service discovery for HTTP clients
@@ -290,18 +301,21 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-six services with fixed ports matching the existing convention:
+eight projects with fixed ports matching the existing convention:
 
-| Service | HTTP | gRPC |
-|---------|------|------|
-| source-jira | 5160 | 5161 |
-| source-zulip | 5170 | 5171 |
-| source-confluence | 5180 | 5181 |
-| source-github | 5190 | 5191 |
-| orchestrator | 5150 | 5151 |
-| mcp | 5200 | — |
+| Service | HTTP |
+|---------|------|
+| source-jira | 5160 |
+| source-zulip | 5170 |
+| source-confluence | 5180 |
+| source-github | 5190 |
+| orchestrator | 5150 |
+| devui | 5210 |
+| mcp | 5200 |
+| cli | — |
 
-The orchestrator uses `WaitFor()` to depend on all source services.
-Confluence uses `WithExplicitStart()` to allow manual triggering. All
-endpoints use `isProxied: false` so services listen on their own ports
-directly (no Aspire reverse proxy).
+The orchestrator uses `WaitFor()` to depend on Jira, Zulip, and GitHub
+source services. Confluence, Dev UI, the MCP HTTP server, and the CLI use
+`WithExplicitStart()` to allow manual triggering. All endpoints use
+`isProxied: false` so services listen on their own ports directly (no
+Aspire reverse proxy).

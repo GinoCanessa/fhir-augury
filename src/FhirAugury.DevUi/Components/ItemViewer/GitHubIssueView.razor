@@ -1,0 +1,67 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item">
+    @{
+        string state = Item.Metadata?.GetValueOrDefault("state") ?? "";
+        bool isPr = Item.Metadata?.GetValueOrDefault("is_pull_request")?.Equals("True", StringComparison.OrdinalIgnoreCase) == true;
+    }
+    @if (!string.IsNullOrEmpty(state))
+    {
+        <span class="badge @SourceBadgeHelper.GitHubStateBadgeClass(state) me-2">@state</span>
+    }
+    @if (isPr)
+    {
+        <span class="badge text-bg-purple me-2"><i class="bi bi-git"></i> PR</span>
+    }
+    @if (Item.Metadata?.TryGetValue("number", out string? number) == true)
+    {
+        <span class="text-muted me-2">#@number</span>
+    }
+</ItemHeader>
+
+@if (Item.Metadata?.TryGetValue("repo", out string? repo) == true)
+{
+    <p class="text-muted small mb-3"><i class="bi bi-folder"></i> @repo</p>
+}
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="github"
+            DisplayOrder="_displayOrder" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-file-text"></i> Body</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    @MarkdownRenderer.ToHtml(Item.Content)
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No body content available.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (Item.Comments is { Count: > 0 })
+{
+    <ItemComments Comments="Item.Comments" RenderAsMarkdown="true" />
+}
+
+<ItemCrossRefs CrossRefs="CrossRefs" />
+
+@code {
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
+
+    private static readonly List<string> _displayOrder =
+    [
+        "state", "is_pull_request", "repo", "number", "author",
+        "labels", "assignees", "milestone", "merge_state", "closed_at", "jira_refs"
+    ];
+}

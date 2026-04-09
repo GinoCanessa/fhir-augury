@@ -12,12 +12,6 @@ public record CrossReference(string TargetType, string TargetId, string Context)
 /// </summary>
 public static partial class CrossRefPatterns
 {
-    [GeneratedRegex(@"\b(FHIR-\d+)\b")]
-    private static partial Regex JiraKeyRegex();
-
-    [GeneratedRegex(@"https?://jira\.hl7\.org/browse/(FHIR-\d+)")]
-    private static partial Regex JiraUrlRegex();
-
     [GeneratedRegex(@"https?://chat\.fhir\.org/#narrow/(?:stream|channel)/(\d+)[^/]*/topic/([^\s?#]+)")]
     private static partial Regex ZulipUrlRegex();
 
@@ -41,21 +35,13 @@ public static partial class CrossRefPatterns
         List<CrossReference> results = new List<CrossReference>();
         HashSet<(string, string)> seen = new HashSet<(string, string)>();
 
-        // Jira URLs (check before Jira keys to avoid double-matching)
-        foreach (Match match in JiraUrlRegex().Matches(text))
-        {
-            (string TargetType, string TargetId) key = (TargetType: "jira", TargetId: match.Groups[1].Value);
-            if (seen.Add(key))
-                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
-        }
-
-        // Jira keys (skip if already found via URL)
-        foreach (Match match in JiraKeyRegex().Matches(text))
-        {
-            (string TargetType, string TargetId) key = (TargetType: "jira", TargetId: match.Groups[1].Value);
-            if (seen.Add(key))
-                results.Add(new CrossReference(key.TargetType, key.TargetId, GetSurroundingText(text, match.Index)));
-        }
+    // Jira references (delegated to JiraTicketExtractor for full pattern coverage)
+    foreach (JiraTicketMatch jiraMatch in JiraTicketExtractor.ExtractTickets(text))
+    {
+        (string TargetType, string TargetId) key = ("jira", jiraMatch.JiraKey);
+        if (seen.Add(key))
+            results.Add(new CrossReference(key.TargetType, key.TargetId, jiraMatch.Context));
+    }
 
         // Zulip URLs
         foreach (Match match in ZulipUrlRegex().Matches(text))

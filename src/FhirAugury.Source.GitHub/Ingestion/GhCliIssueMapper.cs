@@ -77,7 +77,7 @@ public static class GhCliIssueMapper
     /// <summary>
     /// Maps a <c>gh repo view --json</c> element to a <see cref="GitHubRepoRecord"/>.
     /// </summary>
-    public static GitHubRepoRecord MapRepo(JsonElement json)
+    public static GitHubRepoRecord MapRepo(JsonElement json, string category = "")
     {
         return new GitHubRepoRecord
         {
@@ -88,6 +88,7 @@ public static class GhCliIssueMapper
             Description = GetString(json, "description"),
             HasIssues = json.TryGetProperty("hasIssuesEnabled", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
+            Category = category,
         };
     }
 

@@ -11,7 +11,7 @@ HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
-builder.Services.AddMcpGrpcClients();
+builder.Services.AddMcpHttpClients();
 
 builder.Services
     .AddMcpServer()

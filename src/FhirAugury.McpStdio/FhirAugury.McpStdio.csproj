@@ -5,11 +5,11 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fhir-augury-mcp</ToolCommandName>
     <PackageId>FhirAugury.McpStdio</PackageId>
-    <Description>FHIR Augury MCP server (stdio transport) — provides search tools for LLM agents over HL7 FHIR community data via gRPC.</Description>
+    <Description>FHIR Augury MCP server (stdio transport) — provides search tools for LLM agents over HL7 FHIR community data via HTTP.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol" Version="1.1.0" />
+    <PackageReference Include="ModelContextProtocol" Version="1.2.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.*" />
   </ItemGroup>

@@ -23,8 +23,8 @@ public class GitHubRestProvider(
     ILogger<GitHubRestProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
-    public const string SourceName = "github";
-    private const string GitHubApiBase = "https://api.github.com";
+    public const string SourceName = SourceSystems.GitHub;
+    private const string GitHubApiBase= "https://api.github.com";
 
     /// <summary>Performs a full download of all issues for configured repositories.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default)
@@ -52,6 +52,8 @@ public class GitHubRestProvider(
         foreach (string key in cache.EnumerateKeys(GitHubCacheLayout.SourceName))
         {
             if (ct.IsCancellationRequested) break;
+            if (key.StartsWith(GitHubCacheLayout.ReposSubDir + "/", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!key.EndsWith("." + GitHubCacheLayout.JsonExtension, StringComparison.OrdinalIgnoreCase)) continue;
             if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out Stream? stream)) continue;
 
             using (stream)
@@ -288,9 +290,7 @@ public class GitHubRestProvider(
 
     private List<string> GetEffectiveRepositories()
     {
-        List<string> repos = new List<string>(_options.Repositories);
-        repos.AddRange(_options.AdditionalRepositories);
-        return repos;
+        return _options.GetAllRepositoryNames();
     }
 
     private enum ProcessOutcome { New, Updated, Failed }

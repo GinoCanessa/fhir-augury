@@ -364,4 +364,33 @@ public class GitHubCommitFileExtractorTests
         Assert.Equal(0, commits[0].Commit.Insertions);
         Assert.Equal(0, commits[0].Commit.Deletions);
     }
+
+    // ── BuildLogRange tests ──────────────────────────────────────────
+
+    [Fact]
+    public void BuildLogRange_WithLastSha_ReturnsShaRange()
+    {
+        (string sinceArg, string limitArg) = GitHubCommitFileExtractor.BuildLogRange("abc123def456");
+
+        Assert.Equal("abc123def456..HEAD", sinceArg);
+        Assert.Equal("", limitArg);
+    }
+
+    [Fact]
+    public void BuildLogRange_NoLastSha_ReturnsHeadWithLimit()
+    {
+        (string sinceArg, string limitArg) = GitHubCommitFileExtractor.BuildLogRange(null);
+
+        Assert.Equal("HEAD", sinceArg);
+        Assert.Equal(" -n 500", limitArg);
+    }
+
+    [Fact]
+    public void BuildLogRange_CustomMaxCount_Honored()
+    {
+        (string sinceArg, string limitArg) = GitHubCommitFileExtractor.BuildLogRange(null, maxInitialCommits: 100);
+
+        Assert.Equal("HEAD", sinceArg);
+        Assert.Equal(" -n 100", limitArg);
+    }
 }

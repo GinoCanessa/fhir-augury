@@ -24,6 +24,9 @@ public class JiraServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
+    /// <summary>HTTP address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorAddress { get; set; }
+
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
     /// available for queries but will not download new content.
@@ -38,7 +41,7 @@ public class JiraServiceOptions
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }
     public int PageSize { get; set; } = 100;
-    public PortConfiguration Ports { get; set; } = new() { Http = 5160, Grpc = 5161 };
+    public PortConfiguration Ports { get; set; } = new() { Http = 5160 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();

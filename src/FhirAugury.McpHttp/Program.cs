@@ -5,7 +5,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 
-builder.Services.AddMcpGrpcClients();
+builder.Services.AddMcpHttpClients();
 
 builder.Services
     .AddMcpServer()

@@ -9,13 +9,6 @@ var jira = builder.AddProject<Projects.FhirAugury_Source_Jira>("source-jira")
         e.Port = 5160;
         e.TargetPort = 5160;
         e.IsProxied = false;
-    })
-    .WithEndpoint("grpc", e =>
-    {
-        e.Port = 5161;
-        e.TargetPort = 5161;
-        e.Transport = "http2";
-        e.IsProxied = false;
     });
 
 var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
@@ -23,13 +16,6 @@ var zulip = builder.AddProject<Projects.FhirAugury_Source_Zulip>("source-zulip")
     {
         e.Port = 5170;
         e.TargetPort = 5170;
-        e.IsProxied = false;
-    })
-    .WithEndpoint("grpc", e =>
-    {
-        e.Port = 5171;
-        e.TargetPort = 5171;
-        e.Transport = "http2";
         e.IsProxied = false;
     })
     .WaitFor(jira);
@@ -41,13 +27,6 @@ var confluence = builder.AddProject<Projects.FhirAugury_Source_Confluence>("sour
         e.TargetPort = 5180;
         e.IsProxied = false;
     })
-    .WithEndpoint("grpc", e =>
-    {
-        e.Port = 5181;
-        e.TargetPort = 5181;
-        e.Transport = "http2";
-        e.IsProxied = false;
-    })
     .WithExplicitStart();
 
 var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-github")
@@ -55,13 +34,6 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
     {
         e.Port = 5190;
         e.TargetPort = 5190;
-        e.IsProxied = false;
-    })
-    .WithEndpoint("grpc", e =>
-    {
-        e.Port = 5191;
-        e.TargetPort = 5191;
-        e.Transport = "http2";
         e.IsProxied = false;
     })
     .WaitFor(jira);
@@ -74,16 +46,20 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
         e.TargetPort = 5150;
         e.IsProxied = false;
     })
-    .WithEndpoint("grpc", e =>
-    {
-        e.Port = 5151;
-        e.TargetPort = 5151;
-        e.Transport = "http2";
-        e.IsProxied = false;
-    })
     .WaitFor(jira)
     .WaitFor(zulip)
     .WaitFor(github);
+
+// ── Dev UI ───────────────────────────────────────────────────────
+builder.AddProject<Projects.FhirAugury_DevUi>("devui")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5210;
+        e.TargetPort = 5210;
+        e.IsProxied = false;
+    })
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
 
 // ── MCP HTTP server ─────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_McpHttp>("mcp")
@@ -93,6 +69,54 @@ builder.AddProject<Projects.FhirAugury_McpHttp>("mcp")
         e.TargetPort = 5200;
         e.IsProxied = false;
     })
-    .WaitFor(orchestrator);
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
+
+// ── CLI tool ─────────────────────────────────────────────────────
+IResourceBuilder<ProjectResource> cli = builder.AddProject<Projects.FhirAugury_Cli>("cli")
+    .WithExplicitStart();
+
+(string? Type, string DisplayName, string Description)[] indexCommands =
+[
+    (null, "Rebuild all indexes", "Rebuilds all indexes on all source services via the orchestrator."),
+    ("bm25", "Rebuild BM25", "Rebuilds BM25 full-text search indexes."),
+    ("fts", "Rebuild FTS", "Rebuilds FTS indexes."),
+    ("cross-refs", "Rebuild cross-refs", "Rebuilds cross-reference indexes."),
+    ("lookup-tables", "Rebuild lookup tables", "Rebuilds lookup table indexes."),
+    ("commits", "Rebuild commits", "Rebuilds commit indexes."),
+    ("artifact-map", "Rebuild artifact map", "Rebuilds artifact mapping indexes."),
+    ("page-links", "Rebuild page links", "Rebuilds page link indexes."),
+];
+
+foreach ((string? type, string displayName, string description) in indexCommands)
+{
+    string commandName = type is null ? "index-all" : $"index-{type}";
+    string url = type is null
+        ? "http://localhost:5150/api/v1/rebuild-index"
+        : $"http://localhost:5150/api/v1/rebuild-index?type={type}";
+
+    cli.WithCommand(
+        name: commandName,
+        displayName: displayName,
+        executeCommand: async context =>
+        {
+            using HttpClient http = new();
+            try
+            {
+                HttpResponseMessage response = await http.PostAsync(url, null, context.CancellationToken);
+                if (response.IsSuccessStatusCode)
+                    return CommandResults.Success();
+
+                string body = await response.Content.ReadAsStringAsync(context.CancellationToken);
+                return CommandResults.Failure($"HTTP {(int)response.StatusCode}: {body}");
+            }
+            catch (HttpRequestException ex)
+            {
+                return CommandResults.Failure($"Cannot reach orchestrator: {ex.Message}");
+            }
+        },
+        commandOptions: new CommandOptions { Description = description }
+    );
+}
 
 builder.Build().Run();

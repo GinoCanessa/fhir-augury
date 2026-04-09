@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -36,7 +37,7 @@ public abstract class SourceDatabase : IDisposable
 
     /// <summary>Opens a new SQLite connection with WAL mode and performance pragmas.</summary>
     /// <remarks>
-    /// Ideally protected, but kept public because composed services (gRPC, HTTP, indexers)
+    /// Ideally protected, but kept public because composed services (HTTP endpoints, indexers)
     /// need direct connection access. A future refactor could introduce a connection factory.
     /// </remarks>
     public SqliteConnection OpenConnection()
@@ -73,6 +74,19 @@ public abstract class SourceDatabase : IDisposable
 
     /// <summary>Override to create source-specific tables, indexes, and FTS5 virtual tables.</summary>
     protected abstract void InitializeSchema(SqliteConnection connection);
+
+    /// <summary>
+    /// Returns true if the specified table contains zero rows.
+    /// Useful for detecting missing index data on startup.
+    /// </summary>
+    public bool TableIsEmpty(string tableName, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM \"{tableName}\"";
+        return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
+    }
 
     /// <summary>
     /// Executes a batch of items, committing every <paramref name="batchSize"/> items.
@@ -180,7 +194,23 @@ public abstract class SourceDatabase : IDisposable
         return pageCount * pageSize;
     }
 
-    /// <summary>Runs PRAGMA integrity_check.</summary>
+    /// <summary>
+    /// Lightweight connectivity/liveness check suitable for frequent health probes.
+    /// Uses a trivial query instead of a full integrity scan.
+    /// </summary>
+    public string QuickCheck()
+    {
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT 1;";
+        object? result = cmd.ExecuteScalar();
+        return result is not null ? "ok" : "unknown";
+    }
+
+    /// <summary>
+    /// Runs a full PRAGMA integrity_check. This scans every page of the database
+    /// and can be very slow on large databases. Use only for diagnostics, not health probes.
+    /// </summary>
     public string CheckIntegrity()
     {
         using SqliteConnection connection = OpenConnection();
@@ -214,6 +244,112 @@ public abstract class SourceDatabase : IDisposable
             cmd.ExecuteNonQuery();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Retrieves extracted keywords for a specific item, sorted by BM25 score descending.
+    /// </summary>
+    public static List<KeywordEntry> GetKeywordsForItem(
+        SqliteConnection connection, string sourceId, string? keywordType = null, int limit = 50)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+
+        string keywordFilter = keywordType is not null ? " AND KeywordType = @keywordType" : "";
+        cmd.CommandText = $"""
+            SELECT Keyword, KeywordType, Count, Bm25Score
+            FROM index_keywords
+            WHERE SourceId = @sourceId{keywordFilter}
+            ORDER BY Bm25Score DESC
+            LIMIT @limit
+            """;
+
+        cmd.Parameters.AddWithValue("@sourceId", sourceId);
+        if (keywordType is not null)
+            cmd.Parameters.AddWithValue("@keywordType", keywordType);
+        cmd.Parameters.AddWithValue("@limit", limit);
+
+        List<KeywordEntry> keywords = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            keywords.Add(new KeywordEntry
+            {
+                Keyword = reader.GetString(0),
+                KeywordType = reader.GetString(1),
+                Count = reader.GetInt32(2),
+                Bm25Score = reader.GetDouble(3),
+            });
+        }
+        return keywords;
+    }
+
+    /// <summary>
+    /// Gets the content type for a specific item from the keyword index.
+    /// Returns empty string if no keywords exist for the item.
+    /// </summary>
+    public static string GetContentTypeForItem(SqliteConnection connection, string sourceId)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT ContentType FROM index_keywords WHERE SourceId = @sourceId LIMIT 1";
+        cmd.Parameters.AddWithValue("@sourceId", sourceId);
+        return cmd.ExecuteScalar()?.ToString() ?? "";
+    }
+
+    /// <summary>
+    /// Finds items related to a source item by shared keyword BM25 vectors.
+    /// Returns raw related items without titles — callers resolve titles from source-specific tables.
+    /// </summary>
+    public static List<(string SourceId, string ContentType, double Score, string SharedKeywords)> GetRelatedByKeyword(
+        SqliteConnection connection, string sourceId, double minScore = 0.1,
+        string? keywordType = null, int limit = 20)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+
+        string keywordFilter = keywordType is not null ? " AND KeywordType = @keywordType" : "";
+        cmd.CommandText = $"""
+            WITH seed AS (
+                SELECT Keyword, KeywordType, Bm25Score
+                FROM index_keywords
+                WHERE SourceId = @sourceId{keywordFilter}
+                ORDER BY Bm25Score DESC
+                LIMIT 50
+            ),
+            candidates AS (
+                SELECT k.SourceId, k.ContentType, k.Keyword,
+                       k.Bm25Score AS CandidateScore, s.Bm25Score AS SeedScore
+                FROM index_keywords k
+                INNER JOIN seed s ON k.Keyword = s.Keyword AND k.KeywordType = s.KeywordType
+                WHERE k.SourceId != @sourceId
+            )
+            SELECT SourceId, ContentType,
+                   SUM(CASE WHEN CandidateScore > 0 AND SeedScore > 0
+                            THEN SQRT(CandidateScore * SeedScore) ELSE 0 END) AS Score,
+                   GROUP_CONCAT(Keyword, ',') AS SharedKeywords
+            FROM candidates
+            GROUP BY SourceId, ContentType
+            HAVING Score >= @minScore
+            ORDER BY Score DESC
+            LIMIT @limit
+            """;
+
+        cmd.Parameters.AddWithValue("@sourceId", sourceId);
+        cmd.Parameters.AddWithValue("@minScore", minScore);
+        if (keywordType is not null)
+            cmd.Parameters.AddWithValue("@keywordType", keywordType);
+        cmd.Parameters.AddWithValue("@limit", limit);
+
+        List<(string SourceId, string ContentType, double Score, string SharedKeywords)> results = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add((
+                SourceId: reader.GetString(0),
+                ContentType: reader.GetString(1),
+                Score: reader.GetDouble(2),
+                SharedKeywords: reader.GetString(3)
+            ));
+        }
+        return results;
     }
 
     public void Dispose()

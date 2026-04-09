@@ -8,29 +8,28 @@ FTS5 and BM25 relevance scoring.
 ## Architecture (v2)
 
 FHIR Augury v2 uses a microservices architecture where each data source runs as
-an independent gRPC service with its own database and cache. The Orchestrator
+an independent HTTP service with its own database and cache. The Orchestrator
 aggregates results and manages cross-references across sources.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Clients                                                     │
 │  ┌─────────┐  ┌───────────┐  ┌──────────────────────────┐   │
-│  │   CLI   │  │ MCP Server│  │   Direct gRPC Clients    │   │
+│  │   CLI   │  │ MCP Server│  │   HTTP API Clients       │   │
 │  └────┬────┘  └─────┬─────┘  └────────────┬─────────────┘   │
 │       └──────────────┼─────────────────────┘                 │
 │                      ▼                                       │
 │  ┌───────────────────────────────────────────┐               │
-│  │          Orchestrator (:5150/:5151)       │               │
+│  │          Orchestrator (:5150)             │               │
 │  │  Unified search · Cross-references ·     │               │
 │  │  Related items · Source aggregation       │               │
 │  └───┬──────────┬──────────┬──────────┬─────┘               │
-│      │          │          │          │         gRPC         │
+│      │          │          │          │         HTTP         │
 │  ┌───▼───┐  ┌──▼───┐  ┌──▼────────┐ ┌▼──────┐              │
 │  │ Jira  │  │Zulip │  │Confluence │ │GitHub │              │
 │  │:5160  │  │:5170 │  │  :5180    │ │:5190  │              │
-│  │:5161  │  │:5171 │  │  :5181    │ │:5191  │              │
 │  └───────┘  └──────┘  └──────────┘ └───────┘              │
-│    Each service: SQLite + FTS5 + Cache + gRPC               │
+│    Each service: SQLite + FTS5 + Cache + HTTP API           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,11 +52,12 @@ docker compose --profile full logs -f
 
 ```bash
 # Start all services with the Aspire dashboard
-aspire run
+dotnet run --project src/FhirAugury.AppHost
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and
-metrics at the URL shown in the console output.
+metrics at the URL shown in the console output. Confluence, Dev UI, MCP HTTP,
+and CLI use explicit start and must be started manually from the dashboard.
 
 ### From Source
 
@@ -73,14 +73,15 @@ dotnet run --project src/FhirAugury.Orchestrator
 
 ## Services
 
-| Service | HTTP | gRPC | Description |
-|---------|------|------|-------------|
-| Orchestrator | [5150](http://localhost:5150/health) | 5151 | Unified search, cross-references, aggregation |
-| Jira | [5160](http://localhost:5160/health) | 5161 | HL7 Jira issues and comments |
-| Zulip | [5170](http://localhost:5170/health) | 5171 | FHIR Zulip chat messages |
-| Confluence | [5180](http://localhost:5180/health) | 5181 | HL7 Confluence wiki pages |
-| GitHub | [5190](http://localhost:5190/health) | 5191 | HL7 GitHub issues, PRs, and commits |
-| MCP (HTTP) | [5200](http://localhost:5200/mcp) | — | MCP server (HTTP/SSE transport) |
+| Service | Port | Description |
+|---------|------|-------------|
+| Orchestrator | [5150](http://localhost:5150/health) | Unified search, cross-references, aggregation |
+| Jira | [5160](http://localhost:5160/health) | HL7 Jira issues and comments |
+| Zulip | [5170](http://localhost:5170/health) | FHIR Zulip chat messages |
+| Confluence | [5180](http://localhost:5180/health) | HL7 Confluence wiki pages |
+| GitHub | [5190](http://localhost:5190/health) | HL7 GitHub issues, PRs, and commits |
+| MCP (HTTP) | [5200](http://localhost:5200/mcp) | MCP server (HTTP/SSE transport) |
+| Dev UI | [5210](http://localhost:5210) | Blazor Server operational dashboard |
 
 ## Features
 
@@ -93,8 +94,9 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **Related items** — find similar content using BM25 keyword vectors
 - **FHIR-aware tokenization** — recognizes FHIR paths, operations, and terms
 - **Independent services** — each source runs standalone with its own database
+- **FHIR artifact parsing** — indexes StructureDefinitions, canonical artifacts, and FSH definitions from cloned repositories
 - **MCP servers** — stdio and HTTP/SSE transports for integration with LLM agents
-- **CLI tool** for searching and managing services via gRPC
+- **CLI tool** for searching and managing services via HTTP
 - **Docker Compose** deployment with profiles for subset stacks
 - **.NET Aspire** orchestration with dashboard, OpenTelemetry, and service discovery
 
@@ -111,11 +113,11 @@ Configure your MCP client to connect to the running services:
       "command": "dotnet",
       "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
-        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171",
-        "FHIR_AUGURY_CONFLUENCE_GRPC": "http://localhost:5181",
-        "FHIR_AUGURY_GITHUB_GRPC": "http://localhost:5191"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
+        "FHIR_AUGURY_JIRA": "http://localhost:5160",
+        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
+        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
+        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
       }
     }
   }
@@ -132,7 +134,7 @@ Configure your MCP client to connect to the running services:
       "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
                "--", "--mode", "direct", "--source", "jira"],
       "env": {
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161"
+        "FHIR_AUGURY_JIRA": "http://localhost:5160"
       }
     }
   }
@@ -183,12 +185,15 @@ docker compose --profile jira-only up -d   # Single source
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
-| GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits ingestion |
-| Common | `src/FhirAugury.Common` | Shared types, protobuf definitions, utilities |
+| GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
+| Common | `src/FhirAugury.Common` | Shared types, API contracts, utilities |
+| Parsing (FHIR) | `src/FhirAugury.Parsing.Fhir` | FHIR XML/JSON StructureDefinition and canonical artifact parsing |
+| Parsing (FSH) | `src/FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) and sushi-config.yaml parsing |
 | MCP Server (stdio) | `src/FhirAugury.McpStdio` | MCP server for LLM agents (stdio transport, e.g., Claude Desktop) |
 | MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
-| MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and gRPC client registration |
-| CLI | `src/FhirAugury.Cli` | Command-line interface via gRPC |
+| MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and HTTP client registration |
+| CLI | `src/FhirAugury.Cli` | Command-line interface via HTTP |
+| Dev UI | `src/FhirAugury.DevUi` | Blazor Server operational dashboard |
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
@@ -213,7 +218,7 @@ docker compose --profile jira-only up -d   # Single source
 | [Getting Started](docs/user/getting-started.md) | Setup, configure, download, search |
 | [CLI Reference](docs/user/cli-reference.md) | Command-line interface documentation |
 | [Configuration](docs/user/configuration.md) | User configuration guide |
-| [API Reference](docs/user/api-reference.md) | gRPC and HTTP API endpoints |
+| [API Reference](docs/user/api-reference.md) | HTTP API endpoints |
 | [MCP Tools](docs/user/mcp-tools.md) | MCP tool reference for LLM agents |
 | [Docker](docs/user/docker.md) | Docker Compose deployment |
 
@@ -232,9 +237,8 @@ docker compose --profile jira-only up -d   # Single source
 
 - **Language:** C# 14 / .NET 10
 - **Database:** SQLite with FTS5 and WAL mode (per service)
-- **Communication:** gRPC (inter-service), HTTP (health/REST)
-- **Protobuf:** Shared definitions in `protos/`
-- **CLI framework:** System.CommandLine
+- **Communication:** HTTP/REST with JSON (inter-service and client-facing)
+- **CLI framework:** JSON-in/JSON-out interface via HTTP
 - **MCP:** Model Context Protocol (stdio and HTTP/SSE transports)
 - **Containerization:** Docker with multi-stage builds
 - **Orchestration:** .NET Aspire (optional, for development)

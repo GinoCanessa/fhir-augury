@@ -6,5 +6,4 @@ namespace FhirAugury.Common.Configuration;
 public class PortConfiguration
 {
     public int Http { get; set; }
-    public int Grpc { get; set; }
 }

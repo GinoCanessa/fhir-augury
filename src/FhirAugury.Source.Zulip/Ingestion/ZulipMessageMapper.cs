@@ -1,10 +1,11 @@
 using System.Text.Json;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Database.Records;
+using zulip_cs_lib.Models;
 
 namespace FhirAugury.Source.Zulip.Ingestion;
 
-/// <summary>Maps Zulip API JSON responses to database records.</summary>
+/// <summary>Maps Zulip API JSON responses and library model types to database records.</summary>
 public static class ZulipMessageMapper
 {
     /// <summary>Maps a Zulip stream JSON element to a ZulipStreamRecord.</summary>
@@ -19,6 +20,24 @@ public static class ZulipMessageMapper
             IsWebPublic = GetBool(streamJson, "is_web_public"),
             MessageCount = 0,
             IncludeStream = true,
+            BaselineValue = 5,
+            LastFetchedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    /// <summary>Maps a <see cref="StreamObject"/> to a ZulipStreamRecord.</summary>
+    public static ZulipStreamRecord MapStream(StreamObject streamObj)
+    {
+        return new ZulipStreamRecord
+        {
+            Id = ZulipStreamRecord.GetIndex(),
+            ZulipStreamId = streamObj.StreamId,
+            Name = streamObj.Name ?? string.Empty,
+            Description = streamObj.Description,
+            IsWebPublic = streamObj.IsWebPublic ?? false,
+            MessageCount = 0,
+            IncludeStream = true,
+            BaselineValue = 5,
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
     }
@@ -42,7 +61,7 @@ public static class ZulipMessageMapper
 
         return new ZulipMessageRecord
         {
-            Id = 0,
+            Id = ZulipMessageRecord.GetIndex(),
             ZulipMessageId = messageJson.GetProperty("id").GetInt32(),
             StreamId = streamDbId,
             StreamName = streamName,
@@ -55,6 +74,36 @@ public static class ZulipMessageMapper
             Timestamp = messageTimestamp,
             CreatedAt = messageTimestamp,
             Reactions = reactions,
+        };
+    }
+
+    /// <summary>Maps a <see cref="MessageObject"/> to a ZulipMessageRecord.</summary>
+    public static ZulipMessageRecord MapMessage(MessageObject msgObj, string streamName, int streamDbId)
+    {
+        if (msgObj.Content is null)
+        {
+            throw new ArgumentNullException(nameof(msgObj.Content));
+        }
+
+        string contentHtml = msgObj.Content;
+        string contentPlain = TextSanitizer.StripHtml(contentHtml) ?? string.Empty;
+        DateTimeOffset messageTimestamp = DateTimeOffset.FromUnixTimeSeconds(msgObj.Timestamp);
+
+        return new ZulipMessageRecord
+        {
+            Id = ZulipMessageRecord.GetIndex(),
+            ZulipMessageId = (int)msgObj.Id,
+            StreamId = streamDbId,
+            StreamName = streamName,
+            Topic = msgObj.Subject ?? string.Empty,
+            SenderId = msgObj.SenderId,
+            SenderName = msgObj.SenderFullName ?? "Unknown",
+            SenderEmail = msgObj.SenderEmail,
+            ContentHtml = contentHtml,
+            ContentPlain = contentPlain,
+            Timestamp = messageTimestamp,
+            CreatedAt = messageTimestamp,
+            Reactions = null,
         };
     }
 

@@ -5,6 +5,26 @@ using Microsoft.Data.Sqlite;
 namespace FhirAugury.Source.Zulip.Indexing;
 
 /// <summary>
+/// Plain DTO for flexible message queries, replacing the protobuf ZulipQueryRequest.
+/// </summary>
+public record ZulipQueryRequest
+{
+    public List<string> StreamNames { get; init; } = [];
+    public List<int> StreamIds { get; init; } = [];
+    public string? Topic { get; init; }
+    public string? TopicKeyword { get; init; }
+    public List<string> SenderNames { get; init; } = [];
+    public List<int> SenderIds { get; init; } = [];
+    public DateTimeOffset? After { get; init; }
+    public DateTimeOffset? Before { get; init; }
+    public string? Query { get; init; }
+    public string? SortBy { get; init; }
+    public string? SortOrder { get; init; }
+    public int Limit { get; init; }
+    public int Offset { get; init; }
+}
+
+/// <summary>
 /// Builds parameterized SQL queries from ZulipQueryRequest fields.
 /// All fields are optional; combined with AND. Repeated values within a field use IN (OR).
 /// </summary>
@@ -19,7 +39,7 @@ public static class ZulipQueryBuilder
     /// Builds a SELECT query with parameterized WHERE clause from the given query request.
     /// Returns the SQL string and a list of parameters to bind.
     /// </summary>
-    public static (string Sql, List<SqliteParameter> Parameters) Build(Fhiraugury.ZulipQueryRequest request)
+    public static (string Sql, List<SqliteParameter> Parameters) Build(ZulipQueryRequest request)
     {
         StringBuilder sb = new StringBuilder("SELECT * FROM zulip_messages WHERE 1=1");
         List<SqliteParameter> parameters = new List<SqliteParameter>();
@@ -78,14 +98,14 @@ public static class ZulipQueryBuilder
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND Timestamp >= {name}");
-            parameters.Add(new SqliteParameter(name, request.After.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.After.Value.ToString("o")));
         }
 
         if (request.Before is not null)
         {
             string name = $"@p{paramIdx++}";
             sb.Append($" AND Timestamp <= {name}");
-            parameters.Add(new SqliteParameter(name, request.Before.ToDateTimeOffset().ToString("o")));
+            parameters.Add(new SqliteParameter(name, request.Before.Value.ToString("o")));
         }
 
         // FTS5 subquery
@@ -97,7 +117,7 @@ public static class ZulipQueryBuilder
         }
 
         // Sorting
-        string sortBy = AllowedSortColumns.Contains(request.SortBy) ? ToColumnName(request.SortBy) : "Timestamp";
+        string sortBy = AllowedSortColumns.Contains(request.SortBy ?? "") ? ToColumnName(request.SortBy!) : "Timestamp";
         string sortOrder = request.SortOrder?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "ASC" : "DESC";
         sb.Append($" ORDER BY {sortBy} {sortOrder}");
 
@@ -112,7 +132,7 @@ public static class ZulipQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, Google.Protobuf.Collections.RepeatedField<string> values, ref int paramIdx)
+        string column, List<string> values, ref int paramIdx)
     {
         if (values.Count == 0) return;
 

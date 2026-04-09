@@ -60,4 +60,6 @@ public partial record class JiraIssueRecord
     public int? VoteAbstainCount { get; set; }
     public required string? Labels { get; set; }
     public required int CommentCount { get; set; }
+    public required string? ChangeCategory { get; set; }
+    public required string? ChangeImpact { get; set; }
 }

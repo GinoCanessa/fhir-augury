@@ -24,6 +24,9 @@ public static class JiraXmlParser
         ["customfield_14910"] = nameof(JiraIssueRecord.ChangeType),
         ["customfield_10001"] = nameof(JiraIssueRecord.Impact),
         ["customfield_10510"] = nameof(JiraIssueRecord.Vote),
+        ["customfield_11402"] = nameof(JiraIssueRecord.Labels),
+        ["customfield_10512"] = nameof(JiraIssueRecord.ChangeCategory),
+        ["customfield_10511"] = nameof(JiraIssueRecord.ChangeImpact),
     };
 
     public static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseExport(Stream stream)
@@ -34,7 +37,9 @@ public static class JiraXmlParser
                   ?? throw new InvalidOperationException("Failed to deserialize Jira XML export.");
 
         if (rss.Channel?.Items is null)
+        {
             yield break;
+        }
 
         foreach (JiraItem item in rss.Channel.Items)
         {
@@ -70,6 +75,8 @@ public static class JiraXmlParser
                 DuplicateOf = null,
                 AppliedVersions = null,
                 ChangeType = null,
+                ChangeCategory = null,
+                ChangeImpact = null,
                 Impact = null,
                 Vote = null,
                 VoteMover = null,
@@ -88,13 +95,16 @@ public static class JiraXmlParser
                     if (cf.Id is null || !CustomFieldKeyMap.TryGetValue(cf.Id, out string? propertyName))
                         continue;
 
-                    string? value = JiraFieldMapper.CleanFieldValue(
-                        cf.Values?.Items is { Length: > 0 }
-                            ? string.Join(", ", cf.Values.Items.Where(v => !string.IsNullOrEmpty(v)))
-                            : null);
+                    string? value = cf.Values?.Items is not null && cf.Values.Items.Length > 0
+                        ? JiraFieldMapper.CleanFieldValue(string.Join(", ", cf.Values.Items.Where(v => !string.IsNullOrEmpty(v))))
+                        : cf.Values?.Labels is not null && cf.Values.Labels.Length > 0
+                        ? JiraFieldMapper.CleanFieldValue(string.Join(", ", cf.Values.Labels.Where(v => !string.IsNullOrEmpty(v))))
+                        : null;
 
                     if (value is null)
+                    {
                         continue;
+                    }
 
                     switch (propertyName)
                     {
@@ -110,6 +120,9 @@ public static class JiraXmlParser
                         case nameof(JiraIssueRecord.ChangeType): record.ChangeType = value; break;
                         case nameof(JiraIssueRecord.Impact): record.Impact = value; break;
                         case nameof(JiraIssueRecord.Vote): record.Vote = value; break;
+                        case nameof(JiraIssueRecord.Labels): record.Labels = value; break;
+                        case nameof(JiraIssueRecord.ChangeCategory): record.ChangeCategory = value; break;
+                        case nameof(JiraIssueRecord.ChangeImpact): record.ChangeImpact = value; break;
                     }
                 }
             }
@@ -292,6 +305,9 @@ public static class JiraXmlParser
     {
         [XmlElement("customfieldvalue")]
         public string[]? Items { get; set; }
+
+        [XmlElement("label")]
+        public string[]? Labels { get; set; }
     }
 
     #endregion

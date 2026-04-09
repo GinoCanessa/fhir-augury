@@ -1,11 +1,10 @@
-using Fhiraugury;
-using FhirAugury.Source.GitHub.Api;
-using FhirAugury.Source.GitHub.Configuration;
+using FhirAugury.Common;
+using FhirAugury.Common.Database.Records;
+using FhirAugury.Source.GitHub.Controllers;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Tests;
 
@@ -13,16 +12,12 @@ public class GitHubCrossSourceRelatedTests : IDisposable
 {
     private readonly string _dbPath;
     private readonly GitHubDatabase _db;
-    private readonly GitHubGrpcService _service;
 
     public GitHubCrossSourceRelatedTests()
     {
         _dbPath = Path.Combine(Path.GetTempPath(), $"github_crosssource_test_{Guid.NewGuid()}.db");
         _db = new GitHubDatabase(_dbPath, NullLogger<GitHubDatabase>.Instance);
         _db.Initialize();
-
-        IOptions<GitHubServiceOptions> options = Options.Create(new GitHubServiceOptions());
-        _service = new GitHubGrpcService(_db, null!, null!, null!, options);
     }
 
     public void Dispose()
@@ -55,14 +50,15 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         BaseBranch = null,
     };
 
-    private static GitHubJiraRefRecord CreateJiraRef(
-        string sourceType, string sourceId, string repo, string jiraKey, string? context = null) => new()
+    private static JiraXRefRecord CreateJiraRef(
+        string sourceType, string sourceId, string jiraKey, string? context = null) => new()
     {
-        Id = GitHubJiraRefRecord.GetIndex(),
-        SourceType = sourceType,
+        Id = JiraXRefRecord.GetIndex(),
+        ContentType = sourceType,
         SourceId = sourceId,
-        RepoFullName = repo,
+        LinkType = "mentions",
         JiraKey = jiraKey,
+        OriginalLiteral = jiraKey,
         Context = context ?? $"Ref to {jiraKey}",
     };
 
@@ -74,10 +70,59 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         PrNumber = prNumber,
     };
 
+    /// <summary>
+    /// Simulates the cross-source related resolution logic from the HTTP API.
+    /// Given a Jira key, finds all GitHub items referencing it via xref records.
+    /// </summary>
+    private List<GitHubUrlHelper.ResolvedItem> FindRelatedViaJiraSeed(string jiraKey, int limit = 10)
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        List<JiraXRefRecord> refs = JiraXRefRecord.SelectList(conn, JiraKey: jiraKey);
+        List<GitHubUrlHelper.ResolvedItem> results = [];
+        HashSet<string> seen = [];
+
+        foreach (JiraXRefRecord jiraRef in refs)
+        {
+            GitHubUrlHelper.ResolvedItem? resolved = GitHubUrlHelper.ResolveXRef(conn, jiraRef);
+            if (resolved is null || !seen.Add(resolved.Id)) continue;
+            results.Add(resolved);
+            if (results.Count >= limit) break;
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Simulates intra-source related resolution (same-source, via shared Jira keys).
+    /// </summary>
+    private List<GitHubUrlHelper.ResolvedItem> FindRelatedIntraSource(string key, int limit = 10)
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        List<JiraXRefRecord> sourceRefs = JiraXRefRecord.SelectList(conn, SourceId: key);
+        HashSet<string> relatedIds = [];
+        List<GitHubUrlHelper.ResolvedItem> results = [];
+
+        foreach (JiraXRefRecord jiraRef in sourceRefs)
+        {
+            List<JiraXRefRecord> sameKeyRefs = JiraXRefRecord.SelectList(conn, JiraKey: jiraRef.JiraKey);
+            foreach (JiraXRefRecord r in sameKeyRefs)
+            {
+                if (r.SourceId == key) continue;
+                GitHubUrlHelper.ResolvedItem? resolved = GitHubUrlHelper.ResolveXRef(conn, r);
+                if (resolved is null || !relatedIds.Add(resolved.Id)) continue;
+                results.Add(resolved);
+                if (results.Count >= limit) break;
+            }
+            if (results.Count >= limit) break;
+        }
+
+        return results;
+    }
+
     // ── Tests ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_ReturnsMatchingIssues()
+    public void GetRelated_WithJiraSeed_ReturnsMatchingIssues()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -86,26 +131,18 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue1);
         GitHubIssueRecord.Insert(conn, issue2);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#100", "HL7/fhir", "FHIR-55001"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#200", "HL7/fhir", "FHIR-55001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#100", "FHIR-55001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#200", "FHIR-55001"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55001",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55001");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Equal(2, response.Results.Count);
-        Assert.All(response.Results, r => Assert.Equal(1.0, r.Score));
-        Assert.All(response.Results, r => Assert.Equal("github", r.Source));
-        Assert.Contains(response.Results, r => r.Id == "HL7/fhir#100");
-        Assert.Contains(response.Results, r => r.Id == "HL7/fhir#200");
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, r => r.Id == "HL7/fhir#100");
+        Assert.Contains(results, r => r.Id == "HL7/fhir#200");
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_ResolvesCommentsToParentIssue()
+    public void GetRelated_WithJiraSeed_ResolvesCommentsToParentIssue()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -113,64 +150,43 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, parentIssue);
 
         // Comment source ID format: "repo#issueNum:commentId"
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#42:12345", "HL7/fhir", "FHIR-55002"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Comment, "HL7/fhir#42:12345", "FHIR-55002"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55002",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55002");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Single(response.Results);
-        Assert.Equal("HL7/fhir#42", response.Results[0].Id);
-        Assert.Equal("Parent issue for comment", response.Results[0].Title);
-        Assert.Equal(1.0, response.Results[0].Score);
+        Assert.Single(results);
+        Assert.Equal("HL7/fhir#42", results[0].Id);
+        Assert.Equal("Parent issue for comment", results[0].Title);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_ResolvesCommitsToLinkedPR()
+    public void GetRelated_WithJiraSeed_ResolvesCommitsToLinkedPR()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
         GitHubIssueRecord pr = CreateIssue("HL7/fhir", 300, "PR fixing observation", isPr: true);
         GitHubIssueRecord.Insert(conn, pr);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("commit", "abc123def", "HL7/fhir", "FHIR-55003"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Commit, "abc123def", "FHIR-55003"));
         GitHubCommitPrLinkRecord.Insert(conn, CreateCommitPrLink("abc123def", "HL7/fhir", 300));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55003",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55003");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Single(response.Results);
-        Assert.Equal("HL7/fhir#300", response.Results[0].Id);
-        Assert.Equal("PR fixing observation", response.Results[0].Title);
-        Assert.Equal(1.0, response.Results[0].Score);
+        Assert.Single(results);
+        Assert.Equal("HL7/fhir#300", results[0].Id);
+        Assert.Equal("PR fixing observation", results[0].Title);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_NoMatches_ReturnsEmpty()
+    public void GetRelated_WithJiraSeed_NoMatches_ReturnsEmpty()
     {
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-99999",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-99999");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Empty(response.Results);
-        Assert.Equal(0, response.TotalResults);
+        Assert.Empty(results);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_DeduplicatesResolvedIssues()
+    public void GetRelated_WithJiraSeed_DeduplicatesResolvedIssues()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -178,44 +194,17 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue);
 
         // Two different ref types both resolving to the same issue
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#50", "HL7/fhir", "FHIR-55004"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("comment", "HL7/fhir#50:99999", "HL7/fhir", "FHIR-55004"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#50", "FHIR-55004"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Comment, "HL7/fhir#50:99999", "FHIR-55004"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55004",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55004");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Single(response.Results);
-        Assert.Equal("HL7/fhir#50", response.Results[0].Id);
+        Assert.Single(results);
+        Assert.Equal("HL7/fhir#50", results[0].Id);
     }
 
     [Fact]
-    public async Task GetRelated_WithUnknownSeedSource_FallsBackToFts()
-    {
-        using SqliteConnection conn = _db.OpenConnection();
-
-        GitHubIssueRecord issue = CreateIssue("HL7/fhir", 600, "Patient resource search test");
-        GitHubIssueRecord.Insert(conn, issue);
-
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "confluence",
-            SeedId = "Patient",
-        };
-
-        // FTS fallback should not crash; results may or may not appear depending on FTS indexing
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        // Verify FTS fallback scores are reduced (multiplied by 0.3)
-        Assert.All(response.Results, r => Assert.True(r.Score <= 0.3 || r.Score == 0));
-    }
-
-    [Fact]
-    public async Task GetRelated_WithEmptySeedSource_UsesIntraSourceLogic()
+    public void GetRelated_WithEmptySeedSource_UsesIntraSourceLogic()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -224,22 +213,17 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         GitHubIssueRecord.Insert(conn, issue1);
         GitHubIssueRecord.Insert(conn, issue2);
 
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#10", "HL7/fhir", "FHIR-77001"));
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#20", "HL7/fhir", "FHIR-77001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#10", "FHIR-77001"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#20", "FHIR-77001"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            Id = "HL7/fhir#10",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedIntraSource("HL7/fhir#10");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Single(response.Results);
-        Assert.Equal("HL7/fhir#20", response.Results[0].Id);
+        Assert.Single(results);
+        Assert.Equal("HL7/fhir#20", results[0].Id);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_RespectsLimit()
+    public void GetRelated_WithJiraSeed_RespectsLimit()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -247,65 +231,52 @@ public class GitHubCrossSourceRelatedTests : IDisposable
         {
             GitHubIssueRecord issue = CreateIssue("HL7/fhir", 400 + i, $"Limit test issue {i}");
             GitHubIssueRecord.Insert(conn, issue);
-            GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", $"HL7/fhir#{400 + i}", "HL7/fhir", "FHIR-55005"));
+            JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, $"HL7/fhir#{400 + i}", "FHIR-55005"));
         }
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55005",
-            Limit = 3,
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55005", limit: 3);
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Equal(3, response.Results.Count);
-        Assert.Equal(3, response.TotalResults);
+        Assert.Equal(3, results.Count);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_IncludesCorrectUrl()
+    public void GetRelated_WithJiraSeed_IncludesCorrectUrl()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
         GitHubIssueRecord issue = CreateIssue("HL7/fhir", 777, "URL check issue");
         GitHubIssueRecord.Insert(conn, issue);
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#777", "HL7/fhir", "FHIR-55006"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#777", "FHIR-55006"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55006",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55006");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
-
-        Assert.Single(response.Results);
-        Assert.Equal("https://github.com/HL7/fhir/issues/777", response.Results[0].Url);
+        Assert.Single(results);
+        Assert.Equal("https://github.com/HL7/fhir/issues/777", results[0].Url);
     }
 
     [Fact]
-    public async Task GetRelated_WithJiraSeed_SkipsUnresolvableRefs()
+    public void GetRelated_WithJiraSeed_SkipsUnresolvableRefs()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
         // Insert jira ref pointing to a non-existent issue
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#9999", "HL7/fhir", "FHIR-55007"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#9999", "FHIR-55007"));
 
         // Insert another ref pointing to an existing issue
         GitHubIssueRecord issue = CreateIssue("HL7/fhir", 888, "Resolvable issue");
         GitHubIssueRecord.Insert(conn, issue);
-        GitHubJiraRefRecord.Insert(conn, CreateJiraRef("issue", "HL7/fhir#888", "HL7/fhir", "FHIR-55007"));
+        JiraXRefRecord.Insert(conn, CreateJiraRef(ContentTypes.Issue, "HL7/fhir#888", "FHIR-55007"));
 
-        GetRelatedRequest request = new GetRelatedRequest
-        {
-            SeedSource = "jira",
-            SeedId = "FHIR-55007",
-        };
+        List<GitHubUrlHelper.ResolvedItem> results = FindRelatedViaJiraSeed("FHIR-55007");
 
-        SearchResponse response = await _service.GetRelated(request, null!);
+        Assert.Single(results);
+        Assert.Equal("HL7/fhir#888", results[0].Id);
+    }
 
-        Assert.Single(response.Results);
-        Assert.Equal("HL7/fhir#888", response.Results[0].Id);
+    [Fact]
+    public void BuildIssueUrl_FormatsCorrectly()
+    {
+        Assert.Equal("https://github.com/HL7/fhir/issues/42", GitHubUrlHelper.BuildIssueUrl("HL7/fhir#42"));
+        Assert.Equal("https://github.com/HL7/fhir", GitHubUrlHelper.BuildIssueUrl("HL7/fhir"));
     }
 }

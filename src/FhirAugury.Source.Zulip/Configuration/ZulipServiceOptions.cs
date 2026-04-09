@@ -23,17 +23,20 @@ public class ZulipServiceOptions
     /// </summary>
     public string MinSyncAge { get; set; } = "04:00:00";
 
+    /// <summary>HTTP address of the orchestrator service for ingestion notifications.</summary>
+    public string? OrchestratorAddress { get; set; }
+
     /// <summary>
     /// When true, pauses all ingestion (scheduled and on-demand). The service remains
     /// available for queries but will not download new content.
     /// </summary>
     public bool IngestionPaused { get; set; } = false;
 
-    public bool RebuildFromCacheOnStartup { get; set; } = false;
+    public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     /// <summary>
     /// Force a full rebuild of Jira ticket reference indexes on startup.
-    /// This is independent of <see cref="RebuildFromCacheOnStartup"/>, which
+    /// This is independent of <see cref="ReloadFromCacheOnStartup"/>, which
     /// already triggers ticket re-indexing as part of a full cache rebuild.
     /// A new database creation also triggers ticket indexing automatically.
     /// </summary>
@@ -41,9 +44,16 @@ public class ZulipServiceOptions
 
     public List<int> ExcludedStreamIds { get; set; } = [];
 
+    /// <summary>
+    /// Per-stream baseline ranking values (0–10). Streams not listed default to 5.
+    /// Keys are stream names (case-insensitive match). Lower values reduce search
+    /// ranking for noisy/low-value streams (e.g. build notifications).
+    /// </summary>
+    public Dictionary<string, int> StreamBaselineValues { get; set; } = [];
+
     public bool OnlyWebPublic { get; set; } = true;
     public int BatchSize { get; set; } = 1000;
-    public PortConfiguration Ports { get; set; } = new() { Http = 5170, Grpc = 5171 };
+    public PortConfiguration Ports { get; set; } = new() { Http = 5170 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();

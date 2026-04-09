@@ -5,7 +5,7 @@ namespace FhirAugury.Common.Ingestion;
 
 /// <summary>
 /// Queues ingestion requests onto a background executor using the application lifetime token
-/// instead of the gRPC request token. This prevents client disconnects from cancelling
+/// instead of the HTTP request token. This prevents client disconnects from cancelling
 /// in-progress ingestion work.
 /// </summary>
 public class IngestionWorkQueue(
@@ -18,7 +18,7 @@ public class IngestionWorkQueue(
     /// <summary>
     /// Enqueues an ingestion function to run in the background using the application lifetime token.
     /// A linked token is created so the work stops if either the app shuts down or the original
-    /// cancellation is explicitly requested by the caller (not the gRPC request).
+    /// cancellation is explicitly requested by the caller (not the HTTP request).
     /// </summary>
     public void Enqueue(Func<CancellationToken, Task> work, string description)
     {

@@ -1,0 +1,50 @@
+@using FhirAugury.Common.Api
+@using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Components.ItemViewer
+
+<ItemHeader Item="Item">
+    @if (Item.Metadata?.TryGetValue("extension", out string? ext) == true)
+    {
+        <span class="badge bg-secondary me-2"><i class="bi bi-file-earmark-code"></i> @ext</span>
+    }
+</ItemHeader>
+
+@if (Item.Metadata?.TryGetValue("repo", out string? repo) == true)
+{
+    <p class="text-muted small mb-3"><i class="bi bi-folder"></i> @repo</p>
+}
+
+<div class="row">
+    <div class="col-md-3 mb-3">
+        <ItemMetadataSidebar Metadata="Item.Metadata" Source="github"
+            DisplayOrder="_displayOrder" />
+    </div>
+    <div class="col-md-9">
+        <div class="card">
+            <div class="card-header fw-semibold"><i class="bi bi-file-earmark-code"></i> File Content</div>
+            <div class="card-body item-viewer-content">
+                @if (!string.IsNullOrEmpty(Item.Content))
+                {
+                    <pre><code>@Item.Content</code></pre>
+                }
+                else
+                {
+                    <span class="text-muted fst-italic">No file content available.</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<ItemCrossRefs CrossRefs="CrossRefs" />
+
+@code {
+    [Parameter, EditorRequired] public ContentItemResponse Item { get; set; } = default!;
+    [Parameter] public CrossReferenceQueryResponse? CrossRefs { get; set; }
+
+    private static readonly List<string> _displayOrder =
+    [
+        "repo", "file_path", "extension", "parser_type",
+        "content_length", "extracted_length", "last_commit_sha", "last_modified_at"
+    ];
+}

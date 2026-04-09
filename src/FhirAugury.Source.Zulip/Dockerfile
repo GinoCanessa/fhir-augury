@@ -8,13 +8,14 @@ COPY src/Directory.Build.props src/Directory.Build.props
 
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
+COPY src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj src/FhirAugury.ServiceDefaults/
 COPY src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj src/FhirAugury.Source.Zulip/
-COPY protos/ protos/
 
 RUN dotnet restore src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj
 
 # Copy source and build
 COPY src/FhirAugury.Common/ src/FhirAugury.Common/
+COPY src/FhirAugury.ServiceDefaults/ src/FhirAugury.ServiceDefaults/
 COPY src/FhirAugury.Source.Zulip/ src/FhirAugury.Source.Zulip/
 
 RUN dotnet publish src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj \
@@ -29,7 +30,7 @@ RUN adduser --disabled-password --no-create-home appuser \
     && mkdir -p /app/cache /app/data \
     && chown -R appuser:appuser /app
 
-EXPOSE 5170 5171
+EXPOSE 5170
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD wget --spider -q http://localhost:5170/health || exit 1

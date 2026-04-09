@@ -11,13 +11,14 @@
 
   <ItemGroup>
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.324.2022" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="Grpc.AspNetCore" Version="2.*" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.ServiceDefaults\FhirAugury.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\FhirAugury.Parsing.Fhir\FhirAugury.Parsing.Fhir.csproj" />
+    <ProjectReference Include="..\FhirAugury.Parsing.Fsh\FhirAugury.Parsing.Fsh.csproj" />
   </ItemGroup>
 
 </Project>

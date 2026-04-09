@@ -1,412 +1,275 @@
 # CLI Reference
 
-The FHIR Augury CLI (`FhirAugury.Cli`) connects to the orchestrator service via
-gRPC to search, browse, and manage FHIR community data across all source
-services.
+The FHIR Augury CLI (`fhir-augury`) connects to the orchestrator service via
+HTTP to search, browse, and manage FHIR community data across all source
+services. All input and output uses JSON.
 
 ## Usage
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- [command] [options]
+fhir-augury --json '{"command":"<name>", ...}' [--pretty] [--output <file>]
+fhir-augury --input <file> [--pretty] [--output <file>]
+fhir-augury --help [command] [--pretty] [--output <file>]
+fhir-augury --json @file.json [--pretty] [--output <file>]
+fhir-augury --json @- [--pretty] [--output <file>]
 ```
 
-## Global Options
+## Arguments
 
-These options apply to all commands:
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--orchestrator` | string | `http://localhost:5151` | Orchestrator gRPC endpoint (or set `FHIR_AUGURY_ORCHESTRATOR` env var) |
-| `--format` | string | `table` | Output format: `table`, `json`, `markdown` |
-| `--verbose` | flag | `false` | Enable verbose output |
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--json <string>` | Yes (unless `--input` or `--help`) | JSON string containing the command request. Use `@file.json` to read from a file, `@-` to read from stdin. Mutually exclusive with `--input`. |
+| `--input <file>` | Yes (unless `--json` or `--help`) | Path to a JSON file containing the command request. Mutually exclusive with `--json`. |
+| `--output <file>` | No | Write JSON output to the specified file instead of stdout. |
+| `--pretty` | No | Pretty-print JSON output. Default is compact single-line JSON. |
+| `--help [command]` | No | Output JSON describing available commands and their schemas. With a command name, returns only that command's schemas. |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `FHIR_AUGURY_ORCHESTRATOR` | Default orchestrator gRPC endpoint (overridden by `--orchestrator`) |
+| `FHIR_AUGURY_ORCHESTRATOR` | Orchestrator HTTP endpoint (default: `http://localhost:5150`) |
+
+The orchestrator address can also be set per-request via the `orchestrator`
+field in the JSON input.
 
 ---
 
-## Search & Discovery Commands
+## Input JSON Format
+
+Every request is a JSON object with a required `command` field:
+
+```jsonc
+{
+  "command": "<command-name>",    // required
+  "orchestrator": "http://...",  // optional override
+  "verbose": false               // optional; include timing in metadata
+}
+```
+
+## Output JSON Format
+
+All responses use a consistent envelope:
+
+```jsonc
+// Success
+{
+  "success": true,
+  "command": "search",
+  "data": { /* command-specific */ },
+  "metadata": { "elapsedMs": 142, "orchestrator": "http://localhost:5150", "version": "1.2.0" },
+  "warnings": []
+}
+
+// Error
+{
+  "success": false,
+  "command": "search",
+  "error": { "code": "CONNECTION_FAILED", "message": "...", "details": "..." },
+  "metadata": { "orchestrator": "http://localhost:5150", "version": "1.2.0" }
+}
+```
+
+---
+
+## Commands
 
 ### `search` — Unified search
 
-Performs a full-text search across all indexed sources via the orchestrator.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- search <query> [options]
+```jsonc
+{
+  "command": "search",
+  "query": "patient matching algorithm",   // required
+  "sources": ["jira", "zulip"],            // optional (default: all)
+  "limit": 20                              // optional (default: 20)
+}
 ```
-
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--sources` | string | all | Comma-separated source filter: `jira`, `zulip`, `confluence`, `github` |
-| `--limit` | int | `20` | Maximum number of results |
-
-**Examples:**
-
-```bash
-# Search everything
-dotnet run --project src/FhirAugury.Cli -- search "patient matching algorithm"
-
-# Search only Jira and Zulip, limit to 5 results
-dotnet run --project src/FhirAugury.Cli -- search "R5 breaking change" --sources jira,zulip --limit 5
-
-# JSON output for scripting
-dotnet run --project src/FhirAugury.Cli -- search "terminology" --format json
-```
-
----
 
 ### `get` — Get full item details
 
-Retrieves full details of a specific item from a source service.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- get <source> <id> [options]
+```jsonc
+{
+  "command": "get",
+  "source": "jira",              // required
+  "id": "FHIR-43499",           // required
+  "includeComments": true,       // optional (default: true)
+  "includeContent": false,       // optional (default: false)
+  "includeSnapshot": false       // optional (default: false)
+}
 ```
 
-**Arguments:**
+### `refers-to` — Outgoing cross-references
 
-| Argument | Description |
-|----------|-------------|
-| `source` | Source name: `jira`, `zulip`, `confluence`, `github` |
-| `id` | Item identifier (e.g., `FHIR-43499`, `implementers:US Core`) |
+Returns items that the specified item refers to (outgoing links).
 
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--comments` | flag | `false` | Include comments in output |
-
-**Examples:**
-
-```bash
-# Get a Jira issue
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499
-
-# Get with comments
-dotnet run --project src/FhirAugury.Cli -- get jira FHIR-43499 --comments
+```jsonc
+{
+  "command": "refers-to",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
+}
 ```
 
----
+### `referred-by` — Incoming cross-references
 
-### `related` — Find related items
+Returns items that refer to the specified item (incoming links).
 
-Finds items related to a given item using keyword similarity and cross-reference
-boosting.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- related <source> <id> [options]
+```jsonc
+{
+  "command": "referred-by",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
+}
 ```
 
-**Arguments:**
+### `cross-referenced` — All cross-references
 
-| Argument | Description |
-|----------|-------------|
-| `source` | Source of the reference item: `jira`, `zulip`, `confluence`, `github` |
-| `id` | Item identifier |
+Returns both outgoing and incoming cross-references for the specified item.
 
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--target-sources` | string | all | Comma-separated target sources to search |
-| `--limit` | int | `20` | Maximum number of results |
-
-**Examples:**
-
-```bash
-# Find items related to a Jira issue across all sources
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499
-
-# Find related items only in Zulip
-dotnet run --project src/FhirAugury.Cli -- related jira FHIR-43499 --target-sources zulip
+```jsonc
+{
+  "command": "cross-referenced",
+  "value": "FHIR-43499",        // required
+  "sourceType": "jira",         // optional (filter by source type)
+  "limit": 50                   // optional
+}
 ```
 
----
+### `list` — List items from a source
 
-### `snapshot` — Markdown snapshot
-
-Renders a rich Markdown snapshot of an item, including metadata, description,
-and optionally comments.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- snapshot <source> <id> [options]
+```jsonc
+{
+  "command": "list",
+  "source": "jira",              // required
+  "limit": 20,                   // optional (default: 20)
+  "sortBy": "updated_at",       // optional (default: "updated_at")
+  "sortOrder": "desc",          // optional (default: "desc")
+  "filters": { "status": "Open" } // optional
+}
 ```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `source` | Source name: `jira`, `zulip`, `confluence`, `github` |
-| `id` | Item identifier |
-
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--comments` | flag | `false` | Include comments in snapshot |
-
-**Examples:**
-
-```bash
-# Snapshot a Jira issue
-dotnet run --project src/FhirAugury.Cli -- snapshot jira FHIR-43499
-
-# Snapshot with comments
-dotnet run --project src/FhirAugury.Cli -- snapshot jira FHIR-43499 --comments
-```
-
----
-
-### `xref` — Cross-references
-
-Shows cross-references for an item — links between items across different
-sources.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- xref <source> <id> [options]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `source` | Source name: `jira`, `zulip`, `confluence`, `github` |
-| `id` | Item identifier |
-
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--direction` | string | `outgoing` | Cross-reference direction: `outgoing`, `incoming`, `both` |
-
-**Examples:**
-
-```bash
-# Outgoing cross-references (default)
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499
-
-# All cross-references in both directions
-dotnet run --project src/FhirAugury.Cli -- xref jira FHIR-43499 --direction both
-```
-
----
-
-## Structured Query Commands
 
 ### `query-jira` — Structured Jira query
 
-Query Jira issues with structured filter options.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- query-jira [options]
+```jsonc
+{
+  "command": "query-jira",
+  "query": "R5 breaking change",       // optional
+  "statuses": ["Open", "Reopened"],    // optional
+  "workGroups": ["FHIR Infrastructure"], // optional
+  "specifications": ["FHIR Core"],     // optional
+  "types": ["Bug", "New Feature"],     // optional
+  "priorities": ["Critical", "Major"], // optional
+  "labels": ["connectathon"],          // optional
+  "assignees": ["jsmith"],             // optional
+  "sortBy": "updated_at",             // optional (default: "updated_at")
+  "sortOrder": "desc",                // optional (default: "desc")
+  "limit": 20,                        // optional (default: 20)
+  "updatedAfter": "2025-01-01T00:00:00Z" // optional (ISO 8601)
+}
 ```
-
-**Options (12 filter parameters):**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--statuses` | string | | Filter by statuses (comma-separated) |
-| `--work-groups` | string | | Filter by work groups (comma-separated) |
-| `--specs` | string | | Filter by specifications (comma-separated) |
-| `--types` | string | | Filter by issue types (comma-separated) |
-| `--priorities` | string | | Filter by priorities (comma-separated) |
-| `--labels` | string | | Filter by labels (comma-separated) |
-| `--assignees` | string | | Filter by assignees (comma-separated) |
-| `--query` | string | | Text query for additional filtering |
-| `--sort-by` | string | `updated_at` | Sort by field |
-| `--sort-order` | string | `desc` | Sort order: `asc` or `desc` |
-| `--limit` | int | `20` | Maximum results |
-| `--updated-after` | date | | Only issues updated after this date (ISO 8601) |
-
-**Examples:**
-
-```bash
-# Find open FHIR Infrastructure issues
-dotnet run --project src/FhirAugury.Cli -- query-jira \
-  --work-groups "FHIR Infrastructure" --statuses "Open,Reopened"
-
-# Find high-priority issues updated recently
-dotnet run --project src/FhirAugury.Cli -- query-jira \
-  --priorities "Critical,Major" --updated-after "2025-01-01"
-```
-
----
 
 ### `query-zulip` — Structured Zulip query
 
-Query Zulip messages with structured filter options.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- query-zulip [options]
+```jsonc
+{
+  "command": "query-zulip",
+  "query": "US Core",                // optional
+  "streams": ["implementers"],       // optional
+  "topic": "US Core",               // optional (exact match)
+  "topicKeyword": "core",           // optional (partial match)
+  "senders": ["john@example.com"],  // optional
+  "sortBy": "timestamp",            // optional (default: "timestamp")
+  "sortOrder": "desc",              // optional (default: "desc")
+  "limit": 20,                      // optional (default: 20)
+  "after": "2025-06-01T00:00:00Z", // optional (ISO 8601)
+  "before": "2025-12-31T00:00:00Z" // optional (ISO 8601)
+}
 ```
 
-**Options (10 filter parameters):**
+### `ingest` — Ingestion management
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--streams` | string | | Filter by stream names (comma-separated) |
-| `--topic` | string | | Filter by exact topic name |
-| `--topic-keyword` | string | | Filter by topic keyword (partial match) |
-| `--senders` | string | | Filter by sender names (comma-separated) |
-| `--query` | string | | Text query |
-| `--sort-by` | string | `timestamp` | Sort by field |
-| `--sort-order` | string | `desc` | Sort order: `asc` or `desc` |
-| `--limit` | int | `20` | Maximum results |
-| `--after` | date | | Only messages after this date (ISO 8601) |
-| `--before` | date | | Only messages before this date (ISO 8601) |
+```jsonc
+// Trigger sync
+{ "command": "ingest", "action": "trigger", "sources": ["jira"], "type": "incremental" }
 
-**Examples:**
+// Check status
+{ "command": "ingest", "action": "status" }
 
-```bash
-# Find messages in the implementers stream about US Core
-dotnet run --project src/FhirAugury.Cli -- query-zulip \
-  --streams implementers --topic "US Core"
+// Rebuild from cache
+{ "command": "ingest", "action": "rebuild", "sources": ["jira"] }
 
-# Recent messages from a specific sender
-dotnet run --project src/FhirAugury.Cli -- query-zulip \
-  --senders "john@example.com" --after "2025-06-01"
+// Rebuild indexes
+{ "command": "ingest", "action": "index", "sources": ["jira"], "indexType": "bm25" }
 ```
 
----
+**Actions:** `trigger`, `status`, `rebuild`, `index`
 
-### `list` — List items with filters
+**Index types:** `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents`
 
-List items from a source with filtering and sorting.
+### `services` — Service management
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- list <source> [options]
+```jsonc
+// Service health
+{ "command": "services", "action": "status" }
+
+// Aggregate statistics
+{ "command": "services", "action": "stats" }
 ```
 
-**Arguments:**
+### `version` — Show version
 
-| Argument | Description |
-|----------|-------------|
-| `source` | Source to list: `jira`, `zulip`, `confluence`, `github` |
-
-**Examples:**
-
-```bash
-# List Jira issues
-dotnet run --project src/FhirAugury.Cli -- list jira
-
-# List Zulip messages
-dotnet run --project src/FhirAugury.Cli -- list zulip --format json
+```jsonc
+{ "command": "version" }
 ```
 
----
+### `show-schemas` — Output JSON schemas
 
-## Ingestion Commands
+Returns the full set of JSON schemas describing the CLI's input and output
+contracts.
 
-### `ingest trigger` — Trigger sync
-
-Triggers an ingestion sync for one or more source services.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- ingest trigger [options]
+```jsonc
+{ "command": "show-schemas" }
 ```
 
-**Options:**
+### `save-schemas` — Save schemas to disk
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--sources` | string | all | Comma-separated sources to sync |
-| `--type` | string | `incremental` | Ingestion type: `full`, `incremental` |
+Exports schema files to a directory.
 
-**Examples:**
-
-```bash
-# Incremental sync for all sources
-dotnet run --project src/FhirAugury.Cli -- ingest trigger
-
-# Full sync for Jira only
-dotnet run --project src/FhirAugury.Cli -- ingest trigger --sources jira --type full
+```jsonc
+{ "command": "save-schemas", "outputDirectory": "./schemas" }
 ```
 
 ---
 
-### `ingest status` — Ingestion status
-
-Shows the current ingestion status across all source services.
+## Examples
 
 ```bash
-dotnet run --project src/FhirAugury.Cli -- ingest status
-```
+# Inline JSON search
+fhir-augury --json '{"command":"search","query":"patient matching","limit":5}'
 
----
+# Pretty-printed output
+fhir-augury --json '{"command":"search","query":"patient matching"}' --pretty
 
-### `ingest rebuild` — Rebuild from cache
+# Read from file
+fhir-augury --input request.json
 
-Rebuilds source indexes from cached data without re-downloading.
+# Write output to file
+fhir-augury --json '{"command":"search","query":"patient matching"}' --output results.json
 
-```bash
-dotnet run --project src/FhirAugury.Cli -- ingest rebuild [options]
-```
+# File-to-file pipeline
+fhir-augury --input request.json --output results.json --pretty
 
-**Options:**
+# Read from file via @-prefix
+fhir-augury --json @request.json
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--sources` | string | all | Comma-separated sources to rebuild |
+# Read from stdin
+echo '{"command":"version"}' | fhir-augury --json @-
 
-**Examples:**
+# Get help for all commands (JSON)
+fhir-augury --help --pretty
 
-```bash
-# Rebuild all sources
-dotnet run --project src/FhirAugury.Cli -- ingest rebuild
-
-# Rebuild only Jira
-dotnet run --project src/FhirAugury.Cli -- ingest rebuild --sources jira
-```
-
----
-
-## Service Management Commands
-
-### `services status` — Service health
-
-Shows the health status of the orchestrator and all source services.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- services status
-```
-
----
-
-### `services stats` — Aggregate statistics
-
-Shows aggregate statistics across all source services.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- services stats
-```
-
----
-
-### `services xref-scan` — Trigger cross-reference scan
-
-Triggers a cross-reference scan across sources to discover links between items.
-
-```bash
-dotnet run --project src/FhirAugury.Cli -- services xref-scan [options]
-```
-
-**Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--full` | flag | `false` | Run a full scan (default is incremental) |
-
-**Examples:**
-
-```bash
-# Incremental scan
-dotnet run --project src/FhirAugury.Cli -- services xref-scan
-
-# Full rescan
-dotnet run --project src/FhirAugury.Cli -- services xref-scan --full
+# Get help for a specific command
+fhir-augury --help search --pretty
 ```

@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Orchestrator.Search;
 
 namespace FhirAugury.Orchestrator.Tests;
@@ -9,9 +10,9 @@ public class ScoreNormalizerTests
     {
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", "A", 10.0),
-            MakeItem("jira", "B", 20.0),
-            MakeItem("jira", "C", 30.0),
+            MakeItem(SourceSystems.Jira, "A", 10.0),
+            MakeItem(SourceSystems.Jira, "B", 20.0),
+            MakeItem(SourceSystems.Jira, "C", 30.0),
         };
 
         List<ScoredItem> result = ScoreNormalizer.Normalize(items);
@@ -31,10 +32,10 @@ public class ScoreNormalizerTests
     {
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", "J1", 100.0),
-            MakeItem("jira", "J2", 200.0),
-            MakeItem("zulip", "Z1", 5.0),
-            MakeItem("zulip", "Z2", 15.0),
+            MakeItem(SourceSystems.Jira, "J1", 100.0),
+            MakeItem(SourceSystems.Jira, "J2", 200.0),
+            MakeItem(SourceSystems.Zulip, "Z1", 5.0),
+            MakeItem(SourceSystems.Zulip, "Z2", 15.0),
         };
 
         List<ScoredItem> result = ScoreNormalizer.Normalize(items);
@@ -57,8 +58,8 @@ public class ScoreNormalizerTests
     {
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", "J1", 42.0),
-            MakeItem("zulip", "Z1", 7.0),
+            MakeItem(SourceSystems.Jira, "J1", 42.0),
+            MakeItem(SourceSystems.Zulip, "Z1", 7.0),
         };
 
         List<ScoredItem> result = ScoreNormalizer.Normalize(items);
@@ -71,9 +72,9 @@ public class ScoreNormalizerTests
     {
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", "A", 5.0),
-            MakeItem("jira", "B", 5.0),
-            MakeItem("jira", "C", 5.0),
+            MakeItem(SourceSystems.Jira, "A", 5.0),
+            MakeItem(SourceSystems.Jira, "B", 5.0),
+            MakeItem(SourceSystems.Jira, "C", 5.0),
         };
 
         List<ScoredItem> result = ScoreNormalizer.Normalize(items);
@@ -93,13 +94,13 @@ public class ScoreNormalizerTests
     {
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", "J1", 10.0, title: "Test Issue", url: "https://jira.hl7.org/browse/FHIR-1"),
+            MakeItem(SourceSystems.Jira, "J1", 10.0, title: "Test Issue", url: "https://jira.hl7.org/browse/FHIR-1"),
         };
 
         List<ScoredItem> result = ScoreNormalizer.Normalize(items);
 
         ScoredItem item = Assert.Single(result);
-        Assert.Equal("jira", item.Source);
+        Assert.Equal(SourceSystems.Jira, item.Source);
         Assert.Equal("J1", item.Id);
         Assert.Equal("Test Issue", item.Title);
         Assert.Equal("https://jira.hl7.org/browse/FHIR-1", item.Url);

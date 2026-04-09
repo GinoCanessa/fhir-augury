@@ -1,4 +1,4 @@
-using FhirAugury.Common.Grpc;
+using FhirAugury.Common.Http;
 using FhirAugury.Source.Jira.Configuration;
 using Microsoft.Extensions.Options;
 

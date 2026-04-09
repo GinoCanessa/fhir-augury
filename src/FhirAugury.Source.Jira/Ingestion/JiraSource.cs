@@ -1,4 +1,3 @@
-using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
 using FhirAugury.Source.Jira.Cache;
@@ -8,6 +7,8 @@ using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
+using System.Web;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
@@ -28,7 +29,7 @@ public class JiraSource(
 {
     private readonly JiraServiceOptions options = optionsAccessor.Value;
 
-    public const string SourceName = "jira";
+    public const string SourceName = SourceSystems.Jira;
 
     /// <summary>Performs a full download of all issues matching the configured JQL.</summary>
     public async Task<IngestionResult> DownloadAllAsync(string? jqlOverride, CancellationToken ct)
@@ -36,7 +37,9 @@ public class JiraSource(
         string jql = jqlOverride ?? options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
 
         if (IsApiTokenAuth())
+        {
             return await DownloadJsonAsync(jql, ct);
+        }
 
         return await DownloadXmlAsync(jql, JiraCacheLayout.DefaultFullSyncStartDate, ct);
     }
@@ -73,7 +76,7 @@ public class JiraSource(
 
         while (hasMore && !ct.IsCancellationRequested)
         {
-            string url = $"{options.BaseUrl}/rest/api/2/search?jql={Uri.EscapeDataString(jql)}" +
+            string url = $"{options.BaseUrl}/rest/api/2/search?jql={HttpUtility.UrlEncode(jql)}" +
                       $"&startAt={startAt}&maxResults={options.PageSize}&fields=*all&expand=renderedFields";
 
             logger.LogInformation("Fetching issues: startAt={StartAt}", startAt);
@@ -162,7 +165,7 @@ public class JiraSource(
             string dateStr = date.ToString("yyyy-MM-dd");
             string dayJql = $"{baseJql} AND updated >= '{dateStr} 00:00' AND updated <= '{dateStr} 23:59' ORDER BY updated ASC";
             string url = $"{options.BaseUrl}/sr/jira.issueviews:searchrequest-xml/temp/SearchRequest.xml" +
-                         $"?jqlQuery={Uri.EscapeDataString(dayJql)}&tempMax={JiraCacheLayout.XmlMaxResults}";
+                         $"?jqlQuery={HttpUtility.UrlEncode(dayJql)}&tempMax={JiraCacheLayout.XmlMaxResults}";
 
             logger.LogInformation("Fetching XML for date {Date}", dateStr);
 
@@ -324,8 +327,15 @@ public class JiraSource(
 
         foreach ((string source, string key) in MergeAndSortCacheEntries())
         {
-            if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream)) continue;
+            if (ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            if (!cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? stream))
+            {
+                continue;
+            }
 
             using (stream)
             {
@@ -508,7 +518,9 @@ public class JiraSource(
     private static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseCachedFile(Stream stream, string key)
     {
         if (key.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+        {
             return JiraXmlParser.ParseExport(stream);
+        }
 
         return ParseJsonCacheFile(stream);
     }

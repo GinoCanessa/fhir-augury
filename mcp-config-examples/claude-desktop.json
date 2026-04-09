@@ -8,9 +8,11 @@
         "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5151",
-        "FHIR_AUGURY_JIRA_GRPC": "http://localhost:5161",
-        "FHIR_AUGURY_ZULIP_GRPC": "http://localhost:5171"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
+        "FHIR_AUGURY_JIRA": "http://localhost:5160",
+        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
+        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
+        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
       }
     }
   }

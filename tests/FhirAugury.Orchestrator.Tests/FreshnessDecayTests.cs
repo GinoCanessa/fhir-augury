@@ -1,3 +1,4 @@
+using FhirAugury.Common;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Search;
 using Microsoft.Extensions.Options;
@@ -12,8 +13,8 @@ public class FreshnessDecayTests
         {
             FreshnessWeights = weights ?? new Dictionary<string, double>
             {
-                ["jira"] = 0.5,
-                ["zulip"] = 2.0,
+                [SourceSystems.Jira] = 0.5,
+                [SourceSystems.Zulip] = 2.0,
             },
         },
     });
@@ -24,7 +25,7 @@ public class FreshnessDecayTests
         FreshnessDecay decay = new FreshnessDecay(CreateOptions());
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", 1.0, DateTimeOffset.UtcNow.AddHours(-1)),
+            MakeItem(SourceSystems.Jira, 1.0, DateTimeOffset.UtcNow.AddHours(-1)),
         };
 
         List<ScoredItem> result = decay.Apply(items);
@@ -39,7 +40,7 @@ public class FreshnessDecayTests
         FreshnessDecay decay = new FreshnessDecay(CreateOptions());
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("zulip", 1.0, DateTimeOffset.UtcNow.AddYears(-2)),
+            MakeItem(SourceSystems.Zulip, 1.0, DateTimeOffset.UtcNow.AddYears(-2)),
         };
 
         List<ScoredItem> result = decay.Apply(items);
@@ -54,7 +55,7 @@ public class FreshnessDecayTests
         FreshnessDecay decay = new FreshnessDecay(CreateOptions());
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", 0.75, updatedAt: null),
+            MakeItem(SourceSystems.Jira, 0.75, updatedAt: null),
         };
 
         List<ScoredItem> result = decay.Apply(items);
@@ -70,15 +71,15 @@ public class FreshnessDecayTests
 
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", 1.0, oneYearAgo),   // weight 0.5
-            MakeItem("zulip", 1.0, oneYearAgo),  // weight 2.0
+            MakeItem(SourceSystems.Jira, 1.0, oneYearAgo),   // weight 0.5
+            MakeItem(SourceSystems.Zulip, 1.0, oneYearAgo),  // weight 2.0
         };
 
         List<ScoredItem> result = decay.Apply(items);
 
         // Jira (0.5 weight) decays less than Zulip (2.0 weight)
-        double jiraScore = result.Single(r => r.Source == "jira").Score;
-        double zulipScore = result.Single(r => r.Source == "zulip").Score;
+        double jiraScore = result.Single(r => string.Equals(r.Source, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)).Score;
+        double zulipScore = result.Single(r => string.Equals(r.Source, SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase)).Score;
         Assert.True(jiraScore > zulipScore,
             $"Jira ({jiraScore:F4}) should decay less than Zulip ({zulipScore:F4})");
     }
@@ -104,14 +105,14 @@ public class FreshnessDecayTests
         FreshnessDecay decay = new FreshnessDecay(CreateOptions());
         List<ScoredItem> items = new List<ScoredItem>
         {
-            MakeItem("jira", 1.0, DateTimeOffset.UtcNow, id: "J1", title: "Test"),
+            MakeItem(SourceSystems.Jira, 1.0, DateTimeOffset.UtcNow, id: "J1", title: "Test"),
         };
 
         List<ScoredItem> result = decay.Apply(items);
 
         Assert.Equal("J1", result[0].Id);
         Assert.Equal("Test", result[0].Title);
-        Assert.Equal("jira", result[0].Source);
+        Assert.Equal(SourceSystems.Jira, result[0].Source);
     }
 
     private static ScoredItem MakeItem(string source, double score,

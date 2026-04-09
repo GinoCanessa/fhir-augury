@@ -1,3 +1,5 @@
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Database;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
 using Microsoft.Data.Sqlite;
@@ -144,6 +146,143 @@ public class ConfluenceDatabaseTests : IDisposable
         LastModifiedAt = DateTimeOffset.UtcNow,
         Url = $"https://confluence.hl7.org/pages/viewpage.action?pageId={confluenceId}",
     };
+
+    // ── Keyword query tests ────────────────────────────────────────────
+
+    [Fact]
+    public void GetKeywordsForItem_ReturnsMatchingKeywords()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'test-item-1', 'patient', 5, 'word', 4.5),
+                   ('page', 'test-item-1', 'Patient.name', 3, 'fhir_path', 3.2),
+                   ('page', 'test-item-1', '$validate', 1, 'fhir_operation', 2.1),
+                   ('page', 'test-item-2', 'observation', 2, 'word', 1.5);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        List<KeywordEntry> results = SourceDatabase.GetKeywordsForItem(connection, "test-item-1");
+        Assert.Equal(3, results.Count);
+        Assert.Equal("patient", results[0].Keyword);
+        Assert.Equal(4.5, results[0].Bm25Score);
+        Assert.Equal("Patient.name", results[1].Keyword);
+        Assert.Equal("$validate", results[2].Keyword);
+    }
+
+    [Fact]
+    public void GetKeywordsForItem_FiltersByKeywordType()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'test-filter-1', 'patient', 5, 'word', 4.5),
+                   ('page', 'test-filter-1', 'Patient.name', 3, 'fhir_path', 3.2),
+                   ('page', 'test-filter-1', '$validate', 1, 'fhir_operation', 2.1);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        List<KeywordEntry> results = SourceDatabase.GetKeywordsForItem(connection, "test-filter-1", keywordType: "fhir_path");
+        Assert.Single(results);
+        Assert.Equal("Patient.name", results[0].Keyword);
+    }
+
+    [Fact]
+    public void GetKeywordsForItem_RespectsLimit()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'test-limit-1', 'a', 1, 'word', 3.0),
+                   ('page', 'test-limit-1', 'b', 1, 'word', 2.0),
+                   ('page', 'test-limit-1', 'c', 1, 'word', 1.0);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        List<KeywordEntry> results = SourceDatabase.GetKeywordsForItem(connection, "test-limit-1", limit: 2);
+        Assert.Equal(2, results.Count);
+    }
+
+    [Fact]
+    public void GetKeywordsForItem_ReturnsEmpty_WhenNoMatch()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        List<KeywordEntry> results = SourceDatabase.GetKeywordsForItem(connection, "nonexistent-item");
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void GetContentTypeForItem_ReturnsContentType()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'test-ct-1', 'patient', 1, 'word', 1.0);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        string contentType = SourceDatabase.GetContentTypeForItem(connection, "test-ct-1");
+        Assert.Equal("page", contentType);
+    }
+
+    [Fact]
+    public void GetRelatedByKeyword_FindsRelatedItems()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'seed-1', 'patient', 5, 'word', 4.0),
+                   ('page', 'seed-1', 'observation', 3, 'word', 3.0),
+                   ('page', 'related-1', 'patient', 4, 'word', 3.5),
+                   ('page', 'related-1', 'observation', 2, 'word', 2.0),
+                   ('page', 'related-2', 'patient', 1, 'word', 1.0),
+                   ('page', 'unrelated', 'medication', 5, 'word', 5.0);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        var results = SourceDatabase.GetRelatedByKeyword(connection, "seed-1", minScore: 0.0);
+        Assert.True(results.Count >= 1);
+        Assert.Equal("related-1", results[0].SourceId);
+        Assert.Contains("patient", results[0].SharedKeywords);
+    }
+
+    [Fact]
+    public void GetRelatedByKeyword_ExcludesSeedItem()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'self-1', 'patient', 5, 'word', 4.0),
+                   ('page', 'other-1', 'patient', 3, 'word', 3.0);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        var results = SourceDatabase.GetRelatedByKeyword(connection, "self-1", minScore: 0.0);
+        Assert.DoesNotContain(results, r => r.SourceId == "self-1");
+    }
+
+    [Fact]
+    public void GetRelatedByKeyword_RespectsMinScore()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        using SqliteCommand insertCmd = connection.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO index_keywords (ContentType, SourceId, Keyword, Count, KeywordType, Bm25Score)
+            VALUES ('page', 'high-seed', 'patient', 5, 'word', 4.0),
+                   ('page', 'high-match', 'patient', 4, 'word', 3.5),
+                   ('page', 'low-match', 'patient', 1, 'word', 0.001);
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        var results = SourceDatabase.GetRelatedByKeyword(connection, "high-seed", minScore: 1.0);
+        Assert.DoesNotContain(results, r => r.SourceId == "low-match");
+    }
 
     private static List<string> GetTableNames(Microsoft.Data.Sqlite.SqliteConnection conn)
     {

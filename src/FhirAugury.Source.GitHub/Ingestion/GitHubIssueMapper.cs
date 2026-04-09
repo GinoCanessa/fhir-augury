@@ -54,7 +54,7 @@ public static class GitHubIssueMapper
     }
 
     /// <summary>Maps a GitHub repo JSON element to a GitHubRepoRecord.</summary>
-    public static GitHubRepoRecord MapRepo(JsonElement repoJson)
+    public static GitHubRepoRecord MapRepo(JsonElement repoJson, string category = "")
     {
         return new GitHubRepoRecord
         {
@@ -65,6 +65,7 @@ public static class GitHubIssueMapper
             Description = GetString(repoJson, "description"),
             HasIssues = repoJson.TryGetProperty("has_issues", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
+            Category = category,
         };
     }
 

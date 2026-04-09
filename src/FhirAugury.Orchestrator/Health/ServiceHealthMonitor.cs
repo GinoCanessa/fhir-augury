@@ -1,4 +1,5 @@
-using Fhiraugury;
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Http;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.Extensions.Logging;
@@ -7,11 +8,11 @@ using Microsoft.Extensions.Options;
 namespace FhirAugury.Orchestrator.Health;
 
 /// <summary>
-/// Monitors source service health via gRPC HealthCheck.
+/// Monitors source service health via HTTP health endpoints.
 /// Maintains aggregate health status for all configured services.
 /// </summary>
 public class ServiceHealthMonitor(
-    SourceRouter router,
+    SourceHttpClient httpClient,
     IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<ServiceHealthMonitor> logger)
 {
@@ -55,34 +56,37 @@ public class ServiceHealthMonitor(
     /// </summary>
     public async Task<ServiceHealthInfo> CheckServiceAsync(string sourceName, CancellationToken ct)
     {
-        SourceService.SourceServiceClient? client = router.GetSourceClient(sourceName);
-        SourceServiceConfig? config = router.GetSourceConfig(sourceName);
+        SourceServiceConfig? config = httpClient.GetSourceConfig(sourceName);
 
-        if (client is null || config is null)
+        if (config is null || !config.Enabled)
         {
             return new ServiceHealthInfo
             {
                 Name = sourceName,
                 Status = "not_configured",
-                GrpcAddress = config?.GrpcAddress ?? "",
+                HttpAddress = config?.HttpAddress ?? "",
             };
         }
 
         try
         {
-            HealthCheckResponse response = await client.HealthCheckAsync(new HealthCheckRequest(), cancellationToken: ct);
-            StatsResponse stats = await client.GetStatsAsync(new StatsRequest(), cancellationToken: ct);
+            HealthCheckResponse? health = await httpClient.HealthCheckAsync(sourceName, ct);
+            StatsResponse? stats = await httpClient.GetStatsAsync(sourceName, ct);
+            IngestionStatusResponse? ingestionStatus = await httpClient.GetIngestionStatusAsync(sourceName, ct);
+
+            List<Common.Api.IndexStatusInfo> indexes = ingestionStatus?.Indexes ?? [];
 
             return new ServiceHealthInfo
             {
                 Name = sourceName,
-                Status = response.Status,
-                GrpcAddress = config.GrpcAddress,
-                UptimeSeconds = response.UptimeSeconds,
-                Version = response.Version,
-                ItemCount = stats.TotalItems,
-                DbSizeBytes = stats.DatabaseSizeBytes,
-                LastSyncAt = stats.LastSyncAt?.ToDateTimeOffset(),
+                Status = health?.Status ?? "unknown",
+                HttpAddress = config.HttpAddress,
+                UptimeSeconds = health?.UptimeSeconds ?? 0,
+                Version = health?.Version,
+                ItemCount = stats?.TotalItems ?? 0,
+                DbSizeBytes = stats?.DatabaseSizeBytes ?? 0,
+                LastSyncAt = stats?.LastSyncAt,
+                Indexes = indexes,
             };
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -92,21 +96,39 @@ public class ServiceHealthMonitor(
             {
                 Name = sourceName,
                 Status = "timeout",
-                GrpcAddress = config.GrpcAddress,
+                HttpAddress = config.HttpAddress,
                 LastError = "Health check timed out",
             };
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Health check failed for {Source}", sourceName);
+            if (ex.IsTransientHttpError(out string statusDescription))
+                logger.LogWarning("Health check failed for {Source} ({HttpStatus})", sourceName, statusDescription);
+            else
+                logger.LogWarning(ex, "Health check failed for {Source}", sourceName);
+
             return new ServiceHealthInfo
             {
                 Name = sourceName,
                 Status = "unavailable",
-                GrpcAddress = config.GrpcAddress,
+                HttpAddress = config.HttpAddress,
                 LastError = ex.Message,
             };
         }
+    }
+
+    /// <summary>
+    /// Checks health of a single source service and updates the cached status.
+    /// Used by the reconnection worker to refresh status of offline sources.
+    /// </summary>
+    public async Task<ServiceHealthInfo> CheckAndUpdateServiceAsync(string sourceName, CancellationToken ct)
+    {
+        ServiceHealthInfo info = await CheckServiceAsync(sourceName, ct);
+        lock (_lock)
+        {
+            _healthStatus[sourceName] = info;
+        }
+        return info;
     }
 
     /// <summary>
@@ -136,11 +158,12 @@ public class ServiceHealthInfo
 {
     public required string Name { get; set; }
     public required string Status { get; set; }
-    public required string GrpcAddress { get; set; }
+    public string HttpAddress { get; set; } = "";
     public double UptimeSeconds { get; set; }
     public string? Version { get; set; }
     public int ItemCount { get; set; }
     public long DbSizeBytes { get; set; }
     public DateTimeOffset? LastSyncAt { get; set; }
     public string? LastError { get; set; }
+    public List<Common.Api.IndexStatusInfo> Indexes { get; set; } = [];
 }

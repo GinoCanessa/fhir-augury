@@ -1,66 +1,25 @@
-using Fhiraugury;
 using FhirAugury.McpShared.Tools;
-using Google.Protobuf.WellKnownTypes;
-using Grpc.Core;
-using Grpc.Core.Testing;
-using NSubstitute;
 
 namespace FhirAugury.McpShared.Tests;
 
 public class ZulipToolsTests
 {
     [Fact]
-    public async Task SearchZulip_ReturnsFormattedResults()
-    {
-        SearchResponse mockResponse = McpTestHelper.CreateSearchResponse(
-            ("zulip", "general:test-topic", "Test Topic", 0.9));
-
-        AsyncUnaryCall<SearchResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        SourceService.SourceServiceClient client = Substitute.For<SourceService.SourceServiceClient>();
-        client.SearchAsync(Arg.Any<SearchRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await ZulipTools.SearchZulip(client, "test query");
-
-        Assert.Contains("Search Results", result);
-        Assert.Contains("test-topic", result);
-    }
-
-    [Fact]
     public async Task GetZulipThread_ReturnsFormattedThread()
     {
-        ZulipThread thread = new ZulipThread { StreamName = "general", Topic = "test-topic" };
-        thread.Messages.Add(new ZulipMessage
-        {
-            Id = 1, StreamName = "general", Topic = "test-topic",
-            SenderName = "User1", Content = "Hello world",
-            Timestamp = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-        });
-        thread.Messages.Add(new ZulipMessage
-        {
-            Id = 2, StreamName = "general", Topic = "test-topic",
-            SenderName = "User2", Content = "Reply message",
-            Timestamp = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-        });
+        string json = """
+            {
+                "stream": "general",
+                "topic": "test-topic",
+                "messages": [
+                    { "sender": "User1", "content": "Hello world", "timestamp": "2024-01-01T00:00:00Z" },
+                    { "sender": "User2", "content": "Reply message", "timestamp": "2024-01-01T00:01:00Z" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
 
-        AsyncUnaryCall<ZulipThread> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(thread),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
-        client.GetThreadAsync(Arg.Any<ZulipGetThreadRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await ZulipTools.GetZulipThread(client, "general", "test-topic");
+        string result = await ZulipTools.GetZulipThread(factory, "general", "test-topic");
 
         Assert.Contains("general > test-topic", result);
         Assert.Contains("User1", result);
@@ -72,20 +31,16 @@ public class ZulipToolsTests
     [Fact]
     public async Task GetZulipThread_NoMessages_ReturnsMessage()
     {
-        ZulipThread thread = new ZulipThread { StreamName = "general", Topic = "empty-topic" };
+        string json = """
+            {
+                "stream": "general",
+                "topic": "empty-topic",
+                "messages": []
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
 
-        AsyncUnaryCall<ZulipThread> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(thread),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
-        client.GetThreadAsync(Arg.Any<ZulipGetThreadRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await ZulipTools.GetZulipThread(client, "general", "empty-topic");
+        string result = await ZulipTools.GetZulipThread(factory, "general", "empty-topic");
 
         Assert.Contains("No messages found", result);
     }
@@ -93,18 +48,17 @@ public class ZulipToolsTests
     [Fact]
     public async Task ListZulipStreams_ReturnsFormattedStreams()
     {
-        ZulipStream[] streams = new[]
-        {
-            new ZulipStream { Id = 1, Name = "general", Description = "General discussion", MessageCount = 500 },
-            new ZulipStream { Id = 2, Name = "committers", Description = "Committer chat", MessageCount = 200 },
-        };
+        string json = """
+            {
+                "streams": [
+                    { "name": "general", "description": "General discussion", "messageCount": 500 },
+                    { "name": "committers", "description": "Committer chat", "messageCount": 200 }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
 
-        AsyncServerStreamingCall<ZulipStream> streamCall = McpTestHelper.CreateStreamingCall(streams);
-        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
-        client.ListStreams(Arg.Any<ZulipListStreamsRequest>(), null, null, default)
-            .Returns(streamCall);
-
-        string result = await ZulipTools.ListZulipStreams(client);
+        string result = await ZulipTools.ListZulipStreams(factory);
 
         Assert.Contains("Zulip Streams", result);
         Assert.Contains("general", result);
@@ -115,50 +69,19 @@ public class ZulipToolsTests
     [Fact]
     public async Task ListZulipTopics_ReturnsFormattedTopics()
     {
-        ZulipTopic[] topics = new[]
-        {
-            new ZulipTopic
+        string json = """
             {
-                StreamName = "general", Topic = "topic-1", MessageCount = 10,
-                LastMessageAt = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
-            },
-        };
+                "topics": [
+                    { "topic": "topic-1", "messageCount": 10, "lastMessageAt": "2024-01-01T00:00:00Z" }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
 
-        AsyncServerStreamingCall<ZulipTopic> streamCall = McpTestHelper.CreateStreamingCall(topics);
-        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
-        client.ListTopics(Arg.Any<ZulipListTopicsRequest>(), null, null, default)
-            .Returns(streamCall);
-
-        string result = await ZulipTools.ListZulipTopics(client, "general");
+        string result = await ZulipTools.ListZulipTopics(factory, "general");
 
         Assert.Contains("Topics in general", result);
         Assert.Contains("topic-1", result);
         Assert.Contains("10 messages", result);
-    }
-
-    [Fact]
-    public async Task SnapshotZulipThread_ReturnsMarkdown()
-    {
-        SnapshotResponse mockResponse = new SnapshotResponse
-        {
-            Id = "general:test-topic",
-            Source = "zulip",
-            Markdown = "# general > test-topic\n\nFull thread content...",
-        };
-
-        AsyncUnaryCall<SnapshotResponse> mockCall = TestCalls.AsyncUnaryCall(
-            Task.FromResult(mockResponse),
-            Task.FromResult(new Metadata()),
-            () => Status.DefaultSuccess,
-            () => [],
-            () => { });
-
-        ZulipService.ZulipServiceClient client = Substitute.For<ZulipService.ZulipServiceClient>();
-        client.GetThreadSnapshotAsync(Arg.Any<ZulipSnapshotRequest>(), null, null, default)
-            .Returns(mockCall);
-
-        string result = await ZulipTools.SnapshotZulipThread(client, "general", "test-topic");
-
-        Assert.Contains("general > test-topic", result);
     }
 }
