@@ -35,6 +35,10 @@ public static class CommandDispatcher
         ["save-schemas"] = j => j.Deserialize<SaveSchemasRequest>(DeserializeOptions)!,
         ["keywords"] = j => j.Deserialize<KeywordsRequest>(DeserializeOptions)!,
         ["related-by-keyword"] = j => j.Deserialize<RelatedByKeywordRequest>(DeserializeOptions)!,
+        ["list-jira-workgroups"] = j => ParseDimension(j, "workgroups"),
+        ["list-jira-specifications"] = j => ParseDimension(j, "specifications"),
+        ["list-jira-labels"] = j => ParseDimension(j, "labels"),
+        ["list-jira-statuses"] = j => ParseDimension(j, "statuses"),
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -144,8 +148,16 @@ public static class CommandDispatcher
             SaveSchemasRequest r => SaveSchemasHandler.HandleAsync(r),
             KeywordsRequest r => KeywordsHandler.HandleAsync(r, orchestratorAddr, ct),
             RelatedByKeywordRequest r => RelatedByKeywordHandler.HandleAsync(r, orchestratorAddr, ct),
+            ListJiraDimensionRequest r => ListJiraDimensionHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
+
+    private static CliRequest ParseDimension(JsonElement j, string dimension)
+    {
+        ListJiraDimensionRequest request = j.Deserialize<ListJiraDimensionRequest>(DeserializeOptions)!;
+        request.Dimension = dimension;
+        return request;
+    }
 }
 
 /// <summary>

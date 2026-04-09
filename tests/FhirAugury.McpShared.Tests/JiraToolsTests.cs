@@ -107,4 +107,108 @@ public class JiraToolsTests
 
         Assert.Equal("No labels found.", result);
     }
+
+    // ── Work Groups ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListJiraWorkGroups_ReturnsMarkdownTable()
+    {
+        string json = """[{"name":"FHIR Infrastructure","issueCount":4231},{"name":"Orders","issueCount":1894}]""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.ListJiraWorkGroups(factory);
+
+        Assert.Contains("| FHIR Infrastructure | 4231 |", result);
+        Assert.Contains("| Orders | 1894 |", result);
+        Assert.Contains("Work Group", result);
+    }
+
+    [Fact]
+    public async Task ListJiraWorkGroups_Empty_ReturnsMessage()
+    {
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
+
+        string result = await JiraTools.ListJiraWorkGroups(factory);
+
+        Assert.Equal("No work groups found.", result);
+    }
+
+    // ── Specifications ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListJiraSpecifications_ReturnsMarkdownTable()
+    {
+        string json = """[{"name":"FHIR Core","issueCount":300},{"name":"US Core","issueCount":150}]""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.ListJiraSpecifications(factory);
+
+        Assert.Contains("| FHIR Core | 300 |", result);
+        Assert.Contains("| US Core | 150 |", result);
+        Assert.Contains("Specification", result);
+    }
+
+    [Fact]
+    public async Task ListJiraSpecifications_Empty_ReturnsMessage()
+    {
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
+
+        string result = await JiraTools.ListJiraSpecifications(factory);
+
+        Assert.Equal("No specifications found.", result);
+    }
+
+    // ── Statuses ───────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ListJiraStatuses_ReturnsMarkdownTable()
+    {
+        string json = """[{"name":"Open","issueCount":1000},{"name":"Closed","issueCount":2000}]""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.ListJiraStatuses(factory);
+
+        Assert.Contains("| Open | 1000 |", result);
+        Assert.Contains("| Closed | 2000 |", result);
+        Assert.Contains("Status", result);
+    }
+
+    [Fact]
+    public async Task ListJiraStatuses_Empty_ReturnsMessage()
+    {
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
+
+        string result = await JiraTools.ListJiraStatuses(factory);
+
+        Assert.Equal("No statuses found.", result);
+    }
+
+    // ── Enhanced QueryJiraIssues ────────────────────────────────────────
+
+    [Fact]
+    public async Task QueryJiraIssues_WithAssigneesAndReporters_Succeeds()
+    {
+        string json = """{"results":[{"key":"FHIR-100","title":"Test","status":"Open","type":"Bug"}]}""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.QueryJiraIssues(factory,
+            assignees: "user1,user2",
+            reporters: "reporter1");
+
+        Assert.Contains("FHIR-100", result);
+    }
+
+    [Fact]
+    public async Task QueryJiraIssues_WithDateFilters_Succeeds()
+    {
+        string json = """{"results":[{"key":"FHIR-200","title":"Date test","status":"Open","type":"Task"}]}""";
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+
+        string result = await JiraTools.QueryJiraIssues(factory,
+            createdAfter: "2024-01-01",
+            updatedBefore: "2024-12-31",
+            offset: 10);
+
+        Assert.Contains("FHIR-200", result);
+    }
 }

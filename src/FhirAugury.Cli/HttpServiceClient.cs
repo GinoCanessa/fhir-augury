@@ -131,6 +131,11 @@ public sealed class HttpServiceClient : IDisposable
         return await PostJsonAsync(_orchestratorClient, "/api/v1/zulip/query", queryParams, ct);
     }
 
+    public async Task<JsonElement> GetFromOrchestratorAsync(string path, CancellationToken ct)
+    {
+        return await GetJsonAsync(_orchestratorClient, path, ct);
+    }
+
     // ── Content Query API ──────────────────────────────────────────────
 
     public async Task<JsonElement> ContentSearchAsync(List<string> values, string? sources, int? limit, CancellationToken ct)

@@ -62,10 +62,17 @@ public static class JiraTools
         [Description("Filter by types (comma-separated)")] string? types = null,
         [Description("Filter by priorities (comma-separated)")] string? priorities = null,
         [Description("Filter by labels (comma-separated, exact match, AND logic)")] string? labels = null,
+        [Description("Filter by assignees (comma-separated)")] string? assignees = null,
+        [Description("Filter by reporters (comma-separated)")] string? reporters = null,
         [Description("Text query for additional filtering")] string? query = null,
+        [Description("Include issues created on/after this date (ISO 8601)")] string? createdAfter = null,
+        [Description("Include issues created on/before this date (ISO 8601)")] string? createdBefore = null,
+        [Description("Include issues updated on/after this date (ISO 8601)")] string? updatedAfter = null,
+        [Description("Include issues updated on/before this date (ISO 8601)")] string? updatedBefore = null,
         [Description("Sort by field (default updated_at)")] string sortBy = "updated_at",
         [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
         [Description("Maximum results (default 20)")] int limit = 20,
+        [Description("Pagination offset (default 0)")] int offset = 0,
         CancellationToken cancellationToken = default)
     {
         try
@@ -79,10 +86,17 @@ public static class JiraTools
                 types = ParseCsv(types),
                 priorities = ParseCsv(priorities),
                 labels = ParseCsv(labels),
+                assignees = ParseCsv(assignees),
+                reporters = ParseCsv(reporters),
                 query = query ?? "",
+                createdAfter,
+                createdBefore,
+                updatedAfter,
+                updatedBefore,
                 sortBy,
                 sortOrder,
                 limit,
+                offset,
             };
 
             JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/query", body, cancellationToken);
@@ -197,6 +211,99 @@ public static class JiraTools
                 string count = item.TryGetProperty("issueCount", out JsonElement countEl)
                     ? countEl.ToString()
                     : "";
+                sb.AppendLine($"| {name} | {count} |");
+            }
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    [McpServerTool, Description("List all Jira work groups with issue counts.")]
+    public static async Task<string> ListJiraWorkGroups(
+        IHttpClientFactory httpClientFactory,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            JsonElement root = await UnifiedTools.GetJsonAsync(
+                client, "/api/v1/work-groups", cancellationToken);
+
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                return "No work groups found.";
+
+            StringBuilder sb = new();
+            sb.AppendLine("| Work Group | Issues |");
+            sb.AppendLine("|------------|--------|");
+            foreach (JsonElement item in root.EnumerateArray())
+            {
+                string name = UnifiedTools.GetString(item, "name");
+                string count = item.TryGetProperty("issueCount", out JsonElement c) ? c.ToString() : "";
+                sb.AppendLine($"| {name} | {count} |");
+            }
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    [McpServerTool, Description("List all Jira specifications with issue counts.")]
+    public static async Task<string> ListJiraSpecifications(
+        IHttpClientFactory httpClientFactory,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            JsonElement root = await UnifiedTools.GetJsonAsync(
+                client, "/api/v1/specifications", cancellationToken);
+
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                return "No specifications found.";
+
+            StringBuilder sb = new();
+            sb.AppendLine("| Specification | Issues |");
+            sb.AppendLine("|---------------|--------|");
+            foreach (JsonElement item in root.EnumerateArray())
+            {
+                string name = UnifiedTools.GetString(item, "name");
+                string count = item.TryGetProperty("issueCount", out JsonElement c) ? c.ToString() : "";
+                sb.AppendLine($"| {name} | {count} |");
+            }
+            return sb.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    [McpServerTool, Description("List all Jira statuses with issue counts.")]
+    public static async Task<string> ListJiraStatuses(
+        IHttpClientFactory httpClientFactory,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("jira");
+            JsonElement root = await UnifiedTools.GetJsonAsync(
+                client, "/api/v1/statuses", cancellationToken);
+
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                return "No statuses found.";
+
+            StringBuilder sb = new();
+            sb.AppendLine("| Status | Issues |");
+            sb.AppendLine("|--------|--------|");
+            foreach (JsonElement item in root.EnumerateArray())
+            {
+                string name = UnifiedTools.GetString(item, "name");
+                string count = item.TryGetProperty("issueCount", out JsonElement c) ? c.ToString() : "";
                 sb.AppendLine($"| {name} | {count} |");
             }
             return sb.ToString();

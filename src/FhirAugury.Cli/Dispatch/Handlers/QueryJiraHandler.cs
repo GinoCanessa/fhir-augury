@@ -19,10 +19,15 @@ public static class QueryJiraHandler
             priorities = request.Priorities,
             labels = request.Labels,
             assignees = request.Assignees,
+            reporters = request.Reporters,
             sortBy = request.SortBy,
             sortOrder = request.SortOrder,
             limit = request.Limit,
+            offset = request.Offset,
             updatedAfter = request.UpdatedAfter,
+            updatedBefore = request.UpdatedBefore,
+            createdAfter = request.CreatedAfter,
+            createdBefore = request.CreatedBefore,
         };
 
         JsonElement response = await client.QueryJiraViaOrchestratorAsync(queryBody, ct);

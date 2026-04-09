@@ -63,4 +63,14 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             .Select(l => new { l.Name, l.IssueCount })
             .OrderByDescending(l => l.IssueCount));
     }
+
+    [HttpGet("statuses")]
+    public IActionResult ListStatuses()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexStatusRecord> records = JiraIndexStatusRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
 }

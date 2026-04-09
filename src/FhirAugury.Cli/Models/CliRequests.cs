@@ -105,6 +105,21 @@ public sealed class QueryJiraRequest : CliRequest
 
     [JsonPropertyName("updatedAfter")]
     public string? UpdatedAfter { get; set; }
+
+    [JsonPropertyName("reporters")]
+    public string[]? Reporters { get; set; }
+
+    [JsonPropertyName("createdAfter")]
+    public string? CreatedAfter { get; set; }
+
+    [JsonPropertyName("createdBefore")]
+    public string? CreatedBefore { get; set; }
+
+    [JsonPropertyName("updatedBefore")]
+    public string? UpdatedBefore { get; set; }
+
+    [JsonPropertyName("offset")]
+    public int Offset { get; set; }
 }
 
 public sealed class QueryZulipRequest : CliRequest
@@ -235,6 +250,15 @@ public sealed class RelatedByKeywordRequest : CliRequest
 
     [JsonPropertyName("keywordType")]
     public string? KeywordType { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int? Limit { get; set; }
+}
+
+public sealed class ListJiraDimensionRequest : CliRequest
+{
+    [JsonPropertyName("dimension")]
+    public string Dimension { get; set; } = "";
 
     [JsonPropertyName("limit")]
     public int? Limit { get; set; }

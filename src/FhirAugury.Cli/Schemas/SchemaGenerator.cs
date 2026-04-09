@@ -257,10 +257,15 @@ public static class SchemaGenerator
                 ["priorities"] = ArrayProp("string", "Filter by priorities"),
                 ["labels"] = ArrayProp("string", "Filter by labels"),
                 ["assignees"] = ArrayProp("string", "Filter by assignees"),
+                ["reporters"] = ArrayProp("string", "Filter by reporters"),
                 ["sortBy"] = new { type = "string", description = "Sort by field", defaultValue = "updated_at" },
                 ["sortOrder"] = new { type = "string", description = "Sort order", defaultValue = "desc" },
                 ["limit"] = IntProp("Maximum results", 20),
+                ["offset"] = IntProp("Pagination offset", 0),
                 ["updatedAfter"] = Prop("string", "Only issues updated after this date (ISO 8601)"),
+                ["updatedBefore"] = Prop("string", "Only issues updated before this date (ISO 8601)"),
+                ["createdAfter"] = Prop("string", "Only issues created after this date (ISO 8601)"),
+                ["createdBefore"] = Prop("string", "Only issues created before this date (ISO 8601)"),
             }),
             new
             {
@@ -294,6 +299,78 @@ public static class SchemaGenerator
                 properties = new Dictionary<string, object>
                 {
                     ["results"] = ArrayProp("object", "Matching Zulip messages"),
+                },
+            }
+        ),
+
+        ["list-jira-workgroups"] = new(
+            "List all Jira work groups with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-workgroups"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Work groups with name and issueCount"),
+                },
+            }
+        ),
+
+        ["list-jira-specifications"] = new(
+            "List all Jira specifications with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-specifications"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Specifications with name and issueCount"),
+                },
+            }
+        ),
+
+        ["list-jira-labels"] = new(
+            "List all Jira labels with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-labels"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Labels with name and issueCount"),
+                },
+            }
+        ),
+
+        ["list-jira-statuses"] = new(
+            "List all Jira statuses with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-statuses"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Statuses with name and issueCount"),
                 },
             }
         ),

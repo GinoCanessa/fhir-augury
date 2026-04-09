@@ -211,6 +211,79 @@ public class JiraDatabaseTests : IDisposable
         ChangeImpact = null,
     };
 
+    // ── Index list endpoint tests ─────────────────────────────────────
+
+    [Fact]
+    public void ListWorkGroups_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexWorkGroupRecord.CreateTable(conn);
+        JiraIndexWorkGroupRecord.Insert(conn, new JiraIndexWorkGroupRecord
+        {
+            Id = JiraIndexWorkGroupRecord.GetIndex(), Name = "Orders", IssueCount = 100,
+        });
+        JiraIndexWorkGroupRecord.Insert(conn, new JiraIndexWorkGroupRecord
+        {
+            Id = JiraIndexWorkGroupRecord.GetIndex(), Name = "FHIR Infrastructure", IssueCount = 500,
+        });
+        JiraIndexWorkGroupRecord.Insert(conn, new JiraIndexWorkGroupRecord
+        {
+            Id = JiraIndexWorkGroupRecord.GetIndex(), Name = "Patient Care", IssueCount = 200,
+        });
+
+        List<JiraIndexWorkGroupRecord> records = JiraIndexWorkGroupRecord.SelectList(conn);
+
+        Assert.Equal(3, records.Count);
+        Assert.Contains(records, r => r.Name == "FHIR Infrastructure" && r.IssueCount == 500);
+        Assert.Contains(records, r => r.Name == "Orders" && r.IssueCount == 100);
+    }
+
+    [Fact]
+    public void ListSpecifications_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexSpecificationRecord.CreateTable(conn);
+        JiraIndexSpecificationRecord.Insert(conn, new JiraIndexSpecificationRecord
+        {
+            Id = JiraIndexSpecificationRecord.GetIndex(), Name = "FHIR Core", IssueCount = 300,
+        });
+        JiraIndexSpecificationRecord.Insert(conn, new JiraIndexSpecificationRecord
+        {
+            Id = JiraIndexSpecificationRecord.GetIndex(), Name = "US Core", IssueCount = 150,
+        });
+
+        List<JiraIndexSpecificationRecord> records = JiraIndexSpecificationRecord.SelectList(conn);
+
+        Assert.Equal(2, records.Count);
+        Assert.Contains(records, r => r.Name == "FHIR Core" && r.IssueCount == 300);
+        Assert.Contains(records, r => r.Name == "US Core" && r.IssueCount == 150);
+    }
+
+    [Fact]
+    public void ListStatuses_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexStatusRecord.CreateTable(conn);
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "Open", IssueCount = 1000,
+        });
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "Closed", IssueCount = 2000,
+        });
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "In Progress", IssueCount = 50,
+        });
+
+        List<JiraIndexStatusRecord> records = JiraIndexStatusRecord.SelectList(conn);
+
+        Assert.Equal(3, records.Count);
+        Assert.Contains(records, r => r.Name == "Closed" && r.IssueCount == 2000);
+        Assert.Contains(records, r => r.Name == "In Progress" && r.IssueCount == 50);
+    }
+
     // ── Keyword query tests ────────────────────────────────────────────
 
     [Fact]

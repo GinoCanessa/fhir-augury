@@ -1,6 +1,7 @@
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
+using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -11,6 +12,16 @@ namespace FhirAugury.Source.Jira.Controllers;
 [Route("api/v1")]
 public class SpecificationsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
+    [HttpGet("specifications")]
+    public IActionResult ListSpecifications()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexSpecificationRecord> records = JiraIndexSpecificationRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
+
     [HttpGet("specifications/{spec}")]
     public IActionResult GetSpecificationIssues([FromRoute] string spec, [FromQuery] int? limit, [FromQuery] int? offset)
     {
