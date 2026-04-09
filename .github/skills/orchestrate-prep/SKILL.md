@@ -11,20 +11,8 @@ structured output directory and the worklist is updated as tickets complete.
 
 ## Prerequisites
 
-- The `fhir-augury` CLI must be available. Determine the CLI path by building
-  or locating the binary:
-  ```powershell
-  dotnet build "src\FhirAugury.Cli\FhirAugury.Cli.csproj" -c Release --nologo -v q
-  ```
-  The binary will be at:
-  `src\FhirAugury.Cli\bin\Release\net10.0\FhirAugury.Cli.exe`
-
-- The FHIR Augury services must be running and accessible (the CLI connects to
-  the orchestrator, default `http://localhost:5150`). Verify with:
-  ```powershell
-  Invoke-WebRequest -Uri "http://localhost:5150" -TimeoutSec 3
-  ```
-  A 404 response is normal — it confirms the orchestrator is responding.
+- The `FhirAugury` MCP should be available (preferred). If not, the
+  `fhir-augury` CLI must be available as a fallback.
 
 - The `ticket-prep` skill must be available (it defines the per-ticket workflow
   and report format).
@@ -107,15 +95,7 @@ cleaned name:
 New-Item -ItemType Directory -Path "$OutputDir\$CleanedGroupName" -Force
 ```
 
-### Step 4: Build the CLI Binary
-
-Build the CLI once so sub-agents can use the binary directly (faster than
-`dotnet run`):
-```powershell
-dotnet build "src\FhirAugury.Cli\FhirAugury.Cli.csproj" -c Release --nologo -v q
-```
-
-### Step 5: Dispatch Sub-Agents
+### Step 4: Dispatch Sub-Agents
 
 Process tickets from the queue, maintaining up to N concurrent agents at all
 times. For each ticket, launch a **general-purpose background agent** with the
@@ -140,26 +120,68 @@ You are preparing a FHIR Jira ticket for workgroup review. Follow these steps.
 ## Work Group: {WORK_GROUP}
 ## Output File: {OUTPUT_DIR}\{CLEAN_GROUP}\{TICKET_KEY}.md
 
-## CLI Path
-The fhir-augury CLI is at: {CLI_PATH}
+## Data Access
+
+Use whichever data access method is available, in this priority order:
+
+1. **FhirAugury MCP** (preferred) — If tools prefixed with `FhirAugury-` are
+   available (e.g., `FhirAugury-get_item`), use them directly for all data
+   access. This is faster and avoids shell overhead.
+
+2. **fhir-augury CLI** (fallback) — If MCP tools are not available, use the
+   CLI at: {CLI_PATH}
+
+### MCP Tool → CLI Command Mapping
+
+| MCP Tool | CLI Command |
+|----------|-------------|
+| `FhirAugury-get_item` | `get` |
+| `FhirAugury-cross_referenced` | `cross-referenced` |
+| `FhirAugury-content_search` | `search` |
+| `FhirAugury-get_zulip_thread` | `get` (source=zulip) |
+| `FhirAugury-query_zulip_messages` | `query-zulip` |
 
 ## Step 1: Gather Ticket and Cross-References (run in parallel)
 
 1a. Get ticket details:
+
+Using MCP:
+```
+FhirAugury-get_item(source="jira", id="{TICKET_KEY}", includeComments=true, includeContent=true, includeSnapshot=true)
+```
+Using CLI (fallback):
 ```
 & "{CLI_PATH}" --json '{{"command":"get","source":"jira","id":"{TICKET_KEY}","includeComments":true}}'
 ```
 
 1b. Get all cross-references:
+
+Using MCP:
+```
+FhirAugury-cross_referenced(value="{TICKET_KEY}", limit=50)
+```
+Using CLI (fallback):
 ```
 & "{CLI_PATH}" --json '{{"command":"cross-referenced","value":"{TICKET_KEY}","limit":50}}'
 ```
 
 ## Step 2: Fetch Related Jira Tickets
-For each Jira ticket found in cross-references, fetch its details.
+For each Jira ticket found in cross-references, fetch its details using
+`FhirAugury-get_item` (MCP) or the `get` CLI command.
 
 ## Step 3: Fetch Zulip Conversations
-For each Zulip cross-reference, get the thread. Also search Zulip:
+For each Zulip cross-reference, get the thread.
+
+Using MCP:
+```
+FhirAugury-get_zulip_thread(stream="<stream>", topic="<topic>")
+```
+Also search Zulip for the ticket key:
+```
+FhirAugury-content_search(values="{TICKET_KEY}", sources="zulip", limit=10)
+```
+
+Using CLI (fallback):
 ```
 & "{CLI_PATH}" --json '{{"command":"search","query":"{TICKET_KEY}","sources":["zulip"],"limit":10}}'
 ```
@@ -242,7 +264,7 @@ elements}}
 ```
 
 ## Important Rules
-- Use ONLY data from the CLI. Do not fabricate details.
+- Use ONLY data from the MCP or CLI. Do not fabricate details.
 - Be specific in dispositions — name resources, elements, constraints.
 - Summarize Zulip threads honestly.
 - The recommendation must pick one.
@@ -276,8 +298,9 @@ After each batch of completions, report progress to the user:
 
 - If a sub-agent fails, log the ticket key and error, skip it, and continue
   with the next ticket in the queue. Do not retry automatically.
-- If the CLI binary is not found, attempt to build it before failing.
-- If the orchestrator is not responding, stop and inform the user.
+- If neither MCP tools nor the CLI binary are available, attempt to build the
+  CLI before failing.
+- If the FHIR Augury services are not responding, stop and inform the user.
 - If a ticket's line cannot be found in the worklist for marking, log a
   warning but continue processing.
 

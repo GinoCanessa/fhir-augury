@@ -10,16 +10,39 @@ Given a ticket key, the skill gathers the resolution details, determines which
 repositories are affected, and builds a markdown report containing a feature
 proposal, impact analysis, and step-by-step implementation plan.
 
-## Prerequisites
+## Data Access
 
-- The `fhir-augury` CLI must be available (installed as a dotnet tool or via
-  local alias).
-- The FHIR Augury services must be running and accessible (the CLI connects to
-  the orchestrator, default `http://localhost:5150`).
-- The GitHub source service cache must be populated (cloned repositories live
-  under `cache/github/repos/`).
+This skill supports two data access methods, in priority order:
 
-## CLI Reference
+1. **FhirAugury MCP** (preferred) — Use MCP tools directly when available.
+   These are tools prefixed with `FhirAugury-` (e.g., `FhirAugury-get_item`,
+   `FhirAugury-cross_referenced`). MCP tools are more efficient because they
+   avoid shell invocation overhead.
+
+2. **fhir-augury CLI** (fallback) — Use the CLI when MCP tools are not
+   available. The CLI requires shell access and running FHIR Augury services
+   (the CLI connects to the orchestrator, default `http://localhost:5150`).
+
+**Detection:** At the start of the workflow, check whether `FhirAugury-get_item`
+is available as a callable tool. If so, use MCP for all data access. Otherwise,
+fall back to the CLI.
+
+### MCP Tool Reference
+
+| MCP Tool | Purpose |
+|----------|---------|
+| `FhirAugury-get_item` | Fetch full details of an item from a source |
+| `FhirAugury-cross_referenced` | Get all cross-references (both directions) for a value |
+| `FhirAugury-refers_to` | Get outgoing cross-references from an item |
+| `FhirAugury-referred_by` | Get incoming cross-references to an item |
+| `FhirAugury-content_search` | Unified text search across all sources |
+| `FhirAugury-query_zulip_messages` | Structured Zulip message search |
+| `FhirAugury-get_zulip_thread` | Get a full Zulip topic thread |
+| `FhirAugury-get_jira_comments` | Get comments on a Jira issue |
+| `FhirAugury-get_keywords` | Get extracted keywords for an item |
+| `FhirAugury-related_by_keyword` | Find items related by keyword similarity |
+
+### CLI Reference (Fallback)
 
 The `fhir-augury` CLI accepts JSON commands. All examples below use inline
 JSON; for readability, use `--pretty` when inspecting output manually.
@@ -28,17 +51,20 @@ JSON; for readability, use `--pretty` when inspecting output manually.
 fhir-augury --json '<json>' --pretty
 ```
 
-### Key Commands
+| CLI Command | MCP Equivalent |
+|-------------|----------------|
+| `get` | `FhirAugury-get_item` |
+| `cross-referenced` | `FhirAugury-cross_referenced` |
+| `refers-to` | `FhirAugury-refers_to` |
+| `referred-by` | `FhirAugury-referred_by` |
+| `search` | `FhirAugury-content_search` |
+| `keywords` | `FhirAugury-get_keywords` |
+| `related-by-keyword` | `FhirAugury-related_by_keyword` |
 
-| Command | Purpose |
-|---------|---------|
-| `get` | Fetch full details of an item from a source |
-| `cross-referenced` | Get all cross-references (both directions) for a value |
-| `refers-to` | Get outgoing cross-references from an item |
-| `referred-by` | Get incoming cross-references to an item |
-| `search` | Unified text search across all sources |
-| `keywords` | Get extracted keywords for an item |
-| `related-by-keyword` | Find items related by keyword similarity |
+## Prerequisites
+
+- The GitHub source service cache must be populated (cloned repositories live
+  under `cache/github/repos/`).
 
 ## Known GitHub Repository Cache
 
@@ -86,7 +112,7 @@ checkout.
 ## Workflow
 
 When the user provides a Jira ticket key (e.g., `FHIR-55197`), execute the
-following steps. Run independent CLI calls in parallel where possible.
+following steps. Run independent calls in parallel where possible.
 
 ### Step 1: Gather Ticket Details and Resolution
 
@@ -94,6 +120,12 @@ Run these commands in parallel:
 
 **1a. Get the ticket with full content, comments, and snapshot:**
 
+Using MCP:
+```
+FhirAugury-get_item(source="jira", id="FHIR-55197", includeComments=true, includeContent=true, includeSnapshot=true)
+```
+
+Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-55197","includeComments":true,"includeContent":true,"includeSnapshot":true}'
 ```
@@ -109,6 +141,12 @@ Key fields to extract from the response:
 
 **1b. Get all cross-references:**
 
+Using MCP:
+```
+FhirAugury-cross_referenced(value="FHIR-55197", limit=50)
+```
+
+Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"cross-referenced","value":"FHIR-55197","limit":50}'
 ```
@@ -120,6 +158,12 @@ From the cross-references response, categorize:
 
 **1c. Get keywords for the ticket:**
 
+Using MCP:
+```
+FhirAugury-get_keywords(source="jira", id="FHIR-55197", limit=30)
+```
+
+Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"keywords","source":"jira","id":"FHIR-55197","limit":30}'
 ```
@@ -192,8 +236,13 @@ For each affected repository, assess the scope of change:
 For each affected FHIR resource or artifact, read the current source file to
 understand the existing state:
 
+Using MCP:
+```
+FhirAugury-get_item(source="github", id="HL7/fhir:source/patient/structuredefinition-Patient.xml", includeContent=true)
+```
+
+Using CLI (fallback):
 ```bash
-# Get file content from the GitHub source service
 fhir-augury --json '{"command":"get","source":"github","id":"HL7/fhir:source/patient/structuredefinition-Patient.xml","includeContent":true}'
 ```
 
@@ -212,6 +261,12 @@ or closed.
 
 Search for other tickets affecting the same resources:
 
+Using MCP:
+```
+FhirAugury-content_search(values="<resource-name>", sources="jira", limit=10)
+```
+
+Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"search","query":"<resource-name>","sources":["jira"],"limit":10}'
 ```
@@ -221,6 +276,12 @@ fhir-augury --json '{"command":"search","query":"<resource-name>","sources":["ji
 If the change involves coded elements, check for ValueSet or CodeSystem
 changes needed in the UTG repository:
 
+Using MCP:
+```
+FhirAugury-content_search(values="<valueset-name>", sources="github", limit=10)
+```
+
+Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"search","query":"<valueset-name>","sources":["github"],"limit":10}'
 ```
@@ -386,8 +447,8 @@ during implementation. If none: "No open questions."}
 
 ## Important Rules
 
-- **Use only data from the CLI and cached repositories.** Do not fabricate
-  ticket details, file paths, or resolution content. If a CLI call fails or
+- **Use only data from the MCP or CLI and cached repositories.** Do not fabricate
+  ticket details, file paths, or resolution content. If a call fails or
   returns no data, say so in the report.
 - **Be specific in the proposal.** Generic statements like "modify the
   resource" are not useful. Name the exact element, path, type, cardinality,

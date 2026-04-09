@@ -13,7 +13,8 @@ output directory, and tracking progress in the worklist file.
 
 - The `ticket-plan` skill SKILL.md must exist at
   `.github/skills/ticket-plan/SKILL.md` (it defines the per-ticket workflow).
-- The `fhir-augury` CLI must be available.
+- The `FhirAugury` MCP should be available (preferred). If not, the
+  `fhir-augury` CLI must be available as a fallback.
 - The FHIR Augury services must be running and accessible.
 - The GitHub source service cache must be populated
   (`cache/github/repos/`).
@@ -178,13 +179,18 @@ You are planning the implementation of FHIR Jira ticket {TICKET-KEY}
 Your job is to produce a structured implementation plan report and save it to:
 {output_directory}/{WgFolder}/{TICKET-KEY}.md
 
-[... full ticket-plan skill workflow from .github/skills/ticket-plan/SKILL.md ...]
+[... full ticket-plan skill workflow from .github/skills/ticket-plan/SKILL.md,
+     including the Data Access section with MCP-first detection, MCP Tool
+     Reference, CLI Reference (Fallback), all workflow steps, report format,
+     and important rules ...]
 ```
 
 **IMPORTANT:** Read the full content of `.github/skills/ticket-plan/SKILL.md`
-and include its complete workflow instructions (Steps 1–4, report format, and
-important rules) in each agent prompt. Do not summarize or abbreviate — the
-agent needs the full context since it cannot access skills.
+and include its complete workflow instructions (Data Access section, Steps 1–4,
+report format, and important rules) in each agent prompt. The Data Access
+section is critical — it teaches the sub-agent to detect and prefer MCP tools
+over the CLI. Do not summarize or abbreviate — the agent needs the full context
+since it cannot access skills.
 
 Launch agents using:
 ```
@@ -250,8 +256,8 @@ Reports saved to: {output_directory}
 
 - **Agent failure:** Log the error, skip the ticket, continue with remaining.
   The ticket stays unchecked in the worklist for retry in a future run.
-- **CLI unavailable:** If the first agent fails due to CLI connectivity, stop
-  all processing and alert the user to check services.
+- **CLI unavailable:** If the first agent fails due to MCP or CLI connectivity,
+  stop all processing and alert the user to check services.
 - **Worklist parse error:** If the worklist doesn't match the expected format,
   alert the user and stop.
 - **Output directory issues:** Create directories as needed. If creation fails,
