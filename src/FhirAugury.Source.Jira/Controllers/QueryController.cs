@@ -51,7 +51,7 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             });
         }
 
-        return Ok(results);
+        return Ok(new { results });
     }
 
     [HttpGet("labels")]

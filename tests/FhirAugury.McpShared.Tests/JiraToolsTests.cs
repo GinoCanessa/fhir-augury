@@ -76,12 +76,12 @@ public class JiraToolsTests
     [Fact]
     public async Task QueryJiraIssues_WithLabels_IncludesLabelsInBody()
     {
-        string json = """[{"key":"PROJ-1","summary":"Test","status":"Open"}]""";
+        string json = """{"results":[{"key":"PROJ-1","title":"Test","status":"Open"}]}""";
         IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
 
-        await JiraTools.QueryJiraIssues(factory, labels: "bug,urgent");
+        string result = await JiraTools.QueryJiraIssues(factory, labels: "bug,urgent");
 
-        // Verify the method accepted labels without error — the mock returns a valid response
+        Assert.Contains("PROJ-1", result);
     }
 
     [Fact]

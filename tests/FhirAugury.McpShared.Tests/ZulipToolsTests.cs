@@ -67,6 +67,33 @@ public class ZulipToolsTests
     }
 
     [Fact]
+    public async Task QueryZulipMessages_ReturnsFormattedResults()
+    {
+        string json = """
+            {
+                "total": 1,
+                "results": [
+                    {
+                        "id": 12345,
+                        "streamName": "implementers",
+                        "topic": "Search params",
+                        "senderName": "TestUser",
+                        "snippet": "How does search work?",
+                        "timestamp": "2024-06-15T10:30:00Z"
+                    }
+                ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("zulip", json);
+
+        string result = await ZulipTools.QueryZulipMessages(factory);
+
+        Assert.Contains("Zulip Query Results", result);
+        Assert.Contains("implementers", result);
+        Assert.Contains("Search params", result);
+    }
+
+    [Fact]
     public async Task ListZulipTopics_ReturnsFormattedTopics()
     {
         string json = """
