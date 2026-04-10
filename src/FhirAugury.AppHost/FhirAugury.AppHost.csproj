@@ -1,4 +1,5 @@
 <Project Sdk="Aspire.AppHost.Sdk/13.2.1">
+	<Import Project="..\common.props" />
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
 
-  <PropertyGroup>
+	<PropertyGroup>
     <OutputType>Exe</OutputType>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>fhir-augury-mcp</ToolCommandName>
