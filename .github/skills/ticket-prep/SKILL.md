@@ -161,23 +161,27 @@ data to write substantive, specific content — not generic placeholders.
 
 ## Report Format
 
-The report MUST follow this structure. Every section is required, though
+The report MUST follow this structure EXACTLY. Every section is required, though
 sections may note "None found" if no data exists.
 
 ```markdown
 # Ticket Review: {TICKET-KEY}
 
-**Title:** {ticket title}
-**Status:** {status}
-**Priority:** {priority}
-**Type:** {type}
-**Work Group:** {work group}
-**Specification:** {specification}
-**Reporter:** {reporter}
-**Assignee:** {assignee}
-**Created:** {date}
-**Updated:** {date}
-**Labels:** {comma-separated labels}
+* **Title:** {ticket title}
+* **Status:** {status}
+* **Priority:** {priority}
+* **Type:** {type}
+* **Work Group:** {work group}
+* **Specification:** {specification}
+* **Related Artifacts:** {comma-separated list of related artifact names}
+* **Related Pages:** {comma-separated list of related page names}
+* **Related URLs:** {comma-separated list of related URLs}
+* **Related Sections:** {comma-separated list of related section values}
+* **Reporter:** {reporter}
+* **Assignee:** {assignee}
+* **Created:** {date}
+* **Updated:** {date}
+* **Labels:** {comma-separated labels}
 
 ---
 
@@ -202,6 +206,15 @@ cross-referenced ticket by key and explain how it relates.}
 essential concepts, resources, and FHIR elements involved in this ticket.
 Include FHIR resource names, element paths, operation names, terminology,
 and domain terms as appropriate.}
+
+## Related Jira Tickets
+
+{For each cross-referenced Jira ticket, include:}
+
+### {TICKET-KEY}: {ticket title}
+**Link:** {URL to the ticket}
+
+{A 2-4 sentence summary of the ticket's content and how it relates to the main ticket.}
 
 ## Related Zulip Discussions
 
