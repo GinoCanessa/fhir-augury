@@ -1,6 +1,7 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
@@ -172,6 +173,31 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     jiraOpts.DictionaryDatabase,
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
     CancellationToken.None);
+
+// ── Cache migration (flat → project-scoped layout) ──────────────
+{
+    IResponseCache migrationCache = app.Services.GetRequiredService<IResponseCache>();
+    ILogger migrationLogger = app.Services
+        .GetRequiredService<ILoggerFactory>().CreateLogger("JiraCacheMigration");
+
+    JiraCacheMigrator.MigrateToProjectLayout(
+        migrationCache, jiraOpts.DefaultProject, migrationLogger);
+}
+
+// ── Log configured projects ─────────────────────────────────────
+{
+    ILogger startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    List<JiraProjectConfig> effectiveProjects = jiraOpts.GetEffectiveProjects();
+    if (effectiveProjects.Count == 0)
+    {
+        startupLog.LogWarning("No enabled Jira projects configured — ingestion will be skipped");
+    }
+    else
+    {
+        startupLog.LogInformation("Configured Jira projects: {Projects}",
+            string.Join(", ", effectiveProjects.Select(p => p.Key)));
+    }
+}
 
 // ── Reload from cache on startup (if configured) ─────────────────
 if (jiraOpts.ReloadFromCacheOnStartup ||

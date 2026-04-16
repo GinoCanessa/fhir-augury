@@ -60,3 +60,10 @@ public record SpecArtifactEntry(
 
 /// <summary>Issue numbers response.</summary>
 public record IssueNumbersResponse(List<int> IssueNumbers);
+
+/// <summary>Sync status for a single Jira project.</summary>
+public record JiraProjectStatus(
+    string Project,
+    DateTimeOffset? LastSyncAt,
+    int ItemsIngested,
+    string Status);

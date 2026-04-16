@@ -10,7 +10,14 @@ public record IngestionStatusResponse(
     string? LastError,
     string? SyncSchedule,
     List<IndexStatusInfo> Indexes,
-    List<string>? SupportedIndexTypes = null);
+    List<string>? SupportedIndexTypes = null)
+{
+    /// <summary>
+    /// Source-specific additional data. Used by individual sources to provide
+    /// extended status information (e.g., per-project sync state for Jira).
+    /// </summary>
+    public Dictionary<string, object>? AdditionalData { get; init; }
+};
 
 /// <summary>Status of a single index within a source service.</summary>
 public record IndexStatusInfo(

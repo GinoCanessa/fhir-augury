@@ -40,6 +40,28 @@ public class JiraServiceOptions
 
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }
+
+    /// <summary>
+    /// List of Jira projects to download. Each project gets its own cache
+    /// subdirectory and sync state. When empty, falls back to
+    /// <see cref="DefaultProject"/>.
+    /// </summary>
+    public List<JiraProjectConfig> Projects { get; set; } = [];
+
+    /// <summary>
+    /// Returns the effective list of enabled projects. If <see cref="Projects"/>
+    /// is populated, returns only enabled entries. Otherwise creates a
+    /// single-element list from <see cref="DefaultProject"/>.
+    /// </summary>
+    public List<JiraProjectConfig> GetEffectiveProjects()
+    {
+        if (Projects.Count > 0)
+        {
+            return Projects.Where(p => p.Enabled).ToList();
+        }
+
+        return [new JiraProjectConfig { Key = DefaultProject }];
+    }
     public int PageSize { get; set; } = 100;
     public PortConfiguration Ports { get; set; } = new() { Http = 5160 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();

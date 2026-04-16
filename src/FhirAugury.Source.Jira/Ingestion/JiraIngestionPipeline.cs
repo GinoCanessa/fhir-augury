@@ -33,7 +33,7 @@ public class JiraIngestionPipeline(
     public string CurrentStatus => _currentStatus;
 
     /// <summary>Runs a full ingestion from the Jira API.</summary>
-    public async Task<IngestionResult> RunFullIngestionAsync(string? jqlOverride = null, CancellationToken ct = default)
+    public async Task<IngestionResult> RunFullIngestionAsync(string? jqlOverride = null, string? project = null, CancellationToken ct = default)
     {
         if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
@@ -44,14 +44,41 @@ public class JiraIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
+            // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
-            IngestionResult downloadResult = await source.DownloadAllAsync(jqlOverride, ct);
-            IngestionResult result = MergeResults(cacheResult, downloadResult);
-            PostIngestion(result, "full", ct);
-            await NotifyOrchestratorAsync(result, "full");
+
+            List<JiraProjectConfig> projects = project is not null
+                ? [new JiraProjectConfig { Key = project }]
+                : _options.GetEffectiveProjects();
+
+            IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
+
+            foreach (JiraProjectConfig proj in projects)
+            {
+                try
+                {
+                    logger.LogInformation("Starting full ingestion for project {Project}", proj.Key);
+
+                    string jql = jqlOverride ?? proj.Jql ?? $"project = \"{proj.Key}\"";
+                    IngestionResult downloadResult = await source.DownloadAllAsync(proj.Key, jql, ct);
+                    combined = MergeResults(combined, downloadResult);
+
+                    UpdateSyncState(downloadResult, proj.Key, "full");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError(ex, "Ingestion failed for project {Project}", proj.Key);
+                    combined = MergeResults(combined, new IngestionResult(
+                        0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
+                        DateTimeOffset.UtcNow));
+                }
+            }
+
+            PostIngestion(combined, "full", ct);
+            await NotifyOrchestratorAsync(combined, "full");
 
             _currentStatus = "idle";
-            return result;
+            return combined;
         }
         catch (Exception ex)
         {
@@ -66,7 +93,7 @@ public class JiraIngestionPipeline(
     }
 
     /// <summary>Runs an incremental ingestion from the Jira API.</summary>
-    public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
+    public async Task<IngestionResult> RunIncrementalIngestionAsync(string? project = null, CancellationToken ct = default)
     {
         if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
@@ -75,17 +102,44 @@ public class JiraIngestionPipeline(
 
         try
         {
-            DateTimeOffset since = GetLastSyncTime();
-            logger.LogInformation("Starting incremental ingestion since {Since}", since);
-
+            // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
-            IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
-            IngestionResult result = MergeResults(cacheResult, downloadResult);
-            PostIngestion(result, "incremental", ct);
-            await NotifyOrchestratorAsync(result, "incremental");
+
+            List<JiraProjectConfig> projects = project is not null
+                ? [new JiraProjectConfig { Key = project }]
+                : _options.GetEffectiveProjects();
+
+            IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
+
+            foreach (JiraProjectConfig proj in projects)
+            {
+                try
+                {
+                    DateTimeOffset since = GetLastSyncTime(proj.Key);
+                    logger.LogInformation(
+                        "Starting incremental ingestion for {Project} since {Since}",
+                        proj.Key, since);
+
+                    IngestionResult downloadResult = await source.DownloadIncrementalAsync(
+                        proj.Key, proj.Jql, since, ct);
+                    combined = MergeResults(combined, downloadResult);
+
+                    UpdateSyncState(downloadResult, proj.Key, "incremental");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError(ex, "Ingestion failed for project {Project}", proj.Key);
+                    combined = MergeResults(combined, new IngestionResult(
+                        0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
+                        DateTimeOffset.UtcNow));
+                }
+            }
+
+            PostIngestion(combined, "incremental", ct);
+            await NotifyOrchestratorAsync(combined, "incremental");
 
             _currentStatus = "idle";
-            return result;
+            return combined;
         }
         catch (Exception ex)
         {
@@ -102,7 +156,7 @@ public class JiraIngestionPipeline(
     // Explicit interface implementation for IIngestionPipeline
     async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
     {
-        await RunIncrementalIngestionAsync(ct);
+        await RunIncrementalIngestionAsync(project: null, ct);
     }
 
     /// <summary>Rebuilds the database entirely from cached responses.</summary>
@@ -118,7 +172,11 @@ public class JiraIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase(ct);
 
-            IngestionResult result = await source.LoadFromCacheAsync(ct);
+            // Load cache for all projects (null = load everything)
+            IngestionResult result = await source.LoadFromCacheAsync(project: null, ct: ct);
+
+            UpdateSyncState(result, _options.DefaultProject, "rebuild");
+
             PostIngestion(result, "rebuild", ct);
             await NotifyOrchestratorAsync(result, "rebuild");
 
@@ -150,7 +208,8 @@ public class JiraIngestionPipeline(
             return null;
 
         logger.LogInformation("Database is empty; loading local cache before downloading");
-        IngestionResult cacheResult = await source.LoadFromCacheAsync(ct);
+        // Load ALL cache data (project: null) to populate the DB fully
+        IngestionResult cacheResult = await source.LoadFromCacheAsync(project: null, ct: ct);
 
         if (cacheResult.ItemsProcessed > 0)
             logger.LogInformation("Pre-loaded {Count} items from cache ({New} new)",
@@ -161,10 +220,14 @@ public class JiraIngestionPipeline(
         return cacheResult;
     }
 
-    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult second)
+    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult? second)
     {
+        if (first is null && second is null)
+            return new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
         if (first is null)
-            return second;
+            return second!;
+        if (second is null)
+            return first;
 
         return new IngestionResult(
             first.ItemsProcessed + second.ItemsProcessed,
@@ -223,8 +286,7 @@ public class JiraIngestionPipeline(
             throw;
         }
 
-        // Update sync state
-        UpdateSyncState(result, runType, ct);
+        // Sync state is now updated per-project in the calling method
 
         logger.LogInformation(
             "Post-ingestion complete: {Processed} items, {New} new, {Updated} updated",
@@ -252,19 +314,20 @@ public class JiraIngestionPipeline(
         }
     }
 
-    private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
+    private void UpdateSyncState(IngestionResult result, string project, string runType, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
 
         using SqliteConnection connection = database.OpenConnection();
 
-        JiraSyncStateRecord? existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: runType);
+        string subSource = JiraSyncStateHelper.SyncKey(project, runType);
+        JiraSyncStateRecord? existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: subSource);
 
         JiraSyncStateRecord syncState = new JiraSyncStateRecord
         {
             Id = existing?.Id ?? JiraSyncStateRecord.GetIndex(),
             SourceName = JiraSource.SourceName,
-            SubSource = runType,
+            SubSource = subSource,
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
@@ -280,35 +343,58 @@ public class JiraIngestionPipeline(
             JiraSyncStateRecord.Insert(connection, syncState);
     }
 
-    private DateTimeOffset GetLastSyncTime()
+    private DateTimeOffset GetLastSyncTime(string project)
     {
         using SqliteConnection connection = database.OpenConnection();
-        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
+
+        // Try project-scoped key first
+        string subSource = JiraSyncStateHelper.SyncKey(project, "incremental");
+        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: subSource);
+
+        // Also check for "full" sync state if no incremental state exists
+        if (state is null)
+        {
+            string fullSubSource = JiraSyncStateHelper.SyncKey(project, "full");
+            state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: fullSubSource);
+        }
+
+        // Backward compat: check for old un-prefixed rows (only for the default project)
+        if (state is null && project == _options.DefaultProject)
+        {
+            state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: "incremental");
+            state ??= JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: "full");
+        }
 
         if (state is not null)
             return state.LastSyncAt;
 
         // No DB record — check cache for the latest cached date and resume from the day after
-        HashSet<DateOnly> cachedDates = source.GetCachedDates();
+        HashSet<DateOnly> cachedDates = source.GetCachedDates(project);
         if (cachedDates.Count > 0)
         {
             DateOnly latestCached = cachedDates.Max();
             DateOnly resumeDate = latestCached.AddDays(1);
             logger.LogInformation(
-                "No sync state in database; latest cache file is {LatestCached}, resuming from {ResumeDate}",
-                latestCached, resumeDate);
+                "No sync state for {Project}; latest cache file is {LatestCached}, resuming from {ResumeDate}",
+                project, latestCached, resumeDate);
             return new DateTimeOffset(resumeDate.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
         }
 
         // No cache either — default to last 30 days
-        logger.LogInformation("No sync state or cache files found; defaulting to last 30 days");
+        logger.LogInformation("No sync state or cache files for {Project}; defaulting to last 30 days", project);
         return DateTimeOffset.UtcNow.AddDays(-30);
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()
     {
         using SqliteConnection connection = database.OpenConnection();
-        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName);
-        return state?.LastSyncAt;
+        List<JiraSyncStateRecord> allStates = JiraSyncStateRecord.SelectList(connection)
+            .Where(s => s.SourceName == JiraSource.SourceName)
+            .ToList();
+
+        if (allStates.Count == 0)
+            return null;
+
+        return allStates.Max(s => s.LastSyncAt);
     }
 }

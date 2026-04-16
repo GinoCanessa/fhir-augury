@@ -1,11 +1,13 @@
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
+using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
@@ -18,22 +20,38 @@ public class IngestionController(
     JiraIndexBuilder indexBuilder,
     JiraXRefRebuilder xrefRebuilder,
     JiraIndexer indexer,
+    IOptions<JiraServiceOptions> optionsAccessor,
     IIndexTracker indexTracker) : ControllerBase
 {
+    private readonly JiraServiceOptions _options = optionsAccessor.Value;
+
     [HttpPost("ingest")]
-    public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, CancellationToken ct)
+    public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, [FromQuery] string? project, CancellationToken ct)
     {
+        if (project is not null)
+        {
+            List<JiraProjectConfig> configured = _options.GetEffectiveProjects();
+            JiraProjectConfig? match = configured
+                .FirstOrDefault(p => p.Key.Equals(project, StringComparison.OrdinalIgnoreCase));
+
+            if (match is null)
+                return BadRequest(new { error = $"Unknown project '{project}'" });
+
+            project = match.Key;
+        }
+
         string ingestionType = type ?? "incremental";
         try
         {
             IngestionResult result = ingestionType == "full"
-                ? await pipeline.RunFullIngestionAsync(ct: ct)
-                : await pipeline.RunIncrementalIngestionAsync(ct);
+                ? await pipeline.RunFullIngestionAsync(project: project, ct: ct)
+                : await pipeline.RunIncrementalIngestionAsync(project: project, ct: ct);
 
             return Ok(new
             {
                 result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated, result.ItemsFailed,
                 errors = result.Errors,
+                project = project ?? "all",
             });
         }
         catch (InvalidOperationException ex)
@@ -43,17 +61,29 @@ public class IngestionController(
     }
 
     [HttpPost("ingest/trigger")]
-    public IActionResult QueueIngestion([FromQuery] string? type)
+    public IActionResult QueueIngestion([FromQuery] string? type, [FromQuery] string? project)
     {
+        if (project is not null)
+        {
+            List<JiraProjectConfig> configured = _options.GetEffectiveProjects();
+            JiraProjectConfig? match = configured
+                .FirstOrDefault(p => p.Key.Equals(project, StringComparison.OrdinalIgnoreCase));
+
+            if (match is null)
+                return BadRequest(new { error = $"Unknown project '{project}'" });
+
+            project = match.Key;
+        }
+
         string ingestionType = (type ?? "incremental").ToLowerInvariant();
 
         workQueue.Enqueue(ct => ingestionType switch
         {
-            "full" => pipeline.RunFullIngestionAsync(ct: ct),
-            _ => pipeline.RunIncrementalIngestionAsync(ct),
-        }, $"jira-{ingestionType}");
+            "full" => pipeline.RunFullIngestionAsync(project: project, ct: ct),
+            _ => pipeline.RunIncrementalIngestionAsync(project: project, ct: ct),
+        }, $"jira-{ingestionType}{(project is not null ? $"-{project}" : "")}");
 
-        return Accepted(new { status = "queued", type = ingestionType });
+        return Accepted(new { status = "queued", type = ingestionType, project = project ?? "all" });
     }
 
     [HttpPost("rebuild")]

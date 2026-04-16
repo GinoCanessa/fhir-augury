@@ -32,43 +32,43 @@ public class JiraSource(
     public const string SourceName = SourceSystems.Jira;
 
     /// <summary>Performs a full download of all issues matching the configured JQL.</summary>
-    public async Task<IngestionResult> DownloadAllAsync(string? jqlOverride, CancellationToken ct)
+    public async Task<IngestionResult> DownloadAllAsync(string project, string? jqlOverride, CancellationToken ct)
     {
-        string jql = jqlOverride ?? options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
+        string jql = jqlOverride ?? $"project = \"{project}\"";
 
         if (IsApiTokenAuth())
         {
-            return await DownloadJsonAsync(jql, ct);
+            return await DownloadJsonAsync(project, jql, ct);
         }
 
-        return await DownloadXmlAsync(jql, JiraCacheLayout.DefaultFullSyncStartDate, ct);
+        return await DownloadXmlAsync(project, jql, JiraCacheLayout.DefaultFullSyncStartDate, ct);
     }
 
     /// <summary>Performs an incremental download of issues updated since the given timestamp.</summary>
-    public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct)
+    public async Task<IngestionResult> DownloadIncrementalAsync(string project, string? jqlOverride, DateTimeOffset since, CancellationToken ct)
     {
-        string baseJql = options.DefaultJql ?? $"project = \"{options.DefaultProject}\"";
+        string baseJql = jqlOverride ?? $"project = \"{project}\"";
 
         if (IsApiTokenAuth())
         {
             string sinceStr = since.ToString("yyyy-MM-dd HH:mm");
             string jql = $"{baseJql} AND updated >= '{sinceStr}' ORDER BY updated ASC";
-            return await DownloadJsonAsync(jql, ct);
+            return await DownloadJsonAsync(project, jql, ct);
         }
 
         DateOnly startDate = DateOnly.FromDateTime(since.UtcDateTime);
-        return await DownloadXmlAsync(baseJql, startDate, ct);
+        return await DownloadXmlAsync(project, baseJql, startDate, ct);
     }
 
     /// <summary>Downloads via the REST API (JSON), used for apitoken/basic auth modes.</summary>
-    private async Task<IngestionResult> DownloadJsonAsync(string jql, CancellationToken ct)
+    private async Task<IngestionResult> DownloadJsonAsync(string project, string jql, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         List<string> errors = [];
 
-        List<string> existingKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName)
-            .Where(k => k.StartsWith(JiraCacheLayout.JsonPrefix + "/")).ToList();
+        string jsonSubPath = JiraCacheLayout.ProjectJsonSubPath(project);
+        List<string> existingKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName, jsonSubPath).ToList();
         DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         int startAt = 0;
@@ -102,7 +102,7 @@ public class JiraSource(
             existingKeys.Add(cacheKey);
             using (MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
             {
-                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.JsonKey(cacheKey), cacheStream, ct);
+                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.ProjectJsonKey(project, cacheKey), cacheStream, ct);
             }
 
             using JsonDocument doc = JsonDocument.Parse(json);
@@ -143,15 +143,15 @@ public class JiraSource(
     }
 
     /// <summary>Downloads via the XML export endpoint, used for cookie auth mode.</summary>
-    private async Task<IngestionResult> DownloadXmlAsync(string baseJql, DateOnly startDate, CancellationToken ct)
+    private async Task<IngestionResult> DownloadXmlAsync(string project, string baseJql, DateOnly startDate, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         List<string> errors = [];
 
-        HashSet<DateOnly> cachedDates = GetCachedDates();
-        List<string> existingXmlKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName)
-            .Where(k => k.StartsWith(JiraCacheLayout.XmlPrefix + "/")).ToList();
+        HashSet<DateOnly> cachedDates = GetCachedDates(project);
+        string xmlSubPath = JiraCacheLayout.ProjectXmlSubPath(project);
+        List<string> existingXmlKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName, xmlSubPath).ToList();
         DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         using SqliteConnection connection = database.OpenConnection();
@@ -198,7 +198,7 @@ public class JiraSource(
             existingXmlKeys.Add(cacheKey);
             using (MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(xml)))
             {
-                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.XmlKey(cacheKey), cacheStream, ct);
+                await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.ProjectXmlKey(project, cacheKey), cacheStream, ct);
             }
 
             // Parse and upsert
@@ -317,7 +317,7 @@ public class JiraSource(
     }
 
     /// <summary>Loads all issues from cached API responses (no network). Merges XML and JSON caches in date order.</summary>
-    public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
+    public Task<IngestionResult> LoadFromCacheAsync(string? project = null, CancellationToken ct = default)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
@@ -325,7 +325,7 @@ public class JiraSource(
 
         using SqliteConnection connection = database.OpenConnection();
 
-        foreach ((string source, string key) in MergeAndSortCacheEntries())
+        foreach ((string source, string key) in MergeAndSortCacheEntries(project))
         {
             if (ct.IsCancellationRequested)
             {
@@ -546,12 +546,13 @@ public class JiraSource(
         options.AuthMode.Equals("apitoken", StringComparison.OrdinalIgnoreCase) ||
         options.AuthMode.Equals("basic", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Collects all dates that have cached files in either the XML or JSON cache folders.</summary>
-    internal HashSet<DateOnly> GetCachedDates()
+    /// <summary>Collects all dates that have cached files for a specific project.</summary>
+    internal HashSet<DateOnly> GetCachedDates(string project)
     {
         HashSet<DateOnly> dates = [];
+        string subPath = JiraCacheLayout.ProjectSubPath(project);
 
-        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
+        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName, subPath))
         {
             if (CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed))
                 dates.Add(parsed.Date);
@@ -564,19 +565,41 @@ public class JiraSource(
     /// Merges cache entries from both XML and JSON sources, sorted by date for correct ingestion order.
     /// Files without a parseable date are appended at the end.
     /// </summary>
-    private List<(string Source, string Key)> MergeAndSortCacheEntries()
+    private List<(string Source, string Key)> MergeAndSortCacheEntries(string? project = null)
     {
         List<(string Source, string Key, CacheFileNaming.ParsedBatchFile? Parsed)> entries = [];
 
-        foreach (string key in cache.EnumerateKeys(JiraCacheLayout.SourceName))
+        IEnumerable<string> allKeys = project is not null
+            ? cache.EnumerateKeys(JiraCacheLayout.SourceName, JiraCacheLayout.ProjectSubPath(project))
+            : cache.EnumerateKeys(JiraCacheLayout.SourceName);
+
+        foreach (string key in allKeys)
         {
+            // Classify by segments to handle both legacy and project-scoped keys:
+            //   Legacy:  "xml/DayOf_2026-02-24-000.xml"  (2 segments)
+            //   New:     "FHIR/xml/DayOf_2026-02-24-000.xml" (3 segments)
+            string[] segments = key.Split('/');
             string sourceType;
-            if (key.StartsWith(JiraCacheLayout.XmlPrefix + "/"))
-                sourceType = JiraCacheLayout.XmlPrefix;
-            else if (key.StartsWith(JiraCacheLayout.JsonPrefix + "/"))
-                sourceType = JiraCacheLayout.JsonPrefix;
+
+            if (segments.Length == 3)
+            {
+                // Project-scoped: "{project}/{xml|json}/{filename}"
+                sourceType = segments[1];
+            }
+            else if (segments.Length == 2)
+            {
+                // Legacy flat: "{xml|json}/{filename}"
+                sourceType = segments[0];
+            }
             else
-                continue;
+            {
+                continue; // skip metadata files, unexpected formats
+            }
+
+            if (sourceType is not (JiraCacheLayout.XmlPrefix or JiraCacheLayout.JsonPrefix))
+            {
+                continue; // skip non-data directories (e.g., jira-spec-artifacts)
+            }
 
             CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedBatchFile? parsed);
             entries.Add((sourceType, key, parsed));
