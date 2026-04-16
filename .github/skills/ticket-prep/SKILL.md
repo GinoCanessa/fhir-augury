@@ -167,21 +167,22 @@ sections may note "None found" if no data exists.
 ```markdown
 # Ticket Review: {TICKET-KEY}
 
-* **Title:** {ticket title}
-* **Status:** {status}
-* **Priority:** {priority}
-* **Type:** {type}
-* **Work Group:** {work group}
-* **Specification:** {specification}
-* **Related Artifacts:** {comma-separated list of related artifact names}
-* **Related Pages:** {comma-separated list of related page names}
-* **Related URLs:** {comma-separated list of related URLs}
-* **Related Sections:** {comma-separated list of related section values}
-* **Reporter:** {reporter}
-* **Assignee:** {assignee}
-* **Created:** {date}
-* **Updated:** {date}
-* **Labels:** {comma-separated labels}
+| | |
+|-|-|
+| Ticket | ({TICKET-KEY}([{link to jira ticket}]) : {type} |
+| Work Group | {work group} |
+| Status | {priority} {status} |
+| Labels | {comma-separated labels} |
+| Specification | {specification} |
+| Related Artifacts | {comma-separated list of related artifact names} |
+| Related Pages | {comma-separated list of related page names} |
+| Related URLs | {comma-separated list of related URLs} |
+| Related Sections | {comma-separated list of related section values} |
+| Reporter | {reporter} |
+| Assignee | {assignee} |
+| In-Person | {comma-separated list of in-person requesters} |
+| Created | {created date} |
+| Updated | {updated date} |
 
 ---
 
@@ -207,26 +208,37 @@ essential concepts, resources, and FHIR elements involved in this ticket.
 Include FHIR resource names, element paths, operation names, terminology,
 and domain terms as appropriate.}
 
+## Linked Jira Tickets
+
+{For each explicitly-linked Jira ticket, include:}
+
+### ({TICKET-KEY}: {ticket title})[{URL to the ticket}]
+
+{A 2-4 sentence summary of the ticket's content and how it relates to the main ticket.}
+
+{A comma-separated list of users involved in the ticket - reporter, assignee, watchers, commenters, etc..}
+
 ## Related Jira Tickets
 
 {For each cross-referenced Jira ticket, include:}
 
-### {TICKET-KEY}: {ticket title}
-**Link:** {URL to the ticket}
+### ({TICKET-KEY}: {ticket title})[{URL to the ticket}]
 
 {A 2-4 sentence summary of the ticket's content and how it relates to the main ticket.}
+
+{A comma-separated list of users involved in the ticket - reporter, assignee, watchers, commenters, etc..}
 
 ## Related Zulip Discussions
 
 {For each related Zulip thread, provide:}
 
-### {Stream} > {Topic}
-
-**Link:** {URL to the Zulip thread}
+### ({Stream} > {Topic})[{URL to the Zulip thread}]
 
 {A 2-4 sentence summary of the conversation: what was discussed, what
 positions were taken, whether consensus was reached, and any relevant
 conclusions or open questions.}
+
+{A comma-separated list of the participants in the discussion, if available.}
 
 {If no Zulip discussions found: "No related Zulip discussions were found."}
 
@@ -313,7 +325,7 @@ workgroup wants a clear recommendation to start the discussion.}
 - **The recommendation must pick one.** Don't hedge with "it depends" — the
   workgroup can override the recommendation, but they need a starting point.
 - **Include ticket keys as links.** When referencing Jira tickets, format them
-  as identifiers the reader can look up.
+  as links the reader can use to get to Jira directly.
 - **Keep the summary self-contained.** A reviewer should be able to understand
   the request from the Summary section alone, without reading the original
   ticket.
