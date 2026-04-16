@@ -74,7 +74,10 @@ public class JiraIngestionPipeline(
                 }
             }
 
-            PostIngestion(combined, "full", ct);
+            if (ShouldRunPostIngestion(combined, projects.Count))
+                PostIngestion(combined, "full", ct);
+            else
+                logger.LogWarning("Skipping post-ingestion: all {Count} project runs failed.", projects.Count);
             await NotifyOrchestratorAsync(combined, "full");
 
             _currentStatus = "idle";
@@ -135,7 +138,10 @@ public class JiraIngestionPipeline(
                 }
             }
 
-            PostIngestion(combined, "incremental", ct);
+            if (ShouldRunPostIngestion(combined, projects.Count))
+                PostIngestion(combined, "incremental", ct);
+            else
+                logger.LogWarning("Skipping post-ingestion: all {Count} project runs failed.", projects.Count);
             await NotifyOrchestratorAsync(combined, "incremental");
 
             _currentStatus = "idle";
@@ -172,16 +178,34 @@ public class JiraIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase(ct);
 
-            // Load cache for all projects (null = load everything)
-            IngestionResult result = await source.LoadFromCacheAsync(project: null, ct: ct);
+            List<JiraProjectConfig> projects = _options.GetEffectiveProjects();
+            IngestionResult combined = new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
-            UpdateSyncState(result, _options.DefaultProject, "rebuild");
+            foreach (JiraProjectConfig proj in projects)
+            {
+                try
+                {
+                    IngestionResult projectResult = await source.LoadFromCacheAsync(project: proj.Key, ct: ct);
+                    combined = MergeResults(combined, projectResult);
+                    UpdateSyncState(projectResult, proj.Key, "rebuild");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogError(ex, "Rebuild failed for project {Project}", proj.Key);
+                    combined = MergeResults(combined, new IngestionResult(
+                        0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
+                        DateTimeOffset.UtcNow));
+                }
+            }
 
-            PostIngestion(result, "rebuild", ct);
-            await NotifyOrchestratorAsync(result, "rebuild");
+            if (ShouldRunPostIngestion(combined, projects.Count))
+                PostIngestion(combined, "rebuild", ct);
+            else
+                logger.LogWarning("Skipping post-ingestion: all {Count} project rebuilds failed.", projects.Count);
+            await NotifyOrchestratorAsync(combined, "rebuild");
 
             _currentStatus = "idle";
-            return result;
+            return combined;
         }
         catch (Exception ex)
         {
@@ -219,6 +243,9 @@ public class JiraIngestionPipeline(
 
         return cacheResult;
     }
+
+    private static bool ShouldRunPostIngestion(IngestionResult result, int projectCount)
+        => result.ItemsProcessed > 0 || result.ItemsFailed < projectCount;
 
     private static IngestionResult MergeResults(IngestionResult? first, IngestionResult? second)
     {

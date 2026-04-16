@@ -803,8 +803,6 @@ public class ZulipSource(
             ZulipSyncStateRecord.Insert(connection, syncState);
     }
 
-    private enum ProcessOutcome { New, Updated, Failed }
-
     private record StreamCacheModel
     {
         public DateTimeOffset FetchedAt { get; init; }

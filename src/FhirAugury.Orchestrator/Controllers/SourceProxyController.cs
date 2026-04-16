@@ -16,7 +16,7 @@ public class SourceProxyController(SourceHttpClient httpClient, IHttpClientFacto
         HttpClient client = httpClientFactory.CreateClient("source-jira");
         using StreamContent body = new(Request.Body);
         body.Headers.ContentType = new("application/json");
-        HttpResponseMessage response = await client.PostAsync("/api/v1/query", body, ct);
+        using HttpResponseMessage response = await client.PostAsync("/api/v1/query", body, ct);
         string json = await response.Content.ReadAsStringAsync(ct);
         return Content(json, "application/json");
     }
@@ -74,7 +74,7 @@ public class SourceProxyController(SourceHttpClient httpClient, IHttpClientFacto
         HttpClient client = httpClientFactory.CreateClient("source-zulip");
         using StreamContent body = new(Request.Body);
         body.Headers.ContentType = new("application/json");
-        HttpResponseMessage response = await client.PostAsync("/api/v1/query", body, ct);
+        using HttpResponseMessage response = await client.PostAsync("/api/v1/query", body, ct);
         string json = await response.Content.ReadAsStringAsync(ct);
         return Content(json, "application/json");
     }

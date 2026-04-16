@@ -11,7 +11,6 @@ public class FileSystemResponseCache : IResponseCache
     private readonly string _rootPath;
     private readonly string _rootPathWithSep;
     private readonly ILogger? _logger;
-    private static readonly Random Jitter = new();
 
     public FileSystemResponseCache(string rootPath, ILogger? logger = null)
     {
@@ -52,7 +51,7 @@ public class FileSystemResponseCache : IResponseCache
                 // File may be locked by a concurrent write
             }
 
-            Thread.Sleep(Jitter.Next(10, 50));
+            Thread.Sleep(Random.Shared.Next(10, 50));
         }
 
         content = null;

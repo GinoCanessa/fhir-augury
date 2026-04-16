@@ -14,10 +14,11 @@ public static class JiraCacheMigrator
     /// Checks for legacy flat-layout cache files and moves them into a
     /// project-scoped subdirectory. Idempotent — no-op if no legacy files exist.
     /// </summary>
-    public static void MigrateToProjectLayout(
+    public static async Task MigrateToProjectLayoutAsync(
         IResponseCache cache,
         string defaultProject,
-        ILogger logger)
+        ILogger logger,
+        CancellationToken ct = default)
     {
         List<string> oldKeys = cache.EnumerateKeys(JiraCacheLayout.SourceName)
             .Where(IsLegacyKey)
@@ -38,22 +39,26 @@ public static class JiraCacheMigrator
 
         foreach (string oldKey in oldKeys)
         {
+            ct.ThrowIfCancellationRequested();
             string newKey = $"{defaultProject}/{oldKey}";
 
             try
             {
                 if (cache.TryGet(JiraCacheLayout.SourceName, oldKey, out Stream? content))
                 {
-                    using (content)
+                    await using (content)
                     {
-                        cache.PutAsync(
-                            JiraCacheLayout.SourceName, newKey, content,
-                            CancellationToken.None).GetAwaiter().GetResult();
+                        await cache.PutAsync(
+                            JiraCacheLayout.SourceName, newKey, content, ct);
                     }
 
                     cache.Remove(JiraCacheLayout.SourceName, oldKey);
                     migrated++;
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {

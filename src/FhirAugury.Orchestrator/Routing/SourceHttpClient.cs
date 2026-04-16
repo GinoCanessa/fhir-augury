@@ -140,7 +140,7 @@ public class SourceHttpClient
         string sourceName, string type, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsync(
+        using HttpResponseMessage response = await client.PostAsync(
             $"/api/v1/ingest?type={Uri.EscapeDataString(type)}", null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<IngestionStatusResponse>(ct);
@@ -150,7 +150,7 @@ public class SourceHttpClient
         string sourceName, PeerIngestionNotification notification, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsJsonAsync("/api/v1/notify-peer", notification, ct);
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/api/v1/notify-peer", notification, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<PeerIngestionAck>(ct);
     }
@@ -159,7 +159,7 @@ public class SourceHttpClient
         string sourceName, string indexType, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsync(
+        using HttpResponseMessage response = await client.PostAsync(
             $"/api/v1/rebuild-index?type={Uri.EscapeDataString(indexType)}", null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<RebuildIndexResponse>(ct);

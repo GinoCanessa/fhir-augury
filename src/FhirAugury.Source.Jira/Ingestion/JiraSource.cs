@@ -240,6 +240,7 @@ public class JiraSource(
                         toUpdate[issue.Key] = issue;
                         RemoveExistingComments(connection, issue.Key);
                         RemoveRelatedIssues(connection, issue.Key);
+                        RemoveExistingInPersons(connection, issue.Id);
                     }
                     else
                     {

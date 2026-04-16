@@ -257,8 +257,8 @@ public static class FhirContentParser
                 {
                     types.Add(new ElementTypeInfo(
                         Code: typeRef.Code ?? "",
-                        Profiles: typeRef.Profile?.Where(v => v is not null)!.ToList<string>(),
-                        TargetProfiles: typeRef.TargetProfile?.Where(v => v is not null)!.ToList<string>()));
+                        Profiles: typeRef.Profile?.Where(v => v is not null).Cast<string>().ToList(),
+                        TargetProfiles: typeRef.TargetProfile?.Where(v => v is not null).Cast<string>().ToList()));
                 }
             }
 
@@ -410,9 +410,13 @@ public static class FhirContentParser
         int? fhirMaturity = ExtractExtensionInteger(ns, "http://hl7.org/fhir/StructureDefinition/structuredefinition-fmm");
         string? standardsStatus = ExtractExtensionCode(ns, "http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status");
 
+        string? namingSystemUrl = ns.UniqueId?
+            .FirstOrDefault(u => u.Type == Hl7.Fhir.Model.NamingSystem.NamingSystemIdentifierType.Uri)
+            ?.Value;
+
         return new CanonicalArtifactInfo(
             ResourceType: "NamingSystem",
-            Url: ns.Name ?? "",
+            Url: namingSystemUrl ?? "",
             Name: ns.Name ?? "",
             Title: ns.Title,
             Version: ns.Version,

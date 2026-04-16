@@ -155,9 +155,7 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> ContentGetItemAsync(string source, string id,
         bool includeContent, bool includeComments, bool includeSnapshot, CancellationToken ct)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23")
-            : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/item/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (includeContent) url.Append("includeContent=true&");
         if (includeComments) url.Append("includeComments=true&");
@@ -176,8 +174,7 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> ContentKeywordsAsync(
         string source, string id, string? keywordType, int? limit, CancellationToken ct = default)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
         if (limit.HasValue) url.Append($"limit={limit.Value}&");
@@ -188,8 +185,7 @@ public sealed class HttpServiceClient : IDisposable
         string source, string id, double? minScore, string? keywordType, int? limit,
         CancellationToken ct = default)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (minScore.HasValue) url.Append($"minScore={minScore.Value}&");
         if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
@@ -248,26 +244,22 @@ public sealed class HttpServiceClient : IDisposable
 
     private static async Task<JsonElement> GetJsonAsync(HttpClient client, string url, CancellationToken ct)
     {
-        HttpResponseMessage response = await client.GetAsync(url, ct);
+        using HttpResponseMessage response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(ct);
-        return JsonDocument.Parse(json).RootElement.Clone();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+        using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.Clone();
     }
 
     private static async Task<JsonElement> PostJsonAsync(HttpClient client, string url, object? body, CancellationToken ct)
     {
-        HttpResponseMessage response;
-        if (body is not null)
-        {
-            response = await client.PostAsJsonAsync(url, body, JsonOptions, ct);
-        }
-        else
-        {
-            response = await client.PostAsync(url, null, ct);
-        }
+        using HttpResponseMessage response = body is not null
+            ? await client.PostAsJsonAsync(url, body, JsonOptions, ct)
+            : await client.PostAsync(url, null, ct);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(ct);
-        return JsonDocument.Parse(json).RootElement.Clone();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+        using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.Clone();
     }
 
     public void Dispose()

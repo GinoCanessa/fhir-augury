@@ -63,7 +63,7 @@ public class GitHubCliProvider(
             if (ct.IsCancellationRequested) break;
             if (key.StartsWith(GitHubCacheLayout.ReposSubDir + "/", StringComparison.OrdinalIgnoreCase)) continue;
             if (!key.EndsWith("." + GitHubCacheLayout.JsonExtension, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out Stream? stream)) continue;
+            if (!cache.TryGet(GitHubCacheLayout.SourceName, key, out Stream? stream) || stream is null) continue;
 
             using (stream)
             {

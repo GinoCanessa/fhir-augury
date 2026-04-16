@@ -87,9 +87,7 @@ public static class ContentTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("orchestrator");
-            string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-                ? id.Replace("#", "%23")
-                : Uri.EscapeDataString(id);
+            string encodedId = Uri.EscapeDataString(id);
 
             StringBuilder url = new($"/api/v1/content/item/{Uri.EscapeDataString(source)}/{encodedId}?");
             if (includeContent) url.Append("includeContent=true&");
@@ -116,8 +114,7 @@ public static class ContentTools
         CancellationToken cancellationToken = default)
     {
         HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         string url = $"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}";
         List<string> queryParts = [];
         if (!string.IsNullOrEmpty(keywordType)) queryParts.Add($"keywordType={Uri.EscapeDataString(keywordType)}");
@@ -169,8 +166,7 @@ public static class ContentTools
         CancellationToken cancellationToken = default)
     {
         HttpClient client = httpClientFactory.CreateClient("orchestrator");
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         string url = $"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}";
         List<string> queryParts = [];
         if (minScore.HasValue) queryParts.Add($"minScore={minScore.Value}");

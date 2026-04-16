@@ -181,7 +181,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     ILogger migrationLogger = app.Services
         .GetRequiredService<ILoggerFactory>().CreateLogger("JiraCacheMigration");
 
-    JiraCacheMigrator.MigrateToProjectLayout(
+    await JiraCacheMigrator.MigrateToProjectLayoutAsync(
         migrationCache, jiraOpts.DefaultProject, migrationLogger);
 }
 
