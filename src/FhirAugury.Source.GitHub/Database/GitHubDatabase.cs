@@ -39,6 +39,12 @@ public class GitHubDatabase : SourceDatabase
         GitHubStructureDefinitionRecord.CreateTable(connection);
         GitHubSdElementRecord.CreateTable(connection);
         GitHubCanonicalArtifactRecord.CreateTable(connection);
+        JiraSpecRecord.CreateTable(connection);
+        JiraSpecVersionRecord.CreateTable(connection);
+        JiraSpecArtifactRecord.CreateTable(connection);
+        JiraSpecPageRecord.CreateTable(connection);
+        JiraWorkgroupRecord.CreateTable(connection);
+        JiraSpecFamilyRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
@@ -169,6 +175,12 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_file_contents;
             DROP TABLE IF EXISTS github_file_tags;
             DROP TABLE IF EXISTS github_canonical_artifacts;
+            DROP TABLE IF EXISTS jira_spec_versions;
+            DROP TABLE IF EXISTS jira_spec_artifacts;
+            DROP TABLE IF EXISTS jira_spec_pages;
+            DROP TABLE IF EXISTS jira_spec_families;
+            DROP TABLE IF EXISTS jira_workgroups;
+            DROP TABLE IF EXISTS jira_specs;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

@@ -108,6 +108,7 @@ builder.Services.AddSingleton<ArtifactFileMapper>();
 builder.Services.AddSingleton<CanonicalArtifactIndexer>();
 builder.Services.AddSingleton<StructureDefinitionIndexer>();
 builder.Services.AddSingleton<FshArtifactIndexer>();
+builder.Services.AddSingleton<JiraSpecXmlIndexer>();
 
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));
@@ -117,6 +118,7 @@ builder.Services.AddSingleton<IRepoCategoryStrategy, UtgStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, FhirExtensionsPackStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, IncubatorStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, IgStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, JiraSpecArtifactsStrategy>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -178,6 +180,11 @@ tracker.RegisterIndex("file-contents", "Repository file content indexing", () =>
 {
     using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
     return FhirAugury.Source.GitHub.Database.Records.GitHubFileContentRecord.SelectCount(c);
+});
+tracker.RegisterIndex("jira-specs", "Jira specification artifact registry", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.JiraSpecRecord.SelectCount(c);
 });
 
 // ── Health check ─────────────────────────────────────────────────

@@ -24,6 +24,9 @@ public class GitHubServiceOptions
     /// <summary>Repositories in the IG category.</summary>
     public List<string> IgRepositories { get; set; } = [];
 
+    /// <summary>Repositories in the JiraSpecArtifacts category (e.g., HL7/JIRA-Spec-Artifacts).</summary>
+    public List<string> JiraSpecArtifactsRepositories { get; set; } = [];
+
     /// <summary>Manual cross-reference links.</summary>
     public List<string> ManualLinks { get; set; } = [];
 
@@ -88,6 +91,8 @@ public class GitHubServiceOptions
             repos.Add((repo, RepoCategory.Incubator));
         foreach (string repo in IgRepositories)
             repos.Add((repo, RepoCategory.Ig));
+        foreach (string repo in JiraSpecArtifactsRepositories)
+            repos.Add((repo, RepoCategory.JiraSpecArtifacts));
 
         return repos;
     }
@@ -103,6 +108,7 @@ public class GitHubServiceOptions
         repos.AddRange(FhirExtensionsPackRepositories);
         repos.AddRange(IncubatorRepositories);
         repos.AddRange(IgRepositories);
+        repos.AddRange(JiraSpecArtifactsRepositories);
         return repos;
     }
 }
