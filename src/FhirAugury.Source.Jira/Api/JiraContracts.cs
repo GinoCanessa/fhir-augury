@@ -17,6 +17,7 @@ public record JiraQueryRequest
     public List<string> Labels { get; init; } = [];
     public List<string> Assignees { get; init; } = [];
     public List<string> Reporters { get; init; } = [];
+    public List<string> InPersonRequesters { get; init; } = [];
     public DateTimeOffset? CreatedAfter { get; init; }
     public DateTimeOffset? CreatedBefore { get; init; }
     public DateTimeOffset? UpdatedAfter { get; init; }

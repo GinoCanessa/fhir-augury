@@ -25,6 +25,7 @@ public class JiraSource(
     IHttpClientFactory httpClientFactory,
     JiraDatabase database,
     IResponseCache cache,
+    JiraUserMapper userMapper,
     ILogger<JiraSource> logger)
 {
     private readonly JiraServiceOptions options = optionsAccessor.Value;
@@ -211,9 +212,18 @@ public class JiraSource(
 
                 Dictionary<string, List<JiraCommentRecord>> commentsToInsert = [];
                 Dictionary<string, List<JiraIssueRelatedRecord>> relatedIssuesToInsert = [];
+                List<JiraIssueInPersonRecord> inPersonsToInsert = [];
 
-                foreach ((JiraIssueRecord issue, List<JiraCommentRecord> comments) in JiraXmlParser.ParseExport(parseStream))
+                foreach (JiraParsedIssue parsed in JiraXmlParser.ParseExport(parseStream))
                 {
+                    JiraIssueRecord issue = parsed.Issue;
+
+                    // Resolve users and set FK columns
+                    issue.AssigneeId = userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
+                    issue.ReporterId = userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
+                    issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                    issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+
                     if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                     {
                         issue.Id = existing.Id;
@@ -241,16 +251,33 @@ public class JiraSource(
                         toInsert[issue.Key] = issue;
                     }
 
-                    foreach (JiraCommentRecord comment in comments)
+                    foreach (JiraCommentRecord comment in parsed.Comments)
                     {
                         if (comment.Id <= 0) 
                         {
                             comment.Id = JiraCommentRecord.GetIndex();
                         }
                         comment.IssueId = issue.Id;
+                        // Resolve comment author (XML: author attribute is username)
+                        userMapper.ResolveUser(connection, comment.Author, null);
                     }
 
-                    commentsToInsert[issue.Key] = comments;
+                    commentsToInsert[issue.Key] = parsed.Comments;
+
+                    // Collect in-person requesters
+                    foreach (JiraInPersonRef ipRef in parsed.InPersons)
+                    {
+                        int? userId = userMapper.ResolveUser(connection, ipRef.Username, ipRef.DisplayName);
+                        if (userId is not null)
+                        {
+                            inPersonsToInsert.Add(new()
+                            {
+                                Id = JiraIssueInPersonRecord.GetIndex(),
+                                IssueId = issue.Id,
+                                UserId = userId.Value,
+                            });
+                        }
+                    }
 
                     if (issue.RelatedIssues is not null)
                     {
@@ -292,6 +319,11 @@ public class JiraSource(
                 foreach (List<JiraIssueRelatedRecord> relateds in relatedIssuesToInsert.Values)
                 {
                     relateds.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                if (inPersonsToInsert.Count > 0)
+                {
+                    inPersonsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
                 }
 
                 itemsNew += toInsert.Count;
@@ -344,12 +376,21 @@ public class JiraSource(
 
                 Dictionary<string, List<JiraCommentRecord>> commentsToInsert = [];
                 Dictionary<string, List<JiraIssueRelatedRecord>> relatedIssuesToInsert = [];
+                List<JiraIssueInPersonRecord> inPersonsToInsert = [];
 
                 try
                 {
-                    IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> records = ParseCachedFile(stream, key);
-                    foreach ((JiraIssueRecord? issue, List<JiraCommentRecord>? comments) in records)
+                    IEnumerable<JiraParsedIssue> records = ParseCachedFile(stream, key);
+                    foreach (JiraParsedIssue parsed in records)
                     {
+                        JiraIssueRecord issue = parsed.Issue;
+
+                        // Resolve users and set FK columns
+                        issue.AssigneeId = userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
+                        issue.ReporterId = userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
+                        issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                        issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+
                         if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                         {
                             issue.Id = existing.Id;
@@ -366,6 +407,7 @@ public class JiraSource(
                             toUpdate[issue.Key] = issue;
                             RemoveExistingComments(connection, issue.Key);
                             RemoveRelatedIssues(connection, issue.Key);
+                            RemoveExistingInPersons(connection, issue.Id);
                         }
                         else
                         {
@@ -377,16 +419,33 @@ public class JiraSource(
                             toInsert[issue.Key] = issue;
                         }
 
-                        foreach (JiraCommentRecord comment in comments)
+                        foreach (JiraCommentRecord comment in parsed.Comments)
                         {
                             if (comment.Id <= 0)
                             {
                                 comment.Id = JiraCommentRecord.GetIndex();
                             }
                             comment.IssueId = issue.Id;
+                            // Resolve comment author
+                            userMapper.ResolveUser(connection, comment.Author, null);
                         }
 
-                        commentsToInsert[issue.Key] = comments;
+                        commentsToInsert[issue.Key] = parsed.Comments;
+
+                        // Collect in-person requesters
+                        foreach (JiraInPersonRef ipRef in parsed.InPersons)
+                        {
+                            int? userId = userMapper.ResolveUser(connection, ipRef.Username, ipRef.DisplayName);
+                            if (userId is not null)
+                            {
+                                inPersonsToInsert.Add(new()
+                                {
+                                    Id = JiraIssueInPersonRecord.GetIndex(),
+                                    IssueId = issue.Id,
+                                    UserId = userId.Value,
+                                });
+                            }
+                        }
 
                         if (issue.RelatedIssues is not null)
                         {
@@ -437,6 +496,11 @@ public class JiraSource(
                     relateds.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
                 }
 
+                if (inPersonsToInsert.Count > 0)
+                {
+                    inPersonsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
                 itemsNew += toInsert.Count;
                 itemsUpdated += toUpdate.Count;
 
@@ -459,21 +523,55 @@ public class JiraSource(
             JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
             key = issue.Key;
 
+            // Resolve users
+            JsonElement fields = issueJson.GetProperty("fields");
+            (string? assigneeUsername, string? assigneeDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "assignee");
+            (string? reporterUsername, string? reporterDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "reporter");
+
+            issue.AssigneeId = userMapper.ResolveUser(connection, assigneeUsername, assigneeDisplayName);
+            issue.ReporterId = userMapper.ResolveUser(connection, reporterUsername, reporterDisplayName);
+            issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+            issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+
             JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: key);
             if (existing is not null)
             {
                 issue.Id = existing.Id;
                 JiraIssueRecord.Update(connection, issue);
+                RemoveExistingInPersons(connection, issue.Id);
             }
             else
             {
                 JiraIssueRecord.Insert(connection, issue, ignoreDuplicates: true);
             }
 
+            // Resolve comment authors
             List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
             foreach (JiraCommentRecord comment in comments)
             {
+                // Extract username separately for proper user resolution
+                (string? commentAuthorUsername, string? commentAuthorDisplayName) =
+                    JiraFieldMapper.ExtractCommentAuthorRef(issueJson, comment);
+                userMapper.ResolveUser(connection, commentAuthorUsername, commentAuthorDisplayName ?? comment.Author);
+
                 JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+            }
+
+            // Resolve in-person requesters
+            List<JiraInPersonRef> inPersonRefs = JiraFieldMapper.ExtractInPersonRequesters(fields);
+            foreach (JiraInPersonRef ipRef in inPersonRefs)
+            {
+                int? userId = userMapper.ResolveUser(connection, ipRef.Username, ipRef.DisplayName);
+                if (userId is not null)
+                {
+                    JiraIssueInPersonRecord inPersonRecord = new()
+                    {
+                        Id = JiraIssueInPersonRecord.GetIndex(),
+                        IssueId = issue.Id,
+                        UserId = userId.Value,
+                    };
+                    JiraIssueInPersonRecord.Insert(connection, inPersonRecord, ignoreDuplicates: true);
+                }
             }
 
             List<JiraIssueLinkRecord> links = JiraFieldMapper.MapIssueLinks(issueJson, issue.Key);
@@ -515,7 +613,7 @@ public class JiraSource(
         }
     }
 
-    private static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseCachedFile(Stream stream, string key)
+    private static IEnumerable<JiraParsedIssue> ParseCachedFile(Stream stream, string key)
     {
         if (key.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
         {
@@ -525,7 +623,7 @@ public class JiraSource(
         return ParseJsonCacheFile(stream);
     }
 
-    private static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseJsonCacheFile(Stream stream)
+    private static IEnumerable<JiraParsedIssue> ParseJsonCacheFile(Stream stream)
     {
         using JsonDocument doc = JsonDocument.Parse(stream);
         JsonElement root = doc.RootElement;
@@ -537,7 +635,22 @@ public class JiraSource(
         {
             JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
             List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
-            yield return (issue, comments);
+
+            JsonElement fields = issueJson.GetProperty("fields");
+            (string? assigneeUsername, string? assigneeDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "assignee");
+            (string? reporterUsername, string? reporterDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "reporter");
+
+            JiraXmlUserInfo userInfo = new()
+            {
+                AssigneeUsername = assigneeUsername,
+                AssigneeDisplayName = assigneeDisplayName,
+                ReporterUsername = reporterUsername,
+                ReporterDisplayName = reporterDisplayName,
+            };
+
+            List<JiraInPersonRef> inPersons = JiraFieldMapper.ExtractInPersonRequesters(fields);
+
+            yield return new JiraParsedIssue(issue, comments, userInfo, inPersons);
         }
     }
 
@@ -656,6 +769,14 @@ public class JiraSource(
         using SqliteCommand deleteCmd = conn.CreateCommand();
         deleteCmd.CommandText = "DELETE FROM jira_issue_related WHERE IssueKey = @key";
         deleteCmd.Parameters.AddWithValue("@key", issueKey);
+        deleteCmd.ExecuteNonQuery();
+    }
+
+    private static void RemoveExistingInPersons(SqliteConnection conn, int issueId)
+    {
+        using SqliteCommand deleteCmd = conn.CreateCommand();
+        deleteCmd.CommandText = "DELETE FROM jira_issue_inpersons WHERE IssueId = @id";
+        deleteCmd.Parameters.AddWithValue("@id", issueId);
         deleteCmd.ExecuteNonQuery();
     }
 }

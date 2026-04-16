@@ -39,6 +39,10 @@ public class JiraDatabaseTests : IDisposable
         Assert.Contains("index_keywords", tables);
         Assert.Contains("index_corpus", tables);
         Assert.Contains("index_doc_stats", tables);
+        Assert.Contains("jira_users", tables);
+        Assert.Contains("jira_issue_inpersons", tables);
+        Assert.Contains("jira_index_users", tables);
+        Assert.Contains("jira_index_inpersons", tables);
     }
 
     [Fact]

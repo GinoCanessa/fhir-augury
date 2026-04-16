@@ -58,6 +58,26 @@ public static class JiraQueryBuilder
             }
         }
 
+        if (request.InPersonRequesters.Count > 0)
+        {
+            List<string> ipParamNames = [];
+            foreach (string name in request.InPersonRequesters)
+            {
+                string paramName = $"@ip{paramIdx++}";
+                ipParamNames.Add(paramName);
+                parameters.Add(new SqliteParameter(paramName, name));
+            }
+
+            // AND semantics: every requested in-person user must be present
+            foreach (string paramName in ipParamNames)
+            {
+                sb.Append($@" AND EXISTS (
+            SELECT 1 FROM jira_issue_inpersons jip
+            INNER JOIN jira_users ju ON jip.UserId = ju.Id
+            WHERE jip.IssueId = jira_issues.Id AND ju.DisplayName = {paramName})");
+            }
+        }
+
         // Timestamp filters
         if (request.CreatedAfter is not null)
         {

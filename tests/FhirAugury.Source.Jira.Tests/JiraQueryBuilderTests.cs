@@ -178,6 +178,59 @@ public class JiraQueryBuilderTests
     }
 
     [Fact]
+    public void Build_InPersonRequesters_GeneratesExistsSubquery()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+        request.InPersonRequesters.Add("Alice");
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
+
+        Assert.Contains("jira_issue_inpersons", sql);
+        Assert.Contains("jira_users", sql);
+        Assert.Contains("EXISTS", sql);
+        Assert.Contains(parameters, p => p.Value!.ToString() == "Alice");
+    }
+
+    [Fact]
+    public void Build_MultipleInPersonRequesters_GeneratesMultipleExists()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+        request.InPersonRequesters.Add("Alice");
+        request.InPersonRequesters.Add("Bob");
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
+
+        // Should have two EXISTS subqueries (one per in-person requester)
+        int existsCount = sql!.Split("jira_issue_inpersons").Length - 1;
+        Assert.Equal(2, existsCount);
+        Assert.Contains(parameters, p => p.Value!.ToString() == "Alice");
+        Assert.Contains(parameters, p => p.Value!.ToString() == "Bob");
+    }
+
+    [Fact]
+    public void Build_EmptyInPersonRequesters_NoFilter()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? _) = JiraQueryBuilder.Build(request);
+
+        Assert.DoesNotContain("jira_issue_inpersons", sql);
+    }
+
+    [Fact]
+    public void Build_InPersonRequesters_ParameterizedValues()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+        request.InPersonRequesters.Add("Alice Smith");
+
+        (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
+
+        // Should not contain the display name inline
+        Assert.DoesNotContain("'Alice Smith'", sql);
+        Assert.Contains(parameters, p => p.Value!.ToString() == "Alice Smith");
+    }
+
+    [Fact]
     public void Build_AllParametersAreParameterized()
     {
         JiraQueryRequest request = new JiraQueryRequest() { Query = "test" };

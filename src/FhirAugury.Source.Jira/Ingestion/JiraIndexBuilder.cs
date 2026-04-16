@@ -19,6 +19,8 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         RebuildSimpleIndex<JiraIndexStatusRecord>(conn, "jira_index_statuses", "Status");
         RebuildSimpleIndex<JiraIndexResolutionRecord>(conn, "jira_index_resolutions", "Resolution");
         RebuildLabelsIndex(conn);
+        RebuildUsersIndex(conn);
+        RebuildInPersonsIndex(conn);
 
         logger.LogInformation("Index tables rebuilt");
     }
@@ -122,5 +124,63 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         issueLabelsToInsert.Insert(conn, ignoreDuplicates: true, insertPrimaryKey: true);
 
         logger.LogInformation("Labels index rebuilt: {Count} distinct labels", labelCounts.Count);
+    }
+
+    private void RebuildUsersIndex(SqliteConnection conn)
+    {
+        using (SqliteCommand deleteCmd = conn.CreateCommand())
+        {
+            deleteCmd.CommandText = "DELETE FROM jira_index_users";
+            deleteCmd.ExecuteNonQuery();
+        }
+
+        using SqliteCommand insertCmd = conn.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO jira_index_users (Name, IssueCount)
+            SELECT u.DisplayName, COUNT(DISTINCT issue_id) AS IssueCount
+            FROM jira_users u
+            INNER JOIN (
+                SELECT AssigneeId AS user_id, Id AS issue_id FROM jira_issues WHERE AssigneeId IS NOT NULL
+                UNION ALL
+                SELECT ReporterId, Id FROM jira_issues WHERE ReporterId IS NOT NULL
+                UNION ALL
+                SELECT VoteMoverId, Id FROM jira_issues WHERE VoteMoverId IS NOT NULL
+                UNION ALL
+                SELECT VoteSeconderId, Id FROM jira_issues WHERE VoteSeconderId IS NOT NULL
+                UNION ALL
+                SELECT UserId, IssueId FROM jira_issue_inpersons
+            ) roles ON roles.user_id = u.Id
+            GROUP BY u.Id, u.DisplayName
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        using SqliteCommand countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT COUNT(*) FROM jira_index_users";
+        int count = Convert.ToInt32(countCmd.ExecuteScalar());
+        logger.LogInformation("Users index rebuilt: {Count} distinct users", count);
+    }
+
+    private void RebuildInPersonsIndex(SqliteConnection conn)
+    {
+        using (SqliteCommand deleteCmd = conn.CreateCommand())
+        {
+            deleteCmd.CommandText = "DELETE FROM jira_index_inpersons";
+            deleteCmd.ExecuteNonQuery();
+        }
+
+        using SqliteCommand insertCmd = conn.CreateCommand();
+        insertCmd.CommandText = """
+            INSERT INTO jira_index_inpersons (Name, IssueCount)
+            SELECT u.DisplayName, COUNT(*)
+            FROM jira_issue_inpersons ip
+            INNER JOIN jira_users u ON u.Id = ip.UserId
+            GROUP BY u.Id, u.DisplayName
+            """;
+        insertCmd.ExecuteNonQuery();
+
+        using SqliteCommand countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT COUNT(*) FROM jira_index_inpersons";
+        int count = Convert.ToInt32(countCmd.ExecuteScalar());
+        logger.LogInformation("In-persons index rebuilt: {Count} distinct users", count);
     }
 }

@@ -80,6 +80,46 @@ public static class JiraFieldMapper
         );
     }
 
+    /// <summary>Extracts raw user reference (username + displayName) from a JSON user object field.</summary>
+    public static (string? Username, string? DisplayName) ExtractUserRef(JsonElement fields, string fieldName)
+    {
+        if (!fields.TryGetProperty(fieldName, out JsonElement userObj) || userObj.ValueKind != JsonValueKind.Object)
+            return (null, null);
+
+        string? username = JsonElementHelper.GetString(userObj, "name")
+                        ?? JsonElementHelper.GetString(userObj, "key");
+        string? displayName = JsonElementHelper.GetString(userObj, "displayName");
+
+        return (username, displayName);
+    }
+
+    /// <summary>
+    /// Extracts in-person requester user references from customfield_11000 (multiuserpicker).
+    /// </summary>
+    public static List<JiraInPersonRef> ExtractInPersonRequesters(JsonElement fields)
+    {
+        List<JiraInPersonRef> results = [];
+
+        if (!fields.TryGetProperty("customfield_11000", out JsonElement ipField) ||
+            ipField.ValueKind != JsonValueKind.Array)
+            return results;
+
+        foreach (JsonElement user in ipField.EnumerateArray())
+        {
+            if (user.ValueKind != JsonValueKind.Object)
+                continue;
+
+            string? username = JsonElementHelper.GetString(user, "name")
+                            ?? JsonElementHelper.GetString(user, "key");
+            string? displayName = JsonElementHelper.GetString(user, "displayName");
+
+            if (username is not null || displayName is not null)
+                results.Add(new JiraInPersonRef(username, displayName));
+        }
+
+        return results;
+    }
+
     public static JiraIssueRecord MapIssue(JsonElement issueJson)
     {
         JsonElement fields = issueJson.GetProperty("fields");
@@ -176,6 +216,34 @@ public static class JiraFieldMapper
          record.VoteAgainstCount, record.VoteAbstainCount) = ParseVote(record.Vote);
 
         return record;
+    }
+
+    /// <summary>Extracts comment author username and display name from the JSON issue for a specific comment.</summary>
+    public static (string? Username, string? DisplayName) ExtractCommentAuthorRef(
+        JsonElement issueJson, JiraCommentRecord comment)
+    {
+        JsonElement fields = issueJson.GetProperty("fields");
+        if (!fields.TryGetProperty("comment", out JsonElement commentField))
+            return (null, comment.Author);
+
+        if (!commentField.TryGetProperty("comments", out JsonElement commentArray))
+            return (null, comment.Author);
+
+        foreach (JsonElement c in commentArray.EnumerateArray())
+        {
+            if (c.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object)
+            {
+                string? displayName = JsonElementHelper.GetString(author, "displayName");
+                if (displayName == comment.Author || comment.Author == (JsonElementHelper.GetString(author, "name") ?? "Unknown"))
+                {
+                    string? username = JsonElementHelper.GetString(author, "name")
+                                    ?? JsonElementHelper.GetString(author, "key");
+                    return (username, displayName);
+                }
+            }
+        }
+
+        return (null, comment.Author);
     }
 
     public static List<JiraCommentRecord> MapComments(JsonElement issueJson, int issueId, string issueKey)

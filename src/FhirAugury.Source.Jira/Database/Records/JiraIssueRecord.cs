@@ -16,6 +16,10 @@ namespace FhirAugury.Source.Jira.Database.Records;
 [LdgSQLiteIndex(nameof(Assignee))]
 [LdgSQLiteIndex(nameof(Reporter))]
 [LdgSQLiteIndex(nameof(CreatedAt))]
+[LdgSQLiteIndex(nameof(AssigneeId))]
+[LdgSQLiteIndex(nameof(ReporterId))]
+[LdgSQLiteIndex(nameof(VoteMoverId))]
+[LdgSQLiteIndex(nameof(VoteSeconderId))]
 public partial record class JiraIssueRecord
 {
     [LdgSQLiteKey]
@@ -58,6 +62,13 @@ public partial record class JiraIssueRecord
     public int? VoteForCount { get; set; }
     public int? VoteAgainstCount { get; set; }
     public int? VoteAbstainCount { get; set; }
+
+    // User FK columns referencing jira_users.Id
+    public int? AssigneeId { get; set; }
+    public int? ReporterId { get; set; }
+    public int? VoteMoverId { get; set; }
+    public int? VoteSeconderId { get; set; }
+
     public required string? Labels { get; set; }
     public required int CommentCount { get; set; }
     public required string? ChangeCategory { get; set; }

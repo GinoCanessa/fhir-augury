@@ -73,4 +73,24 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             .Select(r => new { r.Name, r.IssueCount })
             .OrderByDescending(r => r.IssueCount));
     }
+
+    [HttpGet("users")]
+    public IActionResult ListUsers()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexUserRecord> records = JiraIndexUserRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
+
+    [HttpGet("inpersons")]
+    public IActionResult ListInPersonRequesters()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexInPersonRecord> records = JiraIndexInPersonRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
 }

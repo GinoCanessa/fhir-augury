@@ -92,6 +92,7 @@ builder.Services.AddHttpClient("jira-xml", client =>
   .AddStandardResilienceHandler();
 
 // Ingestion
+builder.Services.AddSingleton<JiraUserMapper>();
 builder.Services.AddSingleton<JiraSource>();
 builder.Services.AddSingleton(sp =>
 {

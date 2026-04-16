@@ -5,6 +5,25 @@ using static FhirAugury.Common.DateTimeHelper;
 
 namespace FhirAugury.Source.Jira.Ingestion;
 
+/// <summary>Raw user references extracted from XML/JSON, before resolution to jira_users IDs.</summary>
+public record JiraXmlUserInfo
+{
+    public string? AssigneeUsername { get; init; }
+    public string? AssigneeDisplayName { get; init; }
+    public string? ReporterUsername { get; init; }
+    public string? ReporterDisplayName { get; init; }
+}
+
+/// <summary>A user reference for in-person discussion requests.</summary>
+public record JiraInPersonRef(string? Username, string? DisplayName);
+
+/// <summary>All parsed data for a single Jira issue.</summary>
+public record JiraParsedIssue(
+    JiraIssueRecord Issue,
+    List<JiraCommentRecord> Comments,
+    JiraXmlUserInfo UserInfo,
+    List<JiraInPersonRef> InPersons);
+
 /// <summary>Parses Jira XML RSS export format into database records.</summary>
 public static class JiraXmlParser
 {
@@ -29,7 +48,7 @@ public static class JiraXmlParser
         ["customfield_10511"] = nameof(JiraIssueRecord.ChangeImpact),
     };
 
-    public static IEnumerable<(JiraIssueRecord Issue, List<JiraCommentRecord> Comments)> ParseExport(Stream stream)
+    public static IEnumerable<JiraParsedIssue> ParseExport(Stream stream)
     {
         XmlReaderSettings settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit };
         using XmlReader reader = XmlReader.Create(stream, settings);
@@ -146,8 +165,36 @@ public static class JiraXmlParser
             (record.VoteMover, record.VoteSeconder, record.VoteForCount,
              record.VoteAgainstCount, record.VoteAbstainCount) = JiraFieldMapper.ParseVote(record.Vote);
 
-            List<JiraCommentRecord> comments= JiraCommentParser.ParseXmlComments(item, issueId, key);
-            yield return (record, comments);
+            // Extract raw user references for later resolution
+            JiraXmlUserInfo userInfo = new()
+            {
+                AssigneeUsername = item.Assignee?.Username,
+                AssigneeDisplayName = item.Assignee?.Text,
+                ReporterUsername = item.Reporter?.Username,
+                ReporterDisplayName = item.Reporter?.Text,
+            };
+
+            // Extract in-person requesters from customfield_11000
+            List<JiraInPersonRef> inPersonUsers = [];
+            if (item.CustomFields?.Items is not null)
+            {
+                JiraXmlCustomField? inPersonField = item.CustomFields.Items
+                    .FirstOrDefault(cf => cf.Id == "customfield_11000");
+
+                if (inPersonField?.Values?.Items is not null)
+                {
+                    foreach (string username in inPersonField.Values.Items)
+                    {
+                        if (!string.IsNullOrWhiteSpace(username))
+                        {
+                            inPersonUsers.Add(new JiraInPersonRef(username.Trim(), null));
+                        }
+                    }
+                }
+            }
+
+            List<JiraCommentRecord> comments = JiraCommentParser.ParseXmlComments(item, issueId, key);
+            yield return new JiraParsedIssue(record, comments, userInfo, inPersonUsers);
         }
     }
 
