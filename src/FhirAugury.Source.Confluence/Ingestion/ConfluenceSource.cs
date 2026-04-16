@@ -374,29 +374,38 @@ public class ConfluenceSource(
             // Extract cross-references from page content
             string pageText = $"{title} {bodyPlain}";
 
+            List<JiraXRefRecord> jiraRefs = [];
             foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("page", pageId, null, pageText))
             {
                 r.Id = JiraXRefRecord.GetIndex();
-                JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                jiraRefs.Add(r);
             }
 
+            List<ZulipXRefRecord> zulipRefs = [];
             foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = ZulipXRefRecord.GetIndex();
-                ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                zulipRefs.Add(r);
             }
 
+            List<GitHubXRefRecord> githubRefs = [];
             foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = GitHubXRefRecord.GetIndex();
-                GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                githubRefs.Add(r);
             }
 
+            List<FhirElementXRefRecord> fhirRefs = [];
             foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = FhirElementXRefRecord.GetIndex();
-                FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                fhirRefs.Add(r);
             }
+
+            jiraRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            zulipRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            githubRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            fhirRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
             return isNew ? PageResult.New : PageResult.Updated;
         }

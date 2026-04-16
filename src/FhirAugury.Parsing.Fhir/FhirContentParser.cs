@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace FhirAugury.Parsing.Fhir;
 
 /// <summary>
@@ -49,21 +51,27 @@ public static class FhirContentParser
     // TryParseStructureDefinition
     // ────────────────────────────────────────────────────────
 
-    public static StructureDefinitionInfo? TryParseStructureDefinition(string filePath)
+    public static StructureDefinitionInfo? TryParseStructureDefinition(string filePath, ILogger? logger = null)
     {
         try
         {
             string content = File.ReadAllText(filePath);
             string format = DetectFormat(filePath);
-            return TryParseStructureDefinition(content, format);
+            return TryParseStructureDefinition(content, format, logger, filePath);
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to read/parse StructureDefinition at {Path}", filePath);
             return null;
         }
     }
 
-    public static StructureDefinitionInfo? TryParseStructureDefinition(string content, string format)
+    public static StructureDefinitionInfo? TryParseStructureDefinition(string content, string format, ILogger? logger = null)
+    {
+        return TryParseStructureDefinition(content, format, logger, sourcePath: null);
+    }
+
+    private static StructureDefinitionInfo? TryParseStructureDefinition(string content, string format, ILogger? logger, string? sourcePath)
     {
         try
         {
@@ -73,9 +81,19 @@ public static class FhirContentParser
                 return null;
             }
 
+            string? url = sd.Url ?? sd.Id;
+            string? name = sd.Name ?? sd.Id;
+            if (url is null || name is null)
+            {
+                logger?.LogWarning(
+                    "StructureDefinition missing url/name/id at {Path} (ResourceType={ResourceType})",
+                    sourcePath ?? "<inline>", sd.TypeName);
+                return null;
+            }
+
             return new StructureDefinitionInfo(
-                Url: sd.Url ?? sd.Id ?? throw new ArgumentNullException(nameof(sd.Url)),
-                Name: sd.Name ?? sd.Id ?? throw new ArgumentNullException(nameof(sd.Name)),
+                Url: url,
+                Name: name,
                 Title: sd.Title,
                 Status: sd.Status?.ToString()?.ToLowerInvariant(),
                 Kind: sd.Kind?.ToString()?.ToLowerInvariant() ?? "",
@@ -93,8 +111,9 @@ public static class FhirContentParser
                 Contexts: ExtractContexts(sd),
                 DifferentialElements: ExtractDifferentialElements(sd));
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to parse StructureDefinition ({Format}) at {Path}", format, sourcePath ?? "<inline>");
             return null;
         }
     }
@@ -103,29 +122,43 @@ public static class FhirContentParser
     // TryParseCanonicalArtifact
     // ────────────────────────────────────────────────────────
 
-    public static CanonicalArtifactInfo? TryParseCanonicalArtifact(string filePath)
+    public static CanonicalArtifactInfo? TryParseCanonicalArtifact(string filePath, ILogger? logger = null)
     {
         try
         {
             string content = File.ReadAllText(filePath);
             string format = DetectFormat(filePath);
-            return TryParseCanonicalArtifact(content, format);
+            return TryParseCanonicalArtifact(content, format, logger, filePath);
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to read/parse canonical artifact at {Path}", filePath);
             return null;
         }
     }
 
-    public static CanonicalArtifactInfo? TryParseCanonicalArtifact(string content, string format)
+    public static CanonicalArtifactInfo? TryParseCanonicalArtifact(string content, string format, ILogger? logger = null)
+    {
+        return TryParseCanonicalArtifact(content, format, logger, sourcePath: null);
+    }
+
+    private static CanonicalArtifactInfo? TryParseCanonicalArtifact(string content, string format, ILogger? logger, string? sourcePath)
     {
         try
         {
             Hl7.Fhir.Model.Resource resource = DeserializeResource(content, format);
-            return ExtractCanonicalArtifact(resource);
+            CanonicalArtifactInfo? info = ExtractCanonicalArtifact(resource);
+            if (info is null)
+            {
+                logger?.LogWarning(
+                    "Unsupported canonical resource type {ResourceType} at {Path}",
+                    resource.TypeName, sourcePath ?? "<inline>");
+            }
+            return info;
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to parse canonical artifact ({Format}) at {Path}", format, sourcePath ?? "<inline>");
             return null;
         }
     }
@@ -134,27 +167,38 @@ public static class FhirContentParser
     // TryParseBundle
     // ────────────────────────────────────────────────────────
 
-    public static List<CanonicalArtifactInfo> TryParseBundle(string filePath)
+    public static List<CanonicalArtifactInfo> TryParseBundle(string filePath, ILogger? logger = null)
     {
         try
         {
             string content = File.ReadAllText(filePath);
             string format = DetectFormat(filePath);
-            return TryParseBundle(content, format);
+            return TryParseBundle(content, format, logger, filePath);
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to read/parse Bundle at {Path}", filePath);
             return [];
         }
     }
 
-    public static List<CanonicalArtifactInfo> TryParseBundle(string content, string format)
+    public static List<CanonicalArtifactInfo> TryParseBundle(string content, string format, ILogger? logger = null)
+    {
+        return TryParseBundle(content, format, logger, sourcePath: null);
+    }
+
+    private static List<CanonicalArtifactInfo> TryParseBundle(string content, string format, ILogger? logger, string? sourcePath)
     {
         try
         {
             Hl7.Fhir.Model.Resource resource = DeserializeResource(content, format);
             if (resource is not Hl7.Fhir.Model.Bundle bundle)
+            {
+                logger?.LogWarning(
+                    "Expected Bundle but got {ResourceType} at {Path}",
+                    resource.TypeName, sourcePath ?? "<inline>");
                 return [];
+            }
 
             List<CanonicalArtifactInfo> results = [];
             foreach (Hl7.Fhir.Model.Bundle.EntryComponent entry in bundle.Entry)
@@ -164,12 +208,21 @@ public static class FhirContentParser
 
                 CanonicalArtifactInfo? info = ExtractCanonicalArtifact(entry.Resource);
                 if (info is not null)
+                {
                     results.Add(info);
+                }
+                else
+                {
+                    logger?.LogWarning(
+                        "Skipping unsupported bundle entry resource type {ResourceType} at {Path}",
+                        entry.Resource.TypeName, sourcePath ?? "<inline>");
+                }
             }
             return results;
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "Failed to parse Bundle ({Format}) at {Path}", format, sourcePath ?? "<inline>");
             return [];
         }
     }

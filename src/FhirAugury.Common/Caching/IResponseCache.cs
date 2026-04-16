@@ -45,7 +45,9 @@ public interface IResponseCache
     /// <summary>
     /// Get cache statistics: total files and total bytes per source.
     /// </summary>
-    CacheStats GetStats(string source);
+    /// <param name="source">Source name.</param>
+    /// <param name="forceRefresh">If true, bypass any cached snapshot and recompute from disk.</param>
+    CacheStats GetStats(string source, bool forceRefresh = false);
 
     /// <summary>Async version of <see cref="TryGet"/>. Returns null on cache miss.</summary>
     Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default);

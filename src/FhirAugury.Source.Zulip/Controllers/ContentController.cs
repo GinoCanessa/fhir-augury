@@ -172,34 +172,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         {
             if (ValueFormatDetector.IsJiraKey(value))
             {
-                HashSet<string> seen = [];
-                foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, JiraKey: value))
-                {
-                    if (!seen.Add(r.SourceId)) continue;
-                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
-
-                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
-                    double score = 1.0;
-                    if (message is not null)
-                    {
-                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
-                        score = (stream?.BaselineValue ?? 5) / 5.0;
-                    }
-                    hits.Add(new CrossReferenceHit
-                    {
-                        SourceType = SourceSystems.Zulip,
-                        ContentType = r.ContentType,
-                        SourceId = r.SourceId,
-                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
-                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
-                        TargetType = r.TargetType,
-                        TargetId = r.TargetId,
-                        LinkType = r.LinkType,
-                        Context = r.Context,
-                        Score = score,
-                        UpdatedAt = message?.Timestamp,
-                    });
-                }
+                AddZulipHits(
+                    connection,
+                    JiraXRefRecord.SelectList(connection, JiraKey: value),
+                    options,
+                    maxResults,
+                    hits);
             }
         }
 
@@ -207,34 +185,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         {
             if (ValueFormatDetector.TryParseGitHubIssue(value, out string repoFullName, out int issueNumber))
             {
-                HashSet<string> seen = [];
-                foreach (GitHubXRefRecord r in GitHubXRefRecord.SelectList(connection, RepoFullName: repoFullName, IssueNumber: issueNumber))
-                {
-                    if (!seen.Add(r.SourceId)) continue;
-                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
-
-                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
-                    double score = 1.0;
-                    if (message is not null)
-                    {
-                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
-                        score = (stream?.BaselineValue ?? 5) / 5.0;
-                    }
-                    hits.Add(new CrossReferenceHit
-                    {
-                        SourceType = SourceSystems.Zulip,
-                        ContentType = r.ContentType,
-                        SourceId = r.SourceId,
-                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
-                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
-                        TargetType = r.TargetType,
-                        TargetId = r.TargetId,
-                        LinkType = r.LinkType,
-                        Context = r.Context,
-                        Score = score,
-                        UpdatedAt = message?.Timestamp,
-                    });
-                }
+                AddZulipHits(
+                    connection,
+                    GitHubXRefRecord.SelectList(connection, RepoFullName: repoFullName, IssueNumber: issueNumber),
+                    options,
+                    maxResults,
+                    hits);
             }
         }
 
@@ -242,34 +198,12 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         {
             if (ValueFormatDetector.IsFhirElement(value))
             {
-                HashSet<string> seen = [];
-                foreach (FhirElementXRefRecord r in FhirElementXRefRecord.SelectList(connection, ElementPath: value))
-                {
-                    if (!seen.Add(r.SourceId)) continue;
-                    if (!int.TryParse(r.SourceId, out int msgId)) continue;
-
-                    ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
-                    double score = 1.0;
-                    if (message is not null)
-                    {
-                        ZulipStreamRecord? stream = ZulipStreamRecord.SelectSingle(connection, Id: message.StreamId);
-                        score = (stream?.BaselineValue ?? 5) / 5.0;
-                    }
-                    hits.Add(new CrossReferenceHit
-                    {
-                        SourceType = SourceSystems.Zulip,
-                        ContentType = r.ContentType,
-                        SourceId = r.SourceId,
-                        SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
-                        SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
-                        TargetType = r.TargetType,
-                        TargetId = r.TargetId,
-                        LinkType = r.LinkType,
-                        Context = r.Context,
-                        Score = score,
-                        UpdatedAt = message?.Timestamp,
-                    });
-                }
+                AddZulipHits(
+                    connection,
+                    FhirElementXRefRecord.SelectList(connection, ElementPath: value),
+                    options,
+                    maxResults,
+                    hits);
             }
         }
 
@@ -627,5 +561,69 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         cmd.CommandText = "SELECT Topic FROM zulip_messages WHERE MessageId = @id LIMIT 1";
         cmd.Parameters.AddWithValue("@id", int.TryParse(sourceId, out int msgId) ? msgId : 0);
         return cmd.ExecuteScalar()?.ToString() ?? sourceId;
+    }
+
+    /// <summary>
+    /// Resolves xref records to Zulip message hits using batched message+stream lookups.
+    /// Dedupes by <c>SourceId</c>, caps at <paramref name="maxResults"/>, and appends to <paramref name="hits"/>.
+    /// </summary>
+    private static void AddZulipHits<TXref>(
+        SqliteConnection connection,
+        IEnumerable<TXref> refs,
+        ZulipServiceOptions options,
+        int maxResults,
+        List<CrossReferenceHit> hits)
+        where TXref : ICrossReferenceRecord
+    {
+        HashSet<string> seen = [];
+        List<(TXref Ref, int MsgId)> parsed = [];
+        foreach (TXref r in refs)
+        {
+            if (!seen.Add(r.SourceId)) continue;
+            if (!int.TryParse(r.SourceId, out int msgId)) continue;
+            parsed.Add((r, msgId));
+            if (parsed.Count >= maxResults) break;
+        }
+
+        if (parsed.Count == 0) return;
+
+        int[] msgIds = [.. parsed.Select(p => p.MsgId).Distinct()];
+        Dictionary<int, ZulipMessageRecord> msgs = msgIds.Length == 0
+            ? []
+            : ZulipMessageRecord
+                .SelectList(connection, ZulipMessageIdValues: msgIds)
+                .ToDictionary(m => m.ZulipMessageId);
+
+        int[] streamIds = [.. msgs.Values.Select(m => m.StreamId).Distinct()];
+        Dictionary<int, ZulipStreamRecord> streams = streamIds.Length == 0
+            ? []
+            : ZulipStreamRecord
+                .SelectList(connection, IdValues: streamIds)
+                .ToDictionary(s => s.Id);
+
+        foreach ((TXref r, int msgId) in parsed)
+        {
+            msgs.TryGetValue(msgId, out ZulipMessageRecord? message);
+            double score = 1.0;
+            if (message is not null
+                && streams.TryGetValue(message.StreamId, out ZulipStreamRecord? stream))
+            {
+                score = (stream?.BaselineValue ?? 5) / 5.0;
+            }
+            hits.Add(new CrossReferenceHit
+            {
+                SourceType = SourceSystems.Zulip,
+                ContentType = r.ContentType,
+                SourceId = r.SourceId,
+                SourceTitle = message is not null ? $"[{message.StreamName}] {message.Topic}" : null,
+                SourceUrl = message is not null ? ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId) : null,
+                TargetType = r.TargetType,
+                TargetId = r.TargetId,
+                LinkType = r.LinkType,
+                Context = r.Context,
+                Score = score,
+                UpdatedAt = message?.Timestamp,
+            });
+        }
     }
 }

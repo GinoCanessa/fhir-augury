@@ -1,6 +1,8 @@
+using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Health;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Workers;
 
@@ -9,17 +11,31 @@ namespace FhirAugury.Orchestrator.Workers;
 /// </summary>
 public class HealthCheckWorker(
     ServiceHealthMonitor monitor,
+    IOptions<OrchestratorOptions> optionsAccessor,
     ILogger<HealthCheckWorker> logger)
     : BackgroundService
 {
-    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(60);
+    private readonly OrchestratorOptions _options = optionsAccessor.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Health check worker started. Interval: {Interval}", Interval);
+        TimeSpan interval = TimeSpan.FromSeconds(Math.Max(1, _options.HealthCheckIntervalSeconds));
+        TimeSpan startupDelay = TimeSpan.FromSeconds(Math.Max(0, _options.HealthCheckStartupDelaySeconds));
+        logger.LogInformation(
+            "Health check worker started. Startup delay: {StartupDelay}, Interval: {Interval}",
+            startupDelay, interval);
 
-        // Wait for services to start up
-        await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+        if (startupDelay > TimeSpan.Zero)
+        {
+            try
+            {
+                await Task.Delay(startupDelay, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -38,7 +54,7 @@ public class HealthCheckWorker(
 
             try
             {
-                await Task.Delay(Interval, stoppingToken);
+                await Task.Delay(interval, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

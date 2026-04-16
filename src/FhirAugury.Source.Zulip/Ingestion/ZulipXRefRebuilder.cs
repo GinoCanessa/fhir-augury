@@ -69,24 +69,37 @@ public class ZulipXRefRebuilder(ZulipDatabase database, ILogger<ZulipXRefRebuild
         using SqliteConnection connection = database.OpenConnection();
 
         HashSet<(string StreamName, string Topic)> affectedThreads = [];
-        int refCount = 0;
 
-        foreach (int zulipMessageId in newZulipMessageIds)
+        int[] ids = [.. newZulipMessageIds];
+        List<ZulipMessageRecord> messages =
+            ZulipMessageRecord.SelectList(connection, ZulipMessageIdValues: ids);
+
+        List<JiraXRefRecord> jiraRefs = [];
+        List<GitHubXRefRecord> githubRefs = [];
+        List<ConfluenceXRefRecord> confluenceRefs = [];
+        List<FhirElementXRefRecord> fhirRefs = [];
+
+        foreach (ZulipMessageRecord message in messages)
         {
             ct.ThrowIfCancellationRequested();
-
-            ZulipMessageRecord? message = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: zulipMessageId);
-            if (message is null) continue;
 
             string messageText = GetMessageText(message);
             if (string.IsNullOrWhiteSpace(messageText)) continue;
 
             string sourceId = message.ZulipMessageId.ToString();
-            int extracted = ExtractAndInsertRefs(connection, sourceId, messageText);
+            int extractedBefore = jiraRefs.Count + githubRefs.Count + confluenceRefs.Count + fhirRefs.Count;
+            CollectRefs(sourceId, messageText, jiraRefs, githubRefs, confluenceRefs, fhirRefs);
+            int extracted = jiraRefs.Count + githubRefs.Count + confluenceRefs.Count + fhirRefs.Count - extractedBefore;
+
             if (extracted > 0)
                 affectedThreads.Add((message.StreamName, message.Topic));
-            refCount += extracted;
         }
+
+        int refCount = jiraRefs.Count + githubRefs.Count + confluenceRefs.Count + fhirRefs.Count;
+        jiraRefs.Insert(connection, ignoreDuplicates: true);
+        githubRefs.Insert(connection, ignoreDuplicates: true);
+        confluenceRefs.Insert(connection, ignoreDuplicates: true);
+        fhirRefs.Insert(connection, ignoreDuplicates: true);
 
         // Refresh affected threads
         foreach ((string streamName, string topic) in affectedThreads)
@@ -98,6 +111,40 @@ public class ZulipXRefRebuilder(ZulipDatabase database, ILogger<ZulipXRefRebuild
         logger.LogInformation(
             "Incremental cross-reference index: {Messages} messages scanned, {Refs} refs, {Threads} threads refreshed",
             newZulipMessageIds.Count, refCount, affectedThreads.Count);
+    }
+
+    /// <summary>Runs all shared extractors on the text and appends records to the provided lists (Id assigned).</summary>
+    private static void CollectRefs(
+        string sourceId,
+        string messageText,
+        List<JiraXRefRecord> jiraRefs,
+        List<GitHubXRefRecord> githubRefs,
+        List<ConfluenceXRefRecord> confluenceRefs,
+        List<FhirElementXRefRecord> fhirRefs)
+    {
+        foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, null, messageText))
+        {
+            r.Id = JiraXRefRecord.GetIndex();
+            jiraRefs.Add(r);
+        }
+
+        foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
+        {
+            r.Id = GitHubXRefRecord.GetIndex();
+            githubRefs.Add(r);
+        }
+
+        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
+        {
+            r.Id = ConfluenceXRefRecord.GetIndex();
+            confluenceRefs.Add(r);
+        }
+
+        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(ContentTypes.Message, sourceId, messageText))
+        {
+            r.Id = FhirElementXRefRecord.GetIndex();
+            fhirRefs.Add(r);
+        }
     }
 
     /// <summary>Combines plain text and HTML content from a message for extraction.</summary>

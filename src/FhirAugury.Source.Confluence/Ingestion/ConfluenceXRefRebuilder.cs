@@ -30,7 +30,10 @@ public class ConfluenceXRefRebuilder(
             cmd.ExecuteNonQuery();
         }
 
-        int refCount = 0;
+        List<JiraXRefRecord> jiraRefs = [];
+        List<ZulipXRefRecord> zulipRefs = [];
+        List<GitHubXRefRecord> githubRefs = [];
+        List<FhirElementXRefRecord> fhirRefs = [];
 
         // Scan pages
         List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
@@ -38,7 +41,7 @@ public class ConfluenceXRefRebuilder(
         {
             ct.ThrowIfCancellationRequested();
             string pageText = $"{page.Title} {page.BodyPlain}";
-            refCount += ExtractAndInsertAll(connection, page.ConfluenceId, ContentTypes.Page, pageText);
+            ExtractAll(page.ConfluenceId, ContentTypes.Page, pageText, jiraRefs, zulipRefs, githubRefs, fhirRefs);
         }
 
         // Scan comments (xrefs keyed to parent page ID, matching how Jira maps comment xrefs to the parent issue)
@@ -47,46 +50,66 @@ public class ConfluenceXRefRebuilder(
         {
             ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(comment.Body)) continue;
-            refCount += ExtractAndInsertAll(connection, comment.ConfluencePageId, ContentTypes.Comment, comment.Body);
+            ExtractAll(comment.ConfluencePageId, ContentTypes.Comment, comment.Body, jiraRefs, zulipRefs, githubRefs, fhirRefs);
         }
+
+        ct.ThrowIfCancellationRequested();
+
+        BatchInsert(connection, jiraRefs, (c, b) => b.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        BatchInsert(connection, zulipRefs, (c, b) => b.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        BatchInsert(connection, githubRefs, (c, b) => b.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        BatchInsert(connection, fhirRefs, (c, b) => b.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+
+        int refCount = jiraRefs.Count + zulipRefs.Count + githubRefs.Count + fhirRefs.Count;
 
         logger.LogInformation("Rebuilt cross-references: {RefCount} refs from {PageCount} pages and {CommentCount} comments",
             refCount, pages.Count, comments.Count);
     }
 
-    private static int ExtractAndInsertAll(SqliteConnection connection, string sourceId, string contentType, string text)
+    private static void ExtractAll(
+        string sourceId,
+        string contentType,
+        string text,
+        List<JiraXRefRecord> jiraRefs,
+        List<ZulipXRefRecord> zulipRefs,
+        List<GitHubXRefRecord> githubRefs,
+        List<FhirElementXRefRecord> fhirRefs)
     {
-        if (string.IsNullOrWhiteSpace(text)) return 0;
-        int count = 0;
+        if (string.IsNullOrWhiteSpace(text)) return;
 
         foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences(contentType, sourceId, null, text))
         {
             r.Id = JiraXRefRecord.GetIndex();
-            JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
+            jiraRefs.Add(r);
         }
 
         foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(contentType, sourceId, text))
         {
             r.Id = ZulipXRefRecord.GetIndex();
-            ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
+            zulipRefs.Add(r);
         }
 
         foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences(contentType, sourceId, text))
         {
             r.Id = GitHubXRefRecord.GetIndex();
-            GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
+            githubRefs.Add(r);
         }
 
         foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(contentType, sourceId, text))
         {
             r.Id = FhirElementXRefRecord.GetIndex();
-            FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
+            fhirRefs.Add(r);
         }
+    }
 
-        return count;
+    private static void BatchInsert<T>(SqliteConnection connection, List<T> records, Action<SqliteConnection, List<T>> insertBatch)
+    {
+        if (records.Count == 0) return;
+        const int batchSize = 1000;
+        for (int i = 0; i < records.Count; i += batchSize)
+        {
+            List<T> batch = records.GetRange(i, Math.Min(batchSize, records.Count - i));
+            insertBatch(connection, batch);
+        }
     }
 }

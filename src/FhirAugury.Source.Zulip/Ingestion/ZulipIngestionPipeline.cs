@@ -241,25 +241,32 @@ public class ZulipIngestionPipeline(
     /// </summary>
     private List<IndexContent> BuildIndexContent(IReadOnlyList<int> zulipMessageIds)
     {
-        using SqliteConnection connection = database.OpenConnection();
         List<IndexContent> items = [];
+        if (zulipMessageIds.Count == 0) return items;
+
+        using SqliteConnection connection = database.OpenConnection();
+
+        int[] idArray = [.. zulipMessageIds];
+        List<ZulipMessageRecord> msgs =
+            ZulipMessageRecord.SelectList(connection, ZulipMessageIdValues: idArray);
+
+        Dictionary<int, ZulipMessageRecord> byId = msgs.ToDictionary(m => m.ZulipMessageId);
+
         foreach (int msgId in zulipMessageIds)
         {
-            ZulipMessageRecord? msg = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
-            if (msg is not null)
+            if (!byId.TryGetValue(msgId, out ZulipMessageRecord? msg)) continue;
+
+            string text = string.Join(" ",
+                new[] { msg.ContentPlain, msg.Topic, msg.SenderName }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+            if (!string.IsNullOrWhiteSpace(text))
             {
-                string text = string.Join(" ",
-                    new[] { msg.ContentPlain, msg.Topic, msg.SenderName }
-                        .Where(s => !string.IsNullOrEmpty(s)));
-                if (!string.IsNullOrWhiteSpace(text))
+                items.Add(new IndexContent
                 {
-                    items.Add(new IndexContent
-                    {
-                        ContentType = ContentTypes.Message,
-                        SourceId = msg.ZulipMessageId.ToString(),
-                        Text = text
-                    });
-                }
+                    ContentType = ContentTypes.Message,
+                    SourceId = msg.ZulipMessageId.ToString(),
+                    Text = text
+                });
             }
         }
         return items;

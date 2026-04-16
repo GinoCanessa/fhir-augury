@@ -144,6 +144,9 @@ public class ContentController(
 
         List<ScoredItem> allItems = [];
 
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
+
         foreach ((string sourceName, Task<ContentSearchResponse?> task) in tasks)
         {
             try
@@ -300,6 +303,10 @@ public class ContentController(
         }
 
         List<RelatedByKeywordItem> allItems = [];
+
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
+
         foreach ((string sourceName, Task<RelatedByKeywordResponse?> task) in tasks)
         {
             try
@@ -351,6 +358,9 @@ public class ContentController(
         }
 
         List<CrossReferenceHit> allHits = [];
+
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
 
         foreach ((string sourceName, Task<CrossReferenceQueryResponse?> task) in tasks)
         {

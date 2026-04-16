@@ -113,23 +113,167 @@ public class JiraSource(
 
             using SqliteConnection connection = database.OpenConnection();
 
-            foreach (JsonElement issueJson in issues.EnumerateArray())
-            {
-                (ProcessOutcome outcome, string? error) = ProcessIssue(issueJson, connection);
-                itemsProcessed++;
+            Dictionary<string, JiraIssueRecord> toUpdate = [];
+            Dictionary<string, JiraIssueRecord> toInsert = [];
+            Dictionary<string, List<JiraCommentRecord>> commentsToInsert = [];
+            Dictionary<string, List<JiraIssueRelatedRecord>> relatedIssuesToInsert = [];
+            List<JiraIssueInPersonRecord> inPersonsToInsert = [];
+            List<JiraIssueLinkRecord> linksToInsert = [];
+            List<(JsonElement Json, JiraIssueRecord Issue)> parsedPage = [];
+            List<string> pageKeys = [];
 
-                switch (outcome)
+            try
+            {
+                foreach (JsonElement issueJson in issues.EnumerateArray())
                 {
-                    case ProcessOutcome.New: itemsNew++; break;
-                    case ProcessOutcome.Updated: itemsUpdated++; break;
-                    case ProcessOutcome.Failed:
-                        itemsFailed++;
-                        if (error is not null) errors.Add(error);
-                        break;
+                    JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
+
+                    JsonElement fields = issueJson.GetProperty("fields");
+                    (string? assigneeUsername, string? assigneeDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "assignee");
+                    (string? reporterUsername, string? reporterDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "reporter");
+
+                    issue.AssigneeId = userMapper.ResolveUser(connection, assigneeUsername, assigneeDisplayName);
+                    issue.ReporterId = userMapper.ResolveUser(connection, reporterUsername, reporterDisplayName);
+                    issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                    issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+
+                    pageKeys.Add(issue.Key);
+                    parsedPage.Add((issueJson, issue));
                 }
 
-                if (itemsProcessed % 1000 == 0)
-                    logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
+                Dictionary<string, JiraIssueRecord> existingByKey = [];
+                if (pageKeys.Count > 0)
+                {
+                    // Chunk to stay well under SQLite's 999-parameter limit.
+                    foreach (string[] chunk in pageKeys.Chunk(500).Select(c => c.ToArray()))
+                    {
+                        foreach (JiraIssueRecord row in JiraIssueRecord.SelectList(connection, KeyValues: chunk))
+                        {
+                            existingByKey[row.Key] = row;
+                        }
+                    }
+                }
+
+                foreach ((JsonElement issueJson, JiraIssueRecord issue) in parsedPage)
+                {
+                    if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
+                    {
+                        issue.Id = existing.Id;
+                        toInsert[issue.Key] = issue;
+                    }
+                    else if (toUpdate.TryGetValue(issue.Key, out existing))
+                    {
+                        issue.Id = existing.Id;
+                        toUpdate[issue.Key] = issue;
+                    }
+                    else if (existingByKey.TryGetValue(issue.Key, out JiraIssueRecord? dbExisting))
+                    {
+                        issue.Id = dbExisting.Id;
+                        toUpdate[issue.Key] = issue;
+                        RemoveExistingComments(connection, issue.Key);
+                        RemoveRelatedIssues(connection, issue.Key);
+                        RemoveExistingInPersons(connection, issue.Id);
+                    }
+                    else
+                    {
+                        if (issue.Id <= 0)
+                        {
+                            issue.Id = JiraIssueRecord.GetIndex();
+                        }
+                        toInsert[issue.Key] = issue;
+                    }
+
+                    List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
+                    foreach (JiraCommentRecord comment in comments)
+                    {
+                        if (comment.Id <= 0)
+                        {
+                            comment.Id = JiraCommentRecord.GetIndex();
+                        }
+                        comment.IssueId = issue.Id;
+                        (string? commentAuthorUsername, string? commentAuthorDisplayName) =
+                            JiraFieldMapper.ExtractCommentAuthorRef(issueJson, comment);
+                        userMapper.ResolveUser(connection, commentAuthorUsername, commentAuthorDisplayName ?? comment.Author);
+                    }
+                    commentsToInsert[issue.Key] = comments;
+
+                    JsonElement issueFields = issueJson.GetProperty("fields");
+                    foreach (JiraInPersonRef ipRef in JiraFieldMapper.ExtractInPersonRequesters(issueFields))
+                    {
+                        int? userId = userMapper.ResolveUser(connection, ipRef.Username, ipRef.DisplayName);
+                        if (userId is not null)
+                        {
+                            inPersonsToInsert.Add(new JiraIssueInPersonRecord
+                            {
+                                Id = JiraIssueInPersonRecord.GetIndex(),
+                                IssueId = issue.Id,
+                                UserId = userId.Value,
+                            });
+                        }
+                    }
+
+                    foreach (JiraIssueLinkRecord link in JiraFieldMapper.MapIssueLinks(issueJson, issue.Key))
+                    {
+                        linksToInsert.Add(link);
+                    }
+
+                    if (issue.RelatedIssues is not null)
+                    {
+                        List<JiraIssueRelatedRecord> related = [];
+                        string[] keys = issue.RelatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                        foreach (string relatedKey in keys)
+                        {
+                            related.Add(new JiraIssueRelatedRecord
+                            {
+                                Id = JiraIssueRelatedRecord.GetIndex(),
+                                IssueId = issue.Id,
+                                IssueKey = issue.Key,
+                                RelatedIssueKey = relatedKey,
+                            });
+                        }
+                        if (related.Count > 0)
+                        {
+                            relatedIssuesToInsert[issue.Key] = related;
+                        }
+                    }
+
+                    itemsProcessed++;
+
+                    if (itemsProcessed % 1000 == 0)
+                        logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
+                }
+
+                toUpdate.Values.Update(connection);
+                toInsert.Values.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+
+                foreach (List<JiraCommentRecord> comments in commentsToInsert.Values)
+                {
+                    comments.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                foreach (List<JiraIssueRelatedRecord> relateds in relatedIssuesToInsert.Values)
+                {
+                    relateds.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                if (inPersonsToInsert.Count > 0)
+                {
+                    inPersonsToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                if (linksToInsert.Count > 0)
+                {
+                    linksToInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+                }
+
+                itemsNew += toInsert.Count;
+                itemsUpdated += toUpdate.Count;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to process JSON page at startAt={StartAt}", startAt);
+                itemsFailed++;
+                errors.Add($"page:{startAt} - {ex.Message}");
             }
 
             startAt += issues.GetArrayLength();
@@ -515,105 +659,6 @@ public class JiraSource(
         return Task.FromResult(new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt));
     }
 
-    private (ProcessOutcome Outcome, string? Error) ProcessIssue(
-        JsonElement issueJson, Microsoft.Data.Sqlite.SqliteConnection connection)
-    {
-        string key = string.Empty;
-        try
-        {
-            JiraIssueRecord issue = JiraFieldMapper.MapIssue(issueJson);
-            key = issue.Key;
-
-            // Resolve users
-            JsonElement fields = issueJson.GetProperty("fields");
-            (string? assigneeUsername, string? assigneeDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "assignee");
-            (string? reporterUsername, string? reporterDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "reporter");
-
-            issue.AssigneeId = userMapper.ResolveUser(connection, assigneeUsername, assigneeDisplayName);
-            issue.ReporterId = userMapper.ResolveUser(connection, reporterUsername, reporterDisplayName);
-            issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
-            issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
-
-            JiraIssueRecord? existing = JiraIssueRecord.SelectSingle(connection, Key: key);
-            if (existing is not null)
-            {
-                issue.Id = existing.Id;
-                JiraIssueRecord.Update(connection, issue);
-                RemoveExistingInPersons(connection, issue.Id);
-            }
-            else
-            {
-                JiraIssueRecord.Insert(connection, issue, ignoreDuplicates: true);
-            }
-
-            // Resolve comment authors
-            List<JiraCommentRecord> comments = JiraFieldMapper.MapComments(issueJson, issue.Id, issue.Key);
-            foreach (JiraCommentRecord comment in comments)
-            {
-                // Extract username separately for proper user resolution
-                (string? commentAuthorUsername, string? commentAuthorDisplayName) =
-                    JiraFieldMapper.ExtractCommentAuthorRef(issueJson, comment);
-                userMapper.ResolveUser(connection, commentAuthorUsername, commentAuthorDisplayName ?? comment.Author);
-
-                JiraCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
-            }
-
-            // Resolve in-person requesters
-            List<JiraInPersonRef> inPersonRefs = JiraFieldMapper.ExtractInPersonRequesters(fields);
-            foreach (JiraInPersonRef ipRef in inPersonRefs)
-            {
-                int? userId = userMapper.ResolveUser(connection, ipRef.Username, ipRef.DisplayName);
-                if (userId is not null)
-                {
-                    JiraIssueInPersonRecord inPersonRecord = new()
-                    {
-                        Id = JiraIssueInPersonRecord.GetIndex(),
-                        IssueId = issue.Id,
-                        UserId = userId.Value,
-                    };
-                    JiraIssueInPersonRecord.Insert(connection, inPersonRecord, ignoreDuplicates: true);
-                }
-            }
-
-            List<JiraIssueLinkRecord> links = JiraFieldMapper.MapIssueLinks(issueJson, issue.Key);
-            foreach (JiraIssueLinkRecord link in links)
-            {
-                JiraIssueLinkRecord.Insert(connection, link, ignoreDuplicates: true);
-            }
-
-            RemoveRelatedIssues(connection, issue.Key);
-
-            if (issue.RelatedIssues is not null)
-            {
-                List<JiraIssueRelatedRecord> related = [];
-
-                string[] keys = issue.RelatedIssues.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-                foreach (string relatedKey in keys)
-                {
-                    related.Add(new()
-                    {
-                        Id = JiraIssueRelatedRecord.GetIndex(),
-                        IssueId = issue.Id,
-                        IssueKey = issue.Key,
-                        RelatedIssueKey = relatedKey
-                    });
-                }
-
-                if (related.Count > 0)
-                {
-                    related.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-                }
-            }
-
-            return (existing is not null ? ProcessOutcome.Updated : ProcessOutcome.New, null);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to process issue {Key}", key);
-            return (ProcessOutcome.Failed, $"{key}: {ex.Message}");
-        }
-    }
-
     private static IEnumerable<JiraParsedIssue> ParseCachedFile(Stream stream, string key)
     {
         if (key.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
@@ -754,8 +799,6 @@ public class JiraSource(
 
         return entries.Select(e => (e.Source, e.Key)).ToList();
     }
-
-    private enum ProcessOutcome { New, Updated, Failed }
 
     private static void RemoveExistingComments(SqliteConnection conn, string issueKey)
     {

@@ -169,6 +169,13 @@ public class ZulipSource(
                 Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
                 Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
 
+                int[] pageIds = [.. messageObjects.Select(m => (int)m.Id)];
+                Dictionary<int, ZulipMessageRecord> pageExisting = pageIds.Length == 0
+                    ? []
+                    : ZulipMessageRecord
+                        .SelectList(connection, ZulipMessageIdValues: pageIds)
+                        .ToDictionary(m => m.ZulipMessageId);
+
                 foreach (MessageObject msgObj in messageObjects)
                 {
                     itemsProcessed++;
@@ -198,7 +205,7 @@ public class ZulipSource(
                         record.Id = existing.Id;
                         messagesToUpdate[record.ZulipMessageId] = record;
                     }
-                    else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                    else if (pageExisting.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? dbExisting))
                     {
                         record.Id = dbExisting.Id;
                         messagesToUpdate[record.ZulipMessageId] = record;
@@ -368,6 +375,13 @@ public class ZulipSource(
                 Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
                 Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
 
+                int[] pageIds = [.. messageObjects.Select(m => (int)m.Id)];
+                Dictionary<int, ZulipMessageRecord> pageExisting = pageIds.Length == 0
+                    ? []
+                    : ZulipMessageRecord
+                        .SelectList(connection, ZulipMessageIdValues: pageIds)
+                        .ToDictionary(m => m.ZulipMessageId);
+
                 foreach (MessageObject msgObj in messageObjects)
                 {
                     itemsProcessed++;
@@ -394,7 +408,7 @@ public class ZulipSource(
                         record.Id = existing.Id;
                         messagesToUpdate[record.ZulipMessageId] = record;
                     }
-                    else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                    else if (pageExisting.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? dbExisting))
                     {
                         record.Id = dbExisting.Id;
                         messagesToUpdate[record.ZulipMessageId] = record;
@@ -555,6 +569,15 @@ public class ZulipSource(
                         Dictionary<int, ZulipMessageRecord> messagesToUpdate = [];
                         Dictionary<int, ZulipMessageRecord> messagesToInsert = [];
 
+                        int[] pageIds = [.. messagesArray.EnumerateArray()
+                            .Where(e => e.TryGetProperty("id", out _))
+                            .Select(e => e.GetProperty("id").GetInt32())];
+                        Dictionary<int, ZulipMessageRecord> pageExisting = pageIds.Length == 0
+                            ? []
+                            : ZulipMessageRecord
+                                .SelectList(connection, ZulipMessageIdValues: pageIds)
+                                .ToDictionary(m => m.ZulipMessageId);
+
                         foreach (JsonElement msgJson in messagesArray.EnumerateArray())
                         {
                             itemsProcessed++;
@@ -585,7 +608,7 @@ public class ZulipSource(
                                 record.Id = existing.Id;
                                 messagesToUpdate[record.ZulipMessageId] = record;
                             }
-                            else if (ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: record.ZulipMessageId) is ZulipMessageRecord dbExisting)
+                            else if (pageExisting.TryGetValue(record.ZulipMessageId, out ZulipMessageRecord? dbExisting))
                             {
                                 record.Id = dbExisting.Id;
                                 messagesToUpdate[record.ZulipMessageId] = record;

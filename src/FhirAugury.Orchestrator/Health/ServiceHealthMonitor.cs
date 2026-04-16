@@ -19,8 +19,17 @@ public class ServiceHealthMonitor(
     private readonly OrchestratorOptions options = optionsAccessor.Value;
     private readonly Dictionary<string, ServiceHealthInfo> _healthStatus = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
+    private DateTimeOffset? _lastCheckedAt;
 
     private static readonly TimeSpan PerServiceTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Timestamp of the last completed full health sweep. Null until the first sweep finishes.
+    /// </summary>
+    public DateTimeOffset? LastCheckedAt
+    {
+        get { lock (_lock) { return _lastCheckedAt; } }
+    }
 
     /// <summary>
     /// Checks health of all enabled source services in parallel with per-service timeouts.
@@ -48,6 +57,7 @@ public class ServiceHealthMonitor(
             {
                 _healthStatus[name] = info;
             }
+            _lastCheckedAt = DateTimeOffset.UtcNow;
         }
     }
 
@@ -165,5 +175,6 @@ public class ServiceHealthInfo
     public long DbSizeBytes { get; set; }
     public DateTimeOffset? LastSyncAt { get; set; }
     public string? LastError { get; set; }
+    public DateTimeOffset CheckedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<Common.Api.IndexStatusInfo> Indexes { get; set; } = [];
 }

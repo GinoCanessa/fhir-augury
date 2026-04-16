@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
@@ -59,7 +60,7 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
             ["bm25", "cross-refs", "fts", "lookup-tables", "all"])
         {
             AdditionalData = projectStatuses.Count > 0
-                ? new Dictionary<string, object> { ["projects"] = projectStatuses }
+                ? new Dictionary<string, JsonElement> { ["projects"] = JsonSerializer.SerializeToElement(projectStatuses) }
                 : null
         };
 

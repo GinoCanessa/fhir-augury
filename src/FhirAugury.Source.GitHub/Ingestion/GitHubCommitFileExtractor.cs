@@ -63,23 +63,45 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
         using SqliteConnection connection = database.OpenConnection();
 
-        int commitCount = 0, fileCount = 0;
+        // Pre-fetch existing SHAs for this repo (single query) to avoid per-commit SELECT.
+        HashSet<string> existingShas = new HashSet<string>(StringComparer.Ordinal);
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT Sha FROM github_commits WHERE RepoFullName = @repo";
+            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read()) existingShas.Add(reader.GetString(0));
+        }
+
+        List<GitHubCommitRecord> newCommits = [];
+        List<GitHubCommitFileRecord> newFiles = [];
         foreach ((GitHubCommitRecord? commit, List<GitHubCommitFileRecord>? files) in commits)
         {
             ct.ThrowIfCancellationRequested();
+            if (existingShas.Contains(commit.Sha)) continue;
 
-            GitHubCommitRecord? existing = GitHubCommitRecord.SelectSingle(connection, Sha: commit.Sha);
-            if (existing is not null) continue;
-
-            GitHubCommitRecord.Insert(connection, commit, ignoreDuplicates: true);
-            commitCount++;
-
-            foreach (GitHubCommitFileRecord file in files)
-            {
-                GitHubCommitFileRecord.Insert(connection, file, ignoreDuplicates: true);
-                fileCount++;
-            }
+            newCommits.Add(commit);
+            newFiles.AddRange(files);
         }
+
+        const int batchSize = 1000;
+
+        for (int i = 0; i < newCommits.Count; i += batchSize)
+        {
+            List<GitHubCommitRecord> batch =
+                newCommits.GetRange(i, Math.Min(batchSize, newCommits.Count - i));
+            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
+
+        for (int i = 0; i < newFiles.Count; i += batchSize)
+        {
+            List<GitHubCommitFileRecord> batch =
+                newFiles.GetRange(i, Math.Min(batchSize, newFiles.Count - i));
+            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
+
+        int commitCount = newCommits.Count;
+        int fileCount = newFiles.Count;
 
         logger.LogInformation(
             "Extracted {Commits} commits and {Files} file changes from {Repo}",

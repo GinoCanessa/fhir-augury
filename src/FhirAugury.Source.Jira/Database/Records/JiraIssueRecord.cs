@@ -26,6 +26,7 @@ public partial record class JiraIssueRecord
     public required int Id { get; set; }
 
     [LdgSQLiteUnique]
+    [LdgSQLiteMultiSelect]
     public required string Key { get; set; }
 
     public required string ProjectKey { get; set; }

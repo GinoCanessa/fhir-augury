@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 
@@ -11,6 +12,10 @@ public class FileSystemResponseCache : IResponseCache
     private readonly string _rootPath;
     private readonly string _rootPathWithSep;
     private readonly ILogger? _logger;
+    private static readonly TimeSpan StatsCacheTtl = TimeSpan.FromSeconds(30);
+    private readonly ConcurrentDictionary<string, CachedStatsEntry> _statsCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record CachedStatsEntry(CacheStats Value, DateTimeOffset ComputedAtUtc);
 
     public FileSystemResponseCache(string rootPath, ILogger? logger = null)
     {
@@ -66,6 +71,7 @@ public class FileSystemResponseCache : IResponseCache
             async fs => await content.CopyToAsync(fs, ct),
             _logger,
             ct);
+        _statsCache.TryRemove(source, out _);
     }
 
     public void Remove(string source, string key)
@@ -73,6 +79,7 @@ public class FileSystemResponseCache : IResponseCache
         string path = ResolvePath(source, key);
         if (File.Exists(path))
             File.Delete(path);
+        _statsCache.TryRemove(source, out _);
     }
 
     public IEnumerable<string> EnumerateKeys(string source)
@@ -96,10 +103,13 @@ public class FileSystemResponseCache : IResponseCache
         string metaFile = Path.Combine(_rootPath, $"_meta_{source}.json");
         if (File.Exists(metaFile))
             File.Delete(metaFile);
+
+        _statsCache.TryRemove(source, out _);
     }
 
     public void ClearAll()
     {
+        _statsCache.Clear();
         if (!Directory.Exists(_rootPath))
             return;
 
@@ -112,23 +122,34 @@ public class FileSystemResponseCache : IResponseCache
         }
     }
 
-    public CacheStats GetStats(string source)
+    public CacheStats GetStats(string source, bool forceRefresh = false)
     {
+        if (!forceRefresh
+            && _statsCache.TryGetValue(source, out CachedStatsEntry? cached)
+            && DateTimeOffset.UtcNow - cached.ComputedAtUtc < StatsCacheTtl)
+        {
+            return cached.Value;
+        }
+
         string sourceDir = Path.Combine(_rootPath, source);
         if (!Directory.Exists(sourceDir))
-            return new CacheStats(source, 0, 0, []);
+        {
+            CacheStats empty = new CacheStats(source, 0, 0, []);
+            _statsCache[source] = new CachedStatsEntry(empty, DateTimeOffset.UtcNow);
+            return empty;
+        }
 
         int fileCount = 0;
         long totalBytes = 0;
         HashSet<string> subPaths = new HashSet<string>();
 
-        foreach (string file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
+        DirectoryInfo rootInfo = new DirectoryInfo(sourceDir);
+        foreach (FileInfo info in rootInfo.EnumerateFiles("*", SearchOption.AllDirectories))
         {
-            FileInfo info = new FileInfo(file);
             fileCount++;
             totalBytes += info.Length;
 
-            string relative = Path.GetRelativePath(sourceDir, file);
+            string relative = Path.GetRelativePath(sourceDir, info.FullName);
             string? dirPart = Path.GetDirectoryName(relative);
             if (!string.IsNullOrEmpty(dirPart))
             {
@@ -137,7 +158,9 @@ public class FileSystemResponseCache : IResponseCache
             }
         }
 
-        return new CacheStats(source, fileCount, totalBytes, subPaths.Order().ToList());
+        CacheStats stats = new CacheStats(source, fileCount, totalBytes, subPaths.Order().ToList());
+        _statsCache[source] = new CachedStatsEntry(stats, DateTimeOffset.UtcNow);
+        return stats;
     }
 
     public Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default)
@@ -173,17 +196,17 @@ public class FileSystemResponseCache : IResponseCache
             return [];
 
         string sourceRoot = Path.Combine(_rootPath, source);
-        List<string> allFiles = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-            .Where(f => !IsMetadataFile(Path.GetFileName(f)))
-            .ToList();
 
-        List<CacheFileNaming.ParsedBatchFile> batchFiles = new List<CacheFileNaming.ParsedBatchFile>();
-        List<string> nonBatchKeys = new List<string>();
+        List<CacheFileNaming.ParsedBatchFile> batchFiles = [];
+        List<string> nonBatchKeys = [];
 
-        foreach (string? file in allFiles)
+        foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
         {
-            string key = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
             string fileName = Path.GetFileName(file);
+            if (IsMetadataFile(fileName))
+                continue;
+
+            string key = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
 
             if (CacheFileNaming.TryParse(fileName, out CacheFileNaming.ParsedBatchFile? parsed))
             {
