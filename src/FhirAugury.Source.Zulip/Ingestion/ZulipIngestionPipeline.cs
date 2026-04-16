@@ -245,20 +245,21 @@ public class ZulipIngestionPipeline(
         List<IndexContent> items = [];
         foreach (int msgId in zulipMessageIds)
         {
-            ZulipMessageRecord? msg = ZulipMessageRecord.SelectSingle(
-                connection, ZulipMessageId: msgId);
+            ZulipMessageRecord? msg = ZulipMessageRecord.SelectSingle(connection, ZulipMessageId: msgId);
             if (msg is not null)
             {
                 string text = string.Join(" ",
                     new[] { msg.ContentPlain, msg.Topic, msg.SenderName }
                         .Where(s => !string.IsNullOrEmpty(s)));
                 if (!string.IsNullOrWhiteSpace(text))
+                {
                     items.Add(new IndexContent
                     {
                         ContentType = ContentTypes.Message,
                         SourceId = msg.ZulipMessageId.ToString(),
                         Text = text
                     });
+                }
             }
         }
         return items;

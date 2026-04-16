@@ -9,7 +9,7 @@
     <InternalsVisibleTo Include="FhirAugury.Orchestrator.Tests" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.324.2022" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
   </ItemGroup>
   <ItemGroup>
