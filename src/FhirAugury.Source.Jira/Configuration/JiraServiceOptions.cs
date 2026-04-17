@@ -34,6 +34,15 @@ public class JiraServiceOptions
     public bool IngestionPaused { get; set; } = false;
 
     /// <summary>
+    /// When true, the scheduled ingestion worker runs exactly one pass at
+    /// startup (honoring <see cref="MinSyncAge"/> and <see cref="IngestionPaused"/>)
+    /// and then exits its loop cleanly. The service itself keeps running, so HTTP
+    /// endpoints and manual ingestion remain available. Useful for local/dev
+    /// runs where a continuous sync loop is not desired.
+    /// </summary>
+    public bool RunIngestionOnStartupOnly { get; set; } = false;
+
+    /// <summary>
     /// When true, rebuilds the database from cached responses on startup.
     /// </summary>
     public bool ReloadFromCacheOnStartup { get; set; } = false;

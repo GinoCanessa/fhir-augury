@@ -430,6 +430,13 @@ All source services also have a `MinSyncAge` setting (default `04:00:00`) that
 prevents over-syncing by skipping the startup incremental sync if the last sync
 occurred less than `MinSyncAge` ago.
 
+All source services also support a `RunIngestionOnStartupOnly` flag (default
+`false`). When `true`, the scheduled ingestion worker runs exactly one pass at
+startup (still honoring `MinSyncAge` and `IngestionPaused`) and then exits its
+loop cleanly. The service itself keeps running, so HTTP endpoints and manual
+ingestion via the `IngestionController` remain available. This is primarily
+useful for local/dev runs that should not continue syncing in the background.
+
 ---
 
 ## BM25 Tuning

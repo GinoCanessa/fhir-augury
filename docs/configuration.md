@@ -88,6 +88,7 @@ pattern.
 | `DefaultJql` | string? | `null` | Custom JQL query to use instead of the default |
 | `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
+| `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5160` | HTTP listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
@@ -173,6 +174,7 @@ pattern.
 | `StreamBaselineValues` | Dictionary | `{}` | Per-stream baseline multipliers for search ranking (stream name → value 0–10, default 5). Scores are multiplied by `value / 5.0`. |
 | `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
+| `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5170` | HTTP listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
@@ -253,6 +255,7 @@ pattern.
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
+| `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5180` | HTTP listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
@@ -371,6 +374,7 @@ pattern.
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
+| `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5190` | HTTP listen port |
 | `RateLimiting.MaxRequestsPerSecond` | int | `10` | Rate limit |
 | `RateLimiting.MaxConcurrentRequests` | int | `1` | Maximum concurrent API requests |
