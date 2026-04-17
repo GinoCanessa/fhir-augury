@@ -171,6 +171,25 @@ public class JiraUserMapperTests : IDisposable
     }
 
     [Fact]
+    public void ResolveByDisplayName_ReusesExistingRealUser()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        int? realId = _mapper.ResolveUser(conn, "jane.doe", "Jane Doe");
+        Assert.NotNull(realId);
+
+        // Fresh mapper — cache empty — must reuse the existing real user,
+        // not insert a synthetic (Username="Jane Doe") duplicate.
+        JiraUserMapper fresh = new();
+        int? resolved = fresh.ResolveByDisplayName(conn, "Jane Doe");
+
+        Assert.Equal(realId, resolved);
+
+        List<JiraUserRecord> all = JiraUserRecord.SelectList(conn);
+        Assert.Single(all);
+        Assert.Equal("jane.doe", all[0].Username);
+    }
+
+    [Fact]
     public void ResolveUser_MultipleUsers_DifferentIds()
     {
         using SqliteConnection conn = _db.OpenConnection();

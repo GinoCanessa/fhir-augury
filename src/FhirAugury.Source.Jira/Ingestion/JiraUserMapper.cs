@@ -87,6 +87,18 @@ public class JiraUserMapper
         if (_displayNameToId.TryGetValue(displayName, out int cachedId))
             return cachedId;
 
+        // Reuse an existing jira_users row with this DisplayName if present, to
+        // avoid inserting a synthetic (Username=displayName) duplicate when a
+        // real account with the same DisplayName already exists.
+        List<JiraUserRecord> matches = JiraUserRecord.SelectList(conn, DisplayName: displayName);
+        if (matches.Count > 0)
+        {
+            JiraUserRecord chosen = matches.OrderBy(u => u.Id).First();
+            _displayNameToId[displayName] = chosen.Id;
+            _usernameToId[chosen.Username] = chosen.Id;
+            return chosen.Id;
+        }
+
         return ResolveUser(conn, null, displayName);
     }
 

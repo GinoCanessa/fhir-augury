@@ -1,5 +1,6 @@
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
+using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
@@ -407,9 +408,16 @@ public class JiraIngestionPipeline(
             return new DateTimeOffset(resumeDate.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
         }
 
-        // No cache either — default to last 30 days
-        logger.LogInformation("No sync state or cache files for {Project}; defaulting to last 30 days", project);
-        return DateTimeOffset.UtcNow.AddDays(-30);
+        //logger.LogInformation("No sync state or cache files for {Project}; defaulting to last 30 days", project);
+        //return DateTimeOffset.UtcNow.AddDays(-30);
+
+        // No cache either — default to the full-sync start date
+        logger.LogInformation(
+            "No sync state or cache files for {Project}; defaulting to full-sync start date {StartDate}",
+            project, JiraCacheLayout.DefaultFullSyncStartDate);
+        return new DateTimeOffset(
+            JiraCacheLayout.DefaultFullSyncStartDate.ToDateTime(TimeOnly.MinValue),
+            TimeSpan.Zero);
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()

@@ -202,6 +202,56 @@ public class JiraIndexBuilderUserTests : IDisposable
     }
 
     [Fact]
+    public void RebuildIndexTables_CollapsesUsersWithSameDisplayName()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+
+        // Real account and a synthetic mapper-inserted row that collides on DisplayName.
+        JiraUserRecord real = CreateUser(conn, "jane.doe", "Jane Doe");
+        JiraUserRecord synthetic = CreateUser(conn, "Jane Doe", "Jane Doe");
+
+        // Issue A: reporter = real
+        CreateIssue(conn, "FHIR-1", reporterId: real.Id);
+        // Issue B: vote mover = synthetic
+        CreateIssue(conn, "FHIR-2", voteMoverId: synthetic.Id);
+        // Issue C: both real (reporter) and synthetic (vote seconder) -> counts once
+        CreateIssue(conn, "FHIR-3", reporterId: real.Id, voteSeconderId: synthetic.Id);
+
+        _builder.RebuildIndexTables(conn);
+
+        List<JiraIndexUserRecord> index = JiraIndexUserRecord.SelectList(conn);
+        List<JiraIndexUserRecord> janeRows = index.Where(r => r.Name == "Jane Doe").ToList();
+        Assert.Single(janeRows);
+        Assert.Equal(3, janeRows[0].IssueCount);
+    }
+
+    [Fact]
+    public void RebuildIndexTables_CollapsesInPersonsWithSameDisplayName()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+
+        JiraUserRecord real = CreateUser(conn, "jane.doe", "Jane Doe");
+        JiraUserRecord synthetic = CreateUser(conn, "Jane Doe", "Jane Doe");
+
+        JiraIssueRecord issue1 = CreateIssue(conn, "FHIR-1");
+        JiraIssueRecord issue2 = CreateIssue(conn, "FHIR-2");
+        JiraIssueRecord issue3 = CreateIssue(conn, "FHIR-3");
+
+        // real on issue1, synthetic on issue2, both on issue3 (overlap -> count once)
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue1.Id, UserId = real.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue2.Id, UserId = synthetic.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue3.Id, UserId = real.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue3.Id, UserId = synthetic.Id });
+
+        _builder.RebuildIndexTables(conn);
+
+        List<JiraIndexInPersonRecord> index = JiraIndexInPersonRecord.SelectList(conn);
+        List<JiraIndexInPersonRecord> janeRows = index.Where(r => r.Name == "Jane Doe").ToList();
+        Assert.Single(janeRows);
+        Assert.Equal(3, janeRows[0].IssueCount);
+    }
+
+    [Fact]
     public void RebuildInPersonsIndex_MultipleUsers_EachCounted()
     {
         using SqliteConnection conn = _db.OpenConnection();

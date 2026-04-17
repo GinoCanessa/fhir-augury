@@ -150,7 +150,8 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
                 UNION ALL
                 SELECT UserId, IssueId FROM jira_issue_inpersons
             ) roles ON roles.user_id = u.Id
-            GROUP BY u.Id, u.DisplayName
+            WHERE u.DisplayName IS NOT NULL AND u.DisplayName != ''
+            GROUP BY u.DisplayName
             """;
         insertCmd.ExecuteNonQuery();
 
@@ -171,10 +172,11 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         using SqliteCommand insertCmd = conn.CreateCommand();
         insertCmd.CommandText = """
             INSERT INTO jira_index_inpersons (Name, IssueCount)
-            SELECT u.DisplayName, COUNT(*)
+            SELECT u.DisplayName, COUNT(DISTINCT ip.IssueId)
             FROM jira_issue_inpersons ip
             INNER JOIN jira_users u ON u.Id = ip.UserId
-            GROUP BY u.Id, u.DisplayName
+            WHERE u.DisplayName IS NOT NULL AND u.DisplayName != ''
+            GROUP BY u.DisplayName
             """;
         insertCmd.ExecuteNonQuery();
 
