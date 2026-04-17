@@ -197,7 +197,7 @@ public class FileSystemResponseCache : IResponseCache
 
         string sourceRoot = Path.Combine(_rootPath, source);
 
-        List<CacheFileNaming.ParsedBatchFile> batchFiles = [];
+        List<CacheFileNaming.ParsedCacheFile> batchFiles = [];
         List<string> nonBatchKeys = [];
 
         foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
@@ -208,7 +208,7 @@ public class FileSystemResponseCache : IResponseCache
 
             string key = Path.GetRelativePath(sourceRoot, file).Replace('\\', '/');
 
-            if (CacheFileNaming.TryParse(fileName, out CacheFileNaming.ParsedBatchFile? parsed))
+            if (CacheFileNaming.TryParse(fileName, out CacheFileNaming.ParsedCacheFile? parsed))
             {
                 batchFiles.Add(parsed with { FileName = key });
             }

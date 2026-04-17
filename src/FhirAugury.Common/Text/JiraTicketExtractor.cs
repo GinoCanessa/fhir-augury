@@ -27,7 +27,7 @@ public static partial class JiraTicketExtractor
     ///     | UP-N
     /// Also matches hash variants: FHIR#N, JF#N, GF#N, J#N → FHIR-N, etc.
     /// </summary>
-    [GeneratedRegex(@"(?<!/)\b(?:(?<fhir>FHIR|JF|GF|J)|(?<baldef>BALDEF)|(?<ballot>BALLOT)|(?<gom>GCR)|(?<termauth>HTA)|(?<pss>PSS)|(?<tsc>TSC)|(?<up>UP))[-#](?<num>\d+)\b",
+    [GeneratedRegex(@"(?<!/)\b(?:(?<fhir>FHIR|JF|GF|J)|(?<baldef>BALDEF)|(?<ballot>BALLOT)|(?<gom>GCR)|(?<termauth>HTA)|(?<pss>PSS)|(?<tsc>TSC)|(?<up>UP|UPSM))[-#](?<num>\d+)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex UnifiedKeyHashPattern();
 
@@ -35,7 +35,7 @@ public static partial class JiraTicketExtractor
     /// Combined URL pattern covering /browse/ and /projects/.../issues/ formats
     /// for all supported Jira projects.
     /// </summary>
-    [GeneratedRegex(@"https?://jira\.hl7\.org/(?:browse/|projects/(?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP)/issues/)((?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP)-\d+)",
+    [GeneratedRegex(@"https?://jira\.hl7\.org/(?:browse/|projects/(?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP|UPSM)/issues/)((?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP|UPSM)-\d+)",
         RegexOptions.IgnoreCase)]
     private static partial Regex UnifiedUrlPattern();
 

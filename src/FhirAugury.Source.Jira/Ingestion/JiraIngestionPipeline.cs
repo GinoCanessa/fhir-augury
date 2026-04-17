@@ -1,3 +1,4 @@
+using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Cache;
@@ -24,11 +25,13 @@ public class JiraIngestionPipeline(
     IHttpClientFactory httpClientFactory,
     IOptions<JiraServiceOptions> optionsAccessor,
     IIndexTracker tracker,
+    IResponseCache cache,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly JiraServiceOptions _options = optionsAccessor.Value;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private volatile string _currentStatus = "idle";
+    private int _migratorRan;
 
     public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
@@ -54,14 +57,19 @@ public class JiraIngestionPipeline(
 
             IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
+            await RunCacheFileNameMigratorOnceAsync(ct);
+
             foreach (JiraProjectConfig proj in projects)
             {
                 try
                 {
-                    logger.LogInformation("Starting full ingestion for project {Project}", proj.Key);
+                    string startDesc = proj.StartDate?.ToString("yyyy-MM-dd") ?? "default";
+                    logger.LogInformation(
+                        "Starting full ingestion for project {Project} (window={Days} days, startDate={Start})",
+                        proj.Key, proj.DownloadWindowDays, startDesc);
 
                     string jql = jqlOverride ?? proj.Jql ?? $"project = \"{proj.Key}\"";
-                    IngestionResult downloadResult = await source.DownloadAllAsync(proj.Key, jql, ct);
+                    IngestionResult downloadResult = await source.DownloadAllAsync(proj, jql, ct);
                     combined = MergeResults(combined, downloadResult);
 
                     UpdateSyncState(downloadResult, proj.Key, "full");
@@ -115,17 +123,20 @@ public class JiraIngestionPipeline(
 
             IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
+            await RunCacheFileNameMigratorOnceAsync(ct);
+
             foreach (JiraProjectConfig proj in projects)
             {
                 try
                 {
                     DateTimeOffset since = GetLastSyncTime(proj.Key);
+                    string startDesc = proj.StartDate?.ToString("yyyy-MM-dd") ?? "default";
                     logger.LogInformation(
-                        "Starting incremental ingestion for {Project} since {Since}",
-                        proj.Key, since);
+                        "Starting incremental ingestion for {Project} since {Since} (window={Days} days, startDate={Start})",
+                        proj.Key, since, proj.DownloadWindowDays, startDesc);
 
                     IngestionResult downloadResult = await source.DownloadIncrementalAsync(
-                        proj.Key, proj.Jql, since, ct);
+                        proj, proj.Jql, since, ct);
                     combined = MergeResults(combined, downloadResult);
 
                     UpdateSyncState(downloadResult, proj.Key, "incremental");
@@ -178,6 +189,8 @@ public class JiraIngestionPipeline(
         {
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase(ct);
+
+            await RunCacheFileNameMigratorOnceAsync(ct);
 
             List<JiraProjectConfig> projects = _options.GetEffectiveProjects();
             IngestionResult combined = new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
@@ -418,6 +431,13 @@ public class JiraIngestionPipeline(
         return new DateTimeOffset(
             JiraCacheLayout.DefaultFullSyncStartDate.ToDateTime(TimeOnly.MinValue),
             TimeSpan.Zero);
+    }
+
+    private async Task RunCacheFileNameMigratorOnceAsync(CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _migratorRan, 1, 0) != 0)
+            return;
+        await CacheFileNameMigrator.MigrateAsync(cache, JiraCacheLayout.SourceName, logger, ct);
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()

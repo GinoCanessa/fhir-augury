@@ -77,4 +77,20 @@ public class JiraServiceOptions
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
+
+    /// <summary>
+    /// Validates project-level configuration. Returns a list of human-readable
+    /// error messages; an empty list means the configuration is valid.
+    /// </summary>
+    public IEnumerable<string> Validate()
+    {
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+        foreach (JiraProjectConfig p in Projects)
+        {
+            if (p.DownloadWindowDays < 1 || p.DownloadWindowDays > JiraProjectConfig.DownloadWindowDaysMax)
+                yield return $"Project '{p.Key}': DownloadWindowDays must be between 1 and {JiraProjectConfig.DownloadWindowDaysMax} (got {p.DownloadWindowDays}).";
+            if (p.StartDate is DateOnly sd && sd > today)
+                yield return $"Project '{p.Key}': StartDate must not be in the future (got {sd:yyyy-MM-dd}).";
+        }
+    }
 }

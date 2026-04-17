@@ -36,6 +36,12 @@ public class ZulipSource(
         WriteIndented = true,
     };
 
+    private static DateOnly NormalizeToMonday(DateOnly date)
+    {
+        int daysFromMonday = ((int)date.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+        return date.AddDays(-daysFromMonday);
+    }
+
     /// <summary>Performs a full download of all streams and their messages.</summary>
     public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)
     {
@@ -160,7 +166,9 @@ public class ZulipSource(
 
                     long oldestTimestamp = messageObjects[0].Timestamp;
                     DateOnly oldestDate = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(oldestTimestamp).UtcDateTime);
-                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateWeeklyFileName(oldestDate, ZulipCacheLayout.JsonExtension, existingKeys)}";
+                    DateOnly weekStart = NormalizeToMonday(oldestDate);
+                    DateOnly weekEnd = weekStart.AddDays(6);
+                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateFileName(weekStart, weekEnd, ZulipCacheLayout.JsonExtension, existingKeys)}";
                     existingKeys.Add(Path.GetFileName(cacheKey));
                     using MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(cacheJson));
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);
@@ -366,7 +374,7 @@ public class ZulipSource(
                     };
                     string cacheJson = JsonSerializer.Serialize(cachePayload, JsonOptions);
 
-                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateDailyFileName(today, ZulipCacheLayout.JsonExtension, existingKeys)}";
+                    string cacheKey = $"{streamDir}/{CacheFileNaming.GenerateFileName(today, today, ZulipCacheLayout.JsonExtension, existingKeys)}";
                     existingKeys.Add(Path.GetFileName(cacheKey));
                     using MemoryStream cacheStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(cacheJson));
                     await cache.PutAsync(ZulipCacheLayout.SourceName, cacheKey, cacheStream, ct);

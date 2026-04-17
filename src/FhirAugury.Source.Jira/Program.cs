@@ -137,6 +137,17 @@ builder.Services.AddHostedService<ScheduledIngestionWorker>();
 WebApplication app = builder.Build();
 JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
 
+// ── Validate project config ─────────────────────────────────────
+{
+    List<string> validationErrors = jiraOpts.Validate().ToList();
+    if (validationErrors.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Invalid Jira project configuration:" + Environment.NewLine +
+            string.Join(Environment.NewLine, validationErrors));
+    }
+}
+
 // Register indexes with the tracker
 FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredService<FhirAugury.Common.Indexing.IndexTracker>();
 JiraDatabase jiraDatabase = app.Services.GetRequiredService<JiraDatabase>();

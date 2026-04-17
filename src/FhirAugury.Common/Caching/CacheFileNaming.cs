@@ -5,106 +5,94 @@ using System.Text.RegularExpressions;
 namespace FhirAugury.Common.Caching;
 
 /// <summary>
-/// Shared file-naming and sorting logic for date-based cache batch files.
+/// Shared file-naming and sorting logic for date-range cache files.
+/// Filenames follow the flat convention
+/// <c>&lt;YYYYMMDD&gt;-&lt;YYYYMMDD&gt;-&lt;NNN&gt;.&lt;ext&gt;</c>.
+/// Single-day files have <c>start == end</c>.
 /// </summary>
 public static partial class CacheFileNaming
 {
-    public enum BatchPrefix { WeekOf, DayOf }
-
-    public record ParsedBatchFile(
+    public record ParsedCacheFile(
         string FileName,
-        BatchPrefix Prefix,
-        DateOnly Date,
-        int? SequenceNumber);
+        DateOnly StartDate,
+        DateOnly EndDate,
+        int? SequenceNumber,
+        string Extension);
 
-    [GeneratedRegex(@"^_WeekOf_(\d{4}-\d{2}-\d{2})(?:-(\d{3}))?\.(\w+)$")]
-    private static partial Regex WeekOfPattern();
+    [GeneratedRegex(@"^(\d{8})-(\d{8})(?:-(\d{3}))?\.(\w+)$")]
+    private static partial Regex RangePattern();
 
-    [GeneratedRegex(@"^DayOf_(\d{4}-\d{2}-\d{2})(?:-(\d{3}))?\.(\w+)$")]
-    private static partial Regex DayOfPattern();
-
-    public static bool TryParse(string fileName, [NotNullWhen(true)] out ParsedBatchFile? result)
+    /// <summary>
+    /// Attempts to parse <paramref name="fileName"/> into a <see cref="ParsedCacheFile"/>.
+    /// Returns <c>false</c> for legacy <c>DayOf_</c>/<c>_WeekOf_</c> formats — those
+    /// are handled by <see cref="CacheFileNameMigrator"/>, not here.
+    /// </summary>
+    public static bool TryParse(string fileName, [NotNullWhen(true)] out ParsedCacheFile? result)
     {
         result = null;
 
         if (string.IsNullOrEmpty(fileName))
             return false;
 
-        Match match = WeekOfPattern().Match(fileName);
-        if (match.Success)
-        {
-            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date))
-                return false;
+        Match match = RangePattern().Match(fileName);
+        if (!match.Success)
+            return false;
 
-            int? seq = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : null;
-            result = new ParsedBatchFile(fileName, BatchPrefix.WeekOf, date, seq);
-            return true;
-        }
+        if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly start))
+            return false;
+        if (!DateOnly.TryParseExact(match.Groups[2].Value, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly end))
+            return false;
+        if (start > end)
+            return false;
 
-        match = DayOfPattern().Match(fileName);
-        if (match.Success)
-        {
-            if (!DateOnly.TryParseExact(match.Groups[1].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date))
-                return false;
+        int? seq = match.Groups[3].Success ? int.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture) : null;
+        string ext = match.Groups[4].Value;
 
-            int? seq = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : null;
-            result = new ParsedBatchFile(fileName, BatchPrefix.DayOf, date, seq);
-            return true;
-        }
-
-        return false;
+        result = new ParsedCacheFile(fileName, start, end, seq, ext);
+        return true;
     }
 
-    public static string GenerateDailyFileName(DateOnly date, string extension, IEnumerable<string> existingFiles)
+    /// <summary>
+    /// Generates a unique filename for the given <paramref name="start"/>..<paramref name="end"/>
+    /// range, incrementing the sequence suffix past any existing files with the same range.
+    /// </summary>
+    public static string GenerateFileName(DateOnly start, DateOnly end, string extension, IEnumerable<string> existingFiles)
     {
-        string dateStr = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        if (start > end)
+            throw new ArgumentException(
+                $"StartDate ({start:yyyy-MM-dd}) must be on or before EndDate ({end:yyyy-MM-dd}).",
+                nameof(start));
 
         int maxSeq = -1;
         foreach (string file in existingFiles)
         {
             string name = Path.GetFileName(file);
-            if (TryParse(name, out ParsedBatchFile? parsed) &&
-                parsed.Prefix == BatchPrefix.DayOf &&
-                parsed.Date == date &&
+            if (TryParse(name, out ParsedCacheFile? parsed) &&
+                parsed.StartDate == start &&
+                parsed.EndDate == end &&
                 parsed.SequenceNumber.HasValue)
             {
                 maxSeq = Math.Max(maxSeq, parsed.SequenceNumber.Value);
             }
         }
 
-        return $"DayOf_{dateStr}-{(maxSeq + 1):D3}.{extension}";
+        int nextSeq = maxSeq + 1;
+        return $"{start:yyyyMMdd}-{end:yyyyMMdd}-{nextSeq:D3}.{extension}";
     }
 
-    public static string GenerateWeeklyFileName(DateOnly date, string extension, IEnumerable<string> existingFiles)
-    {
-        DateOnly monday = NormalizeToMonday(date);
-        string dateStr = monday.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    /// <summary>
+    /// Single-day convenience overload — equivalent to
+    /// <c>GenerateFileName(date, date, extension, existingFiles)</c>.
+    /// </summary>
+    public static string GenerateFileName(DateOnly date, string extension, IEnumerable<string> existingFiles)
+        => GenerateFileName(date, date, extension, existingFiles);
 
-        int maxSeq = -1;
-        foreach (string file in existingFiles)
-        {
-            string name = Path.GetFileName(file);
-            if (TryParse(name, out ParsedBatchFile? parsed) &&
-                parsed.Prefix == BatchPrefix.WeekOf &&
-                parsed.Date == monday &&
-                parsed.SequenceNumber.HasValue)
-            {
-                maxSeq = Math.Max(maxSeq, parsed.SequenceNumber.Value);
-            }
-        }
-
-        return $"_WeekOf_{dateStr}-{(maxSeq + 1):D3}.{extension}";
-    }
-
-    public static IEnumerable<ParsedBatchFile> SortForIngestion(IEnumerable<ParsedBatchFile> files) =>
-        files.OrderBy(f => f.Date)
-             .ThenBy(f => f.SequenceNumber.HasValue ? 1 : 0)
-             .ThenBy(f => f.Prefix == BatchPrefix.WeekOf ? 0 : 1)
+    /// <summary>
+    /// Sorts files so that wider (earlier-spanning) ranges appear before narrower
+    /// ranges sharing the same start, which mirrors ingestion ordering expectations.
+    /// </summary>
+    public static IEnumerable<ParsedCacheFile> SortForIngestion(IEnumerable<ParsedCacheFile> files) =>
+        files.OrderBy(f => f.StartDate)
+             .ThenByDescending(f => f.EndDate)
              .ThenBy(f => f.SequenceNumber ?? 0);
-
-    private static DateOnly NormalizeToMonday(DateOnly date)
-    {
-        int daysFromMonday = ((int)date.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
-        return date.AddDays(-daysFromMonday);
-    }
 }

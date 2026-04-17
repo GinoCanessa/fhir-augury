@@ -139,7 +139,9 @@ reusable infrastructure:
   per service), and `DictionaryDatabaseOptions` (compiled dictionary builder).
 - **`Caching/`** — `IResponseCache`, `FileSystemResponseCache` (atomic writes
   via temp + move), `CacheMode` enum (`Disabled`, `WriteThrough`, `CacheOnly`,
-  `WriteOnly`), `CacheFileNaming` (`_WeekOf_`/`DayOf_` batch naming).
+  `WriteOnly`), `CacheFileNaming` (flat `YYYYMMDD-YYYYMMDD-NNN.ext` range naming;
+  single-day files use `start == end`). Legacy `DayOf_`/`_WeekOf_` files are
+  rewritten in-place by `CacheFileNameMigrator` on first ingestion per process.
 - **`Text/`** — `CrossRefPatterns` (regex patterns for Jira keys, Jira/Zulip/
   GitHub/Confluence URLs, GitHub short refs `HL7/repo#123`),
   `FhirVocabulary` (100+ FHIR resource names, 30+ operations; extensible via

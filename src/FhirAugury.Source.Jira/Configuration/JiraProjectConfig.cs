@@ -3,6 +3,9 @@ namespace FhirAugury.Source.Jira.Configuration;
 /// <summary>Configuration for a single Jira project to ingest.</summary>
 public class JiraProjectConfig
 {
+    /// <summary>Upper bound for <see cref="DownloadWindowDays"/>.</summary>
+    public const int DownloadWindowDaysMax = 400;
+
     /// <summary>The Jira project key (e.g., "FHIR", "FHIR-I", "CDA").</summary>
     public required string Key { get; set; }
 
@@ -17,4 +20,21 @@ public class JiraProjectConfig
     /// without removing it from config.
     /// </summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Size, in days, of each cookie-auth XML download window. Wider windows
+    /// reduce HTTP request counts for quiet projects but risk hitting
+    /// <c>JiraCacheLayout.XmlMaxResults</c> on busy projects. Must be in the
+    /// inclusive range <c>[1, <see cref="DownloadWindowDaysMax"/>]</c>. Has no
+    /// effect on REST/JSON (apitoken/basic) auth modes.
+    /// </summary>
+    public int DownloadWindowDays { get; set; } = 1;
+
+    /// <summary>
+    /// Optional project-specific start date for full backfills. When set,
+    /// overrides <c>JiraCacheLayout.DefaultFullSyncStartDate</c> but only for
+    /// the initial full sync; subsequent incremental syncs resume from the
+    /// recorded sync cursor. Must not be in the future.
+    /// </summary>
+    public DateOnly? StartDate { get; set; }
 }

@@ -92,4 +92,101 @@ public class JiraServiceOptionsTests
 
         Assert.Null(result[0].Jql);
     }
+
+    [Fact]
+    public void Validate_ReturnsNoErrors_ForDefaults()
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FHIR" }]
+        };
+
+        Assert.Empty(opts.Validate());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(401)]
+    [InlineData(int.MaxValue)]
+    public void Validate_FlagsDownloadWindowDaysOutOfRange(int days)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "BAD", DownloadWindowDays = days }]
+        };
+
+        List<string> errors = opts.Validate().ToList();
+
+        Assert.Single(errors);
+        Assert.Contains("BAD", errors[0]);
+        Assert.Contains("DownloadWindowDays", errors[0]);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(400)]
+    public void Validate_AcceptsBoundaryValues(int days)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FHIR", DownloadWindowDays = days }]
+        };
+
+        Assert.Empty(opts.Validate());
+    }
+
+    [Fact]
+    public void Validate_FlagsFutureStartDate()
+    {
+        DateOnly tomorrow = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FUT", StartDate = tomorrow }]
+        };
+
+        List<string> errors = opts.Validate().ToList();
+        Assert.Single(errors);
+        Assert.Contains("StartDate", errors[0]);
+        Assert.Contains("FUT", errors[0]);
+    }
+
+    [Fact]
+    public void Validate_AcceptsTodayAndPastStartDate()
+    {
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+        JiraServiceOptions opts = new()
+        {
+            Projects =
+            [
+                new JiraProjectConfig { Key = "T", StartDate = today },
+                new JiraProjectConfig { Key = "P", StartDate = today.AddYears(-2) },
+            ]
+        };
+
+        Assert.Empty(opts.Validate());
+    }
+
+    [Fact]
+    public void Validate_ReportsEveryInvalidProject()
+    {
+        DateOnly tomorrow = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+        JiraServiceOptions opts = new()
+        {
+            Projects =
+            [
+                new JiraProjectConfig { Key = "A", DownloadWindowDays = 0 },
+                new JiraProjectConfig { Key = "B", StartDate = tomorrow },
+                new JiraProjectConfig { Key = "C", DownloadWindowDays = 500, StartDate = tomorrow },
+                new JiraProjectConfig { Key = "OK" },
+            ]
+        };
+
+        List<string> errors = opts.Validate().ToList();
+        Assert.Equal(4, errors.Count);
+        Assert.Contains(errors, e => e.Contains("'A'") && e.Contains("DownloadWindowDays"));
+        Assert.Contains(errors, e => e.Contains("'B'") && e.Contains("StartDate"));
+        Assert.Contains(errors, e => e.Contains("'C'") && e.Contains("DownloadWindowDays"));
+        Assert.Contains(errors, e => e.Contains("'C'") && e.Contains("StartDate"));
+    }
 }

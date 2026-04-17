@@ -1,5 +1,7 @@
+using FhirAugury.Common.Caching;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
+using FhirAugury.Source.Zulip.Cache;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -22,11 +24,13 @@ public class ZulipIngestionPipeline(
     IHttpClientFactory httpClientFactory,
     IOptions<ZulipServiceOptions> optionsAccessor,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
+    IResponseCache cache,
     ILogger<ZulipIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly ZulipServiceOptions _options = optionsAccessor.Value;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private volatile string _currentStatus = "idle";
+    private int _migratorRan;
 
     public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
@@ -44,6 +48,7 @@ public class ZulipIngestionPipeline(
             logger.LogInformation("Starting full ingestion");
 
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            await RunCacheFileNameMigratorOnceAsync(ct);
             IngestionResult downloadResult = await source.DownloadAllAsync(ct);
             IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "full", ct);
@@ -77,6 +82,7 @@ public class ZulipIngestionPipeline(
             logger.LogInformation("Starting incremental ingestion");
 
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            await RunCacheFileNameMigratorOnceAsync(ct);
             IngestionResult downloadResult = await source.DownloadIncrementalAsync(ct);
             IngestionResult result = MergeResults(cacheResult, downloadResult);
             PostIngestion(result, "incremental", ct);
@@ -114,6 +120,8 @@ public class ZulipIngestionPipeline(
             logger.LogInformation("Rebuilding database from cache");
             database.ResetDatabase();
 
+            await RunCacheFileNameMigratorOnceAsync(ct);
+
             IngestionResult result = await source.LoadFromCacheAsync(ct);
             PostIngestion(result, "rebuild", ct);
             await NotifyOrchestratorAsync(result, "rebuild");
@@ -131,6 +139,13 @@ public class ZulipIngestionPipeline(
         {
             _runLock.Release();
         }
+    }
+
+    private async Task RunCacheFileNameMigratorOnceAsync(CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _migratorRan, 1, 0) != 0)
+            return;
+        await CacheFileNameMigrator.MigrateAsync(cache, ZulipCacheLayout.SourceName, logger, ct);
     }
 
     /// <summary>
