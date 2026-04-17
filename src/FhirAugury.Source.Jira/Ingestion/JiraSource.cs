@@ -132,10 +132,12 @@ public class JiraSource(
                     (string? assigneeUsername, string? assigneeDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "assignee");
                     (string? reporterUsername, string? reporterDisplayName) = JiraFieldMapper.ExtractUserRef(fields, "reporter");
 
-                    issue.AssigneeId = userMapper.ResolveUser(connection, assigneeUsername, assigneeDisplayName);
-                    issue.ReporterId = userMapper.ResolveUser(connection, reporterUsername, reporterDisplayName);
-                    issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
-                    issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+                    // Ensure jira_users rows exist for every referenced user;
+                    // the resolved Ids are no longer persisted on jira_issues.
+                    userMapper.ResolveUser(connection, assigneeUsername, assigneeDisplayName);
+                    userMapper.ResolveUser(connection, reporterUsername, reporterDisplayName);
+                    userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                    userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
 
                     pageKeys.Add(issue.Key);
                     parsedPage.Add((issueJson, issue));
@@ -362,11 +364,11 @@ public class JiraSource(
                 {
                     JiraIssueRecord issue = parsed.Issue;
 
-                    // Resolve users and set FK columns
-                    issue.AssigneeId = userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
-                    issue.ReporterId = userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
-                    issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
-                    issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+                    // Resolve users to ensure jira_users rows exist.
+                    userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
+                    userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
+                    userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                    userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
 
                     if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                     {
@@ -530,11 +532,11 @@ public class JiraSource(
                     {
                         JiraIssueRecord issue = parsed.Issue;
 
-                        // Resolve users and set FK columns
-                        issue.AssigneeId = userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
-                        issue.ReporterId = userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
-                        issue.VoteMoverId = userMapper.ResolveByDisplayName(connection, issue.VoteMover);
-                        issue.VoteSeconderId = userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
+                        // Resolve users to ensure jira_users rows exist.
+                        userMapper.ResolveUser(connection, parsed.UserInfo.AssigneeUsername, parsed.UserInfo.AssigneeDisplayName);
+                        userMapper.ResolveUser(connection, parsed.UserInfo.ReporterUsername, parsed.UserInfo.ReporterDisplayName);
+                        userMapper.ResolveByDisplayName(connection, issue.VoteMover);
+                        userMapper.ResolveByDisplayName(connection, issue.VoteSeconder);
 
                         if (toInsert.TryGetValue(issue.Key, out JiraIssueRecord? existing))
                         {

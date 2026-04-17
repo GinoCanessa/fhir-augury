@@ -46,8 +46,6 @@ public class JiraDatabase : SourceDatabase
         ConfluenceXRefRecord.CreateTable(connection);
         FhirElementXRefRecord.CreateTable(connection);
 
-        MigrateSchema(connection);
-
         CreateJiraIssuesFts(connection);
         CreateJiraCommentsFts(connection);
     }
@@ -139,32 +137,4 @@ public class JiraDatabase : SourceDatabase
         InitializeSchema(connection);
     }
 
-    /// <summary>Adds new columns to existing tables when upgrading an existing database.</summary>
-    private static void MigrateSchema(SqliteConnection connection)
-    {
-        // FK columns added to jira_issues for user tracking
-        string[] newColumns = ["AssigneeId", "ReporterId", "VoteMoverId", "VoteSeconderId"];
-        foreach (string col in newColumns)
-        {
-            if (!ColumnExists(connection, "jira_issues", col))
-            {
-                using SqliteCommand cmd = connection.CreateCommand();
-                cmd.CommandText = $"ALTER TABLE jira_issues ADD COLUMN {col} INTEGER";
-                cmd.ExecuteNonQuery();
-            }
-        }
-    }
-
-    private static bool ColumnExists(SqliteConnection connection, string table, string column)
-    {
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = $"PRAGMA table_info({table})";
-        using SqliteDataReader reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            if (reader.GetString(1).Equals(column, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
 }

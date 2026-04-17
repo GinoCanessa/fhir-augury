@@ -27,8 +27,8 @@ public class JiraIndexBuilderUserTests : IDisposable
     }
 
     private JiraIssueRecord CreateIssue(SqliteConnection conn, string key,
-        int? assigneeId = null, int? reporterId = null,
-        int? voteMoverId = null, int? voteSeconderId = null)
+        string? assignee = null, string? reporter = null,
+        string? voteMover = null, string? voteSeconder = null)
     {
         JiraIssueRecord issue = new()
         {
@@ -43,8 +43,8 @@ public class JiraIndexBuilderUserTests : IDisposable
             Status = "Open",
             Resolution = null,
             ResolutionDescription = null,
-            Assignee = null,
-            Reporter = null,
+            Assignee = assignee,
+            Reporter = reporter,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
             ResolvedAt = null,
@@ -59,14 +59,12 @@ public class JiraIndexBuilderUserTests : IDisposable
             ChangeType = null,
             Impact = null,
             Vote = null,
+            VoteMover = voteMover,
+            VoteSeconder = voteSeconder,
             Labels = null,
             CommentCount = 0,
             ChangeCategory = null,
             ChangeImpact = null,
-            AssigneeId = assigneeId,
-            ReporterId = reporterId,
-            VoteMoverId = voteMoverId,
-            VoteSeconderId = voteSeconderId,
         };
         JiraIssueRecord.Insert(conn, issue);
         return issue;
@@ -90,9 +88,9 @@ public class JiraIndexBuilderUserTests : IDisposable
         using SqliteConnection conn = _db.OpenConnection();
         JiraUserRecord user = CreateUser(conn, "alice", "Alice");
 
-        CreateIssue(conn, "FHIR-1", assigneeId: user.Id);
-        CreateIssue(conn, "FHIR-2", assigneeId: user.Id);
-        CreateIssue(conn, "FHIR-3", assigneeId: user.Id);
+        CreateIssue(conn, "FHIR-1", assignee: user.DisplayName);
+        CreateIssue(conn, "FHIR-2", assignee: user.DisplayName);
+        CreateIssue(conn, "FHIR-3", assignee: user.DisplayName);
 
         _builder.RebuildIndexTables(conn);
 
@@ -109,7 +107,7 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraUserRecord user = CreateUser(conn, "alice", "Alice");
 
         // Same user as both assignee and reporter on the same issue
-        CreateIssue(conn, "FHIR-1", assigneeId: user.Id, reporterId: user.Id);
+        CreateIssue(conn, "FHIR-1", assignee: user.DisplayName, reporter: user.DisplayName);
 
         _builder.RebuildIndexTables(conn);
 
@@ -125,8 +123,8 @@ public class JiraIndexBuilderUserTests : IDisposable
         using SqliteConnection conn = _db.OpenConnection();
         JiraUserRecord user = CreateUser(conn, "alice", "Alice");
 
-        CreateIssue(conn, "FHIR-1", assigneeId: user.Id);
-        CreateIssue(conn, "FHIR-2", reporterId: user.Id);
+        CreateIssue(conn, "FHIR-1", assignee: user.DisplayName);
+        CreateIssue(conn, "FHIR-2", reporter: user.DisplayName);
 
         _builder.RebuildIndexTables(conn);
 
@@ -210,12 +208,12 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraUserRecord real = CreateUser(conn, "jane.doe", "Jane Doe");
         JiraUserRecord synthetic = CreateUser(conn, "Jane Doe", "Jane Doe");
 
-        // Issue A: reporter = real
-        CreateIssue(conn, "FHIR-1", reporterId: real.Id);
-        // Issue B: vote mover = synthetic
-        CreateIssue(conn, "FHIR-2", voteMoverId: synthetic.Id);
+        // Issue A: reporter = real (matches DisplayName "Jane Doe")
+        CreateIssue(conn, "FHIR-1", reporter: real.DisplayName);
+        // Issue B: vote mover = synthetic (matches Username "Jane Doe" which also equals DisplayName)
+        CreateIssue(conn, "FHIR-2", voteMover: synthetic.DisplayName);
         // Issue C: both real (reporter) and synthetic (vote seconder) -> counts once
-        CreateIssue(conn, "FHIR-3", reporterId: real.Id, voteSeconderId: synthetic.Id);
+        CreateIssue(conn, "FHIR-3", reporter: real.DisplayName, voteSeconder: synthetic.DisplayName);
 
         _builder.RebuildIndexTables(conn);
 

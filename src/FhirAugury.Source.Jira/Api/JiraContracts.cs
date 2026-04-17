@@ -68,3 +68,59 @@ public record JiraProjectStatus(
     DateTimeOffset? LastSyncAt,
     int ItemsIngested,
     string Status);
+
+// ── Local-processing endpoints (api/v1/local-processing) ──────────
+
+/// <summary>Shared filter shape for the local-processing list and random endpoints.</summary>
+public record JiraLocalProcessingFilter
+{
+    public List<string> Projects { get; init; } = [];
+    public List<string> Specifications { get; init; } = [];
+    public List<string> Types { get; init; } = [];
+    public List<string> Priorities { get; init; } = [];
+    public List<string> Statuses { get; init; } = [];
+    public List<string> ChangeCategories { get; init; } = [];
+    public List<string> ChangeImpacts { get; init; } = [];
+    public List<string> RelatedArtifacts { get; init; } = [];
+    public List<string> WorkGroups { get; init; } = [];
+    public List<string> Reporters { get; init; } = [];
+    public List<string> Labels { get; init; } = [];
+
+    /// <summary>
+    /// Optional filter on the local-processing flag.
+    /// null/omitted -> no filter.
+    /// true  -> ProcessedLocallyAt IS NOT NULL.
+    /// false -> ProcessedLocallyAt IS NULL.
+    /// </summary>
+    public bool? ProcessedLocally { get; init; }
+}
+
+/// <summary>List-tickets request: filter + paging.</summary>
+public record JiraLocalProcessingListRequest : JiraLocalProcessingFilter
+{
+    public int? Limit { get; init; }
+    public int? Offset { get; init; }
+}
+
+/// <summary>List-tickets response: paged results plus unpaged total.</summary>
+public record JiraLocalProcessingListResponse(
+    IReadOnlyList<JiraIssueSummaryEntry> Results,
+    int Limit,
+    int Offset,
+    int Total);
+
+/// <summary>Set-processed request for a single Jira issue key.</summary>
+public record JiraLocalProcessingSetRequest
+{
+    public required string Key { get; init; }
+    public bool? ProcessedLocally { get; init; }
+}
+
+/// <summary>Set-processed response.</summary>
+public record JiraLocalProcessingSetResponse(
+    string Key,
+    bool PreviousValue,
+    bool NewValue);
+
+/// <summary>Clear-all-processed response.</summary>
+public record JiraLocalProcessingClearResponse(int RowsAffected);

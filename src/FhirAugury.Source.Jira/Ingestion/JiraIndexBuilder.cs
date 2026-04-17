@@ -137,20 +137,24 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         using SqliteCommand insertCmd = conn.CreateCommand();
         insertCmd.CommandText = """
             INSERT INTO jira_index_users (Name, IssueCount)
-            SELECT u.DisplayName, COUNT(DISTINCT issue_id) AS IssueCount
+            SELECT u.DisplayName, COUNT(DISTINCT roles.issue_id) AS IssueCount
             FROM jira_users u
             INNER JOIN (
-                SELECT AssigneeId AS user_id, Id AS issue_id FROM jira_issues WHERE AssigneeId IS NOT NULL
+                SELECT i.Id AS issue_id, i.Assignee AS name FROM jira_issues i WHERE i.Assignee IS NOT NULL AND i.Assignee <> ''
                 UNION ALL
-                SELECT ReporterId, Id FROM jira_issues WHERE ReporterId IS NOT NULL
+                SELECT i.Id, i.Reporter FROM jira_issues i WHERE i.Reporter IS NOT NULL AND i.Reporter <> ''
                 UNION ALL
-                SELECT VoteMoverId, Id FROM jira_issues WHERE VoteMoverId IS NOT NULL
+                SELECT i.Id, i.VoteMover FROM jira_issues i WHERE i.VoteMover IS NOT NULL AND i.VoteMover <> ''
                 UNION ALL
-                SELECT VoteSeconderId, Id FROM jira_issues WHERE VoteSeconderId IS NOT NULL
+                SELECT i.Id, i.VoteSeconder FROM jira_issues i WHERE i.VoteSeconder IS NOT NULL AND i.VoteSeconder <> ''
                 UNION ALL
-                SELECT UserId, IssueId FROM jira_issue_inpersons
-            ) roles ON roles.user_id = u.Id
-            WHERE u.DisplayName IS NOT NULL AND u.DisplayName != ''
+                SELECT ip.IssueId, u2.DisplayName
+                    FROM jira_issue_inpersons ip
+                    INNER JOIN jira_users u2 ON u2.Id = ip.UserId
+                    WHERE u2.DisplayName IS NOT NULL AND u2.DisplayName <> ''
+            ) roles
+              ON roles.name = u.DisplayName OR roles.name = u.Username
+            WHERE u.DisplayName IS NOT NULL AND u.DisplayName <> ''
             GROUP BY u.DisplayName
             """;
         insertCmd.ExecuteNonQuery();

@@ -16,10 +16,18 @@ public static partial class JiraTicketExtractor
 {
     /// <summary>
     /// Unified key/hash pattern. Named groups identify the canonical project.
-    /// Matches: FHIR-N, JF-N, GF-N, J-N (→ FHIR-N) | BALLOT-N | PSS-N | UP-N
+    /// Matches: 
+    ///     FHIR-N, JF-N, GF-N, J-N (→ FHIR-N) 
+    ///     | BALDEF-N 
+    ///     | BALLOT-N 
+    ///     | GCR-N
+    ///     | HTA-N
+    ///     | PSS-N 
+    ///     | TSC-N
+    ///     | UP-N
     /// Also matches hash variants: FHIR#N, JF#N, GF#N, J#N → FHIR-N, etc.
     /// </summary>
-    [GeneratedRegex(@"(?<!/)\b(?:(?<fhir>FHIR|JF|GF|J)|(?<ballot>BALLOT)|(?<pss>PSS)|(?<up>UP))[-#](?<num>\d+)\b",
+    [GeneratedRegex(@"(?<!/)\b(?:(?<fhir>FHIR|JF|GF|J)|(?<baldef>BALDEF)|(?<ballot>BALLOT)|(?<gom>GCR)|(?<termauth>HTA)|(?<pss>PSS)|(?<tsc>TSC)|(?<up>UP))[-#](?<num>\d+)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex UnifiedKeyHashPattern();
 
@@ -27,7 +35,7 @@ public static partial class JiraTicketExtractor
     /// Combined URL pattern covering /browse/ and /projects/.../issues/ formats
     /// for all supported Jira projects.
     /// </summary>
-    [GeneratedRegex(@"https?://jira\.hl7\.org/(?:browse/|projects/(?:FHIR|BALLOT|PSS|UP)/issues/)((?:FHIR|BALLOT|PSS|UP)-\d+)",
+    [GeneratedRegex(@"https?://jira\.hl7\.org/(?:browse/|projects/(?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP)/issues/)((?:FHIR|BALDEF|BALLOT|GCR|HTA|PSS|TSC|UP)-\d+)",
         RegexOptions.IgnoreCase)]
     private static partial Regex UnifiedUrlPattern();
 
@@ -71,7 +79,9 @@ public static partial class JiraTicketExtractor
                 && validJiraNumbers is not null
                 && int.TryParse(number, out int n)
                 && !validJiraNumbers.Contains(n))
+            {
                 continue;
+            }
 
             string jiraKey = $"{canonicalPrefix}-{number}";
             if (seen.Add(jiraKey))
@@ -84,8 +94,12 @@ public static partial class JiraTicketExtractor
     private static string? GetCanonicalPrefix(Match match)
     {
         if (match.Groups["fhir"].Success) return "FHIR";
+        if (match.Groups["baldef"].Success) return "BALDEF";
         if (match.Groups["ballot"].Success) return "BALLOT";
+        if (match.Groups["gom"].Success) return "GCR";
+        if (match.Groups["termauth"].Success) return "HTA";
         if (match.Groups["pss"].Success) return "PSS";
+        if (match.Groups["tsc"].Success) return "TSC";
         if (match.Groups["up"].Success) return "UP";
         return null;
     }
