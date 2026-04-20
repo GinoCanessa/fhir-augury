@@ -1,3 +1,4 @@
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -13,7 +14,7 @@ namespace FhirAugury.Orchestrator.Controllers;
 public class OpenApiController(
     OpenApiMergeService merge,
     SourceHttpClient sources,
-    IOpenApiDocumentProvider provider,
+    [FromKeyedServices(AuguryOpenApiServiceCollectionExtensions.DocumentName)] IOpenApiDocumentProvider provider,
     IHttpClientFactory httpClientFactory) : ControllerBase
 {
     private const string JsonContentType = "application/json";

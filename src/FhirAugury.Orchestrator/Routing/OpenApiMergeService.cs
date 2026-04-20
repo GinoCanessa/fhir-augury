@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using FhirAugury.Common.OpenApi;
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Reader;
@@ -33,7 +34,7 @@ public sealed class OpenApiMergeService
 
     public OpenApiMergeService(
         SourceHttpClient sources,
-        IOpenApiDocumentProvider provider,
+        [FromKeyedServices(AuguryOpenApiServiceCollectionExtensions.DocumentName)] IOpenApiDocumentProvider provider,
         IHttpClientFactory httpClientFactory,
         ILogger<OpenApiMergeService> logger)
     {

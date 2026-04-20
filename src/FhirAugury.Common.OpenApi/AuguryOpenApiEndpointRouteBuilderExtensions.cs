@@ -18,7 +18,7 @@ public static class AuguryOpenApiEndpointRouteBuilderExtensions
     {
         endpoints.MapOpenApi(JsonRoute);
 
-        endpoints.MapGet(YamlRoute, async (HttpContext http, IOpenApiDocumentProvider provider, CancellationToken ct) =>
+        endpoints.MapGet(YamlRoute, async (HttpContext http, [FromKeyedServices(AuguryOpenApiServiceCollectionExtensions.DocumentName)] IOpenApiDocumentProvider provider, CancellationToken ct) =>
         {
             OpenApiDocument document = await provider.GetOpenApiDocumentAsync(ct).ConfigureAwait(false);
 
