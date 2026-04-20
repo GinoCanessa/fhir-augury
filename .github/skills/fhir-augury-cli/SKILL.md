@@ -18,7 +18,7 @@ direct HTTP and `appsettings.json` reads are last-resort fallbacks.
 
 ## Invocation basics
 
-- **Executable:** `fhir-augury` (installed as a `dotnet tool`). During local
+- **Executable:** `fhir-augury-cli` (installed as a `dotnet tool`). During local
   development you can also run `dotnet run --project src/FhirAugury.Cli --`.
 - **Connection:** the CLI talks to the orchestrator (default
   `http://localhost:5150`). Override with `--orchestrator <url>` or set
@@ -73,7 +73,7 @@ rather than internal envelope plumbing.
 ### Get a Jira ticket
 
 ```bash
-fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-12345","includeContent":true,"includeComments":true,"includeSnapshot":true}'
+fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-12345","includeContent":true,"includeComments":true,"includeSnapshot":true}'
 ```
 
 Returns the ticket envelope with `metadata`, `content`, `comments`, and
@@ -82,13 +82,13 @@ Returns the ticket envelope with `metadata`, `content`, `comments`, and
 ### Cross-references for any value
 
 ```bash
-fhir-augury --json '{"command":"cross-referenced","value":"FHIR-12345","limit":50}'
+fhir-augury-cli --json '{"command":"cross-referenced","value":"FHIR-12345","limit":50}'
 ```
 
 ### Search across sources
 
 ```bash
-fhir-augury --json '{"command":"search","query":"Patient identifier","sources":["jira","zulip","github"],"limit":20}'
+fhir-augury-cli --json '{"command":"search","query":"Patient identifier","sources":["jira","zulip","github"],"limit":20}'
 ```
 
 ### List GitHub repositories and their categories
@@ -98,7 +98,7 @@ The GitHub source exposes `GET /api/v1/repos` (see
 via the `call` command:
 
 ```bash
-fhir-augury --json '{"command":"call","source":"github","operation":"repos"}'
+fhir-augury-cli --json '{"command":"call","source":"github","operation":"repos"}'
 ```
 
 The returned envelope carries a `repos` array; each entry includes
@@ -113,7 +113,7 @@ ticket-plan" or hand-maintained repo list.
 ### Health check
 
 ```bash
-fhir-augury --json '{"command":"services","action":"health"}'
+fhir-augury-cli --json '{"command":"services","action":"health"}'
 ```
 
 Use this to decide whether the CLI path is viable before dispatching
@@ -124,16 +124,16 @@ envelope signals that fallbacks should be considered.
 
 ```bash
 # Inspect ingestion status across sources
-fhir-augury --json '{"command":"ingest","action":"status"}'
+fhir-augury-cli --json '{"command":"ingest","action":"status"}'
 
 # Run an incremental ingest for one or more sources
-fhir-augury --json '{"command":"ingest","action":"run","sources":["github"],"type":"incremental"}'
+fhir-augury-cli --json '{"command":"ingest","action":"run","sources":["github"],"type":"incremental"}'
 ```
 
 ### Dump schemas for offline reference
 
 ```bash
-fhir-augury --json '{"command":"save-schemas","outputDirectory":"./tmp/schemas"}'
+fhir-augury-cli --json '{"command":"save-schemas","outputDirectory":"./tmp/schemas"}'
 ```
 
 Use the dumped JSON files when you need exact field names or you are

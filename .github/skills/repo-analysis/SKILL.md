@@ -56,7 +56,7 @@ The skill is **on-demand**. There is no scheduler, no CI generator, and no
 Preferred: invoke the `fhir-augury` CLI per the `fhir-augury-cli` skill:
 
 ```bash
-fhir-augury --json '{"command":"call","source":"github","operation":"repos"}'
+fhir-augury-cli --json '{"command":"call","source":"github","operation":"repos"}'
 ```
 
 Each entry in the returned `repos` array carries `fullName`, `category`,

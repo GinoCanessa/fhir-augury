@@ -46,15 +46,18 @@ public class ScheduledIngestionWorker<TPipeline>(
 
         bool startupOnly = startupOnlyProvider();
 
+        if (interval.TotalDays >= 1)
+        {
+            logger.LogWarning(
+                "SyncSchedule '{Schedule}' parsed as {Interval} ({TotalHours:F1} hours). Note: TimeSpan format 'HH:mm:ss' requires HH < 24; values like '99:00:00' are interpreted as days.",
+                schedule, interval, interval.TotalHours);
+        }
+
         logger.LogInformation(
             "Scheduled ingestion worker started. Interval: {Interval}, MinSyncAge: {MinSyncAge}, StartupOnly: {StartupOnly}",
             interval, minAge, startupOnly);
 
-        try
-        {
-            await Task.Delay(StartupDelay, stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        if (!await SafeDelayAsync(StartupDelay, stoppingToken))
         {
             return;
         }
@@ -82,11 +85,7 @@ public class ScheduledIngestionWorker<TPipeline>(
                         "Last sync was {Age} ago (threshold: {MinSyncAge}). Skipping startup sync, waiting {Remaining}",
                         age, minAge, remaining);
 
-                    try
-                    {
-                        await Task.Delay(remaining, stoppingToken);
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    if (!await SafeDelayAsync(remaining, stoppingToken))
                     {
                         return;
                     }
@@ -108,11 +107,7 @@ public class ScheduledIngestionWorker<TPipeline>(
                 break;
             }
 
-            try
-            {
-                await Task.Delay(interval, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            if (!await SafeDelayAsync(interval, stoppingToken))
             {
                 break;
             }
@@ -150,5 +145,36 @@ public class ScheduledIngestionWorker<TPipeline>(
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Awaits the requested delay, chunking large intervals so that values
+    /// exceeding <see cref="Task.Delay(TimeSpan, CancellationToken)"/>'s
+    /// ~49.7-day maximum (uint.MaxValue - 1 milliseconds) do not throw
+    /// <see cref="ArgumentOutOfRangeException"/>. Returns <c>false</c> when
+    /// cancellation has been requested.
+    /// </summary>
+    private static async Task<bool> SafeDelayAsync(TimeSpan delay, CancellationToken stoppingToken)
+    {
+        // Task.Delay accepts up to uint.MaxValue - 1 ms. Use a conservative
+        // chunk well below that limit.
+        TimeSpan maxChunk = TimeSpan.FromDays(1);
+
+        try
+        {
+            TimeSpan remaining = delay;
+            while (remaining > TimeSpan.Zero)
+            {
+                TimeSpan chunk = remaining > maxChunk ? maxChunk : remaining;
+                await Task.Delay(chunk, stoppingToken);
+                remaining -= chunk;
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        return !stoppingToken.IsCancellationRequested;
     }
 }

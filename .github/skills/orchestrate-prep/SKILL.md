@@ -12,7 +12,7 @@ structured output directory and the worklist is updated as tickets complete.
 ## Prerequisites
 
 - The `FhirAugury` MCP should be available (preferred). If not, the
-  `fhir-augury` CLI must be available as a fallback.
+  `fhir-augury-cli` CLI must be available as a fallback.
 
 - The `ticket-prep` skill must be available (it defines the per-ticket workflow
   and report format).
