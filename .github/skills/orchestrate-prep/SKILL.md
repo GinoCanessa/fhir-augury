@@ -1,345 +1,285 @@
 ---
 name: orchestrate-prep
-description: "Orchestrates bulk ticket preparation from a markdown worklist. USE FOR: batch ticket prep, bulk preparation, worklist processing, round-robin ticket prep across work groups. Reads a markdown file with checkbox-formatted ticket lists grouped by work group, dispatches up to N concurrent sub-agents (each running the ticket-prep workflow), saves reports to a structured output directory, and marks completed tickets in the worklist."
+description: "Orchestrates bulk ticket preparation directly from the Jira source. USE FOR: batch ticket prep, bulk preparation, round-robin ticket prep across work groups. Queries the Jira source for work groups and randomly draws unprocessed tickets per WG, dispatches up to N concurrent ticket-prep sub-agents, saves reports to a structured output directory, and reports completion back to the Jira source via the local-processing flag."
 ---
 
 # Orchestrate Prep Skill
 
-Bulk-processes a markdown worklist of FHIR Jira tickets, dispatching concurrent
-sub-agents to prepare each ticket for workgroup review. Reports are saved to a
-structured output directory and the worklist is updated as tickets complete.
+Bulk-prepares FHIR Jira tickets for workgroup review by drawing unprocessed
+tickets directly from the Jira source, dispatching concurrent `ticket-prep`
+sub-agents, and reporting completion back to the source. There is **no
+markdown worklist** — the Jira source's `ProcessedLocally` flag is the sole
+persistent state.
 
 ## Prerequisites
 
-- The `FhirAugury` MCP should be available (preferred). If not, the
-  `fhir-augury-cli` CLI must be available as a fallback.
-
-- The `ticket-prep` skill must be available (it defines the per-ticket workflow
-  and report format).
+- The `fhir-augury-cli` skill must be available — it is the canonical entry
+  point for talking to the Jira source. Follow its fallback order (CLI →
+  MCP → direct HTTP) for every data interaction.
+- The `ticket-prep` skill must be available — it defines the per-ticket
+  workflow and report format that each sub-agent runs. The report
+  structure, all data-access steps, the `repo-analysis` briefing
+  dependency, and the disposition rules are all owned by `ticket-prep`
+  and must not be replicated here.
+- The orchestrator service and Jira source service must be reachable. Verify
+  with the CLI's `services` health check before starting.
 
 ## Inputs
 
 The user must provide or you must determine:
 
-1. **Worklist file** — a markdown file with tickets in checkbox format, grouped
-   by work group headings. Example:
-   ```markdown
-   ## Orders & Observations (147)
-   - [ ] FHIR-29776 - Some ticket title
-   - [x] FHIR-30000 - Already completed ticket
-   ```
-
-2. **Output directory** — where prepared reports are saved, organized by
-   cleaned work group name subfolder. Example:
+1. **Output directory** — where prepared reports are saved, organized by
+   cleaned work-group subfolder. Example:
    `C:\ai\git\fhir-augury-content\prepared\`
+2. **Concurrency** — maximum number of concurrent sub-agents (default: 4).
+3. **Ordering strategy** — how to draw the next ticket. Default is
+   **round-robin** (one ticket per work group per round). Alternative is
+   **sequential** (drain one work group's unprocessed tickets before moving
+   to the next).
+4. **Work group filter** *(optional)* — explicit list of work-group names to
+   include. If omitted, all work groups with at least one unprocessed ticket
+   are considered.
+5. **Additional Jira filters** *(optional)* — any subset of the
+   `JiraLocalProcessingFilter` shape (e.g., `statuses`, `priorities`,
+   `types`, `specifications`, `labels`, `projects`). These are forwarded
+   verbatim to the Jira source on every random-draw call.
+6. **Max tickets** *(optional)* — overall cap on tickets to process this
+   run. If omitted, run until every selected work group is exhausted.
 
-3. **Concurrency** — maximum number of concurrent sub-agents (default: 4).
+## Work-Group Name Cleaning
 
-4. **Ordering strategy** — how to select the next ticket to process. Default is
-   **round-robin** across work groups (one ticket per group per round), ensuring
-   every group gets coverage. Alternative is **sequential** (process all tickets
-   in one group before moving to the next).
+Output subdirectories use "cleaned" work-group names:
 
-## Work Group Name Cleaning
+1. Replace the ampersand (`&`) with "and".
+2. Replace all non-alphanumeric, non-space characters (`/`, `-`, `'`, …) with spaces
+3. Split into words
+4. Capitalize each word
+5. Join without separators
 
-Output subdirectories use "cleaned" work group names. The cleaning algorithm:
-
-1. Remove all non-alphanumeric, non-space characters (e.g., `&`, `/`, `-`, `'`)
-2. Split into words
-3. Capitalize each word
-4. Join without separators
-
-Examples:
 | Work Group Name | Cleaned Name |
-|----------------|-------------|
+|-----------------|--------------|
 | Orders & Observations | OrdersObservations |
 | Biomedical Research & Regulation | BiomedicalResearchRegulation |
-| Community-Based Care and Privacy | CommunitybasedCareAndPrivacy |
-| Payer/Provider Information Exchange | PayerproviderInformationExchange |
+| Community-Based Care and Privacy | CommunityBasedCareAndPrivacy |
+| Payer/Provider Information Exchange | PayerProviderInformationExchange |
 | FHIR Infrastructure | FhirInfrastructure |
 | HL7 Australia AU Core | Hl7AustraliaAuCore |
 
+## Jira-source operations used
+
+All operations are reached via the `fhir-augury-cli` skill. Prefer the named
+convenience commands; use `call` for the local-processing endpoints (which
+are not exposed as top-level CLI commands).
+
+| Purpose | CLI form |
+|---------|----------|
+| Health check | `{"command":"services","action":"health"}` |
+| List work groups (with issue counts) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
+| Draw a random unprocessed ticket for a WG | `{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...filter...}}` |
+| Mark a ticket processed locally | `{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
+| Inspect/clear processed flags (admin) | `local-processing.get-tickets` / `local-processing.clear-all-processed` |
+
+Note on operation IDs: the resolver matches `Jira.local-processing.<name>`
+first, then falls back to `local-processing.<name>`. Either form works; the
+unqualified form above is the recommended default.
+
+### Random-draw filter shape
+
+Build the body for `local-processing.get-random-ticket` per
+`JiraLocalProcessingFilter` (in
+`src/FhirAugury.Source.Jira/Api/JiraContracts.cs`). For round-robin pulls,
+constrain to one work group at a time and require unprocessed:
+
+```json
+{
+  "workGroups": ["Orders & Observations"],
+  "processedLocally": false,
+  "statuses": ["Triaged"],
+  "priorities": [],
+  "types": [],
+  "specifications": [],
+  "labels": [],
+  "projects": [],
+  "reporters": [],
+  "changeCategories": [],
+  "changeImpacts": [],
+  "relatedArtifacts": []
+}
+```
+
+Only include the fields you actually want to filter on; omit empty arrays
+when convenient. Merge any user-supplied `Additional Jira filters` into this
+body before each draw.
+
+A successful draw returns a `JiraIssueSummaryEntry` (`key`, `workGroup`,
+`title`, `status`, …). A 404 means there are no more unprocessed tickets
+matching the filter — treat that work group as **exhausted** for this run.
+
 ## Workflow
 
-### Step 1: Parse the Worklist
+### Step 1: Verify services and discover work groups
 
-Read the worklist markdown file and extract:
-- Work group names from `## Group Name (count)` headings
-- Unchecked tickets from `- [ ] FHIR-XXXXX - Title` lines
-- Skip checked tickets `- [x] FHIR-XXXXX - Title` (already completed)
+1. Health-check the orchestrator and Jira source via the CLI's `services`
+   command. Abort with a clear message if either is down.
+2. Fetch the work-group list with `list-jira-dimension --dimension
+   workgroups`. The response carries `name` and `issueCount` per WG.
+3. If the user supplied a work-group filter, intersect it with the returned
+   list and warn about any names that didn't match.
+4. Build the **active set** of work groups: those that pass the filter and
+   have `issueCount > 0`. (The Jira-side count is total, not unprocessed —
+   exhaustion is determined dynamically as draws return 404.)
 
-Build a data structure mapping each work group to its list of pending tickets.
+### Step 2: Create output directories
 
-### Step 2: Build the Processing Queue
+For each active work group, create the cleaned-name subdirectory once:
 
-Build the queue based on the ordering strategy:
-
-**Round-robin (default):**
-```
-Round 0: first ticket from each group (up to 35 items for 35 groups)
-Round 1: second ticket from each group (only groups with 2+ tickets)
-Round 2: third ticket from each group (only groups with 3+ tickets)
-...
-```
-
-**Sequential:**
-```
-All tickets from Group 1, then all from Group 2, etc.
-```
-
-### Step 3: Create Output Directories
-
-For each work group in the worklist, create the output subdirectory using the
-cleaned name:
 ```powershell
 New-Item -ItemType Directory -Path "$OutputDir\$CleanedGroupName" -Force
 ```
 
-### Step 4: Dispatch Sub-Agents
+### Step 3: In-flight tracking
 
-Process tickets from the queue, maintaining up to N concurrent agents at all
-times. For each ticket, launch a **general-purpose background agent** with the
-full ticket-prep workflow.
+Maintain in memory:
 
-#### Agent Prompt Template
+- `inFlight` — set of ticket keys currently assigned to a running sub-agent.
+- `inFlightByWg` — count of in-flight tickets per work group (round-robin
+  uses this to honor "one in-flight per WG per round").
+- `exhaustedWgs` — set of work groups whose last draw returned 404.
+- `completed` / `failed` counters for progress reporting.
 
-Each agent receives a prompt containing:
+Persist nothing locally; the Jira source's `ProcessedLocally` flag is the
+durable state.
 
-1. The ticket key and work group
-2. The output file path
-3. The CLI binary path
-4. The complete ticket-prep workflow (Steps 1-5 from the ticket-prep skill)
-5. The exact report format template
+### Step 4: Round-robin draw and dispatch
 
-Use this template for each agent:
+Loop until either the in-flight set is empty AND every active WG is
+exhausted, or the optional max-tickets cap is reached:
+
+1. While `len(inFlight) < concurrency` and the round still has eligible WGs:
+   1. Pick the next eligible work group (round-robin order, skipping
+      exhausted WGs and — for round-robin mode — WGs that already have an
+      in-flight ticket this round).
+   2. Build the random-draw filter (WG + `processedLocally=false` + any
+      user filters) and call `local-processing.get-random-ticket`.
+   3. Handle the response:
+      - **404 / empty** → mark the WG exhausted; skip.
+      - **Ticket already in `inFlight`** → retry the draw up to **5 times**
+        for this WG this round. If still colliding, skip the WG for this
+        round (it will be retried in the next round). The collision case is
+        rare but possible because `RANDOM()` is unaware of in-flight state.
+      - **Fresh ticket** → add to `inFlight`, dispatch a sub-agent (Step 5).
+2. Wait for the next sub-agent completion (Step 6) before continuing the
+   outer loop.
+3. When every active WG has been visited (or skipped) for the round, start
+   the next round.
+
+For **sequential** mode, the eligibility rule changes: keep drawing from the
+current WG until it is exhausted, then move to the next WG. The in-flight
+deduplication and 5-retry-on-collision rule still apply.
+
+### Step 5: Dispatch a sub-agent
+
+For each fresh ticket, launch a **general-purpose background agent** that
+runs the `ticket-prep` skill. Use the same model as the orchestrator.
+
+The sub-agent prompt:
 
 ````
-You are preparing a FHIR Jira ticket for workgroup review. Follow these steps.
+Run the `ticket-prep` skill for the following ticket.
 
-## Ticket: {TICKET_KEY}
-## Work Group: {WORK_GROUP}
-## Output File: {OUTPUT_DIR}\{CLEAN_GROUP}\{TICKET_KEY}.md
+## Inputs
 
-## Data Access
+- **Ticket key:** {TICKET_KEY}
+- **Work group:** {WORK_GROUP}
+- **Output file:** {OUTPUT_DIR}\{CLEAN_GROUP}\{TICKET_KEY}.md
+- **CLI path (if needed):** {CLI_PATH}
 
-Use whichever data access method is available, in this priority order:
+## Instructions
 
-1. **FhirAugury MCP** (preferred) — If tools prefixed with `FhirAugury-` are
-   available (e.g., `FhirAugury-get_item`), use them directly for all data
-   access. This is faster and avoids shell overhead.
-
-2. **fhir-augury CLI** (fallback) — If MCP tools are not available, use the
-   CLI at: {CLI_PATH}
-
-### MCP Tool → CLI Command Mapping
-
-| MCP Tool | CLI Command |
-|----------|-------------|
-| `FhirAugury-get_item` | `get` |
-| `FhirAugury-cross_referenced` | `cross-referenced` |
-| `FhirAugury-content_search` | `search` |
-| `FhirAugury-get_zulip_thread` | `get` (source=zulip) |
-| `FhirAugury-query_zulip_messages` | `query-zulip` |
-
-## Step 1: Gather Ticket and Cross-References (run in parallel)
-
-1a. Get ticket details:
-
-Using MCP:
-```
-FhirAugury-get_item(source="jira", id="{TICKET_KEY}", includeComments=true, includeContent=true, includeSnapshot=true)
-```
-Using CLI (fallback):
-```
-& "{CLI_PATH}" --json '{{"command":"get","source":"jira","id":"{TICKET_KEY}","includeComments":true}}'
-```
-
-1b. Get all cross-references:
-
-Using MCP:
-```
-FhirAugury-cross_referenced(value="{TICKET_KEY}", limit=50)
-```
-Using CLI (fallback):
-```
-& "{CLI_PATH}" --json '{{"command":"cross-referenced","value":"{TICKET_KEY}","limit":50}}'
-```
-
-## Step 2: Fetch Related Jira Tickets
-For each Jira ticket found in cross-references, fetch its details using
-`FhirAugury-get_item` (MCP) or the `get` CLI command.
-
-## Step 3: Fetch Zulip Conversations
-For each Zulip cross-reference, get the thread.
-
-Using MCP:
-```
-FhirAugury-get_zulip_thread(stream="<stream>", topic="<topic>")
-```
-Also search Zulip for the ticket key:
-```
-FhirAugury-content_search(values="{TICKET_KEY}", sources="zulip", limit=10)
-```
-
-Using CLI (fallback):
-```
-& "{CLI_PATH}" --json '{{"command":"search","query":"{TICKET_KEY}","sources":["zulip"],"limit":10}}'
-```
-
-## Step 4: Note GitHub Items
-Record any GitHub cross-references (type, repo, title, URL).
-
-## Step 5: Build the Report
-Compose a markdown report following this EXACT structure:
-
-```markdown
-# Ticket Review: {TICKET_KEY}
-
-**Title:** {{ticket title}}
-**Status:** {{status}}
-**Priority:** {{priority}}
-**Type:** {{type}}
-**Work Group:** {{work group}}
-**Specification:** {{specification}}
-**Reporter:** {{reporter}}
-**Assignee:** {{assignee}}
-**Created:** {{date}}
-**Updated:** {{date}}
-**Labels:** {{comma-separated labels}}
-
----
-
-## Summary
-{{A clear, concise summary of what the ticket is requesting. Written in third
-person. If there are cross-referenced Jira tickets, incorporate their context.}}
-
-## Details
-
-**Description:**
-{{The full description content of the ticket}}
-
-**Comments:**
-{{Each comment with author/date}}
-
-## Keywords
-{{Comma-separated keywords capturing essential concepts, resources, FHIR
-elements}}
-
-## Related Zulip Discussions
-{{For each thread: ### Stream > Topic, Link, 2-4 sentence summary}}
-{{If none: "No related Zulip discussions were found."}}
-
-## Related GitHub Items
-{{Bullet list of items, or "No related GitHub items were found."}}
-
-## Proposed Dispositions
-
-### Disposition A: Accept As Requested
-#### Proposal
-{{Specific action to fulfill the request}}
-#### Justification
-{{Why this is reasonable}}
-
----
-
-### Disposition B: Alternative Approach
-#### Proposal
-{{Alternative way to address the need}}
-#### Justification
-{{Why this might be preferable}}
-
----
-
-### Disposition C: Decline
-#### Proposal
-{{Clear statement with rationale category}}
-#### Justification
-{{Why declining is defensible}}
-
----
-
-### Recommendation
-**Recommended disposition:** {{A, B, or C}}
-{{Paragraph explaining why}}
-```
-
-## Important Rules
-- Use ONLY data from the MCP or CLI. Do not fabricate details.
-- Be specific in dispositions — name resources, elements, constraints.
-- Summarize Zulip threads honestly.
-- The recommendation must pick one.
-- Keep the summary self-contained.
-
-## Final Step
-Save the completed report to: {OUTPUT_DIR}\{CLEAN_GROUP}\{TICKET_KEY}.md
+1. Follow the `ticket-prep` skill exactly, including all data-gathering
+   steps, the repo-analysis briefing dependency, and the report format.
+2. Save the completed report to the output file path above.
+3. When finished, confirm success and state the full path of the saved file.
 ````
 
-### Step 6: Handle Completions
+### Step 6: Handle completion and report back to Jira
 
 When a sub-agent completes:
 
-1. **Read the agent result** to confirm success.
-2. **Mark the ticket as completed** in the worklist file by replacing
-   `- [ ] FHIR-XXXXX` with `- [x] FHIR-XXXXX` on the matching line.
-   - Use `grep` to find the exact line text first (titles in the file may
-     differ from what you expect).
-   - Use `edit` with the exact matched line for the replacement.
-3. **Launch the next ticket** from the queue to maintain concurrency at N.
+1. **Read the agent result** to confirm success and that the report file
+   exists at the expected path.
+2. **Mark the ticket processed locally** by calling
+   `local-processing.set-processed` with `processedLocally: true`:
 
-### Step 7: Report Progress
+   ```bash
+   fhir-augury-cli --json '{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}'
+   ```
 
-After each batch of completions, report progress to the user:
-- Total completed / total pending
-- Number of agents currently running
-- Which work groups have been covered
-- Next tickets in the queue
+   Only mark on **success**. On failure (Step 7), leave the flag unset so
+   the ticket remains eligible for a future run.
+3. **Remove the ticket from `inFlight`** and decrement `inFlightByWg`.
+4. **Loop back to Step 4** to draw and dispatch the next ticket.
 
-## Error Handling
+### Step 7: Error handling
 
-- If a sub-agent fails, log the ticket key and error, skip it, and continue
-  with the next ticket in the queue. Do not retry automatically.
-- If neither MCP tools nor the CLI binary are available, attempt to build the
-  CLI before failing.
-- If the FHIR Augury services are not responding, stop and inform the user.
-- If a ticket's line cannot be found in the worklist for marking, log a
-  warning but continue processing.
+- **Sub-agent failure** — log the ticket key and error; do **not** mark the
+  ticket processed; remove it from `inFlight`; continue with the next
+  draw. Do not retry the same ticket automatically in the same run (it can
+  be re-drawn naturally on a future run).
+- **Random-draw 404** — work-group is exhausted for the current filter set;
+  mark exhausted and continue.
+- **Random-draw collision with `inFlight`** — retry up to 5 times for the
+  same WG; if still colliding, skip the WG for this round.
+- **CLI unavailable** — fall back per the `fhir-augury-cli` skill's
+  fallback order (MCP, then direct HTTP). Record which path was used in
+  progress reports.
+- **Service unhealthy mid-run** — pause new draws, wait for in-flight
+  agents to complete, then surface the issue to the user before resuming.
+
+### Step 8: Progress reporting
+
+After each batch of completions, report to the user:
+
+- Completed / failed / in-flight counts
+- Per-WG completion totals so far this run
+- Which WGs are exhausted vs. still active
+- Any tickets currently in flight (key + WG)
 
 ## Resumability
 
-The worklist file serves as the persistent state. If the process is interrupted:
-- Already-completed tickets are marked `[x]` and will be skipped on restart.
-- Already-saved report files in the output directory are not re-processed.
-- Simply re-invoke the skill with the same worklist to continue from where it
-  left off.
+There is **no local persistent state**. Resume is automatic:
 
-To check for orphaned work (reports saved but not marked in worklist), compare
-the output directory contents against the worklist:
-```powershell
-# Find reports that exist but aren't marked complete
-Get-ChildItem -Path "$OutputDir" -Recurse -Filter "FHIR-*.md" |
-  ForEach-Object { $_.BaseName } |
-  ForEach-Object { Select-String -Path "$WorklistFile" -Pattern "- \[ \] $_" }
-```
+- Already-processed tickets have `ProcessedLocallyAt` set in the Jira
+  source and will not be drawn again.
+- Re-invoking the skill with the same inputs simply continues from
+  whatever the Jira source currently considers unprocessed.
+
+If you need to clear processed flags (e.g., to re-run a batch from
+scratch), use `local-processing.clear-all-processed` — but be aware that
+this clears the flag for **every** ticket, not just the ones in your
+current scope.
 
 ## Example Invocation
 
-User says: "Prepare all tickets in scratch/_ticket-prep.md, saving reports to
-C:\ai\git\fhir-augury-content\prepared\, round-robin order, 4 concurrent agents"
+User: *"Prepare unprocessed tickets, saving reports to
+C:\ai\git\fhir-augury-content\prepared\, round-robin, 4 concurrent agents."*
 
 The orchestrator should:
-1. Parse `scratch/_ticket-prep.md` → find 2729 unchecked tickets across 35 groups
-2. Build round-robin queue → 2729 items
-3. Create 35 output subdirectories
-4. Build CLI binary
-5. Launch first 4 agents (tickets 0-3 from round 0)
-6. As each completes: mark done, launch next, report progress
-7. Continue until queue is exhausted or user stops
+
+1. Health-check services; list work groups via `list-jira-dimension`.
+2. Create one cleaned-name subdirectory per active WG.
+3. Round-robin draw a random unprocessed ticket per WG via
+   `local-processing.get-random-ticket` (with `processedLocally:false`).
+4. Maintain up to 4 concurrent `ticket-prep` sub-agents; on each success,
+   call `local-processing.set-processed` with `processedLocally:true`.
+5. Continue until every active WG returns 404 (or the optional max-tickets
+   cap is reached); report progress as agents complete.
 
 ## Performance Notes
 
-- Each ticket takes approximately 60-200 seconds depending on cross-reference
+- Each ticket typically takes ~60–200 seconds depending on cross-reference
   density and Zulip search results.
-- With 4 concurrent agents, expect ~1-2 tickets per minute throughput.
-- The orchestrator and source services handle concurrent CLI requests well.
-- Sub-agents should use the same model as the orchestrating agent for
-  consistency.
+- With 4 concurrent agents, expect ~1–2 tickets/minute throughput.
+- The Jira source handles concurrent CLI requests well; the
+  random-with-collision-retry pattern keeps duplicate dispatches negligible
+  in practice.

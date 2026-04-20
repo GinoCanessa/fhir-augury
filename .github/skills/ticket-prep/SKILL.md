@@ -1,6 +1,6 @@
 ---
 name: ticket-prep
-description: "Prepares FHIR Jira tickets for workgroup review. USE FOR: ticket review prep, disposition proposals, ticket summary, workgroup ballot prep. Requires a Jira ticket key (e.g., FHIR-50738). Gathers ticket details, cross-references, Zulip conversations, and GitHub items via the FhirAugury MCP (preferred) or fhir-augury CLI (fallback), then produces a structured report with summary, keywords, related discussions, and three proposed dispositions with a recommendation."
+description: "Prepares FHIR Jira tickets for workgroup review. USE FOR: ticket review prep, disposition proposals, ticket summary, workgroup ballot prep. Requires a Jira ticket key (e.g., FHIR-50738). Gathers ticket details, cross-references, Zulip conversations, and GitHub items via the `fhir-augury-cli` skill (CLI first, MCP/HTTP/appsettings as documented fallbacks), then produces a structured report with summary, keywords, related discussions, and three proposed dispositions with a recommendation."
 ---
 
 # Ticket Prep Skill
@@ -22,11 +22,11 @@ When a CLI command is shown below, it is in the form documented by
 `fhir-augury-cli`:
 
 ```bash
-fhir-augury --json '<json>' [--pretty]
+fhir-augury-cli --json '<json>' [--pretty]
 ```
 
 If the CLI is unavailable in the current environment, fall back per the
-order documented in `fhir-augury-cli`.
+order documented in `fhir-augury-cli` (MCP → direct HTTP → `appsettings.json`).
 
 ## Workflow
 
@@ -40,13 +40,13 @@ Run these two calls in parallel:
 **1a. Get the ticket with full content, comments, and snapshot:**
 
 ```bash
-fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-50738","includeComments":true,"includeContent":true,"includeSnapshot":true}'
+fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-50738","includeComments":true,"includeContent":true,"includeSnapshot":true}'
 ```
 
 **1b. Get all cross-references:**
 
 ```bash
-fhir-augury --json '{"command":"cross-referenced","value":"FHIR-50738","limit":50}'
+fhir-augury-cli --json '{"command":"cross-referenced","value":"FHIR-50738","limit":50}'
 ```
 
 From the cross-references response, identify:
@@ -62,7 +62,7 @@ From the cross-references response, identify:
 For each Jira ticket found in the cross-references, fetch its details:
 
 ```bash
-fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-XXXXX","includeContent":true,"includeSnapshot":true}'
+fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-XXXXX","includeContent":true,"includeSnapshot":true}'
 ```
 
 These provide context for understanding the full scope of the request.
@@ -72,14 +72,14 @@ These provide context for understanding the full scope of the request.
 For each Zulip cross-reference, retrieve the thread by item ID:
 
 ```bash
-fhir-augury --json '{"command":"get","source":"zulip","id":"<zulip-item-id>","includeContent":true}'
+fhir-augury-cli --json '{"command":"get","source":"zulip","id":"<zulip-item-id>","includeContent":true}'
 ```
 
 If the cross-references don't surface enough Zulip context, also search
 for the ticket key in Zulip:
 
 ```bash
-fhir-augury --json '{"command":"search","query":"FHIR-50738","sources":["zulip"],"limit":10}'
+fhir-augury-cli --json '{"command":"search","query":"FHIR-50738","sources":["zulip"],"limit":10}'
 ```
 
 ### Step 4: Note GitHub Items
@@ -87,18 +87,47 @@ fhir-augury --json '{"command":"search","query":"FHIR-50738","sources":["zulip"]
 For each GitHub cross-reference, record the item type (PR, issue, commit),
 repository, title, and URL. No deep fetch is required unless the user asks.
 
-When the ticket's cross-references identify specific repositories **and**
-the consumer will use this report to drive implementation (e.g., it feeds
-`ticket-plan`), also read the saved per-repo briefing at
-`cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`. If the
-briefing is absent or stale (per the `repo-analysis` skill's staleness
-rules), ask the user to run `repo-analysis <owner/name>` (or
-`repo-analysis <owner/name> if-stale`) and resume. Embed a brief
-per-repo summary (category, likely-touched paths) under
-"Related GitHub Items". Skip this step for pure-triage runs where only
-the disposition is needed.
+### Step 5: Load Repo Briefings (required when GitHub cross-refs exist)
 
-### Step 5: Build the Report
+For **every** distinct `owner/name` repository surfaced by the GitHub
+cross-references in Step 1b, read the persisted briefing produced by the
+`repo-analysis` skill:
+
+- Briefing: `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`
+- Metadata: `cache/github/repos/<owner>_<name>/repo-analysis/meta.json`
+
+This skill is **data-only** with respect to repo-analysis: it reads the
+cached artifacts but does **not** invoke the `repo-analysis` skill
+itself. Check `meta.json` against the staleness rules documented in the
+`repo-analysis` skill (clone HEAD + playbook SHA must both match).
+
+If a briefing is **missing** or **stale** for any required repo, **stop
+and ask the user** to run the `repo-analysis` skill before resuming —
+e.g.:
+
+> Briefing for `HL7/US-Core` is stale (clone HEAD changed since last
+> analysis). Please run `repo-analysis HL7/US-Core if-stale` and let me
+> know when it's ready.
+
+Do not proceed with partial repo context, and do not fabricate repo
+facts to fill the gap.
+
+From each briefing, extract for use in later steps:
+
+- **Category** (e.g., `FhirCore`, `Ig`, `Utg`).
+- **Authoring root(s)** and **generated areas (do not edit)** — drives
+  which paths a disposition would touch.
+- **Recommended Change Recipes** that match the ticket's keywords /
+  cross-referenced artifacts.
+- **Warnings / Gotchas** relevant to the proposed change.
+- **Cross-Repo Touch Points** that imply the change spans multiple
+  repos.
+
+If there are **no GitHub cross-references**, this step is a no-op —
+record "No related GitHub repositories." in the report and skip the
+briefing loads.
+
+### Step 6: Build the Report
 
 Compose a markdown report with the sections described below. Use the gathered
 data to write substantive, specific content — not generic placeholders.
@@ -196,7 +225,34 @@ conclusions or open questions.}
 
 {If no GitHub items found: "No related GitHub items were found."}
 
+## Repo Context
+
+{For each distinct repository surfaced in "Related GitHub Items", include
+a subsection sourced from that repo's `repo-analysis/briefing.md`. If
+there are no related GitHub repos, write
+"No related GitHub repositories." and omit the subsections.}
+
+### {owner/name} ({category})
+
+- **Briefing:** `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md` @ clone `{short-sha}`
+- **Authoring root(s):** {from briefing}
+- **Likely-touched paths for this ticket:** {paths from briefing's
+  Ticket-Relevant Paths if present, else inferred from Authoring root(s)
+  + the ticket's keywords / linked artifacts}
+- **Applicable change recipes:** {names of recipes from the briefing's
+  "Recommended Change Recipes" that match this ticket}
+- **Gotchas to weigh in dispositions:** {from briefing's "Warnings /
+  Gotchas", filtered to what's relevant}
+- **Cross-repo touch points:** {from briefing, only entries relevant to
+  this ticket}
+
 ## Proposed Dispositions
+
+{The dispositions below MUST reflect the Repo Context above. When a
+disposition implies a code/spec change, name the specific repo,
+authoring root, and (when known) file path drawn from the briefing(s).
+When a briefing surfaces a gotcha that affects feasibility, address it
+explicitly in the relevant disposition's Justification.}
 
 ### Disposition A: Accept As Requested
 
@@ -264,6 +320,15 @@ workgroup wants a clear recommendation to start the discussion.}
 - **Use only data from the `fhir-augury-cli` skill (CLI / MCP).** Do not
   fabricate ticket details, Zulip conversation content, or GitHub
   links. If a call fails or returns no data, say so in the report.
+- **Use only persisted repo-analysis briefings for repo facts.** This
+  skill does not invoke `repo-analysis` and does not probe clones
+  directly. If a required briefing is missing or stale, stop and ask
+  the user to run `repo-analysis`. Do not infer repo structure from
+  memory.
+- **Dispositions must be grounded in the Repo Context.** Name the
+  specific repo and authoring root(s) when proposing a change. If the
+  briefing flags a gotcha that affects the proposal, the Justification
+  must address it.
 - **Be specific in dispositions.** Generic statements like "modify the spec"
   are not useful. Name the resource, element, constraint, or mechanism.
 - **Summarize Zulip threads honestly.** Capture the range of opinions, not
