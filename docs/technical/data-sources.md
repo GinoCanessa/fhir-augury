@@ -55,7 +55,6 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `ListByWorkGroup` | Issues filtered by HL7 work group |
 | `ListBySpecification` | Issues filtered by specification |
 | `QueryIssues` | Arbitrary JQL-like query |
-| `ListSpecArtifacts` | Specification artifact listing |
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
 

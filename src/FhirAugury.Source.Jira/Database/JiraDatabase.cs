@@ -24,7 +24,6 @@ public class JiraDatabase : SourceDatabase
         JiraCommentRecord.CreateTable(connection);
         JiraIssueLinkRecord.CreateTable(connection);
         JiraIssueRelatedRecord.CreateTable(connection);
-        JiraSpecArtifactRecord.CreateTable(connection);
         JiraSyncStateRecord.CreateTable(connection);
         JiraKeywordRecord.CreateTable(connection);
         JiraCorpusKeywordRecord.CreateTable(connection);
@@ -111,7 +110,6 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_issue_links;
             DROP TABLE IF EXISTS jira_issue_related;
             DROP TABLE IF EXISTS jira_issue_labels;
-            DROP TABLE IF EXISTS jira_spec_artifacts;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

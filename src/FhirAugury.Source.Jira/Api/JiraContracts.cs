@@ -50,15 +50,6 @@ public record JiraIssueSummaryEntry
     public DateTimeOffset? UpdatedAt { get; init; }
 }
 
-/// <summary>Spec artifact entry for the spec-artifacts endpoint.</summary>
-public record SpecArtifactEntry(
-    string Family,
-    string SpecKey,
-    string SpecName,
-    string? GitUrl,
-    string? PublishedUrl,
-    string? DefaultWorkgroup);
-
 /// <summary>Issue numbers response.</summary>
 public record IssueNumbersResponse(List<int> IssueNumbers);
 

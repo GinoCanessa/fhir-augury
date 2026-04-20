@@ -34,7 +34,6 @@ public class JiraDatabaseTests : IDisposable
         Assert.Contains("jira_issues", tables);
         Assert.Contains("jira_comments", tables);
         Assert.Contains("jira_issue_links", tables);
-        Assert.Contains("jira_spec_artifacts", tables);
         Assert.Contains("sync_state", tables);
         Assert.Contains("index_keywords", tables);
         Assert.Contains("index_corpus", tables);
@@ -124,29 +123,6 @@ public class JiraDatabaseTests : IDisposable
         List<JiraCommentRecord> result = JiraCommentRecord.SelectList(conn, IssueKey: "FHIR-500");
         Assert.Single(result);
         Assert.Equal("This is a test comment", result[0].Body);
-    }
-
-    [Fact]
-    public void InsertAndSelect_SpecArtifact_RoundTrips()
-    {
-        using SqliteConnection conn = _db.OpenConnection();
-
-        JiraSpecArtifactRecord artifact = new JiraSpecArtifactRecord
-        {
-            Id = JiraSpecArtifactRecord.GetIndex(),
-            Family = "FHIR",
-            SpecKey = "fhir-core",
-            SpecName = "FHIR Core Specification",
-            GitUrl = "https://github.com/HL7/fhir",
-            PublishedUrl = "https://hl7.org/fhir",
-            DefaultWorkgroup = "FHIR-I",
-        };
-        JiraSpecArtifactRecord.Insert(conn, artifact);
-
-        JiraSpecArtifactRecord? result = JiraSpecArtifactRecord.SelectSingle(conn, SpecKey: "fhir-core");
-        Assert.NotNull(result);
-        Assert.Equal("FHIR Core Specification", result.SpecName);
-        Assert.Equal("https://github.com/HL7/fhir", result.GitUrl);
     }
 
     [Fact]

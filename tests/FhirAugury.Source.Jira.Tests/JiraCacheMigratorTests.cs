@@ -29,12 +29,6 @@ public class JiraCacheMigratorTests
     }
 
     [Fact]
-    public void IsLegacyKey_SpecArtifacts_False()
-    {
-        Assert.False(JiraCacheMigrator.IsLegacyKey("jira-spec-artifacts/some-file.json"));
-    }
-
-    [Fact]
     public void IsLegacyKey_ProjectJsonPrefixed_False()
     {
         Assert.False(JiraCacheMigrator.IsLegacyKey("FHIR-I/json/DayOf_2026-04-01-000.json"));

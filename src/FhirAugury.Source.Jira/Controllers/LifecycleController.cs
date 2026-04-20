@@ -74,7 +74,6 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
         int issueCount = JiraIssueRecord.SelectCount(connection);
         int commentCount = JiraCommentRecord.SelectCount(connection);
         int linkCount = JiraIssueLinkRecord.SelectCount(connection);
-        int specCount = JiraSpecArtifactRecord.SelectCount(connection);
         long dbSize = db.GetDatabaseSizeBytes();
         CacheStats cacheStats = cache.GetStats(JiraCacheLayout.SourceName);
 
@@ -84,7 +83,6 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
         Dictionary<string, int> additionalCounts = new()
         {
             ["issue_links"] = linkCount,
-            ["spec_artifacts"] = specCount,
         };
 
         using SqliteCommand projectCmd = connection.CreateCommand();

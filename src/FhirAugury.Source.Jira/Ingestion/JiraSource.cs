@@ -811,7 +811,7 @@ public class JiraSource(
 
             if (sourceType is not (JiraCacheLayout.XmlPrefix or JiraCacheLayout.JsonPrefix))
             {
-                continue; // skip non-data directories (e.g., jira-spec-artifacts)
+                continue; // skip non-data directories
             }
 
             CacheFileNaming.TryParse(Path.GetFileName(key), out CacheFileNaming.ParsedCacheFile? parsed);

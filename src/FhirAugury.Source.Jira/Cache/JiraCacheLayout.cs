@@ -29,9 +29,6 @@ public static class JiraCacheLayout
     /// <summary>Metadata file name for Jira cache state.</summary>
     public const string MetadataFileName = "_meta_jira.json";
 
-    /// <summary>Subdirectory for JIRA-Spec-Artifacts clone.</summary>
-    public const string SpecArtifactsSubDir = "jira-spec-artifacts";
-
     /// <summary>Maximum results per XML export request.</summary>
     public const int XmlMaxResults = 1000;
 

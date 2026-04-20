@@ -301,17 +301,10 @@ Table names: `jira_index_workgroups`, `jira_index_specifications`,
 `jira_index_ballots`, `jira_index_labels`, `jira_index_types`,
 `jira_index_priorities`, `jira_index_statuses`, `jira_index_resolutions`
 
-#### `jira_spec_artifacts` — Specification artifact mappings
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `Family` | TEXT | Specification family |
-| `SpecKey` | TEXT | Specification key |
-| `SpecName` | TEXT | Specification name |
-| `GitUrl` | TEXT? | Git repository URL |
-| `PublishedUrl` | TEXT? | Published specification URL |
-| `DefaultWorkgroup` | TEXT? | Default work group |
+> **Note:** Spec-artifact data (the parsed `JIRA-Spec-Artifacts` repository) is
+> owned by the GitHub source's `jira_specs*` table family — not the Jira source.
+> See the GitHub-source schema and the `api/v1/jira-specs/...` endpoints for
+> that surface.
 
 #### `jira_issue_links` — Issue-to-issue links
 

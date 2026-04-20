@@ -41,35 +41,6 @@ public class SpecificationsController(JiraDatabase db, IOptions<JiraServiceOptio
         return Ok(results);
     }
 
-    [HttpGet("spec-artifacts")]
-    public IActionResult GetSpecArtifacts([FromQuery] string? family)
-    {
-        using SqliteConnection connection = db.OpenConnection();
-        string sql = "SELECT Family, SpecKey, SpecName, GitUrl, PublishedUrl, DefaultWorkgroup FROM jira_spec_artifacts";
-        if (!string.IsNullOrEmpty(family))
-            sql += " WHERE Family = @family";
-        sql += " ORDER BY Family, SpecKey";
-
-        using SqliteCommand cmd = new SqliteCommand(sql, connection);
-        if (!string.IsNullOrEmpty(family))
-            cmd.Parameters.AddWithValue("@family", family);
-
-        List<SpecArtifactEntry> results = [];
-        using SqliteDataReader reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            results.Add(new SpecArtifactEntry(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
-        }
-
-        return Ok(results);
-    }
-
     [HttpGet("issue-numbers")]
     public IActionResult GetIssueNumbers([FromQuery] string? project)
     {
