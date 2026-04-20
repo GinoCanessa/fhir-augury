@@ -246,6 +246,26 @@ quality gate.
 | [MCP Tools](docs/user/mcp-tools.md) | MCP tool reference for LLM agents |
 | [Docker](docs/user/docker.md) | Docker Compose deployment |
 
+### Agent Skills
+
+The repository ships a set of project skills under `.github/skills/` for
+LLM coding agents (Copilot CLI, Claude Code, etc.). The CLI is the
+default integration surface; MCP, direct HTTP, and `appsettings.json`
+are documented fallbacks (see the `fhir-augury-cli` skill).
+
+| Skill | Purpose |
+|-------|---------|
+| [`fhir-augury-cli`](.github/skills/fhir-augury-cli/SKILL.md) | Reference for invoking the `fhir-augury` CLI (recipes, fallback order). |
+| [`repo-analysis`](.github/skills/repo-analysis/SKILL.md) | On-demand generator that writes per-repo briefings to `cache/github/repos/<owner>_<name>/repo-analysis/`. |
+| [`ticket-prep`](.github/skills/ticket-prep/SKILL.md) | Prepares Jira tickets for workgroup review. |
+| [`ticket-plan`](.github/skills/ticket-plan/SKILL.md) | Plans the implementation of a resolved Jira ticket; consumes saved per-repo briefings. |
+| [`orchestrate-prep`](.github/skills/orchestrate-prep/SKILL.md) | Bulk ticket-prep over a worklist. |
+| [`orchestrate-plan`](.github/skills/orchestrate-plan/SKILL.md) | Bulk ticket-plan over a worklist. |
+
+If a repo is miscategorized for `repo-analysis`, fix it in
+`src/FhirAugury.Source.GitHub/appsettings.json` (under the appropriate
+`*Repositories` list) — the skill does not re-derive categories.
+
 ### Technical Documentation
 
 | Document | Description |

@@ -6,6 +6,7 @@ using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Hosting;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
 using FhirAugury.Source.Jira.Workers;
@@ -142,6 +143,12 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<JiraStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<JiraStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<JiraStartupRebuildService>());
+
 WebApplication app = builder.Build();
 JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
 
@@ -220,37 +227,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     }
 }
 
-// ── Reload from cache on startup (if configured) ─────────────────
-if (jiraOpts.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<JiraDatabase>().PrimaryContentTableIsEmpty())
-{
-    JiraIngestionPipeline pipeline = app.Services.GetRequiredService<JiraIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else
-{
-    // Check individual index tables when not reloading from cache
-    JiraDatabase jiraDb = app.Services.GetRequiredService<JiraDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (jiraDb.TableIsEmpty("jira_index_workgroups"))
-    {
-        startupLogger.LogInformation("Facet indexes are empty — rebuilding");
-        using SqliteConnection conn = jiraDb.OpenConnection();
-        app.Services.GetRequiredService<JiraIndexBuilder>().RebuildIndexTables(conn);
-    }
-
-    if (jiraDb.TableIsEmpty("xref_zulip"))
-    {
-        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        app.Services.GetRequiredService<JiraXRefRebuilder>().RebuildAll(CancellationToken.None);
-    }
-
-    if (jiraDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<JiraIndexer>().RebuildFullIndex(CancellationToken.None);
-    }
-}
+// Startup rebuild work runs in JiraStartupRebuildService (background hosted
+// service) so Kestrel can start serving /health immediately.
 
 app.Run();

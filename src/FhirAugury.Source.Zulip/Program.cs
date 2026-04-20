@@ -5,6 +5,7 @@ using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
+using FhirAugury.Source.Zulip.Hosting;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
 using FhirAugury.Source.Zulip.Workers;
@@ -132,6 +133,12 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<ZulipStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ZulipStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<ZulipStartupRebuildService>());
+
 WebApplication app = builder.Build();
 
 ZulipServiceOptions options = app.Services.GetRequiredService<IOptions<ZulipServiceOptions>>().Value;
@@ -169,31 +176,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
     CancellationToken.None);
 
-// ── Rebuild from cache (optional) ────────────────────────────────
-if (options.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<ZulipDatabase>().PrimaryContentTableIsEmpty())
-{
-    ZulipIngestionPipeline pipeline = app.Services.GetRequiredService<ZulipIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else
-{
-    // Check individual index tables when not reloading from cache
-    ZulipDatabase zulipDb = app.Services.GetRequiredService<ZulipDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (zulipDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<ZulipIndexer>().RebuildFullIndex(CancellationToken.None);
-    }
-
-    if (options.ReindexTicketsOnStartup || zulipDb.TableIsEmpty("xref_jira"))
-    {
-        startupLogger.LogInformation("Rebuilding cross-reference indexes");
-        app.Services.GetRequiredService<ZulipXRefRebuilder>().RebuildAll(CancellationToken.None);
-    }
-}
-
+// Startup rebuild work runs in ZulipStartupRebuildService (background hosted
+// service) so Kestrel can start serving /health immediately.
 
 app.Run();

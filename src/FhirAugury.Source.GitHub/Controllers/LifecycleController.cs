@@ -2,6 +2,7 @@ using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Source.GitHub.Cache;
@@ -22,7 +23,8 @@ public class LifecycleController(
     GitHubDatabase db,
     IResponseCache cache,
     IIndexTracker indexTracker,
-    IOptions<GitHubServiceOptions> optionsAccessor) : ControllerBase
+    IOptions<GitHubServiceOptions> optionsAccessor,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpGet("status")]
     public IActionResult GetStatus()
@@ -80,6 +82,6 @@ public class LifecycleController(
     [HttpGet("health")]
     public IActionResult GetHealth()
     {
-        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline));
+        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline, startupRebuild));
     }
 }

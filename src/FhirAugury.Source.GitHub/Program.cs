@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
+using FhirAugury.Source.GitHub.Hosting;
 using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
 using FhirAugury.Source.GitHub.Ingestion.Categories;
@@ -150,6 +151,12 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<GitHubStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<GitHubStartupRebuildService>());
+
 WebApplication app = builder.Build();
 
 GitHubServiceOptions githubOpts = app.Services.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
@@ -222,32 +229,8 @@ if (githubOpts.Provider.Equals("gh-cli", StringComparison.OrdinalIgnoreCase))
     }
 }
 
-// ── Reload from cache on startup (if configured) ─────────────────
-if (githubOpts.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<GitHubDatabase>().PrimaryContentTableIsEmpty())
-{
-    GitHubIngestionPipeline pipeline = app.Services.GetRequiredService<GitHubIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else
-{
-    // Check individual index tables when not reloading from cache
-    GitHubDatabase githubDb = app.Services.GetRequiredService<GitHubDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (githubDb.TableIsEmpty("xref_jira"))
-    {
-        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        GitHubXRefRebuilder xrefRebuilder = app.Services.GetRequiredService<GitHubXRefRebuilder>();
-        List<string> repos = githubOpts.GetAllRepositoryNames();
-        xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, CancellationToken.None);
-    }
-
-    if (githubDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<GitHubIndexer>().RebuildFullIndex(CancellationToken.None);
-    }
-}
+// Startup rebuild work runs in GitHubStartupRebuildService (background hosted
+// service) so Kestrel can start serving /health immediately. The gh CLI
+// validation above intentionally remains pre-Run as a fail-fast config check.
 
 app.Run();

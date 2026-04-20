@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
+using FhirAugury.Source.Confluence.Hosting;
 using FhirAugury.Source.Confluence.Indexing;
 using FhirAugury.Source.Confluence.Ingestion;
 using FhirAugury.Source.Confluence.Workers;
@@ -120,6 +121,12 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<ConfluenceStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ConfluenceStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<ConfluenceStartupRebuildService>());
+
 WebApplication app = builder.Build();
 ConfluenceServiceOptions confluenceOpts = app.Services.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
 
@@ -161,36 +168,7 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
     CancellationToken.None);
 
-// ── Reload from cache on startup (if configured) ─────────────────
-if (confluenceOpts.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<ConfluenceDatabase>().PrimaryContentTableIsEmpty())
-{
-    ConfluenceIngestionPipeline pipeline = app.Services.GetRequiredService<ConfluenceIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else
-{
-    // Check individual index tables when not reloading from cache
-    ConfluenceDatabase confluenceDb = app.Services.GetRequiredService<ConfluenceDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (confluenceDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<ConfluenceIndexer>().RebuildFullIndex(CancellationToken.None);
-    }
-
-    if (confluenceDb.TableIsEmpty("xref_jira"))
-    {
-        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        app.Services.GetRequiredService<ConfluenceXRefRebuilder>().RebuildAll(CancellationToken.None);
-    }
-
-    if (confluenceDb.TableIsEmpty("confluence_page_links"))
-    {
-        startupLogger.LogInformation("Page link index is empty — rebuilding");
-        app.Services.GetRequiredService<ConfluenceLinkRebuilder>().RebuildAll(CancellationToken.None);
-    }
-}
+// Startup rebuild work runs in ConfluenceStartupRebuildService (background
+// hosted service) so Kestrel can start serving /health immediately.
 
 app.Run();

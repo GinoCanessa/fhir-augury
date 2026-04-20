@@ -2,6 +2,7 @@ using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Source.Jira.Api;
@@ -16,7 +17,7 @@ namespace FhirAugury.Source.Jira.Controllers;
 
 [ApiController]
 [Route("api/v1")]
-public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db, IResponseCache cache, IIndexTracker indexTracker) : ControllerBase
+public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db, IResponseCache cache, IIndexTracker indexTracker, IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpGet("status")]
     public IActionResult GetStatus()
@@ -111,6 +112,6 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
     [HttpGet("health")]
     public IActionResult GetHealth()
     {
-        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline));
+        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline, startupRebuild));
     }
 }
