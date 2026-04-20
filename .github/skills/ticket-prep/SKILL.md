@@ -11,52 +11,22 @@ cross-references, related conversations, and linked artifacts.
 
 ## Data Access
 
-This skill supports two data access methods, in priority order:
+All data access in this skill (Jira, Zulip, GitHub, cross-references,
+search) goes through the **`fhir-augury-cli`** skill. That skill
+documents the CLI invocation form, the canonical recipes
+(`get`, `cross-referenced`, `search`, `query-zulip`, …), and the
+fallback chain (CLI → MCP → direct HTTP → `appsettings.json`). Do not
+duplicate command-line knowledge here.
 
-1. **FhirAugury MCP** (preferred) — Use MCP tools directly when available.
-   These are tools prefixed with `FhirAugury-` (e.g., `FhirAugury-get_item`,
-   `FhirAugury-cross_referenced`). MCP tools are more efficient because they
-   avoid shell invocation overhead.
-
-2. **fhir-augury CLI** (fallback) — Use the CLI when MCP tools are not
-   available. The CLI requires shell access and running FHIR Augury services
-   (the CLI connects to the orchestrator, default `http://localhost:5150`).
-
-**Detection:** At the start of the workflow, check whether `FhirAugury-get_item`
-is available as a callable tool. If so, use MCP for all data access. Otherwise,
-fall back to the CLI.
-
-### MCP Tool Reference
-
-| MCP Tool | Purpose |
-|----------|---------|
-| `FhirAugury-get_item` | Fetch full details of an item from a source |
-| `FhirAugury-cross_referenced` | Get all cross-references (both directions) for a value |
-| `FhirAugury-refers_to` | Get outgoing cross-references from an item |
-| `FhirAugury-referred_by` | Get incoming cross-references to an item |
-| `FhirAugury-content_search` | Unified text search across all sources |
-| `FhirAugury-query_zulip_messages` | Structured Zulip message search |
-| `FhirAugury-get_zulip_thread` | Get a full Zulip topic thread |
-| `FhirAugury-get_jira_comments` | Get comments on a Jira issue |
-| `FhirAugury-get_keywords` | Get extracted keywords for an item |
-
-### CLI Reference (Fallback)
-
-The `fhir-augury` CLI accepts JSON commands. All examples below use inline
-JSON; for readability, use `--pretty` when inspecting output manually.
+When a CLI command is shown below, it is in the form documented by
+`fhir-augury-cli`:
 
 ```bash
-fhir-augury --json '<json>' --pretty
+fhir-augury --json '<json>' [--pretty]
 ```
 
-| CLI Command | MCP Equivalent |
-|-------------|----------------|
-| `get` | `FhirAugury-get_item` |
-| `cross-referenced` | `FhirAugury-cross_referenced` |
-| `refers-to` | `FhirAugury-refers_to` |
-| `referred-by` | `FhirAugury-referred_by` |
-| `search` | `FhirAugury-content_search` |
-| `query-zulip` | `FhirAugury-query_zulip_messages` |
+If the CLI is unavailable in the current environment, fall back per the
+order documented in `fhir-augury-cli`.
 
 ## Workflow
 
@@ -69,24 +39,12 @@ Run these two calls in parallel:
 
 **1a. Get the ticket with full content, comments, and snapshot:**
 
-Using MCP:
-```
-FhirAugury-get_item(source="jira", id="FHIR-50738", includeComments=true, includeContent=true, includeSnapshot=true)
-```
-
-Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-50738","includeComments":true,"includeContent":true,"includeSnapshot":true}'
 ```
 
 **1b. Get all cross-references:**
 
-Using MCP:
-```
-FhirAugury-cross_referenced(value="FHIR-50738", limit=50)
-```
-
-Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"cross-referenced","value":"FHIR-50738","limit":50}'
 ```
@@ -103,12 +61,6 @@ From the cross-references response, identify:
 
 For each Jira ticket found in the cross-references, fetch its details:
 
-Using MCP:
-```
-FhirAugury-get_item(source="jira", id="FHIR-XXXXX", includeContent=true, includeSnapshot=true)
-```
-
-Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-XXXXX","includeContent":true,"includeSnapshot":true}'
 ```
@@ -117,32 +69,15 @@ These provide context for understanding the full scope of the request.
 
 ### Step 3: Fetch Zulip Conversations
 
-For each Zulip cross-reference, retrieve the thread. The cross-reference will
-contain stream and topic information.
+For each Zulip cross-reference, retrieve the thread by item ID:
 
-Using MCP:
-```
-FhirAugury-get_zulip_thread(stream="<stream>", topic="<topic>")
-```
-Or fetch by item ID:
-```
-FhirAugury-get_item(source="zulip", id="<zulip-item-id>", includeContent=true)
-```
-
-Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"get","source":"zulip","id":"<zulip-item-id>","includeContent":true}'
 ```
 
-If the cross-references don't surface enough Zulip context, also search for
-the ticket key in Zulip:
+If the cross-references don't surface enough Zulip context, also search
+for the ticket key in Zulip:
 
-Using MCP:
-```
-FhirAugury-content_search(values="FHIR-50738", sources="zulip", limit=10)
-```
-
-Using CLI (fallback):
 ```bash
 fhir-augury --json '{"command":"search","query":"FHIR-50738","sources":["zulip"],"limit":10}'
 ```
@@ -151,6 +86,17 @@ fhir-augury --json '{"command":"search","query":"FHIR-50738","sources":["zulip"]
 
 For each GitHub cross-reference, record the item type (PR, issue, commit),
 repository, title, and URL. No deep fetch is required unless the user asks.
+
+When the ticket's cross-references identify specific repositories **and**
+the consumer will use this report to drive implementation (e.g., it feeds
+`ticket-plan`), also read the saved per-repo briefing at
+`cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`. If the
+briefing is absent or stale (per the `repo-analysis` skill's staleness
+rules), ask the user to run `repo-analysis <owner/name>` (or
+`repo-analysis <owner/name> if-stale`) and resume. Embed a brief
+per-repo summary (category, likely-touched paths) under
+"Related GitHub Items". Skip this step for pure-triage runs where only
+the disposition is needed.
 
 ### Step 5: Build the Report
 
@@ -315,9 +261,9 @@ workgroup wants a clear recommendation to start the discussion.}
 
 ## Important Rules
 
-- **Use only data from the MCP or CLI.** Do not fabricate ticket details, Zulip
-  conversation content, or GitHub links. If a call fails or returns no
-  data, say so in the report.
+- **Use only data from the `fhir-augury-cli` skill (CLI / MCP).** Do not
+  fabricate ticket details, Zulip conversation content, or GitHub
+  links. If a call fails or returns no data, say so in the report.
 - **Be specific in dispositions.** Generic statements like "modify the spec"
   are not useful. Name the resource, element, constraint, or mechanism.
 - **Summarize Zulip threads honestly.** Capture the range of opinions, not
