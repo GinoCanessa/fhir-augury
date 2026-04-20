@@ -415,4 +415,50 @@ public class JiraSpecXmlIndexerTests : IDisposable
         Assert.Equal("OTHER", specs[0].Family);
         Assert.Single(JiraSpecArtifactRecord.SelectList(connection, SpecKey: "security"));
     }
+
+    [Fact]
+    public void ParseMixedXml10AndXml11_BothIndexed()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+
+        // Plain XML 1.0 spec.
+        WriteFile(cloneDir, "xml/FHIR-core.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <specification key="core" url="http://hl7.org/fhir" defaultVersion="STU4">
+              <artifact key="patient" name="Patient" id="StructureDefinition/Patient"/>
+            </specification>
+            """);
+
+        // XML 1.1 spec containing an embedded C1 control character that
+        // would otherwise cause XmlReader to reject the document.
+        // The downgrading wrapper rewrites the version and strips the C1.
+        string xml11 = "<?xml version=\"1.1\" encoding=\"UTF-8\"?>\n" +
+                       "<specification key=\"hsp-market\" url=\"http://example.org/hsp\" defaultVersion=\"1.0\">\n" +
+                       "  <page name=\"Intro\u0090\" key=\"intro\"/>\n" +
+                       "</specification>\n";
+        WriteFile(cloneDir, "xml/OTHER-hsp-market.xml", xml11);
+
+        // Add hsp-market to SPECS-OTHER so the spec name is resolved.
+        WriteFile(cloneDir, "xml/SPECS-OTHER.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <specifications>
+              <specification key="hsp-market" name="HSP Market"/>
+            </specifications>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        List<JiraSpecRecord> coreSpecs = JiraSpecRecord.SelectList(connection, SpecKey: "core");
+        Assert.Single(coreSpecs);
+
+        List<JiraSpecRecord> hspSpecs = JiraSpecRecord.SelectList(connection, SpecKey: "hsp-market");
+        Assert.Single(hspSpecs);
+        Assert.Equal("OTHER", hspSpecs[0].Family);
+
+        List<JiraSpecPageRecord> pages = JiraSpecPageRecord.SelectList(connection, SpecKey: "hsp-market");
+        Assert.Single(pages);
+        Assert.Equal("Intro", pages[0].Name);
+    }
 }

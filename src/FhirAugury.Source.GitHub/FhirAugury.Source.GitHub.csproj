@@ -20,6 +20,7 @@
     <ProjectReference Include="..\FhirAugury.ServiceDefaults\FhirAugury.ServiceDefaults.csproj" />
     <ProjectReference Include="..\FhirAugury.Parsing.Fhir\FhirAugury.Parsing.Fhir.csproj" />
     <ProjectReference Include="..\FhirAugury.Parsing.Fsh\FhirAugury.Parsing.Fsh.csproj" />
+    <ProjectReference Include="..\FhirAugury.Parsing.Xml\FhirAugury.Parsing.Xml.csproj" />
   </ItemGroup>
 
 </Project>

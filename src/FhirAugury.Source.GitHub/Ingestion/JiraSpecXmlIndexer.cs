@@ -1,6 +1,8 @@
 using System.Data;
 using System.Text.Json;
+using System.Xml;
 using System.Xml.Linq;
+using FhirAugury.Parsing.Xml;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -82,7 +84,8 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
 
         try
         {
-            XDocument doc = XDocument.Load(familiesPath);
+            using XmlReader xr = XmlDowngradeReader.Create(familiesPath);
+            XDocument doc = XDocument.Load(xr);
             foreach (XElement family in doc.Descendants("family"))
             {
                 string? key = (string?)family.Attribute("key");
@@ -126,7 +129,8 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
 
             try
             {
-                XDocument doc = XDocument.Load(specsFile);
+                using XmlReader xr = XmlDowngradeReader.Create(specsFile);
+                XDocument doc = XDocument.Load(xr);
 
                 foreach (XElement spec in doc.Descendants("specification"))
                 {
@@ -182,7 +186,8 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
 
         try
         {
-            XDocument doc = XDocument.Load(wgPath);
+            using XmlReader xr = XmlDowngradeReader.Create(wgPath);
+            XDocument doc = XDocument.Load(xr);
             int count = 0;
 
             List<JiraWorkgroupRecord> records = [];
@@ -259,7 +264,8 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
         SqliteConnection connection,
         CancellationToken ct)
     {
-        XDocument doc = XDocument.Load(filePath);
+        using XmlReader xr = XmlDowngradeReader.Create(filePath);
+        XDocument doc = XDocument.Load(xr);
         XElement? root = doc.Root;
         if (root is null)
             return;

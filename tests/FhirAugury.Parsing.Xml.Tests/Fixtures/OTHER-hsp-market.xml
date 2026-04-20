@@ -1,0 +1,6 @@
+<?xml version="1.1" encoding="UTF-8"?>
+<specification key="hsp-market" defaultWorkgroup="its" defaultVersion="1.0" url="http://example.org/hsp">
+  <version code="1.0" deprecated="false"/>
+  <page name="1 - Intro" key="intro" />
+  <page name="2 - License" key="license" />
+</specification>

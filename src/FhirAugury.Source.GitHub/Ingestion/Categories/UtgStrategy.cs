@@ -215,7 +215,7 @@ public class UtgStrategy(
         try
         {
             using FileStream fs = File.OpenRead(filePath);
-            using XmlReader reader = XmlReader.Create(fs, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+            using XmlReader reader = FhirAugury.Parsing.Xml.XmlDowngradeReader.Create(fs, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
             while (reader.Read())
             {
                 if (reader.NodeType == XmlNodeType.Element)

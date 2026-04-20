@@ -15,6 +15,7 @@
     <Project Path="src/FhirAugury.AppHost/FhirAugury.AppHost.csproj" />
     <Project Path="src/FhirAugury.Parsing.Fhir/FhirAugury.Parsing.Fhir.csproj" />
     <Project Path="src/FhirAugury.Parsing.Fsh/FhirAugury.Parsing.Fsh.csproj" />
+    <Project Path="src/FhirAugury.Parsing.Xml/FhirAugury.Parsing.Xml.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
@@ -26,6 +27,7 @@
     <Project Path="tests/FhirAugury.Orchestrator.Tests/FhirAugury.Orchestrator.Tests.csproj" />
     <Project Path="tests/FhirAugury.Parsing.Fhir.Tests/FhirAugury.Parsing.Fhir.Tests.csproj" />
     <Project Path="tests/FhirAugury.Parsing.Fsh.Tests/FhirAugury.Parsing.Fsh.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Parsing.Xml.Tests/FhirAugury.Parsing.Xml.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />

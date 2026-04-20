@@ -1,5 +1,6 @@
 using System.Text;
 using System.Xml;
+using FhirAugury.Parsing.Xml;
 
 namespace FhirAugury.Source.GitHub.Ingestion.Parsing;
 
@@ -29,7 +30,7 @@ public class XmlFileContentParser : IFileContentParser
                 MaxCharactersFromEntities = 1024 * 1024,
             };
 
-            using XmlReader reader = XmlReader.Create(content, settings);
+            using XmlReader reader = XmlDowngradeReader.Create(content, settings);
             StringBuilder sb = new StringBuilder();
             bool isFhir = false;
             bool inSemanticElement = false;
