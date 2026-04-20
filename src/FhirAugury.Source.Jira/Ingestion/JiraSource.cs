@@ -876,6 +876,68 @@ public class JiraSource(
         deleteCmd.Parameters.AddWithValue("@id", issueId);
         deleteCmd.ExecuteNonQuery();
     }
+
+    /// <summary>
+    /// Seeds the <c>jira_projects</c> table from configuration. For new keys
+    /// we insert a row using the configured <c>BaselineValue</c> and
+    /// <c>Enabled</c>; for keys that already exist we only refresh the
+    /// ingestion-owned <c>Enabled</c> flag so user edits to
+    /// <c>BaselineValue</c> (made via the management API) survive subsequent
+    /// syncs.
+    /// </summary>
+    public void UpsertProjectsFromConfig()
+    {
+        List<JiraProjectConfig> configured = options.Projects.Count > 0
+            ? options.Projects
+            : [new JiraProjectConfig { Key = options.DefaultProject }];
+
+        if (configured.Count == 0) return;
+
+        using SqliteConnection connection = database.OpenConnection();
+        foreach (JiraProjectConfig cfg in configured)
+        {
+            JiraProjectRecord? existing = JiraProjectRecord.SelectSingle(connection, Key: cfg.Key);
+            if (existing is null)
+            {
+                JiraProjectRecord record = new JiraProjectRecord
+                {
+                    Id = JiraProjectRecord.GetIndex(),
+                    Key = cfg.Key,
+                    Enabled = cfg.Enabled,
+                    BaselineValue = Math.Clamp(cfg.BaselineValue, 0, 10),
+                    IssueCount = 0,
+                    LastSyncAt = null,
+                };
+                JiraProjectRecord.Insert(connection, record, ignoreDuplicates: true);
+            }
+            else if (existing.Enabled != cfg.Enabled)
+            {
+                existing.Enabled = cfg.Enabled;
+                JiraProjectRecord.Update(connection, existing);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Updates the <c>IssueCount</c> and <c>LastSyncAt</c> columns on the
+    /// project row from the current contents of <c>jira_issues</c>. No-op
+    /// if the project row does not exist.
+    /// </summary>
+    public void UpdateProjectCounters(string projectKey, DateTimeOffset syncedAt)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        JiraProjectRecord? existing = JiraProjectRecord.SelectSingle(connection, Key: projectKey);
+        if (existing is null) return;
+
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM jira_issues WHERE ProjectKey = @key";
+        cmd.Parameters.AddWithValue("@key", projectKey);
+        int count = Convert.ToInt32(cmd.ExecuteScalar());
+
+        existing.IssueCount = count;
+        existing.LastSyncAt = syncedAt;
+        JiraProjectRecord.Update(connection, existing);
+    }
 }
 
 /// <summary>Result of an ingestion run.</summary>

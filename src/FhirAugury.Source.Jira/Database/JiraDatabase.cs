@@ -20,6 +20,7 @@ public class JiraDatabase : SourceDatabase
     protected override void InitializeSchema(SqliteConnection connection)
     {
         JiraUserRecord.CreateTable(connection);
+        JiraProjectRecord.CreateTable(connection);
         JiraIssueRecord.CreateTable(connection);
         JiraCommentRecord.CreateTable(connection);
         JiraIssueLinkRecord.CreateTable(connection);
@@ -47,6 +48,20 @@ public class JiraDatabase : SourceDatabase
 
         CreateJiraIssuesFts(connection);
         CreateJiraCommentsFts(connection);
+
+        MigrateSchema(connection);
+    }
+
+    /// <summary>
+    /// Applies schema migrations for tables/columns added after initial
+    /// release. Safe to call repeatedly; each migration checks before altering.
+    /// </summary>
+    private static void MigrateSchema(SqliteConnection connection)
+    {
+        // Migration: add jira_projects table for older databases that did
+        // not include it at initial schema creation. CreateTable is
+        // idempotent (CREATE TABLE IF NOT EXISTS), so this is safe.
+        JiraProjectRecord.CreateTable(connection);
     }
 
     private void CreateJiraIssuesFts(SqliteConnection connection)
@@ -125,6 +140,7 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_index_users;
             DROP TABLE IF EXISTS jira_index_inpersons;
             DROP TABLE IF EXISTS jira_users;
+            DROP TABLE IF EXISTS jira_projects;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_github;
             DROP TABLE IF EXISTS xref_confluence;

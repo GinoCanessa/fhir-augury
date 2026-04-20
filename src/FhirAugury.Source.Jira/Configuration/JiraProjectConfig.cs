@@ -37,4 +37,16 @@ public class JiraProjectConfig
     /// recorded sync cursor. Must not be in the future.
     /// </summary>
     public DateOnly? StartDate { get; set; }
+
+    /// <summary>
+    /// Baseline ranking value for this project (0–10, default 5). Scores from
+    /// this project are multiplied by <c>BaselineValue / 5.0</c>, so the
+    /// default is neutral. Use lower values (e.g. <c>1</c>) to keep tickets
+    /// searchable but down-rank them (e.g. ballot vote tracking); use
+    /// <c>0</c> to suppress entries from ranked output entirely. Lookups by
+    /// key, project-scoped queries, and cross-reference endpoints remain
+    /// unaffected. Only seeded into the persisted record on first insert;
+    /// edits via <c>PUT /api/v1/projects/{key}</c> survive subsequent syncs.
+    /// </summary>
+    public int BaselineValue { get; set; } = 5;
 }

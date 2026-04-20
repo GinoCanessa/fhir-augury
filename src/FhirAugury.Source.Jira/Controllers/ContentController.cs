@@ -136,11 +136,15 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
             string sql = """
                 SELECT ji.Key, ji.Title,
                        snippet(jira_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
-                       jira_issues_fts.rank, ji.Status, ji.UpdatedAt
+                       jira_issues_fts.rank * COALESCE(jp.BaselineValue, 5) / 5.0 as ScaledRank,
+                       ji.Status, ji.UpdatedAt,
+                       COALESCE(jp.BaselineValue, 5) as BaselineValue
                 FROM jira_issues_fts
                 JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
+                LEFT JOIN jira_projects jp ON jp.Key = ji.ProjectKey
                 WHERE jira_issues_fts MATCH @query
-                ORDER BY jira_issues_fts.rank
+                  AND COALESCE(jp.BaselineValue, 5) > 0
+                ORDER BY ScaledRank
                 LIMIT @limit
                 """;
 
@@ -529,10 +533,12 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
 
         // Batch-query FTS5 for all source items matching the query value
         using SqliteCommand cmd = new("""
-            SELECT ji.Key, -jira_issues_fts.rank as Score
+            SELECT ji.Key, -(jira_issues_fts.rank) * COALESCE(jp.BaselineValue, 5) / 5.0 as Score
             FROM jira_issues_fts
             JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
+            LEFT JOIN jira_projects jp ON jp.Key = ji.ProjectKey
             WHERE jira_issues_fts MATCH @query
+              AND COALESCE(jp.BaselineValue, 5) > 0
             """, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
 

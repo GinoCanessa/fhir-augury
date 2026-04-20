@@ -55,6 +55,9 @@ public class JiraIngestionPipeline(
                 ? [new JiraProjectConfig { Key = project }]
                 : _options.GetEffectiveProjects();
 
+            // Ensure jira_projects rows exist for downstream rank joins.
+            source.UpsertProjectsFromConfig();
+
             IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
             await RunCacheFileNameMigratorOnceAsync(ct);
@@ -73,6 +76,7 @@ public class JiraIngestionPipeline(
                     combined = MergeResults(combined, downloadResult);
 
                     UpdateSyncState(downloadResult, proj.Key, "full");
+                    source.UpdateProjectCounters(proj.Key, downloadResult.CompletedAt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -121,6 +125,9 @@ public class JiraIngestionPipeline(
                 ? [new JiraProjectConfig { Key = project }]
                 : _options.GetEffectiveProjects();
 
+            // Ensure jira_projects rows exist for downstream rank joins.
+            source.UpsertProjectsFromConfig();
+
             IngestionResult combined = cacheResult ?? new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
             await RunCacheFileNameMigratorOnceAsync(ct);
@@ -140,6 +147,7 @@ public class JiraIngestionPipeline(
                     combined = MergeResults(combined, downloadResult);
 
                     UpdateSyncState(downloadResult, proj.Key, "incremental");
+                    source.UpdateProjectCounters(proj.Key, downloadResult.CompletedAt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -193,6 +201,10 @@ public class JiraIngestionPipeline(
             await RunCacheFileNameMigratorOnceAsync(ct);
 
             List<JiraProjectConfig> projects = _options.GetEffectiveProjects();
+
+            // Ensure jira_projects rows exist for downstream rank joins.
+            source.UpsertProjectsFromConfig();
+
             IngestionResult combined = new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
             foreach (JiraProjectConfig proj in projects)
@@ -202,6 +214,7 @@ public class JiraIngestionPipeline(
                     IngestionResult projectResult = await source.LoadFromCacheAsync(project: proj.Key, ct: ct);
                     combined = MergeResults(combined, projectResult);
                     UpdateSyncState(projectResult, proj.Key, "rebuild");
+                    source.UpdateProjectCounters(proj.Key, projectResult.CompletedAt);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

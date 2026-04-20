@@ -115,3 +115,6 @@ public record JiraLocalProcessingSetResponse(
 
 /// <summary>Clear-all-processed response.</summary>
 public record JiraLocalProcessingClearResponse(int RowsAffected);
+
+/// <summary>Update payload for <c>PUT /api/v1/projects/{key}</c>.</summary>
+public record JiraProjectUpdateRequest(bool Enabled, int? BaselineValue = null);

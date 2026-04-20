@@ -189,4 +189,41 @@ public class JiraServiceOptionsTests
         Assert.Contains(errors, e => e.Contains("'C'") && e.Contains("DownloadWindowDays"));
         Assert.Contains(errors, e => e.Contains("'C'") && e.Contains("StartDate"));
     }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(11)]
+    [InlineData(int.MinValue)]
+    public void Validate_FlagsBaselineValueOutOfRange(int baseline)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "RANK", BaselineValue = baseline }]
+        };
+
+        List<string> errors = opts.Validate().ToList();
+        Assert.Single(errors);
+        Assert.Contains("RANK", errors[0]);
+        Assert.Contains("BaselineValue", errors[0]);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(10)]
+    public void Validate_AcceptsBaselineValueBoundaries(int baseline)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "OK", BaselineValue = baseline }]
+        };
+
+        Assert.Empty(opts.Validate());
+    }
+
+    [Fact]
+    public void JiraProjectConfig_DefaultBaselineIsFive()
+    {
+        Assert.Equal(5, new JiraProjectConfig { Key = "X" }.BaselineValue);
+    }
 }

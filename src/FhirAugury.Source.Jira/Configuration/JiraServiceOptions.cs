@@ -91,6 +91,8 @@ public class JiraServiceOptions
                 yield return $"Project '{p.Key}': DownloadWindowDays must be between 1 and {JiraProjectConfig.DownloadWindowDaysMax} (got {p.DownloadWindowDays}).";
             if (p.StartDate is DateOnly sd && sd > today)
                 yield return $"Project '{p.Key}': StartDate must not be in the future (got {sd:yyyy-MM-dd}).";
+            if (p.BaselineValue < 0 || p.BaselineValue > 10)
+                yield return $"Project '{p.Key}': BaselineValue must be between 0 and 10 (got {p.BaselineValue}).";
         }
     }
 }
