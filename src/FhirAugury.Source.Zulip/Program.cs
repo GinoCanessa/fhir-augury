@@ -1,6 +1,7 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -42,6 +43,12 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Services ─────────────────────────────────────────────────────
 
 builder.Services.AddControllers();
+
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: Zulip";
+    o.Description = "Zulip source service — message ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -154,6 +161,7 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

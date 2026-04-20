@@ -1,6 +1,7 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -44,6 +45,13 @@ builder.WebHost.ConfigureKestrel(k =>
 
 // Controllers
 builder.Services.AddControllers();
+
+// OpenAPI
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: Jira";
+    o.Description = "Jira source service — issue ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -179,6 +187,7 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

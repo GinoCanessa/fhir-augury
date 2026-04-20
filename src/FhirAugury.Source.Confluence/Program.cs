@@ -1,6 +1,7 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
@@ -40,6 +41,12 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Services ─────────────────────────────────────────────────────
 
 builder.Services.AddControllers();
+
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: Confluence";
+    o.Description = "Confluence source service — page ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -146,6 +153,7 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

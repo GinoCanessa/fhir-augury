@@ -26,6 +26,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Cli.Tests" />
   </ItemGroup>
 
 </Project>

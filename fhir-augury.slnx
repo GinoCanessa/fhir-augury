@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FhirAugury.Common/FhirAugury.Common.csproj" />
+    <Project Path="src/FhirAugury.Common.OpenApi/FhirAugury.Common.OpenApi.csproj" />
     <Project Path="src/FhirAugury.Source.Jira/FhirAugury.Source.Jira.csproj" />
     <Project Path="src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj" />
     <Project Path="src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj" />
@@ -19,6 +20,8 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Common.OpenApi.Tests/FhirAugury.Common.OpenApi.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Cli.Tests/FhirAugury.Cli.Tests.csproj" />
     <Project Path="tests/FhirAugury.McpShared.Tests/FhirAugury.McpShared.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Jira.Tests/FhirAugury.Source.Jira.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />

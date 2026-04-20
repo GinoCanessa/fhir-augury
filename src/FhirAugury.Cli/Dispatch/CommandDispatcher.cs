@@ -39,6 +39,10 @@ public static class CommandDispatcher
         ["list-jira-specifications"] = j => ParseDimension(j, "specifications"),
         ["list-jira-labels"] = j => ParseDimension(j, "labels"),
         ["list-jira-statuses"] = j => ParseDimension(j, "statuses"),
+        ["sources"] = j => j.Deserialize<SourcesRequest>(DeserializeOptions)!,
+        ["commands"] = j => j.Deserialize<CommandsRequest>(DeserializeOptions)!,
+        ["schema"] = j => j.Deserialize<SchemaRequest>(DeserializeOptions)!,
+        ["call"] = j => j.Deserialize<CallRequest>(DeserializeOptions)!,
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -149,6 +153,10 @@ public static class CommandDispatcher
             KeywordsRequest r => KeywordsHandler.HandleAsync(r, orchestratorAddr, ct),
             RelatedByKeywordRequest r => RelatedByKeywordHandler.HandleAsync(r, orchestratorAddr, ct),
             ListJiraDimensionRequest r => ListJiraDimensionHandler.HandleAsync(r, orchestratorAddr, ct),
+            SourcesRequest r => SourcesHandler.HandleAsync(r, orchestratorAddr, ct),
+            CommandsRequest r => CommandsHandler.HandleAsync(r, orchestratorAddr, ct),
+            SchemaRequest r => SchemaHandler.HandleAsync(r, orchestratorAddr, ct),
+            CallRequest r => CallHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
 

@@ -1,6 +1,7 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Indexing;
@@ -41,6 +42,12 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Services ─────────────────────────────────────────────────────
 
 builder.Services.AddControllers();
+
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: GitHub";
+    o.Description = "GitHub source service — issue/PR/spec ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -192,6 +199,7 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(

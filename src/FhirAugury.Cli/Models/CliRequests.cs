@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace FhirAugury.Cli.Models;
@@ -262,4 +263,36 @@ public sealed class ListJiraDimensionRequest : CliRequest
 
     [JsonPropertyName("limit")]
     public int? Limit { get; set; }
+}
+
+public sealed class SourcesRequest : CliRequest;
+
+public sealed class CommandsRequest : CliRequest
+{
+    [JsonPropertyName("source")] public string? Source { get; set; }
+    [JsonPropertyName("tag")] public string? Tag { get; set; }
+    [JsonPropertyName("refresh")] public bool Refresh { get; set; }
+}
+
+public sealed class SchemaRequest : CliRequest
+{
+    [JsonPropertyName("source")] public string Source { get; set; } = "";
+    [JsonPropertyName("operation")] public string Operation { get; set; } = "";
+    [JsonPropertyName("refresh")] public bool Refresh { get; set; }
+}
+
+public sealed class CallRequest : CliRequest
+{
+    [JsonPropertyName("source")] public string Source { get; set; } = "";
+    [JsonPropertyName("operation")] public string Operation { get; set; } = "";
+
+    /// <summary>Path/query/header parameter values, keyed by parameter name as defined in the OpenAPI document.</summary>
+    [JsonPropertyName("params")] public Dictionary<string, string>? Params { get; set; }
+
+    /// <summary>Request body. May be a JSON object/array, or a string of the form "@/path/to/file.json" or "@-" for stdin.</summary>
+    [JsonPropertyName("body")] public JsonElement? Body { get; set; }
+
+    [JsonPropertyName("refresh")] public bool Refresh { get; set; }
+    [JsonPropertyName("raw")] public bool Raw { get; set; }
+    [JsonPropertyName("timeoutSeconds")] public int? TimeoutSeconds { get; set; }
 }

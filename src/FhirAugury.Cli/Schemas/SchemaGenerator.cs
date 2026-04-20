@@ -533,6 +533,92 @@ public static class SchemaGenerator
                 },
             }
         ),
+
+        ["sources"] = new(
+            "List enabled source services known to the orchestrator",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("sources"),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["sources"] = ArrayProp("string", "Enabled source service names"),
+                },
+            }
+        ),
+
+        ["commands"] = new(
+            "List operations available across the orchestrator and all enabled sources, derived from the merged OpenAPI document",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("commands"),
+                ["source"] = Prop("string", "Filter to a single source (e.g., jira, zulip, orchestrator)"),
+                ["tag"] = Prop("string", "Filter to operations whose tag equals or starts with this value"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["commands"] = ArrayProp("object", "Discovered operations with operationId, method, path, summary, source, tags"),
+                },
+            }
+        ),
+
+        ["schema"] = new(
+            "Get the request and response JSON schemas for a single operation",
+            InputSchema(["command", "source", "operation"], new()
+            {
+                ["command"] = Const("schema"),
+                ["source"] = Prop("string", "Source name; combined with operation to form operationId '{source}.{operation}'"),
+                ["operation"] = Prop("string", "Operation name (the part after the source prefix in operationId)"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["operationId"] = Prop("string", "Resolved operationId"),
+                    ["method"] = Prop("string", "HTTP method"),
+                    ["path"] = Prop("string", "URL path template"),
+                    ["summary"] = Prop("string", "Operation summary"),
+                    ["parameters"] = ArrayProp("object", "Path/query/header parameters with name, in, required, schema"),
+                    ["requestBody"] = Prop("object", "Request body schema (or null)"),
+                    ["response"] = Prop("object", "First successful (2xx) JSON response schema (or null)"),
+                },
+            }
+        ),
+
+        ["call"] = new(
+            "Invoke any operation discovered via the merged OpenAPI document",
+            InputSchema(["command", "source", "operation"], new()
+            {
+                ["command"] = Const("call"),
+                ["source"] = Prop("string", "Source name; combined with operation to resolve operationId '{source}.{operation}'"),
+                ["operation"] = Prop("string", "Operation name (operationId tail)"),
+                ["params"] = Prop("object", "Path/query/header parameter values keyed by parameter name"),
+                ["body"] = Prop("object", "Request body. May be a JSON value, '@/path/to/file.json', or '@-' for stdin"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+                ["raw"] = BoolProp("Return the response body unwrapped", false),
+                ["timeoutSeconds"] = IntProp("HTTP timeout in seconds", 60),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["httpStatus"] = Prop("integer", "HTTP status code"),
+                    ["contentType"] = Prop("string", "Response content type"),
+                    ["data"] = Prop("object", "Parsed JSON response body (when application/json)"),
+                    ["bodyText"] = Prop("string", "Raw response body (when not JSON)"),
+                },
+            }
+        ),
     };
 
     // Schema builder helpers

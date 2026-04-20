@@ -1,3 +1,4 @@
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
@@ -40,6 +41,13 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Controllers ──────────────────────────────────────────────────
 builder.Services.AddControllers();
 
+// ── OpenAPI ──────────────────────────────────────────────────────
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Orchestrator";
+    o.Description = "Unified routing and merged OpenAPI for all enabled FHIR Augury source services.";
+});
+
 // ── Services ─────────────────────────────────────────────────────
 
 // Database
@@ -63,6 +71,7 @@ foreach (KeyValuePair<string, SourceServiceConfig> entry in orchestratorOptions.
 
 // Routing
 builder.Services.AddSingleton<SourceHttpClient>();
+builder.Services.AddSingleton<OpenApiMergeService>();
 
 // Health monitoring
 builder.Services.AddSingleton<ServiceHealthMonitor>();
@@ -90,6 +99,11 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+// Note: app.MapAuguryOpenApi() is intentionally omitted on the orchestrator.
+// AddAuguryOpenApi() above still registers IOpenApiDocumentProvider, but the
+// orchestrator exposes its merged OpenAPI document via OpenApiController so
+// it can override /api/v1/openapi.{json,yaml}. The orchestrator's own
+// (unmerged) document is reachable at /api/v1/source/orchestrator/openapi.json.
 
 app.Run();
 

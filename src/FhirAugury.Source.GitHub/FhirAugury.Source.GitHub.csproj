@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
     <ProjectReference Include="..\FhirAugury.ServiceDefaults\FhirAugury.ServiceDefaults.csproj" />
     <ProjectReference Include="..\FhirAugury.Parsing.Fhir\FhirAugury.Parsing.Fhir.csproj" />
     <ProjectReference Include="..\FhirAugury.Parsing.Fsh\FhirAugury.Parsing.Fsh.csproj" />

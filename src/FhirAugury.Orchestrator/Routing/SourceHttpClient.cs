@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text;
 using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -40,6 +41,86 @@ public class SourceHttpClient
     private HttpClient GetClientForSource(string sourceName)
     {
         return _httpClientFactory.CreateClient($"source-{sourceName.ToLowerInvariant()}");
+    }
+
+    // ── Generic proxy ───────────────────────────────────────────────────
+
+    private static readonly HashSet<string> s_forwardedRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Accept",
+        "Accept-Encoding",
+        "Accept-Language",
+        "If-None-Match",
+        "If-Modified-Since",
+        "Range",
+        "User-Agent",
+    };
+
+    private const string AuguryHeaderPrefix = "X-Augury-";
+
+    private static bool IsForwardedRequestHeader(string name) =>
+        s_forwardedRequestHeaders.Contains(name)
+        || name.StartsWith(AuguryHeaderPrefix, StringComparison.OrdinalIgnoreCase);
+
+    private static bool MethodAllowsBody(HttpMethod method) =>
+        method == HttpMethod.Post
+        || method == HttpMethod.Put
+        || method == HttpMethod.Patch
+        || method == HttpMethod.Delete;
+
+    /// <summary>
+    /// Forwards an arbitrary HTTP request to the named source service at
+    /// <c>/api/v1/{rest}</c>. Streams the request and response bodies; the
+    /// caller is responsible for relaying the returned <see cref="HttpResponseMessage"/>
+    /// to the original client.
+    /// </summary>
+    public async Task<HttpResponseMessage> ForwardAsync(
+        string sourceName, HttpRequest request, string rest, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(sourceName);
+        ArgumentNullException.ThrowIfNull(request);
+        rest ??= string.Empty;
+
+        HttpClient client = GetClientForSource(sourceName);
+
+        string path = $"/api/v1/{rest}";
+        string? query = request.QueryString.Value;
+        string targetUri = string.IsNullOrEmpty(query) ? path : path + query;
+
+        HttpMethod method = new(request.Method);
+        HttpRequestMessage forward = new(method, targetUri);
+
+        if (MethodAllowsBody(method))
+        {
+            StreamContent content = new(request.Body);
+            string? contentType = request.ContentType;
+            if (!string.IsNullOrEmpty(contentType))
+            {
+                content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+            }
+            if (request.ContentLength is long len)
+            {
+                content.Headers.ContentLength = len;
+            }
+            forward.Content = content;
+        }
+
+        foreach (KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues> header in request.Headers)
+        {
+            if (!IsForwardedRequestHeader(header.Key))
+            {
+                continue;
+            }
+
+            string[] values = header.Value.ToArray()!;
+            if (!forward.Headers.TryAddWithoutValidation(header.Key, values)
+                && forward.Content is not null)
+            {
+                forward.Content.Headers.TryAddWithoutValidation(header.Key, values);
+            }
+        }
+
+        return await client.SendAsync(forward, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
     }
 
     private static string ItemBase() => "items";

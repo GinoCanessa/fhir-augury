@@ -197,6 +197,29 @@ docker compose --profile jira-only up -d   # Single source
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
+## Discovery
+
+Every service publishes an OpenAPI 3.1 document at
+`/api/v1/openapi.json` (and `.yaml`). The orchestrator additionally serves a
+**merged** document at `/api/v1/openapi.json` that describes its own
+endpoints plus every enabled source's endpoints remapped under
+`/api/v1/source/{name}/...`.
+
+The CLI uses this document to enumerate and invoke any operation
+generically — no new code is required to call a newly added endpoint:
+
+```bash
+augury sources                                       # list enabled sources
+augury commands [--source jira] [--tag T]            # enumerate operations
+augury schema source=jira operation=query            # show request/response schema
+augury call source=jira operation=query body=@q.json # invoke any operation
+```
+
+See [docs/openapi.md](docs/openapi.md) for endpoint details, vendor
+extensions (`x-augury-command`, `x-augury-streaming`, `x-augury-visibility`,
+`x-augury-since`, `x-augury-until`, `x-augury-source-status`), and the CI
+quality gate.
+
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) or later
@@ -210,6 +233,7 @@ docker compose --profile jira-only up -d   # Single source
 | [Deployment](docs/deployment.md) | Docker Compose, profiles, volumes |
 | [Development](docs/development.md) | Dev setup, building, running, testing |
 | [Configuration](docs/configuration.md) | All config options per service |
+| [OpenAPI Discovery](docs/openapi.md) | Per-service & merged OpenAPI docs, vendor extensions, generic CLI `call` |
 
 ### User Guides
 
