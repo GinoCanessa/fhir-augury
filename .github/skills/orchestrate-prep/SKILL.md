@@ -1,6 +1,6 @@
 ---
 name: orchestrate-prep
-description: "Orchestrates bulk ticket preparation directly from the Jira source. USE FOR: batch ticket prep, bulk preparation, round-robin ticket prep across work groups. Queries the Jira source for work groups and randomly draws unprocessed tickets per WG, dispatches up to N concurrent ticket-prep sub-agents, saves reports to a structured output directory, and reports completion back to the Jira source via the local-processing flag."
+description: "Orchestrates bulk ticket preparation directly from the Jira source. USE FOR: batch ticket prep, bulk preparation, random ticket prep across (or within) work groups. Queries the Jira source for work groups, randomly draws unprocessed tickets matching the configured filters, dispatches up to N concurrent ticket-prep sub-agents, saves reports to a structured output directory, and reports completion back to the Jira source via the local-processing flag."
 ---
 
 # Orchestrate Prep Skill
@@ -29,41 +29,48 @@ persistent state.
 The user must provide or you must determine:
 
 1. **Output directory** — where prepared reports are saved, organized by
-   cleaned work-group subfolder. Example:
-   `C:\ai\git\fhir-augury-content\prepared\`
-2. **Concurrency** — maximum number of concurrent sub-agents (default: 4).
-3. **Ordering strategy** — how to draw the next ticket. Default is
-   **round-robin** (one ticket per work group per round). Alternative is
-   **sequential** (drain one work group's unprocessed tickets before moving
-   to the next).
-4. **Work group filter** *(optional)* — explicit list of work-group names to
-   include. If omitted, all work groups with at least one unprocessed ticket
-   are considered.
-5. **Additional Jira filters** *(optional)* — any subset of the
-   `JiraLocalProcessingFilter` shape (e.g., `statuses`, `priorities`,
-   `types`, `specifications`, `labels`, `projects`). These are forwarded
-   verbatim to the Jira source on every random-draw call.
-6. **Max tickets** *(optional)* — overall cap on tickets to process this
-   run. If omitted, run until every selected work group is exhausted.
+   work-group `nameClean` subfolder. Example:
+   `C:\ai\git\fhir-augury-content\prepared\`.
+2. **Concurrency** *(optional, default `4`)* — maximum number of concurrent
+   sub-agents.
+3. **Work group** *(optional)* — a single work group to restrict the run to.
+   May be supplied as the work group's `code`, `name`, or `nameClean` (case
+   insensitive). The orchestrator resolves it against the work-group list
+   returned by `list-jira-dimension --dimension workgroups`. If omitted,
+   tickets are drawn at random across **all** work groups (no per-WG
+   round-robin — the Jira source's random draw handles distribution).
+4. **Statuses** *(optional, default `["Triaged"]`)* — list of Jira statuses
+   to consider unprocessed candidates from. Common alternatives:
+   `["Submitted"]`, `["Submitted","Triaged"]`.
+5. **Projects** *(optional, default `["FHIR"]`)* — list of Jira project keys
+   to draw from. Common alternatives: `["UTG"]`, `["FHIR","UTG"]`.
+6. **Additional Jira filters** *(optional)* — any subset of the
+   `JiraLocalProcessingFilter` shape (e.g., `priorities`, `types`,
+   `specifications`, `labels`, `reporters`, `changeCategories`,
+   `changeImpacts`, `relatedArtifacts`). These are forwarded verbatim on
+   every random-draw call.
+7. **Max tickets** *(optional)* — overall cap on tickets to process this
+   run. If omitted, run until the random draw returns 404 (no more
+   unprocessed tickets matching the filter).
+8. **Working directory** *(optional, default `temp/prep/` relative to the
+   repo root)* — directory the orchestrator and each sub-agent may use for
+   transient files. Created if it does not already exist. Must be writable
+   on the current platform.
 
-## Work-Group Name Cleaning
+## Work-Group Names
 
-Output subdirectories use "cleaned" work-group names:
+Work-group records returned by `list-jira-dimension --dimension workgroups`
+include `code`, `name`, and `nameClean` directly. **Use `nameClean`
+verbatim** for output subdirectory names — do not derive it locally.
 
-1. Replace the ampersand (`&`) with "and".
-2. Replace all non-alphanumeric, non-space characters (`/`, `-`, `'`, …) with spaces
-3. Split into words
-4. Capitalize each word
-5. Join without separators
+> Note: the API surface is in the process of being updated to expose
+> `code` and `nameClean` alongside `name`. They are present in the JSON
+> payload even if the typed contract has not been regenerated yet. Read
+> them straight from the JSON.
 
-| Work Group Name | Cleaned Name |
-|-----------------|--------------|
-| Orders & Observations | OrdersAndObservations |
-| Biomedical Research & Regulation | BiomedicalResearchAndRegulation |
-| Community-Based Care and Privacy | CommunityBasedCareAndPrivacy |
-| Payer/Provider Information Exchange | PayerProviderInformationExchange |
-| FHIR Infrastructure | FhirInfrastructure |
-| HL7 Australia AU Core | Hl7AustraliaAuCore |
+If a work group is supplied as `code`, match it against the `code` field;
+if supplied as `name` or `nameClean`, match against those fields (case
+insensitive). Reject the run with a clear error if no match is found.
 
 ## Jira-source operations used
 
@@ -74,8 +81,8 @@ are not exposed as top-level CLI commands).
 | Purpose | CLI form |
 |---------|----------|
 | Health check | `{"command":"services","action":"health"}` |
-| List work groups (with issue counts) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
-| Draw a random unprocessed ticket for a WG | `{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...filter...}}` |
+| List work groups (with `code`/`name`/`nameClean`/`issueCount`) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
+| Draw a random unprocessed ticket | `{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...filter...}}` |
 | Mark a ticket processed locally | `{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
 | Inspect/clear processed flags (admin) | `local-processing.get-tickets` / `local-processing.clear-all-processed` |
 
@@ -87,97 +94,123 @@ unqualified form above is the recommended default.
 
 Build the body for `local-processing.get-random-ticket` per
 `JiraLocalProcessingFilter` (in
-`src/FhirAugury.Source.Jira/Api/JiraContracts.cs`). For round-robin pulls,
-constrain to one work group at a time and require unprocessed:
+`src/FhirAugury.Source.Jira/Api/JiraContracts.cs`). The orchestrator builds
+one filter per draw using the configured inputs:
 
 ```json
 {
   "workGroups": ["Orders & Observations"],
   "processedLocally": false,
   "statuses": ["Triaged"],
-  "priorities": [],
-  "types": [],
-  "specifications": [],
-  "labels": [],
-  "projects": [],
-  "reporters": [],
-  "changeCategories": [],
-  "changeImpacts": [],
-  "relatedArtifacts": []
+  "projects": ["FHIR"]
 }
 ```
 
-Only include the fields you actually want to filter on; omit empty arrays
-when convenient. Merge any user-supplied `Additional Jira filters` into this
-body before each draw.
+- Always include `"processedLocally": false`.
+- Include `workGroups` only when a single work group was supplied.
+- Always include `statuses` and `projects` (defaulted if not supplied).
+- Merge any **Additional Jira filters** into this body before each draw.
 
 A successful draw returns a `JiraIssueSummaryEntry` (`key`, `workGroup`,
-`title`, `status`, …). A 404 means there are no more unprocessed tickets
-matching the filter — treat that work group as **exhausted** for this run.
+`title`, `status`, …). A 404 means no unprocessed tickets remain matching
+the filter — terminate draws (the run is **exhausted**).
 
 ## Workflow
 
-### Step 1: Verify services and discover work groups
+### Step 1: Verify services and resolve inputs
 
 1. Health-check the orchestrator and Jira source via the CLI's `services`
    command. Abort with a clear message if either is down.
 2. Fetch the work-group list with `list-jira-dimension --dimension
-   workgroups`. The response carries `name` and `issueCount` per WG.
-3. If the user supplied a work-group filter, intersect it with the returned
-   list and warn about any names that didn't match.
-4. Build the **active set** of work groups: those that pass the filter and
-   have `issueCount > 0`. (The Jira-side count is total, not unprocessed —
-   exhaustion is determined dynamically as draws return 404.)
+   workgroups`. Read `code`, `name`, `nameClean`, `issueCount` from the
+   JSON response.
+3. If the user supplied a **Work group**, resolve it against `code` /
+   `name` / `nameClean` (case insensitive). Abort if no match.
+4. Apply defaults: statuses → `["Triaged"]`, projects → `["FHIR"]`,
+   concurrency → `4`, working directory → `temp/prep/` relative to the
+   repo root.
 
-### Step 2: Create output directories
+### Step 2: Confirm with the user
 
-For each active work group, create the cleaned-name subdirectory once:
+Before any draws or directory creation, present a one-screen summary and
+**ask the user to confirm**. Use the `ask_user` tool. Include every
+resolved input so the user can verify defaults haven't masked a typo:
 
-```powershell
-New-Item -ItemType Directory -Path "$OutputDir\$CleanedGroupName" -Force
+```
+About to start bulk prep with the following configuration:
+
+  Output directory : C:\ai\git\fhir-augury-content\prepared\
+  Working directory: temp/prep/   (relative to repo root)
+  Work group       : (all)        — or: "Orders & Observations" (nameClean: OrdersAndObservations)
+  Statuses         : Triaged
+  Projects         : FHIR
+  Other filters    : (none)       — or list any additional filters
+  Concurrency      : 4
+  Max tickets      : (no cap)     — or: 50
+
+Proceed?
 ```
 
-### Step 3: In-flight tracking
+Choices: `Yes, start`, `Cancel`. Do not proceed on anything except
+explicit confirmation.
+
+### Step 3: Create directories (cross-platform)
+
+Both the **output directory** and the **working directory** must exist
+before dispatching sub-agents. Create them idempotently using a method
+that works on both Windows (PowerShell) and Unix (bash). Two acceptable
+patterns:
+
+- **Tool-based** (preferred when available): use the agent's file-system
+  tool to create directories — it abstracts the platform.
+- **Shell-based**: detect the shell and run the appropriate command:
+  - PowerShell: `New-Item -ItemType Directory -Path $Path -Force | Out-Null`
+  - bash/sh: `mkdir -p "$Path"`
+
+If a single work group was supplied, also create
+`<OutputDir>/<nameClean>/` for that group. Otherwise, create each
+work-group subdirectory **lazily** as tickets for that group are returned
+by the random draw (avoids creating empty directories for inactive WGs).
+
+The working directory should be passed through to each sub-agent so all
+transient files land in the same controlled location.
+
+### Step 4: In-flight tracking
 
 Maintain in memory:
 
-- `inFlight` — set of ticket keys currently assigned to a running sub-agent.
-- `inFlightByWg` — count of in-flight tickets per work group (round-robin
-  uses this to honor "one in-flight per WG per round").
-- `exhaustedWgs` — set of work groups whose last draw returned 404.
+- `inFlight` — set of ticket keys currently assigned to a running
+  sub-agent. This is the **only** tracking required, and exists solely to
+  prevent assigning the same ticket to two sub-agents (the random draw is
+  unaware of in-flight state).
 - `completed` / `failed` counters for progress reporting.
 
 Persist nothing locally; the Jira source's `ProcessedLocally` flag is the
 durable state.
 
-### Step 4: Round-robin draw and dispatch
+### Step 5: Draw and dispatch loop
 
-Loop until either the in-flight set is empty AND every active WG is
-exhausted, or the optional max-tickets cap is reached:
+Loop until the in-flight set is empty AND the last draw returned 404, or
+the optional max-tickets cap is reached:
 
-1. While `len(inFlight) < concurrency` and the round still has eligible WGs:
-   1. Pick the next eligible work group (round-robin order, skipping
-      exhausted WGs and — for round-robin mode — WGs that already have an
-      in-flight ticket this round).
-   2. Build the random-draw filter (WG + `processedLocally=false` + any
-      user filters) and call `local-processing.get-random-ticket`.
-   3. Handle the response:
-      - **404 / empty** → mark the WG exhausted; skip.
-      - **Ticket already in `inFlight`** → retry the draw up to **5 times**
-        for this WG this round. If still colliding, skip the WG for this
-        round (it will be retried in the next round). The collision case is
-        rare but possible because `RANDOM()` is unaware of in-flight state.
-      - **Fresh ticket** → add to `inFlight`, dispatch a sub-agent (Step 5).
-2. Wait for the next sub-agent completion (Step 6) before continuing the
+1. While `len(inFlight) < concurrency` and the run is not exhausted:
+   1. Build the random-draw filter (work group if supplied,
+      `processedLocally:false`, statuses, projects, any user filters)
+      and call `local-processing.get-random-ticket`.
+   2. Handle the response:
+      - **404 / empty** → mark the run **exhausted**; stop drawing.
+        Wait for in-flight agents to drain before exiting.
+      - **Ticket already in `inFlight`** → retry the draw up to **5
+        times**. If still colliding, pause new draws until the next
+        completion frees space. (Collisions are rare but possible since
+        `RANDOM()` does not see in-flight state.)
+      - **Fresh ticket** → add to `inFlight`, ensure the
+        `<OutputDir>/<nameClean>/` directory exists for the ticket's
+        work group, then dispatch a sub-agent (Step 6).
+2. Wait for the next sub-agent completion (Step 7) before continuing the
    outer loop.
-3. When every active WG has been visited (or skipped) for the round, start
-   the next round.
 
-For **sequential** mode, the eligibility rule changes: keep drawing from the
-current WG until it is exhausted, then move to the next WG. The in-flight
-deduplication and 5-retry-on-collision rule still apply.
-
-### Step 5: Dispatch a sub-agent
+### Step 6: Dispatch a sub-agent
 
 For each fresh ticket, launch a **general-purpose background agent** that
 runs the `ticket-prep` skill. Use the same model as the orchestrator.
@@ -191,18 +224,24 @@ Run the `ticket-prep` skill for the following ticket.
 
 - **Ticket key:** {TICKET_KEY}
 - **Work group:** {WORK_GROUP}
-- **Output file:** {OUTPUT_DIR}\{CLEAN_GROUP}\{TICKET_KEY}.md
+- **Output file:** {OUTPUT_DIR}/{NAME_CLEAN}/{TICKET_KEY}.md
+- **Working directory:** {WORKING_DIR}
 - **CLI path (if needed):** {CLI_PATH}
 
 ## Instructions
 
 1. Follow the `ticket-prep` skill exactly, including all data-gathering
    steps, the repo-analysis briefing dependency, and the report format.
-2. Save the completed report to the output file path above.
-3. When finished, confirm success and state the full path of the saved file.
+2. Use the supplied **Working directory** for any transient files.
+3. Save the completed report to the output file path above.
+4. When finished, confirm success and state the full path of the saved
+   file.
 ````
 
-### Step 6: Handle completion and report back to Jira
+Use forward slashes in paths inside the prompt; both PowerShell and bash
+accept them, and the sub-agent can normalize as needed.
+
+### Step 7: Handle completion and report back to Jira
 
 When a sub-agent completes:
 
@@ -215,35 +254,36 @@ When a sub-agent completes:
    fhir-augury-cli --json '{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}'
    ```
 
-   Only mark on **success**. On failure (Step 7), leave the flag unset so
+   Only mark on **success**. On failure (Step 8), leave the flag unset so
    the ticket remains eligible for a future run.
-3. **Remove the ticket from `inFlight`** and decrement `inFlightByWg`.
-4. **Loop back to Step 4** to draw and dispatch the next ticket.
+3. **Remove the ticket from `inFlight`**.
+4. **Loop back to Step 5** to draw and dispatch the next ticket.
 
-### Step 7: Error handling
+### Step 8: Error handling
 
-- **Sub-agent failure** — log the ticket key and error; do **not** mark the
-  ticket processed; remove it from `inFlight`; continue with the next
-  draw. Do not retry the same ticket automatically in the same run (it can
-  be re-drawn naturally on a future run).
-- **Random-draw 404** — work-group is exhausted for the current filter set;
-  mark exhausted and continue.
-- **Random-draw collision with `inFlight`** — retry up to 5 times for the
-  same WG; if still colliding, skip the WG for this round.
+- **Sub-agent failure** — log the ticket key and error; do **not** mark
+  the ticket processed; remove it from `inFlight`; continue with the next
+  draw. Do not retry the same ticket automatically in the same run (it
+  can be re-drawn naturally on a future run).
+- **Random-draw 404** — no more unprocessed tickets match the filter;
+  mark the run exhausted and drain remaining in-flight agents.
+- **Random-draw collision with `inFlight`** — retry up to 5 times; if
+  still colliding, pause new draws until the next completion.
 - **CLI unavailable** — fall back per the `fhir-augury-cli` skill's
   fallback order (MCP, then direct HTTP). Record which path was used in
   progress reports.
 - **Service unhealthy mid-run** — pause new draws, wait for in-flight
   agents to complete, then surface the issue to the user before resuming.
 
-### Step 8: Progress reporting
+### Step 9: Progress reporting
 
 After each batch of completions, report to the user:
 
-- Completed / failed / in-flight counts
-- Per-WG completion totals so far this run
-- Which WGs are exhausted vs. still active
-- Any tickets currently in flight (key + WG)
+- Completed / failed / in-flight counts.
+- Per-WG completion totals so far this run (derived from completed
+  tickets' `workGroup` field).
+- Any tickets currently in flight (key + WG).
+- Whether the run has been marked exhausted (no more draws will occur).
 
 ## Resumability
 
@@ -262,18 +302,25 @@ current scope.
 ## Example Invocation
 
 User: *"Prepare unprocessed tickets, saving reports to
-C:\ai\git\fhir-augury-content\prepared\, round-robin, 4 concurrent agents."*
+`C:\ai\git\fhir-augury-content\prepared\`, 4 concurrent agents."*
 
 The orchestrator should:
 
-1. Health-check services; list work groups via `list-jira-dimension`.
-2. Create one cleaned-name subdirectory per active WG.
-3. Round-robin draw a random unprocessed ticket per WG via
-   `local-processing.get-random-ticket` (with `processedLocally:false`).
-4. Maintain up to 4 concurrent `ticket-prep` sub-agents; on each success,
-   call `local-processing.set-processed` with `processedLocally:true`.
-5. Continue until every active WG returns 404 (or the optional max-tickets
-   cap is reached); report progress as agents complete.
+1. Health-check services; list work groups via `list-jira-dimension`
+   and read `code`/`name`/`nameClean` from the JSON.
+2. Apply defaults (statuses=`Triaged`, projects=`FHIR`, working
+   directory=`temp/prep/`) and present a confirmation summary via
+   `ask_user`.
+3. After confirmation, ensure the output and working directories exist
+   (cross-platform).
+4. Loop: draw a random unprocessed ticket via
+   `local-processing.get-random-ticket` (with `processedLocally:false`,
+   the configured statuses/projects, and any user filters), keeping at
+   most 4 sub-agents in flight; dedupe via the `inFlight` set.
+5. On each sub-agent success, call `local-processing.set-processed` with
+   `processedLocally:true`.
+6. Continue until the random draw returns 404 (or the optional
+   max-tickets cap is reached); report progress as agents complete.
 
 ## Performance Notes
 

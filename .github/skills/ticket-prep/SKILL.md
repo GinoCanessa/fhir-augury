@@ -28,6 +28,21 @@ fhir-augury-cli --json '<json>' [--pretty]
 If the CLI is unavailable in the current environment, fall back per the
 order documented in `fhir-augury-cli` (MCP → direct HTTP → `appsettings.json`).
 
+## Inputs
+
+- **Ticket key** *(required)* — e.g., `FHIR-50738`.
+- **Output file** *(optional)* — full path where the report should be
+  saved. If omitted, the agent picks a sensible default and reports the
+  path back to the caller.
+- **Working directory** *(optional)* — directory the agent may use for
+  any transient files produced while gathering data (intermediate JSON
+  dumps, scratch notes, downloaded snapshots, etc.). When supplied,
+  **all transient files must be written under this directory** rather
+  than the repo root or the current working directory. Create it with a
+  cross-platform mechanism (PowerShell `New-Item -ItemType Directory
+  -Force`, bash `mkdir -p`, or your file-system tool) if it does not
+  already exist. Do not write transient files outside this directory.
+
 ## Workflow
 
 When the user provides a Jira ticket key (e.g., `FHIR-50738`), execute the
