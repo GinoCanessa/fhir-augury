@@ -1,9 +1,13 @@
 @page "/api-test"
 @using FhirAugury.DevUi.Services
+@using FhirAugury.DevUi.Services.ApiCatalog
+@using System.Net.Http
 @using System.Text.Json
+@using Microsoft.JSInterop
 @inject OrchestratorClient Orchestrator
-@inject SourceDirectClient SourceClient
+@inject ApiInvoker Invoker
 @inject IConfiguration Configuration
+@inject IJSRuntime JS
 
 <PageTitle>API Tests — FHIR Augury Dev UI</PageTitle>
 
@@ -12,7 +16,7 @@
 <div class="row g-3 mb-3">
     <div class="col-md-3">
         <label class="form-label fw-semibold">Source</label>
-        <select class="form-select" @bind="SelectedSource" @bind:after="OnSourceChanged">
+        <select class="form-select" @bind="SelectedSource" @bind:after="OnSourceChangedAsync">
             <option value="">— Select Source —</option>
             @foreach (SourceEndpointInfo ep in _endpoints)
             {
@@ -20,143 +24,139 @@
             }
         </select>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-5">
         <label class="form-label fw-semibold">API</label>
-        <select class="form-select" @bind="SelectedApi">
+        <select class="form-select" @bind="SelectedApiId" @bind:after="OnApiChangedAsync">
             <option value="">— Select API —</option>
-            @if (_isOrchestrator)
+            @foreach (IGrouping<string, ApiEndpointDescriptor> grp in _catalog.GroupBy(d => d.Group).OrderBy(g => g.Key))
             {
-                <option value="content-search">Content Search</option>
-                <option value="refers-to">Refers To</option>
-                <option value="referred-by">Referred By</option>
-                <option value="cross-referenced">Cross-Referenced</option>
-                <option value="get-item">Get Item</option>
-                <option value="get-services-status">Services Status</option>
-                <option value="get-stats">Aggregate Stats</option>
-                <option value="rebuild-index">Rebuild Index</option>
-                <option value="trigger-sync">Trigger Sync</option>
-                <option value="keywords">Keywords</option>
-                <option value="related-by-keyword">Related by Keyword</option>
-            }
-            else
-            {
-                <option value="content-search">Content Search</option>
-                <option value="refers-to">Refers To</option>
-                <option value="referred-by">Referred By</option>
-                <option value="cross-referenced">Cross-Referenced</option>
-                <option value="get-item">Get Item</option>
-                <option value="get-stats">Get Stats</option>
-                <option value="health-check">Health Check</option>
-                <option value="keywords">Keywords</option>
-                <option value="related-by-keyword">Related by Keyword</option>
+                <optgroup label="@grp.Key">
+                    @foreach (ApiEndpointDescriptor d in grp.OrderBy(x => x.DisplayName))
+                    {
+                        <option value="@d.Id">@d.DisplayName</option>
+                    }
+                </optgroup>
             }
         </select>
     </div>
 </div>
 
-@if (_selectedEndpoint is not null && !string.IsNullOrEmpty(SelectedApi))
+@if (_descriptor is not null)
 {
     <div class="mb-3 text-body-secondary small">
         <i class="bi bi-info-circle"></i>
-        <span>Target: <code>@_selectedEndpoint.Address</code> (HTTP)</span>
+        <span>Target: <code>@_selectedEndpoint?.Address</code> (HTTP) — <strong>@_descriptor.Method.Method</strong> <code>@_descriptor.PathTemplate</code></span>
+        @if (_descriptor.Destructive)
+        {
+            <span class="badge bg-danger ms-2"><i class="bi bi-exclamation-triangle"></i> destructive</span>
+        }
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-3">
         <div class="card-header fw-semibold">
-            <i class="bi bi-play-circle"></i> @ApiDisplayName(SelectedApi)
+            <i class="bi bi-play-circle"></i> @_descriptor.DisplayName
         </div>
         <div class="card-body">
-            <div class="row g-3 align-items-end">
-                @if (NeedsQuery)
-                {
-                    <div class="col-md-4">
-                        <label class="form-label">@QueryLabel</label>
-                        <input type="text" class="form-control" @bind="_queryInput"
-                               @bind:event="oninput" placeholder="@QueryPlaceholder" />
-                    </div>
-                }
-                @if (NeedsId)
-                {
-                    <div class="col-md-4">
-                        <label class="form-label">ID</label>
-                        <input type="text" class="form-control" @bind="_idInput"
-                               @bind:event="oninput" placeholder="@IdPlaceholder" />
-                    </div>
-                }
-                @if (NeedsLimit)
-                {
-                    <div class="col-md-2">
-                        <label class="form-label">Limit</label>
-                        <input type="number" class="form-control" @bind="_limitInput" min="1" max="200" />
-                    </div>
-                }
-                @if (NeedsSourceFilter)
-                {
-                    <div class="col-md-2">
-                        <label class="form-label">@SourceFilterLabel</label>
-                        <select class="form-select" @bind="_sourceFilterInput">
-                            <option value="">— @(SourceFilterRequired ? "Select" : "Any") —</option>
-                            @foreach (string src in _targetSources)
+            @if (_descriptor.Parameters.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">This endpoint takes no parameters.</p>
+            }
+            else
+            {
+                <div class="row g-3">
+                    @foreach (ApiParameter p in _descriptor.Parameters)
+                    {
+                        <div class="@ColumnClass(p)">
+                            <label class="form-label">
+                                @p.Name
+                                @if (p.Required)
+                                {
+                                    <span class="text-danger">*</span>
+                                }
+                                <span class="badge bg-light text-body-secondary border">@p.Kind</span>
+                            </label>
+                            @if (p.ValueType == ApiParameterValueType.Bool)
                             {
-                                <option value="@src">@src</option>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox"
+                                           checked="@(GetBool(p))"
+                                           @onchange="e => SetBool(p, e)" />
+                                </div>
                             }
-                        </select>
-                    </div>
-                }
-                @if (NeedsType)
-                {
-                    <div class="col-md-2">
-                        <label class="form-label">Type</label>
-                        <select class="form-select" @bind="_typeInput">
-                            @if (SelectedApi == "rebuild-index")
+                            else if (p.ValueType == ApiParameterValueType.Json)
                             {
-                                <option value="all">all</option>
-                                <option value="bm25">bm25</option>
-                                <option value="fts">fts</option>
-                                <option value="cross-refs">cross-refs</option>
-                                <option value="lookup-tables">lookup-tables</option>
+                                <textarea class="form-control font-monospace" rows="6"
+                                          @oninput="e => OnValueInput(p.Name, e)"
+                                          @bind="_values[p.Name]"></textarea>
                             }
                             else
                             {
-                                <option value="incremental">incremental</option>
-                                <option value="full">full</option>
+                                <input class="form-control"
+                                       type="@(p.ValueType is ApiParameterValueType.Int or ApiParameterValueType.Long or ApiParameterValueType.Double ? "number" : "text")"
+                                       placeholder="@(p.Placeholder ?? p.DefaultValue ?? "")"
+                                       @oninput="e => OnValueInput(p.Name, e)"
+                                       @bind="_values[p.Name]" />
                             }
-                        </select>
-                    </div>
-                }
-                @if (NeedsItemFlags)
-                {
-                    <div class="col-md-3">
-                        <label class="form-label">Include</label>
-                        <div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" @bind="_includeContent" id="chkContent" />
-                                <label class="form-check-label" for="chkContent">Content</label>
-                            </div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" @bind="_includeComments" id="chkComments" />
-                                <label class="form-check-label" for="chkComments">Comments</label>
-                            </div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" @bind="_includeSnapshot" id="chkSnapshot" />
-                                <label class="form-check-label" for="chkSnapshot">Snapshot</label>
-                            </div>
+                            @if (!string.IsNullOrEmpty(p.HelpText))
+                            {
+                                <div class="form-text">@p.HelpText</div>
+                            }
                         </div>
-                    </div>
-                }
-                <div class="col-md-2">
-                    <label class="form-label">&nbsp;</label>
-                    <button class="btn btn-primary d-block" @onclick="ExecuteAsync"
-                            disabled="@(_running || !CanExecute)">
-                        @if (_running)
-                        {
-                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                        }
-                        else
-                        {
-                            <i class="bi bi-play-fill"></i>
-                        }
-                        Go
+                    }
+                </div>
+            }
+            <div class="mt-3">
+                <button class="btn btn-primary" @onclick="OnInvokeClickedAsync" disabled="@_running">
+                    @if (_running)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-play-fill"></i>
+                    }
+                    Go
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold"><i class="bi bi-eye"></i> Request preview</div>
+        <div class="card-body">
+            @if (_previewError is not null)
+            {
+                <div class="text-danger small mb-2">@_previewError</div>
+            }
+            <div><span class="badge bg-secondary">@(_preview?.Method.Method ?? _descriptor.Method.Method)</span>
+                <code>@(_preview?.Url ?? "(invalid)")</code></div>
+            @if (!string.IsNullOrEmpty(_preview?.JsonBody))
+            {
+                <pre class="bg-body-secondary border rounded p-2 mt-2 mb-0 small overflow-auto"
+                     style="max-height: 240px;"><code>@_preview.JsonBody</code></pre>
+            }
+        </div>
+    </div>
+}
+
+@if (_descriptor?.Destructive == true && _confirmOpen)
+{
+    <div class="modal show d-block" tabindex="-1" role="dialog"
+         style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill"></i> Confirm destructive action</h5>
+                </div>
+                <div class="modal-body">
+                    <p>You are about to invoke <strong>@_descriptor.DisplayName</strong>
+                       on <code>@_selectedEndpoint?.Address</code>.</p>
+                    <p class="mb-0"><strong>@_descriptor.Method.Method</strong> <code>@(_preview?.Url ?? _descriptor.PathTemplate)</code></p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => _confirmOpen = false">Cancel</button>
+                    <button class="btn btn-danger" @onclick="ConfirmAndExecuteAsync">
+                        <i class="bi bi-trash"></i> Proceed
                     </button>
                 </div>
             </div>
@@ -164,29 +164,17 @@
     </div>
 }
 
-@if (_error is not null)
-{
-    <div class="alert alert-danger" role="alert">
-        <i class="bi bi-exclamation-triangle-fill"></i> <strong>Error:</strong> @_error
-    </div>
-}
-
-@if (_resultJson is not null)
+@if (_result is not null)
 {
     <div class="mb-4">
         <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
             <h5 class="mb-0">
-                <i class="bi bi-check-circle text-success"></i> Response
+                <i class="bi @(_result.IsSuccess ? "bi-check-circle text-success" : "bi-x-octagon text-danger")"></i> Response
             </h5>
             <div class="d-flex align-items-center gap-2">
-                @if (_requestInfo is not null)
-                {
-                    <span class="badge bg-secondary">@_requestInfo</span>
-                }
-                @if (_elapsedMs.HasValue)
-                {
-                    <span class="badge bg-info">@(_elapsedMs)ms</span>
-                }
+                <span class="badge @(_result.IsSuccess ? "bg-success" : "bg-danger")">@_result.StatusCode</span>
+                <span class="badge bg-secondary">@_result.Method.Method @_result.Url</span>
+                <span class="badge bg-info">@_result.ElapsedMs ms</span>
                 @if (_parsedResults is not null)
                 {
                     <span class="badge bg-info">@_parsedTotalResults results</span>
@@ -310,7 +298,7 @@
         else
         {
             <pre class="bg-body-secondary border rounded p-3 overflow-auto"
-                 style="max-height: 600px;"><code>@_resultJson</code></pre>
+                 style="max-height: 600px;"><code>@_result.ResponseBody</code></pre>
         }
     </div>
 }
@@ -320,80 +308,29 @@
     public string? DefaultSource { get; set; }
 
     private string SelectedSource { get; set; } = "";
-    private string SelectedApi { get; set; } = "";
-
-    private string _queryInput = "";
-    private string _idInput = "";
-    private int _limitInput = 20;
-    private string _sourceFilterInput = "";
-    private string _typeInput = "all";
-    private bool _includeContent = true;
-    private bool _includeComments;
-    private bool _includeSnapshot;
-
-    private bool _running;
-    private string? _error;
-    private string? _resultJson;
-    private string? _requestInfo;
-    private long? _elapsedMs;
-    private bool _showRaw;
-
-    private List<ParsedSearchResult>? _parsedResults;
-    private int _parsedTotalResults;
-
-    private List<ParsedCrossRef>? _parsedCrossRefs;
+    private string SelectedApiId { get; set; } = "";
 
     private List<SourceEndpointInfo> _endpoints = [];
-    private List<string> _targetSources = [];
+    private IReadOnlyList<ApiEndpointDescriptor> _catalog = [];
+    private ApiEndpointDescriptor? _descriptor;
     private SourceEndpointInfo? _selectedEndpoint =>
         _endpoints.FirstOrDefault(e => string.Equals(e.Name, SelectedSource, StringComparison.OrdinalIgnoreCase));
 
-    private bool _isOrchestrator => string.Equals(SelectedSource, "orchestrator", StringComparison.OrdinalIgnoreCase);
+    private Dictionary<string, string?> _values = new(StringComparer.OrdinalIgnoreCase);
 
-    // ── Input field visibility ───────────────────────────────────
+    private ApiBuiltRequest? _preview;
+    private string? _previewError;
 
-    private bool NeedsQuery => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced";
+    private bool _running;
+    private bool _confirmOpen;
 
-    private bool NeedsId => SelectedApi is "get-item" or "keywords" or "related-by-keyword";
+    private ApiInvocationResult? _result;
+    private bool _showRaw;
+    private List<ParsedSearchResult>? _parsedResults;
+    private int _parsedTotalResults;
+    private List<ParsedCrossRef>? _parsedCrossRefs;
 
-    private bool NeedsLimit => SelectedApi is "content-search" or "refers-to" or "referred-by" or "cross-referenced" or "keywords" or "related-by-keyword";
-
-    private bool NeedsSourceFilter => (_isOrchestrator && SelectedApi is "get-item" or "refers-to" or "referred-by" or "cross-referenced" or "keywords" or "related-by-keyword")
-        || (!_isOrchestrator && SelectedApi is "refers-to" or "referred-by" or "cross-referenced");
-
-    private bool SourceFilterRequired => _isOrchestrator && SelectedApi is "get-item" or "keywords" or "related-by-keyword";
-
-    private bool NeedsItemFlags => SelectedApi == "get-item";
-
-    private bool NeedsType => _isOrchestrator
-        && SelectedApi is "rebuild-index" or "trigger-sync";
-
-    private string QueryLabel => SelectedApi == "content-search" ? "Values (comma-separated)" : "Value";
-
-    private string QueryPlaceholder => SelectedApi == "content-search"
-        ? "e.g. patient resource, FHIR-50783"
-        : "e.g. FHIR-50783";
-
-    private string SourceFilterLabel => SelectedApi == "get-item" ? "Target Source" : "Source Type (optional)";
-
-    private string IdPlaceholder => (_isOrchestrator ? _sourceFilterInput : SelectedSource)?.ToLowerInvariant() switch
-    {
-        "jira" => "e.g. FHIR-55001",
-        "github" => "e.g. HL7/fhir#4006",
-        "zulip" => "e.g. 12345",
-        "confluence" => "e.g. 12345",
-        "fhir" => "e.g. Patient.name",
-        _ => "e.g. FHIR-55001",
-    };
-
-    private bool CanExecute =>
-        _selectedEndpoint is not null
-        && !string.IsNullOrEmpty(SelectedApi)
-        && (!NeedsQuery || !string.IsNullOrWhiteSpace(_queryInput))
-        && (!NeedsId || !string.IsNullOrWhiteSpace(_idInput))
-        && (!SourceFilterRequired || !string.IsNullOrWhiteSpace(_sourceFilterInput));
-
-    // ── Initialization ───────────────────────────────────────────
+    private bool _restoredFromStorage;
 
     protected override Task OnInitializedAsync()
     {
@@ -409,49 +346,199 @@
         _endpoints = sources.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
         _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.Address));
 
-        // Target sources: endpoint names (excluding orchestrator) plus any
-        // additional source systems that have no standalone HTTP service.
-        HashSet<string> targetSet = new(
-            _endpoints.Where(e => e.Name != "orchestrator").Select(e => e.Name.ToLowerInvariant()),
-            StringComparer.OrdinalIgnoreCase);
-        targetSet.Add(FhirAugury.Common.SourceSystems.Fhir);
-        _targetSources = [.. targetSet.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
-
         if (!string.IsNullOrEmpty(DefaultSource))
+        {
             SelectedSource = DefaultSource;
-
+            _catalog = SourceApiCatalog.GetCatalog(SelectedSource);
+        }
         return Task.CompletedTask;
     }
 
-    // ── Execution ────────────────────────────────────────────────
-
-    private async Task ExecuteAsync()
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        _running = true;
-        _error = null;
-        _resultJson = null;
-        _requestInfo = null;
-        _elapsedMs = null;
-        _parsedResults = null;
-        _parsedCrossRefs = null;
-        _showRaw = false;
-        StateHasChanged();
+        if (!firstRender || _restoredFromStorage) return;
+        _restoredFromStorage = true;
 
         try
         {
-            if (_isOrchestrator)
+            string? storedSource = await JS.InvokeAsync<string?>("sessionStorage.getItem", "apitest.source");
+            string? storedApi = await JS.InvokeAsync<string?>("sessionStorage.getItem", "apitest.api");
+
+            if (string.IsNullOrEmpty(SelectedSource) && !string.IsNullOrEmpty(storedSource)
+                && _endpoints.Any(e => e.Name == storedSource))
             {
-                await ExecuteOrchestratorAsync();
+                SelectedSource = storedSource;
+                _catalog = SourceApiCatalog.GetCatalog(SelectedSource);
             }
-            else
+
+            if (!string.IsNullOrEmpty(storedApi) && _catalog.Any(d => d.Id == storedApi))
             {
-                SourceEndpointInfo endpoint = _selectedEndpoint!;
-                await ExecuteSourceAsync(endpoint);
+                SelectedApiId = storedApi;
+                _descriptor = _catalog.First(d => d.Id == SelectedApiId);
+                await RestoreValuesAsync();
+                RebuildPreview();
             }
+
+            StateHasChanged();
+        }
+        catch
+        {
+            // sessionStorage not available (prerender or non-browser host) — ignore
+        }
+    }
+
+    private async Task RestoreValuesAsync()
+    {
+        if (_descriptor is null) return;
+        _values = SeedValues(_descriptor);
+        string key = $"apitest.values.{SelectedSource}.{SelectedApiId}";
+        try
+        {
+            string? json = await JS.InvokeAsync<string?>("sessionStorage.getItem", key);
+            if (string.IsNullOrEmpty(json)) return;
+            Dictionary<string, string?>? saved = JsonSerializer.Deserialize<Dictionary<string, string?>>(json);
+            if (saved is null) return;
+            foreach (KeyValuePair<string, string?> kv in saved)
+            {
+                if (_values.ContainsKey(kv.Key))
+                    _values[kv.Key] = kv.Value;
+            }
+        }
+        catch { /* ignore */ }
+    }
+
+    private async Task PersistValuesAsync()
+    {
+        if (_descriptor is null) return;
+        string key = $"apitest.values.{SelectedSource}.{SelectedApiId}";
+        try
+        {
+            string json = JsonSerializer.Serialize(_values);
+            await JS.InvokeVoidAsync("sessionStorage.setItem", key, json);
+        }
+        catch { /* ignore */ }
+    }
+
+    private async Task OnSourceChangedAsync()
+    {
+        _catalog = SourceApiCatalog.GetCatalog(SelectedSource);
+        SelectedApiId = "";
+        _descriptor = null;
+        _values = new(StringComparer.OrdinalIgnoreCase);
+        _preview = null;
+        _previewError = null;
+        ClearResult();
+        try { await JS.InvokeVoidAsync("sessionStorage.setItem", "apitest.source", SelectedSource); }
+        catch { }
+    }
+
+    private async Task OnApiChangedAsync()
+    {
+        _descriptor = _catalog.FirstOrDefault(d => d.Id == SelectedApiId);
+        _values = _descriptor is null ? new(StringComparer.OrdinalIgnoreCase) : SeedValues(_descriptor);
+        ClearResult();
+        if (_descriptor is not null)
+            await RestoreValuesAsync();
+        RebuildPreview();
+        try { await JS.InvokeVoidAsync("sessionStorage.setItem", "apitest.api", SelectedApiId); }
+        catch { }
+    }
+
+    private static Dictionary<string, string?> SeedValues(ApiEndpointDescriptor d)
+    {
+        Dictionary<string, string?> seeded = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ApiParameter p in d.Parameters)
+            seeded[p.Name] = p.DefaultValue;
+        return seeded;
+    }
+
+    private void OnValueInput(string name, ChangeEventArgs e)
+    {
+        _values[name] = e.Value?.ToString();
+        RebuildPreview();
+        _ = PersistValuesAsync();
+    }
+
+    private bool GetBool(ApiParameter p) =>
+        bool.TryParse(_values.TryGetValue(p.Name, out string? v) ? v : p.DefaultValue, out bool b) && b;
+
+    private void SetBool(ApiParameter p, ChangeEventArgs e)
+    {
+        bool b = e.Value is bool bv ? bv : bool.TryParse(e.Value?.ToString(), out bool parsed) && parsed;
+        _values[p.Name] = b ? "true" : "false";
+        RebuildPreview();
+        _ = PersistValuesAsync();
+    }
+
+    private void RebuildPreview()
+    {
+        if (_descriptor is null || _selectedEndpoint is null)
+        {
+            _preview = null;
+            _previewError = null;
+            return;
+        }
+        try
+        {
+            _preview = ApiUrlBuilder.Build(_selectedEndpoint.Address, _descriptor, _values);
+            _previewError = null;
+        }
+        catch (ApiInvocationValidationException ex)
+        {
+            _preview = null;
+            _previewError = $"(missing required: {string.Join(", ", ex.MissingParameters)})";
         }
         catch (Exception ex)
         {
-            _error = ex.Message;
+            _preview = null;
+            _previewError = ex.Message;
+        }
+    }
+
+    private async Task OnInvokeClickedAsync()
+    {
+        if (_descriptor is null) return;
+        if (_descriptor.Destructive)
+        {
+            RebuildPreview();
+            if (_preview is null) return;
+            _confirmOpen = true;
+            return;
+        }
+        await ExecuteAsync();
+    }
+
+    private async Task ConfirmAndExecuteAsync()
+    {
+        _confirmOpen = false;
+        await ExecuteAsync();
+    }
+
+    private async Task ExecuteAsync()
+    {
+        if (_descriptor is null || _selectedEndpoint is null) return;
+        _running = true;
+        ClearResult();
+        StateHasChanged();
+        try
+        {
+            string clientName = string.Equals(SelectedSource, SourceApiCatalog.Orchestrator,
+                StringComparison.OrdinalIgnoreCase) ? "orchestrator" : "source-direct";
+            _result = await Invoker.InvokeAsync(clientName, _selectedEndpoint.Address, _descriptor, _values);
+            if (_result.IsSuccess)
+            {
+                TryParseSearchHits(_result.ResponseBody);
+                TryParseCrossRefHits(_result.ResponseBody);
+            }
+        }
+        catch (ApiInvocationValidationException ex)
+        {
+            _result = new ApiInvocationResult(_descriptor.PathTemplate, _descriptor.Method, null, 0,
+                $"Validation failed: missing {string.Join(", ", ex.MissingParameters)}", 0);
+        }
+        catch (Exception ex)
+        {
+            _result = new ApiInvocationResult(_descriptor.PathTemplate, _descriptor.Method, null, 0, ex.ToString(), 0);
         }
         finally
         {
@@ -459,115 +546,21 @@
         }
     }
 
-    private async Task ExecuteSourceAsync(SourceEndpointInfo endpoint)
+    private void ClearResult()
     {
-        string httpBase = endpoint.Address;
-        string url;
-        string json;
-        long elapsed;
-
-        switch (SelectedApi)
-        {
-            case "content-search":
-                (url, json, elapsed) = await SourceClient.ContentSearchAsync(httpBase, _queryInput, _limitInput);
-                break;
-            case "refers-to":
-                (url, json, elapsed) = await SourceClient.RefersToAsync(httpBase, _queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "referred-by":
-                (url, json, elapsed) = await SourceClient.ReferredByAsync(httpBase, _queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "cross-referenced":
-                (url, json, elapsed) = await SourceClient.CrossReferencedAsync(httpBase, _queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "get-item":
-                (url, json, elapsed) = await SourceClient.ContentItemAsync(httpBase, endpoint.Name, _idInput,
-                    _includeContent, _includeComments, _includeSnapshot);
-                break;
-            case "get-stats":
-                (url, json, elapsed) = await SourceClient.GetStatsAsync(httpBase);
-                break;
-            case "health-check":
-                (url, json, elapsed) = await SourceClient.HealthCheckAsync(httpBase);
-                break;
-            case "keywords":
-                (url, json, elapsed) = await SourceClient.KeywordsAsync(httpBase, endpoint.Name, _idInput, null, _limitInput);
-                break;
-            case "related-by-keyword":
-                (url, json, elapsed) = await SourceClient.RelatedByKeywordAsync(httpBase, endpoint.Name, _idInput, 0.1, null, _limitInput);
-                break;
-            default:
-                return;
-        }
-
-        _resultJson = json;
-        _requestInfo = $"GET {url}";
-        _elapsedMs = elapsed;
-        TryParseSearchHits(json);
-        TryParseCrossRefHits(json);
+        _result = null;
+        _parsedResults = null;
+        _parsedCrossRefs = null;
+        _showRaw = false;
     }
 
-    private async Task ExecuteOrchestratorAsync()
-    {
-        string url;
-        string json;
-        long elapsed;
-
-        switch (SelectedApi)
-        {
-            case "content-search":
-                (url, json, elapsed) = await Orchestrator.ContentSearchAsync(_queryInput, _limitInput);
-                break;
-            case "refers-to":
-                (url, json, elapsed) = await Orchestrator.RefersToAsync(_queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "referred-by":
-                (url, json, elapsed) = await Orchestrator.ReferredByAsync(_queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "cross-referenced":
-                (url, json, elapsed) = await Orchestrator.CrossReferencedAsync(_queryInput,
-                    string.IsNullOrEmpty(_sourceFilterInput) ? null : _sourceFilterInput, _limitInput);
-                break;
-            case "get-item":
-                (url, json, elapsed) = await Orchestrator.GetItemAsync(_sourceFilterInput, _idInput,
-                    _includeContent, _includeComments, _includeSnapshot);
-                break;
-            case "get-services-status":
-                (url, json, elapsed) = await Orchestrator.GetServicesStatusAsync();
-                break;
-            case "get-stats":
-                (url, json, elapsed) = await Orchestrator.GetStatsAsync();
-                break;
-            case "rebuild-index":
-                (url, json, elapsed) = await Orchestrator.RebuildIndexTimedAsync(_typeInput);
-                break;
-            case "trigger-sync":
-                (url, json, elapsed) = await Orchestrator.TriggerSyncAsync(_typeInput);
-                break;
-            case "keywords":
-                (url, json, elapsed) = await Orchestrator.KeywordsAsync(_sourceFilterInput, _idInput, null, _limitInput);
-                break;
-            case "related-by-keyword":
-                (url, json, elapsed) = await Orchestrator.RelatedByKeywordAsync(_sourceFilterInput, _idInput, 0.1, null, _limitInput);
-                break;
-            default:
-                return;
-        }
-
-        _resultJson = json;
-        _requestInfo = $"{(SelectedApi is "rebuild-index" or "trigger-sync" ? "POST" : "GET")} {url}";
-        _elapsedMs = elapsed;
-        TryParseSearchHits(json);
-        TryParseCrossRefHits(json);
-    }
+    private void ToggleRaw() => _showRaw = !_showRaw;
 
     private void TryParseSearchHits(string json)
     {
+        if (_descriptor is null) return;
+        if (_descriptor.Id is not "content.search" and not "content.refers-to"
+            and not "content.referred-by" and not "content.cross-referenced") return;
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
@@ -590,11 +583,14 @@
                 }
             }
         }
-        catch { /* not a search response, table view will be hidden */ }
+        catch { }
     }
 
     private void TryParseCrossRefHits(string json)
     {
+        if (_descriptor is null) return;
+        if (_descriptor.Id is not "content.refers-to" and not "content.referred-by"
+            and not "content.cross-referenced") return;
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
@@ -603,7 +599,6 @@
                 && doc.RootElement.TryGetProperty("direction", out _))
             {
                 string queriedValue = GetStr(doc.RootElement, "value") ?? "";
-
                 _parsedCrossRefs = [];
                 foreach (JsonElement r in hits.EnumerateArray())
                 {
@@ -637,55 +632,19 @@
                 }
             }
         }
-        catch { /* not a cross-ref response, table view will be hidden */ }
+        catch { }
     }
 
     private static string? GetStr(JsonElement el, string name) =>
         el.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    // ── Helpers ──────────────────────────────────────────────────
-
-    private void OnSourceChanged()
-    {
-        SelectedApi = "";
-        _sourceFilterInput = "";
-        _typeInput = "all";
-        _includeContent = true;
-        _includeComments = false;
-        _includeSnapshot = false;
-        _error = null;
-        _resultJson = null;
-        _requestInfo = null;
-        _elapsedMs = null;
-        _parsedResults = null;
-        _parsedCrossRefs = null;
-    }
-
-    private void ToggleRaw() => _showRaw = !_showRaw;
-
-    private static string ApiDisplayName(string api) => api switch
-    {
-        "content-search" => "Content Search",
-        "refers-to" => "Refers To",
-        "referred-by" => "Referred By",
-        "cross-referenced" => "Cross-Referenced",
-        "get-item" => "Get Item",
-        "get-stats" => "Get Stats",
-        "health-check" => "Health Check",
-        "get-services-status" => "Services Status",
-        "rebuild-index" => "Rebuild Index",
-        "trigger-sync" => "Trigger Sync",
-        "keywords" => "Keywords",
-        "related-by-keyword" => "Related by Keyword",
-        _ => api,
-    };
-
     private static string Truncate(string text, int maxLength) =>
-        string.IsNullOrEmpty(text)
-            ? ""
-            : text.Length <= maxLength
-                ? text
-                : string.Concat(text.AsSpan(0, maxLength), "…");
+        string.IsNullOrEmpty(text) ? "" :
+            text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
+
+    private static string ColumnClass(ApiParameter p) =>
+        p.ValueType == ApiParameterValueType.Json ? "col-12" :
+        p.Kind == ApiParameterKind.Path || p.IsCatchAll ? "col-md-6" : "col-md-3";
 
     private sealed record SourceEndpointInfo(string Name, string Address);
     private sealed record ParsedSearchResult(string Source, string Id, string Title, double Score, string? Snippet, string? Url);

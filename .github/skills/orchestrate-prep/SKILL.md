@@ -58,8 +58,8 @@ Output subdirectories use "cleaned" work-group names:
 
 | Work Group Name | Cleaned Name |
 |-----------------|--------------|
-| Orders & Observations | OrdersObservations |
-| Biomedical Research & Regulation | BiomedicalResearchRegulation |
+| Orders & Observations | OrdersAndObservations |
+| Biomedical Research & Regulation | BiomedicalResearchAndRegulation |
 | Community-Based Care and Privacy | CommunityBasedCareAndPrivacy |
 | Payer/Provider Information Exchange | PayerProviderInformationExchange |
 | FHIR Infrastructure | FhirInfrastructure |
