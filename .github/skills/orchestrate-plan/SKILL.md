@@ -1,284 +1,345 @@
 ---
 name: orchestrate-plan
-description: "Orchestrates batch implementation planning of FHIR Jira tickets from a worklist. USE FOR: batch ticket planning, bulk implementation plans, worklist processing, orchestrated planning. Reads a markdown worklist of tickets grouped by work group, launches concurrent ticket-plan agents (up to a configurable limit), saves reports to a target directory organized by work group, and marks tickets complete in the worklist as they finish."
+description: "Orchestrates bulk implementation planning of resolved FHIR Jira tickets directly from the Jira source. USE FOR: batch ticket planning, bulk implementation plans, orchestrated planning. Queries the Jira source for work groups, randomly draws unprocessed resolved tickets matching the configured filters, dispatches up to N concurrent ticket-plan sub-agents, saves reports to a structured output directory, and reports completion back to the Jira source via the local-processing flag."
 ---
 
 # Orchestrate Plan Skill
 
-Processes a markdown worklist of FHIR Jira tickets by launching concurrent
-`ticket-plan` agents, saving each implementation plan report to a structured
-output directory, and tracking progress in the worklist file.
+Bulk-plans implementation for resolved FHIR Jira tickets by drawing
+unprocessed tickets directly from the Jira source, dispatching concurrent
+`ticket-plan` sub-agents, and reporting completion back to the source.
+There is **no markdown worklist** — the Jira source's `ProcessedLocally`
+flag is the sole persistent state.
 
 ## Prerequisites
 
-- The `ticket-plan` skill SKILL.md must exist at
-  `.github/skills/ticket-plan/SKILL.md` (it defines the per-ticket workflow).
-- The `FhirAugury` MCP should be available (preferred). If not, the
-  `fhir-augury` CLI must be available as a fallback.
-- The FHIR Augury services must be running and accessible.
-- The GitHub source service cache must be populated
-  (`cache/github/repos/`).
+- The `fhir-augury-cli` skill must be available — it is the canonical entry
+  point for talking to the Jira source. Follow its fallback order (CLI →
+  MCP → direct HTTP) for every data interaction.
+- The `ticket-plan` skill must be available — it defines the per-ticket
+  workflow and report format that each sub-agent runs. The report
+  structure, all data-gathering steps, the resolution-type guard, the
+  `repo-analysis` briefing dependency, and the implementation-plan rules
+  are all owned by `ticket-plan` and must not be replicated here.
+- The orchestrator service and Jira source service must be reachable.
+  Verify with the CLI's `services` health check before starting.
+- The GitHub source clone cache must be populated. The orchestrator does
+  **not** pre-check briefings — that is the sub-agent's responsibility per
+  `ticket-plan` Step 3.
 
 ## Inputs
 
-The user must provide (or you must confirm via ask_user):
+The user must provide or you must determine:
 
-| Input | Description | Example |
-|-------|-------------|---------|
-| **Worklist file** | Path to a markdown file containing tickets grouped by work group, using `- [ ]` / `- [x]` checkboxes | `scratch/_ticket-plan.md` |
-| **Output directory** | Base directory where reports are saved, organized by work group subfolder | `C:/ai/git/fhir-augury-content/planned/` |
-| **Concurrency** | Maximum number of concurrent planning agents (default: 2) | `2` |
+1. **Output directory** — where planned reports are saved, organized by
+   work-group `nameClean` subfolder. Example:
+   `C:\ai\git\fhir-augury-content\planned\`.
+2. **Concurrency** *(optional, default `2`)* — maximum number of concurrent
+   sub-agents. Plan agents do more work per ticket than prep agents, so
+   the default is lower than `orchestrate-prep`'s `4`.
+3. **Work group** *(optional)* — a single work group to restrict the run to.
+   May be supplied as the work group's `code`, `name`, or `nameClean` (case
+   insensitive). The orchestrator resolves it against the work-group list
+   returned by `list-jira-dimension --dimension workgroups`. If omitted,
+   tickets are drawn at random across **all** work groups (no per-WG
+   round-robin — the Jira source's random draw handles distribution).
+4. **Statuses** *(optional, default `["Resolved - change required"]`)* —
+   list of Jira statuses to consider unprocessed candidates from. Plan
+   operates on tickets that need spec changes, so the default is the
+   resolved-change-required status.
+5. **Projects** *(optional, default `["FHIR"]`)* — list of Jira project keys
+   to draw from. Common alternatives: `["UTG"]`, `["FHIR","UTG"]`.
+6. **Additional Jira filters** *(optional)* — any subset of the
+   `JiraLocalProcessingFilter` shape (e.g., `priorities`, `types`,
+   `specifications`, `labels`, `reporters`, `changeCategories`,
+   `changeImpacts`, `relatedArtifacts`). These are forwarded verbatim on
+   every random-draw call.
+7. **Max tickets** *(optional)* — overall cap on tickets to process this
+   run. If omitted, run until the random draw returns 404 (no more
+   unprocessed tickets matching the filter).
+8. **Working directory** *(optional, default `temp/plan/` relative to the
+   repo root)* — directory the orchestrator and each sub-agent may use for
+   transient files. Created if it does not already exist. Must be writable
+   on the current platform. Mirrors `orchestrate-prep`'s `temp/prep/`.
 
-## Worklist Format
+## Work-Group Names
 
-The worklist markdown file must follow this structure:
+Work-group records returned by `list-jira-dimension --dimension workgroups`
+include `code`, `name`, and `nameClean` directly. **Use `nameClean`
+verbatim** for output subdirectory names — do not derive it locally.
 
-```markdown
-# {Title}
+> Note: the API surface is in the process of being updated to expose
+> `code` and `nameClean` alongside `name`. They are present in the JSON
+> payload even if the typed contract has not been regenerated yet. Read
+> them straight from the JSON.
 
-{Optional description}
+If a work group is supplied as `code`, match it against the `code` field;
+if supplied as `name` or `nameClean`, match against those fields (case
+insensitive). Reject the run with a clear error if no match is found.
 
-## {Work Group Name} ({count})
+## Jira-source operations used
 
-- [ ] FHIR-XXXXX - {ticket title}
-- [ ] FHIR-YYYYY - {ticket title}
-- [x] FHIR-ZZZZZ - {already completed ticket title}
+All operations are reached via the `fhir-augury-cli` skill. Prefer the named
+convenience commands; use `call` for the local-processing endpoints (which
+are not exposed as top-level CLI commands).
 
-## {Another Work Group} ({count})
+| Purpose | CLI form |
+|---------|----------|
+| Health check | `{"command":"services","action":"health"}` |
+| List work groups (with `code`/`name`/`nameClean`/`issueCount`) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
+| Draw a random unprocessed ticket | `{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...filter...}}` |
+| Mark a ticket processed locally | `{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
+| Inspect/clear processed flags (admin) | `local-processing.get-tickets` / `local-processing.clear-all-processed` |
 
-- [ ] FHIR-AAAAA - {ticket title}
-```
+Note on operation IDs: the resolver matches `Jira.local-processing.<name>`
+first, then falls back to `local-processing.<name>`. Either form works; the
+unqualified form above is the recommended default.
 
-Rules:
-- Work group headings are `## {Name} ({count})`.
-- Each ticket is a checkbox line: `- [ ] FHIR-NNNNN - {title}`.
-- Completed tickets are marked `- [x] FHIR-NNNNN - {title}`.
-- Only unchecked (`- [ ]`) tickets are processed.
+### Random-draw filter shape
 
-## Work Group Folder Name Mapping
+Build the body for `local-processing.get-random-ticket` per
+`JiraLocalProcessingFilter` (in
+`src/FhirAugury.Source.Jira/Api/JiraContracts.cs`). The orchestrator builds
+one filter per draw using the configured inputs:
 
-Work group names from the worklist headings are converted to PascalCase folder
-names by removing special characters and joining words. The `&` character is
-replaced with `And`. Examples:
-
-| Work Group Name | Folder Name |
-|----------------|-------------|
-| Biomedical Research & Regulation | BiomedicalResearchAndRegulation |
-| Orders & Observations | OrdersAndObservations |
-| Clinical Decision Support | ClinicalDecisionSupport |
-| FHIR Infrastructure | FHIRInfrastructure |
-| Financial Mgmt | FinancialMgmt |
-| Public Health | PublicHealth |
-| Patient Administration | PatientAdministration |
-| Clinical Quality Information | ClinicalQualityInformation |
-| Cross-Group Projects | CrossGroupProjects |
-| Patient Care | PatientCare |
-| Electronic Health Record | ElectronicHealthRecord |
-| Terminology Infrastructure | TerminologyInfrastructure |
-| Community-Based Care and Privacy | CommunityBasedCareAndPrivacy |
-| Structured Documents | StructuredDocuments |
-| Patient Empowerment | PatientEmpowerment |
-| Payer/Provider Information Exchange | PayerProviderInformationExchange |
-| Implementable Technology Specifications | ImplementableTechnologySpecifications |
-| Infrastructure & Messaging | InfrastructureAndMessaging |
-| HL7 Australia FHIR | HL7AustraliaFHIR |
-| Imaging Integration | ImagingIntegration |
-| FHIR Mgmt Group | FHIRMgmtGroup |
-| Clinical Genomics | ClinicalGenomics |
-| US Realm Task Force [deprecated] | USRealmTaskForce |
-| CDA Management Group | CDAManagementGroup |
-| HL7 Europe | HL7Europe |
-| Pharmacy | Pharmacy |
-| Security | Security |
-| Devices | Devices |
-| Conformance | Conformance |
-| Clinical Interoperability Council | ClinicalInteroperabilityCouncil |
-
-For any work group not in the table above, apply this algorithm:
-1. Replace `&` with `And`
-2. Remove all characters that are not alphanumeric or spaces
-3. Split on spaces and join in PascalCase (capitalize first letter of each word)
-
-## Output Structure
-
-Reports are saved as:
-```
-{output_directory}/{WgFolder}/{TICKET-KEY}.md
-```
-
-Example:
-```
-C:/ai/git/fhir-augury-content/planned/BiomedicalResearchAndRegulation/FHIR-20788.md
-C:/ai/git/fhir-augury-content/planned/OrdersAndObservations/FHIR-42345.md
-```
-
-Work group subdirectories are created automatically as needed.
-
-## Workflow
-
-### Step 0: Confirm Inputs
-
-Use `ask_user` to confirm or gather:
-1. The worklist file path (if not already provided)
-2. The output directory (if not already provided)
-3. The concurrency limit (default 2)
-
-### Step 1: Parse the Worklist
-
-Read the worklist file and extract all pending (unchecked) tickets with their
-work group names. Count totals for progress reporting.
-
-```powershell
-# Example: parse pending tickets
-$lines = Get-Content $worklistPath
-$currentWg = ""
-$pending = @()
-foreach ($line in $lines) {
-    if ($line -match '^## (.+?) \(\d+\)') {
-        $currentWg = $Matches[1]
-    }
-    if ($line -match '- \[ \] (FHIR-\d+) - (.+)$') {
-        $pending += [PSCustomObject]@{
-            Key = $Matches[1]
-            Title = $Matches[2]
-            WgName = $currentWg
-            WgFolder = ConvertTo-WgFolder $currentWg
-        }
-    }
+```json
+{
+  "workGroups": ["Orders & Observations"],
+  "processedLocally": false,
+  "statuses": ["Resolved - change required"],
+  "projects": ["FHIR"]
 }
 ```
 
-Report the total pending count to the user before starting.
+- Always include `"processedLocally": false`.
+- Include `workGroups` only when a single work group was supplied.
+- Always include `statuses` and `projects` (defaulted if not supplied).
+- Merge any **Additional Jira filters** into this body before each draw.
 
-### Step 2: Process Tickets in Batches
+A successful draw returns a `JiraIssueSummaryEntry` (`key`, `workGroup`,
+`title`, `status`, …). A 404 means no unprocessed tickets remain matching
+the filter — terminate draws (the run is **exhausted**).
 
-Process tickets in batches of `{concurrency}` agents at a time. For each
-batch:
+## Workflow
 
-#### 2a. Ensure output directories exist
+### Step 1: Verify services and resolve inputs
 
-For each ticket in the batch, create the work group subdirectory if it doesn't
-exist:
+1. Health-check the orchestrator and Jira source via the CLI's `services`
+   command. Abort with a clear message if either is down.
+2. Fetch the work-group list with `list-jira-dimension --dimension
+   workgroups`. Read `code`, `name`, `nameClean`, `issueCount` from the
+   JSON response.
+3. If the user supplied a **Work group**, resolve it against `code` /
+   `name` / `nameClean` (case insensitive). Abort if no match.
+4. Apply defaults: statuses → `["Resolved - change required"]`, projects →
+   `["FHIR"]`, concurrency → `2`, working directory → `temp/plan/`
+   relative to the repo root.
 
-```powershell
-New-Item -ItemType Directory -Path "{output_directory}\{WgFolder}" -Force
+### Step 2: Confirm with the user
+
+Before any draws or directory creation, present a one-screen summary and
+**ask the user to confirm**. Use the `ask_user` tool. Include every
+resolved input so the user can verify defaults haven't masked a typo:
+
+```
+About to start bulk planning with the following configuration:
+
+  Output directory : C:\ai\git\fhir-augury-content\planned\
+  Working directory: temp/plan/   (relative to repo root)
+  Work group       : (all)        — or: "Orders & Observations" (nameClean: OrdersAndObservations)
+  Statuses         : Resolved - change required
+  Projects         : FHIR
+  Other filters    : (none)       — or list any additional filters
+  Concurrency      : 2
+  Max tickets      : (no cap)     — or: 50
+
+Proceed?
 ```
 
-#### 2b. Launch concurrent agents
+Choices: `Yes, start`, `Cancel`. Do not proceed on anything except
+explicit confirmation.
 
-Launch up to `{concurrency}` `general-purpose` task agents simultaneously.
-Each agent receives the full `ticket-plan` skill instructions and is told to
-save its report to the correct output path.
+### Step 3: Create directories (cross-platform)
 
-**Agent prompt template:**
+Both the **output directory** and the **working directory** must exist
+before dispatching sub-agents. Create them idempotently using a method
+that works on both Windows (PowerShell) and Unix (bash). Two acceptable
+patterns:
 
-```
-You are planning the implementation of FHIR Jira ticket {TICKET-KEY}
-("{ticket title}") for the "{work group name}" work group.
+- **Tool-based** (preferred when available): use the agent's file-system
+  tool to create directories — it abstracts the platform.
+- **Shell-based**: detect the shell and run the appropriate command:
+  - PowerShell: `New-Item -ItemType Directory -Path $Path -Force | Out-Null`
+  - bash/sh: `mkdir -p "$Path"`
 
-Your job is to produce a structured implementation plan report and save it to:
-{output_directory}/{WgFolder}/{TICKET-KEY}.md
+If a single work group was supplied, also create
+`<OutputDir>/<nameClean>/` for that group. Otherwise, create each
+work-group subdirectory **lazily** as tickets for that group are returned
+by the random draw (avoids creating empty directories for inactive WGs).
 
-[... full ticket-plan skill workflow from .github/skills/ticket-plan/SKILL.md,
-     including the Data Access section with MCP-first detection, MCP Tool
-     Reference, CLI Reference (Fallback), all workflow steps, report format,
-     and important rules ...]
-```
+The working directory should be passed through to each sub-agent so all
+transient files land in the same controlled location.
 
-**IMPORTANT:** Read the full content of `.github/skills/ticket-plan/SKILL.md`
-and include its complete workflow instructions (Data Access section, Steps 1–4,
-report format, and important rules) in each agent prompt. The Data Access
-section is critical — it teaches the sub-agent to detect and prefer MCP tools
-over the CLI. Do not summarize or abbreviate — the agent needs the full context
-since it cannot access skills.
+### Step 4: In-flight tracking
 
-Launch agents using:
-```
-task(
-    agent_type="general-purpose",
-    name="plan-{TICKET-KEY}",
-    description="Plan ticket {TICKET-KEY}",
-    mode="background",
-    prompt="..."
-)
-```
+Maintain in memory:
 
-Use the same model as the orchestrating agent (check your own model config).
+- `inFlight` — set of ticket keys currently assigned to a running
+  sub-agent. This is the **only** tracking required, and exists solely to
+  prevent assigning the same ticket to two sub-agents (the random draw is
+  unaware of in-flight state).
+- `completed` / `failed` counters for progress reporting.
 
-#### 2c. Wait for completions
+Persist nothing locally; the Jira source's `ProcessedLocally` flag is the
+durable state.
 
-Wait for all agents in the batch to complete. As each completes:
+### Step 5: Draw and dispatch loop
 
-1. **Read the result** with `read_agent` to confirm success.
-2. **Verify the output file** exists:
-   ```powershell
-   Test-Path "{output_directory}\{WgFolder}\{TICKET-KEY}.md"
+Loop until the in-flight set is empty AND the last draw returned 404, or
+the optional max-tickets cap is reached:
+
+1. While `len(inFlight) < concurrency` and the run is not exhausted:
+   1. Build the random-draw filter (work group if supplied,
+      `processedLocally:false`, statuses, projects, any user filters)
+      and call `local-processing.get-random-ticket`.
+   2. Handle the response:
+      - **404 / empty** → mark the run **exhausted**; stop drawing.
+        Wait for in-flight agents to drain before exiting.
+      - **Ticket already in `inFlight`** → retry the draw up to **5
+        times**. If still colliding, pause new draws until the next
+        completion frees space. (Collisions are rare but possible since
+        `RANDOM()` does not see in-flight state.)
+      - **Fresh ticket** → add to `inFlight`, ensure the
+        `<OutputDir>/<nameClean>/` directory exists for the ticket's
+        work group, then dispatch a sub-agent (Step 6).
+2. Wait for the next sub-agent completion (Step 7) before continuing the
+   outer loop.
+
+### Step 6: Dispatch a sub-agent
+
+For each fresh ticket, launch a **general-purpose background agent** that
+runs the `ticket-plan` skill. Use the same model as the orchestrator. Do
+**not** inline the `ticket-plan` SKILL.md content — sub-agents resolve
+the skill by name.
+
+The sub-agent prompt:
+
+````
+Run the `ticket-plan` skill for the following ticket.
+
+## Inputs
+
+- **Ticket key:** {TICKET_KEY}
+- **Work group:** {WORK_GROUP}
+- **Output file:** {OUTPUT_DIR}/{NAME_CLEAN}/{TICKET_KEY}.md
+- **Working directory:** {WORKING_DIR}
+- **CLI path (if needed):** {CLI_PATH}
+
+## Instructions
+
+1. Follow the `ticket-plan` skill exactly, including all data-gathering
+   steps, the resolution-type guard, the repo-analysis briefing
+   dependency, and the report format.
+2. Use the supplied **Working directory** for any transient files.
+3. Save the completed report to the output file path above.
+4. When finished, confirm success and state the full path of the saved
+   file.
+````
+
+Use forward slashes in paths inside the prompt; both PowerShell and bash
+accept them, and the sub-agent can normalize as needed.
+
+### Step 7: Handle completion and report back to Jira
+
+When a sub-agent completes:
+
+1. **Read the agent result** to confirm success and that the report file
+   exists at the expected path.
+2. **Mark the ticket processed locally** by calling
+   `local-processing.set-processed` with `processedLocally: true`:
+
+   ```bash
+   fhir-augury-cli --json '{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}'
    ```
-3. **Mark the ticket complete** in the worklist file by replacing `- [ ]` with
-   `- [x]` for that ticket's line:
-   ```
-   edit(
-       path="{worklist_path}",
-       old_str="- [ ] {TICKET-KEY} - {title}",
-       new_str="- [x] {TICKET-KEY} - {title}"
-   )
-   ```
-4. **Report progress** to the user: "{TICKET-KEY} done — {completed}/{total}"
 
-If an agent fails:
-- Log the failure and note the ticket key
-- Do NOT mark it as completed in the worklist
-- Continue processing remaining tickets
-- Report failures at the end
+   Only mark on **success**. On failure (Step 8), leave the flag unset so
+   the ticket remains eligible for a future run.
+3. **Remove the ticket from `inFlight`**.
+4. **Loop back to Step 5** to draw and dispatch the next ticket.
 
-#### 2d. Launch next batch
+### Step 8: Error handling
 
-After all agents in the current batch complete, extract the next batch of
-pending tickets from the worklist (re-read the file to pick up any marks) and
-repeat from Step 2a.
+- **Sub-agent failure** — log the ticket key and error; do **not** mark
+  the ticket processed; remove it from `inFlight`; continue with the next
+  draw. Do not retry the same ticket automatically in the same run (it
+  can be re-drawn naturally on a future run).
+- **Random-draw 404** — no more unprocessed tickets match the filter;
+  mark the run exhausted and drain remaining in-flight agents.
+- **Random-draw collision with `inFlight`** — retry up to 5 times; if
+  still colliding, pause new draws until the next completion.
+- **CLI unavailable** — fall back per the `fhir-augury-cli` skill's
+  fallback order (MCP, then direct HTTP). Record which path was used in
+  progress reports.
+- **Service unhealthy mid-run** — pause new draws, wait for in-flight
+  agents to complete, then surface the issue to the user before resuming.
 
-### Step 3: Report Summary
+### Step 9: Progress reporting
 
-After all tickets are processed (or if interrupted), provide a summary:
+After each batch of completions, report to the user:
 
-```
-## Planning Complete
-
-- **Total processed:** {n}
-- **Succeeded:** {n}
-- **Failed:** {n} (list keys)
-- **Remaining:** {n}
-
-Reports saved to: {output_directory}
-```
-
-## Error Handling
-
-- **Agent failure:** Log the error, skip the ticket, continue with remaining.
-  The ticket stays unchecked in the worklist for retry in a future run.
-- **CLI unavailable:** If the first agent fails due to MCP or CLI connectivity,
-  stop all processing and alert the user to check services.
-- **Worklist parse error:** If the worklist doesn't match the expected format,
-  alert the user and stop.
-- **Output directory issues:** Create directories as needed. If creation fails,
-  alert the user.
+- Completed / failed / in-flight counts.
+- Per-WG completion totals so far this run (derived from completed
+  tickets' `workGroup` field).
+- Any tickets currently in flight (key + WG).
+- Whether the run has been marked exhausted (no more draws will occur).
 
 ## Resumability
 
-Because completion is tracked via checkboxes in the worklist file, the skill
-is **fully resumable**. If interrupted:
-- Already-completed tickets remain marked `[x]`
-- The next invocation picks up where the previous one left off
-- No duplicate work is performed
+There is **no local persistent state**. Resume is automatic:
+
+- Already-processed tickets have `ProcessedLocallyAt` set in the Jira
+  source and will not be drawn again.
+- Re-invoking the skill with the same inputs simply continues from
+  whatever the Jira source currently considers unprocessed.
+
+If you need to clear processed flags (e.g., to re-run a batch from
+scratch), use `local-processing.clear-all-processed` — but be aware that
+this clears the flag for **every** ticket, not just the ones in your
+current scope.
 
 ## Example Invocation
 
-User: "Process the ticket plan worklist in scratch/_ticket-plan.md, saving
-reports to C:/ai/git/fhir-augury-content/planned/ with 2 concurrent agents."
+User: *"Plan unprocessed resolved tickets, saving reports to
+`C:\ai\git\fhir-augury-content\planned\`, 2 concurrent agents."*
 
-The agent should:
-1. Confirm inputs (worklist, output dir, concurrency=2)
-2. Parse the worklist → find 1808 pending tickets
-3. Launch 2 agents for the first 2 pending tickets
-4. As each completes, verify output, mark done, report progress
-5. Continue until all tickets are processed or interrupted
+The orchestrator should:
+
+1. Health-check services; list work groups via `list-jira-dimension`
+   and read `code`/`name`/`nameClean` from the JSON.
+2. Apply defaults (statuses=`Resolved - change required`,
+   projects=`FHIR`, working directory=`temp/plan/`) and present a
+   confirmation summary via `ask_user`.
+3. After confirmation, ensure the output and working directories exist
+   (cross-platform).
+4. Loop: draw a random unprocessed ticket via
+   `local-processing.get-random-ticket` (with `processedLocally:false`,
+   the configured statuses/projects, and any user filters), keeping at
+   most 2 sub-agents in flight; dedupe via the `inFlight` set.
+5. On each sub-agent success, call `local-processing.set-processed` with
+   `processedLocally:true`.
+6. Continue until the random draw returns 404 (or the optional
+   max-tickets cap is reached); report progress as agents complete.
+
+## Performance Notes
+
+- Plan agents are typically slower than prep agents — each ticket
+  involves more file I/O into the clone, briefing reads, and
+  cross-reference/terminology lookups. Expect roughly **2–6 minutes**
+  per ticket depending on cross-reference density and the number of
+  in-scope repositories.
+- With 2 concurrent agents, expect ~0.3–1 ticket/minute throughput.
+  Concurrency 2–3 is a sane default; raise carefully if the host has
+  the headroom and the Jira/orchestrator services remain healthy.
+- The Jira source handles concurrent CLI requests well; the
+  random-with-collision-retry pattern keeps duplicate dispatches
+  negligible in practice.

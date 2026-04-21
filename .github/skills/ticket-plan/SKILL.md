@@ -23,35 +23,64 @@ When a CLI command is shown below, it is in the form documented by
 `fhir-augury-cli`:
 
 ```bash
-fhir-augury --json '<json>' [--pretty]
+fhir-augury-cli --json '<json>' [--pretty]
 ```
 
 If the CLI is unavailable in the current environment, fall back per the
-order documented in `fhir-augury-cli`.
+order documented in `fhir-augury-cli` (MCP → direct HTTP → `appsettings.json`).
+
+## Inputs
+
+- **Ticket key** *(required)* — e.g., `FHIR-55197`.
+- **Output file** *(optional)* — full path where the report should be
+  saved. If omitted, the agent picks a sensible default and reports the
+  path back to the caller.
+- **Working directory** *(optional)* — directory the agent may use for
+  any transient files produced while gathering data (intermediate JSON
+  dumps, scratch notes, downloaded snapshots, etc.). When supplied,
+  **all transient files must be written under this directory** rather
+  than the repo root or the current working directory. Create it with a
+  cross-platform mechanism (PowerShell `New-Item -ItemType Directory
+  -Force`, bash `mkdir -p`, or your file-system tool) if it does not
+  already exist. Do not write transient files outside this directory.
 
 ## Prerequisites
 
 - The GitHub source service cache must be populated (cloned repositories
   live under `cache/github/repos/<owner>_<name>/clone/`).
 - For each in-scope repository, a current per-repo briefing must exist
-  under `cache/github/repos/<owner>_<name>/repo-analysis/`. If missing or
-  stale, re-run the **`repo-analysis`** skill before continuing
-  (Step 1c).
+  under `cache/github/repos/<owner>_<name>/repo-analysis/`. Step 3 below
+  detects missing or stale briefings and stops to ask the user to run
+  `repo-analysis`; this skill does not invoke `repo-analysis` itself.
 
 ## Workflow
 
 When the user provides a Jira ticket key (e.g., `FHIR-55197`), execute the
 following steps. Run independent calls in parallel where possible.
 
-### Step 1: Gather Ticket Details and Resolution
+### Step 1: Resolution-Type Guard
 
-Run these commands in parallel (per the `fhir-augury-cli` skill — use
-the MCP equivalent if the CLI is unavailable).
+Run **Step 1a** first. If `metadata.resolution` is one of `Not
+Persuasive`, `Duplicate`, or `Withdrawn`, write a short report:
+
+```markdown
+# Implementation Plan: {TICKET-KEY}
+
+**Resolution:** {resolution}
+
+No implementation required because the resolution is `{resolution}`.
+```
+
+…and exit. Do not run the remaining steps. This avoids burning sub-agent
+time during orchestrated runs.
+
+Otherwise, proceed with Steps 1a–1c (gather ticket data) followed by
+Steps 2–5.
 
 **1a. Get the ticket with full content, comments, and snapshot:**
 
 ```bash
-fhir-augury --json '{"command":"get","source":"jira","id":"FHIR-55197","includeComments":true,"includeContent":true,"includeSnapshot":true}'
+fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-55197","includeComments":true,"includeContent":true,"includeSnapshot":true}'
 ```
 
 Key fields to extract from the response:
@@ -66,7 +95,7 @@ Key fields to extract from the response:
 **1b. Get all cross-references:**
 
 ```bash
-fhir-augury --json '{"command":"cross-referenced","value":"FHIR-55197","limit":50}'
+fhir-augury-cli --json '{"command":"cross-referenced","value":"FHIR-55197","limit":50}'
 ```
 
 From the cross-references response, categorize:
@@ -77,12 +106,12 @@ From the cross-references response, categorize:
 **1c. Get keywords for the ticket:**
 
 ```bash
-fhir-augury --json '{"command":"keywords","source":"jira","id":"FHIR-55197","limit":30}'
+fhir-augury-cli --json '{"command":"keywords","source":"jira","id":"FHIR-55197","limit":30}'
 ```
 
 These keywords identify the FHIR resources, elements, and operations involved.
 
-### Step 1b: Determine In-Scope Repositories
+### Step 2: Determine In-Scope Repositories
 
 From the resolution, linked artifacts, and cross-references, decide which
 cached repositories the change touches (typically 1–2). Normalize each
@@ -101,76 +130,99 @@ For the authoritative list of configured repos and their categories,
 call (per `fhir-augury-cli`):
 
 ```bash
-fhir-augury --json '{"command":"call","source":"github","operation":"repos"}'
+fhir-augury-cli --json '{"command":"call","source":"github","operation":"repos"}'
 ```
 
-### Step 1c: Load Saved Per-Repo Briefings
+### Step 3: Load Saved Per-Repo Briefings
 
-For each in-scope repo, read:
+For **every** distinct `owner/name` repository surfaced by the GitHub
+cross-references in Step 1b (and any additional in-scope repos identified
+in Step 2), read the persisted briefing produced by the `repo-analysis`
+skill:
 
-- `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`
-- `cache/github/repos/<owner>_<name>/repo-analysis/meta.json`
+- Briefing: `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`
+- Metadata: `cache/github/repos/<owner>_<name>/repo-analysis/meta.json`
 
-If a briefing is missing, or `meta.json` is stale (HEAD or playbook SHA
-mismatch — see the `repo-analysis` skill's "Staleness rules"), **stop
-and ask the user** to run:
+This skill is **data-only** with respect to repo-analysis: it reads the
+cached artifacts but does **not** invoke the `repo-analysis` skill
+itself. Check `meta.json` against the staleness rules documented in the
+`repo-analysis` skill (clone HEAD + playbook SHA must both match).
 
-> `repo-analysis <owner/name>` (force refresh) or
-> `repo-analysis <owner/name> if-stale` (refresh only if needed)
+If a briefing is **missing** or **stale** for any required repo, **stop
+and ask the user** to run the `repo-analysis` skill before resuming —
+e.g.:
 
-Do **not** re-discover repo layout inline — that is the `repo-analysis`
-skill's job, and the saved briefing is the contract this skill consumes.
-Use the briefing as the source of truth for build system, authoring
-roots, artifact map, cross-repo touch points, recipes, and warnings.
+> Briefing for `HL7/fhir` is stale (clone HEAD changed since last
+> analysis). Please run `repo-analysis HL7/fhir if-stale` and let me
+> know when it's ready.
 
-### Step 2: Analyze Impact
+Do not proceed with partial repo context, and do not fabricate repo
+facts to fill the gap.
+
+From each briefing, extract for use in later steps:
+
+- **Category** (drives recipe / path expectations).
+- **Authoring root(s)** and **generated areas (do not edit)**.
+- **Ticket-Relevant Paths** / **Artifact Map**.
+- **Recommended Change Recipes** that match the ticket.
+- **Warnings / Gotchas** relevant to the proposed change.
+- **Cross-Repo Touch Points**.
+
+If there are **no GitHub cross-references** and Step 2 produced no
+in-scope repos, this step is a no-op — record "No related GitHub
+repositories." in the report and skip the briefing loads.
+
+### Step 4: Analyze Impact
 
 For each affected repository, assess the scope of change:
 
-**2a. Examine existing definitions.**
+**4a. Examine existing definitions.**
 
-For each affected FHIR resource or artifact, read the current source file
-to understand the existing state. Use the file paths surfaced in the saved
-briefings from Step 1c, then either fetch via the CLI:
+Paths come from the briefing's Artifact Map / Ticket-Relevant Paths
+loaded in Step 3. Use either the CLI or a direct read from the cache
+clone to fetch the file content.
 
 ```bash
-fhir-augury --json '{"command":"get","source":"github","id":"HL7/fhir:source/patient/structuredefinition-Patient.xml","includeContent":true}'
+fhir-augury-cli --json '{"command":"get","source":"github","id":"HL7/fhir:source/patient/structuredefinition-Patient.xml","includeContent":true}'
 ```
 
-Or read directly from the cache clone (paths come from the briefing's
-"Artifact Map" / "Ticket-Relevant Paths" sections):
+Or read directly from the cache clone:
 
 ```powershell
 Get-Content cache\github\repos\HL7_fhir\clone\source\<resource>\<file>.xml | Select-Object -First 50
 ```
 
-**2b. Check for related PRs and commits.**
+**4b. Check for related PRs and commits.**
 
 From the cross-references, identify any existing PRs or commits that have
 already started implementing this change. Note whether they are open, merged,
 or closed.
 
-**2c. Look for related issues in the same area.**
+**4c. Look for related issues in the same area.**
 
-Search for other tickets affecting the same resources:
-
-```bash
-fhir-augury --json '{"command":"search","query":"<resource-name>","sources":["jira"],"limit":10}'
-```
-
-**2d. Assess terminology impact.**
-
-If the change involves coded elements, check for ValueSet or CodeSystem
-changes needed in the UTG repository:
+Only when the resolution involves a coded element or cross-resource
+concern. Cap `limit` at 10. Search for other tickets affecting the same
+resources:
 
 ```bash
-fhir-augury --json '{"command":"search","query":"<valueset-name>","sources":["github"],"limit":10}'
+fhir-augury-cli --json '{"command":"search","query":"<resource-name>","sources":["jira"],"limit":10}'
 ```
 
-### Step 3: Build the Report
+**4d. Assess terminology impact.**
 
-Compose a markdown report with the sections described below. Use the gathered
-data to write substantive, specific content — not generic placeholders.
+Only when the change involves coded elements. Cap `limit` at 10. Check
+for ValueSet or CodeSystem changes needed in the UTG repository:
+
+```bash
+fhir-augury-cli --json '{"command":"search","query":"<valueset-name>","sources":["github"],"limit":10}'
+```
+
+### Step 5: Build the Report
+
+Compose a markdown report with the sections described below, using the
+Repo Context block (Step 3 briefings) to ground every concrete claim.
+Use the gathered data to write substantive, specific content — not
+generic placeholders.
 
 ---
 
@@ -182,12 +234,23 @@ sections may note "None identified" if no data exists.
 ```markdown
 # Implementation Plan: {TICKET-KEY}
 
-**Title:** {ticket title}
-**Status:** {status}
-**Resolution:** {resolution}
-**Work Group:** {work group}
-**Specification:** {specification}
-**Resolved:** {resolved date}
+| | |
+|-|-|
+| Ticket | ({TICKET-KEY}([{link to jira ticket}]) : {type} |
+| Work Group | {work group} |
+| Status | {priority} {status} |
+| Labels | {comma-separated labels} |
+| Specification | {specification} |
+| Related Artifacts | {comma-separated list of related artifact names} |
+| Related Pages | {comma-separated list of related page names} |
+| Related URLs | {comma-separated list of related URLs} |
+| Related Sections | {comma-separated list of related section values} |
+| Reporter | {reporter} |
+| Assignee | {assignee} |
+| In-Person | {comma-separated list of in-person requesters} |
+| Created | {created date} |
+| Updated | {updated date} |
+| Resolved | {resolved date} |
 
 ---
 
@@ -229,7 +292,32 @@ with existing patterns, the resolution discussion, and any Zulip consensus.
 Address potential alternatives that were considered and why they were not
 chosen (if evident from comments or discussion).}
 
+## Repo Context
+
+{For each distinct repository loaded in Step 3, include a subsection
+sourced from that repo's `repo-analysis/briefing.md`. If there are no
+related GitHub repos, write "No related GitHub repositories." and omit
+the subsections.}
+
+### {owner/name} ({category})
+
+- **Briefing:** `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md` @ clone `{short-sha}`
+- **Authoring root(s):** {from briefing}
+- **Likely-touched paths for this ticket:** {paths from briefing's
+  Ticket-Relevant Paths if present, else inferred from Authoring root(s)
+  + the ticket's keywords / linked artifacts}
+- **Applicable change recipes:** {names of recipes from the briefing's
+  "Recommended Change Recipes" that match this ticket}
+- **Gotchas to weigh in the plan:** {from briefing's "Warnings /
+  Gotchas", filtered to what's relevant}
+- **Cross-repo touch points:** {from briefing, only entries relevant to
+  this ticket}
+
 ## Impact Analysis
+
+{The Impact Analysis must reflect the Repo Context above. Sourced from
+the briefings loaded in Step 3 (Authoring root(s), Artifact Map,
+Ticket-Relevant Paths, Cross-Repo Touch Points).}
 
 ### Affected Repositories
 
@@ -282,7 +370,9 @@ terminology additions, extension definitions, or dependent ticket resolutions.}
 ### Step-by-Step Tasks
 
 {Number each task. Group by repository. Each task should be specific enough
-that a developer can execute it without ambiguity.}
+that a developer can execute it without ambiguity. Per-task `File:` paths
+must come from the briefing's Artifact Map / Ticket-Relevant Paths and be
+verified against the clone before being listed.}
 
 #### {Repository Full Name}
 
@@ -323,11 +413,16 @@ that a developer can execute it without ambiguity.}
 ### Open Questions
 
 {List any ambiguities in the resolution that need clarification before or
-during implementation. If none: "No open questions."}
+during implementation. Any Gotchas/Warnings surfaced by Repo Context that
+affect implementation must be addressed here (or in the relevant task
+above). If none: "No open questions."}
 ```
 
 ## Important Rules
 
+- **The plan must be grounded in the Repo Context.** Name the specific
+  repo and authoring root when proposing a change. If the briefing flags
+  a gotcha that affects the plan, the relevant section must address it.
 - **Use only data from the `fhir-augury-cli` skill (CLI / MCP) and cached
   repositories.** Do not fabricate ticket details, file paths, or
   resolution content. If a call fails or returns no data, say so in the
@@ -336,8 +431,8 @@ during implementation. If none: "No open questions."}
   resource" are not useful. Name the exact element, path, type, cardinality,
   and binding.
 - **Include actual file paths.** When referencing repository files, use
-  paths from the saved per-repo briefing (`Step 1c`) and verify they
-  exist in the clone before listing them. Do not invent paths.
+  paths from the saved per-repo briefing (loaded in Step 3) and verify
+  they exist in the clone before listing them. Do not invent paths.
 - **The implementation plan must be actionable.** Each task should describe a
   single, concrete file change. A developer should be able to follow the plan
   without referring back to the original ticket.
@@ -349,10 +444,6 @@ during implementation. If none: "No open questions."}
 - **Read the resolution description carefully.** The resolution (not the
   original ticket description) dictates what must be implemented. The ticket
   description states the problem; the resolution states the approved solution.
-- **Distinguish between resolution types.** Only "Applied", "Persuasive", and
-  "Persuasive with Modification" resolutions require implementation. If the
-  resolution is "Not Persuasive", "Duplicate", or "Withdrawn", note this in
-  the report and explain that no implementation is needed.
 - **Trust the saved briefing.** Repo layout, build system, and recipes
   come from `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`.
   If the briefing is stale, re-run `repo-analysis` rather than
