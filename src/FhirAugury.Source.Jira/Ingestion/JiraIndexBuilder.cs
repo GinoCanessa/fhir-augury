@@ -7,11 +7,18 @@ namespace FhirAugury.Source.Jira.Ingestion;
 /// <summary>Rebuilds lookup/index tables from jira_issues data.</summary>
 public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
 {
+    /// <summary>
+    /// Rebuilds all of the per-source index/lookup tables from the current
+    /// contents of <c>jira_issues</c>. Note: when invoked from the
+    /// ingestion pipeline, <c>Hl7WorkGroupIndexer.Rebuild</c> (FR 02) must
+    /// have already populated <c>hl7_workgroups</c> so that
+    /// <see cref="RebuildWorkGroupsIndex"/> can resolve <c>WorkGroupId</c>.
+    /// </summary>
     public void RebuildIndexTables(SqliteConnection conn)
     {
         logger.LogInformation("Rebuilding Jira index tables");
 
-        RebuildSimpleIndex<JiraIndexWorkGroupRecord>(conn, "jira_index_workgroups", "WorkGroup");
+        RebuildWorkGroupsIndex(conn);
         RebuildSimpleIndex<JiraIndexSpecificationRecord>(conn, "jira_index_specifications", "Specification");
         RebuildSimpleIndex<JiraIndexBallotRecord>(conn, "jira_index_ballots", "SelectedBallot");
         RebuildSimpleIndex<JiraIndexTypeRecord>(conn, "jira_index_types", "Type");
@@ -23,6 +30,121 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         RebuildInPersonsIndex(conn);
 
         logger.LogInformation("Index tables rebuilt");
+    }
+
+    private void RebuildWorkGroupsIndex(SqliteConnection conn)
+    {
+        using (SqliteCommand del = conn.CreateCommand())
+        {
+            del.CommandText = "DELETE FROM jira_index_workgroups";
+            del.ExecuteNonQuery();
+        }
+
+        // Aggregate (WorkGroup, Status) -> count, then pivot to per-status
+        // bucket columns in C# via Hl7JiraStatusBuckets.
+        Dictionary<string, JiraIndexWorkGroupRecord> byName = new(StringComparer.Ordinal);
+        using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT WorkGroup, Status, COUNT(*) AS C
+                FROM jira_issues
+                WHERE WorkGroup IS NOT NULL AND WorkGroup <> ''
+                GROUP BY WorkGroup, Status
+                """;
+            using SqliteDataReader r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string wg = r.GetString(0);
+                string? status = r.IsDBNull(1) ? null : r.GetString(1);
+                int count = r.GetInt32(2);
+
+                if (!byName.TryGetValue(wg, out JiraIndexWorkGroupRecord? rec))
+                {
+                    rec = new JiraIndexWorkGroupRecord
+                    {
+                        Id = JiraIndexWorkGroupRecord.GetIndex(),
+                        Name = wg,
+                        WorkGroupId = null,
+                        IssueCount = 0,
+                        IssueCountSubmitted = 0,
+                        IssueCountTriaged = 0,
+                        IssueCountWaitingForInput = 0,
+                        IssueCountNoChange = 0,
+                        IssueCountChangeRequired = 0,
+                        IssueCountPublished = 0,
+                        IssueCountApplied = 0,
+                        IssueCountDuplicate = 0,
+                        IssueCountClosed = 0,
+                        IssueCountBalloted = 0,
+                        IssueCountWithdrawn = 0,
+                        IssueCountDeferred = 0,
+                        IssueCountOther = 0,
+                    };
+                    byName[wg] = rec;
+                }
+
+                rec.IssueCount += count;
+                string col = Hl7JiraStatusBuckets.MapToBucketColumn(status);
+                IncrementBucket(rec, col, count);
+            }
+        }
+
+        // Resolve WorkGroupId via hl7_workgroups: Name match first, then
+        // NameClean fallback (cleaning the issue's free-text WorkGroup with
+        // the same algorithm so "FHIR Infrastructure" matches "FHIRInfrastructure").
+        Dictionary<string, int> idByName = new(StringComparer.Ordinal);
+        Dictionary<string, int> idByNameClean = new(StringComparer.Ordinal);
+        using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT Id, Name, NameClean FROM hl7_workgroups";
+            using SqliteDataReader r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                int id = r.GetInt32(0);
+                idByName[r.GetString(1)] = id;
+                idByNameClean[r.GetString(2)] = id;
+            }
+        }
+
+        foreach (JiraIndexWorkGroupRecord rec in byName.Values)
+        {
+            if (idByName.TryGetValue(rec.Name, out int id))
+            {
+                rec.WorkGroupId = id;
+                continue;
+            }
+            string clean = Hl7WorkGroupNameCleaner.Clean(rec.Name);
+            if (clean.Length > 0 && idByNameClean.TryGetValue(clean, out id))
+            {
+                rec.WorkGroupId = id;
+                continue;
+            }
+            logger.LogDebug("workgroup {Name} did not match any hl7_workgroups row", rec.Name);
+        }
+
+        List<JiraIndexWorkGroupRecord> rows = [.. byName.Values];
+        rows.Insert(conn, ignoreDuplicates: true, insertPrimaryKey: true);
+        logger.LogInformation("Workgroups index rebuilt: {Count} distinct workgroups", byName.Count);
+    }
+
+    private static void IncrementBucket(JiraIndexWorkGroupRecord rec, string col, int count)
+    {
+        switch (col)
+        {
+            case nameof(JiraIndexWorkGroupRecord.IssueCountSubmitted):       rec.IssueCountSubmitted       += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountTriaged):         rec.IssueCountTriaged         += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountWaitingForInput): rec.IssueCountWaitingForInput += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountNoChange):        rec.IssueCountNoChange        += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountChangeRequired):  rec.IssueCountChangeRequired  += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountPublished):       rec.IssueCountPublished       += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountApplied):         rec.IssueCountApplied         += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountDuplicate):       rec.IssueCountDuplicate       += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountClosed):          rec.IssueCountClosed          += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountBalloted):        rec.IssueCountBalloted        += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountWithdrawn):       rec.IssueCountWithdrawn       += count; break;
+            case nameof(JiraIndexWorkGroupRecord.IssueCountDeferred):        rec.IssueCountDeferred        += count; break;
+            default:                                                          rec.IssueCountOther          += count; break;
+        }
     }
 
     private static void RebuildSimpleIndex<T>(SqliteConnection conn, string tableName, string columnName)

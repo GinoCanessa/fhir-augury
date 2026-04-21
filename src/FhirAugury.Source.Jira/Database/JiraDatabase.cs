@@ -29,6 +29,7 @@ public class JiraDatabase : SourceDatabase
         JiraKeywordRecord.CreateTable(connection);
         JiraCorpusKeywordRecord.CreateTable(connection);
         JiraDocStatsRecord.CreateTable(connection);
+        Hl7WorkGroupRecord.CreateTable(connection);
         JiraIndexWorkGroupRecord.CreateTable(connection);
         JiraIndexSpecificationRecord.CreateTable(connection);
         JiraIndexBallotRecord.CreateTable(connection);
@@ -62,6 +63,51 @@ public class JiraDatabase : SourceDatabase
         // not include it at initial schema creation. CreateTable is
         // idempotent (CREATE TABLE IF NOT EXISTS), so this is safe.
         JiraProjectRecord.CreateTable(connection);
+
+        // Migration: add hl7_workgroups (FR 02) for older databases.
+        Hl7WorkGroupRecord.CreateTable(connection);
+
+        // Migration (FR 03): expand jira_index_workgroups with the FK to
+        // hl7_workgroups and per-status bucket columns. SQLite has no
+        // ADD COLUMN IF NOT EXISTS, so we gate each ALTER on PRAGMA
+        // table_info. The next index rebuild populates real values; until
+        // then existing rows have all-zero buckets and a null FK.
+        AddColumnIfMissing(connection, "jira_index_workgroups", "WorkGroupId",                "INTEGER");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountSubmitted",        "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountTriaged",          "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountWaitingForInput",  "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountNoChange",         "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountChangeRequired",   "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountPublished",        "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountApplied",          "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountDuplicate",        "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountClosed",           "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountBalloted",         "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountWithdrawn",        "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountDeferred",         "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountOther",            "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    /// <summary>
+    /// Issues <c>ALTER TABLE ... ADD COLUMN</c> only when the column is not
+    /// already present. SQLite lacks <c>IF NOT EXISTS</c> on ADD COLUMN so we
+    /// inspect <c>PRAGMA table_info</c> first.
+    /// </summary>
+    private static void AddColumnIfMissing(SqliteConnection connection, string table, string column, string typeAndDefault)
+    {
+        HashSet<string> existing = new(StringComparer.OrdinalIgnoreCase);
+        using (SqliteCommand info = connection.CreateCommand())
+        {
+            info.CommandText = $"PRAGMA table_info({table})";
+            using SqliteDataReader r = info.ExecuteReader();
+            while (r.Read()) existing.Add(r.GetString(1));
+        }
+
+        if (existing.Contains(column)) return;
+
+        using SqliteCommand alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {typeAndDefault}";
+        alter.ExecuteNonQuery();
     }
 
     private void CreateJiraIssuesFts(SqliteConnection connection)
@@ -145,6 +191,7 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS xref_github;
             DROP TABLE IF EXISTS xref_confluence;
             DROP TABLE IF EXISTS xref_fhir_element;
+            DROP TABLE IF EXISTS hl7_workgroups;
             """;
         cmd.ExecuteNonQuery();
 

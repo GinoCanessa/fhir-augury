@@ -100,6 +100,14 @@ builder.Services.AddHttpClient("jira-xml", client =>
 }).AddHttpMessageHandler<JiraAuthHandler>()
   .AddStandardResilienceHandler();
 
+// HTTP client for the work-group support file acquirer (no Jira auth — terminology endpoints don't accept it)
+builder.Services.AddHttpClient(WorkGroupSupportFileAcquirer.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/xml,*/*;q=0.8");
+}).AddStandardResilienceHandler();
+
 // Ingestion
 builder.Services.AddSingleton<JiraUserMapper>();
 builder.Services.AddSingleton<JiraSource>();
@@ -119,6 +127,7 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraXRefRebuilder>();
+builder.Services.AddSingleton<Hl7WorkGroupIndexer>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -138,6 +147,7 @@ builder.Services.AddSingleton(indexTracker);
 }
 
 builder.Services.AddSingleton<JiraIngestionPipeline>();
+builder.Services.AddSingleton<WorkGroupSupportFileAcquirer>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker

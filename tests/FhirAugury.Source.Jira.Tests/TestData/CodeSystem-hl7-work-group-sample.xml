@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CodeSystem xmlns="http://hl7.org/fhir">
+  <id value="hl7-work-group"/>
+  <url value="http://terminology.hl7.org/CodeSystem/hl7-work-group"/>
+  <name value="Hl7WorkGroup"/>
+  <status value="active"/>
+  <content value="complete"/>
+  <concept>
+    <code value="fhir"/>
+    <display value="FHIR Infrastructure"/>
+    <definition value="The FHIR Infrastructure Work Group."/>
+    <concept>
+      <code value="fhir-i-sub"/>
+      <display value="FHIR Infrastructure Sub Group"/>
+      <definition value="A nested sub-group used to test recursion."/>
+    </concept>
+  </concept>
+  <concept>
+    <code value="pc"/>
+    <display value="Patient Care"/>
+    <definition value="The Patient Care Work Group."/>
+  </concept>
+  <concept>
+    <code value="oo"/>
+    <display value="Orders &amp; Observations"/>
+    <definition value="Orders and Observations."/>
+  </concept>
+  <concept>
+    <code value="cds"/>
+    <display value="CDS (Clinical Decision Support)"/>
+    <definition value="Clinical Decision Support."/>
+  </concept>
+  <concept>
+    <code value="oldwg"/>
+    <display value="Retired Group"/>
+    <definition value="An example retired work group."/>
+    <property>
+      <code value="status"/>
+      <valueCode value="retired"/>
+    </property>
+  </concept>
+  <concept>
+    <code value="nodisplay"/>
+    <definition value="A concept with no display element."/>
+  </concept>
+</CodeSystem>

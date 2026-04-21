@@ -27,6 +27,16 @@ public sealed class JiraStartupRebuildService(
         JiraServiceOptions opts = optionsAccessor.Value;
         JiraDatabase db = services.GetRequiredService<JiraDatabase>();
 
+        SetPhase("acquiring workgroup support file");
+        string? wgXmlPath = await services.GetRequiredService<WorkGroupSupportFileAcquirer>()
+            .EnsureAsync(ct).ConfigureAwait(false);
+
+        if (wgXmlPath is not null && db.TableIsEmpty("hl7_workgroups"))
+        {
+            SetPhase("indexing hl7 work groups");
+            services.GetRequiredService<Hl7WorkGroupIndexer>().Rebuild(wgXmlPath, ct);
+        }
+
         if (opts.ReloadFromCacheOnStartup || db.PrimaryContentTableIsEmpty())
         {
             SetPhase("rebuilding from cache");

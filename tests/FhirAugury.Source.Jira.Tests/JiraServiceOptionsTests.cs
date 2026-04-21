@@ -226,4 +226,49 @@ public class JiraServiceOptionsTests
     {
         Assert.Equal(5, new JiraProjectConfig { Key = "X" }.BaselineValue);
     }
+
+    [Fact]
+    public void Validate_AcceptsDefaultHl7WorkGroupSourceXmlFilename()
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FHIR" }]
+        };
+
+        Assert.Empty(opts.Validate());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_FlagsEmptyHl7WorkGroupSourceXmlFilename(string filename)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FHIR" }],
+            Hl7WorkGroupSourceXml = new WorkGroupSourceXmlOptions { Filename = filename }
+        };
+
+        List<string> errors = opts.Validate().ToList();
+        Assert.Single(errors);
+        Assert.Contains("Filename", errors[0]);
+    }
+
+    [Theory]
+    [InlineData("..\\evil.xml")]
+    [InlineData("../evil.xml")]
+    [InlineData("nested/file.xml")]
+    [InlineData("nested\\file.xml")]
+    public void Validate_FlagsHl7WorkGroupSourceXmlFilenameWithSeparators(string filename)
+    {
+        JiraServiceOptions opts = new()
+        {
+            Projects = [new JiraProjectConfig { Key = "FHIR" }],
+            Hl7WorkGroupSourceXml = new WorkGroupSourceXmlOptions { Filename = filename }
+        };
+
+        List<string> errors = opts.Validate().ToList();
+        Assert.Single(errors);
+        Assert.Contains("Filename", errors[0]);
+    }
 }

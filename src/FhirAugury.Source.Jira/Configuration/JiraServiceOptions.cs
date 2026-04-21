@@ -79,6 +79,13 @@ public class JiraServiceOptions
     public Bm25Options Bm25 { get; set; } = new();
 
     /// <summary>
+    /// Optional configuration for the HL7 work-group CodeSystem XML support
+    /// file. When unset, the acquirer logs a single info message and the
+    /// downstream work-group ingestion (FR-02) gracefully skips.
+    /// </summary>
+    public WorkGroupSourceXmlOptions Hl7WorkGroupSourceXml { get; set; } = new();
+
+    /// <summary>
     /// Validates project-level configuration. Returns a list of human-readable
     /// error messages; an empty list means the configuration is valid.
     /// </summary>
@@ -93,6 +100,19 @@ public class JiraServiceOptions
                 yield return $"Project '{p.Key}': StartDate must not be in the future (got {sd:yyyy-MM-dd}).";
             if (p.BaselineValue < 0 || p.BaselineValue > 10)
                 yield return $"Project '{p.Key}': BaselineValue must be between 0 and 10 (got {p.BaselineValue}).";
+        }
+
+        string? filename = Hl7WorkGroupSourceXml.Filename;
+        if (string.IsNullOrWhiteSpace(filename))
+        {
+            yield return "Hl7WorkGroupSourceXml.Filename must be non-empty.";
+        }
+        else if (filename.IndexOf(Path.DirectorySeparatorChar) >= 0
+                 || filename.IndexOf(Path.AltDirectorySeparatorChar) >= 0
+                 || filename.IndexOf('\0') >= 0
+                 || filename.Contains(".."))
+        {
+            yield return $"Hl7WorkGroupSourceXml.Filename '{filename}' must not contain path separators or '..'.";
         }
     }
 }

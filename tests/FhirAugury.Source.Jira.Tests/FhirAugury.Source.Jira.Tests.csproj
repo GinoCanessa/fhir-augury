@@ -23,4 +23,10 @@
     <ProjectReference Include="..\..\src\FhirAugury.Source.Jira\FhirAugury.Source.Jira.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="TestData\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

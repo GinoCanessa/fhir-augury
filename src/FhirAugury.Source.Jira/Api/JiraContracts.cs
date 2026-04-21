@@ -118,3 +118,32 @@ public record JiraLocalProcessingClearResponse(int RowsAffected);
 
 /// <summary>Update payload for <c>PUT /api/v1/projects/{key}</c>.</summary>
 public record JiraProjectUpdateRequest(bool Enabled, int? BaselineValue = null);
+
+/// <summary>
+/// Per-work-group projection returned by <c>GET /api/v1/work-groups</c>.
+/// Joins the Jira-side index (<c>jira_index_workgroups</c>) with the
+/// canonical HL7 catalog (<c>hl7_workgroups</c>). Canonical fields are
+/// nullable because some Jira free-text work groups have no HL7 match.
+/// </summary>
+public record JiraWorkGroupSummaryEntry
+{
+    public required string Name { get; init; }
+    public required int IssueCount { get; init; }
+    public int IssueCountSubmitted { get; init; }
+    public int IssueCountTriaged { get; init; }
+    public int IssueCountWaitingForInput { get; init; }
+    public int IssueCountNoChange { get; init; }
+    public int IssueCountChangeRequired { get; init; }
+    public int IssueCountPublished { get; init; }
+    public int IssueCountApplied { get; init; }
+    public int IssueCountDuplicate { get; init; }
+    public int IssueCountClosed { get; init; }
+    public int IssueCountBalloted { get; init; }
+    public int IssueCountWithdrawn { get; init; }
+    public int IssueCountDeferred { get; init; }
+    public int IssueCountOther { get; init; }
+    public string? WorkGroupCode { get; init; }
+    public string? WorkGroupDefinition { get; init; }
+    public string? WorkGroupNameClean { get; init; }
+    public bool? WorkGroupRetired { get; init; }
+}

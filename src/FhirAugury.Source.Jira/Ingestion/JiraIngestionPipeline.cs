@@ -26,6 +26,8 @@ public class JiraIngestionPipeline(
     IOptions<JiraServiceOptions> optionsAccessor,
     IIndexTracker tracker,
     IResponseCache cache,
+    WorkGroupSupportFileAcquirer workGroupSupportFileAcquirer,
+    Hl7WorkGroupIndexer hl7WorkGroupIndexer,
     ILogger<JiraIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly JiraServiceOptions _options = optionsAccessor.Value;
@@ -47,6 +49,10 @@ public class JiraIngestionPipeline(
         try
         {
             logger.LogInformation("Starting full ingestion");
+
+            string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
+            if (wgXmlPath is not null)
+                hl7WorkGroupIndexer.Rebuild(wgXmlPath, ct);
 
             // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
@@ -118,6 +124,10 @@ public class JiraIngestionPipeline(
 
         try
         {
+            string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
+            if (wgXmlPath is not null)
+                hl7WorkGroupIndexer.Rebuild(wgXmlPath, ct);
+
             // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
 
@@ -196,7 +206,10 @@ public class JiraIngestionPipeline(
         try
         {
             logger.LogInformation("Rebuilding database from cache");
+            string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
             database.ResetDatabase(ct);
+            if (wgXmlPath is not null)
+                hl7WorkGroupIndexer.Rebuild(wgXmlPath, ct);
 
             await RunCacheFileNameMigratorOnceAsync(ct);
 

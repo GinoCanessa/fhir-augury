@@ -14,6 +14,20 @@ public static class JiraCacheLayout
     /// <summary>Key prefix for JSON REST API responses (apitoken auth) within the jira source.</summary>
     public const string JsonPrefix = "json";
 
+    /// <summary>
+    /// Key prefix for miscellaneous support files (e.g. the HL7 work-group
+    /// CodeSystem XML) materialized into <c>cache/jira/_support/</c>.
+    /// The leading underscore avoids collision with project keys
+    /// (Jira project keys cannot start with an underscore).
+    /// </summary>
+    public const string SupportPrefix = "_support";
+
+    /// <summary>Builds a cache key for a support file by prepending the support prefix.</summary>
+    public static string SupportKey(string filename) => $"{SupportPrefix}/{filename}";
+
+    /// <summary>Returns the support sub-path prefix.</summary>
+    public static string SupportSubPath() => SupportPrefix;
+
     /// <summary>Builds a cache key for an XML file by prepending the XML prefix.</summary>
     public static string XmlKey(string filename) => $"{XmlPrefix}/{filename}";
 

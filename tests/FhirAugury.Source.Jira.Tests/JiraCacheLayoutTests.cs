@@ -52,4 +52,23 @@ public class JiraCacheLayoutTests
         string result = JiraCacheLayout.JsonKey("DayOf_2026-02-24-000.json");
         Assert.Equal("json/DayOf_2026-02-24-000.json", result);
     }
+
+    [Fact]
+    public void SupportKey_BuildsUnderscoreSupportPath()
+    {
+        string result = JiraCacheLayout.SupportKey("CodeSystem-hl7-work-group.xml");
+        Assert.Equal("_support/CodeSystem-hl7-work-group.xml", result);
+    }
+
+    [Fact]
+    public void SupportSubPath_ReturnsUnderscoreSupport()
+    {
+        Assert.Equal("_support", JiraCacheLayout.SupportSubPath());
+    }
+
+    [Fact]
+    public void SupportPrefix_StartsWithUnderscore()
+    {
+        Assert.StartsWith("_", JiraCacheLayout.SupportPrefix);
+    }
 }
