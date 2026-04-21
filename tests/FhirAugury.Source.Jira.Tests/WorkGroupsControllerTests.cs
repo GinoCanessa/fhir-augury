@@ -141,44 +141,97 @@ public class WorkGroupsControllerTests : IDisposable
     }
 
     [Fact]
-    public void Get_LookupByName_ReturnsIssues()
+    public void Get_LookupByName_QueryParam_ReturnsIssues()
     {
         SeedFhirWithOneIssue();
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            _controller.GetWorkGroupIssues("FHIR Infrastructure", limit: null, offset: null));
+            _controller.GetIssuesForWorkGroup(groupCode: null, groupName: "FHIR Infrastructure", limit: null, offset: null));
         List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
         Assert.Single(issues);
         Assert.Equal("FHIR-1", issues[0].Key);
     }
 
     [Fact]
-    public void Get_LookupByCode_ResolvesToCanonicalNameAndReturnsIssues()
+    public void Get_LookupByCode_PathParam_ResolvesToCanonicalNameAndReturnsIssues()
     {
         SeedFhirWithOneIssue();
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            _controller.GetWorkGroupIssues("fhir", limit: null, offset: null));
+            _controller.GetIssuesForWorkGroupCode("fhir", limit: null, offset: null));
         List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
         Assert.Single(issues);
         Assert.Equal("FHIR-1", issues[0].Key);
     }
 
     [Fact]
-    public void Get_LookupByNameClean_ResolvesToCanonicalNameAndReturnsIssues()
+    public void Get_LookupByCode_QueryParam_ResolvesToCanonicalNameAndReturnsIssues()
     {
         SeedFhirWithOneIssue();
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            _controller.GetWorkGroupIssues("FHIRInfrastructure", limit: null, offset: null));
+            _controller.GetIssuesForWorkGroup(groupCode: "fhir", groupName: null, limit: null, offset: null));
         List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
         Assert.Single(issues);
         Assert.Equal("FHIR-1", issues[0].Key);
     }
 
     [Fact]
-    public void Get_UnknownGroup_ReturnsEmptyList()
+    public void Get_LookupByNameClean_PathParam_ResolvesToCanonicalNameAndReturnsIssues()
     {
         SeedFhirWithOneIssue();
         OkObjectResult ok = Assert.IsType<OkObjectResult>(
-            _controller.GetWorkGroupIssues("does-not-exist", limit: null, offset: null));
+            _controller.GetIssuesForWorkGroupCode("FHIRInfrastructure", limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Single(issues);
+        Assert.Equal("FHIR-1", issues[0].Key);
+    }
+
+    [Fact]
+    public void Get_UnknownGroupCode_PathParam_ReturnsEmptyList()
+    {
+        SeedFhirWithOneIssue();
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroupCode("does-not-exist", limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public void Get_UnknownGroupCode_QueryParam_ReturnsEmptyList()
+    {
+        SeedFhirWithOneIssue();
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroup(groupCode: "does-not-exist", groupName: null, limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public void Get_NoFilter_ReturnsAllIssues()
+    {
+        SeedFhirWithOneIssue();
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraIssueRecord.Insert(conn, NewIssue("PC-1", "Patient Care"));
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroup(groupCode: null, groupName: null, limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Equal(2, issues.Count);
+    }
+
+    [Fact]
+    public void Get_BothCodeAndName_AndedTogether()
+    {
+        SeedFhirWithOneIssue();
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraIssueRecord.Insert(conn, NewIssue("PC-1", "Patient Care"));
+        }
+
+        // Code "fhir" resolves to "FHIR Infrastructure"; name "Patient Care"
+        // does not overlap, so the AND yields no results.
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroup(groupCode: "fhir", groupName: "Patient Care", limit: null, offset: null));
         List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
         Assert.Empty(issues);
     }

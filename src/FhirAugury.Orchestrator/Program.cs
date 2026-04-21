@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Scalar.AspNetCore;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -104,6 +105,16 @@ app.MapControllers();
 // orchestrator exposes its merged OpenAPI document via OpenApiController so
 // it can override /api/v1/openapi.{json,yaml}. The orchestrator's own
 // (unmerged) document is reachable at /api/v1/source/orchestrator/openapi.json.
+
+// ── Scalar UI ────────────────────────────────────────────────────
+// Interactive documentation / try-it UI served from /scalar/v1, backed by
+// the orchestrator's merged OpenAPI document. See docs/user/openapi.md for
+// details on how to access and use the UI.
+app.MapScalarApiReference("/scalar/v1", options =>
+{
+    options.WithTitle("FHIR Augury Orchestrator");
+    options.WithOpenApiRoutePattern("/api/v1/openapi.json");
+});
 
 app.Run();
 

@@ -25,6 +25,7 @@ builder.Services.AddHttpClient("source-direct");
 builder.Services.AddSingleton<OrchestratorClient>();
 builder.Services.AddSingleton<SourceDirectClient>();
 builder.Services.AddSingleton<ApiInvoker>();
+builder.Services.AddSingleton<OpenApiCatalogClient>();
 
 WebApplication app = builder.Build();
 

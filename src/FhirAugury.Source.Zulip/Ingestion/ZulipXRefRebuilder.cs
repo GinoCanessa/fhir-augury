@@ -14,11 +14,29 @@ namespace FhirAugury.Source.Zulip.Ingestion;
 /// </summary>
 public class ZulipXRefRebuilder(ZulipDatabase database, ILogger<ZulipXRefRebuilder> logger)
 {
+    // Serializes RebuildAll/IndexNewMessages across callers (this service is a singleton).
+    // Without this, the startup rebuild and a peer-notify "rebuild-xrefs" job can race,
+    // causing UNIQUE constraint failures when AggregateThreadTickets re-inserts Ids.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
     /// <summary>
     /// Rebuilds all cross-reference and ticket reference tables from scratch.
     /// Scans every message, runs all extractors, and rebuilds thread-ticket aggregation.
     /// </summary>
     public void RebuildAll(CancellationToken ct = default)
+    {
+        _gate.Wait(ct);
+        try
+        {
+            RebuildAllCore(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void RebuildAllCore(CancellationToken ct)
     {
         using SqliteConnection connection = database.OpenConnection();
 
@@ -66,6 +84,19 @@ public class ZulipXRefRebuilder(ZulipDatabase database, ILogger<ZulipXRefRebuild
     {
         if (newZulipMessageIds.Count == 0) return;
 
+        _gate.Wait(ct);
+        try
+        {
+            IndexNewMessagesCore(newZulipMessageIds, ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private void IndexNewMessagesCore(IReadOnlyList<int> newZulipMessageIds, CancellationToken ct)
+    {
         using SqliteConnection connection = database.OpenConnection();
 
         HashSet<(string StreamName, string Topic)> affectedThreads = [];

@@ -6,6 +6,7 @@
 @using Microsoft.JSInterop
 @inject OrchestratorClient Orchestrator
 @inject ApiInvoker Invoker
+@inject OpenApiCatalogClient OpenApi
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
 
@@ -136,6 +137,77 @@
                      style="max-height: 240px;"><code>@_preview.JsonBody</code></pre>
             }
         </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header fw-semibold d-flex align-items-center">
+            <button class="btn btn-link p-0 me-2 text-decoration-none" type="button"
+                    @onclick="ToggleOpenApiPanelAsync" aria-expanded="@_openApiOpen">
+                <i class="bi @(_openApiOpen ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                OpenAPI / schema
+            </button>
+            @if (_openApiInfo?.OperationId is not null)
+            {
+                <code class="ms-2 small text-body-secondary">@_openApiInfo.OperationId</code>
+            }
+            <button class="btn btn-sm btn-outline-secondary ms-auto" type="button"
+                    @onclick="RefreshOpenApiAsync" disabled="@_openApiLoading"
+                    title="Re-fetch openapi.json from this source">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+        @if (_openApiOpen)
+        {
+            <div class="card-body">
+                @if (_openApiLoading)
+                {
+                    <div class="text-body-secondary small">
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        Fetching <code>@(_selectedEndpoint?.Address.TrimEnd('/'))/api/v1/openapi.json</code>…
+                    </div>
+                }
+                else if (_openApiError is not null)
+                {
+                    <div class="text-danger small">@_openApiError</div>
+                }
+                else if (_openApiInfo is null)
+                {
+                    <div class="text-body-secondary small">
+                        No matching operation found for
+                        <code>@_descriptor.Method.Method @_descriptor.PathTemplate</code> in this source's
+                        OpenAPI document.
+                    </div>
+                }
+                else
+                {
+                    @if (!string.IsNullOrEmpty(_openApiInfo.Summary))
+                    {
+                        <div class="mb-2"><strong>Summary:</strong> @_openApiInfo.Summary</div>
+                    }
+                    @if (!string.IsNullOrEmpty(_openApiInfo.Description))
+                    {
+                        <div class="mb-2 small text-body-secondary">@_openApiInfo.Description</div>
+                    }
+                    @if (!string.IsNullOrEmpty(_openApiInfo.RequestBodyJson))
+                    {
+                        <div class="fw-semibold small mb-1">Request body</div>
+                        <pre class="bg-body-secondary border rounded p-2 mb-2 small overflow-auto"
+                             style="max-height: 320px;"><code>@_openApiInfo.RequestBodyJson</code></pre>
+                    }
+                    @if (!string.IsNullOrEmpty(_openApiInfo.ParametersJson))
+                    {
+                        <div class="fw-semibold small mb-1">Parameters</div>
+                        <pre class="bg-body-secondary border rounded p-2 mb-0 small overflow-auto"
+                             style="max-height: 240px;"><code>@_openApiInfo.ParametersJson</code></pre>
+                    }
+                    @if (string.IsNullOrEmpty(_openApiInfo.RequestBodyJson)
+                        && string.IsNullOrEmpty(_openApiInfo.ParametersJson))
+                    {
+                        <div class="text-body-secondary small">No parameters or request body documented.</div>
+                    }
+                }
+            </div>
+        }
     </div>
 }
 
@@ -332,6 +404,12 @@
 
     private bool _restoredFromStorage;
 
+    // OpenAPI / schema panel state
+    private bool _openApiOpen;
+    private bool _openApiLoading;
+    private string? _openApiError;
+    private OpenApiOperationInfo? _openApiInfo;
+
     protected override Task OnInitializedAsync()
     {
         IConfigurationSection sourcesSection = Configuration.GetSection("DevUi:Sources");
@@ -428,6 +506,7 @@
         _preview = null;
         _previewError = null;
         ClearResult();
+        ResetOpenApiPanel();
         try { await JS.InvokeVoidAsync("sessionStorage.setItem", "apitest.source", SelectedSource); }
         catch { }
     }
@@ -437,11 +516,62 @@
         _descriptor = _catalog.FirstOrDefault(d => d.Id == SelectedApiId);
         _values = _descriptor is null ? new(StringComparer.OrdinalIgnoreCase) : SeedValues(_descriptor);
         ClearResult();
+        ResetOpenApiPanel();
         if (_descriptor is not null)
             await RestoreValuesAsync();
         RebuildPreview();
+        if (_openApiOpen && _descriptor is not null)
+            await LoadOpenApiAsync(forceRefresh: false);
         try { await JS.InvokeVoidAsync("sessionStorage.setItem", "apitest.api", SelectedApiId); }
         catch { }
+    }
+
+    private void ResetOpenApiPanel()
+    {
+        _openApiInfo = null;
+        _openApiError = null;
+        _openApiLoading = false;
+    }
+
+    private async Task ToggleOpenApiPanelAsync()
+    {
+        _openApiOpen = !_openApiOpen;
+        if (_openApiOpen && _descriptor is not null && _openApiInfo is null && _openApiError is null)
+        {
+            await LoadOpenApiAsync(forceRefresh: false);
+        }
+    }
+
+    private async Task RefreshOpenApiAsync()
+    {
+        OpenApi.Clear();
+        await LoadOpenApiAsync(forceRefresh: true);
+    }
+
+    private async Task LoadOpenApiAsync(bool forceRefresh)
+    {
+        if (_descriptor is null || _selectedEndpoint is null) return;
+        _openApiLoading = true;
+        _openApiError = null;
+        _openApiInfo = null;
+        StateHasChanged();
+        try
+        {
+            string clientName = string.Equals(SelectedSource, SourceApiCatalog.Orchestrator,
+                StringComparison.OrdinalIgnoreCase) ? "orchestrator" : "source-direct";
+            System.Text.Json.JsonDocument doc = await OpenApi.GetOrFetchAsync(clientName, _selectedEndpoint.Address);
+            _openApiInfo = OpenApiCatalogClient.FindOperation(doc, _descriptor.PathTemplate, _descriptor.Method);
+        }
+        catch (Exception ex)
+        {
+            _openApiError = $"Could not load OpenAPI: {ex.Message}";
+        }
+        finally
+        {
+            _openApiLoading = false;
+            StateHasChanged();
+        }
+        _ = forceRefresh;
     }
 
     private static Dictionary<string, string?> SeedValues(ApiEndpointDescriptor d)
