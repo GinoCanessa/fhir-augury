@@ -1,4 +1,5 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -21,7 +22,8 @@ public class IngestionController(
     ZulipIndexer indexer,
     ZulipXRefRebuilder xrefRebuilder,
     IIndexTracker indexTracker,
-    IOptions<ZulipServiceOptions> optsAccessor) : ControllerBase
+    IOptions<ZulipServiceOptions> optsAccessor,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpPost("ingest")]
     public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, CancellationToken cancellationToken)
@@ -183,6 +185,16 @@ public class IngestionController(
     [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(Acknowledged: true));
+        }
+
         workQueue.Enqueue(ct =>
         {
             xrefRebuilder.RebuildAll(ct);

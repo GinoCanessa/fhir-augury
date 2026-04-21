@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -27,7 +28,8 @@ public class IngestionController(
     GitHubFileContentIndexer fileContentIndexer,
     ArtifactFileMapper artifactFileMapper,
     IIndexTracker indexTracker,
-    IOptions<GitHubServiceOptions> optionsAccessor) : ControllerBase
+    IOptions<GitHubServiceOptions> optionsAccessor,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpPost("ingest")]
     public async Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken cancellationToken)
@@ -209,6 +211,16 @@ public class IngestionController(
     [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] Common.Api.PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(Acknowledged: true));
+        }
+
         GitHubServiceOptions options = optionsAccessor.Value;
         workQueue.Enqueue(ct =>
         {

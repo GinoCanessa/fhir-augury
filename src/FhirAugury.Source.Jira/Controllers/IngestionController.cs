@@ -1,4 +1,5 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Jira.Configuration;
@@ -22,7 +23,8 @@ public class IngestionController(
     JiraXRefRebuilder xrefRebuilder,
     JiraIndexer indexer,
     IOptions<JiraServiceOptions> optionsAccessor,
-    IIndexTracker indexTracker) : ControllerBase
+    IIndexTracker indexTracker,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     private readonly JiraServiceOptions _options = optionsAccessor.Value;
 
@@ -130,6 +132,16 @@ public class IngestionController(
     [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(true));
+        }
+
         workQueue.Enqueue(ct =>
         {
             xrefRebuilder.RebuildAll(ct);
