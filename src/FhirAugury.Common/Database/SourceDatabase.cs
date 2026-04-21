@@ -27,11 +27,16 @@ public abstract class SourceDatabase : IDisposable
         Logger = logger;
 
         SqliteOpenMode mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate;
+        // Use the default (private) cache. Shared cache uses table-level locks and
+        // returns SQLITE_LOCKED (error 6) when another in-process connection is
+        // reading a table the writer wants to modify. SQLITE_LOCKED is NOT retried
+        // by PRAGMA busy_timeout, so shared cache + WAL surfaces "database table is
+        // locked" errors under normal concurrency. WAL with private caches provides
+        // proper non-blocking reader/writer concurrency.
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
             Mode = mode,
-            Cache = SqliteCacheMode.Shared,
         }.ToString();
     }
 
