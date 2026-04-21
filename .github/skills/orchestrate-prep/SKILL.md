@@ -74,21 +74,40 @@ insensitive). Reject the run with a clear error if no match is found.
 
 ## Jira-source operations used
 
-All operations are reached via the `fhir-augury-cli` skill. Prefer the named
-convenience commands; use `call` for the local-processing endpoints (which
-are not exposed as top-level CLI commands).
+All operations are reached via the `fhir-augury-cli` skill. Prefer the typed
+`jira-local-processing` family (added in the 2026-04 sync); the generic
+`call` form is documented as a fallback only.
 
-| Purpose | CLI form |
-|---------|----------|
+| Purpose | CLI form (primary, typed) |
+|---------|---------------------------|
 | Health check | `{"command":"services","action":"health"}` |
 | List work groups (with `code`/`name`/`nameClean`/`issueCount`) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
-| Draw a random unprocessed ticket | `{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...filter...}}` |
-| Mark a ticket processed locally | `{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
-| Inspect/clear processed flags (admin) | `local-processing.get-tickets` / `local-processing.clear-all-processed` |
+| Draw a random unprocessed ticket | `{"command":"jira-local-processing","action":"random-ticket","body":{...filter...}}` |
+| Mark a ticket processed locally | `{"command":"jira-local-processing","action":"set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
+| Inspect processed flags (admin) | `{"command":"jira-local-processing","action":"tickets","body":{...filter...}}` |
+| Clear all processed flags (admin) | `{"command":"jira-local-processing","action":"clear-all-processed"}` |
 
-Note on operation IDs: the resolver matches `Jira.local-processing.<name>`
-first, then falls back to `local-processing.<name>`. Either form works; the
-unqualified form above is the recommended default.
+Valid `action` values for `jira-local-processing` (per
+`src/FhirAugury.Cli/Dispatch/Handlers/JiraLocalProcessingHandler.cs`):
+`tickets`, `random-ticket`, `set-processed`, `clear-all-processed`.
+
+Fallback (older `call` form, still works): the resolver matches
+`Jira.local-processing.<name>` first, then falls back to
+`local-processing.<name>` — e.g.,
+`{"command":"call","source":"jira","operation":"local-processing.get-random-ticket","body":{...}}`.
+Use only when running against a build that predates the typed family.
+
+### Pre-run ingestion (optional)
+
+If the bulk run needs fresh Jira data for a single project, scope an
+ingest with the `jiraProject` parameter before starting:
+
+```bash
+fhir-augury-cli --json '{"command":"ingest","action":"trigger","sources":["jira"],"jiraProject":"FHIR"}'
+```
+
+Only the Jira leg of the fan-out receives the parameter; other sources
+ingest normally. Omit `jiraProject` to ingest every configured project.
 
 ### Random-draw filter shape
 
@@ -248,10 +267,11 @@ When a sub-agent completes:
 1. **Read the agent result** to confirm success and that the report file
    exists at the expected path.
 2. **Mark the ticket processed locally** by calling
-   `local-processing.set-processed` with `processedLocally: true`:
+   `jira-local-processing` with `action: "set-processed"` and
+   `processedLocally: true`:
 
    ```bash
-   fhir-augury-cli --json '{"command":"call","source":"jira","operation":"local-processing.set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}'
+   fhir-augury-cli --json '{"command":"jira-local-processing","action":"set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}'
    ```
 
    Only mark on **success**. On failure (Step 8), leave the flag unset so
@@ -295,9 +315,10 @@ There is **no local persistent state**. Resume is automatic:
   whatever the Jira source currently considers unprocessed.
 
 If you need to clear processed flags (e.g., to re-run a batch from
-scratch), use `local-processing.clear-all-processed` — but be aware that
-this clears the flag for **every** ticket, not just the ones in your
-current scope.
+scratch), use
+`{"command":"jira-local-processing","action":"clear-all-processed"}` —
+but be aware that this clears the flag for **every** ticket, not just
+the ones in your current scope.
 
 ## Example Invocation
 
@@ -314,11 +335,12 @@ The orchestrator should:
 3. After confirmation, ensure the output and working directories exist
    (cross-platform).
 4. Loop: draw a random unprocessed ticket via
-   `local-processing.get-random-ticket` (with `processedLocally:false`,
-   the configured statuses/projects, and any user filters), keeping at
-   most 4 sub-agents in flight; dedupe via the `inFlight` set.
-5. On each sub-agent success, call `local-processing.set-processed` with
-   `processedLocally:true`.
+   `jira-local-processing action=random-ticket` (with
+   `processedLocally:false`, the configured statuses/projects, and any
+   user filters), keeping at most 4 sub-agents in flight; dedupe via the
+   `inFlight` set.
+5. On each sub-agent success, call `jira-local-processing
+   action=set-processed` with `processedLocally:true`.
 6. Continue until the random draw returns 404 (or the optional
    max-tickets cap is reached); report progress as agents complete.
 
