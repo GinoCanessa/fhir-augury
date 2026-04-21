@@ -10,7 +10,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\brianpos-fsh-processor\fsh-processor\fsh-processor.csproj" />
+    <ProjectReference Include="..\..\..\brianpos-fsh-processor\fsh-processor\Hl7.FhirShorthand.Serialization.csproj" />
   </ItemGroup>
 
 </Project>

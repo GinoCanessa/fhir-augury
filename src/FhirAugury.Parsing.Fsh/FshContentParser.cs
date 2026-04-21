@@ -1,5 +1,25 @@
-using fsh_processor;
-using fsh_processor.Models;
+using FshParser = Hl7.FhirShorthand.Serialization.FshParser;
+using ParseResult = Hl7.FhirShorthand.Serialization.Models.ParseResult;
+using FshDoc = Hl7.FhirShorthand.Serialization.Models.FshDoc;
+using FshEntity = Hl7.FhirShorthand.Serialization.Models.FshEntity;
+using FshProfile = Hl7.FhirShorthand.Serialization.Models.Profile;
+using FshExtension = Hl7.FhirShorthand.Serialization.Models.Extension;
+using FshResource = Hl7.FhirShorthand.Serialization.Models.Resource;
+using FshLogical = Hl7.FhirShorthand.Serialization.Models.Logical;
+using FshCodeSystem = Hl7.FhirShorthand.Serialization.Models.CodeSystem;
+using FshValueSet = Hl7.FhirShorthand.Serialization.Models.ValueSet;
+using FshInstance = Hl7.FhirShorthand.Serialization.Models.Instance;
+using FshRule = Hl7.FhirShorthand.Serialization.Models.FshRule;
+using FshCaretValueRule = Hl7.FhirShorthand.Serialization.Models.CaretValueRule;
+using FshCsRule = Hl7.FhirShorthand.Serialization.Models.CsRule;
+using FshCsCaretValueRule = Hl7.FhirShorthand.Serialization.Models.CsCaretValueRule;
+using FshVsRule = Hl7.FhirShorthand.Serialization.Models.VsRule;
+using FshVsCaretValueRule = Hl7.FhirShorthand.Serialization.Models.VsCaretValueRule;
+using FshValue = Hl7.FhirShorthand.Serialization.Models.FshValue;
+using FshStringValue = Hl7.FhirShorthand.Serialization.Models.StringValue;
+using FshMetadata = Hl7.FhirShorthand.Serialization.Models.Metadata;
+using FshCode = Hl7.FhirShorthand.Serialization.Models.Code;
+using FshNameValue = Hl7.FhirShorthand.Serialization.Models.NameValue;
 
 namespace FhirAugury.Parsing.Fsh;
 
@@ -49,7 +69,7 @@ public static class FshContentParser
     {
         return entity switch
         {
-            Profile p => new FshDefinitionInfo(
+            FshProfile p => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.Profile,
                 Name: p.Name,
                 Id: p.Id?.Value,
@@ -64,7 +84,7 @@ public static class FshContentParser
                 StartLine: p.Position?.StartLine ?? 0,
                 EndLine: p.Position?.EndLine ?? 0),
 
-            fsh_processor.Models.Extension e => new FshDefinitionInfo(
+            FshExtension e => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.Extension,
                 Name: e.Name,
                 Id: e.Id,
@@ -79,7 +99,7 @@ public static class FshContentParser
                 StartLine: e.Position?.StartLine ?? 0,
                 EndLine: e.Position?.EndLine ?? 0),
 
-            fsh_processor.Models.Resource r => new FshDefinitionInfo(
+            FshResource r => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.Resource,
                 Name: r.Name,
                 Id: r.Id,
@@ -94,7 +114,7 @@ public static class FshContentParser
                 StartLine: r.Position?.StartLine ?? 0,
                 EndLine: r.Position?.EndLine ?? 0),
 
-            Logical l => new FshDefinitionInfo(
+            FshLogical l => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.Logical,
                 Name: l.Name,
                 Id: l.Id,
@@ -109,7 +129,7 @@ public static class FshContentParser
                 StartLine: l.Position?.StartLine ?? 0,
                 EndLine: l.Position?.EndLine ?? 0),
 
-            fsh_processor.Models.CodeSystem cs => new FshDefinitionInfo(
+            FshCodeSystem cs => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.CodeSystem,
                 Name: cs.Name,
                 Id: cs.Id,
@@ -124,7 +144,7 @@ public static class FshContentParser
                 StartLine: cs.Position?.StartLine ?? 0,
                 EndLine: cs.Position?.EndLine ?? 0),
 
-            fsh_processor.Models.ValueSet vs => new FshDefinitionInfo(
+            FshValueSet vs => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.ValueSet,
                 Name: vs.Name,
                 Id: vs.Id,
@@ -139,7 +159,7 @@ public static class FshContentParser
                 StartLine: vs.Position?.StartLine ?? 0,
                 EndLine: vs.Position?.EndLine ?? 0),
 
-            Instance i when IsDefinitionalInstance(i) => new FshDefinitionInfo(
+            FshInstance i when IsDefinitionalInstance(i) => new FshDefinitionInfo(
                 Kind: FshDefinitionKind.DefinitionalInstance,
                 Name: i.Name,
                 Id: null,
@@ -163,7 +183,7 @@ public static class FshContentParser
     // IsDefinitionalInstance
     // ────────────────────────────────────────────────────────
 
-    private static bool IsDefinitionalInstance(Instance instance)
+    private static bool IsDefinitionalInstance(FshInstance instance)
     {
         if (instance.Usage is not "#definition")
             return false;
@@ -183,7 +203,7 @@ public static class FshContentParser
     {
         foreach (FshRule rule in rules)
         {
-            if (rule is CaretValueRule caretRule
+            if (rule is FshCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractStringFromValue(caretRule.Value);
@@ -196,7 +216,7 @@ public static class FshContentParser
     {
         foreach (FshRule rule in rules)
         {
-            if (rule is CaretValueRule caretRule
+            if (rule is FshCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractCodeFromValue(caretRule.Value);
@@ -209,11 +229,11 @@ public static class FshContentParser
     // Caret rule extraction from CS rules (CodeSystem)
     // ────────────────────────────────────────────────────────
 
-    private static string? ExtractCaretRuleStringFromCsRules(IEnumerable<CsRule> rules, string caretPath)
+    private static string? ExtractCaretRuleStringFromCsRules(IEnumerable<FshCsRule> rules, string caretPath)
     {
-        foreach (CsRule rule in rules)
+        foreach (FshCsRule rule in rules)
         {
-            if (rule is CsCaretValueRule caretRule
+            if (rule is FshCsCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractStringFromValue(caretRule.Value);
@@ -222,11 +242,11 @@ public static class FshContentParser
         return null;
     }
 
-    private static string? ExtractCaretRuleCodeFromCsRules(IEnumerable<CsRule> rules, string caretPath)
+    private static string? ExtractCaretRuleCodeFromCsRules(IEnumerable<FshCsRule> rules, string caretPath)
     {
-        foreach (CsRule rule in rules)
+        foreach (FshCsRule rule in rules)
         {
-            if (rule is CsCaretValueRule caretRule
+            if (rule is FshCsCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractCodeFromValue(caretRule.Value);
@@ -239,11 +259,11 @@ public static class FshContentParser
     // Caret rule extraction from VS rules (ValueSet)
     // ────────────────────────────────────────────────────────
 
-    private static string? ExtractCaretRuleStringFromVsRules(IEnumerable<VsRule> rules, string caretPath)
+    private static string? ExtractCaretRuleStringFromVsRules(IEnumerable<FshVsRule> rules, string caretPath)
     {
-        foreach (VsRule rule in rules)
+        foreach (FshVsRule rule in rules)
         {
-            if (rule is VsCaretValueRule caretRule
+            if (rule is FshVsCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractStringFromValue(caretRule.Value);
@@ -252,11 +272,11 @@ public static class FshContentParser
         return null;
     }
 
-    private static string? ExtractCaretRuleCodeFromVsRules(IEnumerable<VsRule> rules, string caretPath)
+    private static string? ExtractCaretRuleCodeFromVsRules(IEnumerable<FshVsRule> rules, string caretPath)
     {
-        foreach (VsRule rule in rules)
+        foreach (FshVsRule rule in rules)
         {
-            if (rule is VsCaretValueRule caretRule
+            if (rule is FshVsCaretValueRule caretRule
                 && caretRule.CaretPath == caretPath)
             {
                 return ExtractCodeFromValue(caretRule.Value);
@@ -273,10 +293,10 @@ public static class FshContentParser
     {
         return value switch
         {
-            StringValue sv => sv.Value,
-            Metadata m => m.Value,
-            Code c => c.Value,
-            NameValue nv => nv.Value,
+            FshStringValue sv => sv.Value,
+            FshMetadata m => m.Value,
+            FshCode c => c.Value,
+            FshNameValue nv => nv.Value,
             _ => null,
         };
     }
@@ -285,10 +305,10 @@ public static class FshContentParser
     {
         return value switch
         {
-            Code c => c.Value.TrimStart('#'),
-            StringValue sv => sv.Value,
-            Metadata m => m.Value,
-            NameValue nv => nv.Value,
+            FshCode c => c.Value.TrimStart('#'),
+            FshStringValue sv => sv.Value,
+            FshMetadata m => m.Value,
+            FshNameValue nv => nv.Value,
             _ => null,
         };
     }
