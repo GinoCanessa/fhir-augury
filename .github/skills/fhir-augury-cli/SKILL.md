@@ -52,7 +52,7 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `refers-to` | Outgoing cross-references from an item |
 | `referred-by` | Incoming cross-references to an item |
 | `cross-referenced` | Both directions of cross-reference for a value |
-| `query-jira` | Structured Jira query (statuses, work groups, dates, …) |
+| `query-jira` | Structured Jira query. Supported filter fields: `query`, `statuses`, `resolutions`, `projects`, `excludeProjects`, `workGroups`, `specifications`, `types`, `priorities`, `labels`, `assignees`, `reporters`, `inPersonRequesters`, `createdAfter`, `createdBefore`, `updatedAfter`, `updatedBefore`, `sortBy`, `sortOrder`, `limit`, `offset`. |
 | `query-zulip` | Structured Zulip query (streams, topics, senders, …) |
 | `list-jira-dimension` | Distinct values for a Jira dimension (work-group, status, …) |
 | `ingest` | Trigger / control source ingestion. Actions: `trigger`, `status`, `reingest`, `reindex` (the latter two were renamed from `rebuild`/`index` in the 2026-04 sync; no aliases). Accepts `jiraProject` to scope a Jira run to one project. |

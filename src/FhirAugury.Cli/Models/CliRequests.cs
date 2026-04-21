@@ -77,6 +77,15 @@ public sealed class QueryJiraRequest : CliRequest
     [JsonPropertyName("statuses")]
     public string[]? Statuses { get; set; }
 
+    [JsonPropertyName("resolutions")]
+    public string[]? Resolutions { get; set; }
+
+    [JsonPropertyName("projects")]
+    public string[]? Projects { get; set; }
+
+    [JsonPropertyName("excludeProjects")]
+    public string[]? ExcludeProjects { get; set; }
+
     [JsonPropertyName("workGroups")]
     public string[]? WorkGroups { get; set; }
 
@@ -109,6 +118,9 @@ public sealed class QueryJiraRequest : CliRequest
 
     [JsonPropertyName("reporters")]
     public string[]? Reporters { get; set; }
+
+    [JsonPropertyName("inPersonRequesters")]
+    public string[]? InPersonRequesters { get; set; }
 
     [JsonPropertyName("createdAfter")]
     public string? CreatedAfter { get; set; }

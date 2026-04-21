@@ -13,6 +13,9 @@ public static class QueryJiraHandler
         {
             query = request.Query ?? "",
             statuses = request.Statuses,
+            resolutions = request.Resolutions,
+            projects = request.Projects,
+            excludeProjects = request.ExcludeProjects,
             workGroups = request.WorkGroups,
             specifications = request.Specifications,
             types = request.Types,
@@ -20,6 +23,7 @@ public static class QueryJiraHandler
             labels = request.Labels,
             assignees = request.Assignees,
             reporters = request.Reporters,
+            inPersonRequesters = request.InPersonRequesters,
             sortBy = request.SortBy,
             sortOrder = request.SortOrder,
             limit = request.Limit,
