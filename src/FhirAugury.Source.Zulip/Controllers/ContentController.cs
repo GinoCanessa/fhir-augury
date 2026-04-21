@@ -365,7 +365,7 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         });
     }
 
-    [HttpGet("item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public IActionResult GetItem(
         [FromRoute] string source,
         [FromRoute] string id,

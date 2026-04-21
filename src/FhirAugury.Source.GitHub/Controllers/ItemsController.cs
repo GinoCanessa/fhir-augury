@@ -8,6 +8,20 @@ using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Source.GitHub.Controllers;
 
+/// <summary>
+/// GitHub items endpoints. Unlike Jira / Zulip / Confluence (which use the
+/// id-first layout <c>items/{id}/{action}</c>), this controller deliberately
+/// uses an <b>action-first</b> layout — <c>items/related/{**key}</c>,
+/// <c>items/snapshot/{**key}</c>, <c>items/content/{**key}</c>, etc.
+/// <para>
+/// Rationale: GitHub keys (e.g. <c>owner/repo#123</c> or
+/// <c>owner/repo:path/to/file.json</c>) contain embedded slashes. Putting
+/// the action segment <em>before</em> the catch-all key removes ambiguity
+/// in route matching and lets every sub-resource share a single
+/// <c>{**key}</c> token without per-action template tweaks. This inversion
+/// is intentional and is preserved across the route-alignment work.
+/// </para>
+/// </summary>
 [ApiController]
 [Route("api/v1/items")]
 public class ItemsController(GitHubDatabase db) : ControllerBase

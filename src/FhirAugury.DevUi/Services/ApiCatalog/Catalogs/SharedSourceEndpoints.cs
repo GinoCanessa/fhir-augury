@@ -81,7 +81,7 @@ public static class SharedSourceEndpoints
             DisplayName: "Get Item",
             Group: "Content",
             Method: HttpMethod.Get,
-            PathTemplate: "api/v1/content/item/{source}/{*id}",
+            PathTemplate: "api/v1/content/item/{source}/{**id}",
             Parameters:
             [
                 new ApiParameter("source", ApiParameterKind.Path, Required: true),

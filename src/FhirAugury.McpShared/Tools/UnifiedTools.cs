@@ -66,6 +66,7 @@ public static class UnifiedTools
         IHttpClientFactory httpClientFactory,
         [Description("Comma-separated sources to sync (empty for all)")] string? sources = null,
         [Description("Sync type: incremental, full, rebuild (default incremental)")] string type = "incremental",
+        [Description("Optional Jira project key (forwarded only to the Jira leg)")] string? jiraProject = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -74,6 +75,8 @@ public static class UnifiedTools
             StringBuilder url = new($"/api/v1/ingest/trigger?type={Uri.EscapeDataString(type)}");
             if (!string.IsNullOrWhiteSpace(sources))
                 url.Append($"&sources={Uri.EscapeDataString(sources)}");
+            if (!string.IsNullOrWhiteSpace(jiraProject))
+                url.Append($"&jira-project={Uri.EscapeDataString(jiraProject)}");
 
             JsonElement root = await PostJsonAsync(client, url.ToString(), cancellationToken);
 
@@ -203,6 +206,16 @@ public static class UnifiedTools
         string bodyJson = JsonSerializer.Serialize(body, CamelCaseOptions);
         using StringContent content = new(bodyJson, Encoding.UTF8, "application/json");
         using HttpResponseMessage response = await client.PostAsync(url, content, ct);
+        response.EnsureSuccessStatusCode();
+        string json = await response.Content.ReadAsStringAsync(ct);
+        using JsonDocument doc = JsonDocument.Parse(json);
+        return doc.RootElement.Clone();
+    }
+
+    internal static async Task<JsonElement> PutJsonBodyAsync(HttpClient client, string url, string? bodyJson, CancellationToken ct)
+    {
+        using StringContent content = new(bodyJson ?? "{}", Encoding.UTF8, "application/json");
+        using HttpResponseMessage response = await client.PutAsync(url, content, ct);
         response.EnsureSuccessStatusCode();
         string json = await response.Content.ReadAsStringAsync(ct);
         using JsonDocument doc = JsonDocument.Parse(json);

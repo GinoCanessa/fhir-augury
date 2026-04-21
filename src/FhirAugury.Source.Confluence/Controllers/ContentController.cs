@@ -13,10 +13,10 @@ using Microsoft.Extensions.Options;
 namespace FhirAugury.Source.Confluence.Controllers;
 
 [ApiController]
-[Route("api/v1")]
+[Route("api/v1/content")]
 public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceServiceOptions> optionsAccessor) : ControllerBase
 {
-    [HttpGet("content/refers-to")]
+    [HttpGet("refers-to")]
     public IActionResult RefersTo([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -38,7 +38,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         });
     }
 
-    [HttpGet("content/referred-by")]
+    [HttpGet("referred-by")]
     public IActionResult ReferredBy([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -60,7 +60,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         });
     }
 
-    [HttpGet("content/cross-referenced")]
+    [HttpGet("cross-referenced")]
     public IActionResult CrossReferenced([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -95,7 +95,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         });
     }
 
-    [HttpGet("content/search")]
+    [HttpGet("search")]
     public IActionResult Search([FromQuery] string? values, [FromQuery] string? sources, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(values))
@@ -177,7 +177,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         });
     }
 
-    [HttpGet("content/item/{source}/{**id}")]
+    [HttpGet("item/{source}/{**id}")]
     public IActionResult GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -503,7 +503,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
 
     // ── Keyword endpoints ────────────────────────────────────────
 
-    [HttpGet("content/keywords/{source}/{**id}")]
+    [HttpGet("keywords/{source}/{**id}")]
     public IActionResult GetKeywords(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] string? keywordType, [FromQuery] int? limit)
@@ -528,7 +528,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
         });
     }
 
-    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    [HttpGet("related-by-keyword/{source}/{**id}")]
     public IActionResult RelatedByKeyword(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] double? minScore, [FromQuery] string? keywordType, [FromQuery] int? limit)

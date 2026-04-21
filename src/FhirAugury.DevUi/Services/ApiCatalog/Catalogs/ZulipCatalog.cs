@@ -48,6 +48,14 @@ public static class ZulipCatalog
                     new ApiParameter("id", ApiParameterKind.Path, Required: true),
                     new ApiParameter("format", ApiParameterKind.Query, Required: false),
                 ]),
+            new ApiEndpointDescriptor("items.comments", "Comments (stub)", "Items",
+                HttpMethod.Get, "api/v1/items/{id}/comments",
+                [new ApiParameter("id", ApiParameterKind.Path, Required: true)],
+                Description: "Always returns []. Zulip has no first-class comment concept; stub for shape parity with Jira."),
+            new ApiEndpointDescriptor("items.links", "Links (stub)", "Items",
+                HttpMethod.Get, "api/v1/items/{id}/links",
+                [new ApiParameter("id", ApiParameterKind.Path, Required: true)],
+                Description: "Always returns []. Zulip has no typed inter-item links; stub for shape parity with Jira."),
 
             // Messages
             new ApiEndpointDescriptor("messages.get", "Get message by id", "Messages",

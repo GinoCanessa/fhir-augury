@@ -226,7 +226,7 @@ public class ContentController(
         });
     }
 
-    [HttpGet("item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public async Task<IActionResult> GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -253,7 +253,7 @@ public class ContentController(
         }
     }
 
-    [HttpGet("keywords/{source}/{*id}")]
+    [HttpGet("keywords/{source}/{**id}")]
     public async Task<IActionResult> GetKeywords(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -279,7 +279,7 @@ public class ContentController(
         }
     }
 
-    [HttpGet("related-by-keyword/{source}/{*id}")]
+    [HttpGet("related-by-keyword/{source}/{**id}")]
     public async Task<IActionResult> RelatedByKeyword(
         [FromRoute] string source,
         [FromRoute] string id,

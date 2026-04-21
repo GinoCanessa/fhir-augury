@@ -2,8 +2,8 @@
 
 Every FHIR Augury service exposes its HTTP surface through an OpenAPI 3.1
 document. The orchestrator additionally publishes a **merged** document that
-describes its own endpoints plus every enabled source service, remapped under
-`/api/v1/source/{name}/...`.
+describes its own endpoints plus every enabled source service, exposed
+through typed per-source proxies under `/api/v1/{name}/...`.
 
 The orchestrator ships with a [Scalar](https://scalar.com/) documentation UI
 that renders the merged document and lets you execute requests against a live
@@ -32,10 +32,11 @@ and execute the call directly.
 ### What the UI shows you
 
 - **Merged schema** — the orchestrator routes every source's `openapi.json`
-  under `/api/v1/source/{name}/…`, so a single page documents all enabled
-  sources plus the orchestrator's own routes.
+  under `/api/v1/{name}/…` (one typed proxy controller per source), so a
+  single page documents all enabled sources plus the orchestrator's own
+  routes.
 - **Request body shapes** — for `POST` endpoints such as
-  `/api/v1/source/jira/query`, the UI displays the exact JSON schema expected
+  `/api/v1/jira/query`, the UI displays the exact JSON schema expected
   by the `body` parameter, including nested filter objects and enumerations.
 - **Try it** — the UI issues requests from your browser to the orchestrator
   at the same origin, so no CORS configuration or API keys are required for
@@ -50,10 +51,9 @@ a client generator or a different UI), the orchestrator exposes:
 - `GET /api/v1/openapi.yaml` — merged YAML
 - `GET /api/v1/openapi.json?include=internal` — include `internal` operations
   (default hides them)
-- `GET /api/v1/source/{name}/openapi.json` — passthrough to a single source's
-  document
 - `GET /api/v1/source/orchestrator/openapi.json` — orchestrator-only document
-  (not merged)
+  (not merged). This is the only surviving `/api/v1/source/...` route; the
+  generic source proxy was removed in the 2026-04 sync.
 
 Each source service (`source-jira`, `source-zulip`, `source-github`,
 `source-confluence`) also exposes its own unmerged document at
@@ -88,4 +88,4 @@ provides the richer schema view and auto-generated client snippets.
   health.
 - **Requests from Scalar fail with CORS / auth errors** — ensure you're
   browsing Scalar from the same origin the orchestrator is listening on; the
-  generic source proxy strips `Authorization` and `Cookie` headers by design.
+  typed source proxies strip `Authorization` and `Cookie` headers by design.

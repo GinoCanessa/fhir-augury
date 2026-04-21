@@ -447,7 +447,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
         });
     }
 
-    [HttpGet("item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public IActionResult GetItem(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] bool? includeContent, [FromQuery] bool? includeComments, [FromQuery] bool? includeSnapshot)

@@ -59,13 +59,16 @@ public class OpenApiMergerPathPrefixTests
             {
                 continue;
             }
-            Assert.Matches(@"^/api/v1/source/[a-z][a-z0-9-]*/", entry.Key);
+            // Source paths must use the typed-proxy shape `/api/v1/{source}/...`,
+            // never the retired generic-proxy `/api/v1/source/{name}/...`.
+            Assert.Matches(@"^/api/v1/[a-z][a-z0-9-]*/", entry.Key);
+            Assert.DoesNotMatch(@"^/api/v1/source/", entry.Key);
         }
 
-        Assert.Contains("/api/v1/source/jira/query", paths);
-        Assert.Contains("/api/v1/source/jira/items/{id}", paths);
-        Assert.Contains("/api/v1/source/jira/list-workgroups", paths);
-        Assert.Contains("/api/v1/source/zulip/query", paths);
+        Assert.Contains("/api/v1/jira/query", paths);
+        Assert.Contains("/api/v1/jira/items/{id}", paths);
+        Assert.Contains("/api/v1/jira/list-workgroups", paths);
+        Assert.Contains("/api/v1/zulip/query", paths);
     }
 
     private static void AddOp(OpenApiDocument doc, string path, HttpMethod method, string operationId)

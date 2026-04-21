@@ -158,7 +158,14 @@ Central coordinator (HTTP :5150).
 
 ```
 FhirAugury.Orchestrator/
-├── Api/                      # ContentController, IngestionController, ServicesController, SourceProxyController (HTTP API)
+├── Api/                      # ContentController, IngestionController, ServicesController, LifecycleController (HTTP API)
+├── Controllers/Proxies/      # Typed per-source proxy controllers — JiraProxyController,
+│                             #   ZulipProxyController, ConfluenceProxyController,
+│                             #   GitHubProxyController. Cover ~98 source endpoints under
+│                             #   /api/v1/{name}/...; replace the removed
+│                             #   GenericSourceProxyController.
+├── Controllers/              # OrchestratorSelfController (preserves /api/v1/source/orchestrator/...
+│                             #   for self-metadata; the only surviving "source/" route)
 ├── Configuration/            # Orchestrator settings, source endpoints
 ├── Database/                 # Orchestrator SQLite DB (scan state)
 ├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
@@ -173,7 +180,16 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing 16 tool implementations in 4 tool classes.
+Shared MCP library containing tool implementations across 16 tool classes
+(2 cross-source — `UnifiedTools`, `ContentTools` — plus 14 source-scoped
+families added in the 2026-04 sync that mirror the typed orchestrator
+proxies one-for-one: `JiraItemsTools`, `JiraDimensionTools`,
+`JiraWorkGroupTools`, `JiraProjectTools`, `JiraLocalProcessingTools`,
+`JiraSpecsTools`, `ZulipItemsTools`, `ZulipMessagesTools`,
+`ZulipStreamsTools`, `ZulipThreadsTools`, `ConfluenceItemsTools`,
+`ConfluencePagesTools`, `GitHubItemsTools`, `GitHubReposTools`; the
+legacy umbrella `JiraTools` and `ZulipTools` classes remain for
+backwards-compatible cross-source helpers).
 
 ```
 FhirAugury.McpShared/
@@ -209,7 +225,16 @@ FhirAugury.McpHttp/
 
 ### `FhirAugury.Cli`
 
-Command-line interface (13 commands via JSON-in/JSON-out, HTTP to orchestrator).
+Command-line interface (JSON-in/JSON-out, HTTP to orchestrator). Each
+handler under `Dispatch/Handlers/` corresponds 1:1 to one logical command;
+the source-scoped families (`JiraItemsHandler`, `JiraDimensionHandler`,
+`JiraWorkGroupHandler`, `JiraProjectHandler`, `JiraLocalProcessingHandler`,
+`JiraSpecsHandler`, `ZulipItemsHandler`, `ZulipMessagesHandler`,
+`ZulipStreamsHandler`, `ZulipThreadsHandler`, `ConfluenceItemsHandler`,
+`ConfluencePagesHandler`, `GitHubItemsHandler`, `GitHubReposHandler`)
+were added in the 2026-04 sync alongside the typed orchestrator proxies.
+The `ingest` handler's actions were renamed at the same time
+(`rebuild`→`reingest`, `index`→`reindex`; no aliases).
 
 ```
 FhirAugury.Cli/

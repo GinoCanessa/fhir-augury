@@ -55,7 +55,7 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `query-jira` | Structured Jira query (statuses, work groups, dates, …) |
 | `query-zulip` | Structured Zulip query (streams, topics, senders, …) |
 | `list-jira-dimension` | Distinct values for a Jira dimension (work-group, status, …) |
-| `ingest` | Trigger / control source ingestion |
+| `ingest` | Trigger / control source ingestion. Actions: `trigger`, `status`, `reingest`, `reindex` (the latter two were renamed from `rebuild`/`index` in the 2026-04 sync; no aliases). Accepts `jiraProject` to scope a Jira run to one project. |
 | `services` | Inspect service health |
 | `version` | CLI/orchestrator version info |
 | `sources` | List enabled source services and metadata |
@@ -63,6 +63,10 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `schema` | Show a single source operation's request/response schema |
 | `call` | Invoke an arbitrary source operation by `(source, operation)` |
 | `save-schemas` | Dump every source's full schema set to a directory |
+| `jira-items`, `jira-dimension`, `jira-workgroup`, `jira-project`, `jira-local-processing`, `jira-specs` | Jira source-scoped families (added in the 2026-04 sync). Mirror the typed orchestrator proxies under `/api/v1/jira/...` and the GitHub-side `jira-specs` resolver. |
+| `zulip-items`, `zulip-messages`, `zulip-streams`, `zulip-threads` | Zulip source-scoped families. |
+| `confluence-items`, `confluence-pages` | Confluence source-scoped families. |
+| `github-items`, `github-repos` | GitHub source-scoped families (action-first item layout — `items/{action}/{**key}` — preserved by design). |
 
 ## Common recipes
 
@@ -127,7 +131,19 @@ envelope signals that fallbacks should be considered.
 fhir-augury-cli --json '{"command":"ingest","action":"status"}'
 
 # Run an incremental ingest for one or more sources
-fhir-augury-cli --json '{"command":"ingest","action":"run","sources":["github"],"type":"incremental"}'
+fhir-augury-cli --json '{"command":"ingest","action":"trigger","sources":["github"],"type":"incremental"}'
+
+# Restrict an ingest to a single Jira project (consumer-facing parameter
+# is jira-project, not project, to disambiguate from "GitHub project")
+fhir-augury-cli --json '{"command":"ingest","action":"trigger","sources":["jira"],"jiraProject":"FHIR"}'
+
+# Rebuild a source's database from cache (was: action=rebuild — renamed
+# in the 2026-04 sync; no backwards-compatible alias)
+fhir-augury-cli --json '{"command":"ingest","action":"reingest","sources":["jira"]}'
+
+# Rebuild a specific index family (was: action=index — renamed in the
+# 2026-04 sync; no alias)
+fhir-augury-cli --json '{"command":"ingest","action":"reindex","sources":["jira"],"indexType":"bm25"}'
 ```
 
 ### Dump schemas for offline reference

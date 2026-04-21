@@ -43,6 +43,21 @@ public static class CommandDispatcher
         ["commands"] = j => j.Deserialize<CommandsRequest>(DeserializeOptions)!,
         ["schema"] = j => j.Deserialize<SchemaRequest>(DeserializeOptions)!,
         ["call"] = j => j.Deserialize<CallRequest>(DeserializeOptions)!,
+        // Phase D additions
+        ["jira-items"] = j => j.Deserialize<JiraItemsRequest>(DeserializeOptions)!,
+        ["jira-dimension"] = j => j.Deserialize<JiraDimensionRequest>(DeserializeOptions)!,
+        ["jira-workgroup"] = j => j.Deserialize<JiraWorkGroupRequest>(DeserializeOptions)!,
+        ["jira-project"] = j => j.Deserialize<JiraProjectRequest>(DeserializeOptions)!,
+        ["jira-local-processing"] = j => j.Deserialize<JiraLocalProcessingRequest>(DeserializeOptions)!,
+        ["zulip-items"] = j => j.Deserialize<ZulipItemsRequest>(DeserializeOptions)!,
+        ["zulip-messages"] = j => j.Deserialize<ZulipMessagesRequest>(DeserializeOptions)!,
+        ["zulip-streams"] = j => j.Deserialize<ZulipStreamsRequest>(DeserializeOptions)!,
+        ["zulip-threads"] = j => j.Deserialize<ZulipThreadsRequest>(DeserializeOptions)!,
+        ["confluence-pages"] = j => j.Deserialize<ConfluencePagesRequest>(DeserializeOptions)!,
+        ["confluence-items"] = j => j.Deserialize<ConfluenceItemsRequest>(DeserializeOptions)!,
+        ["github-items"] = j => j.Deserialize<GitHubItemsRequest>(DeserializeOptions)!,
+        ["github-repos"] = j => j.Deserialize<GitHubReposRequest>(DeserializeOptions)!,
+        ["jira-specs"] = j => j.Deserialize<JiraSpecsRequest>(DeserializeOptions)!,
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -157,6 +172,21 @@ public static class CommandDispatcher
             CommandsRequest r => CommandsHandler.HandleAsync(r, orchestratorAddr, ct),
             SchemaRequest r => SchemaHandler.HandleAsync(r, orchestratorAddr, ct),
             CallRequest r => CallHandler.HandleAsync(r, orchestratorAddr, ct),
+            // Phase D additions
+            JiraItemsRequest r => JiraItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraDimensionRequest r => JiraDimensionHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraWorkGroupRequest r => JiraWorkGroupHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraProjectRequest r => JiraProjectHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraLocalProcessingRequest r => JiraLocalProcessingHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipItemsRequest r => ZulipItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipMessagesRequest r => ZulipMessagesHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipStreamsRequest r => ZulipStreamsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipThreadsRequest r => ZulipThreadsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ConfluencePagesRequest r => ConfluencePagesHandler.HandleAsync(r, orchestratorAddr, ct),
+            ConfluenceItemsRequest r => ConfluenceItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            GitHubItemsRequest r => GitHubItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            GitHubReposRequest r => GitHubReposHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraSpecsRequest r => JiraSpecsHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
 

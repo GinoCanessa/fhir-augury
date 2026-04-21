@@ -85,6 +85,26 @@ public class OrchestratorCatalogParityTests
         Assert.Equal($"{Base}/api/v1/ingest/trigger?type=incremental", r.Url);
     }
 
+    [Fact]
+    public void Lifecycle_health_url_matches_orchestrator_route()
+    {
+        ApiEndpointDescriptor d = Find("lifecycle.health");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>());
+
+        Assert.Equal("Lifecycle", d.Group);
+        Assert.Equal($"{Base}/api/v1/health", r.Url);
+    }
+
+    [Fact]
+    public void Lifecycle_status_url_matches_orchestrator_route()
+    {
+        ApiEndpointDescriptor d = Find("lifecycle.status");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>());
+
+        Assert.Equal("Lifecycle", d.Group);
+        Assert.Equal($"{Base}/api/v1/status", r.Url);
+    }
+
     private static ApiEndpointDescriptor Find(string id) =>
         OrchestratorCatalog.Build().Single(e => e.Id == id);
 }

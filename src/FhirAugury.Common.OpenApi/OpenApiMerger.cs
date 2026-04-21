@@ -120,10 +120,24 @@ public static class OpenApiMerger
                         continue;
                     }
 
-                    if (paths.ContainsKey(newPath))
+                    if (paths[newPath] is JsonObject existingPathItem)
                     {
-                        throw new InvalidOperationException(
-                            $"Path collision while merging source '{sourceName}': '{newPath}' already exists.");
+                        // The orchestrator's typed proxy controllers register the
+                        // same paths (e.g., `/api/v1/jira/items`) but expose only
+                        // minimal metadata (no schemas / response types). The
+                        // source's per-method documentation is richer, so let
+                        // source operations override the orchestrator's
+                        // method-level entries while preserving any
+                        // orchestrator-only methods on the same path.
+                        foreach (KeyValuePair<string, JsonNode?> methodEntry in pathItem.ToList())
+                        {
+                            if (!s_httpMethods.Contains(methodEntry.Key))
+                            {
+                                continue;
+                            }
+                            existingPathItem[methodEntry.Key] = methodEntry.Value?.DeepClone();
+                        }
+                        continue;
                     }
 
                     paths[newPath] = pathItem;
@@ -158,6 +172,14 @@ public static class OpenApiMerger
         return FromJsonObject(root);
     }
 
+    /// <summary>
+    /// Remaps a source-relative path (e.g., <c>/api/v1/items/{id}</c>) into
+    /// its orchestrator typed-proxy URL (<c>/api/v1/{sourceName}/items/{id}</c>).
+    /// The orchestrator no longer hosts the generic <c>/api/v1/source/{name}/...</c>
+    /// catch-all proxy; every source endpoint is reached through a typed proxy
+    /// controller that mirrors the source path one-to-one under the
+    /// <c>/api/v1/{sourceName}</c> prefix.
+    /// </summary>
     private static string RemapPath(string original, string sourceName)
     {
         string remainder;
@@ -172,7 +194,7 @@ public static class OpenApiMerger
 
         if (string.IsNullOrEmpty(remainder))
         {
-            return $"/api/v1/source/{sourceName}";
+            return $"/api/v1/{sourceName}";
         }
 
         if (!remainder.StartsWith("/", StringComparison.Ordinal))
@@ -180,7 +202,7 @@ public static class OpenApiMerger
             remainder = "/" + remainder;
         }
 
-        return $"/api/v1/source/{sourceName}{remainder}";
+        return $"/api/v1/{sourceName}{remainder}";
     }
 
     private static void RewriteSchemaRefs(JsonNode? node, string sourceName)

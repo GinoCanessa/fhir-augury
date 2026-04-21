@@ -4,7 +4,20 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via HTTP to the orchestrator and source
-services, providing 16 tools across 4 categories (Unified, Content, Jira, Zulip).
+services, providing tools across the following families:
+
+**Cross-source families** — `Unified` (status, ingestion control), `Content`
+(unified search, cross-references, item lookup).
+
+**Source-scoped families** (added in the 2026-04 sync, one per typed
+orchestrator proxy) — `JiraItems`, `JiraDimension`, `JiraWorkGroup`,
+`JiraProject`, `JiraLocalProcessing`, `JiraSpecs`, `ZulipItems`,
+`ZulipMessages`, `ZulipStreams`, `ZulipThreads`, `ConfluenceItems`,
+`ConfluencePages`, `GitHubItems`, `GitHubRepos`.
+
+Each MCP tool family corresponds 1:1 to a CLI command family (see
+[CLI Reference](cli-reference.md)) and to a typed orchestrator proxy
+controller under `src/FhirAugury.Orchestrator/Controllers/Proxies/`.
 
 ## Setup
 
@@ -143,7 +156,8 @@ Trigger synchronization/ingestion across source services.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `sources` | string | No | all | Comma-separated sources to sync (e.g., `jira,zulip`) |
-| `type` | string | No | `incremental` | Sync type: `incremental`, `full`, or `rebuild` |
+| `type` | string | No | `incremental` | Sync type: `incremental`, `full`, or `rebuild`. Note: the CLI verb for `rebuild` is exposed as `reingest`; the MCP/HTTP wire value remains `rebuild`. |
+| `jiraProject` | string | No | | Restrict the run to a single Jira project key. Forwarded only to the Jira leg of the fan-out; ignored by other sources. |
 
 **Example:** Trigger a full re-sync of Jira data:
 ```

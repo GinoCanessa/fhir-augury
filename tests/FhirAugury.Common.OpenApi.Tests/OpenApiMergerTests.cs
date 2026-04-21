@@ -21,9 +21,10 @@ public class OpenApiMergerTests
 
         JsonObject root = SerializeAsJsonObject(merged);
         JsonObject paths = (JsonObject)root["paths"]!;
-        Assert.True(paths.ContainsKey("/api/v1/source/jira/query"));
-        Assert.True(paths.ContainsKey("/api/v1/source/jira/list-workgroups"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/query"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/list-workgroups"));
         Assert.False(paths.ContainsKey("/api/v1/query"));
+        Assert.False(paths.ContainsKey("/api/v1/source/jira/query"));
     }
 
     [Fact]
@@ -39,7 +40,7 @@ public class OpenApiMergerTests
             includeInternal: false);
 
         JsonObject root = SerializeAsJsonObject(merged);
-        JsonObject op = (JsonObject)((JsonObject)root["paths"]!["/api/v1/source/jira/query"]!)["post"]!;
+        JsonObject op = (JsonObject)((JsonObject)root["paths"]!["/api/v1/jira/query"]!)["post"]!;
         Assert.Equal("jira.query", op["operationId"]!.GetValue<string>());
 
         JsonArray tags = (JsonArray)op["tags"]!;
@@ -79,7 +80,7 @@ public class OpenApiMergerTests
         Assert.True(schemas.ContainsKey("jira_QueryRequest"));
         Assert.False(schemas.ContainsKey("QueryRequest"));
 
-        JsonObject op = (JsonObject)((JsonObject)root["paths"]!["/api/v1/source/jira/query"]!)["post"]!;
+        JsonObject op = (JsonObject)((JsonObject)root["paths"]!["/api/v1/jira/query"]!)["post"]!;
         string refValue = op["requestBody"]!["content"]!["application/json"]!["schema"]!["$ref"]!.GetValue<string>();
         Assert.Equal("#/components/schemas/jira_QueryRequest", refValue);
     }
@@ -100,15 +101,15 @@ public class OpenApiMergerTests
 
         JsonObject filteredRoot = SerializeAsJsonObject(mergedFiltered);
         JsonObject filteredPaths = (JsonObject)filteredRoot["paths"]!;
-        Assert.True(filteredPaths.ContainsKey("/api/v1/source/jira/query"));
-        Assert.False(filteredPaths.ContainsKey("/api/v1/source/jira/secret"));
+        Assert.True(filteredPaths.ContainsKey("/api/v1/jira/query"));
+        Assert.False(filteredPaths.ContainsKey("/api/v1/jira/secret"));
 
         OpenApiDocument mergedAll = OpenApiMerger.Merge(
             orchestrator,
             new Dictionary<string, OpenApiDocument?> { ["jira"] = jira },
             includeInternal: true);
         JsonObject allRoot = SerializeAsJsonObject(mergedAll);
-        Assert.True(((JsonObject)allRoot["paths"]!).ContainsKey("/api/v1/source/jira/secret"));
+        Assert.True(((JsonObject)allRoot["paths"]!).ContainsKey("/api/v1/jira/secret"));
     }
 
     [Fact]
@@ -131,24 +132,55 @@ public class OpenApiMergerTests
         Assert.Equal("connection refused", status["jira"]!.GetValue<string>());
         Assert.Equal("timeout", status["zulip"]!.GetValue<string>());
 
-        Assert.False((root["paths"] as JsonObject)?.ContainsKey("/api/v1/source/jira/query") ?? false);
+        Assert.False((root["paths"] as JsonObject)?.ContainsKey("/api/v1/jira/query") ?? false);
     }
 
     [Fact]
-    public void OpenApiMerger_ThrowsOnCollision()
+    public void OpenApiMerger_MergesPathMethods_WhenOrchestratorAlreadyDeclaresTypedProxyRoute()
     {
         OpenApiDocument orchestrator = NewDoc("Orchestrator");
-        AddOperation(orchestrator, "/api/v1/source/jira/query", HttpMethod.Post, "jira.query", schemaRef: null);
+        // Orchestrator's typed proxy already declares /api/v1/jira/query (POST)
+        // with thin metadata.
+        AddOperation(orchestrator, "/api/v1/jira/query", HttpMethod.Post, "JiraProxy_Query", schemaRef: null);
+
+        OpenApiDocument jira = NewDoc("Jira");
+        AddOperation(jira, "/api/v1/query", HttpMethod.Post, "query", schemaRef: null);
+        // Source contributes a second method on the same path.
+        AddOperation(jira, "/api/v1/query", HttpMethod.Get, "query-info", schemaRef: null);
+
+        OpenApiDocument merged = OpenApiMerger.Merge(
+            orchestrator,
+            new Dictionary<string, OpenApiDocument?> { ["jira"] = jira },
+            includeInternal: false);
+
+        JsonObject root = SerializeAsJsonObject(merged);
+        JsonObject pathItem = (JsonObject)root["paths"]!["/api/v1/jira/query"]!;
+
+        // POST overridden by source (richer), GET added by source.
+        JsonObject post = (JsonObject)pathItem["post"]!;
+        Assert.Equal("jira.query", post["operationId"]!.GetValue<string>());
+        JsonObject get = (JsonObject)pathItem["get"]!;
+        Assert.Equal("jira.query-info", get["operationId"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void OpenApiMerger_NoLongerThrowsOnPathCollision_MergesInstead()
+    {
+        OpenApiDocument orchestrator = NewDoc("Orchestrator");
+        AddOperation(orchestrator, "/api/v1/jira/query", HttpMethod.Post, "JiraProxy_Query", schemaRef: null);
 
         OpenApiDocument jira = NewDoc("Jira");
         AddOperation(jira, "/api/v1/query", HttpMethod.Post, "query", schemaRef: null);
 
-        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => OpenApiMerger.Merge(
+        // Should not throw — typed-proxy collisions are merged, not rejected.
+        OpenApiDocument merged = OpenApiMerger.Merge(
             orchestrator,
             new Dictionary<string, OpenApiDocument?> { ["jira"] = jira },
-            includeInternal: false));
+            includeInternal: false);
 
-        Assert.Contains("collision", ex.Message, StringComparison.OrdinalIgnoreCase);
+        JsonObject root = SerializeAsJsonObject(merged);
+        JsonObject post = (JsonObject)((JsonObject)root["paths"]!["/api/v1/jira/query"]!)["post"]!;
+        Assert.Equal("jira.query", post["operationId"]!.GetValue<string>());
     }
 
     private static OpenApiDocument NewDoc(string title)

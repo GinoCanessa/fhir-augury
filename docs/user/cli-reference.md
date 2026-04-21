@@ -194,17 +194,36 @@ Returns both outgoing and incoming cross-references for the specified item.
 // Trigger sync
 { "command": "ingest", "action": "trigger", "sources": ["jira"], "type": "incremental" }
 
+// Restrict a Jira sync to a single project
+{ "command": "ingest", "action": "trigger", "sources": ["jira"], "jiraProject": "FHIR" }
+
 // Check status
 { "command": "ingest", "action": "status" }
 
-// Rebuild from cache
-{ "command": "ingest", "action": "rebuild", "sources": ["jira"] }
+// Rebuild from cache (formerly "rebuild" — renamed in the 2026-04 sync; no alias)
+{ "command": "ingest", "action": "reingest", "sources": ["jira"] }
 
-// Rebuild indexes
-{ "command": "ingest", "action": "index", "sources": ["jira"], "indexType": "bm25" }
+// Rebuild indexes (formerly "index" — renamed in the 2026-04 sync; no alias)
+{ "command": "ingest", "action": "reindex", "sources": ["jira"], "indexType": "bm25" }
 ```
 
-**Actions:** `trigger`, `status`, `rebuild`, `index`
+**Actions:** `trigger`, `status`, `reingest`, `reindex`
+
+> **Breaking change.** The `rebuild` and `index` action names were renamed
+> to `reingest` and `reindex` respectively in the 2026-04 sync. There is
+> no backwards-compatibility alias — callers using the old names will get
+> `Unknown ingest action`. The wire-level orchestrator routes
+> (`POST /api/v1/rebuild`, `POST /api/v1/rebuild-index`) keep their
+> historical names; only the CLI / MCP surface was renamed.
+
+**Optional fields:**
+
+| Field | Type | Applies to | Description |
+|-------|------|------------|-------------|
+| `sources` | string[] | `trigger`, `reingest`, `reindex` | Comma-separated source names. Omit for all enabled sources. |
+| `type` | string | `trigger` | `incremental` (default), `full`, or `rebuild`. |
+| `jiraProject` | string | `trigger`, `reingest` | Restrict the run to a single Jira project key. Forwarded only to the Jira leg of the fan-out; ignored by other sources. Surfaced over HTTP as `?jira-project=`. |
+| `indexType` | string | `reindex` | `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents`. |
 
 **Index types:** `all`, `bm25`, `fts`, `cross-refs`, `lookup-tables`, `commits`, `artifact-map`, `page-links`, `file-contents`
 
@@ -217,6 +236,34 @@ Returns both outgoing and incoming cross-references for the specified item.
 // Aggregate statistics
 { "command": "services", "action": "stats" }
 ```
+
+### Source-scoped commands (added in the 2026-04 sync)
+
+The CLI now ships per-source command families that mirror the typed
+orchestrator proxies (`/api/v1/{name}/...`) and the MCP tool families
+(see [MCP Tools](mcp-tools.md)). Every command takes a single JSON
+object on stdin and emits a single JSON envelope on stdout. Use
+`--help <command>` for the full per-command schema.
+
+| Command | Hits | Purpose |
+|---------|------|---------|
+| `jira-items` | `/api/v1/jira/items[/{key}/...]` | List / get Jira items, related, snapshot, content, comments, links |
+| `jira-dimension` | `/api/v1/jira/{labels,statuses,users,inpersons}` | Dimension lookups (replaces `list-jira-dimension`-style ad-hoc calls) |
+| `jira-workgroup` | `/api/v1/jira/work-groups[/{code}/issues]` | Work-group enumeration and per-work-group issue lists |
+| `jira-project` | `/api/v1/jira/projects[/{key}]` | List, get, and update Jira project metadata |
+| `jira-local-processing` | `/api/v1/jira/local-processing/...` | Local processing queue (tickets, random-ticket, set-processed, clear-all-processed) |
+| `jira-specs` | `/api/v1/github/jira-specs/...` | Jira-spec ↔ GitHub-artifact resolution |
+| `zulip-items` | `/api/v1/zulip/items[/{id}/...]` | Zulip item shape (with `comments` / `links` returning `[]` shape stubs) |
+| `zulip-messages` | `/api/v1/zulip/messages[...]` | Single message, by-user lists, paged listings |
+| `zulip-streams` | `/api/v1/zulip/streams[/{id}\|/{name}/topics]` | Stream catalog and per-stream topic enumeration |
+| `zulip-threads` | `/api/v1/zulip/threads/{stream}/{topic}[/snapshot]` | Topic-thread retrieval |
+| `confluence-pages` | `/api/v1/confluence/pages[/{id}/...]` | Pages, related, snapshot, content, comments, children, ancestors, linked, by-label |
+| `confluence-items` | `/api/v1/confluence/items[/{id}/...]` | Confluence-side item shape |
+| `github-items` | `/api/v1/github/items/{action}/{**key}` | Action-first item layout (catch-all key carries `owner/name#123`) |
+| `github-repos` | `/api/v1/github/repos[/{owner}/{name}/tags...]` | Repo catalog and per-repo tag/file lookups |
+
+The `--jira-project <key>` option is also accepted by the renamed
+`reingest` verb on the `ingest` command (see above).
 
 ### `version` — Show version
 

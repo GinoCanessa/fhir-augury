@@ -8,6 +8,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -193,7 +194,19 @@ public class IngestionController(
         return Ok(new RebuildIndexResponse(true, $"queued {indexType} index rebuild", null, null));
     }
 
+    /// <summary>
+    /// Acknowledges an ingestion-completion notification from a peer source so
+    /// this service can rebuild its GitHub-side cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the orchestrator-side
+    /// <c>POST api/v1/notify-ingestion</c> endpoint
+    /// (<c>FhirAugury.Orchestrator.Controllers.IngestionController.NotifyIngestion</c>).
+    /// The orchestrator fans completion notifications from one source out to
+    /// every other source via this endpoint.
+    /// </remarks>
     [HttpPost("notify-peer")]
+    [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] Common.Api.PeerIngestionNotification notification)
     {
         GitHubServiceOptions options = optionsAccessor.Value;

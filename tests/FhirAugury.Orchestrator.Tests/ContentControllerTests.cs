@@ -735,4 +735,98 @@ public class ContentControllerTests
         Assert.NotNull(response.Warnings);
         Assert.Contains(response.Warnings, w => w.Contains("zulip"));
     }
+
+    // ── Phase A: catch-all id slash preservation ────────────────────────
+
+    [Fact]
+    public async Task GetItem_IdContainingSlash_ForwardsSlashVerbatimUpstream()
+    {
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new ContentItemResponse
+        {
+            Source = SourceSystems.Jira, Id = "FHIR-1234/sub", Title = "Slash item",
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = new MockHttpMessageHandler(),
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources());
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            await controller.GetItem(SourceSystems.Jira, "FHIR-1234/sub", ct: CancellationToken.None));
+        ContentItemResponse item = Assert.IsType<ContentItemResponse>(ok.Value);
+        Assert.Equal("FHIR-1234/sub", item.Id);
+
+        HttpRequestMessage sent = Assert.Single(jiraHandler.SentRequests);
+        string url = sent.RequestUri!.ToString();
+        Assert.Contains("/api/v1/content/item/jira/FHIR-1234/sub", url);
+        Assert.DoesNotContain("%2F", url, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetKeywords_IdContainingSlash_ForwardsSlashVerbatimUpstream()
+    {
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new KeywordListResponse
+        {
+            Source = "jira", SourceId = "FHIR-1234/sub", ContentType = "issue", Keywords = [],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+        };
+
+        Dictionary<string, SourceServiceConfig> services = new(StringComparer.OrdinalIgnoreCase)
+        {
+            [SourceSystems.Jira] = new SourceServiceConfig { Enabled = true, HttpAddress = "http://jira:5001" },
+        };
+
+        ContentController controller = CreateController(handlers, services);
+        IActionResult result = await controller.GetKeywords("jira", "FHIR-1234/sub", null, null);
+
+        Assert.IsType<OkObjectResult>(result);
+        HttpRequestMessage sent = Assert.Single(jiraHandler.SentRequests);
+        string url = sent.RequestUri!.ToString();
+        Assert.Contains("/api/v1/content/keywords/jira/FHIR-1234/sub", url);
+        Assert.DoesNotContain("%2F", url, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task RelatedByKeyword_IdContainingSlash_ForwardsSlashVerbatimUpstream()
+    {
+        MockHttpMessageHandler jiraHandler = new();
+        jiraHandler.RespondWith(new RelatedByKeywordResponse
+        {
+            Source = "jira", SourceId = "FHIR-1234/sub", RelatedItems = [],
+        });
+        MockHttpMessageHandler zulipHandler = new();
+        zulipHandler.RespondWith(new RelatedByKeywordResponse
+        {
+            Source = "zulip", SourceId = "FHIR-1234/sub", RelatedItems = [],
+        });
+
+        Dictionary<string, MockHttpMessageHandler> handlers = new()
+        {
+            [SourceSystems.Jira] = jiraHandler,
+            [SourceSystems.Zulip] = zulipHandler,
+        };
+
+        ContentController controller = CreateController(handlers, TwoEnabledSources());
+        IActionResult result = await controller.RelatedByKeyword("jira", "FHIR-1234/sub", null, null, null);
+
+        Assert.IsType<OkObjectResult>(result);
+
+        // Both fan-out legs should preserve the embedded slash in the upstream URL.
+        foreach (MockHttpMessageHandler handler in new[] { jiraHandler, zulipHandler })
+        {
+            HttpRequestMessage sent = Assert.Single(handler.SentRequests);
+            string url = sent.RequestUri!.ToString();
+            Assert.Contains("/api/v1/content/related-by-keyword/jira/FHIR-1234/sub", url);
+            Assert.DoesNotContain("%2F", url, StringComparison.OrdinalIgnoreCase);
+        }
+    }
 }

@@ -38,7 +38,7 @@ contract for the Orchestrator:
 | `GetStats` | Return service statistics (item counts, DB size, last sync) |
 | `RebuildFromCache` | Rebuild the database from the file-system cache |
 | `GetItemCrossReferences` | Get cross-references for a specific item |
-| `NotifyPeerIngestionComplete` | Notify this source that a peer completed ingestion (triggers xref re-scan) |
+| `NotifyPeerIngestionComplete` | Notify this source that a peer completed ingestion (triggers xref re-scan). The orchestrator side of this contract is `POST /api/v1/notify-ingestion`; both halves carry the `ingestion-notifications` OpenAPI tag. See [`docs/user/api-reference.md`](../user/api-reference.md#internal-notification). |
 | `RebuildIndex` | Rebuild specific indexes (BM25, FTS, cross-refs, lookup tables, etc.) |
 | `HealthCheck` | Liveness/readiness probe |
 

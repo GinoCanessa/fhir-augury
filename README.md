@@ -202,8 +202,14 @@ docker compose --profile jira-only up -d   # Single source
 Every service publishes an OpenAPI 3.1 document at
 `/api/v1/openapi.json` (and `.yaml`). The orchestrator additionally serves a
 **merged** document at `/api/v1/openapi.json` that describes its own
-endpoints plus every enabled source's endpoints remapped under
-`/api/v1/source/{name}/...`.
+endpoints plus every enabled source's endpoints exposed through the typed
+per-source proxies under `/api/v1/{name}/...` (e.g. `/api/v1/jira/items`,
+`/api/v1/github/repos`).
+
+The orchestrator self-metadata routes (`/api/v1/source/orchestrator/openapi.json`
+and `/api/v1/source/orchestrator/list-sources`) are preserved by design; the
+generic `/api/v1/source/{name}/...` reverse proxy was removed in the
+2026-04 sync (see [docs/changelog/2026-04-sync.md](docs/changelog/2026-04-sync.md)).
 
 The CLI uses this document to enumerate and invoke any operation
 generically — no new code is required to call a newly added endpoint:
@@ -274,8 +280,13 @@ If a repo is miscategorized for `repo-analysis`, fix it in
 | [Database Schema](docs/technical/database-schema.md) | SQLite, FTS5, source-generated CRUD |
 | [Indexing & Search](docs/technical/indexing-and-search.md) | FTS5, BM25, cross-references |
 | [Data Sources](docs/technical/data-sources.md) | Source connector architecture |
+| [Source Endpoint Reference](docs/technical/source-endpoint-reference.md) | Per-source HTTP route catalog (post 2026-04 sync) |
 | [Development Guide](docs/technical/development-guide.md) | Contributing and code conventions |
 | [Project Structure](docs/technical/project-structure.md) | Code organization |
+
+### Changelog
+
+- [2026-04 HTTP API Sync](docs/changelog/2026-04-sync.md) — typed proxies, generic-proxy removal, CLI verb rename, deleted `HttpServiceClient` methods.
 
 ## Tech Stack
 

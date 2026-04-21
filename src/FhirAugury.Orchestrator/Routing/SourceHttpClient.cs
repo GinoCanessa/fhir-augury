@@ -2,7 +2,6 @@ using System.Net.Http.Json;
 using System.Text;
 using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -11,7 +10,7 @@ namespace FhirAugury.Orchestrator.Routing;
 /// <summary>
 /// Routes proxied calls to source services via named HttpClients.
 /// </summary>
-public class SourceHttpClient
+public partial class SourceHttpClient
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly OrchestratorOptions _options;
@@ -43,86 +42,6 @@ public class SourceHttpClient
         return _httpClientFactory.CreateClient($"source-{sourceName.ToLowerInvariant()}");
     }
 
-    // ── Generic proxy ───────────────────────────────────────────────────
-
-    private static readonly HashSet<string> s_forwardedRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Accept",
-        "Accept-Encoding",
-        "Accept-Language",
-        "If-None-Match",
-        "If-Modified-Since",
-        "Range",
-        "User-Agent",
-    };
-
-    private const string AuguryHeaderPrefix = "X-Augury-";
-
-    private static bool IsForwardedRequestHeader(string name) =>
-        s_forwardedRequestHeaders.Contains(name)
-        || name.StartsWith(AuguryHeaderPrefix, StringComparison.OrdinalIgnoreCase);
-
-    private static bool MethodAllowsBody(HttpMethod method) =>
-        method == HttpMethod.Post
-        || method == HttpMethod.Put
-        || method == HttpMethod.Patch
-        || method == HttpMethod.Delete;
-
-    /// <summary>
-    /// Forwards an arbitrary HTTP request to the named source service at
-    /// <c>/api/v1/{rest}</c>. Streams the request and response bodies; the
-    /// caller is responsible for relaying the returned <see cref="HttpResponseMessage"/>
-    /// to the original client.
-    /// </summary>
-    public async Task<HttpResponseMessage> ForwardAsync(
-        string sourceName, HttpRequest request, string rest, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(sourceName);
-        ArgumentNullException.ThrowIfNull(request);
-        rest ??= string.Empty;
-
-        HttpClient client = GetClientForSource(sourceName);
-
-        string path = $"/api/v1/{rest}";
-        string? query = request.QueryString.Value;
-        string targetUri = string.IsNullOrEmpty(query) ? path : path + query;
-
-        HttpMethod method = new(request.Method);
-        HttpRequestMessage forward = new(method, targetUri);
-
-        if (MethodAllowsBody(method))
-        {
-            StreamContent content = new(request.Body);
-            string? contentType = request.ContentType;
-            if (!string.IsNullOrEmpty(contentType))
-            {
-                content.Headers.TryAddWithoutValidation("Content-Type", contentType);
-            }
-            if (request.ContentLength is long len)
-            {
-                content.Headers.ContentLength = len;
-            }
-            forward.Content = content;
-        }
-
-        foreach (KeyValuePair<string, Microsoft.Extensions.Primitives.StringValues> header in request.Headers)
-        {
-            if (!IsForwardedRequestHeader(header.Key))
-            {
-                continue;
-            }
-
-            string[] values = header.Value.ToArray()!;
-            if (!forward.Headers.TryAddWithoutValidation(header.Key, values)
-                && forward.Content is not null)
-            {
-                forward.Content.Headers.TryAddWithoutValidation(header.Key, values);
-            }
-        }
-
-        return await client.SendAsync(forward, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-    }
-
     private static string ItemBase() => "items";
 
     private static string EncodeId(string source, string id)
@@ -130,7 +49,12 @@ public class SourceHttpClient
         if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
             return id.Replace("#", "%23");
 
-        return Uri.EscapeDataString(id);
+        // Per-segment encoding so embedded '/' is preserved verbatim and
+        // routes to the source service's `{**id}` catch-all parameter.
+        string[] segments = id.Split('/');
+        for (int i = 0; i < segments.Length; i++)
+            segments[i] = Uri.EscapeDataString(segments[i]);
+        return string.Join('/', segments);
     }
 
     private static string BuildItemPath(string source, string id) =>
@@ -220,9 +144,17 @@ public class SourceHttpClient
     public async Task<IngestionStatusResponse?> TriggerIngestionAsync(
         string sourceName, string type, CancellationToken ct)
     {
+        return await TriggerIngestionAsync(sourceName, type, project: null, ct);
+    }
+
+    public async Task<IngestionStatusResponse?> TriggerIngestionAsync(
+        string sourceName, string type, string? project, CancellationToken ct)
+    {
         HttpClient client = GetClientForSource(sourceName);
-        using HttpResponseMessage response = await client.PostAsync(
-            $"/api/v1/ingest?type={Uri.EscapeDataString(type)}", null, ct);
+        string url = $"/api/v1/ingest?type={Uri.EscapeDataString(type)}";
+        if (!string.IsNullOrEmpty(project))
+            url += $"&project={Uri.EscapeDataString(project)}";
+        using HttpResponseMessage response = await client.PostAsync(url, null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<IngestionStatusResponse>(ct);
     }

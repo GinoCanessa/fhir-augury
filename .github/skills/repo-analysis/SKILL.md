@@ -133,7 +133,7 @@ If the clone directory is missing, report:
 
 > `cache/github/repos/<owner>_<name>/clone` is not present. Run the
 > GitHub source ingestion (e.g.,
-> `fhir-augury --json '{"command":"ingest","action":"run","sources":["github"]}'`)
+> `fhir-augury --json '{"command":"ingest","action":"trigger","sources":["github"]}'`)
 > before analyzing.
 
 ### 4. Synthesize the briefing

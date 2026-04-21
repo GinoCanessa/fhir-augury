@@ -169,6 +169,9 @@ public sealed class IngestRequest : CliRequest
 
     [JsonPropertyName("indexType")]
     public string IndexType { get; set; } = "all";
+
+    [JsonPropertyName("jiraProject")]
+    public string? JiraProject { get; set; }
 }
 
 public sealed class ServicesRequest : CliRequest
@@ -295,4 +298,138 @@ public sealed class CallRequest : CliRequest
     [JsonPropertyName("refresh")] public bool Refresh { get; set; }
     [JsonPropertyName("raw")] public bool Raw { get; set; }
     [JsonPropertyName("timeoutSeconds")] public int? TimeoutSeconds { get; set; }
+}
+
+// ── Phase D new request types ────────────────────────────────────────────
+
+public sealed class JiraItemsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
+    [JsonPropertyName("includeComments")] public bool? IncludeComments { get; set; }
+    [JsonPropertyName("includeRefs")] public bool? IncludeRefs { get; set; }
+    [JsonPropertyName("seedSource")] public string? SeedSource { get; set; }
+    [JsonPropertyName("format")] public string? Format { get; set; }
+}
+
+public sealed class JiraDimensionRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("project")] public string? Project { get; set; }
+    [JsonPropertyName("spec")] public string? Spec { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class JiraWorkGroupRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("groupCode")] public string? GroupCode { get; set; }
+}
+
+public sealed class JiraProjectRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("body")] public JsonElement? Body { get; set; }
+}
+
+public sealed class JiraLocalProcessingRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("body")] public JsonElement? Body { get; set; }
+}
+
+public sealed class ZulipItemsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
+    [JsonPropertyName("seedSource")] public string? SeedSource { get; set; }
+    [JsonPropertyName("seedId")] public string? SeedId { get; set; }
+    [JsonPropertyName("format")] public string? Format { get; set; }
+}
+
+public sealed class ZulipMessagesRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("id")] public int? Id { get; set; }
+    [JsonPropertyName("user")] public string? User { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class ZulipStreamsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("zulipStreamId")] public int? ZulipStreamId { get; set; }
+    [JsonPropertyName("streamName")] public string? StreamName { get; set; }
+    [JsonPropertyName("body")] public JsonElement? Body { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class ZulipThreadsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("streamName")] public string? StreamName { get; set; }
+    [JsonPropertyName("topic")] public string? Topic { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+}
+
+public sealed class ConfluencePagesRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("pageId")] public string? PageId { get; set; }
+    [JsonPropertyName("label")] public string? Label { get; set; }
+    [JsonPropertyName("spaceKey")] public string? SpaceKey { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("direction")] public string? Direction { get; set; }
+}
+
+public sealed class ConfluenceItemsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
+    [JsonPropertyName("format")] public string? Format { get; set; }
+}
+
+public sealed class GitHubItemsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
+    [JsonPropertyName("includeComments")] public bool? IncludeComments { get; set; }
+    [JsonPropertyName("includeRefs")] public bool? IncludeRefs { get; set; }
+    [JsonPropertyName("seedSource")] public string? SeedSource { get; set; }
+    [JsonPropertyName("format")] public string? Format { get; set; }
+}
+
+public sealed class GitHubReposRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("owner")] public string? Owner { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+}
+
+public sealed class JiraSpecsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("specKey")] public string? SpecKey { get; set; }
+    [JsonPropertyName("family")] public string? Family { get; set; }
+    [JsonPropertyName("workgroup")] public string? Workgroup { get; set; }
+    [JsonPropertyName("url")] public string? Url { get; set; }
+    [JsonPropertyName("artifactKey")] public string? ArtifactKey { get; set; }
+    [JsonPropertyName("pageKey")] public string? PageKey { get; set; }
 }

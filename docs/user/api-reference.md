@@ -28,9 +28,10 @@ service exposes an HTTP API for health checks, search, and management operations
 
 ### Health Check
 
-#### `GET /health`
+#### `GET /api/v1/health`
 
-Returns orchestrator health status.
+Always returns `200 OK`. Liveness signal — the orchestrator process is
+running and accepting HTTP requests. Does **not** consult source health.
 
 **Response:**
 
@@ -41,6 +42,24 @@ Returns orchestrator health status.
   "version": "2.0.0"
 }
 ```
+
+#### `GET /api/v1/status`
+
+Readiness signal sourced from the in-process service-health registry.
+Returns `200 OK` when the orchestrator considers itself ready (every
+required source is healthy), or `503 Service Unavailable` when one or
+more configured sources are degraded. Use this for load-balancer
+readiness probes and dashboards.
+
+> **Note on the difference vs `GET /api/v1/services`.** `health` and
+> `status` are orchestrator-only signals (process liveness / readiness).
+> `services` is the **aggregate dashboard** — it fans out to every source
+> and returns per-source health, last-sync time, item counts, and index
+> state. Use `services` to render UI; use `status` for an automated
+> ready/not-ready decision.
+
+The legacy unversioned `GET /health` endpoint is still served by the
+default Aspire health-check pipeline.
 
 ### Services
 
@@ -118,7 +137,7 @@ Find all cross-references for an item (both incoming and outgoing).
 
 ### Items
 
-#### `GET /api/v1/content/item/{source}/{*id}`
+#### `GET /api/v1/content/item/{source}/{**id}`
 
 Get full details of a content item from any source, with optional content body,
 comments, and markdown snapshot.
@@ -128,7 +147,7 @@ comments, and markdown snapshot.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `source` | string | Source type (jira, zulip, confluence, github) |
-| `*id` | string | Item identifier (catch-all path segment) |
+| `**id` | string | Item identifier (multi-segment greedy catch-all — preserves `/` in keys such as `HL7/fhir:source/patient/...`) |
 
 **Query Parameters:**
 
@@ -150,10 +169,12 @@ Trigger an ingestion sync on source services.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | No | `full`, `incremental`, or `rebuild` (default: `incremental`) |
+| `type` | string | No | `full`, `incremental`, or `rebuild` (default: `incremental`). The CLI verb for `rebuild` was renamed to `reingest` in the 2026-04 sync; the wire value remains `rebuild`. |
 | `sources` | string | No | Comma-separated sources to sync (omit for all) |
+| `jira-project` | string | No | Restrict ingestion to a single Jira project key. Forwarded only to the Jira leg of the fan-out; ignored by other sources. |
 
 **Example:** `POST /api/v1/ingest/trigger?type=incremental&sources=jira,zulip`
+**Example (single Jira project):** `POST /api/v1/ingest/trigger?sources=jira&jira-project=FHIR`
 
 ### Rebuild Index
 
@@ -172,34 +193,46 @@ Rebuild specific indexes on source services.
 
 #### `POST /api/v1/notify-ingestion`
 
-Internal peer notification endpoint. Used by source services to notify the
-orchestrator of ingestion events.
+Internal peer notification endpoint. Source services call this when an
+ingestion run completes; the orchestrator persists the cross-reference
+scan and fans out a `POST /api/v1/{name}/notify-peer` to every other
+enabled source so peers can re-scan their cross-reference indexes against
+the freshly-updated source. Both halves of this protocol carry the
+`ingestion-notifications` OpenAPI tag.
 
 **Request Body:** `PeerIngestionNotification` object.
 
-### Source Proxy
+### Typed Source Proxies
 
-#### `POST /api/v1/jira/query`
+Every source endpoint is reachable through a typed orchestrator proxy at
+`/api/v1/{name}/...`, where `{name}` is one of `jira`, `zulip`,
+`confluence`, or `github`. The proxy preserves method, query string,
+body, response status, and ETag / `Last-Modified` headers; it strips
+`Authorization` and `Cookie` headers by design.
 
-Proxy structured Jira issue query to the Jira source service.
+Examples:
 
-**Query Parameters:**
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/api/v1/jira/query` | Structured Jira issue query |
+| `POST` | `/api/v1/jira/ingest?jira-project=FHIR` | Trigger Jira ingest scoped to one project |
+| `GET`  | `/api/v1/jira/work-groups` | List HL7 work groups |
+| `POST` | `/api/v1/zulip/query` | Structured Zulip query |
+| `GET`  | `/api/v1/zulip/streams` | List Zulip streams |
+| `GET`  | `/api/v1/zulip/items/{id}/comments` | Always returns `[]` (shape-parity stub) |
+| `GET`  | `/api/v1/zulip/items/{id}/links` | Always returns `[]` (shape-parity stub) |
+| `GET`  | `/api/v1/confluence/pages/{pageId}` | Get a Confluence page |
+| `GET`  | `/api/v1/github/repos` | List indexed GitHub repositories |
+| `GET`  | `/api/v1/github/items/snapshot/{**key}` | GitHub action-first item snapshot (catch-all key preserves `owner/name#123`) |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `q` | string | No | Text query |
-| `limit` | int | No | Maximum results |
+The full set of typed proxy routes is enumerated in
+[Source Endpoint Reference](../technical/source-endpoint-reference.md)
+and surfaced in the merged orchestrator OpenAPI document.
 
-#### `POST /api/v1/zulip/query`
-
-Proxy structured Zulip message query to the Zulip source service.
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `q` | string | No | Text query |
-| `limit` | int | No | Maximum results |
+> **Note.** The previous generic reverse proxy at
+> `/api/v1/source/{name}/...` was removed in the 2026-04 sync. The
+> orchestrator self-metadata routes (`/api/v1/source/orchestrator/...`)
+> are preserved by design.
 
 ---
 
@@ -272,33 +305,57 @@ Returns source-specific statistics (item counts, last sync time, index status).
 curl http://localhost:5160/api/v1/stats
 ```
 
-### Status
+### Status / Health
+
+Each source service publishes both an unversioned `GET /health` (Aspire
+default) and the versioned trio:
+
+#### `GET /api/v1/health`
+
+Always `200`; process liveness only.
 
 #### `GET /api/v1/status`
 
-Returns source service health status.
+Returns source service health status (readiness — `200` when ready,
+`503` when degraded).
+
+#### `GET /api/v1/stats`
+
+Source-specific statistics (item counts, last sync time, index status).
 
 ### Ingestion
 
 #### `POST /api/v1/ingest`
 
-Triggers an ingestion for this source service.
+Synchronous ingestion. Jira additionally accepts `?project=KEY` to scope
+to a single project; the typed orchestrator proxy renames this consumer-
+facing parameter to `?jira-project=KEY` (see
+[Typed Source Proxies](#typed-source-proxies)).
 
-**Example:**
+#### `POST /api/v1/ingest/trigger`
 
-```bash
-curl -X POST http://localhost:5160/api/v1/ingest
-```
+Asynchronous ingestion (queues a run and returns immediately).
 
-### Rebuild
+### Reingest / Reindex
 
 #### `POST /api/v1/rebuild`
 
-Rebuild database from cache.
+Rebuild database from cache (no upstream re-fetch). The CLI surface uses
+the `reingest` verb for this operation; the wire path remains `rebuild`.
 
 #### `POST /api/v1/rebuild-index`
 
-Rebuild specific indexes on this source service.
+Rebuild specific indexes on this source service. The CLI surface uses
+the `reindex` verb for this operation; the wire path remains
+`rebuild-index`.
+
+### Internal Peer Notification
+
+#### `POST /api/v1/notify-peer`
+
+Receives `PeerIngestionNotification` from the orchestrator after another
+source's ingestion run completes; triggers a cross-reference re-scan
+against the newly updated peer. Tagged `ingestion-notifications`.
 
 ---
 

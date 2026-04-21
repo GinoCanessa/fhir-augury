@@ -115,12 +115,14 @@ public class OpenApiDocumentValidationTests
             {
                 continue;
             }
-            Assert.Matches(@"^/api/v1/source/[a-z][a-z0-9-]*/", entry.Key);
+            // Source paths flow through typed proxies at `/api/v1/{source}/...`.
+            Assert.Matches(@"^/api/v1/[a-z][a-z0-9-]*/", entry.Key);
+            Assert.DoesNotMatch(@"^/api/v1/source/[a-z]", entry.Key);
         }
 
-        Assert.True(paths.ContainsKey("/api/v1/source/jira/query"));
-        Assert.True(paths.ContainsKey("/api/v1/source/jira/items/{id}"));
-        Assert.True(paths.ContainsKey("/api/v1/source/zulip/query"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/query"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/items/{id}"));
+        Assert.True(paths.ContainsKey("/api/v1/zulip/query"));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────

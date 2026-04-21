@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using FhirAugury.Cli.Models;
 
@@ -9,43 +10,31 @@ public static class ListHandler
     {
         using HttpServiceClient client = new(orchestratorAddr);
 
-        JsonElement endpoints = await client.GetServiceEndpointsAsync(ct);
         string sourceLower = request.Source.ToLowerInvariant();
-        string? sourceAddress = null;
-
-        if (endpoints.TryGetProperty("endpoints", out JsonElement endpointsEl) && endpointsEl.ValueKind == JsonValueKind.Array)
+        if (sourceLower != "jira" && sourceLower != "zulip" && sourceLower != "confluence" && sourceLower != "github")
         {
-            foreach (JsonElement ep in endpointsEl.EnumerateArray())
-            {
-                bool enabled = ep.TryGetProperty("enabled", out JsonElement enabledEl) && enabledEl.GetBoolean();
-                string? name = ep.GetStringOrNull("name");
-                if (enabled && name is not null && name.Equals(sourceLower, StringComparison.OrdinalIgnoreCase))
-                {
-                    sourceAddress = ep.GetStringOrNull("httpAddress");
-                    break;
-                }
-            }
-        }
-
-        if (sourceAddress is null)
-        {
-            List<string> available = [];
-            if (endpoints.TryGetProperty("endpoints", out JsonElement eps) && eps.ValueKind == JsonValueKind.Array)
-            {
-                foreach (JsonElement ep in eps.EnumerateArray())
-                {
-                    bool enabled = ep.TryGetProperty("enabled", out JsonElement enabledEl) && enabledEl.GetBoolean();
-                    string? name = ep.GetStringOrNull("name");
-                    if (enabled && name is not null)
-                        available.Add(name);
-                }
-            }
             throw new ArgumentException(
-                $"Unknown or disabled source: {request.Source}. Available: {string.Join(", ", available)}");
+                $"Unknown source: {request.Source}. Available: jira, zulip, confluence, github");
         }
 
-        JsonElement response = await client.ListItemsAsync(
-            sourceAddress, request.Limit, offset: null, request.SortBy, request.SortOrder, request.Filters, ct);
+        StringBuilder url = new($"/api/v1/{sourceLower}/items");
+        List<string> queryParams = [];
+        if (request.Limit > 0)
+            queryParams.Add($"limit={request.Limit}");
+        if (!string.IsNullOrEmpty(request.SortBy))
+            queryParams.Add($"sort_by={Uri.EscapeDataString(request.SortBy)}");
+        if (!string.IsNullOrEmpty(request.SortOrder))
+            queryParams.Add($"sort_order={Uri.EscapeDataString(request.SortOrder)}");
+        if (request.Filters is not null)
+        {
+            foreach ((string key, string value) in request.Filters)
+                queryParams.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value)}");
+        }
+
+        if (queryParams.Count > 0)
+            url.Append($"?{string.Join("&", queryParams)}");
+
+        JsonElement response = await client.GetFromOrchestratorAsync(url.ToString(), ct);
 
         List<object> items = [];
         if (response.TryGetProperty("items", out JsonElement itemsEl) && itemsEl.ValueKind == JsonValueKind.Array)

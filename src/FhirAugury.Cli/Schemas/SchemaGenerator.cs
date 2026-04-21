@@ -376,14 +376,15 @@ public static class SchemaGenerator
         ),
 
         ["ingest"] = new(
-            "Ingestion management (trigger, status, rebuild, index)",
+            "Ingestion management (trigger, status, reingest, reindex)",
             InputSchema(["command", "action"], new()
             {
                 ["command"] = Const("ingest"),
-                ["action"] = new { type = "string", description = "Action: trigger, status, rebuild, index", enumValues = new[] { "trigger", "status", "rebuild", "index" } },
+                ["action"] = new { type = "string", description = "Action: trigger, status, reingest, reindex", enumValues = new[] { "trigger", "status", "reingest", "reindex" } },
                 ["sources"] = ArrayProp("string", "Source filter (default: all)"),
                 ["type"] = new { type = "string", description = "Sync type (for trigger)", defaultValue = "incremental" },
-                ["indexType"] = new { type = "string", description = "Index type (for index action)", defaultValue = "all" },
+                ["indexType"] = new { type = "string", description = "Index type (for reindex action)", defaultValue = "all" },
+                ["jiraProject"] = new { type = "string", description = "Restrict a Jira run to a single project key (forwarded only to the Jira leg of the fan-out; surfaced over HTTP as ?jira-project=)" },
             }),
             new
             {

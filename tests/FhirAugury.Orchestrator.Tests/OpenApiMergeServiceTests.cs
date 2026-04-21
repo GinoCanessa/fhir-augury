@@ -119,7 +119,7 @@ public class OpenApiMergeServiceTests
         JsonObject paths = (JsonObject)root["paths"]!;
 
         Assert.True(paths.ContainsKey("/api/v1/health"));
-        Assert.True(paths.ContainsKey("/api/v1/source/jira/query"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/query"));
     }
 
     [Fact]
@@ -151,7 +151,7 @@ public class OpenApiMergeServiceTests
         Assert.True(status!.ContainsKey("jira"));
 
         JsonObject paths = (JsonObject)root["paths"]!;
-        Assert.False(paths.ContainsKey("/api/v1/source/jira/query"));
+        Assert.False(paths.ContainsKey("/api/v1/jira/query"));
     }
 
     [Fact]

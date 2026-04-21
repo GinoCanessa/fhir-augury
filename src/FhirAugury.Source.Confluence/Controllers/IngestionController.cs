@@ -5,6 +5,7 @@ using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
 using FhirAugury.Source.Confluence.Ingestion;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Source.Confluence.Controllers;
@@ -84,7 +85,19 @@ public class IngestionController(
         return Ok(new RebuildIndexResponse(true, $"queued {indexType} index rebuild", null, null));
     }
 
+    /// <summary>
+    /// Acknowledges an ingestion-completion notification from a peer source so
+    /// this service can rebuild its Confluence-side cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the orchestrator-side
+    /// <c>POST api/v1/notify-ingestion</c> endpoint
+    /// (<c>FhirAugury.Orchestrator.Controllers.IngestionController.NotifyIngestion</c>).
+    /// The orchestrator fans completion notifications from one source out to
+    /// every other source via this endpoint.
+    /// </remarks>
     [HttpPost("notify-peer")]
+    [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] PeerIngestionNotification notification)
     {
         workQueue.Enqueue(ct =>
