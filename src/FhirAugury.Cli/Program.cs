@@ -15,6 +15,7 @@ public static class Program
         string? jsonInput = null;
         string? inputFile = null;
         string? outputFile = null;
+        string? bodyInput = null;
         bool pretty = false;
         bool help = false;
         string? helpCommand = null;
@@ -32,6 +33,9 @@ public static class Program
                     break;
                 case "--output" when i + 1 < args.Length:
                     outputFile = args[++i];
+                    break;
+                case "--body" when i + 1 < args.Length:
+                    bodyInput = args[++i];
                     break;
                 case "--pretty":
                     pretty = true;
@@ -83,6 +87,32 @@ public static class Program
             json = await File.ReadAllTextAsync(inputFile);
         }
 
+        // Inject --body into the envelope, if supplied. The body string is
+        // resolved with the same @file / @- / inline-JSON semantics as
+        // --json, then parsed as a JSON value (not a string-wrapped
+        // string) and merged under "body". Conflicts with an existing
+        // envelope-supplied body are a usage error.
+        if (bodyInput is not null)
+        {
+            try
+            {
+                json = await InjectBodyAsync(json, bodyInput);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return await WriteErrorAsync(ex.Message, outputFile, pretty);
+            }
+            catch (FileNotFoundException ex)
+            {
+                return await WriteErrorAsync(ex.Message, outputFile, pretty);
+            }
+            catch (JsonException ex)
+            {
+                return await WriteErrorAsync(
+                    $"--body did not parse as JSON: {ex.Message}", outputFile, pretty);
+            }
+        }
+
         // Execute command (with Ctrl+C cancellation support)
         using CancellationTokenSource cts = new();
         Console.CancelKeyPress += (_, e) =>
@@ -101,10 +131,12 @@ public static class Program
             result = OutputEnvelope.Fail("", "CANCELLED", "Operation was cancelled.");
         }
 
-        // Serialize and output
+        // Serialize and output. On failure, write the envelope to stderr
+        // when no --output was supplied so consumers piping stdout get a
+        // clean signal.
         JsonSerializerOptions opts = pretty ? PrettyJson : CompactJson;
         string output = JsonSerializer.Serialize(result, opts);
-        await WriteOutputAsync(output, outputFile);
+        await WriteOutputAsync(output, outputFile, isError: !result.Success);
 
         return result.Success ? 0 : 1;
     }
@@ -140,11 +172,28 @@ public static class Program
             Dictionary<string, object> allSchemas = SchemaGenerator.GenerateAll();
             helpData = new Dictionary<string, object>(allSchemas)
             {
-                ["usage"] = "fhir-augury --json '{\"command\":\"<name>\", ...}' [--pretty] [--output <file>]\n"
-                          + "fhir-augury --input <file> [--pretty] [--output <file>]\n"
-                          + "fhir-augury --help [command] [--pretty] [--output <file>]\n"
-                          + "fhir-augury --json @file.json [--pretty] [--output <file>]\n"
-                          + "fhir-augury --json @- [--pretty] [--output <file>]",
+                ["usage"] = string.Join('\n',
+                [
+                    "fhir-augury [INPUT] [OPTIONS]",
+                    "",
+                    "INPUT (one of):",
+                    "  --json '<json>'           Inline request envelope.",
+                    "  --json @file.json         Read the envelope from a file.",
+                    "  --json @-                 Read the envelope from stdin.",
+                    "  --input <file>            Read the envelope from a file.",
+                    "",
+                    "OPTIONS:",
+                    "  --body <value|@file|@->   Inject a JSON body into the envelope under \"body\".",
+                    "                            Resolves with the same @file / @- semantics as --json.",
+                    "                            Errors if the envelope already supplies \"body\".",
+                    "  --output <file>           Write the response envelope to <file> instead of stdout.",
+                    "  --pretty                  Pretty-print JSON output.",
+                    "  --help [command]          Show schemas for all commands or one specific command.",
+                    "",
+                    "OUTPUT:",
+                    "  Success envelopes go to stdout (or --output).",
+                    "  Failure envelopes go to stderr (or --output) with exit code 1.",
+                ]),
             };
         }
 
@@ -171,11 +220,53 @@ public static class Program
         return input;
     }
 
-    private static async Task WriteOutputAsync(string output, string? outputFile)
+    /// <summary>
+    /// Injects a CLI-supplied <c>--body</c> value into the request envelope
+    /// under the <c>"body"</c> property. The body string is resolved with
+    /// the same <c>@file</c> / <c>@-</c> / inline-JSON semantics as
+    /// <c>--json</c>, then parsed as a JSON value (not a quoted string) so
+    /// it round-trips through the envelope without double-encoding.
+    /// Throws <see cref="InvalidOperationException"/> when the envelope
+    /// already carries a <c>body</c> property.
+    /// </summary>
+    internal static async Task<string> InjectBodyAsync(string envelopeJson, string bodyInput)
+    {
+        string bodyText = await ResolveJsonInputAsync(bodyInput);
+
+        using JsonDocument bodyDoc = JsonDocument.Parse(bodyText);
+        using JsonDocument envelopeDoc = JsonDocument.Parse(envelopeJson);
+        if (envelopeDoc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException(
+                "--body requires the request envelope to be a JSON object.");
+        }
+
+        Dictionary<string, JsonElement> merged = new(StringComparer.Ordinal);
+        foreach (JsonProperty prop in envelopeDoc.RootElement.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, "body", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "--body conflicts with a 'body' field already present in the envelope.");
+            }
+            merged[prop.Name] = prop.Value.Clone();
+        }
+        merged["body"] = bodyDoc.RootElement.Clone();
+
+        return JsonSerializer.Serialize(merged, CompactJson);
+    }
+
+    private static async Task WriteOutputAsync(string output, string? outputFile, bool isError = false)
     {
         if (outputFile is not null)
         {
             await File.WriteAllTextAsync(outputFile, output);
+            return;
+        }
+
+        if (isError)
+        {
+            await Console.Error.WriteLineAsync(output);
         }
         else
         {
@@ -189,14 +280,7 @@ public static class Program
         JsonSerializerOptions opts = pretty ? PrettyJson : CompactJson;
         string output = JsonSerializer.Serialize(envelope, opts);
 
-        if (outputFile is not null)
-        {
-            await File.WriteAllTextAsync(outputFile, output);
-        }
-        else
-        {
-            await Console.Error.WriteLineAsync(output);
-        }
+        await WriteOutputAsync(output, outputFile, isError: true);
 
         return 1;
     }

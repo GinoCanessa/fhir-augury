@@ -30,13 +30,28 @@ direct HTTP and `appsettings.json` reads are last-resort fallbacks.
   ```
 
   Alternatively, `--json @path/to/request.json` reads the body from a file,
-  and `--json @-` reads from stdin.
-- **Output:** every command emits a JSON `OutputEnvelope` on stdout. Skills
-  parse JSON; non-zero exit codes signal failure. Use `--pretty` only when
-  inspecting output manually.
-- **Discovery:** `fhir-augury --help` lists every command. Authoritative
-  behavior lives under `src/FhirAugury.Cli/Dispatch/Handlers/`. The full
-  request/response shapes can be exported with `save-schemas` (see below).
+  `--json @-` reads from stdin, and `--input <file>` reads the envelope from
+  a file (equivalent to `--json @file`).
+- **Bulky bodies:** for commands that take a `body` field (notably `call`,
+  `jira-project`, `jira-local-processing`, `zulip-streams`), use the
+  top-level `--body <value|@file|@->` flag to inject the body as a JSON
+  value. This avoids string-escaping the body inside the envelope and the
+  classic "double-encoded JSON string" mistake. The flag conflicts with an
+  envelope-supplied `body`.
+
+  ```bash
+  fhir-augury --json '{"command":"call","source":"orchestrator","operation":"jira.query"}' --body @scratch/query.json
+  ```
+- **Output:** every command emits a JSON `OutputEnvelope`. Success
+  envelopes go to stdout (or `--output <file>`); failure envelopes go to
+  stderr (or `--output`) with exit code 1. Skills parse JSON; non-zero
+  exit codes signal failure. Use `--pretty` only when inspecting output
+  manually.
+- **Discovery:** `fhir-augury --help` lists every command and every
+  top-level flag (`--json`, `--input`, `--output`, `--body`, `--pretty`).
+  Authoritative behavior lives under
+  `src/FhirAugury.Cli/Dispatch/Handlers/`. The full request/response
+  shapes can be exported with `save-schemas` (see below).
 
 ## Command map
 
@@ -54,7 +69,7 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `cross-referenced` | Both directions of cross-reference for a value |
 | `query-jira` | Structured Jira query. Supported filter fields: `query`, `statuses`, `resolutions`, `projects`, `excludeProjects`, `workGroups`, `specifications`, `types`, `priorities`, `labels`, `assignees`, `reporters`, `inPersonRequesters`, `createdAfter`, `createdBefore`, `updatedAfter`, `updatedBefore`, `sortBy`, `sortOrder`, `limit`, `offset`. |
 | `query-zulip` | Structured Zulip query (streams, topics, senders, …) |
-| `list-jira-dimension` | Distinct values for a Jira dimension (work-group, status, …) |
+| `list-jira-workgroups`, `list-jira-specifications`, `list-jira-labels`, `list-jira-statuses` | Distinct values for a Jira dimension. The `workgroups` variant joins the canonical HL7 catalog and surfaces `name`, `code`, `nameClean` (PascalCase slug from `Hl7WorkGroupNameCleaner`, safe for URLs and folder names), `definition`, `retired`, and `issueCount`. **Use `nameClean` directly — do not re-derive it.** |
 | `ingest` | Trigger / control source ingestion. Actions: `trigger`, `status`, `reingest`, `reindex` (the latter two were renamed from `rebuild`/`index` in the 2026-04 sync; no aliases). Accepts `jiraProject` to scope a Jira run to one project. |
 | `services` | Inspect service health |
 | `version` | CLI/orchestrator version info |

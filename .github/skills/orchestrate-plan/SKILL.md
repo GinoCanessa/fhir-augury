@@ -40,7 +40,7 @@ The user must provide or you must determine:
 3. **Work group** *(optional)* — a single work group to restrict the run to.
    May be supplied as the work group's `code`, `name`, or `nameClean` (case
    insensitive). The orchestrator resolves it against the work-group list
-   returned by `list-jira-dimension --dimension workgroups`. If omitted,
+   returned by `list-jira-workgroups`. If omitted,
    tickets are drawn at random across **all** work groups (no per-WG
    round-robin — the Jira source's random draw handles distribution).
 4. **Statuses** *(optional, default `["Resolved - change required"]`)* —
@@ -64,7 +64,7 @@ The user must provide or you must determine:
 
 ## Work-Group Names
 
-Work-group records returned by `list-jira-dimension --dimension workgroups`
+Work-group records returned by `list-jira-workgroups`
 include `code`, `name`, and `nameClean` directly. **Use `nameClean`
 verbatim** for output subdirectory names — do not derive it locally.
 
@@ -86,7 +86,7 @@ All operations are reached via the `fhir-augury-cli` skill. Prefer the typed
 | Purpose | CLI form (primary, typed) |
 |---------|---------------------------|
 | Health check | `{"command":"services","action":"health"}` |
-| List work groups (with `code`/`name`/`nameClean`/`issueCount`) | `{"command":"list-jira-dimension","dimension":"workgroups"}` |
+| List work groups (with `code`/`name`/`nameClean`/`issueCount`) | `{"command":"list-jira-workgroups"}` |
 | Draw a random unprocessed ticket | `{"command":"jira-local-processing","action":"random-ticket","body":{...filter...}}` |
 | Mark a ticket processed locally | `{"command":"jira-local-processing","action":"set-processed","body":{"key":"FHIR-XXXXX","processedLocally":true}}` |
 | Inspect processed flags (admin) | `{"command":"jira-local-processing","action":"tickets","body":{...filter...}}` |
@@ -145,9 +145,9 @@ the filter — terminate draws (the run is **exhausted**).
 
 1. Health-check the orchestrator and Jira source via the CLI's `services`
    command. Abort with a clear message if either is down.
-2. Fetch the work-group list with `list-jira-dimension --dimension
-   workgroups`. Read `code`, `name`, `nameClean`, `issueCount` from the
-   JSON response.
+2. Fetch the work-group list with `list-jira-workgroups`. Read `code`,
+   `name`, `nameClean`, `issueCount` from the JSON response — the CLI
+   surfaces `nameClean` directly; do not re-derive it from `name`.
 3. If the user supplied a **Work group**, resolve it against `code` /
    `name` / `nameClean` (case insensitive). Abort if no match.
 4. Apply defaults: statuses → `["Resolved - change required"]`, projects →
@@ -335,7 +335,7 @@ User: *"Plan unprocessed resolved tickets, saving reports to
 
 The orchestrator should:
 
-1. Health-check services; list work groups via `list-jira-dimension`
+1. Health-check services; list work groups via `list-jira-workgroups`
    and read `code`/`name`/`nameClean` from the JSON.
 2. Apply defaults (statuses=`Resolved - change required`,
    projects=`FHIR`, working directory=`temp/plan/`) and present a

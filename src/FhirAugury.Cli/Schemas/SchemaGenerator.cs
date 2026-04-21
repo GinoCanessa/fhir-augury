@@ -304,7 +304,7 @@ public static class SchemaGenerator
         ),
 
         ["list-jira-workgroups"] = new(
-            "List all Jira work groups with issue counts",
+            "List all Jira work groups with issue counts and canonical HL7 fields (code, nameClean, definition, retired)",
             InputSchema(["command"], new()
             {
                 ["command"] = Const("list-jira-workgroups"),
@@ -316,7 +316,26 @@ public static class SchemaGenerator
                 properties = new Dictionary<string, object>
                 {
                     ["dimension"] = Prop("string", "The dimension name"),
-                    ["items"] = ArrayProp("object", "Work groups with name and issueCount"),
+                    ["items"] = new
+                    {
+                        type = "array",
+                        description = "Work groups joined with the canonical HL7 catalog. "
+                                    + "Canonical fields (code/nameClean/definition) are null for free-text Jira "
+                                    + "work groups with no HL7 match.",
+                        items = new
+                        {
+                            type = "object",
+                            properties = new Dictionary<string, object>
+                            {
+                                ["name"] = Prop("string", "Free-text work-group name as stored on jira_issues.WorkGroup"),
+                                ["code"] = Prop("string", "Canonical HL7 work-group code (e.g. 'oo', 'fhir')"),
+                                ["nameClean"] = Prop("string", "PascalCase slug derived by Hl7WorkGroupNameCleaner; safe for URLs and folder names"),
+                                ["definition"] = Prop("string", "HL7 work-group definition text"),
+                                ["retired"] = Prop("boolean", "True if the HL7 work group is retired"),
+                                ["issueCount"] = Prop("integer", "Total Jira issue count attributed to this work group"),
+                            },
+                        },
+                    },
                 },
             }
         ),
