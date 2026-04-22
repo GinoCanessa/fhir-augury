@@ -1,9 +1,9 @@
 ---
-name: artifact-notes
-description: "Drafts an updated ballot note for a single FHIR artifact based on changes made since a specified commit. USE FOR: per-artifact ballot notes, ballot-comment drafting, change roll-ups for resources/profiles/IG artifacts. Requires a GitHub repo (e.g., HL7/fhir), a since-commit SHA, and an artifact name (e.g., Observation). Walks the artifact's source files between the since-commit and HEAD, attributes commits to the FHIR Jira tickets they applied, summarises what actually changed in the after-applied state, and writes a markdown report containing a draft HTML ballot note suitable for the artifact's intro file."
+name: notes-artifact
+description: "Drafts an updated ballot note for a single FHIR artifact (resource / profile / IG artifact) based on changes made since a specified commit. USE FOR: per-artifact ballot notes, ballot-comment drafting, change roll-ups for resources/profiles/IG artifacts. Requires a GitHub repo (e.g., HL7/fhir), a since-commit SHA, and an artifact name (e.g., Observation). Walks the artifact's source files between the since-commit and HEAD, attributes commits to the FHIR Jira tickets they applied, summarizes what actually changed in the after-applied state, and writes a markdown report containing a draft HTML ballot note suitable for the artifact's intro file. For specification *page* ballot notes (`source/*.html`), use `notes-page` instead. For the consolidated *datatypes* page (`source/datatypes/**`), use `notes-datatype`."
 ---
 
-# Artifact Notes Skill
+# Notes — Artifact Skill
 
 Drafts an updated **ballot note** for a single FHIR artifact (resource,
 profile, IG artifact, terminology bundle, …) by analysing the changes
@@ -164,6 +164,24 @@ If the briefing's Artifact Map does **not** have an explicit mapping
 for the requested artifact, list every file matched by the patterns
 above that exists in the clone, and list the patterns that produced no
 match in the report's "Source files" section.
+
+**Out of scope for this skill** (route to the matching sibling skill
+instead and, if the user asked for one of these explicitly, stop and
+suggest the right skill rather than producing a misleading report):
+
+- **`HL7/fhir` narrative spec pages** (`source/<page>.html` such as
+  `security`, `extensibility`, `terminologies`) — use `notes-page`.
+- **The `HL7/fhir` consolidated datatypes page** and anything under
+  `source/datatypes/` — use `notes-datatype`.
+- **IG / extension-pack / incubator narrative pages**
+  (`input/pagecontent/<page>.{md,xml}`) when the change is purely
+  page-level (no FSH / SD / example file changes) — use `notes-page`.
+
+For the common case in non-FhirCore repos the artifact and the page
+overlap (an IG profile usually has both an FSH source and a markdown
+page describing it). When that happens, stay in `notes-artifact` and
+include the page mark-up in the file list as documented above; do
+not also emit a parallel `notes-page` report for the same artifact.
 
 Materialise the file list as both:
 
