@@ -1,6 +1,6 @@
 ---
 name: index-planned
-description: "Builds a README.md index for one or more workgroup folders of planned FHIR ticket reports. USE FOR: indexing plan output, generating workgroup implementation indexes, grouping planned tickets by specification/type/topic, producing per-workgroup tables of contents. Reads `ticket-plan` reports under a planned directory (single workgroup folder OR parent planned dir), clusters tickets into topics using ticket content with prerequisite/related tickets prioritized, and writes a structured README.md per workgroup with a Table of Contents, per-specification sections, per-type subsections, topic groupings, prerequisite-ticket sub-groups, and ticket tables."
+description: "Builds a README.md index for one or more workgroup folders of planned FHIR ticket reports. USE FOR: indexing plan output, generating workgroup implementation indexes, grouping planned tickets by specification/type/topic, producing per-workgroup tables of contents. Reads `ticket-plan` reports under a planned directory (single workgroup folder OR parent planned dir), clusters tickets into topics using ticket content with prerequisite tickets, related tickets, and shared related artifacts (both explicitly listed and implicitly derived from affected file paths) prioritized, and writes a structured README.md per workgroup with a Table of Contents, per-specification sections, per-type subsections, topic groupings, prerequisite-ticket sub-groups, and ticket tables that list each ticket's effective related-artifact set."
 ---
 
 # Index Planned Skill
@@ -102,7 +102,7 @@ Full plans have a header table at the top of the document. Extract:
 | `specification` | `\| Specification \|` row | If empty, `(none reported)`, `None recorded`, or missing → use `Unspecified`. |
 | `reporter` | `\| Reporter \|` row | |
 | `resolved` | `\| Resolved \|` row | ISO `YYYY-MM-DD` if available. |
-| `relatedArtifacts` | `\| Related Artifacts \|` row | Comma-separated list; used as a secondary clustering signal. |
+| `relatedArtifacts` | `\| Related Artifacts \|` row | Comma-separated list of FHIR artifact names (resources, profiles, IG artifacts, pages, datatypes). Parsed into a normalized set per ticket; used as a primary clustering signal **and** rendered as a column in every ticket table. Empty / `(none reported)` / `None recorded` / missing → empty set. |
 
 Also extract:
 
@@ -117,6 +117,13 @@ Also extract:
   `### Affected Repositories` inside `## Impact Analysis` (used as a
   Topic-clustering signal: tickets that touch the same repos are more
   likely to belong together).
+- **Affected files** — for each affected repository, the set of file
+  paths listed under that repository's `**Affected Files:**` bullet
+  inside `### Affected Repositories`, **unioned with** every `- File:
+  {path}` value found under `### Step-by-Step Tasks` for the same
+  repository. Stored as `{repoFullName -> set of paths}`. Drives the
+  derivation of implicit artifacts (see [Implicit artifact
+  derivation](#implicit-artifact-derivation)).
 - **Resolution Summary** — the contents of the `## Resolution Summary`
   section (used for Topic clustering and to draft the Topic
   description).
@@ -153,6 +160,71 @@ No-op tickets do **not** participate in Topic clustering. They are
 rendered in a dedicated `No Implementation Required` subsection at
 the end of their `(Specification, Type)` bucket — see
 [README format](#readme-format).
+
+#### Implicit artifact derivation
+
+In addition to the explicit `Related Artifacts` header field, the
+indexer derives **implicit artifacts** from the `Affected files` set
+parsed above. Implicit artifacts represent the area-of-work that a
+ticket touches and let reviewers see groupings (e.g., "all the
+Observation changes", "all the search.html changes") even when the
+ticket author did not list them in `Related Artifacts` explicitly.
+
+Derivation is repo-aware:
+
+1. **Prefer the repo briefing's Artifact Map.** If a per-repo briefing
+   is available (via `cache/github/repos/<owner>_<name>/repo-analysis/`,
+   produced by the `repo-analysis` skill), use its Artifact Map /
+   Ticket-Relevant Paths to map a file path to its owning artifact.
+   This is the source of truth — never override a briefing mapping
+   with a heuristic.
+2. **Fallback heuristics** when no briefing entry covers a path. The
+   defaults below cover the common HL7 specification repos; treat them
+   as a starting point and let the briefing expand or override them
+   per-repo:
+
+   | Repo shape | Path pattern | Implicit artifact |
+   |------------|--------------|-------------------|
+   | `HL7/fhir` | `source/<artifact>/**` | `<artifact>` (resource / module folder name, capitalized as it appears on disk — e.g., `observation` → `Observation` only if the briefing confirms; otherwise keep folder casing) |
+   | `HL7/fhir` | `source/<page>.html` (top-level page) | `<page>` (e.g., `search`, `formats`, `narrative`) |
+   | `HL7/fhir` | `source/datatypes/**` | `datatypes` |
+   | IG repos (`HL7/<ig>-ig`, `HL7/fhir-<domain>`) | `input/resources/<artifact>/**`, `input/profiles/<artifact>.*`, `input/pagecontent/<page>.md` | `<artifact>` or `<page>` accordingly |
+   | Anything else | (no match) | omit — do not invent an artifact name |
+
+3. **Union with explicit artifacts.** A ticket's **effective artifact
+   set** = the explicit `Related Artifacts` set ∪ the implicit
+   artifacts derived above, de-duplicated using the rules in
+   [Related artifact normalization](#related-artifact-normalization).
+4. **Tag the source.** Internally track, per artifact, whether it came
+   from the explicit header, the briefing, or a fallback heuristic.
+   Implicit-only artifacts are still rendered in the `Artifacts`
+   column and still participate in clustering, but the indexer should
+   prefer explicit artifacts when naming a Topic.
+5. **Be conservative.** Do not derive implicit artifacts from paths
+   that clearly fall outside the spec content (e.g., build scripts,
+   CI files, top-level READMEs). When in doubt, omit.
+
+Use the **effective artifact set** wherever Step 5 refers to "shared
+related artifacts" and wherever the ticket-table `Artifacts` column
+is rendered.
+
+#### Related artifact normalization
+
+When comparing artifact sets across tickets for clustering, normalize
+each artifact name as follows:
+
+1. Trim surrounding whitespace.
+2. Compare case-insensitively (e.g., `Observation` and `observation`
+   are the same artifact).
+3. Treat trivial punctuation differences (trailing periods, surrounding
+   parentheses) as equivalent.
+4. Do **not** strip prefixes like `StructureDefinition/` or trailing
+   version suffixes — they are part of the artifact identity and may
+   meaningfully differ.
+
+Render artifact names in ticket tables using the **first spelling
+encountered in the parsed plan files within the workgroup**, so the
+displayed string matches what reviewers see in the source tickets.
 
 #### Header field resolution
 
@@ -212,24 +284,40 @@ Rules:
 For each non-empty `(Specification, Type)` bucket, set aside any
 no-op tickets (they are rendered separately — see Step 6) and cluster
 the remaining tickets into **Topics**. Topic clustering is the
-agent's analytic step — read the parsed Resolution Summary and
-Proposed Change, and weigh signals as follows (strongest first):
+agent's analytic step — read the parsed Resolution Summary, Proposed
+Change, and Related Artifacts, and weigh signals as follows
+(strongest first):
 
 1. **Prerequisite tickets** — tickets named under one another's
    `### Prerequisites` subsections are strongly co-clustered. Two
    tickets that share a prerequisite chain (directly or transitively)
    belong in the same Topic.
-2. **Related tickets** (cross-references) — tickets that surface each
+2. **Shared related artifacts (effective set)** — tickets whose
+   **effective artifact set** (explicit `Related Artifacts` ∪ implicit
+   artifacts derived from affected file paths — see [Implicit artifact
+   derivation](#implicit-artifact-derivation)) overlap on one or more
+   artifacts (after normalization — see [Related artifact
+   normalization](#related-artifact-normalization)) are strongly
+   co-clustered. A single shared artifact is a meaningful signal;
+   multiple shared artifacts make the link stronger. This is weaker
+   than a direct prerequisite edge but stronger than a bare
+   cross-reference. Implicit (path-derived) overlap counts the same as
+   explicit overlap, but when naming a Topic prefer artifact names
+   that came from at least one ticket's explicit header.
+3. **Related tickets** (cross-references) — tickets that surface each
    other under `### Related Tickets` are likely co-clustered, but
-   weaker than direct prerequisite edges.
-3. **Shared subject matter** — overlapping FHIR resources, element
+   weaker than prerequisite or shared-artifact edges.
+4. **Shared subject matter** — overlapping FHIR resources, element
    paths, operation names, and domain terms drawn from Resolution
-   Summary, Proposed Change, Affected Repositories, and Related
-   Artifacts.
+   Summary, Proposed Change, and Affected Repositories. Use this as a
+   tiebreaker when stronger signals are absent.
 
 Each non-no-op ticket joins exactly one Topic. Prefer fewer, broader
 Topics over many narrow ones; the goal is reviewer navigation, not
-maximal specificity.
+maximal specificity. When a Topic is formed primarily by a shared
+artifact (or a small set of artifacts), name the Topic after that
+artifact (or theme) and call out the shared artifacts in the longer
+description.
 
 For each Topic, decide:
 
@@ -298,7 +386,7 @@ After all workgroups are processed, summarize:
 
 Every ticket table — whether inside a Prerequisite Ticket Group, a
 Topic's remaining-tickets table, the Individual Tickets section, or
-the No Implementation Required section — uses the same five columns:
+the No Implementation Required section — uses the same six columns:
 
 | Column | Content |
 |--------|---------|
@@ -307,6 +395,7 @@ the No Implementation Required section — uses the same five columns:
 | Status | The full status string as parsed (e.g., `Highest Applied`). For no-op tickets where the workflow status is unavailable, render the resolution prefixed with `Resolution:` (e.g., `Resolution: Not Persuasive`). |
 | Reporter | The reporter as parsed. |
 | Resolved | The resolved date as parsed (ISO `YYYY-MM-DD` if available). |
+| Artifacts | Comma-separated list of the ticket's **effective artifact set** (explicit `Related Artifacts` ∪ implicit artifacts derived from affected file paths — see [Implicit artifact derivation](#implicit-artifact-derivation)), rendered using the first spelling encountered in the workgroup (see [Related artifact normalization](#related-artifact-normalization)). When there are no artifacts in the effective set, render an em dash (`—`). When the list exceeds 6 entries, render the first 6 (preferring explicit-header artifacts first, then briefing-derived, then heuristic) followed by ` … (+N more)`. |
 
 Row ordering rules:
 
@@ -384,18 +473,18 @@ prerequisite.}
 {Ticket table for the group, ordered by dependency then ascending
 key.}
 
-| Ticket | Title | Status | Reporter | Resolved |
-|--------|-------|--------|----------|----------|
-| [FHIR-XXXXX](./FHIR-XXXXX.md) [Jira](https://jira.hl7.org/browse/FHIR-XXXXX) | … | … | … | … |
+| Ticket | Title | Status | Reporter | Resolved | Artifacts |
+|--------|-------|--------|----------|----------|-----------|
+| [FHIR-XXXXX](./FHIR-XXXXX.md) [Jira](https://jira.hl7.org/browse/FHIR-XXXXX) | … | … | … | … | … |
 
 {After all Prerequisite Ticket Groups in the Topic, render the
 Topic's remaining tickets (Topic members not part of any Prerequisite
 Ticket Group) as a single ticket table, ordered ascending by key.
 Omit this table when the Topic has no remaining tickets.}
 
-| Ticket | Title | Status | Reporter | Resolved |
-|--------|-------|--------|----------|----------|
-| … | … | … | … | … |
+| Ticket | Title | Status | Reporter | Resolved | Artifacts |
+|--------|-------|--------|----------|----------|-----------|
+| … | … | … | … | … | … |
 
 {After all Topics, if any 1-ticket Topics existed, render:}
 
@@ -404,9 +493,9 @@ Omit this table when the Topic has no remaining tickets.}
 {Ticket table of every 1-ticket-Topic ticket in the Type bucket,
 ordered ascending by key.}
 
-| Ticket | Title | Status | Reporter | Resolved |
-|--------|-------|--------|----------|----------|
-| … | … | … | … | … |
+| Ticket | Title | Status | Reporter | Resolved | Artifacts |
+|--------|-------|--------|----------|----------|-----------|
+| … | … | … | … | … | … |
 
 {After Individual Tickets, if any no-op tickets exist for this
 (Specification, Type), render:}
@@ -416,9 +505,9 @@ ordered ascending by key.}
 Tickets in this list resolved as `Not Persuasive`, `Duplicate`, or
 `Withdrawn`; their plan reports record no implementation work.
 
-| Ticket | Title | Status | Reporter | Resolved |
-|--------|-------|--------|----------|----------|
-| … | … | … | … | … |
+| Ticket | Title | Status | Reporter | Resolved | Artifacts |
+|--------|-------|--------|----------|----------|-----------|
+| … | … | … | … | … | … |
 
 ---
 
@@ -472,6 +561,22 @@ order — and use the suffixed anchor in the matching ToC entry.
   each other under `### Prerequisites`, they belong to the same
   Topic, even if their Resolution Summary / Proposed Change differ in
   surface terms.
+- **Shared related artifacts are a primary clustering signal.**
+  Tickets whose **effective artifact set** (explicit `Related
+  Artifacts` ∪ implicit artifacts derived from affected file paths)
+  overlaps (after normalization) should be co-clustered unless a
+  stronger signal — a prerequisite edge — pulls them apart. A Topic
+  that is held together primarily by a shared artifact should name or
+  call out that artifact in its description, preferring artifact names
+  that came from at least one ticket's explicit `Related Artifacts`
+  header. Every ticket's effective artifact set is also rendered in
+  its row of every ticket table; do not omit the Artifacts column,
+  even when every ticket in a table has an empty set (render `—`).
+- **Implicit artifacts supplement, never replace, explicit
+  artifacts.** Path-derived artifacts are best-effort. Trust the
+  per-repo briefing's Artifact Map first, fallback heuristics second,
+  and never invent artifact names from paths that fall outside spec
+  content (build scripts, CI, top-level READMEs, etc.).
 - **No-op tickets do not cluster.** Tickets whose plan is the no-op
   short report (`Not Persuasive` / `Duplicate` / `Withdrawn`) skip
   Topic clustering and land in the dedicated No Implementation
