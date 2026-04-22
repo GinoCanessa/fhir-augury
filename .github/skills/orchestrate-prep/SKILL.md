@@ -30,7 +30,7 @@ The user must provide or you must determine:
 
 1. **Output directory** — where prepared reports are saved, organized by
    work-group `nameClean` subfolder. Example:
-   `C:\ai\git\fhir-augury-content\prepared\`.
+   `./cache/output/prepared/`.
 2. **Concurrency** *(optional, default `4`)* — maximum number of concurrent
    sub-agents.
 3. **Work group** *(optional)* — a single work group to restrict the run to.
@@ -323,7 +323,7 @@ the ones in your current scope.
 ## Example Invocation
 
 User: *"Prepare unprocessed tickets, saving reports to
-`C:\ai\git\fhir-augury-content\prepared\`, 4 concurrent agents."*
+`./cache/output/prepared/`, 4 concurrent agents."*
 
 The orchestrator should:
 

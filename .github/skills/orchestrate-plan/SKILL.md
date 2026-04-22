@@ -33,7 +33,7 @@ The user must provide or you must determine:
 
 1. **Output directory** — where planned reports are saved, organized by
    work-group `nameClean` subfolder. Example:
-   `C:\ai\git\fhir-augury-content\planned\`.
+   `./cache/output/planned/`.
 2. **Concurrency** *(optional, default `2`)* — maximum number of concurrent
    sub-agents. Plan agents do more work per ticket than prep agents, so
    the default is lower than `orchestrate-prep`'s `4`.
@@ -331,7 +331,7 @@ the ones in your current scope.
 ## Example Invocation
 
 User: *"Plan unprocessed resolved tickets, saving reports to
-`C:\ai\git\fhir-augury-content\planned\`, 2 concurrent agents."*
+`./cache/output/planned/`, 2 concurrent agents."*
 
 The orchestrator should:
 

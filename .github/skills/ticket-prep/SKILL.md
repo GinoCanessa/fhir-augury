@@ -160,6 +160,7 @@ sections may note "None found" if no data exists.
 | | |
 |-|-|
 | Ticket | ({TICKET-KEY}([{link to jira ticket}]) : {type} |
+| Title | {ticket title} |
 | Work Group | {work group} |
 | Status | {priority} {status} |
 | Labels | {comma-separated labels} |

@@ -48,7 +48,7 @@ The user must provide or you must determine:
    saved. Reports land at
    `<OutputDir>/<owner>_<name>/<since-shortSha>..<head-shortSha>/<artifact>.md`.
    Example:
-   `C:\ai\git\fhir-augury-content\artifact-notes\`.
+   `./cache/output/artifact-notes/`.
 4. **Concurrency** *(optional, default `3`)* — maximum number of
    concurrent sub-agents. Each sub-agent does substantial git + Jira
    work; default is conservative.
@@ -144,7 +144,7 @@ About to draft artifact ballot notes:
   Since-commit    : 1a2b3c4d5e6f
   HEAD            : 9f8e7d6c5b4a (descendant: yes)
   Window          : 1a2b3c4..9f8e7d6
-  Output directory: C:\ai\git\fhir-augury-content\artifact-notes\HL7_fhir\1a2b3c4..9f8e7d6\
+  Output directory: ./cache/output/artifact-notes/HL7_fhir/1a2b3c4..9f8e7d6/
   Working dir     : temp/artifact-notes/   (relative to repo root)
   Artifact filter : (all)
   Excludes        : (none)
@@ -290,7 +290,7 @@ To force a full re-run, pass `skip existing = false` (or delete the
 
 User: *"Draft updated ballot notes for `HL7/fhir` since commit
 `1a2b3c4`, saving reports to
-`C:\ai\git\fhir-augury-content\artifact-notes\`, 3 concurrent
+`./cache/output/artifact-notes/`, 3 concurrent
 agents."*
 
 The orchestrator should:
