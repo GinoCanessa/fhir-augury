@@ -46,6 +46,7 @@ public class GitHubDatabase : SourceDatabase
         JiraWorkgroupRecord.CreateTable(connection);
         JiraSpecFamilyRecord.CreateTable(connection);
         Hl7WorkGroupRecord.CreateTable(connection);
+        GitHubRepoWorkGroupRecord.CreateTable(connection);
 
         // Phase 3 migration: add WorkGroupCode (nullable canonical HL7 code) +
         // index to the existing jira_workgroups table for in-place upgrades.
@@ -53,6 +54,29 @@ public class GitHubDatabase : SourceDatabase
         using (SqliteCommand idx = connection.CreateCommand())
         {
             idx.CommandText = "CREATE INDEX IF NOT EXISTS ix_jira_workgroups_WorkGroupCode ON jira_workgroups(WorkGroupCode)";
+            idx.ExecuteNonQuery();
+        }
+
+        // Phase 4 migrations: add WorkGroup + WorkGroupRaw to github_spec_file_map
+        // (legacy schema had neither) and add WorkGroupRaw to canonical_artifacts /
+        // structure_definitions (legacy schema already had WorkGroup).
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroup", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
+
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE INDEX IF NOT EXISTS ix_github_spec_file_map_RepoFullName_WorkGroup
+                    ON github_spec_file_map(RepoFullName, WorkGroup);
+                CREATE INDEX IF NOT EXISTS ix_github_spec_file_map_RepoFullName_WorkGroupRaw
+                    ON github_spec_file_map(RepoFullName, WorkGroupRaw);
+                CREATE INDEX IF NOT EXISTS ix_github_canonical_artifacts_RepoFullName_WorkGroupRaw
+                    ON github_canonical_artifacts(RepoFullName, WorkGroupRaw);
+                CREATE INDEX IF NOT EXISTS ix_github_structure_definitions_RepoFullName_WorkGroupRaw
+                    ON github_structure_definitions(RepoFullName, WorkGroupRaw);
+                """;
             idx.ExecuteNonQuery();
         }
 
@@ -191,6 +215,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_spec_families;
             DROP TABLE IF EXISTS jira_workgroups;
             DROP TABLE IF EXISTS jira_specs;
+            DROP TABLE IF EXISTS github_repo_workgroups;
             DROP TABLE IF EXISTS sync_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;

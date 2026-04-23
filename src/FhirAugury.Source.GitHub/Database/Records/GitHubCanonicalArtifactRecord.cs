@@ -9,6 +9,7 @@ namespace FhirAugury.Source.GitHub.Database.Records;
 [LdgSQLiteIndex(nameof(RepoFullName), nameof(Name))]
 [LdgSQLiteIndex(nameof(RepoFullName), nameof(FilePath), nameof(Url))]
 [LdgSQLiteIndex(nameof(ResourceType))]
+[LdgSQLiteIndex(nameof(RepoFullName), nameof(WorkGroupRaw))]
 public partial record class GitHubCanonicalArtifactRecord
 {
     [LdgSQLiteKey]
@@ -25,6 +26,14 @@ public partial record class GitHubCanonicalArtifactRecord
     public string? Description { get; set; }
     public string? Publisher { get; set; }
     public string? WorkGroup { get; set; }
+
+    /// <summary>
+    /// Original (pre-resolution) work-group input preserved by
+    /// <c>WorkGroupResolutionPass</c> when the parsed value didn't resolve
+    /// to a canonical HL7 code or resolved to a different code. Null when
+    /// <c>WorkGroup</c> already matches the canonical code.
+    /// </summary>
+    public string? WorkGroupRaw { get; set; }
     public int? FhirMaturity { get; set; }
     public string? StandardsStatus { get; set; }
     public string? TypeSpecificData { get; set; }

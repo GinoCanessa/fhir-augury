@@ -128,6 +128,7 @@ builder.Services.AddHttpClient(GitHubWorkGroupSupportFileAcquirer.HttpClientName
 builder.Services.AddSingleton<GitHubWorkGroupSupportFileAcquirer>();
 builder.Services.AddSingleton<GitHubHl7WorkGroupIndexer>();
 builder.Services.AddSingleton<WorkGroupResolver>();
+builder.Services.AddSingleton<RepoDefaultWorkGroupResolver>();
 
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));

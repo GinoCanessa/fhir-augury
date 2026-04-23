@@ -93,6 +93,14 @@ public class GitHubServiceOptions
     public WorkGroupSourceXmlOptions Hl7WorkGroupSourceXml { get; set; } = new();
 
     /// <summary>
+    /// Per-repo configuration overrides keyed by <c>OWNER/Repo</c>. Currently
+    /// supports an explicit work-group override that wins over derived
+    /// majority-of-JIRA-Spec values in <c>RepoDefaultWorkGroupResolver</c>.
+    /// </summary>
+    public Dictionary<string, RepoOverrideOptions> RepoOverrides { get; set; }
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Returns all configured repositories paired with their category.
     /// </summary>
     public IReadOnlyList<(string Name, RepoCategory Category)> GetAllRepositories()
@@ -202,4 +210,15 @@ public class GitHubRateLimitConfiguration : RateLimitConfiguration
     /// before any response updates the remaining count.
     /// </summary>
     public int MaxConcurrentRequests { get; set; } = 1;
+}
+
+/// <summary>Per-repo configuration overrides (currently work-group only).</summary>
+public class RepoOverrideOptions
+{
+    /// <summary>
+    /// Free-text work-group identifier (canonical HL7 code, display name, or
+    /// any input that resolves through <c>WorkGroupResolver</c>). Wins over
+    /// derived per-repo defaults.
+    /// </summary>
+    public string? WorkGroup { get; set; }
 }
