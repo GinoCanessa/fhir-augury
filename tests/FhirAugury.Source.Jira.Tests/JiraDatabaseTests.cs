@@ -186,7 +186,6 @@ public class JiraDatabaseTests : IDisposable
         JiraCommentRecord comment = new JiraCommentRecord
         {
             Id = JiraCommentRecord.GetIndex(),
-            IssueId = 1,
             IssueKey = "FHIR-500",
             Author = "testuser",
             CreatedAt = DateTimeOffset.UtcNow,

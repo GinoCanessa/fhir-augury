@@ -9,7 +9,6 @@ public partial record class JiraIssueRelatedRecord
 {
     [LdgSQLiteKey]
     public required int Id { get; set; }
-    public required int IssueId { get; set; }
     public required string IssueKey { get; set; }
     public required string RelatedIssueKey { get; set; }
 }

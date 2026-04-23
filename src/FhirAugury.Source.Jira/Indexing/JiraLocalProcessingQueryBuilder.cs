@@ -8,36 +8,101 @@ namespace FhirAugury.Source.Jira.Indexing;
 /// Builds parameterized SQL for the FR-02 local-processing endpoints.
 /// OR semantics within a field, AND semantics across fields.
 /// </summary>
+/// <remarks>
+/// Parameterised by <see cref="TableMapping"/> so the same filter shape
+/// can be applied to any of the four Jira-issue-shaped tables
+/// (<c>jira_issues</c>, <c>jira_pss</c>, <c>jira_baldef</c>,
+/// <c>jira_ballot</c>). Tables that lack a given column (e.g. PSS has no
+/// Specification) map it to NULL in the projection and silently drop the
+/// corresponding IN filter rather than raising. The default overloads
+/// preserve the pre-split FHIR-change-request behaviour.
+/// </remarks>
 public static class JiraLocalProcessingQueryBuilder
 {
     public const int DefaultLimit = 500;
 
-    private const string SelectColumns =
-        "Key, ProjectKey, Title, Type, Status, Priority, WorkGroup, Specification, UpdatedAt";
+    /// <summary>Per-shape table mapping: table name + column expressions for
+    /// filterable fields that vary across shapes.</summary>
+    public sealed record TableMapping(
+        string Type,
+        string TableName,
+        string? WorkGroupExpr,
+        string? SpecificationExpr,
+        bool HasRelatedArtifacts,
+        bool HasChangeCategory,
+        bool HasChangeImpact);
+
+    public static readonly TableMapping Fhir = new TableMapping(
+        "fhir", "jira_issues", "WorkGroup", "Specification",
+        HasRelatedArtifacts: true, HasChangeCategory: true, HasChangeImpact: true);
+
+    public static readonly TableMapping Pss = new TableMapping(
+        "pss", "jira_pss",
+        WorkGroupExpr: "COALESCE(SponsoringWorkGroup, SponsoringWorkGroupsLegacy)",
+        SpecificationExpr: null,
+        HasRelatedArtifacts: false, HasChangeCategory: false, HasChangeImpact: false);
+
+    public static readonly TableMapping Baldef = new TableMapping(
+        "baldef", "jira_baldef",
+        WorkGroupExpr: null,
+        SpecificationExpr: "Specification",
+        HasRelatedArtifacts: true, HasChangeCategory: false, HasChangeImpact: false);
+
+    public static readonly TableMapping Ballot = new TableMapping(
+        "ballot", "jira_ballot",
+        WorkGroupExpr: null,
+        SpecificationExpr: "Specification",
+        HasRelatedArtifacts: false, HasChangeCategory: false, HasChangeImpact: false);
+
+    private static readonly Dictionary<string, TableMapping> MappingByType = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["fhir"] = Fhir,
+        ["pss"] = Pss,
+        ["baldef"] = Baldef,
+        ["ballot"] = Ballot,
+    };
+
+    public static IReadOnlyCollection<TableMapping> AllMappings => MappingByType.Values;
+
+    /// <summary>Resolve a type qualifier (e.g. "fhir", "pss") to its mapping.
+    /// Returns <c>null</c> if unknown.</summary>
+    public static TableMapping? TryGetMapping(string? type)
+    {
+        if (string.IsNullOrWhiteSpace(type)) return Fhir;
+        return MappingByType.TryGetValue(type, out TableMapping? m) ? m : null;
+    }
 
     /// <summary>
     /// Builds the WHERE clause plus parameters for the supplied filter.
     /// Returned SQL starts with <c>" WHERE 1=1 ..."</c>.
     /// </summary>
     public static (string WhereSql, List<SqliteParameter> Parameters)
-        BuildWhere(JiraLocalProcessingFilter filter)
+        BuildWhere(JiraLocalProcessingFilter filter) => BuildWhere(filter, Fhir);
+
+    public static (string WhereSql, List<SqliteParameter> Parameters)
+        BuildWhere(JiraLocalProcessingFilter filter, TableMapping mapping)
     {
         StringBuilder sb = new StringBuilder(" WHERE 1=1");
         List<SqliteParameter> parameters = [];
         int paramIdx = 0;
 
         AddInClause(sb, parameters, "ProjectKey", filter.Projects, ref paramIdx);
-        AddInClause(sb, parameters, "Specification", filter.Specifications, ref paramIdx);
+        if (mapping.SpecificationExpr is not null)
+            AddInClause(sb, parameters, mapping.SpecificationExpr, filter.Specifications, ref paramIdx);
         AddInClause(sb, parameters, "Type", filter.Types, ref paramIdx);
         AddInClause(sb, parameters, "Priority", filter.Priorities, ref paramIdx);
         AddInClause(sb, parameters, "Status", filter.Statuses, ref paramIdx);
-        AddInClause(sb, parameters, "ChangeCategory", filter.ChangeCategories, ref paramIdx);
-        AddInClause(sb, parameters, "ChangeImpact", filter.ChangeImpacts, ref paramIdx);
-        AddInClause(sb, parameters, "WorkGroup", filter.WorkGroups, ref paramIdx);
+        if (mapping.HasChangeCategory)
+            AddInClause(sb, parameters, "ChangeCategory", filter.ChangeCategories, ref paramIdx);
+        if (mapping.HasChangeImpact)
+            AddInClause(sb, parameters, "ChangeImpact", filter.ChangeImpacts, ref paramIdx);
+        if (mapping.WorkGroupExpr is not null)
+            AddInClause(sb, parameters, mapping.WorkGroupExpr, filter.WorkGroups, ref paramIdx);
         AddInClause(sb, parameters, "Reporter", filter.Reporters, ref paramIdx);
 
-        AddRelatedArtifactsClause(sb, parameters, filter.RelatedArtifacts, ref paramIdx);
-        AddLabelsClause(sb, parameters, filter.Labels, ref paramIdx);
+        if (mapping.HasRelatedArtifacts)
+            AddRelatedArtifactsClause(sb, parameters, filter.RelatedArtifacts, ref paramIdx);
+        AddLabelsClause(sb, parameters, filter.Labels, mapping.TableName, ref paramIdx);
 
         ProcessedLocallyMapper.AppendFilter(sb, parameters, filter.ProcessedLocally, ref paramIdx);
 
@@ -46,9 +111,12 @@ public static class JiraLocalProcessingQueryBuilder
 
     /// <summary>Builds the paged list query.</summary>
     public static (string Sql, List<SqliteParameter> Parameters)
-        BuildList(JiraLocalProcessingListRequest request)
+        BuildList(JiraLocalProcessingListRequest request) => BuildList(request, Fhir);
+
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildList(JiraLocalProcessingListRequest request, TableMapping mapping)
     {
-        (string where, List<SqliteParameter> parameters) = BuildWhere(request);
+        (string where, List<SqliteParameter> parameters) = BuildWhere(request, mapping);
 
         int limit = (request.Limit is null || request.Limit.Value <= 0)
             ? DefaultLimit
@@ -58,7 +126,7 @@ public static class JiraLocalProcessingQueryBuilder
             : request.Offset.Value;
 
         StringBuilder sb = new StringBuilder();
-        sb.Append($"SELECT {SelectColumns} FROM jira_issues");
+        sb.Append($"SELECT {BuildSelectColumns(mapping)} FROM {mapping.TableName}");
         sb.Append(where);
         sb.Append(" ORDER BY Key ASC");
         sb.Append(" LIMIT @limit OFFSET @offset");
@@ -71,22 +139,40 @@ public static class JiraLocalProcessingQueryBuilder
 
     /// <summary>Builds the random-single-ticket query.</summary>
     public static (string Sql, List<SqliteParameter> Parameters)
-        BuildRandom(JiraLocalProcessingFilter filter)
-    {
-        (string where, List<SqliteParameter> parameters) = BuildWhere(filter);
+        BuildRandom(JiraLocalProcessingFilter filter) => BuildRandom(filter, Fhir);
 
-        string sql = $"SELECT {SelectColumns} FROM jira_issues{where} ORDER BY RANDOM() LIMIT 1";
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildRandom(JiraLocalProcessingFilter filter, TableMapping mapping)
+    {
+        (string where, List<SqliteParameter> parameters) = BuildWhere(filter, mapping);
+
+        string sql =
+            $"SELECT {BuildSelectColumns(mapping)} FROM {mapping.TableName}{where} ORDER BY RANDOM() LIMIT 1";
         return (sql, parameters);
     }
 
     /// <summary>Builds the count query for paging totals.</summary>
     public static (string Sql, List<SqliteParameter> Parameters)
-        BuildCount(JiraLocalProcessingFilter filter)
-    {
-        (string where, List<SqliteParameter> parameters) = BuildWhere(filter);
+        BuildCount(JiraLocalProcessingFilter filter) => BuildCount(filter, Fhir);
 
-        string sql = $"SELECT COUNT(*) FROM jira_issues{where}";
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildCount(JiraLocalProcessingFilter filter, TableMapping mapping)
+    {
+        (string where, List<SqliteParameter> parameters) = BuildWhere(filter, mapping);
+
+        string sql = $"SELECT COUNT(*) FROM {mapping.TableName}{where}";
         return (sql, parameters);
+    }
+
+    private static string BuildSelectColumns(TableMapping mapping)
+    {
+        string workGroup = mapping.WorkGroupExpr is null
+            ? "NULL AS WorkGroup"
+            : $"{mapping.WorkGroupExpr} AS WorkGroup";
+        string specification = mapping.SpecificationExpr is null
+            ? "NULL AS Specification"
+            : $"{mapping.SpecificationExpr} AS Specification";
+        return $"Key, ProjectKey, Title, Type, Status, Priority, {workGroup}, {specification}, UpdatedAt";
     }
 
     private static void AddInClause(
@@ -127,7 +213,7 @@ public static class JiraLocalProcessingQueryBuilder
 
     private static void AddLabelsClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        List<string> values, ref int paramIdx)
+        List<string> values, string tableName, ref int paramIdx)
     {
         if (values.Count == 0) return;
 
@@ -141,7 +227,7 @@ public static class JiraLocalProcessingQueryBuilder
 
         sb.Append(" AND EXISTS (SELECT 1 FROM jira_issue_labels jil");
         sb.Append(" INNER JOIN jira_index_labels jlab ON jil.LabelId = jlab.Id");
-        sb.Append(" WHERE jil.IssueId = jira_issues.Id");
+        sb.Append($" WHERE jil.IssueKey = {tableName}.Key");
         sb.Append($" AND jlab.Name IN ({string.Join(", ", names)}))");
     }
 }

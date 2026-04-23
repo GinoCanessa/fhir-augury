@@ -54,7 +54,7 @@ public static class JiraQueryBuilder
                 sb.Append($@" AND EXISTS (
             SELECT 1 FROM jira_issue_labels jil
             INNER JOIN jira_index_labels jlab ON jil.LabelId = jlab.Id
-            WHERE jil.IssueId = jira_issues.Id AND jlab.Name = {paramName})");
+            WHERE jil.IssueKey = jira_issues.Key AND jlab.Name = {paramName})");
             }
         }
 
@@ -74,7 +74,7 @@ public static class JiraQueryBuilder
                 sb.Append($@" AND EXISTS (
             SELECT 1 FROM jira_issue_inpersons jip
             INNER JOIN jira_users ju ON jip.UserId = ju.Id
-            WHERE jip.IssueId = jira_issues.Id AND ju.DisplayName = {paramName})");
+            WHERE jip.IssueKey = jira_issues.Key AND ju.DisplayName = {paramName})");
             }
         }
 

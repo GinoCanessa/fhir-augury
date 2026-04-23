@@ -204,9 +204,9 @@ public class LocalProcessingControllerTests : IDisposable
             JiraIndexLabelRecord.Insert(conn, l2);
             JiraIndexLabelRecord.Insert(conn, l3);
 
-            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueId = i1.Id, LabelId = l1.Id });
-            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueId = i2.Id, LabelId = l2.Id });
-            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueId = i3.Id, LabelId = l3.Id });
+            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueKey = i1.Key, LabelId = l1.Id });
+            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueKey = i2.Key, LabelId = l2.Id });
+            JiraIssueLabelRecord.Insert(conn, new JiraIssueLabelRecord { Id = JiraIssueLabelRecord.GetIndex(), IssueKey = i3.Key, LabelId = l3.Id });
         }
 
         JiraLocalProcessingListResponse response = UnwrapList(
@@ -307,6 +307,155 @@ public class LocalProcessingControllerTests : IDisposable
 
         using SqliteConnection conn = _db.OpenConnection();
         Assert.Empty(JiraIssueRecord.SelectList(conn, Key: "NOPE-1"));
+    }
+
+    // ── Phase 9 / 10: per-shape ?type= routing ─────────────────────────
+
+    private static JiraProjectScopeStatementRecord NewPss(string key, DateTimeOffset? processedAt) => new JiraProjectScopeStatementRecord
+    {
+        Id = JiraProjectScopeStatementRecord.GetIndex(),
+        Key = key,
+        ProjectKey = "PSS",
+        Title = $"PSS {key}",
+        Description = null,
+        Summary = null,
+        Type = "Project Scope Statement",
+        Priority = "Major",
+        Status = "Open",
+        Assignee = null,
+        Reporter = null,
+        CreatedAt = DateTimeOffset.UtcNow,
+        UpdatedAt = DateTimeOffset.UtcNow,
+        ResolvedAt = null,
+        ProcessedLocallyAt = processedAt,
+    };
+
+    private static JiraBaldefRecord NewBaldef(string key, DateTimeOffset? processedAt) => new JiraBaldefRecord
+    {
+        Id = JiraBaldefRecord.GetIndex(),
+        Key = key,
+        ProjectKey = "BALDEF",
+        Title = $"BALDEF {key}",
+        Description = null,
+        Summary = null,
+        Type = "Ballot",
+        Priority = "Major",
+        Status = "Open",
+        Assignee = null,
+        Reporter = null,
+        CreatedAt = DateTimeOffset.UtcNow,
+        UpdatedAt = DateTimeOffset.UtcNow,
+        ResolvedAt = null,
+        ProcessedLocallyAt = processedAt,
+    };
+
+    private static JiraBallotRecord NewBallot(string key, DateTimeOffset? processedAt) => new JiraBallotRecord
+    {
+        Id = JiraBallotRecord.GetIndex(),
+        Key = key,
+        ProjectKey = "BALLOT",
+        Title = $"BALLOT {key}",
+        Description = null,
+        Summary = null,
+        Type = "Vote",
+        Priority = "Major",
+        Status = "Open",
+        Assignee = null,
+        Reporter = null,
+        CreatedAt = DateTimeOffset.UtcNow,
+        UpdatedAt = DateTimeOffset.UtcNow,
+        ResolvedAt = null,
+        ProcessedLocallyAt = processedAt,
+    };
+
+    [Fact]
+    public void SetProcessed_PssTable_MarksOnlyPssRow()
+    {
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraProjectScopeStatementRecord.Insert(conn, NewPss("PSS-1", processedAt: null));
+            SeedIssue(conn, "FHIR-1", processedAt: null);
+        }
+
+        JiraLocalProcessingSetResponse resp = UnwrapSet(
+            _controller.SetProcessed(new JiraLocalProcessingSetRequest { Key = "PSS-1", ProcessedLocally = true }, type: "pss"));
+        Assert.True(resp.NewValue);
+
+        JiraLocalProcessingListResponse listed = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { ProcessedLocally = true }, type: "pss"));
+        Assert.Equal(1, listed.Total);
+        Assert.Equal("PSS-1", listed.Results[0].Key);
+
+        // FHIR table should be untouched.
+        JiraLocalProcessingListResponse fhir = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { ProcessedLocally = true }, type: "fhir"));
+        Assert.Equal(0, fhir.Total);
+    }
+
+    [Fact]
+    public void SetProcessed_BaldefTable_MarksOnlyBaldefRow()
+    {
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraBaldefRecord.Insert(conn, NewBaldef("BALDEF-1", processedAt: null));
+        }
+
+        JiraLocalProcessingSetResponse resp = UnwrapSet(
+            _controller.SetProcessed(new JiraLocalProcessingSetRequest { Key = "BALDEF-1", ProcessedLocally = true }, type: "baldef"));
+        Assert.True(resp.NewValue);
+
+        JiraLocalProcessingListResponse listed = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { ProcessedLocally = true }, type: "baldef"));
+        Assert.Equal(1, listed.Total);
+        Assert.Equal("BALDEF-1", listed.Results[0].Key);
+    }
+
+    [Fact]
+    public void SetProcessed_BallotTable_MarksOnlyBallotRow()
+    {
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraBallotRecord.Insert(conn, NewBallot("BALLOT-1", processedAt: null));
+        }
+
+        JiraLocalProcessingSetResponse resp = UnwrapSet(
+            _controller.SetProcessed(new JiraLocalProcessingSetRequest { Key = "BALLOT-1", ProcessedLocally = true }, type: "ballot"));
+        Assert.True(resp.NewValue);
+
+        JiraLocalProcessingListResponse listed = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { ProcessedLocally = true }, type: "ballot"));
+        Assert.Equal(1, listed.Total);
+        Assert.Equal("BALLOT-1", listed.Results[0].Key);
+    }
+
+    [Fact]
+    public void ClearAllProcessed_NoType_ClearsAcrossAllFourTables()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            SeedIssue(conn, "FHIR-1", processedAt: now);
+            JiraProjectScopeStatementRecord.Insert(conn, NewPss("PSS-1", processedAt: now));
+            JiraBaldefRecord.Insert(conn, NewBaldef("BALDEF-1", processedAt: now));
+            JiraBallotRecord.Insert(conn, NewBallot("BALLOT-1", processedAt: now));
+        }
+
+        JiraLocalProcessingClearResponse resp = UnwrapClear(_controller.ClearAllProcessed());
+        Assert.Equal(4, resp.RowsAffected);
+
+        using SqliteConnection check = _db.OpenConnection();
+        Assert.Null(JiraIssueRecord.SelectList(check, Key: "FHIR-1").Single().ProcessedLocallyAt);
+        Assert.Null(JiraProjectScopeStatementRecord.SelectList(check, Key: "PSS-1").Single().ProcessedLocallyAt);
+        Assert.Null(JiraBaldefRecord.SelectList(check, Key: "BALDEF-1").Single().ProcessedLocallyAt);
+        Assert.Null(JiraBallotRecord.SelectList(check, Key: "BALLOT-1").Single().ProcessedLocallyAt);
+    }
+
+    [Fact]
+    public void SetProcessed_UnknownType_Returns400()
+    {
+        IActionResult result = _controller.SetProcessed(
+            new JiraLocalProcessingSetRequest { Key = "X-1", ProcessedLocally = true }, type: "bogus");
+        Assert.IsType<BadRequestObjectResult>(result);
     }
 
     [Fact]

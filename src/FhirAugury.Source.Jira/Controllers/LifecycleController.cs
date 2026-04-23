@@ -68,11 +68,25 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
         return Ok(status);
     }
 
+    /// <summary>
+    /// Returns per-source statistics.
+    /// </summary>
+    /// <remarks>
+    /// <c>TotalItems</c> remains the <c>jira_issues</c> (FHIR change-request)
+    /// count for backward compatibility with callers pre-dating the
+    /// 2026-04-23 table split. Per-shape counts for the sibling tables
+    /// (<c>jira_pss</c>, <c>jira_baldef</c>, <c>jira_ballot</c>) plus a
+    /// four-table sum are exposed in <c>AdditionalCounts</c> under the
+    /// keys <c>pss</c>, <c>baldef</c>, <c>ballot</c>, and <c>all_issues</c>.
+    /// </remarks>
     [HttpGet("stats")]
     public IActionResult GetStats()
     {
         using SqliteConnection connection = db.OpenConnection();
         int issueCount = JiraIssueRecord.SelectCount(connection);
+        int pssCount = JiraProjectScopeStatementRecord.SelectCount(connection);
+        int baldefCount = JiraBaldefRecord.SelectCount(connection);
+        int ballotCount = JiraBallotRecord.SelectCount(connection);
         int commentCount = JiraCommentRecord.SelectCount(connection);
         int linkCount = JiraIssueLinkRecord.SelectCount(connection);
         long dbSize = db.GetDatabaseSizeBytes();
@@ -84,6 +98,10 @@ public class LifecycleController(JiraIngestionPipeline pipeline, JiraDatabase db
         Dictionary<string, int> additionalCounts = new()
         {
             ["issue_links"] = linkCount,
+            ["pss"] = pssCount,
+            ["baldef"] = baldefCount,
+            ["ballot"] = ballotCount,
+            ["all_issues"] = issueCount + pssCount + baldefCount + ballotCount,
         };
 
         using SqliteCommand projectCmd = connection.CreateCommand();

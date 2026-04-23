@@ -8,6 +8,11 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Specification rollup endpoints. Counts aggregate FHIR change requests
+/// (<c>jira_issues</c>); per-shape BALDEF/BALLOT specification columns
+/// are exposed via the specifications index but not from this controller.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class SpecificationsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase

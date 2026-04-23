@@ -22,6 +22,9 @@ public class JiraDatabase : SourceDatabase
         JiraUserRecord.CreateTable(connection);
         JiraProjectRecord.CreateTable(connection);
         JiraIssueRecord.CreateTable(connection);
+        JiraProjectScopeStatementRecord.CreateTable(connection);
+        JiraBaldefRecord.CreateTable(connection);
+        JiraBallotRecord.CreateTable(connection);
         JiraCommentRecord.CreateTable(connection);
         JiraIssueLinkRecord.CreateTable(connection);
         JiraIssueRelatedRecord.CreateTable(connection);
@@ -32,7 +35,8 @@ public class JiraDatabase : SourceDatabase
         Hl7WorkGroupRecord.CreateTable(connection);
         JiraIndexWorkGroupRecord.CreateTable(connection);
         JiraIndexSpecificationRecord.CreateTable(connection);
-        JiraIndexBallotRecord.CreateTable(connection);
+        JiraIndexBallotTargetRecord.CreateTable(connection);
+        JiraIndexBallotCycleRecord.CreateTable(connection);
         JiraIndexLabelRecord.CreateTable(connection);
         JiraIndexTypeRecord.CreateTable(connection);
         JiraIndexPriorityRecord.CreateTable(connection);
@@ -49,6 +53,9 @@ public class JiraDatabase : SourceDatabase
 
         CreateJiraIssuesFts(connection);
         CreateJiraCommentsFts(connection);
+        CreateJiraPssFts(connection);
+        CreateJiraBaldefFts(connection);
+        CreateJiraBallotFts(connection);
 
         MigrateSchema(connection);
     }
@@ -132,13 +139,53 @@ public class JiraDatabase : SourceDatabase
             tokenizer: _ftsTokenizer);
     }
 
-    /// <summary>Rebuilds both FTS5 indexes from their content tables.</summary>
+    private void CreateJiraPssFts(SqliteConnection connection)
+    {
+        CreateFts5Table(
+            connection,
+            ftsTableName: "jira_pss_fts",
+            contentTable: "jira_pss",
+            contentRowId: "Id",
+            indexedColumns: ["Title", "DescriptionPlain", "ProjectDescriptionPlain"],
+            tokenizer: _ftsTokenizer);
+    }
+
+    private void CreateJiraBaldefFts(SqliteConnection connection)
+    {
+        CreateFts5Table(
+            connection,
+            ftsTableName: "jira_baldef_fts",
+            contentTable: "jira_baldef",
+            contentRowId: "Id",
+            indexedColumns: ["Title", "DescriptionPlain"],
+            tokenizer: _ftsTokenizer);
+    }
+
+    private void CreateJiraBallotFts(SqliteConnection connection)
+    {
+        // BALLOT rows are vote-tracking rows; <description> is empty per
+        // plan §2.2. The negative-with-comment narrative lives on the
+        // related FHIR-* ticket (already in jira_issues_fts), so only
+        // Title (parsed summary) is indexed here.
+        CreateFts5Table(
+            connection,
+            ftsTableName: "jira_ballot_fts",
+            contentTable: "jira_ballot",
+            contentRowId: "Id",
+            indexedColumns: ["Title"],
+            tokenizer: _ftsTokenizer);
+    }
+
+    /// <summary>Rebuilds all FTS5 indexes from their content tables.</summary>
     public void RebuildFtsIndexes(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         using SqliteConnection connection = OpenConnection();
         RebuildFts5(connection, "jira_issues_fts");
         RebuildFts5(connection, "jira_comments_fts");
+        RebuildFts5(connection, "jira_pss_fts");
+        RebuildFts5(connection, "jira_baldef_fts");
+        RebuildFts5(connection, "jira_ballot_fts");
     }
 
     /// <summary>
@@ -151,7 +198,13 @@ public class JiraDatabase : SourceDatabase
         ct.ThrowIfCancellationRequested();
         using SqliteConnection connection = OpenConnection();
         using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM jira_issues";
+        cmd.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM jira_issues) +
+                (SELECT COUNT(*) FROM jira_pss) +
+                (SELECT COUNT(*) FROM jira_baldef) +
+                (SELECT COUNT(*) FROM jira_ballot)
+            """;
         return Convert.ToInt32(cmd.ExecuteScalar()) == 0;
     }
 
@@ -165,8 +218,14 @@ public class JiraDatabase : SourceDatabase
         cmd.CommandText = """
             DROP TABLE IF EXISTS jira_issues_fts;
             DROP TABLE IF EXISTS jira_comments_fts;
+            DROP TABLE IF EXISTS jira_pss_fts;
+            DROP TABLE IF EXISTS jira_baldef_fts;
+            DROP TABLE IF EXISTS jira_ballot_fts;
             DROP TABLE IF EXISTS jira_issue_inpersons;
             DROP TABLE IF EXISTS jira_issues;
+            DROP TABLE IF EXISTS jira_pss;
+            DROP TABLE IF EXISTS jira_baldef;
+            DROP TABLE IF EXISTS jira_ballot;
             DROP TABLE IF EXISTS jira_comments;
             DROP TABLE IF EXISTS jira_issue_links;
             DROP TABLE IF EXISTS jira_issue_related;
@@ -178,6 +237,8 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_index_workgroups;
             DROP TABLE IF EXISTS jira_index_specifications;
             DROP TABLE IF EXISTS jira_index_ballots;
+            DROP TABLE IF EXISTS jira_index_ballot_targets;
+            DROP TABLE IF EXISTS jira_index_ballot_cycles;
             DROP TABLE IF EXISTS jira_index_labels;
             DROP TABLE IF EXISTS jira_index_types;
             DROP TABLE IF EXISTS jira_index_priorities;

@@ -74,30 +74,63 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
         RecomputeCorpusStats(connection);
     }
 
+    // BM25 storage audit (plan §8 / phase 7.3): JiraKeywordRecord and
+    // JiraCorpusKeywordRecord key on (ContentType, SourceId) where SourceId
+    // is the Jira issue Key. Jira keys are project-prefixed and globally
+    // unique across jira_issues / jira_pss / jira_baldef / jira_ballot
+    // (FHIR-*, GCR-*, ..., PSS-*, BALDEF-*, BALLOT-*), so no SourceTable
+    // discriminator is required on the BM25 records.
     private static List<IndexContent> CollectDocuments(
         SqliteConnection connection, CancellationToken ct)
     {
         List<JiraIssueRecord> issues = JiraIssueRecord.SelectList(connection);
+        List<JiraProjectScopeStatementRecord> pss = JiraProjectScopeStatementRecord.SelectList(connection);
+        List<JiraBaldefRecord> baldefs = JiraBaldefRecord.SelectList(connection);
+        List<JiraBallotRecord> ballots = JiraBallotRecord.SelectList(connection);
         List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection);
 
-        List<IndexContent> contents = new(issues.Count + comments.Count);
+        List<IndexContent> contents = new(issues.Count + pss.Count + baldefs.Count + ballots.Count + comments.Count);
 
         foreach (JiraIssueRecord issue in issues)
         {
             ct.ThrowIfCancellationRequested();
-            string text = string.Join(" ",
-                new[] { issue.Title, issue.Description, issue.Summary, issue.ResolutionDescription, issue.Labels, issue.RelatedArtifacts }
-                    .Where(s => !string.IsNullOrEmpty(s)));
+            string text = JoinNonEmpty(
+                issue.Title,
+                issue.DescriptionPlain ?? issue.Description,
+                issue.ResolutionDescriptionPlain ?? issue.ResolutionDescription);
 
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                contents.Add(new()
-                {
-                    ContentType = ContentTypes.Issue,
-                    SourceId = issue.Key,
-                    Text = text,
-                });
-            }
+            AddIfText(contents, ContentTypes.Issue, issue.Key, text);
+        }
+
+        foreach (JiraProjectScopeStatementRecord row in pss)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = JoinNonEmpty(
+                row.Title,
+                row.DescriptionPlain ?? row.Description,
+                row.ProjectDescriptionPlain ?? row.ProjectDescription,
+                row.ProjectNeedPlain ?? row.ProjectNeed,
+                row.ProjectDependenciesPlain ?? row.ProjectDependencies);
+
+            AddIfText(contents, ContentTypes.Issue, row.Key, text);
+        }
+
+        foreach (JiraBaldefRecord row in baldefs)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = JoinNonEmpty(
+                row.Title,
+                row.DescriptionPlain ?? row.Description,
+                row.OrganizationalParticipationPlain ?? row.OrganizationalParticipation);
+
+            AddIfText(contents, ContentTypes.Issue, row.Key, text);
+        }
+
+        foreach (JiraBallotRecord row in ballots)
+        {
+            ct.ThrowIfCancellationRequested();
+            // BALLOT: Title only (per plan §2.2 — <description> empty).
+            AddIfText(contents, ContentTypes.Issue, row.Key, row.Title);
         }
 
         foreach (JiraCommentRecord comment in comments)
@@ -115,6 +148,20 @@ public class JiraIndexer(JiraDatabase database, AuxiliaryDatabase auxiliaryDatab
         }
 
         return contents;
+    }
+
+    private static string JoinNonEmpty(params string?[] parts)
+        => string.Join(" ", parts.Where(static s => !string.IsNullOrEmpty(s)));
+
+    private static void AddIfText(List<IndexContent> contents, string contentType, string sourceId, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        contents.Add(new()
+        {
+            ContentType = contentType,
+            SourceId = sourceId,
+            Text = text,
+        });
     }
 
     private void BuildIndex(

@@ -10,6 +10,11 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Structured-query endpoint. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT are queried via their own
+/// per-shape controllers.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase

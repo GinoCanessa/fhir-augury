@@ -8,6 +8,11 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Work-group rollup endpoints. Counts aggregate FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT lifecycle columns are exposed
+/// via the workgroup index but not from this controller.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase

@@ -33,4 +33,23 @@ public partial record class JiraIndexWorkGroupRecord
     public required int IssueCountWithdrawn { get; set; }
     public required int IssueCountDeferred { get; set; }
     public required int IssueCountOther { get; set; }
+
+    // Phase 6 plan §7.2: PSS-flavoured buckets sourced from
+    // jira_pss.SponsoringWorkGroup (with SponsoringWorkGroupsLegacy
+    // fallback). Defaulted so existing test/code-paths that only set
+    // the FHIR buckets continue to compile.
+    public int IssueCountSubmittedPss { get; set; } = 0;
+    public int IssueCountApprovedPss { get; set; } = 0;
+    public int IssueCountRejectedPss { get; set; } = 0;
+    public int IssueCountOtherPss { get; set; } = 0;
+
+    // Phase 6 plan §7.2: ballot-disposition buckets sourced from
+    // jira_ballot.VoteBallot, attributed to the workgroup of the
+    // ballot's package (BALLOT → BallotPackageCode → jira_baldef →
+    // linked PSS → SponsoringWorkGroup). Unresolved chains land in a
+    // synthetic "(Unattributed)" workgroup row.
+    public int AffirmativeVotes { get; set; } = 0;
+    public int NegativeVotes { get; set; } = 0;
+    public int NegativeWithCommentVotes { get; set; } = 0;
+    public int AbstainVotes { get; set; } = 0;
 }

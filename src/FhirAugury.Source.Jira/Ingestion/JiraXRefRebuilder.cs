@@ -36,12 +36,46 @@ public class JiraXRefRebuilder(
         foreach (JiraIssueRecord issue in issues)
         {
             ct.ThrowIfCancellationRequested();
-            string text = string.Join(" ",
-                new[] { issue.DescriptionPlain, issue.Summary,
-                        issue.ResolutionDescriptionPlain, issue.RelatedArtifacts }
-                    .Where(s => !string.IsNullOrEmpty(s)));
+            string text = JoinNonEmpty(
+                issue.DescriptionPlain, issue.Summary,
+                issue.ResolutionDescriptionPlain, issue.RelatedArtifacts);
 
             refCount += ExtractAndInsertAll(connection, issue.Key, ContentTypes.Issue, text);
+        }
+
+        List<JiraProjectScopeStatementRecord> pss = JiraProjectScopeStatementRecord.SelectList(connection);
+        foreach (JiraProjectScopeStatementRecord row in pss)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = JoinNonEmpty(
+                row.DescriptionPlain,
+                row.ProjectDescriptionPlain,
+                row.ProjectNeedPlain,
+                row.ProjectDependenciesPlain);
+
+            refCount += ExtractAndInsertAll(connection, row.Key, ContentTypes.Issue, text);
+        }
+
+        List<JiraBaldefRecord> baldefs = JiraBaldefRecord.SelectList(connection);
+        foreach (JiraBaldefRecord row in baldefs)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text = JoinNonEmpty(
+                row.DescriptionPlain,
+                row.OrganizationalParticipationPlain);
+
+            refCount += ExtractAndInsertAll(connection, row.Key, ContentTypes.Issue, text);
+        }
+
+        List<JiraBallotRecord> ballots = JiraBallotRecord.SelectList(connection);
+        foreach (JiraBallotRecord row in ballots)
+        {
+            ct.ThrowIfCancellationRequested();
+            // BALLOT.DescriptionPlain is typically empty (plan §2.2); the
+            // spec-change ↔ ballot-comment relationship is queryable via
+            // jira_ballot.RelatedFhirIssue and jira_issue_links, so no
+            // new xref kind is needed here.
+            refCount += ExtractAndInsertAll(connection, row.Key, ContentTypes.Issue, row.DescriptionPlain);
         }
 
         List<JiraCommentRecord> comments = JiraCommentRecord.SelectList(connection);
@@ -51,9 +85,13 @@ public class JiraXRefRebuilder(
             refCount += ExtractAndInsertAll(connection, comment.IssueKey, ContentTypes.Comment, comment.BodyPlain);
         }
 
-        logger.LogInformation("Rebuilt cross-references: {RefCount} refs from {IssueCount} issues and {CommentCount} comments",
-            refCount, issues.Count, comments.Count);
+        logger.LogInformation(
+            "Rebuilt cross-references: {RefCount} refs from {IssueCount} issues, {PssCount} PSS, {BaldefCount} BALDEF, {BallotCount} BALLOT and {CommentCount} comments",
+            refCount, issues.Count, pss.Count, baldefs.Count, ballots.Count, comments.Count);
     }
+
+    private static string JoinNonEmpty(params string?[] parts)
+        => string.Join(" ", parts.Where(static s => !string.IsNullOrEmpty(s)));
 
     private static int ExtractAndInsertAll(SqliteConnection connection, string sourceId, string contentType, string text)
     {

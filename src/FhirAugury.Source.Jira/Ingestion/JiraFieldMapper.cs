@@ -62,6 +62,128 @@ public static class JiraFieldMapper
         return string.IsNullOrEmpty(plain) ? null : plain;
     }
 
+    private static readonly Regex AnchorHrefPattern = new(
+        @"<a\b[^>]*\bhref\s*=\s*[""']([^""']+)[""']",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex BallotSummaryPattern = new(
+        @"^\s*(?<vote>[^-]+?)\s+-\s+(?<voter>.+?)\s+(?:\((?<org>[^)]+)\)\s+)?:\s*(?<code>.+?)\s*$",
+        RegexOptions.Compiled | RegexOptions.Singleline);
+
+    private static readonly Regex TableCellPattern = new(
+        @"<td\b[^>]*>(?<cell>.*?)</td>",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    /// <summary>
+    /// If <paramref name="value"/> is an HTML anchor (<c>&lt;a href="…"&gt;text&lt;/a&gt;</c>),
+    /// returns the href value. Otherwise returns the input cleaned of HTML
+    /// (so plain URLs and plain text fall through unchanged).
+    /// </summary>
+    internal static string? ExtractAnchorHref(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        Match m = AnchorHrefPattern.Match(value);
+        if (m.Success)
+        {
+            return System.Net.WebUtility.HtmlDecode(m.Groups[1].Value).Trim();
+        }
+        return ToPlainText(value) ?? value.Trim();
+    }
+
+    /// <summary>
+    /// Strips an HTML <c>&lt;tr&gt;&lt;td&gt;…&lt;/td&gt;&lt;/tr&gt;</c> table to a comma-separated
+    /// list of cell text. Falls back to plain-text strip when no
+    /// <c>&lt;td&gt;</c> tags are present.
+    /// </summary>
+    internal static string? StripHtmlTableToCsv(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        MatchCollection cells = TableCellPattern.Matches(value);
+        if (cells.Count == 0) return ToPlainText(value);
+
+        List<string> parts = [];
+        foreach (Match m in cells)
+        {
+            string cellText = ToPlainText(m.Groups["cell"].Value)?.Trim() ?? string.Empty;
+            if (!string.IsNullOrEmpty(cellText))
+            {
+                parts.Add(cellText);
+            }
+        }
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
+    }
+
+    /// <summary>Parses an integer value, tolerating decimal-formatted numerics.</summary>
+    internal static int? TryParseInt(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        string trimmed = value.Trim();
+        if (int.TryParse(trimmed, System.Globalization.NumberStyles.Integer,
+                         System.Globalization.CultureInfo.InvariantCulture, out int i))
+        {
+            return i;
+        }
+        if (double.TryParse(trimmed, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out double d))
+        {
+            return (int)d;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Splits a BALDEF/BALLOT ballot code (e.g. <c>2019-Sep | FHIR IG LIVD R1</c>)
+    /// on the first <c>|</c> into <c>(BallotCycle, BallotPackageName)</c>. When
+    /// no <c>|</c> is present, the cycle is null and the full value is the
+    /// package name.
+    /// </summary>
+    internal static (string? Cycle, string? PackageName) SplitBallotCode(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return (null, null);
+        int idx = code.IndexOf('|');
+        if (idx < 0) return (null, code.Trim());
+        string cycle = code[..idx].Trim();
+        string name = code[(idx + 1)..].Trim();
+        return (cycle.Length > 0 ? cycle : null, name.Length > 0 ? name : null);
+    }
+
+    /// <summary>
+    /// Parses a BALLOT summary (<c>"&lt;vote&gt; - &lt;voter&gt; (&lt;org&gt;) : &lt;code&gt;"</c>)
+    /// and returns the voter name and ballot package code. Org is optional.
+    /// Returns nulls when the summary does not match.
+    /// </summary>
+    internal static (string? Voter, string? BallotPackageCode) ParseBallotSummary(string? summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary)) return (null, null);
+        Match m = BallotSummaryPattern.Match(summary.Trim());
+        if (!m.Success) return (null, null);
+        string voter = m.Groups["voter"].Value.Trim();
+        string code = m.Groups["code"].Value.Trim();
+        return (voter.Length > 0 ? voter : null, code.Length > 0 ? code : null);
+    }
+
+    /// <summary>
+    /// Picks the first link whose target key starts with <c>FHIR-</c> and the
+    /// link type is <c>is created from</c>, <c>relates to</c>, or <c>votes on</c>.
+    /// Used by BALLOT mapping to materialise <c>RelatedFhirIssue</c> at parse time.
+    /// </summary>
+    internal static string? PickRelatedFhirKey(IEnumerable<JiraIssueLinkRecord> links, string sourceKey)
+    {
+        foreach (JiraIssueLinkRecord link in links)
+        {
+            if (!string.Equals(link.SourceKey, sourceKey, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!link.TargetKey.StartsWith("FHIR-", StringComparison.OrdinalIgnoreCase)) continue;
+            string lt = link.LinkType ?? string.Empty;
+            if (lt.Contains("created from", StringComparison.OrdinalIgnoreCase) ||
+                lt.Contains("relates to", StringComparison.OrdinalIgnoreCase) ||
+                lt.Contains("votes on", StringComparison.OrdinalIgnoreCase))
+            {
+                return link.TargetKey;
+            }
+        }
+        return null;
+    }
+
     internal static (string? Mover, string? Seconder, int? For, int? Against, int? Abstain) ParseVote(string? vote)
     {
         if (string.IsNullOrWhiteSpace(vote))
@@ -120,61 +242,70 @@ public static class JiraFieldMapper
         return results;
     }
 
-    public static JiraIssueRecord MapIssue(JsonElement issueJson)
+    private static void MapBase<T>(JsonElement issueJson, T record) where T : JiraIssueBaseRecord
     {
         JsonElement fields = issueJson.GetProperty("fields");
         string key = issueJson.GetProperty("key").GetString()!;
 
+        record.Key = key;
+        record.ProjectKey = JsonElementHelper.GetNestedString(fields, "project", "key") ?? key.Split('-')[0];
+        record.Title = JsonElementHelper.GetString(fields, "summary") ?? string.Empty;
+        record.Description = JsonElementHelper.GetString(fields, "description");
+        record.DescriptionPlain = ToPlainText(record.Description);
+        record.Summary = JsonElementHelper.GetString(fields, "summary");
+        record.Type = CleanFieldValue(JsonElementHelper.GetNestedString(fields, "issuetype", "name")) ?? "Unknown";
+        record.Priority = CleanFieldValue(JsonElementHelper.GetNestedString(fields, "priority", "name")) ?? "Unknown";
+        record.Status = CleanFieldValue(JsonElementHelper.GetNestedString(fields, "status", "name")) ?? "Unknown";
+        record.Assignee = CleanFieldValue(JsonElementHelper.GetNestedString(fields, "assignee", "displayName"));
+        record.Reporter = CleanFieldValue(JsonElementHelper.GetNestedString(fields, "reporter", "displayName"));
+        record.CreatedAt = ParseDate(JsonElementHelper.GetString(fields, "created"));
+        record.UpdatedAt = ParseDate(JsonElementHelper.GetString(fields, "updated"));
+        record.ResolvedAt = ParseNullableDate(JsonElementHelper.GetString(fields, "resolutiondate"));
+        record.Labels = GetLabels(fields);
+        record.CommentCount = GetCommentCount(fields);
+        record.Title = CleanTitle(record.Title, record.Key);
+    }
+
+    public static JiraIssueRecord MapIssue(JsonElement issueJson)
+    {
+        JsonElement fields = issueJson.GetProperty("fields");
+
         JiraIssueRecord record = new JiraIssueRecord
         {
             Id = JiraIssueRecord.GetIndex(),
-            Key = key,
-            ProjectKey = JsonElementHelper.GetNestedString(fields, "project", "key") ?? key.Split('-')[0],
-            Title = JsonElementHelper.GetString(fields, "summary") ?? string.Empty,
-            Description = JsonElementHelper.GetString(fields, "description"),
-            DescriptionPlain = null,
-            Summary = JsonElementHelper.GetString(fields, "summary"),
-            Type = JsonElementHelper.GetNestedString(fields, "issuetype", "name") ?? "Unknown",
-            Priority = JsonElementHelper.GetNestedString(fields, "priority", "name") ?? "Unknown",
-            Status = JsonElementHelper.GetNestedString(fields, "status", "name") ?? "Unknown",
+            Key = string.Empty,
+            ProjectKey = string.Empty,
+            Title = string.Empty,
+            Description = null,
+            Summary = null,
+            Type = "Unknown",
+            Priority = "Unknown",
+            Status = "Unknown",
             Resolution = JsonElementHelper.GetNestedString(fields, "resolution", "name"),
-            Assignee = JsonElementHelper.GetNestedString(fields, "assignee", "displayName"),
-            Reporter = JsonElementHelper.GetNestedString(fields, "reporter", "displayName"),
-            CreatedAt = ParseDate(JsonElementHelper.GetString(fields, "created")),
-            UpdatedAt = ParseDate(JsonElementHelper.GetString(fields, "updated")),
-            ResolvedAt = ParseNullableDate(JsonElementHelper.GetString(fields, "resolutiondate")),
-            Labels = GetLabels(fields),
-            CommentCount = GetCommentCount(fields),
+            ResolutionDescription = null,
+            Assignee = null,
+            Reporter = null,
+            CreatedAt = default,
+            UpdatedAt = default,
+            ResolvedAt = null,
             Specification = null,
             WorkGroup = null,
             RaisedInVersion = null,
-            ResolutionDescription = null,
-            ResolutionDescriptionPlain = null,
             RelatedArtifacts = null,
             SelectedBallot = null,
             RelatedIssues = null,
             DuplicateOf = null,
             AppliedVersions = null,
             ChangeType = null,
-            ChangeCategory = null,
-            ChangeImpact = null,
             Impact = null,
             Vote = null,
-            VoteMover = null,
-            VoteSeconder = null,
-            VoteForCount = null,
-            VoteAgainstCount = null,
-            VoteAbstainCount = null,
         };
+        MapBase(issueJson, record);
 
         foreach ((string? fieldId, string? propertyName) in CustomFieldMap)
         {
             string? value = CleanFieldValue(ExtractCustomFieldValue(fields, fieldId));
-
-            if (value is null)
-            {
-                continue;
-            }
+            if (value is null) continue;
 
             switch (propertyName)
             {
@@ -196,24 +327,186 @@ public static class JiraFieldMapper
             }
         }
 
-        // Clean standard field values
-        record.Type = CleanFieldValue(record.Type) ?? "Unknown";
-        record.Priority = CleanFieldValue(record.Priority) ?? "Unknown";
-        record.Status = CleanFieldValue(record.Status) ?? "Unknown";
         record.Resolution = CleanFieldValue(record.Resolution);
-        record.Assignee = CleanFieldValue(record.Assignee);
-        record.Reporter = CleanFieldValue(record.Reporter);
-
-        // Compute plain text from HTML fields
-        record.DescriptionPlain = ToPlainText(record.Description);
         record.ResolutionDescriptionPlain = ToPlainText(record.ResolutionDescription);
-
-        // Clean title: remove ticket identifier prefix
-        record.Title = CleanTitle(record.Title, record.Key);
-
-        // Parse vote components
         (record.VoteMover, record.VoteSeconder, record.VoteForCount,
          record.VoteAgainstCount, record.VoteAbstainCount) = ParseVote(record.Vote);
+
+        return record;
+    }
+
+    public static JiraProjectScopeStatementRecord MapProjectScopeStatement(JsonElement issueJson)
+    {
+        JsonElement fields = issueJson.GetProperty("fields");
+
+        JiraProjectScopeStatementRecord record = new JiraProjectScopeStatementRecord
+        {
+            Id = JiraProjectScopeStatementRecord.GetIndex(),
+            Key = string.Empty,
+            ProjectKey = string.Empty,
+            Title = string.Empty,
+            Description = null,
+            Summary = null,
+            Type = "Unknown",
+            Priority = "Unknown",
+            Status = "Unknown",
+            Assignee = null,
+            Reporter = null,
+            CreatedAt = default,
+            UpdatedAt = default,
+            ResolvedAt = null,
+        };
+        MapBase(issueJson, record);
+
+        record.SponsoringWorkGroup = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_14500"));
+        record.SponsoringWorkGroupsLegacy = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12110"));
+        string? cosp = ExtractCustomFieldValue(fields, "customfield_14501");
+        record.CoSponsoringWorkGroups = StripHtmlTableToCsv(cosp) ?? CleanFieldValue(cosp);
+        record.CoSponsoringWorkGroupsLegacy = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12106"));
+        record.Realm = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13704"));
+        record.OtherRealm = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13727"));
+        record.SteeringDivision = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12109"));
+        record.ManagementGroups = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12108"));
+        record.ProductFamily = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12105"));
+        record.BallotCycleTarget = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12801"));
+        record.ApprovalDate = ParseNullableDate(ExtractCustomFieldValue(fields, "customfield_12316"));
+        record.RejectionDate = ParseNullableDate(ExtractCustomFieldValue(fields, "customfield_13709"));
+        record.OptOutDate = ParseNullableDate(ExtractCustomFieldValue(fields, "customfield_13710"));
+        record.ProjectCommonName = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13720"));
+
+        string? projectDesc = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12802"));
+        record.ProjectDescription = projectDesc;
+        record.ProjectDescriptionPlain = ToPlainText(projectDesc);
+
+        string? projectNeed = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13707"));
+        record.ProjectNeed = projectNeed;
+        record.ProjectNeedPlain = ToPlainText(projectNeed);
+
+        record.ProjectDocumentRepositoryUrl = ExtractAnchorHref(ExtractCustomFieldValue(fields, "customfield_13708"));
+        record.ProjectFacilitator = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13714"));
+        record.PublishingFacilitator = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13716"));
+        record.VocabularyFacilitator = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13717"));
+        record.OtherInterestedParties = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13715"));
+        record.Implementers = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13718"));
+        record.Stakeholders = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13725"));
+        record.OtherStakeholders = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13726"));
+
+        string? projectDeps = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13721"));
+        record.ProjectDependencies = projectDeps;
+        record.ProjectDependenciesPlain = ToPlainText(projectDeps);
+
+        record.Accelerators = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13700"));
+        record.NormativeNotification = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13701"));
+        record.ProductInfo = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13702"));
+        record.ExternalContentMajority = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13703"));
+        record.JointCopyright = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13705"));
+        record.ExternalCodeSystems = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13706"));
+        record.IsoStandardToAdopt = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13711"));
+        record.ExcerptText = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13712"));
+        record.UnitOfMeasure = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13713"));
+        record.ExternalDrivers = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13719"));
+        record.BackwardsCompatibility = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13722"));
+        record.ExternalProjectCollaboration = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13723"));
+        record.DevelopersOfExternalContent = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_13724"));
+        record.ContactEmail = ExtractAnchorHref(ExtractCustomFieldValue(fields, "customfield_12702"));
+
+        return record;
+    }
+
+    public static JiraBaldefRecord MapBaldef(JsonElement issueJson)
+    {
+        JsonElement fields = issueJson.GetProperty("fields");
+
+        JiraBaldefRecord record = new JiraBaldefRecord
+        {
+            Id = JiraBaldefRecord.GetIndex(),
+            Key = string.Empty,
+            ProjectKey = string.Empty,
+            Title = string.Empty,
+            Description = null,
+            Summary = null,
+            Type = "Unknown",
+            Priority = "Unknown",
+            Status = "Unknown",
+            Assignee = null,
+            Reporter = null,
+            CreatedAt = default,
+            UpdatedAt = default,
+            ResolvedAt = null,
+        };
+        MapBase(issueJson, record);
+
+        string? ballotCode = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11704"));
+        record.BallotCode = ballotCode;
+        (record.BallotCycle, record.BallotPackageName) = SplitBallotCode(ballotCode);
+
+        record.BallotCategory = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11604"));
+        record.Specification = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11302"));
+        record.SpecificationLocation = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11706"));
+        record.BallotOpens = ParseNullableDate(ExtractCustomFieldValue(fields, "customfield_10900"));
+        record.BallotCloses = ParseNullableDate(ExtractCustomFieldValue(fields, "customfield_10901"));
+        record.ProductFamily = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_12105"));
+        record.ApprovalStatus = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11610"));
+        record.VotersTotalEligible = TryParseInt(ExtractCustomFieldValue(fields, "customfield_11606"));
+        record.VotersAffirmative = TryParseInt(ExtractCustomFieldValue(fields, "customfield_11607"));
+        record.VotersNegative = TryParseInt(ExtractCustomFieldValue(fields, "customfield_11608"));
+        record.VotersAbstain = TryParseInt(ExtractCustomFieldValue(fields, "customfield_11609"));
+
+        string? orgPart = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11806"));
+        record.OrganizationalParticipation = orgPart;
+        record.OrganizationalParticipationPlain = ToPlainText(orgPart);
+
+        record.Reconciled = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11810"));
+        record.RelatedArtifacts = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11300"));
+        record.RelatedPages = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11301"));
+
+        return record;
+    }
+
+    public static JiraBallotRecord MapBallot(JsonElement issueJson)
+    {
+        JsonElement fields = issueJson.GetProperty("fields");
+        string key = issueJson.GetProperty("key").GetString()!;
+
+        JiraBallotRecord record = new JiraBallotRecord
+        {
+            Id = JiraBallotRecord.GetIndex(),
+            Key = string.Empty,
+            ProjectKey = string.Empty,
+            Title = string.Empty,
+            Description = null,
+            Summary = null,
+            Type = "Unknown",
+            Priority = "Unknown",
+            Status = "Unknown",
+            Assignee = null,
+            Reporter = null,
+            CreatedAt = default,
+            UpdatedAt = default,
+            ResolvedAt = null,
+        };
+        MapBase(issueJson, record);
+
+        record.VoteBallot = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_10519"));
+        record.VoteItem = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_10521"));
+        record.ExternalId = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11707"));
+        record.Organization = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_10601"));
+        record.OrganizationCategory = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11805"));
+        record.BallotCategory = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11604"));
+        record.VoteSameAs = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11603"));
+        record.Specification = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11302"));
+        record.Reconciled = CleanFieldValue(ExtractCustomFieldValue(fields, "customfield_11810"));
+
+        // Parse summary for Voter / BallotPackageCode and derive cycle.
+        (record.Voter, record.BallotPackageCode) = ParseBallotSummary(record.Summary);
+        if (record.BallotPackageCode is not null)
+        {
+            (record.BallotCycle, _) = SplitBallotCode(record.BallotPackageCode);
+        }
+
+        // RelatedFhirIssue from issuelinks.
+        List<JiraIssueLinkRecord> links = MapIssueLinks(issueJson, key);
+        record.RelatedFhirIssue = PickRelatedFhirKey(links, key);
 
         return record;
     }
@@ -246,7 +539,7 @@ public static class JiraFieldMapper
         return (null, comment.Author);
     }
 
-    public static List<JiraCommentRecord> MapComments(JsonElement issueJson, int issueId, string issueKey)
+    public static List<JiraCommentRecord> MapComments(JsonElement issueJson, string issueKey)
     {
         List<JiraCommentRecord> comments = new List<JiraCommentRecord>();
         JsonElement fields = issueJson.GetProperty("fields");
@@ -263,7 +556,6 @@ public static class JiraFieldMapper
             comments.Add(new JiraCommentRecord
             {
                 Id = JiraCommentRecord.GetIndex(),
-                IssueId = issueId,
                 IssueKey = issueKey,
                 Author = JsonElementHelper.GetNestedString(comment, "author", "displayName")
                          ?? JsonElementHelper.GetNestedString(comment, "author", "name")

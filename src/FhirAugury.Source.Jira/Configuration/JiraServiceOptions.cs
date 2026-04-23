@@ -71,6 +71,18 @@ public class JiraServiceOptions
 
         return [new JiraProjectConfig { Key = DefaultProject }];
     }
+
+    /// <summary>
+    /// Returns a project-key → <see cref="JiraProjectShape"/> lookup built
+    /// from <see cref="Projects"/>. Used by the parser/upsert dispatch in
+    /// <c>JiraSource</c> and <c>JiraXmlParser</c> to route items to the
+    /// correct typed table. Unknown project keys default to
+    /// <see cref="JiraProjectShape.FhirChangeRequest"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, JiraProjectShape> ShapeByProjectKey =>
+        Projects.GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Shape, StringComparer.OrdinalIgnoreCase);
+
     public int PageSize { get; set; } = 100;
     public PortConfiguration Ports { get; set; } = new() { Http = 5160 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();

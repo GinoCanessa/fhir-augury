@@ -12,6 +12,10 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Content search / refers-to endpoints. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT content is not exposed here.
+/// </summary>
 [ApiController]
 [Route("api/v1/content")]
 public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase

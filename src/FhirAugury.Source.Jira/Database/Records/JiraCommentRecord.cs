@@ -11,7 +11,6 @@ public partial record class JiraCommentRecord
     [LdgSQLiteKey]
     public required int Id { get; set; }
 
-    public required int IssueId { get; set; }
     public required string IssueKey { get; set; }
     public required string Author { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }

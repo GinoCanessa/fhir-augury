@@ -156,7 +156,7 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord()
         {
             Id = JiraIssueInPersonRecord.GetIndex(),
-            IssueId = issue.Id,
+            IssueKey = issue.Key,
             UserId = user.Id,
         });
 
@@ -177,9 +177,9 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraIssueRecord issue2 = CreateIssue(conn, "FHIR-2");
         JiraIssueRecord issue3 = CreateIssue(conn, "FHIR-3");
 
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue1.Id, UserId = user.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue2.Id, UserId = user.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue3.Id, UserId = user.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue1.Key, UserId = user.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue2.Key, UserId = user.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue3.Key, UserId = user.Id });
 
         _builder.RebuildIndexTables(conn);
 
@@ -236,10 +236,10 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraIssueRecord issue3 = CreateIssue(conn, "FHIR-3");
 
         // real on issue1, synthetic on issue2, both on issue3 (overlap -> count once)
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue1.Id, UserId = real.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue2.Id, UserId = synthetic.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue3.Id, UserId = real.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue3.Id, UserId = synthetic.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue1.Key, UserId = real.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue2.Key, UserId = synthetic.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue3.Key, UserId = real.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue3.Key, UserId = synthetic.Id });
 
         _builder.RebuildIndexTables(conn);
 
@@ -258,8 +258,8 @@ public class JiraIndexBuilderUserTests : IDisposable
         JiraIssueRecord issue1 = CreateIssue(conn, "FHIR-1");
         JiraIssueRecord issue2 = CreateIssue(conn, "FHIR-2");
 
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue1.Id, UserId = alice.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issue2.Id, UserId = bob.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue1.Key, UserId = alice.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issue2.Key, UserId = bob.Id });
 
         _builder.RebuildIndexTables(conn);
 

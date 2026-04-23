@@ -12,8 +12,17 @@ namespace FhirAugury.Source.Jira.Controllers;
 /// <summary>
 /// FR-02: local-processing workflow endpoints. Exposes the boolean
 /// <c>ProcessedLocally</c> surface over the stored
-/// <c>jira_issues.ProcessedLocallyAt</c> timestamp column.
+/// <c>ProcessedLocallyAt</c> timestamp column on any of the four
+/// Jira-issue-shaped tables.
 /// </summary>
+/// <remarks>
+/// Endpoints accept an optional <c>?type=fhir|pss|baldef|ballot</c> query
+/// parameter that selects the target table. Default is <c>fhir</c> (i.e.
+/// <c>jira_issues</c>) for backward compatibility. Unknown types return
+/// HTTP 400. <c>clear-all-processed</c> clears the selected table when
+/// <c>type</c> is supplied; when omitted, it clears the flag across all
+/// four tables.
+/// </remarks>
 [ApiController]
 [Route("api/v1/local-processing")]
 public class LocalProcessingController(
@@ -21,13 +30,16 @@ public class LocalProcessingController(
     IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
     [HttpPost("tickets")]
-    public IActionResult GetTickets([FromBody] JiraLocalProcessingListRequest request)
+    public IActionResult GetTickets([FromBody] JiraLocalProcessingListRequest request, [FromQuery] string? type = null)
     {
+        JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+        if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
+
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
 
         (string listSql, List<SqliteParameter> listParams) =
-            JiraLocalProcessingQueryBuilder.BuildList(request);
+            JiraLocalProcessingQueryBuilder.BuildList(request, mapping);
 
         int limit = (request.Limit is null || request.Limit.Value <= 0)
             ? JiraLocalProcessingQueryBuilder.DefaultLimit
@@ -39,7 +51,7 @@ public class LocalProcessingController(
         List<JiraIssueSummaryEntry> results = ReadSummaries(connection, listSql, listParams, options);
 
         (string countSql, List<SqliteParameter> countParams) =
-            JiraLocalProcessingQueryBuilder.BuildCount(request);
+            JiraLocalProcessingQueryBuilder.BuildCount(request, mapping);
         using SqliteCommand countCmd = new SqliteCommand(countSql, connection);
         foreach (SqliteParameter p in countParams) countCmd.Parameters.Add(p);
         int total = Convert.ToInt32(countCmd.ExecuteScalar());
@@ -48,13 +60,16 @@ public class LocalProcessingController(
     }
 
     [HttpPost("random-ticket")]
-    public IActionResult GetRandomTicket([FromBody] JiraLocalProcessingFilter request)
+    public IActionResult GetRandomTicket([FromBody] JiraLocalProcessingFilter request, [FromQuery] string? type = null)
     {
+        JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+        if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
+
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
 
         (string sql, List<SqliteParameter> parameters) =
-            JiraLocalProcessingQueryBuilder.BuildRandom(request);
+            JiraLocalProcessingQueryBuilder.BuildRandom(request, mapping);
 
         List<JiraIssueSummaryEntry> results = ReadSummaries(connection, sql, parameters, options);
 
@@ -63,12 +78,15 @@ public class LocalProcessingController(
     }
 
     [HttpPost("set-processed")]
-    public IActionResult SetProcessed([FromBody] JiraLocalProcessingSetRequest request)
+    public IActionResult SetProcessed([FromBody] JiraLocalProcessingSetRequest request, [FromQuery] string? type = null)
     {
         if (string.IsNullOrWhiteSpace(request.Key))
         {
             return BadRequest(new { error = "Key is required" });
         }
+
+        JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+        if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
         using SqliteConnection connection = db.OpenConnection();
 
@@ -76,7 +94,7 @@ public class LocalProcessingController(
         bool found = false;
         using (SqliteCommand selectCmd = connection.CreateCommand())
         {
-            selectCmd.CommandText = "SELECT ProcessedLocallyAt FROM jira_issues WHERE Key = @k";
+            selectCmd.CommandText = $"SELECT ProcessedLocallyAt FROM {mapping.TableName} WHERE Key = @k";
             selectCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
             using SqliteDataReader reader = selectCmd.ExecuteReader();
             existing = null;
@@ -99,7 +117,7 @@ public class LocalProcessingController(
 
         using (SqliteCommand updateCmd = connection.CreateCommand())
         {
-            updateCmd.CommandText = "UPDATE jira_issues SET ProcessedLocallyAt = @v WHERE Key = @k";
+            updateCmd.CommandText = $"UPDATE {mapping.TableName} SET ProcessedLocallyAt = @v WHERE Key = @k";
             updateCmd.Parameters.Add(new SqliteParameter("@v", storageValue));
             updateCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
             updateCmd.ExecuteNonQuery();
@@ -110,12 +128,29 @@ public class LocalProcessingController(
     }
 
     [HttpPost("clear-all-processed")]
-    public IActionResult ClearAllProcessed()
+    public IActionResult ClearAllProcessed([FromQuery] string? type = null)
     {
         using SqliteConnection connection = db.OpenConnection();
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = "UPDATE jira_issues SET ProcessedLocallyAt = NULL WHERE ProcessedLocallyAt IS NOT NULL";
-        int rowsAffected = cmd.ExecuteNonQuery();
+
+        IEnumerable<JiraLocalProcessingQueryBuilder.TableMapping> targets;
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            targets = JiraLocalProcessingQueryBuilder.AllMappings;
+        }
+        else
+        {
+            JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+            if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
+            targets = [mapping];
+        }
+
+        int rowsAffected = 0;
+        foreach (JiraLocalProcessingQueryBuilder.TableMapping t in targets)
+        {
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = $"UPDATE {t.TableName} SET ProcessedLocallyAt = NULL WHERE ProcessedLocallyAt IS NOT NULL";
+            rowsAffected += cmd.ExecuteNonQuery();
+        }
         return Ok(new JiraLocalProcessingClearResponse(rowsAffected));
     }
 

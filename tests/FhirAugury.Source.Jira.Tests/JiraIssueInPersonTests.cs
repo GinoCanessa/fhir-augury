@@ -35,12 +35,12 @@ public class JiraIssueInPersonTests : IDisposable
         JiraIssueInPersonRecord record = new()
         {
             Id = JiraIssueInPersonRecord.GetIndex(),
-            IssueId = 1,
+            IssueKey = "FHIR-1",
             UserId = user.Id,
         };
         JiraIssueInPersonRecord.Insert(conn, record);
 
-        List<JiraIssueInPersonRecord> results = JiraIssueInPersonRecord.SelectList(conn, IssueId: 1);
+        List<JiraIssueInPersonRecord> results = JiraIssueInPersonRecord.SelectList(conn, IssueKey: "FHIR-1");
         Assert.Single(results);
         Assert.Equal(user.Id, results[0].UserId);
     }
@@ -57,12 +57,12 @@ public class JiraIssueInPersonTests : IDisposable
         JiraUserRecord.Insert(conn, u2);
         JiraUserRecord.Insert(conn, u3);
 
-        int issueId = 42;
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issueId, UserId = u1.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issueId, UserId = u2.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = issueId, UserId = u3.Id });
+        string issueKey = "FHIR-42";
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issueKey, UserId = u1.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issueKey, UserId = u2.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = issueKey, UserId = u3.Id });
 
-        List<JiraIssueInPersonRecord> results = JiraIssueInPersonRecord.SelectList(conn, IssueId: issueId);
+        List<JiraIssueInPersonRecord> results = JiraIssueInPersonRecord.SelectList(conn, IssueKey: issueKey);
         Assert.Equal(3, results.Count);
     }
 
@@ -74,15 +74,15 @@ public class JiraIssueInPersonTests : IDisposable
         JiraUserRecord user = new() { Id = JiraUserRecord.GetIndex(), Username = "alice", DisplayName = "Alice" };
         JiraUserRecord.Insert(conn, user);
 
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = 1, UserId = user.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = 2, UserId = user.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = "FHIR-1", UserId = user.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = "FHIR-2", UserId = user.Id });
 
         List<JiraIssueInPersonRecord> byUser = JiraIssueInPersonRecord.SelectList(conn, UserId: user.Id);
         Assert.Equal(2, byUser.Count);
     }
 
     [Fact]
-    public void SelectList_ByIssueId_FiltersCorrectly()
+    public void SelectList_ByIssueKey_FiltersCorrectly()
     {
         using SqliteConnection conn = _db.OpenConnection();
 
@@ -91,10 +91,10 @@ public class JiraIssueInPersonTests : IDisposable
         JiraUserRecord.Insert(conn, u1);
         JiraUserRecord.Insert(conn, u2);
 
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = 1, UserId = u1.Id });
-        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueId = 2, UserId = u2.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = "FHIR-1", UserId = u1.Id });
+        JiraIssueInPersonRecord.Insert(conn, new JiraIssueInPersonRecord() { Id = JiraIssueInPersonRecord.GetIndex(), IssueKey = "FHIR-2", UserId = u2.Id });
 
-        List<JiraIssueInPersonRecord> issue1 = JiraIssueInPersonRecord.SelectList(conn, IssueId: 1);
+        List<JiraIssueInPersonRecord> issue1 = JiraIssueInPersonRecord.SelectList(conn, IssueKey: "FHIR-1");
         Assert.Single(issue1);
         Assert.Equal(u1.Id, issue1[0].UserId);
     }

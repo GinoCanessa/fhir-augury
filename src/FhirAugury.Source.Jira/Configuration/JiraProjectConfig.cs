@@ -49,4 +49,13 @@ public class JiraProjectConfig
     /// edits via <c>PUT /api/v1/projects/{key}</c> survive subsequent syncs.
     /// </summary>
     public int BaselineValue { get; set; } = 5;
+
+    /// <summary>
+    /// Selects which typed Jira table this project's items are routed into.
+    /// Defaults to <see cref="JiraProjectShape.FhirChangeRequest"/> so that
+    /// existing FHIR-shaped projects (FHIR, FHIR-I, GCR, HTA, TSC, UP, UPSM)
+    /// continue to land in <c>jira_issues</c> without configuration churn.
+    /// PSS / BALDEF / BALLOT must opt in explicitly via this property.
+    /// </summary>
+    public JiraProjectShape Shape { get; set; } = JiraProjectShape.FhirChangeRequest;
 }

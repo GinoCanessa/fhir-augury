@@ -11,6 +11,12 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Per-item read endpoints. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT rows are served by the
+/// per-shape controllers under <c>/api/v1/pss</c>, <c>/api/v1/baldef</c>,
+/// <c>/api/v1/ballot</c>.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase

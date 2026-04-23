@@ -165,6 +165,51 @@ public static class JiraCatalog
                 "Local Processing",
                 HttpMethod.Post, "api/v1/local-processing/clear-all-processed", [],
                 Destructive: true),
+
+            // Project Scope Statements (PSS-*)
+            new ApiEndpointDescriptor("pss.list", "List PSS items", "Project Scope Statements",
+                HttpMethod.Get, "api/v1/pss",
+                [
+                    new ApiParameter("workGroup", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("status", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "50",
+                        ValueType: ApiParameterValueType.Int),
+                    new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
+            new ApiEndpointDescriptor("pss.get", "Get PSS by key", "Project Scope Statements",
+                HttpMethod.Get, "api/v1/pss/{key}",
+                [
+                    new ApiParameter("key", ApiParameterKind.Path, Required: true, Placeholder: "PSS-1234"),
+                ]),
+
+            // Ballot Definitions (BALDEF-*)
+            new ApiEndpointDescriptor("baldef.list", "List Ballot Definitions", "Ballot Definitions",
+                HttpMethod.Get, "api/v1/baldef",
+                [
+                    new ApiParameter("cycle", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("level", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("workGroup", ApiParameterKind.Query, Required: false),
+                ]),
+            new ApiEndpointDescriptor("baldef.get", "Get Ballot Definition by key", "Ballot Definitions",
+                HttpMethod.Get, "api/v1/baldef/{key}",
+                [
+                    new ApiParameter("key", ApiParameterKind.Path, Required: true, Placeholder: "BALDEF-1234"),
+                ]),
+
+            // Ballot Votes (BALLOT-*)
+            new ApiEndpointDescriptor("ballot.list", "List Ballot Votes", "Ballot Votes",
+                HttpMethod.Get, "api/v1/ballot",
+                [
+                    new ApiParameter("cycle", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("specification", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("disposition", ApiParameterKind.Query, Required: false),
+                ]),
+            new ApiEndpointDescriptor("ballot.get", "Get Ballot Vote by key", "Ballot Votes",
+                HttpMethod.Get, "api/v1/ballot/{key}",
+                [
+                    new ApiParameter("key", ApiParameterKind.Path, Required: true, Placeholder: "BALLOT-1234"),
+                ]),
         ];
 
         return list;
