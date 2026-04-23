@@ -1,4 +1,5 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Common.WorkGroups;
 
 namespace FhirAugury.Source.GitHub.Configuration;
 
@@ -82,6 +83,14 @@ public class GitHubServiceOptions
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
     public FileContentIndexingOptions FileContentIndexing { get; set; } = new();
+
+    /// <summary>
+    /// Source for the authoritative HL7 work-group CodeSystem XML (mirrors
+    /// the Jira source's same-named option). Materialized into
+    /// <c>cache/github/_support/</c> by the GitHub ingestion pipeline at the
+    /// start of every run; consumed by <c>WorkGroupResolver</c>.
+    /// </summary>
+    public WorkGroupSourceXmlOptions Hl7WorkGroupSourceXml { get; set; } = new();
 
     /// <summary>
     /// Returns all configured repositories paired with their category.

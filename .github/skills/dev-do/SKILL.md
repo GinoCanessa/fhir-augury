@@ -1,6 +1,6 @@
 ---
 name: dev-do
-description: "Executes an implementation plan produced by `dev-plan` in the role of a staff-level Engineer. USE FOR: actually doing the work — writing/modifying code, running builds and tests, committing locally as phases complete, and keeping `plan.md` updated with current status. Accepts either a full path to the plan file or a short slot number that expands to `scratch/[MMDD]-[##]/plan.md`. Optional `max_subagents` (default 3) caps parallel sub-agent fan-out. May commit locally with concise conventional-commit messages, but **must not push and must not open a PR**. The `plan.md` file may be edited but never deleted."
+description: "Executes an implementation plan produced by `dev-plan` in the role of a staff-level Engineer. USE FOR: actually doing the work — writing/modifying code, running builds and tests, committing locally as phases complete, and keeping `plan.md` updated with current status. Accepts either a full path to the plan file or a short slot number that expands to `scratch/[MMDD]-[##]/plan.md`. Optional `max_subagents` (default 3) caps parallel sub-agent fan-out. Optional `checkpoint_every` (default 0 = never) yields back to the user after every N completed phases; the default is to run the entire plan in a single invocation without re-prompting. May commit locally with concise conventional-commit messages, but **must not push and must not open a PR**. The `plan.md` file may be edited but never deleted."
 ---
 
 # Dev Do Skill
@@ -48,6 +48,62 @@ You are a **staff-level Engineer**. That means:
    sub-agents to run in parallel at any given time. `1` disables
    parallel fan-out entirely. Hard upper bound: `8`.
 
+3. **`checkpoint_every`** *(optional, default `0`)* — non-negative
+   integer. When `0` (the default), the skill runs **all** remaining
+   `Pending` phases back-to-back without ever pausing for user input.
+   When `> 0`, after every `N` successfully `Complete` phases the
+   skill posts a brief progress summary and yields so the user can
+   review or course-correct before the next phase starts. `Blocked`
+   phases, scope-exceeded decisions, pre-flight inconsistencies, and
+   final completion are *separate* yield conditions and always fire
+   regardless of this setting (see "Yield Conditions" below).
+
+## Continuous Execution (Default Behavior)
+
+This skill is designed to drive a `plan.md` to completion in a single
+invocation. The default contract is:
+
+- Run **all** remaining `Pending` phases back-to-back.
+- A successful verification + commit is **not** a yield point.
+  Updating `plan.md` and committing is a normal step inside the loop;
+  immediately mark the next `Pending` phase `In-progress` and keep
+  going.
+- Yield to the user **only** for the reasons enumerated in
+  "Yield Conditions" below.
+
+Explicit anti-patterns — do not do these:
+
+- ❌ "Phase N complete — should I continue with Phase N+1?"
+- ❌ Posting a per-phase summary as your last act of a turn and then
+  stopping.
+- ❌ Treating a green build, a green test run, or a successful commit
+  as the natural end of the task.
+- ❌ Assuming the user will re-invoke `dev-do` between phases. They
+  will not. Re-invocation is the *recovery* path, not the normal path.
+
+## Yield Conditions
+
+These are the **only** reasons to stop and hand control back to the
+user mid-plan:
+
+1. A phase is `Blocked` after reasonable debugging effort. Mark it
+   `Blocked` in `plan.md` with a one-line reason and stop.
+2. A required decision **materially exceeds the plan's scope**
+   (architecture change, new dependency, behavior the plan does not
+   cover). Stop and ask; do not silently rewrite the plan.
+3. **All phases are `Complete`** — proceed to "Final Wrap-up".
+4. `checkpoint_every > 0` and `N` phases have been marked `Complete`
+   since the last checkpoint. Post a brief progress summary
+   (commits + remaining phases) and yield.
+5. A pre-flight inconsistency: dirty working tree that conflicts with
+   the plan, missing build/test commands referenced by the plan, or
+   `plan.md` claims a phase is `Complete` but the working tree
+   disagrees.
+
+Anything else — including the satisfying click of a green test run —
+is **not** a yield condition. Continue immediately to the next
+`Pending` phase.
+
 ## Plan Is Editable, But Never Deleted
 
 `plan.md` is the source of truth for what has been done. You **must**:
@@ -73,8 +129,9 @@ sibling source request (`featurerequest.md` / `bugreport.md`).
      dirty in a way that conflicts with the plan, stop and ask.
    - Confirm the build/test commands named in the plan actually exist
      in this repo.
-3. **Plan execution loop.** For each phase whose `Status` is `Pending`,
-   in order:
+3. **Plan execution loop.** This is a `while` loop, not a single pass.
+   While there is at least one phase with `Status: Pending`, take the
+   first such phase (in document order) and:
    1. Mark the phase `In-progress` in `plan.md`.
    2. Execute the steps. Use sub-agents for independent units of work
       where it pays — never exceed `max_subagents` running
@@ -82,21 +139,32 @@ sibling source request (`featurerequest.md` / `bugreport.md`).
    3. Run the phase's `Verification` commands. If green, continue. If
       red, debug; if you can't get green within reasonable effort,
       mark the phase `Blocked`, write the reason in `plan.md`, and
-      stop.
-   4. Stage and commit the phase's changes locally with a concise
-      conventional-commit message
-      (`<type>(<scope>): <subject>`), e.g.,
-      `fix(github-source): handle empty FSH alias map`.
-      Include the standard co-author trailer required by this repo.
-   5. Mark the phase `Complete` in `plan.md` and append a Progress Log
-      entry with the commit SHA. Commit the `plan.md` update as well
-      (a small `chore(plan): mark phase N complete` is fine, or fold
-      it into the phase commit when the plan was updated alongside
-      the code).
-4. **Final verification.** When all phases are `Complete`, run the
-   broader test command from the plan (or the repo default,
-   `dotnet test fhir-augury.slnx`) once more end-to-end.
-5. **Wrap up.** Report:
+      stop (yield condition #1).
+   4. Update `plan.md` in the same working tree: mark the phase
+      `Complete` and append a `## Progress Log` entry (with the
+      pending commit SHA placeholder; you'll fill it in after the
+      commit, or amend immediately after).
+   5. Stage **both** the code changes and the `plan.md` update and
+      commit them together as a single phase commit with a concise
+      conventional-commit message (`<type>(<scope>): <subject>`,
+      e.g., `fix(github-source): handle empty FSH alias map`). Include
+      the standard co-author trailer required by this repo. Folding
+      the plan update into the phase commit is the default; a
+      separate `chore(plan):` commit is allowed only when the code
+      and plan changes are genuinely independent.
+   6. **Continue immediately to the next `Pending` phase. Do not
+      yield.** Successful verification + commit is *not* a stopping
+      point. The only legal reasons to break out of this loop are the
+      ones listed under "Yield Conditions". If `checkpoint_every > 0`
+      and `N` phases have completed since the last checkpoint, post a
+      brief progress summary and yield (yield condition #4) — then
+      resume from this same loop on the next invocation.
+4. **Final verification.** When the loop exits because all phases are
+   `Complete`, run the broader test command from the plan (or the repo
+   default, `dotnet test fhir-augury.slnx`) once more end-to-end.
+5. **Final wrap-up.** Fires only when the loop has fully exited (all
+   phases `Complete`, a `Blocked` phase, a scope-exceeded decision,
+   or a checkpoint boundary). Never fires per-phase. Report:
    - The list of commits created (SHA + subject) in chronological
      order.
    - The final state of each phase.
@@ -134,17 +202,23 @@ sibling source request (`featurerequest.md` / `bugreport.md`).
   --amend` (only on commits you just made in this session) are
   allowed.
 
-## Iteration Mode
+## Iteration Mode (Recovery Path)
 
-When `plan.md` already shows `In-progress` or partial completion (e.g.,
-from a prior `dev-do` invocation):
+A single `dev-do` invocation is expected to drive `plan.md` to
+completion in one shot. Re-invocation is the **recovery path** — used
+after a `Blocked` phase, a scope-exceeded yield, an explicit
+`checkpoint_every` boundary, or an interrupted run — **not** the
+normal mode of operation.
+
+When `plan.md` already shows `In-progress` or partial completion:
 
 - **Trust the recorded status.** Resume from the first non-`Complete`
-  phase. Do not redo `Complete` phases unless the user asks.
+  phase and continue the normal continuous-execution loop from there.
+  Do not redo `Complete` phases unless the user asks.
 - If the working tree disagrees with what `plan.md` claims is complete
   (e.g., the plan says Phase 2 is Complete but the relevant file
   doesn't show the change), stop and ask the user — do not silently
-  reconcile.
+  reconcile. (Yield condition #5.)
 - If the user provides additional input, treat it as an instruction
   layered on top of the plan. Prefer surfacing it to `dev-plan` for a
   proper revision when the change is non-trivial.

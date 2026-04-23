@@ -118,6 +118,17 @@ builder.Services.AddSingleton<StructureDefinitionIndexer>();
 builder.Services.AddSingleton<FshArtifactIndexer>();
 builder.Services.AddSingleton<JiraSpecXmlIndexer>();
 
+// HL7 work-group acquisition + resolution (Phase 2)
+builder.Services.AddHttpClient(GitHubWorkGroupSupportFileAcquirer.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/xml,*/*;q=0.8");
+}).AddStandardResilienceHandler();
+builder.Services.AddSingleton<GitHubWorkGroupSupportFileAcquirer>();
+builder.Services.AddSingleton<GitHubHl7WorkGroupIndexer>();
+builder.Services.AddSingleton<WorkGroupResolver>();
+
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));
 builder.Services.AddSingleton<TagWeightResolver>();

@@ -31,6 +31,9 @@ public class GitHubIngestionPipeline(
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
+    GitHubWorkGroupSupportFileAcquirer workGroupAcquirer,
+    GitHubHl7WorkGroupIndexer workGroupIndexer,
+    WorkGroupResolver workGroupResolver,
     ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -145,6 +148,8 @@ public class GitHubIngestionPipeline(
     private async Task PostIngestionAsync(IngestionResult result, string runType, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+
+        await EnsureWorkGroupsRefreshedAsync(ct).ConfigureAwait(false);
 
         // Clone repos and extract commit data
         IReadOnlyList<(string Name, RepoCategory Category)> repos = _options.GetAllRepositories();
@@ -466,4 +471,35 @@ public class GitHubIngestionPipeline(
 
     async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
         => await RunIncrementalIngestionAsync(ct);
+
+    /// <summary>
+    /// Materializes the configured HL7 work-group XML and reloads the
+    /// <see cref="WorkGroupResolver"/> snapshot. Invoked at the start of
+    /// <see cref="PostIngestionAsync"/> so manual, scheduled, and rebuild
+    /// flows all see fresh data inside the existing run-lock.
+    /// </summary>
+    private async Task EnsureWorkGroupsRefreshedAsync(CancellationToken ct)
+    {
+        tracker.MarkStarted("workgroups");
+        try
+        {
+            string? xmlPath = await workGroupAcquirer.EnsureAsync(ct).ConfigureAwait(false);
+            int total = workGroupIndexer.Rebuild(xmlPath, ct);
+            workGroupResolver.Reload();
+            logger.LogInformation(
+                "hl7 workgroups refreshed: {Total} rows resolvable (xml={Xml})",
+                total, xmlPath ?? "<none>");
+            tracker.MarkCompleted("workgroups");
+        }
+        catch (OperationCanceledException)
+        {
+            tracker.MarkFailed("workgroups", "cancelled");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "hl7 workgroup refresh failed; continuing ingestion with last-known snapshot");
+            tracker.MarkFailed("workgroups", ex.Message);
+        }
+    }
 }

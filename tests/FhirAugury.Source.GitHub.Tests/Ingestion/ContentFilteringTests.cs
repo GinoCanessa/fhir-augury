@@ -213,6 +213,9 @@ public class ContentFilteringTests : IDisposable
             httpClientFactory: null!,
             tracker: null!,
             optionsAccessor: Options.Create(options),
+            workGroupAcquirer: null!,
+            workGroupIndexer: null!,
+            workGroupResolver: null!,
             logger: NullLogger<GitHubIngestionPipeline>.Instance);
     }
 

@@ -19,4 +19,11 @@ public static class GitHubCacheLayout
 
     /// <summary>Subdirectory name for the local git clone within a repo cache dir.</summary>
     public const string CloneSubDir = "clone";
+
+    /// <summary>
+    /// Sub-path for miscellaneous support files (e.g. the HL7 work-group
+    /// CodeSystem XML) materialized into <c>cache/github/_support/</c>.
+    /// The leading underscore avoids collision with repository owner names.
+    /// </summary>
+    public const string SupportPrefix = "_support";
 }

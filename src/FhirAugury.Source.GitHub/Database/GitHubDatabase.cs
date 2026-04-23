@@ -45,6 +45,7 @@ public class GitHubDatabase : SourceDatabase
         JiraSpecPageRecord.CreateTable(connection);
         JiraWorkgroupRecord.CreateTable(connection);
         JiraSpecFamilyRecord.CreateTable(connection);
+        Hl7WorkGroupRecord.CreateTable(connection);
 
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
