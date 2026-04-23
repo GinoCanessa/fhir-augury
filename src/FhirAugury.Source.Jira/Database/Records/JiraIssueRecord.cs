@@ -68,8 +68,12 @@ public partial record class JiraIssueRecord
     /// </summary>
     public DateTimeOffset? ProcessedLocallyAt { get; set; }
 
-    public required string? Labels { get; set; }
-    public required int CommentCount { get; set; }
-    public required string? ChangeCategory { get; set; }
-    public required string? ChangeImpact { get; set; }
+    public string? Labels { get; set; }
+    public int CommentCount { get; set; } = 0;
+    public string? ChangeCategory { get; set; }
+    public string? ChangeImpact { get; set; }
+
+    public string? Realm { get; set; }
+    public string? SponsoringWorkGroup { get; set; }
+    public string? CoSponsoringWorkGroups { get; set; }
 }

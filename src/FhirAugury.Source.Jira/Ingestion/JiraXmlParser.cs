@@ -46,6 +46,10 @@ public static class JiraXmlParser
         ["customfield_11402"] = nameof(JiraIssueRecord.Labels),
         ["customfield_10512"] = nameof(JiraIssueRecord.ChangeCategory),
         ["customfield_10511"] = nameof(JiraIssueRecord.ChangeImpact),
+
+        ["customfield_14500"] = nameof(JiraIssueRecord.SponsoringWorkGroup),
+        ["customfield_14501"] = nameof(JiraIssueRecord.CoSponsoringWorkGroups),
+        ["customfield_13704"] = nameof(JiraIssueRecord.Realm),
     };
 
     public static IEnumerable<JiraParsedIssue> ParseExport(Stream stream)
@@ -142,6 +146,9 @@ public static class JiraXmlParser
                         case nameof(JiraIssueRecord.Labels): record.Labels = value; break;
                         case nameof(JiraIssueRecord.ChangeCategory): record.ChangeCategory = value; break;
                         case nameof(JiraIssueRecord.ChangeImpact): record.ChangeImpact = value; break;
+                        case nameof(JiraIssueRecord.SponsoringWorkGroup): record.SponsoringWorkGroup = value; break;
+                        case nameof(JiraIssueRecord.CoSponsoringWorkGroups): record.CoSponsoringWorkGroups = value; break;
+                        case nameof(JiraIssueRecord.Realm): record.Realm = value; break;
                     }
                 }
             }
