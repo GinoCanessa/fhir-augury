@@ -34,6 +34,7 @@ public class GitHubIngestionPipeline(
     GitHubWorkGroupSupportFileAcquirer workGroupAcquirer,
     GitHubHl7WorkGroupIndexer workGroupIndexer,
     WorkGroupResolver workGroupResolver,
+    WorkGroupResolutionPass workGroupResolutionPass,
     ILogger<GitHubIngestionPipeline> logger) : IIngestionPipeline
 {
     private readonly SemaphoreSlim _runLock = new(1, 1);
@@ -239,6 +240,20 @@ public class GitHubIngestionPipeline(
             }
             tracker.MarkCompleted("commits");
             tracker.MarkCompleted("file-contents");
+
+            try
+            {
+                _currentStatus = "resolving_workgroups";
+                tracker.MarkStarted("workgroup-resolution");
+                List<string> repoNamesForWg = repos.Select(r => r.Name).ToList();
+                await workGroupResolutionPass.RunAsync(repoNamesForWg, ct).ConfigureAwait(false);
+                tracker.MarkCompleted("workgroup-resolution");
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to run work-group resolution pass");
+                tracker.MarkFailed("workgroup-resolution", ex.Message);
+            }
 
             try
             {

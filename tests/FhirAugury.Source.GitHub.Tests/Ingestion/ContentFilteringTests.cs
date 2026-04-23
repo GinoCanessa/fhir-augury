@@ -216,6 +216,7 @@ public class ContentFilteringTests : IDisposable
             workGroupAcquirer: null!,
             workGroupIndexer: null!,
             workGroupResolver: null!,
+            workGroupResolutionPass: null!,
             logger: NullLogger<GitHubIngestionPipeline>.Instance);
     }
 
