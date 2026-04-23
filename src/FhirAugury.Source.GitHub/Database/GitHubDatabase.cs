@@ -47,6 +47,15 @@ public class GitHubDatabase : SourceDatabase
         JiraSpecFamilyRecord.CreateTable(connection);
         Hl7WorkGroupRecord.CreateTable(connection);
 
+        // Phase 3 migration: add WorkGroupCode (nullable canonical HL7 code) +
+        // index to the existing jira_workgroups table for in-place upgrades.
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "jira_workgroups", "WorkGroupCode", "TEXT");
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = "CREATE INDEX IF NOT EXISTS ix_jira_workgroups_WorkGroupCode ON jira_workgroups(WorkGroupCode)";
+            idx.ExecuteNonQuery();
+        }
+
         CreateGitHubIssuesFts(connection);
         CreateGitHubCommentsFts(connection);
         CreateGitHubCommitsFts(connection);

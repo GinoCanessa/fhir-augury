@@ -24,7 +24,9 @@ public class JiraSpecArtifactsStrategyTests : IDisposable
         _dbPath = Path.Combine(_tempDir, "test.db");
         _database = new GitHubDatabase(_dbPath, NullLogger<GitHubDatabase>.Instance);
         _database.Initialize();
-        _indexer = new JiraSpecXmlIndexer(NullLogger<JiraSpecXmlIndexer>.Instance);
+        _indexer = new JiraSpecXmlIndexer(
+            NullLogger<JiraSpecXmlIndexer>.Instance,
+            new WorkGroupResolver(_database, NullLogger<WorkGroupResolver>.Instance));
         _strategy = new JiraSpecArtifactsStrategy(_indexer, NullLogger<JiraSpecArtifactsStrategy>.Instance);
     }
 

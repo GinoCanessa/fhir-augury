@@ -13,7 +13,7 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Parses JIRA-Spec-Artifacts XML files and indexes them into the database.
 /// Handles _families.xml, SPECS-*.xml, _workgroups.xml, and individual spec files.
 /// </summary>
-public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
+public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger, WorkGroupResolver workGroupResolver)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
@@ -210,6 +210,7 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger)
                     Webcode = (string?)wg.Attribute("webcode"),
                     Listserv = (string?)wg.Attribute("listserv"),
                     Deprecated = string.Equals((string?)wg.Attribute("deprecated"), "true", StringComparison.OrdinalIgnoreCase),
+                    WorkGroupCode = workGroupResolver.Resolve(name),
                 });
                 count++;
             }

@@ -11,6 +11,7 @@ public class JiraSpecXmlIndexerTests : IDisposable
     private readonly string _tempDir;
     private readonly string _dbPath;
     private readonly GitHubDatabase _database;
+    private readonly WorkGroupResolver _workGroupResolver;
     private readonly JiraSpecXmlIndexer _indexer;
     private const string RepoName = "HL7/JIRA-Spec-Artifacts";
 
@@ -21,7 +22,8 @@ public class JiraSpecXmlIndexerTests : IDisposable
         _dbPath = Path.Combine(_tempDir, "test.db");
         _database = new GitHubDatabase(_dbPath, NullLogger<GitHubDatabase>.Instance);
         _database.Initialize();
-        _indexer = new JiraSpecXmlIndexer(NullLogger<JiraSpecXmlIndexer>.Instance);
+        _workGroupResolver = new WorkGroupResolver(_database, NullLogger<WorkGroupResolver>.Instance);
+        _indexer = new JiraSpecXmlIndexer(NullLogger<JiraSpecXmlIndexer>.Instance, _workGroupResolver);
     }
 
     public void Dispose()
@@ -226,6 +228,123 @@ public class JiraSpecXmlIndexerTests : IDisposable
         Assert.Equal(2, workgroups.Count);
         Assert.Contains(workgroups, w => w.WorkgroupKey == "fhir-i" && w.Name == "FHIR Infrastructure" && !w.Deprecated);
         Assert.Contains(workgroups, w => w.WorkgroupKey == "oo" && w.Deprecated);
+        // No HL7 WG seed data → WorkGroupCode is null on every row.
+        Assert.All(workgroups, w => Assert.Null(w.WorkGroupCode));
+    }
+
+    [Fact]
+    public void ParseWorkgroups_ExactNameMatch_PopulatesWorkGroupCode()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+        SeedHl7WorkGroups(("fhir-i", "FHIR Infrastructure", false), ("oo", "Orders and Observations", false));
+        _workGroupResolver.Reload();
+
+        WriteFile(cloneDir, "xml/_workgroups.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <workgroups>
+              <workgroup key="fhir-i" name="FHIR Infrastructure"/>
+              <workgroup key="oo" name="Orders and Observations"/>
+            </workgroups>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        List<JiraWorkgroupRecord> workgroups = JiraWorkgroupRecord.SelectList(connection);
+        Assert.Equal("fhir-i", workgroups.Single(w => w.WorkgroupKey == "fhir-i").WorkGroupCode);
+        Assert.Equal("oo", workgroups.Single(w => w.WorkgroupKey == "oo").WorkGroupCode);
+    }
+
+    [Fact]
+    public void ParseWorkgroups_NameCleanFallback_PopulatesWorkGroupCode()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+        // Seeded HL7 WG name differs in punctuation/casing from the JIRA-Spec input,
+        // forcing resolution through Hl7WorkGroupNameCleaner via NameClean.
+        SeedHl7WorkGroups(("oo", "Orders & Observations", false));
+        _workGroupResolver.Reload();
+
+        WriteFile(cloneDir, "xml/_workgroups.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <workgroups>
+              <workgroup key="oo" name="orders and observations"/>
+            </workgroups>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        JiraWorkgroupRecord row = JiraWorkgroupRecord.SelectList(connection).Single();
+        Assert.Equal("oo", row.WorkGroupCode);
+    }
+
+    [Fact]
+    public void ParseWorkgroups_UnknownName_LeavesWorkGroupCodeNull()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+        SeedHl7WorkGroups(("fhir-i", "FHIR Infrastructure", false));
+        _workGroupResolver.Reload();
+
+        WriteFile(cloneDir, "xml/_workgroups.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <workgroups>
+              <workgroup key="mystery" name="Some Unrecognized WG"/>
+            </workgroups>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        JiraWorkgroupRecord row = JiraWorkgroupRecord.SelectList(connection).Single();
+        Assert.Equal("mystery", row.WorkgroupKey);
+        Assert.Null(row.WorkGroupCode);
+    }
+
+    [Fact]
+    public void ParseWorkgroups_RetiredHl7Code_StillResolves()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+        // Retired HL7 work group must still resolve — this matters for
+        // historical JIRA-Spec workgroups that map to deprecated codes.
+        SeedHl7WorkGroups(("modeling", "Modeling and Methodology", true));
+        _workGroupResolver.Reload();
+
+        WriteFile(cloneDir, "xml/_workgroups.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <workgroups>
+              <workgroup key="mnm" name="Modeling and Methodology" deprecated="true"/>
+            </workgroups>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        JiraWorkgroupRecord row = JiraWorkgroupRecord.SelectList(connection).Single();
+        Assert.Equal("modeling", row.WorkGroupCode);
+        Assert.True(row.Deprecated);
+    }
+
+    private void SeedHl7WorkGroups(params (string Code, string Name, bool Retired)[] groups)
+    {
+        using SqliteConnection conn = _database.OpenConnection();
+        List<Hl7WorkGroupRecord> rows = [];
+        foreach ((string code, string name, bool retired) in groups)
+        {
+            rows.Add(new Hl7WorkGroupRecord
+            {
+                Id = Hl7WorkGroupRecord.GetIndex(),
+                Code = code,
+                Name = name,
+                Definition = null,
+                Retired = retired,
+                NameClean = FhirAugury.Common.WorkGroups.Hl7WorkGroupNameCleaner.Clean(name),
+            });
+        }
+        Hl7WorkGroupRecord.Insert(conn, rows, ignoreDuplicates: true, insertPrimaryKey: true);
     }
 
     [Fact]
