@@ -1,6 +1,6 @@
 ---
 name: orchestrate-notes
-description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes page. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Walks the commit window, groups changed files into units (artifacts / pages / datatypes), and dispatches up to N concurrent sub-agents (`notes-artifact`, `notes-page`, and — for `HL7/fhir` — a single `notes-datatype`) to produce per-unit markdown reports in a structured output directory."
+description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes surface. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Walks the commit window, groups changed files into units (artifacts / pages / datatypes) using a shared datatype-page map so per-datatype own-pages (e.g., `dosage.html`, `metadatatypes.html`) are routed into the datatypes unit instead of being double-dispatched as pages, and dispatches up to N concurrent sub-agents (`notes-artifact`, `notes-page`, and — for `HL7/fhir` — a single `notes-datatype`) to produce per-unit markdown reports in a structured output directory."
 ---
 
 # Orchestrate Notes Skill
@@ -14,9 +14,11 @@ dispatching one sub-agent per unit. A unit is one of:
   → handled by the `notes-artifact` skill;
 - a **page** (narrative `.html` / `.md` page) → handled by the
   `notes-page` skill;
-- the consolidated **datatypes** page in `HL7/fhir` → handled by a
-  single `notes-datatype` sub-agent that covers every datatype touched
-  in the window.
+- the consolidated **datatypes** unit in `HL7/fhir` → handled by a
+  single `notes-datatype` sub-agent that covers every datatype
+  touched in the window, plus any per-datatype narrative page
+  (`source/<page>.html`) the datatype-page map resolves to (e.g.,
+  `dosage.html`, `marketingstatus.html`, `metadatatypes.html`).
 
 Unlike the Jira-driven orchestrators (`orchestrate-prep`,
 `orchestrate-plan`), the trigger here is a **commit**, not a Jira
@@ -119,17 +121,21 @@ those for after-applied SD shape).
 Each touched file is classified into exactly one of three buckets:
 
 - **`datatypes`** *(only when repo is `HL7/fhir`)* — any file under
-  `source/datatypes/` plus `source/datatypes.html`. All such files
-  collapse into a **single** `datatypes` unit handled by one
-  `notes-datatype` sub-agent. Do **not** create one unit per
-  datatype.
+  `source/datatypes/`, `source/datatypes.html`, **or any per-datatype
+  own-page** (`source/<page>.html`) whose `<page>` resolves through
+  the datatype-page map (see below). All such files collapse into a
+  **single** `datatypes` unit handled by one `notes-datatype`
+  sub-agent. Do **not** create one unit per datatype, and do **not**
+  dispatch a separate `notes-page` unit for any own-page that the
+  datatype map claims.
 - **page** — a narrative page source file. Resolved per category:
   - **FhirCore (`HL7/fhir`)** — top-level `source/<page>.html` files
     (and any conventional siblings such as `source/<page>-notes.html`
-    or `source/<page>-examples.html`). Excludes `source/datatypes.html`
-    (handled by the `datatypes` unit) and excludes resource-intro
-    files inside `source/<resource>/` folders (those belong to the
-    resource artifact).
+    or `source/<page>-examples.html`). **Excludes** `source/datatypes.html`
+    *and* every `source/<stem>.html` in the per-window
+    `datatypeOwnedPages` set (handled by the `datatypes` unit), and
+    excludes resource-intro files inside `source/<resource>/` folders
+    (those belong to the resource artifact).
   - **FhirIg / FhirExtensionsPack / Incubator** — files under
     `input/pagecontent/**` (and any non-conventional page locations
     declared in the briefing's page index or `sushi-config.yaml`
@@ -166,6 +172,50 @@ Each touched file is classified into exactly one of three buckets:
     Artifact Map.
 
 After bucketing, apply selection rules:
+
+#### Datatype-page map (FhirCore only)
+
+For `HL7/fhir`, the orchestrator computes a per-window
+`datatypeOwnedPages` set so that own-page datatypes are routed into
+the `datatypes` unit instead of being dispatched as standalone
+`notes-page` units. The map MUST be kept identical to the one
+documented in `notes-datatype/SKILL.md` ("Datatype-page map" section)
+— if the FHIR repo grows a new own-page datatype, update both files.
+
+Computation (run once per orchestrator invocation):
+
+1. List `source/datatypes/<dt>.xml` SD files at HEAD inside the
+   cached clone.
+2. For each `<dt>`, derive a candidate page stem:
+   - **Default**: lowercase datatype name (e.g., `Quantity` →
+     `quantity`).
+   - **Explicit overrides**:
+     - `Reference` → `references`.
+     - The **MetaDataTypes cluster** — `ContactDetail`,
+       `DataRequirement`, `Expression`, `ParameterDefinition`,
+       `RelatedArtifact`, `TriggerDefinition`, `UsageContext`,
+       `Contributor` — all → `metadatatypes`.
+3. Test the candidate stem against HEAD:
+
+   ```bash
+   git -C cache/github/repos/HL7_fhir/clone \
+       cat-file -e HEAD:source/<stem>.html
+   ```
+
+4. When `cat-file -e` succeeds, add `source/<stem>.html` to
+   `datatypeOwnedPages`.
+
+The orchestrator then:
+
+- Removes any path in `datatypeOwnedPages` from the candidate **page**
+  bucket before grouping by page name.
+- Adds any **touched** path in `datatypeOwnedPages` to the
+  `datatypes` unit's file scope (alongside `source/datatypes/**` and
+  `source/datatypes.html`). The `notes-datatype` sub-agent
+  re-discovers its own target pages from HEAD; the orchestrator's job
+  is purely to prevent double-dispatch.
+
+Apply selection rules:
 
 - **Datatypes unit** — drop entirely when the repo is not `HL7/fhir`,
   when `exclude datatypes = true`, or when no `source/datatypes/**`
@@ -220,7 +270,10 @@ About to draft ballot notes:
       • security           (4 commits, 1 file)
     Datatypes (1):
       • datatypes          (5 commits, 9 files across 4 datatypes:
-                            Quantity, Period, Range, SimpleQuantity)
+                            Dosage, MarketingStatus, Quantity, Period)
+                           Pages targeted: datatypes.html,
+                                           dosage.html,
+                                           marketingstatus.html
 
 Proceed?
 ```
@@ -345,8 +398,7 @@ Run the `notes-page` skill for the following page.
 #### Datatypes prompt (HL7/fhir only)
 
 ````
-Run the `notes-datatype` skill for the consolidated FHIR datatypes
-page.
+Run the `notes-datatype` skill for the FHIR datatypes surface.
 
 ## Inputs
 
@@ -362,9 +414,14 @@ page.
 1. Follow the `notes-datatype` skill exactly, including all
    data-gathering steps, the briefing dependency, and the report
    format.
-2. Use the supplied **Working directory** for any transient files.
-3. Save the completed report to the output file path above.
-4. When finished, confirm success and state the full path of the
+2. This skill may produce **multiple** ballot-note drafts in a
+   single report — one per target page (`source/datatypes.html`
+   plus any per-datatype narrative pages such as `source/dosage.html`
+   or `source/metadatatypes.html` resolved via the datatype-page
+   map).
+3. Use the supplied **Working directory** for any transient files.
+4. Save the completed report to the output file path above.
+5. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -399,7 +456,10 @@ When a sub-agent completes:
 Report to the user:
 
 - After each completion: completed / failed / in-flight counts; the
-  unit just finished (with its kind) and its output path.
+  unit just finished (with its kind) and its output path. For the
+  `datatypes` unit, surface the list of target pages drafted in the
+  report (parsed from the report header table's `Pages targeted`
+  row, or stated as "see report" if parsing fails).
 - Final summary: a table of `kind | unit | status | report path |
   error (if any)`. State the output directory path so the user can
   review reports as a batch.
@@ -429,9 +489,11 @@ The orchestrator should:
    reachable from HEAD; load the FhirCore briefing.
 2. `git diff --name-only 1a2b3c4..HEAD` and bucket the result into
    artifacts (per `source/<name>/` folder), pages (per top-level
-   `source/<page>.html`), and datatypes (any file under
-   `source/datatypes/` or `source/datatypes.html`, collapsed into one
-   unit).
+   `source/<page>.html`, **excluding** `source/datatypes.html` and
+   any per-datatype own-page in the computed `datatypeOwnedPages`
+   set), and datatypes (any file under `source/datatypes/`,
+   `source/datatypes.html`, or any touched own-page in
+   `datatypeOwnedPages`, collapsed into one unit).
 3. Apply defaults (concurrency `3`, working directory `temp/notes/`,
    skip existing `true`, exclude datatypes `false`) and present a
    confirmation summary listing every unit in the batch via
