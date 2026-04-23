@@ -1,3 +1,4 @@
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Source.Jira.Configuration;
 
 namespace FhirAugury.Source.Jira.Tests;

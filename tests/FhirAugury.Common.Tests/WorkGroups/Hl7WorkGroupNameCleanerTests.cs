@@ -1,6 +1,6 @@
 using FhirAugury.Common.WorkGroups;
 
-namespace FhirAugury.Source.Jira.Tests;
+namespace FhirAugury.Common.Tests.WorkGroups;
 
 public class Hl7WorkGroupNameCleanerTests
 {

@@ -306,7 +306,7 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
                 rec.WorkGroupId = id;
                 continue;
             }
-            string clean = Hl7WorkGroupNameCleaner.Clean(rec.Name);
+            string clean = FhirAugury.Common.WorkGroups.Hl7WorkGroupNameCleaner.Clean(rec.Name);
             if (clean.Length > 0 && idByNameClean.TryGetValue(clean, out id))
             {
                 rec.WorkGroupId = id;

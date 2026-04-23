@@ -1,4 +1,5 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Common.WorkGroups;
 
 namespace FhirAugury.Source.Jira.Configuration;
 

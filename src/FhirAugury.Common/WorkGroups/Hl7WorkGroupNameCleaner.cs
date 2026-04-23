@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace FhirAugury.Source.Jira.Ingestion;
+namespace FhirAugury.Common.WorkGroups;
 
 /// <summary>
 /// Computes a sanitized PascalCase rendering of an HL7 work group display

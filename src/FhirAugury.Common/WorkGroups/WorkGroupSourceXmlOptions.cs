@@ -1,16 +1,22 @@
-namespace FhirAugury.Source.Jira.Configuration;
+namespace FhirAugury.Common.WorkGroups;
 
 /// <summary>
 /// Configuration for the HL7 work-group CodeSystem XML support file used by
-/// the Jira source service. The file is materialized into
-/// <c>cache/jira/_support/&lt;Filename&gt;</c> on startup and at the start of
-/// every scheduled sync.
+/// any source service. The file is materialized into
+/// <c>cache/&lt;source&gt;/&lt;support&gt;/&lt;Filename&gt;</c> on startup and at
+/// the start of every scheduled sync.
 /// </summary>
+/// <remarks>
+/// Promoted from <c>FhirAugury.Source.Jira.Configuration</c> so the GitHub
+/// source can share the same shape under the <c>GitHub:Hl7WorkGroupSourceXml</c>
+/// configuration section.
+/// </remarks>
 public class WorkGroupSourceXmlOptions
 {
     /// <summary>
-    /// Filename, relative to <c>cache/jira/_support/</c>, where the XML file
-    /// is materialized. Defaults to <c>CodeSystem-hl7-work-group.xml</c>.
+    /// Filename, relative to the source's <c>_support</c> directory, where
+    /// the XML file is materialized. Defaults to
+    /// <c>CodeSystem-hl7-work-group.xml</c>.
     /// </summary>
     public string Filename { get; set; } = "CodeSystem-hl7-work-group.xml";
 

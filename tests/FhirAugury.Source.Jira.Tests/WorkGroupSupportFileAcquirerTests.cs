@@ -4,6 +4,7 @@ using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using WorkGroupSourceXmlOptions = FhirAugury.Common.WorkGroups.WorkGroupSourceXmlOptions;
 
 namespace FhirAugury.Source.Jira.Tests;
 
