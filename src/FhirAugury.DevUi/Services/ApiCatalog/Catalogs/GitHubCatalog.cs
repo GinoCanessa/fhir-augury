@@ -154,6 +154,45 @@ public static class GitHubCatalog
             new ApiEndpointDescriptor("jira-specs.by-canonical", "By canonical URL", "Jira Specs",
                 HttpMethod.Get, "api/v1/jira-specs/by-canonical",
                 [new ApiParameter("url", ApiParameterKind.Query, Required: false)]),
+
+            // Work-group attribution
+            new ApiEndpointDescriptor("workgroups.list", "List work-groups", "Work Groups",
+                HttpMethod.Get, "api/v1/workgroups", []),
+            new ApiEndpointDescriptor("workgroups.files", "Files for work-group", "Work Groups",
+                HttpMethod.Get, "api/v1/workgroups/files",
+                [
+                    new ApiParameter("repo", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("workgroup", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "100",
+                        ValueType: ApiParameterValueType.Int),
+                    new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
+            new ApiEndpointDescriptor("workgroups.artifacts", "Artifacts for work-group", "Work Groups",
+                HttpMethod.Get, "api/v1/workgroups/artifacts",
+                [
+                    new ApiParameter("repo", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("workgroup", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "100",
+                        ValueType: ApiParameterValueType.Int),
+                    new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
+            new ApiEndpointDescriptor("workgroups.resolve", "Resolve path → work-group", "Work Groups",
+                HttpMethod.Get, "api/v1/workgroups/resolve",
+                [
+                    new ApiParameter("repo", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("path", ApiParameterKind.Query, Required: true),
+                ]),
+            new ApiEndpointDescriptor("workgroups.unresolved", "Unresolved raw values", "Work Groups",
+                HttpMethod.Get, "api/v1/workgroups/unresolved",
+                [
+                    new ApiParameter("repo", ApiParameterKind.Query, Required: false),
+                    new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "100",
+                        ValueType: ApiParameterValueType.Int),
+                    new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
         ];
 
         return list;
