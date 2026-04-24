@@ -544,6 +544,8 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `ArtifactKey` | TEXT | Specification artifact key |
 | `FilePath` | TEXT | File path in repository |
 | `MapType` | TEXT | Mapping type |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code resolved by `WorkGroupResolutionPass` |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input; populated when it didn't resolve or resolved to a different code |
 
 #### `github_structure_definitions` — Parsed FHIR StructureDefinitions
 
@@ -566,6 +568,7 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `Description` | TEXT? | Description |
 | `Publisher` | TEXT? | Publisher |
 | `WorkGroup` | TEXT? | HL7 work group |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input preserved by `WorkGroupResolutionPass` when not canonical |
 | `FhirMaturity` | TEXT? | Maturity level (FMM) |
 | `StandardsStatus` | TEXT? | Standards status |
 | `Category` | TEXT? | Category |
@@ -603,7 +606,43 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `Status` | TEXT? | Publication status |
 | `Description` | TEXT? | Description |
 | `Publisher` | TEXT? | Publisher |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code resolved by `WorkGroupResolutionPass` |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input preserved when not canonical |
+| `FhirMaturity` | INTEGER? | Maturity level (FMM) |
+| `StandardsStatus` | TEXT? | Standards status |
+| `TypeSpecificData` | TEXT? | Per-resource-type extracted JSON |
 | `Format` | TEXT | Source format (xml, json, fsh) |
+
+#### `github_repo_workgroups` — Per-repo derived default work-group attribution
+
+Lives in its own table (rather than as a column on `github_repos`) so API-driven
+repo upserts in `GitHubRestProvider` / `GitHubCliProvider` — which fully rewrite
+the `github_repos` row from `MapRepo` output — cannot blank out the value
+derived by `WorkGroupResolutionPass`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT UNIQUE | Owner/Name (e.g., `HL7/fhir`) — one row per repo |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code, or `NULL` when no signal |
+| `WorkGroupRaw` | TEXT? | Original input preserved when not canonical |
+| `Source` | TEXT | Provenance (`config` or `majority-jira-spec`) |
+| `ResolvedAt` | TEXT | When the row was last derived |
+
+#### `hl7_workgroups` — Authoritative HL7 work-group codeset
+
+Local copy of the `CodeSystem-hl7-work-group` resource, populated from the
+support XML. Used by `WorkGroupResolutionPass` to canonicalize free-text
+work-group inputs.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `Code` | TEXT UNIQUE | Canonical work-group code (e.g., `fhir-i`) |
+| `Name` | TEXT | Display name |
+| `Definition` | TEXT? | Definition text |
+| `Retired` | INTEGER | Whether retired |
+| `NameClean` | TEXT | Normalized name (case/punct-folded) for fuzzy lookups |
 
 #### `github_file_contents` — Indexed repository file contents
 

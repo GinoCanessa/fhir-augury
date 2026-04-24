@@ -358,6 +358,38 @@ Returns topic names with message counts and last activity.
 
 ---
 
+## GitHub Work-Group Tools
+
+### `github_workgroup_for_path`
+
+Resolve the canonical HL7 work-group attribution for a file path within a
+GitHub repository. Walks the same four-stage lookup chain used by
+`WorkGroupResolutionPass`: exact-file match → longest directory-prefix
+match → artifact-table match → repo-default → none.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | string | Yes | | Repository full name (e.g., `HL7/fhir`) |
+| `path` | string | Yes | | Repository-relative file path (forward slashes) |
+
+Returns a JSON object:
+
+```json
+{
+  "repoFullName": "HL7/fhir",
+  "path": "source/patient/patient-introduction.md",
+  "workGroup": "fhir-i",
+  "workGroupRaw": null,
+  "matchedStage": "exact-file"
+}
+```
+
+`matchedStage` is one of `exact-file`, `directory-prefix`, `artifact`,
+`repo-default`, or `none`. `workGroupRaw` carries the original, un-resolved
+input when it didn't match a canonical HL7 work-group code.
+
+---
+
 ## Recommended Workflow for LLM Agents
 
 The tools are designed for a progressive discovery pattern:

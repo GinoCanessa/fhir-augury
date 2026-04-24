@@ -221,6 +221,57 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
         => httpClient.ProxyAsync(Source, HttpMethod.Get,
             $"jira-specs/{Uri.EscapeDataString(specKey)}/versions", Request, ct);
 
+    // ── Workgroups ───────────────────────────────────────────────────────
+
+    /// <summary>List canonical HL7 work-groups with per-repo coverage counts.</summary>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("workgroups")]
+    public Task<IActionResult> ListWorkGroups(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "workgroups", Request, ct);
+
+    /// <summary>List spec_file_map rows attributed to the given canonical work-group.</summary>
+    /// <param name="repo">Repository full name.</param>
+    /// <param name="workgroup">Canonical work-group code.</param>
+    /// <param name="limit">Maximum number of rows.</param>
+    /// <param name="offset">Number of rows to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("workgroups/files")]
+    public Task<IActionResult> ListWorkGroupFiles(
+        [FromQuery] string? repo, [FromQuery] string? workgroup,
+        [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "workgroups/files", Request, ct);
+
+    /// <summary>List artifacts attributed to the given canonical work-group.</summary>
+    /// <param name="repo">Repository full name.</param>
+    /// <param name="workgroup">Canonical work-group code.</param>
+    /// <param name="limit">Maximum number of rows.</param>
+    /// <param name="offset">Number of rows to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("workgroups/artifacts")]
+    public Task<IActionResult> ListWorkGroupArtifacts(
+        [FromQuery] string? repo, [FromQuery] string? workgroup,
+        [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "workgroups/artifacts", Request, ct);
+
+    /// <summary>Best-effort lookup of the canonical work-group for a (repo, path) pair.</summary>
+    /// <param name="repo">Repository full name.</param>
+    /// <param name="path">File path within the repository.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("workgroups/resolve")]
+    public Task<IActionResult> ResolveWorkGroup(
+        [FromQuery] string? repo, [FromQuery] string? path, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "workgroups/resolve", Request, ct);
+
+    /// <summary>List unresolved <c>WorkGroupRaw</c> values that need codeset review.</summary>
+    /// <param name="repo">Optional repo filter.</param>
+    /// <param name="limit">Maximum number of rows.</param>
+    /// <param name="offset">Number of rows to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("workgroups/unresolved")]
+    public Task<IActionResult> ListWorkGroupUnresolved(
+        [FromQuery] string? repo, [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "workgroups/unresolved", Request, ct);
+
     // ── Ingestion ────────────────────────────────────────────────────────
 
     /// <summary>Trigger a synchronous ingestion run on the GitHub source.</summary>
