@@ -1,3 +1,4 @@
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
@@ -21,12 +22,18 @@ public static class JiraProcessingServiceCollectionExtensions
         Action<JiraProcessingOptions>? configure = null,
         JiraProcessingFilterDefaults? defaults = null)
     {
+        services.AddOptions<ProcessingServiceOptions>()
+            .Bind(configuration.GetSection(ProcessingServiceOptions.SectionName))
+            .Validate(options => !options.Validate().Any(), "Processing configuration is invalid.")
+            .ValidateOnStart();
+
         services.AddOptions<JiraProcessingOptions>()
             .Bind(configuration.GetSection(JiraProcessingOptions.SectionName))
             .Configure(options => configure?.Invoke(options))
             .Validate(options => !options.Validate().Any(), "Processing:Jira configuration is invalid.")
             .ValidateOnStart();
 
+        services.AddSingleton<ProcessingLifecycleService>();
         services.AddSingleton(defaults ?? JiraProcessingFilterDefaults.None);
         services.AddSingleton<JiraProcessingFilterResolver>(sp => new JiraProcessingFilterResolver(sp.GetRequiredService<JiraProcessingFilterDefaults>()));
         services.AddSingleton<JiraLocalProcessingRequestFactory>();
@@ -37,6 +44,7 @@ public static class JiraProcessingServiceCollectionExtensions
         services.AddSingleton<IJiraAgentExtensionTokenProvider, EmptyJiraAgentExtensionTokenProvider>();
         services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, JiraTicketProcessingHandler>();
         services.AddSingleton<ProcessingQueueRunner<JiraProcessingSourceTicketRecord>>();
+        services.AddHostedService<ProcessingHostedService<JiraProcessingSourceTicketRecord>>();
         services.AddHttpClient<DirectJiraTicketDiscoveryClient>((sp, client) =>
         {
             JiraProcessingOptions options = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
@@ -56,7 +64,6 @@ public static class JiraProcessingServiceCollectionExtensions
                 : sp.GetRequiredService<DirectJiraTicketDiscoveryClient>();
         });
         services.AddSingleton<JiraTicketSyncService>();
-        services.AddProcessingService<JiraProcessingSourceTicketRecord, JiraProcessingSourceTicketStore, JiraTicketProcessingHandler>(configuration);
         return services;
     }
 

@@ -61,6 +61,8 @@ Ports (HTTP only):
 | **Parsing.Fhir** | `FhirAugury.Parsing.Fhir` | FHIR XML/JSON parsing library — StructureDefinitions, canonical artifacts (CodeSystem, ValueSet, etc.), Bundles, artifact classification |
 | **Parsing.Fsh** | `FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) parsing library — Profile, Extension, Resource, Logical, CodeSystem, ValueSet, Instance definitions; sushi-config.yaml parsing |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
+| **Processing.Common** | `FhirAugury.Processing.Common` | Generic Processing substrate — options, lifecycle endpoints, queue runner, work-item contracts |
+| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira Processing layer — source-ticket queue, filters, discovery, agent invocation, single-ticket enqueue endpoint |
 | **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 16 tool implementations (UnifiedTools, ContentTools, JiraTools, ZulipTools) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
@@ -85,6 +87,11 @@ FhirAugury.Parsing.Fhir       ← Standalone library (Hl7.Fhir.R5 SDK)
 FhirAugury.Parsing.Fsh        ← Standalone library (fsh-processor ANTLR4 parser)
     ↑                            Both used by Source.GitHub for artifact indexing
 FhirAugury.Orchestrator        ← Common + ServiceDefaults (HTTP API, consumes source HTTP APIs)
+    ↑
+FhirAugury.Processing.Common   ← Common (generic Processing lifecycle/queue substrate)
+    ↑
+FhirAugury.Processing.Jira.Common ← Common + Processing.Common (Jira queue/discovery/agent layer)
+    ↑                            Concrete Processing.Jira.* services plug in processor-specific output/tokens
     ↑
 FhirAugury.McpShared            ← Common (shared MCP tool implementations, HTTP clients)
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
@@ -181,6 +188,13 @@ The `RelatedItemFinder` combines four signals to rank related items:
 | Cross-source references | 10 | Items linked via cross-references (outgoing + incoming) |
 | BM25 text similarity | 3 | Keyword overlap via BM25 scoring |
 | Shared metadata | 2 | Common labels, components, specifications, etc. |
+
+
+### Processing Stack
+
+Processing services are layered separately from source ingestion. `FhirAugury.Processing.Common` owns service-wide Processing options, lifecycle state, queue stats, `start`/`stop`/`status` endpoints, and the concurrency-limited runner over `IProcessingWorkItemStore<T>` plus `IProcessingWorkItemHandler<T>`.
+
+`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed processors. It persists source tickets in `jira_processing_source_tickets`, applies the shared null/default/empty/restrict filter conventions, discovers tickets through Source.Jira or the orchestrator using shared Jira DTOs, invokes an agent command without shell expansion, and exposes `POST /processing/tickets/{key}` for ad-hoc enqueue/reset. Concrete preparer/planner services provide processor-specific defaults, output records, and extension tokens such as repository filters.
 
 ## Key Design Decisions
 

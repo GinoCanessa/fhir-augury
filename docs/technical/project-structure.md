@@ -19,10 +19,10 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (16 projects)
+│   └── (17 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
-    └── (14 test projects)
+    └── (15 test projects)
 ```
 
 ## API Contracts
@@ -36,6 +36,7 @@ used by all services for inter-service communication:
 - **`IngestionContracts`** — Ingestion trigger and status contracts
 - **`ServiceContracts`** — Service status, health, and endpoint contracts
 - **`ContentFormats`** — Content format definitions
+- **`JiraProcessingContracts`** — Jira issue summary and local-processing DTOs shared by Source.Jira, orchestrator proxies, and Processing.Jira services
 
 These contracts define the HTTP API surface that all source services implement
 and that the orchestrator uses for fan-out communication.
@@ -58,7 +59,8 @@ FhirAugury.Common/
 │                             #   DictionaryDatabase: compiled dictionary builder
 ├── Api/                      # Shared HTTP API contracts (SearchContracts,
 │                             #   ItemContracts, CrossReferenceContracts,
-│                             #   IngestionContracts, ServiceContracts, ContentFormats)
+│                             #   IngestionContracts, ServiceContracts,
+│                             #   ContentFormats, JiraProcessingContracts)
 ├── Http/                     # HTTP helpers: AtlassianAuthHandler,
 │                             #   HttpServiceLifecycle, HttpErrorMapper,
 │                             #   TransientHttpExtensions
@@ -163,6 +165,23 @@ FhirAugury.Processing.Common/
 ├── Database/                 # ProcessingDatabase and generated-record base columns
 ├── Hosting/                  # DI, lifecycle, hosted service, endpoint mappings
 └── Queue/                    # Work-item store/handler contracts and runner
+```
+
+
+### `FhirAugury.Processing.Jira.Common`
+
+Shared Jira-specific processing layer used by future concrete `Processing.Jira.*` services. It consumes `FhirAugury.Processing.Common` for lifecycle/queue execution and adds Jira filters, source-ticket persistence, upstream discovery, agent command rendering, and the uniform `POST /processing/tickets/{key}` enqueue endpoint.
+
+```
+FhirAugury.Processing.Jira.Common/
+├── Agent/                    # Command rendering, CLI process runner, token providers
+├── Api/                      # Single-ticket enqueue endpoint contracts and mappings
+├── Configuration/            # Processing:Jira options and discovery-source enum
+├── Database/                 # SQLite source-ticket queue and lifecycle store
+├── Discovery/                # Source.Jira/orchestrator clients and sync service
+├── Filtering/                # Null/default/empty/restrict filter semantics
+├── Hosting/                  # DI registrations for concrete Jira processors
+└── Processing/               # Work-item handler that invokes the agent runner
 ```
 
 ### `FhirAugury.Orchestrator`
