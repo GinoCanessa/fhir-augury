@@ -12,7 +12,7 @@ namespace FhirAugury.Processing.Jira.Common.Database;
 
 public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>
 {
-    internal const string SchemaSql = """
+    public const string SchemaSql = """
             CREATE TABLE IF NOT EXISTS jira_processing_source_tickets (
                 Id TEXT NOT NULL PRIMARY KEY,
                 Key TEXT NOT NULL,
