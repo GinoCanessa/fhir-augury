@@ -1,6 +1,7 @@
 using FhirAugury.Common.OpenApi;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Api;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -8,6 +9,7 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Hosting;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
@@ -48,6 +50,8 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .Validate(options => !PreparerJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the preparer.")
     .ValidateOnStart();
 
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, FhirTicketPrepHandler>();
+
 builder.Services.AddSingleton(sp =>
 {
     PreparerServiceOptions options = sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
@@ -70,3 +74,4 @@ app.MapAuguryOpenApi();
 app.Run();
 
 public partial class Program;
+
