@@ -52,11 +52,11 @@ public class JiraServiceOptions
     public string? DefaultJql { get; set; }
 
     /// <summary>
-    /// List of Jira projects to download. Each project gets its own cache
-    /// subdirectory and sync state. When empty, falls back to
-    /// <see cref="DefaultProject"/>.
+    /// List of Jira projects to download. Uses the null-as-default, empty-as-explicit-all convention; null falls back to <see cref="DefaultProject"/> and [] disables project ingestion. See docs/source-filter-conventions.md.
     /// </summary>
-    public List<JiraProjectConfig> Projects { get; set; } = [];
+    public List<JiraProjectConfig>? Projects { get; set; }
+
+    public bool HasExplicitEmptyProjects => Projects is { Count: 0 };
 
     /// <summary>
     /// Returns the effective list of enabled projects. If <see cref="Projects"/>
@@ -65,12 +65,17 @@ public class JiraServiceOptions
     /// </summary>
     public List<JiraProjectConfig> GetEffectiveProjects()
     {
-        if (Projects.Count > 0)
+        if (Projects is null)
         {
-            return Projects.Where(p => p.Enabled).ToList();
+            return [new JiraProjectConfig { Key = DefaultProject }];
         }
 
-        return [new JiraProjectConfig { Key = DefaultProject }];
+        if (Projects.Count == 0)
+        {
+            return [];
+        }
+
+        return Projects.Where(p => p.Enabled).ToList();
     }
 
     /// <summary>
@@ -81,8 +86,8 @@ public class JiraServiceOptions
     /// <see cref="JiraProjectShape.FhirChangeRequest"/>.
     /// </summary>
     public IReadOnlyDictionary<string, JiraProjectShape> ShapeByProjectKey =>
-        Projects.GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.First().Shape, StringComparer.OrdinalIgnoreCase);
+        (Projects ?? []).GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+                       .ToDictionary(g => g.Key, g => g.First().Shape, StringComparer.OrdinalIgnoreCase);
 
     public int PageSize { get; set; } = 100;
     public PortConfiguration Ports { get; set; } = new() { Http = 5160 };
@@ -105,7 +110,7 @@ public class JiraServiceOptions
     public IEnumerable<string> Validate()
     {
         DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
-        foreach (JiraProjectConfig p in Projects)
+        foreach (JiraProjectConfig p in Projects ?? [])
         {
             if (p.DownloadWindowDays < 1 || p.DownloadWindowDays > JiraProjectConfig.DownloadWindowDaysMax)
                 yield return $"Project '{p.Key}': DownloadWindowDays must be between 1 and {JiraProjectConfig.DownloadWindowDaysMax} (got {p.DownloadWindowDays}).";

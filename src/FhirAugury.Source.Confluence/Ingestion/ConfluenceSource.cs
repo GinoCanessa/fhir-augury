@@ -40,7 +40,7 @@ public class ConfluenceSource(
         HttpClient httpClient = httpClientFactory.CreateClient("confluence");
         using SqliteConnection connection = database.OpenConnection();
 
-        foreach (string spaceKey in options.Spaces)
+        foreach (string spaceKey in options.GetEffectiveSpaces())
         {
             if (ct.IsCancellationRequested) break;
 
@@ -141,7 +141,13 @@ public class ConfluenceSource(
         using SqliteConnection connection = database.OpenConnection();
 
         string sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
-        string spacesParam = string.Join(",", options.Spaces.Select(s => $"\"{s}\""));
+        List<string> effectiveSpaces = options.GetEffectiveSpaces();
+        if (effectiveSpaces.Count == 0)
+        {
+            logger.LogWarning("Confluence Spaces is explicitly empty; skipping page search");
+            return new IngestionResult(0, 0, 0, 0, errors, startedAt) { CompletedAt = DateTimeOffset.UtcNow };
+        }
+        string spacesParam = string.Join(",", effectiveSpaces.Select(s => $"\"{s}\""));
         string cql = $"lastModified >= \"{sinceStr}\" AND space in ({spacesParam}) AND type = page";
 
         int start = 0;
@@ -177,7 +183,7 @@ public class ConfluenceSource(
 
                 foreach (JsonElement pageJson in results.EnumerateArray())
                 {
-                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? options.Spaces.FirstOrDefault() ?? "FHIR";
+                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? effectiveSpaces[0];
 
                     string pageId = pageJson.GetProperty("id").GetString()!;
                     string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);

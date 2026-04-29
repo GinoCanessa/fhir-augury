@@ -828,9 +828,7 @@ public class JiraSource(
     /// </summary>
     public void UpsertProjectsFromConfig()
     {
-        List<JiraProjectConfig> configured = options.Projects.Count > 0
-            ? options.Projects
-            : [new JiraProjectConfig { Key = options.DefaultProject }];
+        List<JiraProjectConfig> configured = options.GetEffectiveProjects();
 
         if (configured.Count == 0) return;
 

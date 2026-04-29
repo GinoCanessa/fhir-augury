@@ -4,6 +4,48 @@ namespace FhirAugury.Source.GitHub.Tests.Ingestion.Categories;
 
 public class RepoCategoryResolutionTests
 {
+
+    [Fact]
+    public void GetAllRepositories_NullDefaultedLists_UsesDefaults()
+    {
+        GitHubServiceOptions options = new();
+
+        IReadOnlyList<(string Name, RepoCategory Category)> repos = options.GetAllRepositories();
+
+        Assert.Contains(repos, r => r.Name == "HL7/fhir" && r.Category == RepoCategory.FhirCore);
+        Assert.Contains(repos, r => r.Name == "HL7/UTG" && r.Category == RepoCategory.Utg);
+        Assert.Contains(repos, r => r.Name == "HL7/fhir-extensions" && r.Category == RepoCategory.FhirExtensionsPack);
+    }
+
+    [Fact]
+    public void GetAllRepositories_ExplicitEmptyDefaultedLists_ReturnsNoDefaultRepos()
+    {
+        GitHubServiceOptions options = new()
+        {
+            FhirCoreRepositories = [],
+            UtgRepositories = [],
+            FhirExtensionsPackRepositories = [],
+        };
+
+        IReadOnlyList<(string Name, RepoCategory Category)> repos = options.GetAllRepositories();
+
+        Assert.DoesNotContain(repos, r => r.Category == RepoCategory.FhirCore);
+        Assert.DoesNotContain(repos, r => r.Category == RepoCategory.Utg);
+        Assert.DoesNotContain(repos, r => r.Category == RepoCategory.FhirExtensionsPack);
+    }
+
+    [Fact]
+    public void GetAllRepositoryNames_NullLists_UsesDefaults()
+    {
+        GitHubServiceOptions options = new();
+
+        List<string> names = options.GetAllRepositoryNames();
+
+        Assert.Contains("HL7/fhir", names);
+        Assert.Contains("HL7/UTG", names);
+        Assert.Contains("HL7/fhir-extensions", names);
+    }
+
     [Fact]
     public void GetAllRepositories_PairsReposWithCategories()
     {

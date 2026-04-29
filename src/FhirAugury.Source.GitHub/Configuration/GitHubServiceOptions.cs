@@ -11,25 +11,42 @@ public class GitHubServiceOptions
     public const string SectionName = "GitHub";
 
     /// <summary>Repositories in the FhirCore category (e.g., HL7/fhir).</summary>
-    public List<string> FhirCoreRepositories { get; set; } = ["HL7/fhir"];
+    public List<string>? FhirCoreRepositories { get; set; }
 
     /// <summary>Repositories in the UTG category (e.g., HL7/UTG).</summary>
-    public List<string> UtgRepositories { get; set; } = ["HL7/UTG"];
+    public List<string>? UtgRepositories { get; set; }
 
     /// <summary>Repositories in the FHIR Extensions Pack category.</summary>
-    public List<string> FhirExtensionsPackRepositories { get; set; } = ["HL7/fhir-extensions"];
+    public List<string>? FhirExtensionsPackRepositories { get; set; }
 
     /// <summary>Repositories in the Incubator category.</summary>
-    public List<string> IncubatorRepositories { get; set; } = [];
+    public List<string>? IncubatorRepositories { get; set; }
 
     /// <summary>Repositories in the IG category.</summary>
-    public List<string> IgRepositories { get; set; } = [];
+    public List<string>? IgRepositories { get; set; }
 
     /// <summary>Repositories in the JiraSpecArtifacts category (e.g., HL7/JIRA-Spec-Artifacts).</summary>
-    public List<string> JiraSpecArtifactsRepositories { get; set; } = [];
+    public List<string>? JiraSpecArtifactsRepositories { get; set; }
 
     /// <summary>Manual cross-reference links.</summary>
-    public List<string> ManualLinks { get; set; } = [];
+    public List<string>? ManualLinks { get; set; }
+
+
+    private static readonly string[] DefaultFhirCoreRepositories = ["HL7/fhir"];
+    private static readonly string[] DefaultUtgRepositories = ["HL7/UTG"];
+    private static readonly string[] DefaultFhirExtensionsPackRepositories = ["HL7/fhir-extensions"];
+
+    public List<string> GetEffectiveFhirCoreRepositories() => FhirCoreRepositories ?? [.. DefaultFhirCoreRepositories];
+    public List<string> GetEffectiveUtgRepositories() => UtgRepositories ?? [.. DefaultUtgRepositories];
+    public List<string> GetEffectiveFhirExtensionsPackRepositories() => FhirExtensionsPackRepositories ?? [.. DefaultFhirExtensionsPackRepositories];
+    public List<string> GetEffectiveIncubatorRepositories() => IncubatorRepositories ?? [];
+    public List<string> GetEffectiveIgRepositories() => IgRepositories ?? [];
+    public List<string> GetEffectiveJiraSpecArtifactsRepositories() => JiraSpecArtifactsRepositories ?? [];
+    public List<string> GetEffectiveManualLinks() => ManualLinks ?? [];
+
+    public bool HasExplicitEmptyFhirCoreRepositories => FhirCoreRepositories is { Count: 0 };
+    public bool HasExplicitEmptyUtgRepositories => UtgRepositories is { Count: 0 };
+    public bool HasExplicitEmptyFhirExtensionsPackRepositories => FhirExtensionsPackRepositories is { Count: 0 };
 
     /// <summary>Authentication configuration.</summary>
     public AuthConfiguration Auth { get; set; } = new();
@@ -107,17 +124,17 @@ public class GitHubServiceOptions
     {
         List<(string Name, RepoCategory Category)> repos = [];
 
-        foreach (string repo in FhirCoreRepositories)
+        foreach (string repo in GetEffectiveFhirCoreRepositories())
             repos.Add((repo, RepoCategory.FhirCore));
-        foreach (string repo in UtgRepositories)
+        foreach (string repo in GetEffectiveUtgRepositories())
             repos.Add((repo, RepoCategory.Utg));
-        foreach (string repo in FhirExtensionsPackRepositories)
+        foreach (string repo in GetEffectiveFhirExtensionsPackRepositories())
             repos.Add((repo, RepoCategory.FhirExtensionsPack));
-        foreach (string repo in IncubatorRepositories)
+        foreach (string repo in GetEffectiveIncubatorRepositories())
             repos.Add((repo, RepoCategory.Incubator));
-        foreach (string repo in IgRepositories)
+        foreach (string repo in GetEffectiveIgRepositories())
             repos.Add((repo, RepoCategory.Ig));
-        foreach (string repo in JiraSpecArtifactsRepositories)
+        foreach (string repo in GetEffectiveJiraSpecArtifactsRepositories())
             repos.Add((repo, RepoCategory.JiraSpecArtifacts));
 
         return repos;
@@ -129,12 +146,12 @@ public class GitHubServiceOptions
     public List<string> GetAllRepositoryNames()
     {
         List<string> repos = [];
-        repos.AddRange(FhirCoreRepositories);
-        repos.AddRange(UtgRepositories);
-        repos.AddRange(FhirExtensionsPackRepositories);
-        repos.AddRange(IncubatorRepositories);
-        repos.AddRange(IgRepositories);
-        repos.AddRange(JiraSpecArtifactsRepositories);
+        repos.AddRange(GetEffectiveFhirCoreRepositories());
+        repos.AddRange(GetEffectiveUtgRepositories());
+        repos.AddRange(GetEffectiveFhirExtensionsPackRepositories());
+        repos.AddRange(GetEffectiveIncubatorRepositories());
+        repos.AddRange(GetEffectiveIgRepositories());
+        repos.AddRange(GetEffectiveJiraSpecArtifactsRepositories());
         return repos;
     }
 }
@@ -155,13 +172,13 @@ public class FileContentIndexingOptions
     public int MaxFilesPerRepo { get; set; } = 50_000;
 
     /// <summary>Additional file extensions to skip (beyond the built-in list).</summary>
-    public List<string> AdditionalSkipExtensions { get; set; } = [];
+    public List<string>? AdditionalSkipExtensions { get; set; }
 
     /// <summary>Additional directory names to skip (beyond the built-in list).</summary>
-    public List<string> AdditionalSkipDirectories { get; set; } = [];
+    public List<string>? AdditionalSkipDirectories { get; set; }
 
     /// <summary>When non-empty, only index files under these paths (relative to clone root).</summary>
-    public List<string> IncludeOnlyPaths { get; set; } = [];
+    public List<string>? IncludeOnlyPaths { get; set; }
 
     /// <summary>
     /// Gitignore-style glob patterns for files/directories to exclude from indexing.
@@ -169,7 +186,9 @@ public class FileContentIndexingOptions
     /// with trailing /. Evaluated in order; last match wins.
     /// Merged with patterns from .augury-index-ignore in the repository root.
     /// </summary>
-    public List<string> IgnorePatterns { get; set; } =
+    public List<string>? IgnorePatterns { get; set; }
+
+    private static readonly string[] DefaultIgnorePatterns =
     [
         "**/test-data/**",
         "**/testdata/**",
@@ -177,6 +196,11 @@ public class FileContentIndexingOptions
         "**/vendor/**",
         "**/third_party/**",
     ];
+
+    public List<string> GetEffectiveAdditionalSkipExtensions() => AdditionalSkipExtensions ?? [];
+    public List<string> GetEffectiveAdditionalSkipDirectories() => AdditionalSkipDirectories ?? [];
+    public List<string> GetEffectiveIncludeOnlyPaths() => IncludeOnlyPaths ?? [];
+    public List<string> GetEffectiveIgnorePatterns() => IgnorePatterns ?? [.. DefaultIgnorePatterns];
 }
 
 public class AuthConfiguration

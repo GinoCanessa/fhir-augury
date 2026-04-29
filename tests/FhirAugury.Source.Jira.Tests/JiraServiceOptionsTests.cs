@@ -6,7 +6,7 @@ namespace FhirAugury.Source.Jira.Tests;
 public class JiraServiceOptionsTests
 {
     [Fact]
-    public void GetEffectiveProjects_EmptyList_ReturnsSingleDefaultProject()
+    public void GetEffectiveProjects_NullProjects_ReturnsSingleDefaultProject()
     {
         JiraServiceOptions opts = new() { DefaultProject = "FHIR" };
 
@@ -14,6 +14,33 @@ public class JiraServiceOptionsTests
 
         Assert.Single(result);
         Assert.Equal("FHIR", result[0].Key);
+    }
+
+
+    [Fact]
+    public void GetEffectiveProjects_EmptyProjects_ReturnsEmptyList()
+    {
+        JiraServiceOptions opts = new() { Projects = [] };
+
+        List<JiraProjectConfig> result = opts.GetEffectiveProjects();
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ShapeByProjectKey_NullProjects_ReturnsEmptyLookup()
+    {
+        JiraServiceOptions opts = new();
+
+        Assert.Empty(opts.ShapeByProjectKey);
+    }
+
+    [Fact]
+    public void Validate_NullProjects_DoesNotThrow()
+    {
+        JiraServiceOptions opts = new();
+
+        Assert.Empty(opts.Validate());
     }
 
     [Fact]
