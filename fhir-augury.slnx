@@ -19,6 +19,8 @@
     <Project Path="src/FhirAugury.Parsing.Xml/FhirAugury.Parsing.Xml.csproj" />
     <Project Path="src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj" />
     <Project Path="src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
@@ -36,6 +38,7 @@
     <Project Path="tests/FhirAugury.DevUi.Tests/FhirAugury.DevUi.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Common.Tests/FhirAugury.Processing.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Jira.Common.Tests/FhirAugury.Processing.Jira.Common.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
@@ -44,4 +47,5 @@
     <File Path="src/common.props" />
   </Folder>
 </Solution>
+
 

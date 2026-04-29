@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 	<Import Project="..\common.props" />
 
 	<PropertyGroup>
@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,3 +35,4 @@
   </ItemGroup>
 
 </Project>
+

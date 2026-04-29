@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processor.Jira.Fhir.Preparer.Persistence</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Jira.Common\FhirAugury.Processing.Jira.Common.csproj" />
+  </ItemGroup>
+</Project>
