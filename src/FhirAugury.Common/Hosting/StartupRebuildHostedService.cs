@@ -29,6 +29,15 @@ public abstract class StartupRebuildHostedService(
     public string? CurrentPhase { get; private set; }
     public Exception? LastError { get; private set; }
 
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        if (State == StartupRebuildState.Pending)
+        {
+            State = StartupRebuildState.Cancelled;
+        }
+    }
+
     protected sealed override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await WaitForApplicationStartedAsync(stoppingToken).ConfigureAwait(false);
