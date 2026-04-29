@@ -21,11 +21,12 @@ dotnet build fhir-augury.slnx
 
 ## Solution Structure
 
-The v2 architecture uses 15 independent projects:
+The v2 architecture uses 16 independent projects:
 
 | Project | Type | Description |
 |---------|------|-------------|
 | `FhirAugury.Common` | Library | Shared types, API contracts, utilities |
+| `FhirAugury.Processing.Common` | Library | Shared Processing service substrate: lifecycle, runner, queue contracts, endpoints |
 | `FhirAugury.Source.Jira` | Service | Jira source (:5160) |
 | `FhirAugury.Source.Zulip` | Service | Zulip source (:5170) |
 | `FhirAugury.Source.Confluence` | Service | Confluence source (:5180) |
@@ -135,6 +136,15 @@ Each service uses its own prefix for environment variables:
 | Confluence | `FHIR_AUGURY_CONFLUENCE_` |
 | GitHub | `FHIR_AUGURY_GITHUB_` |
 | Orchestrator | `FHIR_AUGURY_ORCHESTRATOR_` |
+| Processing services | `FHIR_AUGURY_PROCESSING_` or a service-specific prefix |
+
+## Processing Service Scaffolding
+
+Future concrete `Processing.*` services should follow the Source-service host shape while referencing `FhirAugury.Processing.Common`. A typical `Program.cs` loads `appsettings.json` and `appsettings.local.json`, adds environment variables with `FHIR_AUGURY_PROCESSING_` or a service-specific prefix, configures HTTP-only Kestrel from `Processing:Ports:Http`, calls `builder.AddServiceDefaults()`, registers the concrete SQLite database/store/handler, calls `AddProcessingService<TItem,TStore,THandler>()`, maps `app.MapDefaultEndpoints()` and `app.MapProcessingEndpoints<TItem>()`, then runs the app.
+
+The orchestrator discovers Processing services from configuration, not dynamic self-registration. Add entries under `Orchestrator:ProcessingServices:{name}:HttpAddress` with optional `Enabled` and `Description` values. The common Processing default HTTP port is `5170`; concrete services should use an available local `5170+` port when running alongside existing services.
+
+Processing work items use the concrete service's table as the queue: `ProcessingStatus IS NULL` means pending, `in-progress` means claimed, `complete` means done, and `error` means failed. Retry and other item actions are intentionally service- or step-scoped; concrete processors should expose explicit paths such as `/api/v1/processing/{step}/items/{id}/retry` so duplicate IDs across processing steps remain unambiguous. This common slot does not create `FhirAugury.Processing.Jira`, preparer, or planner services.
 
 ## Running the MCP Server
 

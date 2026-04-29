@@ -19,10 +19,10 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (15 projects)
+│   └── (16 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
-    └── (9 test projects)
+    └── (14 test projects)
 ```
 
 ## API Contracts
@@ -152,6 +152,19 @@ FhirAugury.Parsing.Fsh/
 └── FhirAugury.Parsing.Fsh.csproj
 ```
 
+### `FhirAugury.Processing.Common`
+
+Shared substrate for future `Processing.*` services. It provides Processing-service configuration, API contracts, lifecycle state, queue/store/handler abstractions, a concurrency-limited runner, hosted-service integration, endpoint mapping helpers, and CsLightDbGen base records for common processing columns. It does not implement a concrete Jira, preparer, or planner processor.
+
+```
+FhirAugury.Processing.Common/
+├── Api/                      # Processing status, lifecycle, and queue-stat contracts
+├── Configuration/            # ProcessingServiceOptions
+├── Database/                 # ProcessingDatabase and generated-record base columns
+├── Hosting/                  # DI, lifecycle, hosted service, endpoint mappings
+└── Queue/                    # Work-item store/handler contracts and runner
+```
+
 ### `FhirAugury.Orchestrator`
 
 Central coordinator (HTTP :5150).
@@ -166,11 +179,11 @@ FhirAugury.Orchestrator/
 │                             #   GenericSourceProxyController.
 ├── Controllers/              # OrchestratorSelfController (preserves /api/v1/source/orchestrator/...
 │                             #   for self-metadata; the only surviving "source/" route)
-├── Configuration/            # Orchestrator settings, source endpoints
+├── Configuration/            # Orchestrator settings, source and Processing endpoints
 ├── Database/                 # Orchestrator SQLite DB (scan state)
-├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
+├── Health/                   # ServiceHealthMonitor (parallel source/Processing checks)
 ├── Related/                  # RelatedItemFinder (multi-signal ranking)
-├── Routing/                  # SourceHttpClient — named HTTP clients to source services
+├── Routing/                  # SourceHttpClient and ProcessingHttpClient named clients
 ├── Search/                   # FreshnessDecay, ScoreNormalizer
 ├── Workers/                  # HealthCheckWorker, SourceReconnectionWorker
 ├── Program.cs                # Kestrel HTTP server, DI registration
