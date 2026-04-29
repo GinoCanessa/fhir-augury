@@ -221,7 +221,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     }
 
     public Task MarkErrorAsync(JiraProcessingSourceTicketRecord item, string errorMessage, DateTimeOffset completedAt, CancellationToken ct) =>
-        MarkErrorAsync(item, errorMessage, null, completedAt, ct);
+        MarkErrorAsync(item, errorMessage, item.AgentExitCode, completedAt, ct);
 
     public async Task MarkErrorAsync(JiraProcessingSourceTicketRecord item, string errorMessage, int? agentExitCode, DateTimeOffset completedAt, CancellationToken ct)
     {
