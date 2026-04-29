@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -11,9 +12,15 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = JiraProcessingSourceTicketStore.SchemaSql + PlannerSchemaSql;
-        command.ExecuteNonQuery();
+        FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord.CreateTable(connection);
+        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        PlannedTicketRecord.CreateTable(connection);
+        PlannedTicketRepoRecord.CreateTable(connection);
+        PlannedTicketRepoChangeRecord.CreateTable(connection);
+        PlannedTicketRepoImpactRecord.CreateTable(connection);
+        PlannedTicketChangeValidationRecord.CreateTable(connection);
+        PlannedTicketTestingConsiderationRecord.CreateTable(connection);
+        PlannedTicketOpenQuestionRecord.CreateTable(connection);
     }
 
     public async Task DeletePlanForTicketAsync(string issueKey, CancellationToken ct = default)
@@ -56,96 +63,4 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         "planned_ticket_repos",
         "planned_tickets",
     ];
-
-    private const string PlannerSchemaSql = """
-        CREATE TABLE IF NOT EXISTS planned_tickets (
-            Id TEXT NOT NULL PRIMARY KEY,
-            Key TEXT NOT NULL UNIQUE,
-            Resolution TEXT NOT NULL,
-            ResolutionSummary TEXT NOT NULL,
-            FeatureProposal TEXT NOT NULL,
-            DesignRationale TEXT NOT NULL,
-            SavedAt TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_planned_tickets_key ON planned_tickets(Key);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_repos (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            RepoRevision TEXT NULL,
-            Justification TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repos_issue_key ON planned_ticket_repos(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repos_repo_key ON planned_ticket_repos(RepoKey);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_repo_changes (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            TicketRepoId TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            ChangeSequence INTEGER NOT NULL,
-            FilePath TEXT NOT NULL,
-            ChangeTitle TEXT NOT NULL,
-            ChangeDescription TEXT NOT NULL,
-            SourceLineStart INTEGER NULL,
-            SourceLineEnd INTEGER NULL,
-            ReplacementLines TEXT NOT NULL,
-            Reason TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_changes_issue_key ON planned_ticket_repo_changes(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_changes_ticket_repo_id ON planned_ticket_repo_changes(TicketRepoId);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_changes_repo_key ON planned_ticket_repo_changes(RepoKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_changes_file_path ON planned_ticket_repo_changes(FilePath);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_repo_impacts (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            TicketRepoId TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            TicketRepoChangeId TEXT NULL,
-            AffectedFilePath TEXT NOT NULL,
-            HowAffected TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_impacts_issue_key ON planned_ticket_repo_impacts(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_impacts_ticket_repo_id ON planned_ticket_repo_impacts(TicketRepoId);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_impacts_repo_key ON planned_ticket_repo_impacts(RepoKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_repo_impacts_change_id ON planned_ticket_repo_impacts(TicketRepoChangeId);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_change_validations (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            TicketRepoId TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            ValidationSequence INTEGER NOT NULL,
-            Action TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_change_validations_issue_key ON planned_ticket_change_validations(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_change_validations_ticket_repo_id ON planned_ticket_change_validations(TicketRepoId);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_change_validations_repo_key ON planned_ticket_change_validations(RepoKey);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_testing_considerations (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            TicketRepoId TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            ConsiderationSequence INTEGER NOT NULL,
-            Consideration TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_testing_considerations_issue_key ON planned_ticket_testing_considerations(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_testing_considerations_ticket_repo_id ON planned_ticket_testing_considerations(TicketRepoId);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_testing_considerations_repo_key ON planned_ticket_testing_considerations(RepoKey);
-
-        CREATE TABLE IF NOT EXISTS planned_ticket_open_questions (
-            Id TEXT NOT NULL PRIMARY KEY,
-            IssueKey TEXT NOT NULL,
-            TicketRepoId TEXT NOT NULL,
-            RepoKey TEXT NOT NULL,
-            QuestionSequence INTEGER NOT NULL,
-            Question TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_open_questions_issue_key ON planned_ticket_open_questions(IssueKey);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_open_questions_ticket_repo_id ON planned_ticket_open_questions(TicketRepoId);
-        CREATE INDEX IF NOT EXISTS idx_planned_ticket_open_questions_repo_key ON planned_ticket_open_questions(RepoKey);
-        """;
 }

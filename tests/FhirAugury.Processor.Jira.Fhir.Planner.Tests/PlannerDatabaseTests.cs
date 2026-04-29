@@ -20,6 +20,11 @@ public sealed class PlannerDatabaseTests
         Assert.True(TableExists(fixture.Database, "planned_ticket_open_questions"));
         Assert.Contains("RepoRevision", Columns(fixture.Database, "planned_ticket_repos"));
         Assert.Contains("ReplacementLines", Columns(fixture.Database, "planned_ticket_repo_changes"));
+        Assert.True(IsRowIdPrimaryKey(fixture.Database, "planned_tickets"));
+        Assert.True(IsRowIdPrimaryKey(fixture.Database, "planned_ticket_repos"));
+        Assert.True(IsRowIdPrimaryKey(fixture.Database, "planned_ticket_repo_changes"));
+        Assert.True(HasUniqueIndexOver(fixture.Database, "planned_tickets", "Key"));
+        Assert.True(HasUniqueIndexOver(fixture.Database, "planned_tickets", "Id"));
     }
 
     [Fact]
@@ -87,6 +92,67 @@ public sealed class PlannerDatabaseTests
     }
 
     private static bool TableExists(PlannerDatabase database, string tableName) => Count(database, "sqlite_master", $"type = 'table' AND name = '{tableName}'") == 1;
+
+    private static bool IsRowIdPrimaryKey(PlannerDatabase database, string tableName)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName})";
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string columnName = reader.GetString(reader.GetOrdinal("name"));
+            int pk = reader.GetInt32(reader.GetOrdinal("pk"));
+            if (string.Equals(columnName, "RowId", StringComparison.Ordinal))
+            {
+                return pk == 1;
+            }
+        }
+        return false;
+    }
+
+    private static bool HasUniqueIndexOver(PlannerDatabase database, string tableName, string column)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        using SqliteCommand listCommand = connection.CreateCommand();
+        listCommand.CommandText = $"PRAGMA index_list({tableName})";
+        List<(string Name, bool Unique)> indexes = [];
+        using (SqliteDataReader reader = listCommand.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                string name = reader.GetString(reader.GetOrdinal("name"));
+                long unique = reader.GetInt64(reader.GetOrdinal("unique"));
+                indexes.Add((name, unique == 1));
+            }
+        }
+        foreach ((string name, bool unique) in indexes)
+        {
+            if (!unique)
+            {
+                continue;
+            }
+            using SqliteCommand info = connection.CreateCommand();
+            info.CommandText = $"PRAGMA index_info({name})";
+            using SqliteDataReader r = info.ExecuteReader();
+            int columnCount = 0;
+            bool matchesColumn = false;
+            while (r.Read())
+            {
+                columnCount++;
+                string colName = r.GetString(r.GetOrdinal("name"));
+                if (string.Equals(colName, column, StringComparison.Ordinal))
+                {
+                    matchesColumn = true;
+                }
+            }
+            if (columnCount == 1 && matchesColumn)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static IReadOnlyList<string> Columns(PlannerDatabase database, string tableName)
     {

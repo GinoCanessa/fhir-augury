@@ -3,7 +3,6 @@ using CsLightDbGen.SQLiteGenerator;
 namespace FhirAugury.Processor.Jira.Fhir.Planner.Database.Records;
 
 [LdgSQLiteTable("planned_tickets")]
-[LdgSQLiteIndex(nameof(Key))]
 public partial record class PlannedTicketRecord
 {
     [LdgSQLiteKey]
