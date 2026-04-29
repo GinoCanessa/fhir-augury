@@ -12,40 +12,6 @@ namespace FhirAugury.Processing.Jira.Common.Database;
 
 public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>
 {
-    public const string SchemaSql = """
-            CREATE TABLE IF NOT EXISTS jira_processing_source_tickets (
-                Id TEXT NOT NULL PRIMARY KEY,
-                Key TEXT NOT NULL,
-                Title TEXT NOT NULL,
-                Description TEXT NULL,
-                Project TEXT NOT NULL,
-                Status TEXT NOT NULL,
-                WorkGroup TEXT NOT NULL,
-                Type TEXT NOT NULL,
-                SourceTicketShape TEXT NOT NULL,
-                LastSyncedAt TEXT NOT NULL,
-                LastUpdated TEXT NULL,
-                StartedProcessingAt TEXT NULL,
-                CompletedProcessingAt TEXT NULL,
-                LastProcessingAttemptAt TEXT NULL,
-                ProcessingStatus TEXT NULL,
-                ProcessingError TEXT NULL,
-                ProcessingAttemptCount INTEGER NOT NULL DEFAULT 0,
-                ErrorMessage TEXT NULL,
-                AgentExitCode INTEGER NULL,
-                ErrorOccurredAt TEXT NULL,
-                UNIQUE(Key, SourceTicketShape)
-            );
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_key ON jira_processing_source_tickets(Key);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_project ON jira_processing_source_tickets(Project);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_status ON jira_processing_source_tickets(Status);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_workgroup ON jira_processing_source_tickets(WorkGroup);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_type ON jira_processing_source_tickets(Type);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_shape ON jira_processing_source_tickets(SourceTicketShape);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_updated ON jira_processing_source_tickets(LastUpdated);
-            CREATE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_processing_status ON jira_processing_source_tickets(ProcessingStatus);
-            """;
-
     private readonly string _dbPath;
     private readonly Func<ResolvedJiraProcessingFilters> _filtersFactory;
 
@@ -309,8 +275,21 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_dbPath)) ?? ".");
         using SqliteConnection connection = OpenConnection();
+        JiraProcessingSourceTicketRecord.CreateTable(connection);
+        EnsureCompositeUniqueIndex(connection);
+    }
+
+    /// <summary>
+    /// CsLightDbGen does not currently expose a way to declare a composite UNIQUE index, so
+    /// the (Key, SourceTicketShape) uniqueness contract from the prior hand-written DDL is
+    /// preserved here as a follow-on CREATE UNIQUE INDEX. Required by the upsert path:
+    /// concurrent UpsertAsync callers rely on this constraint to surface duplicate inserts
+    /// rather than silently double-write.
+    /// </summary>
+    internal static void EnsureCompositeUniqueIndex(SqliteConnection connection)
+    {
         using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = SchemaSql;
+        command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_key_shape ON jira_processing_source_tickets(Key, SourceTicketShape);";
         command.ExecuteNonQuery();
     }
 
@@ -403,6 +382,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
 
     private static JiraProcessingSourceTicketRecord ReadRecord(SqliteDataReader reader) => new()
     {
+        RowId = reader.GetInt32(reader.GetOrdinal("RowId")),
         Id = reader.GetString(reader.GetOrdinal("Id")),
         Key = reader.GetString(reader.GetOrdinal("Key")),
         Title = reader.GetString(reader.GetOrdinal("Title")),

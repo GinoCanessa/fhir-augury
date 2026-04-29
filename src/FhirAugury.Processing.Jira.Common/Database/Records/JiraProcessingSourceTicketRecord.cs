@@ -1,5 +1,4 @@
 using CsLightDbGen.SQLiteGenerator;
-using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Filtering;
 
@@ -13,7 +12,11 @@ namespace FhirAugury.Processing.Jira.Common.Database.Records;
 [LdgSQLiteIndex(nameof(Type))]
 [LdgSQLiteIndex(nameof(SourceTicketShape))]
 [LdgSQLiteIndex(nameof(LastUpdated))]
-public partial record class JiraProcessingSourceTicketRecord : ProcessingWorkItemBaseRecord, IProcessingWorkItem, IJiraProcessingTicketFilterCandidate
+[LdgSQLiteIndex(nameof(ProcessingStatus))]
+[LdgSQLiteIndex(nameof(StartedProcessingAt))]
+[LdgSQLiteIndex(nameof(CompletedProcessingAt))]
+[LdgSQLiteIndex(nameof(LastProcessingAttemptAt))]
+public partial record class JiraProcessingSourceTicketRecord : IProcessingWorkItem, IJiraProcessingTicketFilterCandidate
 {
     [LdgSQLiteKey]
     public int RowId { get; set; }
@@ -29,6 +32,12 @@ public partial record class JiraProcessingSourceTicketRecord : ProcessingWorkIte
     public string SourceTicketShape { get; set; } = "fhir";
     public DateTimeOffset LastSyncedAt { get; set; }
     public DateTimeOffset? LastUpdated { get; set; }
+    public DateTimeOffset? StartedProcessingAt { get; set; }
+    public DateTimeOffset? CompletedProcessingAt { get; set; }
+    public DateTimeOffset? LastProcessingAttemptAt { get; set; }
+    public string? ProcessingStatus { get; set; }
+    public string? ProcessingError { get; set; }
+    public int ProcessingAttemptCount { get; set; }
     public string? ErrorMessage { get; set; }
     public int? AgentExitCode { get; set; }
     public DateTimeOffset? ErrorOccurredAt { get; set; }

@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -11,8 +12,7 @@ public sealed class JiraProcessingDatabase(string dbPath, ILogger<JiraProcessing
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = JiraProcessingSourceTicketStore.SchemaSql;
-        command.ExecuteNonQuery();
+        JiraProcessingSourceTicketRecord.CreateTable(connection);
+        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
     }
 }
