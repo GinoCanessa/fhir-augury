@@ -42,6 +42,11 @@ order documented in `fhir-augury-cli` (MCP → direct HTTP → `appsettings.json
   cross-platform mechanism (PowerShell `New-Item -ItemType Directory
   -Force`, bash `mkdir -p`, or your file-system tool) if it does not
   already exist. Do not write transient files outside this directory.
+- **Database path** *(optional)* — when invoked with `--db <path>` and
+  `--ticket <key>`, still produce the same markdown reasoning/report,
+  then persist the structured output through `fhir-augury-cli` command
+  `prepared-ticket-write`. The JSON payload/DB write is the source of
+  truth for processors when this option is supplied.
 
 ## Workflow
 
@@ -323,13 +328,32 @@ changes, complexity), explain how.}
 
 ### Recommendation
 
-**Recommended disposition:** {A, B, or C}
+**Recommended disposition:** {existing, A, B, or C}
 
 {A paragraph explaining why this disposition is recommended over the others.
 Weigh the trade-offs, reference the community discussion if relevant, and
-consider the impact on implementers. Be direct and opinionated — the
-workgroup wants a clear recommendation to start the discussion.}
+consider the impact on implementers. Use `existing` when the current Jira
+proposal should stand; use `A`, `B`, or `C` for the three proposed
+dispositions. Be direct and opinionated — the workgroup wants a clear
+recommendation to start the discussion.}
 ```
+
+## Optional DB Persistence
+
+When `--db <path>` is supplied, after writing the normal markdown report,
+serialize the structured report fields into a `PreparedTicketWriteRequest`
+JSON envelope and invoke:
+
+```bash
+fhir-augury-cli --json '{"command":"prepared-ticket-write","dbPath":"<path>","payload":{...}}'
+```
+
+The payload key must match `--ticket <key>`. Include request/comment/related
+summaries, existing proposal text, Proposal A/B/C text and justifications,
+Proposal A/B impact values (`Non-substantive`, `Compatible, substantive`, or
+`Non-compatible`), recommendation (`existing`, `A`, `B`, or `C`), recommendation
+justification, and related repo/Jira/Zulip/GitHub collections. Do not include a
+`ProposalCImpact` field in v1.
 
 ## Important Rules
 

@@ -49,6 +49,7 @@ public static class CommandDispatcher
         ["jira-workgroup"] = j => j.Deserialize<JiraWorkGroupRequest>(DeserializeOptions)!,
         ["jira-project"] = j => j.Deserialize<JiraProjectRequest>(DeserializeOptions)!,
         ["jira-local-processing"] = j => j.Deserialize<JiraLocalProcessingRequest>(DeserializeOptions)!,
+        ["prepared-ticket-write"] = j => j.Deserialize<PreparedTicketWriteRequest>(DeserializeOptions)!,
         ["zulip-items"] = j => j.Deserialize<ZulipItemsRequest>(DeserializeOptions)!,
         ["zulip-messages"] = j => j.Deserialize<ZulipMessagesRequest>(DeserializeOptions)!,
         ["zulip-streams"] = j => j.Deserialize<ZulipStreamsRequest>(DeserializeOptions)!,
@@ -178,6 +179,7 @@ public static class CommandDispatcher
             JiraWorkGroupRequest r => JiraWorkGroupHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraProjectRequest r => JiraProjectHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraLocalProcessingRequest r => JiraLocalProcessingHandler.HandleAsync(r, orchestratorAddr, ct),
+            PreparedTicketWriteRequest r => PreparedTicketWriteHandler.HandleAsync(r, ct),
             ZulipItemsRequest r => ZulipItemsHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipMessagesRequest r => ZulipMessagesHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipStreamsRequest r => ZulipStreamsHandler.HandleAsync(r, orchestratorAddr, ct),
@@ -206,3 +208,4 @@ public interface IHasWarnings
     List<string>? TakeWarnings();
     object GetData();
 }
+

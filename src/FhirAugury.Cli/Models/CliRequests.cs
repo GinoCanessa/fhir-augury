@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
 namespace FhirAugury.Cli.Models;
 
@@ -444,4 +445,13 @@ public sealed class JiraSpecsRequest : CliRequest
     [JsonPropertyName("url")] public string? Url { get; set; }
     [JsonPropertyName("artifactKey")] public string? ArtifactKey { get; set; }
     [JsonPropertyName("pageKey")] public string? PageKey { get; set; }
+}
+
+public sealed class PreparedTicketWriteRequest : CliRequest
+{
+    [JsonPropertyName("dbPath")]
+    public string DbPath { get; set; } = string.Empty;
+
+    [JsonPropertyName("payload")]
+    public PreparedTicketPayload? Payload { get; set; }
 }

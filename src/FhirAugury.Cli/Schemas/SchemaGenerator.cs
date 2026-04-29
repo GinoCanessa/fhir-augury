@@ -639,6 +639,28 @@ public static class SchemaGenerator
                 },
             }
         ),
+        ["prepared-ticket-write"] = new(
+            "Persist structured ticket-prep output into a preparer SQLite database",
+            InputSchema(["command", "dbPath", "payload"], new()
+            {
+                ["command"] = Const("prepared-ticket-write"),
+                ["dbPath"] = Prop("string", "Path to the preparer SQLite database"),
+                ["payload"] = Prop("object", "PreparedTicketPayload with structured ticket-prep fields"),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["key"] = Prop("string", "Jira ticket key written"),
+                    ["preparedTicketRows"] = Prop("integer", "Parent rows written"),
+                    ["repoRows"] = Prop("integer", "Related repo rows written"),
+                    ["relatedJiraRows"] = Prop("integer", "Related Jira rows written"),
+                    ["relatedZulipRows"] = Prop("integer", "Related Zulip rows written"),
+                    ["relatedGitHubRows"] = Prop("integer", "Related GitHub rows written"),
+                },
+            }
+        ),
     };
 
     // Schema builder helpers
@@ -662,3 +684,4 @@ public static class SchemaGenerator
 
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);
 }
+
