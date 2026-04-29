@@ -20,6 +20,56 @@ public class JiraLocalProcessingQueryBuilderTests
         Assert.Equal(0, parameters.Single(p => p.ParameterName == "@offset").Value);
     }
 
+
+    [Fact]
+    public void BuildList_NullListFilters_AddNoPredicates()
+    {
+        JiraLocalProcessingListRequest request = new JiraLocalProcessingListRequest();
+
+        (string sql, List<SqliteParameter> _) = JiraLocalProcessingQueryBuilder.BuildList(request);
+
+        Assert.DoesNotContain(" IN (", sql);
+        Assert.DoesNotContain("LOWER(IFNULL(RelatedArtifacts,''))", sql);
+        Assert.DoesNotContain("jira_issue_labels", sql);
+    }
+
+    [Fact]
+    public void BuildList_EmptyListFilters_AddNoPredicates()
+    {
+        JiraLocalProcessingListRequest request = new JiraLocalProcessingListRequest
+        {
+            Projects = [],
+            Specifications = [],
+            Types = [],
+            Priorities = [],
+            Statuses = [],
+            ChangeCategories = [],
+            ChangeImpacts = [],
+            RelatedArtifacts = [],
+            WorkGroups = [],
+            Reporters = [],
+            Labels = [],
+        };
+
+        (string sql, List<SqliteParameter> _) = JiraLocalProcessingQueryBuilder.BuildList(request);
+
+        Assert.DoesNotContain(" IN (", sql);
+        Assert.DoesNotContain("LOWER(IFNULL(RelatedArtifacts,''))", sql);
+        Assert.DoesNotContain("jira_issue_labels", sql);
+    }
+
+    [Fact]
+    public void BuildRandom_NullListFilters_AddNoPredicates()
+    {
+        JiraLocalProcessingFilter filter = new JiraLocalProcessingFilter();
+
+        (string sql, List<SqliteParameter> _) = JiraLocalProcessingQueryBuilder.BuildRandom(filter);
+
+        Assert.DoesNotContain(" IN (", sql);
+        Assert.DoesNotContain("LOWER(IFNULL(RelatedArtifacts,''))", sql);
+        Assert.DoesNotContain("jira_issue_labels", sql);
+    }
+
     [Fact]
     public void BuildList_PagingNormalization_CoercesInvalidValues()
     {

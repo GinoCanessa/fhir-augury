@@ -1,4 +1,5 @@
 using System.Text;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Source.Jira.Api;
 using Microsoft.Data.Sqlite;
 
@@ -177,12 +178,12 @@ public static class JiraLocalProcessingQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);
@@ -194,12 +195,12 @@ public static class JiraLocalProcessingQueryBuilder
 
     private static void AddRelatedArtifactsClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        List<string> values, ref int paramIdx)
+        IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> predicates = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             predicates.Add($"LOWER(IFNULL(RelatedArtifacts,'')) LIKE '%' || {name} || '%'");
@@ -213,12 +214,12 @@ public static class JiraLocalProcessingQueryBuilder
 
     private static void AddLabelsClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        List<string> values, string tableName, ref int paramIdx)
+        IReadOnlyCollection<string>? values, string tableName, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);

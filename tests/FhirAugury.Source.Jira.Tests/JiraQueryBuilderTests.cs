@@ -19,12 +19,61 @@ public class JiraQueryBuilderTests
         Assert.Equal(0, parameters.Single(p => p.ParameterName == "@offset").Value);
     }
 
+
+    [Fact]
+    public void Build_NullListFilters_AddNoPredicates()
+    {
+        JiraQueryRequest request = new JiraQueryRequest();
+
+        (string sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
+
+        Assert.DoesNotContain(" IN (", sql);
+        Assert.DoesNotContain(" NOT IN (", sql);
+        Assert.DoesNotContain("jira_issue_labels", sql);
+        Assert.DoesNotContain("jira_issue_inpersons", sql);
+    }
+
+    [Fact]
+    public void Build_EmptyListFilters_AddNoPredicates()
+    {
+        JiraQueryRequest request = new JiraQueryRequest
+        {
+            Statuses = [],
+            Resolutions = [],
+            WorkGroups = [],
+            Specifications = [],
+            Projects = [],
+            ExcludeProjects = [],
+            Types = [],
+            Priorities = [],
+            Labels = [],
+            Assignees = [],
+            Reporters = [],
+            InPersonRequesters = [],
+        };
+
+        (string sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
+
+        Assert.DoesNotContain(" IN (", sql);
+        Assert.DoesNotContain(" NOT IN (", sql);
+        Assert.DoesNotContain("jira_issue_labels", sql);
+        Assert.DoesNotContain("jira_issue_inpersons", sql);
+    }
+
+    [Fact]
+    public void Build_ExcludeProjects_NullAndEmpty_AddNoNotInClause()
+    {
+        (string nullSql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(new JiraQueryRequest());
+        (string emptySql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(new JiraQueryRequest { ExcludeProjects = [] });
+
+        Assert.DoesNotContain("ProjectKey NOT IN", nullSql);
+        Assert.DoesNotContain("ProjectKey NOT IN", emptySql);
+    }
+
     [Fact]
     public void Build_StatusFilter_AddsInClause()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.Statuses.Add("Open");
-        request.Statuses.Add("In Progress");
+        JiraQueryRequest request = new JiraQueryRequest { Statuses = ["Open", "In Progress"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -34,10 +83,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_MultipleFilters_CombinesWithAnd()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.Statuses.Add("Open");
-        request.WorkGroups.Add("FHIR-I");
-        request.Priorities.Add("Critical");
+        JiraQueryRequest request = new JiraQueryRequest { Statuses = ["Open"], WorkGroups = ["FHIR-I"], Priorities = ["Critical"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -49,8 +95,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_ExcludeProjects_AddsNotInClause()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.ExcludeProjects.Add("FHIR-TEST");
+        JiraQueryRequest request = new JiraQueryRequest { ExcludeProjects = ["FHIR-TEST"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = JiraQueryBuilder.Build(request);
 
@@ -60,8 +105,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_Labels_UsesJoinTableFiltering()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.Labels.Add("bug");
+        JiraQueryRequest request = new JiraQueryRequest { Labels = ["bug"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -77,9 +121,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_MultipleLabels_GeneratesExistsPerLabel()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.Labels.Add("bug");
-        request.Labels.Add("urgent");
+        JiraQueryRequest request = new JiraQueryRequest { Labels = ["bug", "urgent"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -94,10 +136,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_LabelsAndOtherFilters_CombinesCorrectly()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.Labels.Add("bug");
-        request.Statuses.Add("Open");
-        request.WorkGroups.Add("TeamA");
+        JiraQueryRequest request = new JiraQueryRequest { Labels = ["bug"], Statuses = ["Open"], WorkGroups = ["TeamA"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? _) = JiraQueryBuilder.Build(request);
 
@@ -180,8 +219,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_InPersonRequesters_GeneratesExistsSubquery()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.InPersonRequesters.Add("Alice");
+        JiraQueryRequest request = new JiraQueryRequest { InPersonRequesters = ["Alice"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -194,9 +232,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_MultipleInPersonRequesters_GeneratesMultipleExists()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.InPersonRequesters.Add("Alice");
-        request.InPersonRequesters.Add("Bob");
+        JiraQueryRequest request = new JiraQueryRequest { InPersonRequesters = ["Alice", "Bob"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -220,8 +256,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_InPersonRequesters_ParameterizedValues()
     {
-        JiraQueryRequest request = new JiraQueryRequest();
-        request.InPersonRequesters.Add("Alice Smith");
+        JiraQueryRequest request = new JiraQueryRequest { InPersonRequesters = ["Alice Smith"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 
@@ -233,10 +268,7 @@ public class JiraQueryBuilderTests
     [Fact]
     public void Build_AllParametersAreParameterized()
     {
-        JiraQueryRequest request = new JiraQueryRequest() { Query = "test" };
-        request.Statuses.Add("Open");
-        request.WorkGroups.Add("FHIR-I");
-        request.Labels.Add("bug");
+        JiraQueryRequest request = new JiraQueryRequest { Query = "test", Statuses = ["Open"], WorkGroups = ["FHIR-I"], Labels = ["bug"] };
 
         (string? sql, List<Microsoft.Data.Sqlite.SqliteParameter>? parameters) = JiraQueryBuilder.Build(request);
 

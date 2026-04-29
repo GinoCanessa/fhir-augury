@@ -1,4 +1,5 @@
 using System.Text;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Api;
 using Microsoft.Data.Sqlite;
@@ -38,10 +39,10 @@ public static class JiraQueryBuilder
         AddInClause(sb, parameters, "Assignee", request.Assignees, ref paramIdx);
         AddInClause(sb, parameters, "Reporter", request.Reporters, ref paramIdx);
 
-        if (request.Labels.Count > 0)
+        if (request.Labels.HasExplicitRestriction())
         {
             List<string> labelParamNames = [];
-            foreach (string label in request.Labels)
+            foreach (string label in request.Labels!)
             {
                 string name = $"@lbl{paramIdx++}";
                 labelParamNames.Add(name);
@@ -58,10 +59,10 @@ public static class JiraQueryBuilder
             }
         }
 
-        if (request.InPersonRequesters.Count > 0)
+        if (request.InPersonRequesters.HasExplicitRestriction())
         {
             List<string> ipParamNames = [];
-            foreach (string name in request.InPersonRequesters)
+            foreach (string name in request.InPersonRequesters!)
             {
                 string paramName = $"@ip{paramIdx++}";
                 ipParamNames.Add(paramName);
@@ -131,12 +132,12 @@ public static class JiraQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);
@@ -148,12 +149,12 @@ public static class JiraQueryBuilder
 
     private static void AddNotInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);
