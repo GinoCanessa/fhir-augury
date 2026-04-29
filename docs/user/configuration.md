@@ -38,6 +38,8 @@ Double underscores (`__`) separate nested keys.
 | Confluence Source | `FHIR_AUGURY_CONFLUENCE_` | `Confluence` |
 | GitHub Source | `FHIR_AUGURY_GITHUB_` | `GitHub` |
 | Orchestrator | `FHIR_AUGURY_ORCHESTRATOR_` | `Orchestrator` |
+| Jira FHIR Preparer | `FHIR_AUGURY_PREPARER_` | `Processing` |
+| Jira FHIR Planner | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_` | `Processing` |
 
 ---
 
@@ -356,6 +358,48 @@ FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__Enabled=true
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://localhost:5170
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 ```
+
+---
+
+## Processing Services
+
+Processing services share the `Processing` configuration shape and expose
+`/health`, `/status`, `/processing/start`, `/processing/stop`,
+`/processing/queue`, and `POST /processing/tickets/{key}`.
+
+### Jira FHIR Planner (`:5172`)
+
+```json
+{
+  "Processing": {
+    "DatabasePath": "./data/processor.jira.fhir.planner.db",
+    "SyncSchedule": "00:05:00",
+    "MaxConcurrentProcessingThreads": 4,
+    "StartProcessingOnStartup": true,
+    "OrchestratorAddress": "http://localhost:5150",
+    "Ports": { "Http": 5172 },
+    "Jira": {
+      "TicketStatusesToProcess": ["Resolved - change required"],
+      "ProjectsToInclude": null,
+      "WorkGroupsToInclude": null,
+      "TicketTypesToProcess": null,
+      "AgentCliCommand": "copilot run ticket-plan --ticket {ticketKey} --db {dbPath} --repos {repoFilters}",
+      "JiraSourceAddress": "http://localhost:5160",
+      "OrchestratorAddress": "http://localhost:5150",
+      "DiscoverySource": "DirectJiraSource",
+      "SourceTicketShape": "fhir"
+    },
+    "Planner": {
+      "RepoFilters": null
+    }
+  }
+}
+```
+
+`Processing:Planner:RepoFilters` is an optional exact `owner/repo` allow-list.
+`null` or `[]` means no repository restriction. Non-empty lists are matched
+case-insensitively, do not support globs/wildcards/block-lists, and are passed
+to `ticket-plan` through the canonical `--repos` JSON-array argument.
 
 ---
 

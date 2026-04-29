@@ -7,8 +7,11 @@ using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Hosting;
+using FhirAugury.Processing.Jira.Common.Agent;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
@@ -37,6 +40,7 @@ builder.Services.AddAuguryOpenApi(o =>
 
 builder.Services.AddOptions<PlannerOptions>()
     .Bind(builder.Configuration.GetSection(PlannerOptions.SectionName))
+    .Validate(options => !PlannerRepoFilters.Validate(options).Any(), "Processing:Planner configuration is invalid.")
     .ValidateOnStart();
 
 builder.Services.AddJiraProcessing(
@@ -47,6 +51,9 @@ builder.Services.AddJiraProcessing(
 builder.Services.AddOptions<JiraProcessingOptions>()
     .Validate(options => !PlannerJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the planner.")
     .ValidateOnStart();
+
+builder.Services.AddSingleton<IJiraAgentExtensionTokenProvider, PlannerAgentCommandTokenProvider>();
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, PlannerTicketHandler>();
 
 builder.Services.AddSingleton(sp =>
 {

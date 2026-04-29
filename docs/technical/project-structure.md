@@ -19,10 +19,10 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (17 projects)
+│   └── (18 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
-    └── (15 test projects)
+    └── (16 test projects)
 ```
 
 ## API Contracts
@@ -184,6 +184,32 @@ FhirAugury.Processing.Jira.Common/
 └── Processing/               # Work-item handler that invokes the agent runner
 ```
 
+### `FhirAugury.Processor.Jira.Fhir.Preparer`
+
+Concrete Jira/FHIR Processing service (HTTP :5171) that queues triaged Jira
+issues, invokes `ticket-prep`, and persists structured prepared-ticket output.
+It composes `FhirAugury.Processing.Common`, `FhirAugury.Processing.Jira.Common`,
+and its persistence project without owning common queue mechanics.
+
+### `FhirAugury.Processor.Jira.Fhir.Planner`
+
+Concrete Jira/FHIR Processing service (HTTP :5172) that queues resolved
+change-required Jira issues, invokes `ticket-plan`, and stores structured
+implementation-plan output in normalized SQLite tables.
+
+```
+FhirAugury.Processor.Jira.Fhir.Planner/
+├── Configuration/             # Planner defaults plus Processing:Planner:RepoFilters validation/rendering
+├── Database/                  # PlannerDatabase, output schema, records, ReplacementLineJson
+├── Processing/                # Planner token provider and cleanup-aware Jira ticket handler
+├── Program.cs                 # HTTP-only Processing service composition
+└── appsettings.json           # Defaults: DB path, Jira filters, port 5172
+```
+
+The planner uses the shared Processing/Jira layers for lifecycle endpoints,
+source-ticket queueing, filters, command rendering, and agent execution. It is a
+sibling of the preparer and does not depend on preparer code or records.
+
 ### `FhirAugury.Orchestrator`
 
 Central coordinator (HTTP :5150).
@@ -318,8 +344,8 @@ Key capabilities:
 ### `FhirAugury.AppHost`
 
 [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
-application host. Orchestrates all eight projects for local development with an
-integrated dashboard. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`
+application host. Orchestrates source services, Processing services, and developer
+tools for local development with an integrated dashboard. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`
 and must be started manually from the dashboard.
 
 ```
@@ -350,6 +376,8 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute) |
 | `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing: StructureDefinitions, canonical artifacts |
 | `FhirAugury.Parsing.Fsh.Tests` | FSH parsing: definitions, sushi-config, canonical URL construction |
+| `FhirAugury.Processor.Jira.Fhir.Preparer.Tests` | Preparer service: persistence, handler, API, smoke tests |
+| `FhirAugury.Processor.Jira.Fhir.Planner.Tests` | Planner service: options, schema, handler, ticket-plan DB contract |
 
 ## Build Configuration
 
