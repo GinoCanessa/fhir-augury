@@ -93,7 +93,7 @@ public class JiraXRefRebuilder(
     private static string JoinNonEmpty(params string?[] parts)
         => string.Join(" ", parts.Where(static s => !string.IsNullOrEmpty(s)));
 
-    private static int ExtractAndInsertAll(SqliteConnection connection, string sourceId, string contentType, string text)
+    private static int ExtractAndInsertAll(SqliteConnection connection, string sourceId, string contentType, string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return 0;
         int count = 0;
