@@ -18,6 +18,44 @@ public class ZulipQueryBuilderTests
         Assert.Equal(0, parameters.Single(p => p.ParameterName == "@offset").Value);
     }
 
+
+    [Fact]
+    public void Build_NullStringListFilters_AddNoPredicates()
+    {
+        ZulipQueryRequest request = new ZulipQueryRequest();
+
+        (string sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
+
+        Assert.DoesNotContain("StreamName IN", sql);
+        Assert.DoesNotContain("SenderName IN", sql);
+    }
+
+    [Fact]
+    public void Build_EmptyStringListFilters_AddNoPredicates()
+    {
+        ZulipQueryRequest request = new ZulipQueryRequest { StreamNames = [], SenderNames = [] };
+
+        (string sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
+
+        Assert.DoesNotContain("StreamName IN", sql);
+        Assert.DoesNotContain("SenderName IN", sql);
+    }
+
+    [Fact]
+    public void Build_NonEmptyStreamNamesAndSenderNames_AddInClauses()
+    {
+        ZulipQueryRequest request = new ZulipQueryRequest
+        {
+            StreamNames = ["implementers"],
+            SenderNames = ["Grahame Grieve"],
+        };
+
+        (string sql, List<Microsoft.Data.Sqlite.SqliteParameter> _) = ZulipQueryBuilder.Build(request);
+
+        Assert.Contains("AND StreamName IN (", sql);
+        Assert.Contains("AND SenderName IN (", sql);
+    }
+
     [Fact]
     public void Build_StreamNameFilter_AddsInClause()
     {

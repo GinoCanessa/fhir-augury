@@ -1,5 +1,6 @@
-using FhirAugury.Common.Text;
 using System.Text;
+using FhirAugury.Common.Filtering;
+using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Source.Zulip.Indexing;
@@ -9,11 +10,13 @@ namespace FhirAugury.Source.Zulip.Indexing;
 /// </summary>
 public record ZulipQueryRequest
 {
-    public List<string> StreamNames { get; init; } = [];
+    /// <summary>Source filter list using the null-as-default, empty-as-explicit-all convention; Zulip query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.</summary>
+    public List<string>? StreamNames { get; init; }
     public List<int> StreamIds { get; init; } = [];
     public string? Topic { get; init; }
     public string? TopicKeyword { get; init; }
-    public List<string> SenderNames { get; init; } = [];
+    /// <summary>Source filter list using the null-as-default, empty-as-explicit-all convention; Zulip query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.</summary>
+    public List<string>? SenderNames { get; init; }
     public List<int> SenderIds { get; init; } = [];
     public DateTimeOffset? After { get; init; }
     public DateTimeOffset? Before { get; init; }
@@ -42,7 +45,7 @@ public static class ZulipQueryBuilder
     public static (string Sql, List<SqliteParameter> Parameters) Build(ZulipQueryRequest request)
     {
         StringBuilder sb = new StringBuilder("SELECT * FROM zulip_messages WHERE 1=1");
-        List<SqliteParameter> parameters = new List<SqliteParameter>();
+        List<SqliteParameter> parameters = [];
         int paramIdx = 0;
 
         // Stream name filter
@@ -51,7 +54,7 @@ public static class ZulipQueryBuilder
         // Stream ID filter
         if (request.StreamIds.Count > 0)
         {
-            List<string> names = new List<string>();
+            List<string> names = [];
             foreach (int id in request.StreamIds)
             {
                 string name = $"@p{paramIdx++}";
@@ -83,7 +86,7 @@ public static class ZulipQueryBuilder
         // Sender ID filter
         if (request.SenderIds.Count > 0)
         {
-            List<string> names = new List<string>();
+            List<string> names = [];
             foreach (int id in request.SenderIds)
             {
                 string name = $"@p{paramIdx++}";
@@ -132,12 +135,12 @@ public static class ZulipQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
-        List<string> names = new List<string>();
-        foreach (string v in values)
+        List<string> names = [];
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);
