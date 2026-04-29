@@ -18,7 +18,9 @@ public sealed class PreparerDatabaseTests
         Assert.True(Exists(database, "table", "prepared_ticket_related_jira"));
         Assert.True(Exists(database, "table", "prepared_ticket_related_zulip"));
         Assert.True(Exists(database, "table", "prepared_ticket_related_github"));
-        Assert.True(Exists(database, "index", "idx_prepared_tickets_key"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_tickets"));
+        Assert.True(HasUniqueIndexOver(database, "prepared_tickets", "Key"));
+        Assert.True(HasUniqueIndexOver(database, "prepared_tickets", "Id"));
     }
 
     [Fact]
@@ -163,6 +165,67 @@ public sealed class PreparerDatabaseTests
         command.Parameters.AddWithValue("@type", type);
         command.Parameters.AddWithValue("@name", name);
         return command.ExecuteScalar() is not null;
+    }
+
+    private static bool IsRowIdPrimaryKey(TestDatabase database, string table)
+    {
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table})";
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string columnName = reader.GetString(reader.GetOrdinal("name"));
+            int pk = reader.GetInt32(reader.GetOrdinal("pk"));
+            if (string.Equals(columnName, "RowId", StringComparison.Ordinal))
+            {
+                return pk == 1;
+            }
+        }
+        return false;
+    }
+
+    private static bool HasUniqueIndexOver(TestDatabase database, string table, string column)
+    {
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand listCommand = connection.CreateCommand();
+        listCommand.CommandText = $"PRAGMA index_list({table})";
+        List<(string Name, bool Unique)> indexes = [];
+        using (SqliteDataReader reader = listCommand.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                string name = reader.GetString(reader.GetOrdinal("name"));
+                long unique = reader.GetInt64(reader.GetOrdinal("unique"));
+                indexes.Add((name, unique == 1));
+            }
+        }
+        foreach ((string name, bool unique) in indexes)
+        {
+            if (!unique)
+            {
+                continue;
+            }
+            using SqliteCommand info = connection.CreateCommand();
+            info.CommandText = $"PRAGMA index_info({name})";
+            using SqliteDataReader r = info.ExecuteReader();
+            int columnCount = 0;
+            bool matchesColumn = false;
+            while (r.Read())
+            {
+                columnCount++;
+                string colName = r.GetString(r.GetOrdinal("name"));
+                if (string.Equals(colName, column, StringComparison.Ordinal))
+                {
+                    matchesColumn = true;
+                }
+            }
+            if (columnCount == 1 && matchesColumn)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int Count(TestDatabase database, string table)

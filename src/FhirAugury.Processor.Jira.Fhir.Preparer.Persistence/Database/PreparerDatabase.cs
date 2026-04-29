@@ -1,6 +1,7 @@
 using System.Globalization;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -14,9 +15,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = JiraProcessingSourceTicketStore.SchemaSql + PreparedTicketSchemaSql;
-        command.ExecuteNonQuery();
+        FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord.CreateTable(connection);
+        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        PreparedTicketRecord.CreateTable(connection);
+        PreparedTicketRepoRecord.CreateTable(connection);
+        PreparedTicketRelatedJiraRecord.CreateTable(connection);
+        PreparedTicketRelatedZulipRecord.CreateTable(connection);
+        PreparedTicketRelatedGitHubRecord.CreateTable(connection);
     }
 
     public async Task<PreparedTicketSaveResult> SavePreparedTicketAsync(PreparedTicketPayload payload, CancellationToken ct = default)
@@ -291,72 +296,4 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     }
 
     private static string Format(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);
-
-    private const string PreparedTicketSchemaSql = """
-        CREATE TABLE IF NOT EXISTS prepared_tickets (
-            Id TEXT NOT NULL PRIMARY KEY,
-            Key TEXT NOT NULL UNIQUE,
-            RequestSummary TEXT NOT NULL,
-            CommentSummary TEXT NOT NULL,
-            LinkedTicketSummary TEXT NOT NULL,
-            RelatedTicketSummary TEXT NOT NULL,
-            RelatedZulipSummary TEXT NOT NULL,
-            RelatedGitHubSummary TEXT NOT NULL,
-            ExistingProposed TEXT NOT NULL,
-            ProposalA TEXT NOT NULL,
-            ProposalAJustification TEXT NOT NULL,
-            ProposalAImpact TEXT NOT NULL,
-            ProposalB TEXT NOT NULL,
-            ProposalBJustification TEXT NOT NULL,
-            ProposalBImpact TEXT NOT NULL,
-            ProposalC TEXT NOT NULL,
-            ProposalCJustification TEXT NOT NULL,
-            Recommendation TEXT NOT NULL,
-            RecommendationJustification TEXT NOT NULL,
-            SavedAt TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_tickets_key ON prepared_tickets(Key);
-        CREATE INDEX IF NOT EXISTS idx_prepared_tickets_recommendation ON prepared_tickets(Recommendation);
-        CREATE INDEX IF NOT EXISTS idx_prepared_tickets_proposal_a_impact ON prepared_tickets(ProposalAImpact);
-        CREATE INDEX IF NOT EXISTS idx_prepared_tickets_proposal_b_impact ON prepared_tickets(ProposalBImpact);
-
-        CREATE TABLE IF NOT EXISTS prepared_ticket_repos (
-            Id TEXT NOT NULL PRIMARY KEY,
-            TicketKey TEXT NOT NULL,
-            Repo TEXT NOT NULL,
-            RepoCategory TEXT NOT NULL,
-            Justification TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_repos_ticket_key ON prepared_ticket_repos(TicketKey);
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_repos_repo ON prepared_ticket_repos(Repo);
-
-        CREATE TABLE IF NOT EXISTS prepared_ticket_related_jira (
-            Id TEXT NOT NULL PRIMARY KEY,
-            TicketKey TEXT NOT NULL,
-            AssociatedTicketKey TEXT NOT NULL,
-            LinkType TEXT NOT NULL,
-            Justification TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_jira_ticket_key ON prepared_ticket_related_jira(TicketKey);
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_jira_associated ON prepared_ticket_related_jira(AssociatedTicketKey);
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_jira_link_type ON prepared_ticket_related_jira(LinkType);
-
-        CREATE TABLE IF NOT EXISTS prepared_ticket_related_zulip (
-            Id TEXT NOT NULL PRIMARY KEY,
-            TicketKey TEXT NOT NULL,
-            ZulipThreadId TEXT NOT NULL,
-            Justification TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_zulip_ticket_key ON prepared_ticket_related_zulip(TicketKey);
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_zulip_thread ON prepared_ticket_related_zulip(ZulipThreadId);
-
-        CREATE TABLE IF NOT EXISTS prepared_ticket_related_github (
-            Id TEXT NOT NULL PRIMARY KEY,
-            TicketKey TEXT NOT NULL,
-            GitHubItemId TEXT NOT NULL,
-            Justification TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_github_ticket_key ON prepared_ticket_related_github(TicketKey);
-        CREATE INDEX IF NOT EXISTS idx_prepared_ticket_related_github_item ON prepared_ticket_related_github(GitHubItemId);
-        """;
 }

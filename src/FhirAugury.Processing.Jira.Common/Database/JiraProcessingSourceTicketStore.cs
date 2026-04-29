@@ -286,7 +286,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     /// concurrent UpsertAsync callers rely on this constraint to surface duplicate inserts
     /// rather than silently double-write.
     /// </summary>
-    internal static void EnsureCompositeUniqueIndex(SqliteConnection connection)
+    public static void EnsureCompositeUniqueIndex(SqliteConnection connection)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_key_shape ON jira_processing_source_tickets(Key, SourceTicketShape);";

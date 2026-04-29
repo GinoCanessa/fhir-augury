@@ -3,7 +3,6 @@ using CsLightDbGen.SQLiteGenerator;
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 
 [LdgSQLiteTable("prepared_tickets")]
-[LdgSQLiteIndex(nameof(Key))]
 [LdgSQLiteIndex(nameof(Recommendation))]
 [LdgSQLiteIndex(nameof(ProposalAImpact))]
 [LdgSQLiteIndex(nameof(ProposalBImpact))]
@@ -15,6 +14,7 @@ public partial record class PreparedTicketRecord
     [LdgSQLiteUnique]
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
+    [LdgSQLiteUnique]
     public required string Key { get; set; }
     public required string RequestSummary { get; set; }
     public required string CommentSummary { get; set; }
