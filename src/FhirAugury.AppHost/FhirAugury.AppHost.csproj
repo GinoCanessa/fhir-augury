@@ -16,6 +16,7 @@
     <ProjectReference Include="..\FhirAugury.McpHttp\FhirAugury.McpHttp.csproj" />
     <ProjectReference Include="..\FhirAugury.DevUi\FhirAugury.DevUi.csproj" />
     <ProjectReference Include="..\FhirAugury.Cli\FhirAugury.Cli.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer\FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
   </ItemGroup>
 
 </Project>

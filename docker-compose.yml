@@ -14,7 +14,7 @@ services:
     build:
       context: .
       dockerfile: src/FhirAugury.Source.Jira/Dockerfile
-    profiles: ["full", "jira-zulip", "jira-only"]
+    profiles: ["full", "jira-zulip", "jira-only", "processing"]
     volumes:
       - jira-cache:/app/cache
       - jira-data:/app/data
@@ -111,6 +111,33 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  processor-jira-fhir-preparer:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Processor.Jira.Fhir.Preparer/Dockerfile
+    profiles: ["full", "processing"]
+    depends_on:
+      source-jira:
+        condition: service_healthy
+    volumes:
+      - preparer-data:/app/data
+    ports:
+      - "5171:5171"
+    environment:
+      - FHIR_AUGURY_PREPARER__Processing__DatabasePath=/app/data/processor.jira.fhir.preparer.db
+      - FHIR_AUGURY_PREPARER__Processing__StartProcessingOnStartup=false
+      - FHIR_AUGURY_PREPARER__Processing__Jira__JiraSourceAddress=http://source-jira:5160
+      - FHIR_AUGURY_PREPARER__Processing__Jira__AgentCliCommand=copilot run ticket-prep --ticket {ticketKey} --db {dbPath}
+      # v1 containers host the API/queue only by default. Actual processing
+      # requires an explicitly supplied Copilot-compatible agent runtime on PATH.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5171/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
   orchestrator:
     build:
       context: .
@@ -156,4 +183,5 @@ volumes:
   confluence-data:
   github-cache:
   github-data:
+  preparer-data:
   orchestrator-data:

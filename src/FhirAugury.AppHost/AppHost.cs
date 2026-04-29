@@ -50,6 +50,16 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
     .WaitFor(zulip)
     .WaitFor(github);
 
+IResourceBuilder<ProjectResource> preparer = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Preparer>("processor-jira-fhir-preparer")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5171;
+        e.TargetPort = 5171;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(orchestrator);
+
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>
