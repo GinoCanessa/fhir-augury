@@ -2,6 +2,7 @@ using System.Text;
 using FhirAugury.Common.Filtering;
 using FhirAugury.Source.Jira.Api;
 using Microsoft.Data.Sqlite;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Source.Jira.Indexing;
 

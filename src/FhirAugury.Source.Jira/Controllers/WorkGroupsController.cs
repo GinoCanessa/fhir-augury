@@ -5,6 +5,7 @@ using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Source.Jira.Controllers;
 

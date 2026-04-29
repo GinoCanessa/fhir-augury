@@ -71,21 +71,6 @@ public record JiraIssueLinkEntry(string SourceKey, string TargetKey, string Link
 /// <summary>Jira comment detail.</summary>
 public record JiraCommentEntry(string Id, string IssueKey, string Author, string Body, DateTimeOffset CreatedAt);
 
-/// <summary>Jira issue summary for list/query endpoints.</summary>
-public record JiraIssueSummaryEntry
-{
-    public required string Key { get; init; }
-    public string ProjectKey { get; init; } = "";
-    public required string Title { get; init; }
-    public string Type { get; init; } = "";
-    public string Status { get; init; } = "";
-    public string Priority { get; init; } = "";
-    public string WorkGroup { get; init; } = "";
-    public string Specification { get; init; } = "";
-    public string? Url { get; init; }
-    public DateTimeOffset? UpdatedAt { get; init; }
-}
-
 /// <summary>Issue numbers response.</summary>
 public record IssueNumbersResponse(List<int> IssueNumbers);
 
@@ -95,95 +80,6 @@ public record JiraProjectStatus(
     DateTimeOffset? LastSyncAt,
     int ItemsIngested,
     string Status);
-
-// ── Local-processing endpoints (api/v1/local-processing) ──────────
-
-/// <summary>Shared filter shape for the local-processing list and random endpoints.</summary>
-public record JiraLocalProcessingFilter
-{
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Projects { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Specifications { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Types { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Priorities { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Statuses { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? ChangeCategories { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? ChangeImpacts { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? RelatedArtifacts { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? WorkGroups { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Reporters { get; init; }
-    /// <summary>
-    /// Source filter list using the null-as-default, empty-as-explicit-all convention; Jira query filters have no per-field default, so null and [] both add no SQL predicate. See docs/source-filter-conventions.md.
-    /// </summary>
-    public List<string>? Labels { get; init; }
-
-    /// <summary>
-    /// Optional filter on the local-processing flag.
-    /// null/omitted -> no filter.
-    /// true  -> ProcessedLocallyAt IS NOT NULL.
-    /// false -> ProcessedLocallyAt IS NULL.
-    /// </summary>
-    public bool? ProcessedLocally { get; init; }
-}
-
-/// <summary>List-tickets request: filter + paging.</summary>
-public record JiraLocalProcessingListRequest : JiraLocalProcessingFilter
-{
-    public int? Limit { get; init; }
-    public int? Offset { get; init; }
-}
-
-/// <summary>List-tickets response: paged results plus unpaged total.</summary>
-public record JiraLocalProcessingListResponse(
-    IReadOnlyList<JiraIssueSummaryEntry> Results,
-    int Limit,
-    int Offset,
-    int Total);
-
-/// <summary>Set-processed request for a single Jira issue key.</summary>
-public record JiraLocalProcessingSetRequest
-{
-    public required string Key { get; init; }
-    public bool? ProcessedLocally { get; init; }
-}
-
-/// <summary>Set-processed response.</summary>
-public record JiraLocalProcessingSetResponse(
-    string Key,
-    bool PreviousValue,
-    bool NewValue);
-
-/// <summary>Clear-all-processed response.</summary>
-public record JiraLocalProcessingClearResponse(int RowsAffected);
 
 /// <summary>Update payload for <c>PUT /api/v1/projects/{key}</c>.</summary>
 public record JiraProjectUpdateRequest(bool Enabled, int? BaselineValue = null);

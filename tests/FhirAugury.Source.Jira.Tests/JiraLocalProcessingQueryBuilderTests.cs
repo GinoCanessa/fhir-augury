@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Indexing;
 using Microsoft.Data.Sqlite;
