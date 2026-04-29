@@ -7,7 +7,12 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 [LdgSQLiteIndex(nameof(ZulipThreadId))]
 public partial record class PreparedTicketRelatedZulipRecord
 {
-    public required string Id { get; set; }
+    [LdgSQLiteKey]
+    public int RowId { get; set; }
+
+    [LdgSQLiteUnique]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
     public required string TicketKey { get; set; }
     public required string ZulipThreadId { get; set; }
     public required string Justification { get; set; }

@@ -7,7 +7,12 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 [LdgSQLiteIndex(nameof(Repo))]
 public partial record class PreparedTicketRepoRecord
 {
-    public required string Id { get; set; }
+    [LdgSQLiteKey]
+    public int RowId { get; set; }
+
+    [LdgSQLiteUnique]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
     public required string TicketKey { get; set; }
     public required string Repo { get; set; }
     public required string RepoCategory { get; set; }

@@ -9,7 +9,12 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 [LdgSQLiteIndex(nameof(ProposalBImpact))]
 public partial record class PreparedTicketRecord
 {
-    public required string Id { get; set; }
+    [LdgSQLiteKey]
+    public int RowId { get; set; }
+
+    [LdgSQLiteUnique]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
     public required string Key { get; set; }
     public required string RequestSummary { get; set; }
     public required string CommentSummary { get; set; }
