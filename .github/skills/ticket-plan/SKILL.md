@@ -35,6 +35,14 @@ order documented in `fhir-augury-cli` (MCP → direct HTTP → `appsettings.json
 - **Output file** *(optional)* — full path where the report should be
   saved. If omitted, the agent picks a sensible default and reports the
   path back to the caller.
+- **Database path** *(optional, `--db <path>`)* — enables planner database
+  output mode against the SQLite database created by
+  `FhirAugury.Processor.Jira.Fhir.Planner`. In this mode, run the same
+  analysis workflow but persist the structured result to the planner tables.
+- **Repository filters** *(optional, `--repos <json-array>`)* — exact
+  `owner/repo` allow-list applied during repository selection before loading
+  repo briefings. `[]` means no restriction. `--repos` is the canonical flag;
+  do not introduce alternate repo-filter flag names in v1.
 - **Working directory** *(optional)* — directory the agent may use for
   any transient files produced while gathering data (intermediate JSON
   dumps, scratch notes, downloaded snapshots, etc.). When supplied,
@@ -115,7 +123,9 @@ These keywords identify the FHIR resources, elements, and operations involved.
 
 From the resolution, linked artifacts, and cross-references, decide which
 cached repositories the change touches (typically 1–2). Normalize each
-to `owner/name`. Useful inputs:
+to `owner/name`. If `--repos <json-array>` is supplied with one or more
+entries, restrict this selection to exact case-insensitive `owner/repo`
+matches before loading repo briefings; `[]` means no restriction. Useful inputs:
 
 - **Specification metadata** (e.g., "FHIR Core (FHIR)" → `HL7/fhir`).
 - **GitHub cross-references** — IDs of the form `owner/repo#N` directly
@@ -418,6 +428,55 @@ during implementation. Any Gotchas/Warnings surfaced by Repo Context that
 affect implementation must be addressed here (or in the relevant task
 above). If none: "No open questions."}
 ```
+
+## Planner Database Output Mode
+
+When invoked with `--db <path>`, persist the final structured plan to the
+planner SQLite database in addition to any requested markdown report. Writes
+must happen inside one transaction. If the skill cannot produce a coherent
+complete row set, roll back and exit non-zero so the planner service can mark
+the source ticket `error` and delete partial rows.
+
+### Transaction and overwrite order
+
+For the current ticket key, delete existing rows in this exact order, then
+insert the replacement rows:
+
+1. `planned_ticket_open_questions`
+2. `planned_ticket_testing_considerations`
+3. `planned_ticket_change_validations`
+4. `planned_ticket_repo_impacts`
+5. `planned_ticket_repo_changes`
+6. `planned_ticket_repos`
+7. `planned_tickets`
+
+This transaction is the authoritative overwrite boundary. The planner service
+also performs pre-run and failure cleanup, but DB-mode agents must still own
+the delete-and-insert transaction immediately before writing replacement rows.
+
+### Section-to-table mapping
+
+- Raw Jira resolution (`metadata.resolution_description` / captured source
+  resolution content) → `planned_tickets.Resolution`.
+- `Resolution Summary` → `planned_tickets.ResolutionSummary`.
+- `Feature Proposal` (`Problem Statement` plus `Proposed Change`) →
+  `planned_tickets.FeatureProposal`.
+- `Design Rationale` → `planned_tickets.DesignRationale`.
+- `Affected Repositories` → `planned_ticket_repos` (`RepoKey`,
+  `Justification`, and `RepoRevision` when available).
+- `Step-by-Step Tasks` file entries → `planned_ticket_repo_changes` in
+  per-repo task order (`ChangeSequence`). Store `ReplacementLines` as JSON
+  array text, even when the replacement is empty (`[]`).
+- `Related Specifications`, `Breaking Changes`, and blast-radius notes tied to
+  files → `planned_ticket_repo_impacts`; `TicketRepoChangeId` may be null for
+  repo-wide impacts.
+- `Validation Checklist` → `planned_ticket_change_validations`.
+- `Testing Considerations` → `planned_ticket_testing_considerations`.
+- `Open Questions` → `planned_ticket_open_questions`.
+
+Fill `planned_ticket_repos.RepoRevision` from the repo-analysis `meta.json`
+clone HEAD when available. Apply `--repos` during repository selection before
+loading repo briefings; do not write out-of-scope rows and then post-filter.
 
 ## Important Rules
 
