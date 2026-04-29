@@ -194,7 +194,7 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 Processing services are layered separately from source ingestion. `FhirAugury.Processing.Common` owns service-wide Processing options, lifecycle state, queue stats, `start`/`stop`/`status` endpoints, and the concurrency-limited runner over `IProcessingWorkItemStore<T>` plus `IProcessingWorkItemHandler<T>`.
 
-`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed processors. It persists source tickets in `jira_processing_source_tickets`, applies the shared null/default/empty/restrict filter conventions, discovers tickets through Source.Jira or the orchestrator using shared Jira DTOs, invokes an agent command without shell expansion, and exposes `POST /processing/tickets/{key}` for ad-hoc enqueue/reset. Concrete preparer/planner services provide processor-specific defaults, output records, and extension tokens such as repository filters.
+`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed processors. It persists source tickets in `jira_processing_source_tickets`, applies the shared null/default/empty/restrict filter conventions, discovers tickets through Source.Jira or the orchestrator using shared Jira DTOs, invokes an agent command without shell expansion, and exposes `POST /processing/tickets/{key}` for ad-hoc enqueue/reset. Concrete preparer/planner services provide processor-specific defaults, output records, extension tokens such as repository filters, service ports/appsettings defaults, and the delete/upsert logic that overwrites prior processor output for a ticket before writing fresh results.
 
 ## Key Design Decisions
 

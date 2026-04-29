@@ -16,6 +16,23 @@ namespace FhirAugury.Processing.Jira.Common.Hosting;
 
 public static class JiraProcessingServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the Jira processing common layer for a concrete processor.
+    /// Concrete services typically call this during startup, map the common
+    /// Processing endpoints, then replace <see cref="IJiraAgentExtensionTokenProvider"/>
+    /// or <see cref="IJiraAgentCliRunner"/> when they need processor-specific
+    /// tokens or tests:
+    /// <code>
+    /// builder.Services.AddJiraProcessing(builder.Configuration, defaults: new JiraProcessingFilterDefaults
+    /// {
+    ///     TicketStatusesToProcess = ["Triaged"]
+    /// });
+    /// app.MapProcessingEndpoints&lt;JiraProcessingSourceTicketRecord&gt;();
+    /// app.MapJiraProcessingTicketEndpoints();
+    /// </code>
+    /// Concrete processors remain responsible for defining output tables, deleting/upserting prior output for the ticket,
+    /// and adding extension tokens such as {repoFilters}.
+    /// </summary>
     public static IServiceCollection AddJiraProcessing(
         this IServiceCollection services,
         IConfiguration configuration,
