@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Configuration;
@@ -107,7 +108,7 @@ public class ContentController(ConfluenceDatabase db, IOptions<ConfluenceService
             : sources.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
         // If sources filter is specified and doesn't include confluence, return empty
-        if (sourceList is not null && !sourceList.Any(s => string.Equals(s, SourceSystems.Confluence, StringComparison.OrdinalIgnoreCase)))
+        if (sourceList.HasExplicitRestriction() && !sourceList!.Any(s => string.Equals(s, SourceSystems.Confluence, StringComparison.OrdinalIgnoreCase)))
         {
             return Ok(new ContentSearchResponse
             {

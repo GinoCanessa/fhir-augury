@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Configuration;
@@ -115,8 +116,8 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
             : null;
 
         // If sources filter is specified and doesn't include "jira", return empty
-        if (sourceList is not null &&
-            !sourceList.Any(s => string.Equals(s, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)))
+        if (sourceList.HasExplicitRestriction() &&
+            !sourceList!.Any(s => string.Equals(s, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)))
         {
             return Ok(new ContentSearchResponse
             {

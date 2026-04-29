@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Configuration;
@@ -281,7 +282,7 @@ public class ContentController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
             : null;
 
         // If source filter is provided and doesn't include zulip, return empty
-        if (sourceList is not null && !sourceList.Any(s => s.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase)))
+        if (sourceList.HasExplicitRestriction() && !sourceList!.Any(s => s.Equals(SourceSystems.Zulip, StringComparison.OrdinalIgnoreCase)))
         {
             return Ok(new ContentSearchResponse
             {
