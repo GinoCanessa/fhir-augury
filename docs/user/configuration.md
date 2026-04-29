@@ -367,6 +367,18 @@ Processing services share the `Processing` configuration shape and expose
 `/health`, `/status`, `/processing/start`, `/processing/stop`,
 `/processing/queue`, and `POST /processing/tickets/{key}`.
 
+> **Schema migration note (April 2026):** The Processing layer's SQLite schemas
+> are now derived from the `cslightdbgen.sqlitegen` annotations on the record
+> classes via generator-emitted `CreateTable` calls, and every Processing table
+> now has a `RowId INTEGER PRIMARY KEY` column in addition to its `Id` GUID.
+> Existing `CREATE TABLE IF NOT EXISTS` calls will not retro-fit `RowId` onto
+> tables built by an older revision, so after pulling this change you must
+> delete any pre-existing local Processing databases (for example
+> `./data/processor.jira.fhir.preparer.db` and
+> `./data/processor.jira.fhir.planner.db`). The services will recreate them on
+> startup. Production data is not affected — these databases are dev-only work
+> queues.
+
 ### Jira FHIR Planner (`:5172`)
 
 ```json
