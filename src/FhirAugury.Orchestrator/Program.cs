@@ -70,8 +70,18 @@ foreach (KeyValuePair<string, SourceServiceConfig> entry in orchestratorOptions.
     });
 }
 
+// Named HttpClients for each enabled Processing service
+foreach (KeyValuePair<string, ProcessingServiceConfig> entry in orchestratorOptions.ProcessingServices.Where(s => s.Value.Enabled))
+{
+    builder.Services.AddHttpClient($"processing-{entry.Key.ToLowerInvariant()}", client =>
+    {
+        client.BaseAddress = new Uri(entry.Value.HttpAddress);
+    });
+}
+
 // Routing
 builder.Services.AddSingleton<SourceHttpClient>();
+builder.Services.AddSingleton<ProcessingHttpClient>();
 builder.Services.AddSingleton<OpenApiMergeService>();
 
 // Health monitoring
