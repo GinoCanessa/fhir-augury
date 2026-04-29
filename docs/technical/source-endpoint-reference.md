@@ -20,8 +20,9 @@ Route conventions:
 - `{**id}` — multi-segment greedy catch-all (allows `/` inside the
   identifier; required for GitHub keys like `HL7/fhir:source/...` and
   for the cross-source `content/...` endpoints).
+- List-shaped Source filters use the [null-as-default, empty-as-explicit-all convention](../source-filter-conventions.md): absent/null and `[]` add no query predicate when there is no per-field default.
 
-## Jira (`src/FhirAugury.Source.Jira/Controllers/`, port :5160)
+## Jira(`src/FhirAugury.Source.Jira/Controllers/`, port :5160)
 
 ### Cross-source content (also implemented by every source)
 

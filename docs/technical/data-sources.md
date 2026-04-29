@@ -42,6 +42,10 @@ contract for the Orchestrator:
 | `RebuildIndex` | Rebuild specific indexes (BM25, FTS, cross-refs, lookup tables, etc.) |
 | `HealthCheck` | Liveness/readiness probe |
 
+## Source list-filter convention
+
+All Source services use the [null-as-default, empty-as-explicit-all convention](../source-filter-conventions.md) for list-shaped string filters and ingestion selection lists. Jira query/local-processing filters, Zulip `StreamNames`/`SenderNames`, content-search `sources`, GitHub repository/file-content lists, and Confluence `Spaces` all follow this rule.
+
 ## Source-Specific HTTP API Endpoints
 
 Each source also exposes source-specific HTTP API endpoints for domain queries:

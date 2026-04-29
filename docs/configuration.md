@@ -22,6 +22,10 @@ pattern.
 
 **Example:** `FHIR_AUGURY_JIRA__Jira__Cookie=JSESSIONID=...`
 
+## Nullable Source list configuration
+
+Source API list filters and ingestion selection lists use the [null-as-default, empty-as-explicit-all convention](source-filter-conventions.md). For defaulted ingestion lists, remove the key or set it to `null` to use defaults; `[]` is an explicit opt-out.
+
 ## Jira Source Service
 
 **Prefix:** `FHIR_AUGURY_JIRA_`
