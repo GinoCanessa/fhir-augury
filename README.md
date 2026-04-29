@@ -78,6 +78,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Orchestrator | [5150](http://localhost:5150/health) | Unified search, cross-references, aggregation |
 | Jira | [5160](http://localhost:5160/health) | HL7 Jira issues and comments |
 | Zulip | [5170](http://localhost:5170/health) | FHIR Zulip chat messages |
+| Jira FHIR Preparer | [5171](http://localhost:5171/health) | Processing service for Triaged FHIR Jira ticket prep outputs (`/api/v1/prepared-tickets`) |
 | Confluence | [5180](http://localhost:5180/health) | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | HL7 GitHub issues, PRs, and commits |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | MCP server (HTTP/SSE transport) |
@@ -167,12 +168,14 @@ See `mcp-config-examples/` for ready-to-use configuration files.
 
 | Profile | Services | Use Case |
 |---------|----------|----------|
-| `full` | All 5 services | Production / full development |
+| `full` | All services, including the optional preparer | Production / full development |
+| `processing` | Jira + Jira FHIR Preparer | Local processing API/queue; agent runtime must be supplied separately |
 | `jira-zulip` | Jira + Zulip + Orchestrator | Common subset |
 | `jira-only` | Jira only | Single source standalone |
 
 ```bash
 docker compose --profile full up -d        # Everything
+docker compose --profile processing up -d  # Jira + preparer API/queue
 docker compose --profile jira-zulip up -d  # Subset
 docker compose --profile jira-only up -d   # Single source
 ```
@@ -183,6 +186,7 @@ docker compose --profile jira-only up -d   # Single source
 |-----------|---------|-------------|
 | Orchestrator | `src/FhirAugury.Orchestrator` | Aggregator, cross-references, unified search |
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
+| Jira FHIR Preparer | `src/FhirAugury.Processor.Jira.Fhir.Preparer` | Processing service that defaults to Triaged FHIR Jira tickets, overwrites structured prep output without history, and exposes read/query APIs; Docker processing requires a host-provided agent runtime |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
