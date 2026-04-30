@@ -74,6 +74,18 @@ IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugu
     .WaitFor(orchestrator)
     .WithExplicitStart();
 
+IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Applier>("processor-jira-fhir-applier")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5173;
+        e.TargetPort = 5173;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(orchestrator)
+    .WaitFor(planner)
+    .WithExplicitStart();
+
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>

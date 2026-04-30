@@ -22,6 +22,7 @@
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner/FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Applier/FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
@@ -41,6 +42,7 @@
     <Project Path="tests/FhirAugury.Processing.Jira.Common.Tests/FhirAugury.Processing.Jira.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Planner.Tests/FhirAugury.Processor.Jira.Fhir.Planner.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Applier.Tests/FhirAugury.Processor.Jira.Fhir.Applier.Tests.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
