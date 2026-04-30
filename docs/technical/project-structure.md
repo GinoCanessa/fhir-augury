@@ -210,6 +210,38 @@ The planner uses the shared Processing/Jira layers for lifecycle endpoints,
 source-ticket queueing, filters, command rendering, and agent execution. It is a
 sibling of the preparer and does not depend on preparer code or records.
 
+### `FhirAugury.Processor.Jira.Fhir.Applier`
+
+Concrete Jira/FHIR Processing service (HTTP :5173) that consumes completed
+plans from the Planner database and runs an agent in a per-(ticket, repo)
+git worktree to actually apply each planned change. After the agent finishes,
+the applier runs the per-repo `BuildCommand`, diffs the build output against
+a pre-built repo baseline, copies the surviving differences into a per-ticket
+output directory, and locally commits the worktree (success or failure). A
+push HTTP API (`POST /api/v1/applied-tickets/{ticketKey}/push`) lets an
+operator move successful local commits to the upstream remote on demand.
+
+```
+FhirAugury.Processor.Jira.Fhir.Applier/
+├── Configuration/             # ApplierOptions / ApplierAuthOptions / per-repo settings + Jira defaults
+├── Controllers/               # AppliedTicketsController (push API)
+├── Database/                  # ApplierDatabase, applied_* records, planner read-only DB, write store
+├── Processing/                # PlannerWorkQueue + ApplierTicketHandler (per-ticket orchestrator)
+├── Push/                      # IGitPushService / GitPushService + push-response DTOs
+├── Workspace/                 # Repo workspace lifecycle (clone, baseline, worktree, lock, diff, commit)
+├── Program.cs                 # HTTP composition + queue runner + hosted services
+└── appsettings.json           # Defaults: working dir, planner DB, repos, commit templates, port 5173
+```
+
+The applier polls the Planner database via `PlannerWorkQueue` to discover
+completed plans, queues them in its own SQLite `applied_ticket_queue_items`
+table, and processes each item via the shared
+`ProcessingHostedService<AppliedTicketQueueItemRecord>` runner. Per-(ticket,
+repo) outcomes (`Success` / `AgentFailed` / `BuildFailed` / `DiffFailed` /
+`WorktreeFailed` / `RepoNotConfigured`) live in the `applied_*` tables; the
+queue's `ProcessingStatus` reflects only transport / runtime outcome so a
+genuinely-failed agent run still completes the queue item normally.
+
 ### `FhirAugury.Orchestrator`
 
 Central coordinator (HTTP :5150).
@@ -378,6 +410,7 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | `FhirAugury.Parsing.Fsh.Tests` | FSH parsing: definitions, sushi-config, canonical URL construction |
 | `FhirAugury.Processor.Jira.Fhir.Preparer.Tests` | Preparer service: persistence, handler, API, smoke tests |
 | `FhirAugury.Processor.Jira.Fhir.Planner.Tests` | Planner service: options, schema, handler, ticket-plan DB contract |
+| `FhirAugury.Processor.Jira.Fhir.Applier.Tests` | Applier service: schema, planner-discovery store, workspace lifecycle, output diff, commit, handler, push |
 
 ## Build Configuration
 
