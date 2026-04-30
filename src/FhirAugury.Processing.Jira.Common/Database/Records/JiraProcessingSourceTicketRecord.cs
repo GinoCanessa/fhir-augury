@@ -16,6 +16,7 @@ namespace FhirAugury.Processing.Jira.Common.Database.Records;
 [LdgSQLiteIndex(nameof(StartedProcessingAt))]
 [LdgSQLiteIndex(nameof(CompletedProcessingAt))]
 [LdgSQLiteIndex(nameof(LastProcessingAttemptAt))]
+[LdgSQLiteIndex(nameof(CompletionId))]
 public partial record class JiraProcessingSourceTicketRecord : IProcessingWorkItem, IJiraProcessingTicketFilterCandidate
 {
     [LdgSQLiteKey]
@@ -38,6 +39,7 @@ public partial record class JiraProcessingSourceTicketRecord : IProcessingWorkIt
     public string? ProcessingStatus { get; set; }
     public string? ProcessingError { get; set; }
     public int ProcessingAttemptCount { get; set; }
+    public string? CompletionId { get; set; }
     public string? ErrorMessage { get; set; }
     public int? AgentExitCode { get; set; }
     public DateTimeOffset? ErrorOccurredAt { get; set; }

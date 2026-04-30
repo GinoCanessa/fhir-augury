@@ -105,10 +105,11 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             SELECT * FROM jira_processing_source_tickets
-            WHERE ProcessingStatus IS NULL AND SourceTicketShape = @shape
+            WHERE (ProcessingStatus IS NULL OR ProcessingStatus = @stale) AND SourceTicketShape = @shape
             ORDER BY LastUpdated ASC, Key ASC
             LIMIT @limit
             """;
+        command.Parameters.AddWithValue("@stale", ProcessingStatusValues.Stale);
         command.Parameters.AddWithValue("@shape", filters.SourceTicketShape);
         command.Parameters.AddWithValue("@limit", Math.Max(maxItems * 5, maxItems));
         List<JiraProcessingSourceTicketRecord> rows = [];
@@ -141,9 +142,10 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 StartedProcessingAt = @started,
                 LastProcessingAttemptAt = @started,
                 ProcessingAttemptCount = ProcessingAttemptCount + 1
-            WHERE Id = @id AND ProcessingStatus IS NULL
+            WHERE Id = @id AND (ProcessingStatus IS NULL OR ProcessingStatus = @stale)
             """;
         command.Parameters.AddWithValue("@status", ProcessingStatusValues.InProgress);
+        command.Parameters.AddWithValue("@stale", ProcessingStatusValues.Stale);
         command.Parameters.AddWithValue("@started", Format(startedAt));
         command.Parameters.AddWithValue("@id", item.Id);
         int affected = await command.ExecuteNonQueryAsync(ct);
@@ -162,12 +164,18 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
 
     public async Task MarkCompleteAsync(JiraProcessingSourceTicketRecord item, DateTimeOffset completedAt, CancellationToken ct)
     {
+        // CompletionId is stamped idempotently: the queue runner calls MarkCompleteAsync
+        // a second time after the handler has already done so (ProcessingQueueRunner.cs:108),
+        // so the UPDATE preserves the GUID stamped by the first call via COALESCE and the
+        // SELECT re-binds whatever value actually landed on disk back onto `item`.
+        string newCompletionId = Guid.NewGuid().ToString("N");
         await using SqliteConnection connection = OpenConnection();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             UPDATE jira_processing_source_tickets
             SET ProcessingStatus = @status,
                 CompletedProcessingAt = @completed,
+                CompletionId = COALESCE(CompletionId, @completionId),
                 ProcessingError = NULL,
                 ErrorMessage = NULL,
                 AgentExitCode = NULL,
@@ -176,8 +184,15 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             """;
         command.Parameters.AddWithValue("@status", ProcessingStatusValues.Complete);
         command.Parameters.AddWithValue("@completed", Format(completedAt));
+        command.Parameters.AddWithValue("@completionId", newCompletionId);
         command.Parameters.AddWithValue("@id", item.Id);
         await command.ExecuteNonQueryAsync(ct);
+
+        await using SqliteCommand select = connection.CreateCommand();
+        select.CommandText = "SELECT CompletionId FROM jira_processing_source_tickets WHERE Id = @id";
+        select.Parameters.AddWithValue("@id", item.Id);
+        object? stored = await select.ExecuteScalarAsync(ct);
+        item.CompletionId = stored is string s ? s : newCompletionId;
         item.ProcessingStatus = ProcessingStatusValues.Complete;
         item.CompletedProcessingAt = completedAt;
         item.ProcessingError = null;
@@ -197,6 +212,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             UPDATE jira_processing_source_tickets
             SET ProcessingStatus = @status,
                 CompletedProcessingAt = @completed,
+                CompletionId = NULL,
                 ProcessingError = @error,
                 ErrorMessage = @error,
                 AgentExitCode = @exitCode,
@@ -211,10 +227,40 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         await command.ExecuteNonQueryAsync(ct);
         item.ProcessingStatus = ProcessingStatusValues.Error;
         item.CompletedProcessingAt = completedAt;
+        item.CompletionId = null;
         item.ProcessingError = errorMessage;
         item.ErrorMessage = errorMessage;
         item.AgentExitCode = agentExitCode;
         item.ErrorOccurredAt = completedAt;
+    }
+
+    public async Task MarkStaleAsync(JiraProcessingSourceTicketRecord item, DateTimeOffset markedAt, CancellationToken ct)
+    {
+        // Stale rows are previously-completed entries whose upstream input has changed.
+        // Clears CompletionId and the error fields so the next claim begins from a clean
+        // slate, but preserves CompletedProcessingAt / LastProcessingAttemptAt for audit.
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE jira_processing_source_tickets
+            SET ProcessingStatus = @status,
+                CompletionId = NULL,
+                ProcessingError = NULL,
+                ErrorMessage = NULL,
+                AgentExitCode = NULL,
+                ErrorOccurredAt = NULL
+            WHERE Id = @id
+            """;
+        command.Parameters.AddWithValue("@status", ProcessingStatusValues.Stale);
+        command.Parameters.AddWithValue("@id", item.Id);
+        await command.ExecuteNonQueryAsync(ct);
+        item.ProcessingStatus = ProcessingStatusValues.Stale;
+        item.CompletionId = null;
+        item.ProcessingError = null;
+        item.ErrorMessage = null;
+        item.AgentExitCode = null;
+        item.ErrorOccurredAt = null;
+        _ = markedAt;
     }
 
     public async Task<int> ResetOrphanedItemsAsync(TimeSpan olderThan, DateTimeOffset now, CancellationToken ct)
@@ -226,6 +272,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             UPDATE jira_processing_source_tickets
             SET ProcessingStatus = NULL,
                 StartedProcessingAt = NULL,
+                CompletionId = NULL,
                 ProcessingError = NULL
             WHERE ProcessingStatus = @status AND LastProcessingAttemptAt < @cutoff
             """;
@@ -238,7 +285,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     {
         await using SqliteConnection connection = OpenConnection();
         int complete = await CountAsync(connection, "ProcessingStatus = @status", ProcessingStatusValues.Complete, ct);
-        int pending = await CountAsync(connection, "ProcessingStatus IS NULL", null, ct);
+        int pending = await CountAsync(connection, "ProcessingStatus IS NULL OR ProcessingStatus = @status", ProcessingStatusValues.Stale, ct);
         int inProgress = await CountAsync(connection, "ProcessingStatus = @status", ProcessingStatusValues.InProgress, ct);
         int error = await CountAsync(connection, "ProcessingStatus = @status", ProcessingStatusValues.Error, ct);
         DateTimeOffset? lastCompleted = await LastCompletedAsync(connection, ct);
@@ -259,6 +306,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         record.ProcessingStatus = null;
         record.ProcessingError = null;
         record.ProcessingAttemptCount = 0;
+        record.CompletionId = null;
         record.ErrorMessage = null;
         record.AgentExitCode = null;
         record.ErrorOccurredAt = null;
@@ -301,11 +349,11 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             INSERT INTO jira_processing_source_tickets
             (Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated,
              StartedProcessingAt, CompletedProcessingAt, LastProcessingAttemptAt, ProcessingStatus, ProcessingError, ProcessingAttemptCount,
-             ErrorMessage, AgentExitCode, ErrorOccurredAt)
+             CompletionId, ErrorMessage, AgentExitCode, ErrorOccurredAt)
             VALUES
             (@Id, @Key, @Title, @Description, @Project, @Status, @WorkGroup, @Type, @SourceTicketShape, @LastSyncedAt, @LastUpdated,
              @StartedProcessingAt, @CompletedProcessingAt, @LastProcessingAttemptAt, @ProcessingStatus, @ProcessingError, @ProcessingAttemptCount,
-             @ErrorMessage, @AgentExitCode, @ErrorOccurredAt)
+             @CompletionId, @ErrorMessage, @AgentExitCode, @ErrorOccurredAt)
             """;
         AddParameters(command, record);
         await command.ExecuteNonQueryAsync(ct);
@@ -331,6 +379,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 ProcessingStatus = @ProcessingStatus,
                 ProcessingError = @ProcessingError,
                 ProcessingAttemptCount = @ProcessingAttemptCount,
+                CompletionId = @CompletionId,
                 ErrorMessage = @ErrorMessage,
                 AgentExitCode = @AgentExitCode,
                 ErrorOccurredAt = @ErrorOccurredAt
@@ -359,6 +408,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         command.Parameters.AddWithValue("@ProcessingStatus", (object?)record.ProcessingStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("@ProcessingError", (object?)record.ProcessingError ?? DBNull.Value);
         command.Parameters.AddWithValue("@ProcessingAttemptCount", record.ProcessingAttemptCount);
+        command.Parameters.AddWithValue("@CompletionId", (object?)record.CompletionId ?? DBNull.Value);
         command.Parameters.AddWithValue("@ErrorMessage", (object?)record.ErrorMessage ?? DBNull.Value);
         command.Parameters.AddWithValue("@AgentExitCode", (object?)record.AgentExitCode ?? DBNull.Value);
         command.Parameters.AddWithValue("@ErrorOccurredAt", FormatNullable(record.ErrorOccurredAt));
@@ -400,6 +450,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         ProcessingStatus = GetNullableString(reader, "ProcessingStatus"),
         ProcessingError = GetNullableString(reader, "ProcessingError"),
         ProcessingAttemptCount = reader.GetInt32(reader.GetOrdinal("ProcessingAttemptCount")),
+        CompletionId = GetNullableString(reader, "CompletionId"),
         ErrorMessage = GetNullableString(reader, "ErrorMessage"),
         AgentExitCode = GetNullableInt(reader, "AgentExitCode"),
         ErrorOccurredAt = ParseDate(reader, "ErrorOccurredAt"),

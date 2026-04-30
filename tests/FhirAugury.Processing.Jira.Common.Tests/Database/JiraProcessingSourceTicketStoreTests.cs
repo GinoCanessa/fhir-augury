@@ -107,6 +107,121 @@ public class JiraProcessingSourceTicketStoreTests
     }
 
     [Fact]
+    public async Task MarkComplete_StampsCompletionIdAndIsIdempotent()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        DateTimeOffset firstCompletedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset secondCompletedAt = firstCompletedAt.AddSeconds(1);
+
+        await store.MarkCompleteAsync(record, firstCompletedAt, CancellationToken.None);
+        string firstCompletionId = record.CompletionId!;
+        Assert.False(string.IsNullOrWhiteSpace(firstCompletionId));
+
+        await store.MarkCompleteAsync(record, secondCompletedAt, CancellationToken.None);
+        Assert.Equal(firstCompletionId, record.CompletionId);
+
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Equal(firstCompletionId, reloaded.CompletionId);
+    }
+
+    [Fact]
+    public async Task MarkError_ClearsCompletionId()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        await store.MarkCompleteAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.False(string.IsNullOrWhiteSpace(record.CompletionId));
+
+        await store.MarkErrorAsync(record, "boom", 7, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Null(record.CompletionId);
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Null(reloaded.CompletionId);
+    }
+
+    [Fact]
+    public async Task ResetForReprocessing_ClearsCompletionId()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        await store.MarkCompleteAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        JiraProcessingSourceTicketRecord? reset = await store.ResetForReprocessingAsync("FHIR-1", "fhir", CancellationToken.None);
+
+        Assert.NotNull(reset);
+        Assert.Null(reset.CompletionId);
+    }
+
+    [Fact]
+    public async Task MarkStale_ClearsCompletionIdAndAllowsClaim()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        DateTimeOffset completedAt = DateTimeOffset.UtcNow;
+        await store.MarkCompleteAsync(record, completedAt, CancellationToken.None);
+        DateTimeOffset markedAt = completedAt.AddMinutes(5);
+
+        await store.MarkStaleAsync(record, markedAt, CancellationToken.None);
+
+        Assert.Equal(ProcessingStatusValues.Stale, record.ProcessingStatus);
+        Assert.Null(record.CompletionId);
+        Assert.Equal(completedAt, record.CompletedProcessingAt);
+
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Equal(ProcessingStatusValues.Stale, reloaded.ProcessingStatus);
+        Assert.Null(reloaded.CompletionId);
+    }
+
+    [Fact]
+    public async Task GetPending_IncludesStaleRows()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord recordA = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        JiraProcessingSourceTicketRecord recordB = await store.UpsertAsync(CreateTicket("FHIR-2"), "fhir", false, CancellationToken.None);
+        await store.MarkCompleteAsync(recordA, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkStaleAsync(recordA, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        IReadOnlyList<JiraProcessingSourceTicketRecord> pending = await store.GetPendingAsync(10, CancellationToken.None);
+
+        Assert.Contains(pending, p => p.Key == "FHIR-1");
+        Assert.Contains(pending, p => p.Key == "FHIR-2");
+        _ = recordB;
+    }
+
+    [Fact]
+    public async Task ClaimItem_ClaimsStaleRow()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        await store.MarkCompleteAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkStaleAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        bool claimed = await store.ClaimItemAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.True(claimed);
+        Assert.Equal(ProcessingStatusValues.InProgress, record.ProcessingStatus);
+    }
+
+    [Fact]
+    public async Task GetQueueStats_CountsStaleAsPending()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        JiraProcessingSourceTicketRecord recordA = await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+        await store.UpsertAsync(CreateTicket("FHIR-2"), "fhir", false, CancellationToken.None);
+        await store.MarkCompleteAsync(recordA, DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.MarkStaleAsync(recordA, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        ProcessingQueueStats stats = await store.GetQueueStatsAsync(CancellationToken.None);
+
+        Assert.Equal(0, stats.ProcessedCount);
+        Assert.Equal(2, stats.RemainingCount);
+    }
+
+    [Fact]
     public void Schema_HasRowIdPrimaryKeyAndIdUnique()
     {
         string path = Path.Combine(AppContext.BaseDirectory, $"jira-processing-{Guid.NewGuid():N}.db");
@@ -126,6 +241,8 @@ public class JiraProcessingSourceTicketStoreTests
         IReadOnlyList<(string Name, bool Unique)> indexes = ReadIndexes(connection, "jira_processing_source_tickets");
         Assert.Contains(indexes, i => i.Unique && IndexCovers(connection, i.Name, ["Id"]));
         Assert.Contains(indexes, i => i.Unique && IndexCovers(connection, i.Name, ["Key", "SourceTicketShape"]));
+        Assert.True(columns.ContainsKey("CompletionId"), "CompletionId column missing");
+        Assert.Contains(indexes, i => IndexCovers(connection, i.Name, ["CompletionId"]));
     }
 
     [Fact]

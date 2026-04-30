@@ -84,6 +84,34 @@ public sealed class PlannerTicketHandlerTests
         Assert.Equal(ProcessingStatusValues.Error, fixture.Item.ProcessingStatus);
     }
 
+    [Fact]
+    public async Task Success_StampsNonEmptyCompletionId()
+    {
+        using HandlerFixture fixture = new(async (_, context, database) =>
+        {
+            await InsertTicketAsync(database, context.TicketKey);
+            return new JiraAgentResult(0, string.Empty, string.Empty, TimeSpan.Zero, false);
+        });
+
+        await fixture.Handler.ProcessAsync(fixture.Item, CancellationToken.None);
+
+        Assert.False(string.IsNullOrWhiteSpace(fixture.Item.CompletionId));
+    }
+
+    [Fact]
+    public async Task Failure_LeavesCompletionIdNull()
+    {
+        using HandlerFixture fixture = new(async (_, context, database) =>
+        {
+            await InsertTicketAsync(database, context.TicketKey);
+            return new JiraAgentResult(2, string.Empty, "bad plan", TimeSpan.Zero, false);
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Handler.ProcessAsync(fixture.Item, CancellationToken.None));
+
+        Assert.Null(fixture.Item.CompletionId);
+    }
+
     private static async Task InsertTicketAsync(PlannerDatabase database, string key)
     {
         await using SqliteConnection connection = database.OpenConnection();
