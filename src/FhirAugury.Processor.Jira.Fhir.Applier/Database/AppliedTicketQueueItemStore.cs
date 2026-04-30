@@ -148,6 +148,24 @@ public sealed class AppliedTicketQueueItemStore : IProcessingWorkItemStore<Appli
         item.ErrorSummary = errorMessage;
     }
 
+    public async Task UpdateOutcomeAsync(AppliedTicketQueueItemRecord item, string outcome, string? errorSummary, CancellationToken ct)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE applied_ticket_queue_items
+            SET Outcome = @outcome,
+                ErrorSummary = @err
+            WHERE Id = @id
+            """;
+        command.Parameters.AddWithValue("@outcome", outcome);
+        command.Parameters.AddWithValue("@err", (object?)errorSummary ?? DBNull.Value);
+        command.Parameters.AddWithValue("@id", item.Id);
+        await command.ExecuteNonQueryAsync(ct);
+        item.Outcome = outcome;
+        item.ErrorSummary = errorSummary;
+    }
+
     public async Task MarkStaleAsync(AppliedTicketQueueItemRecord item, DateTimeOffset markedAt, CancellationToken ct)
     {
         await using SqliteConnection connection = OpenConnection();

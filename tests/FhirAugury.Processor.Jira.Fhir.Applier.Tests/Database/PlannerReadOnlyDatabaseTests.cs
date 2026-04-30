@@ -35,8 +35,57 @@ public static class PlannerFixture
                 Id TEXT PRIMARY KEY,
                 Key TEXT NOT NULL UNIQUE
             );
+            CREATE TABLE planned_ticket_repos (
+                Id TEXT PRIMARY KEY,
+                IssueKey TEXT NOT NULL,
+                RepoKey TEXT NOT NULL,
+                RepoRevision TEXT,
+                Justification TEXT
+            );
+            CREATE TABLE planned_ticket_repo_changes (
+                Id TEXT PRIMARY KEY,
+                IssueKey TEXT NOT NULL,
+                TicketRepoId TEXT NOT NULL,
+                RepoKey TEXT NOT NULL,
+                ChangeSequence INTEGER NOT NULL,
+                FilePath TEXT NOT NULL,
+                ChangeTitle TEXT
+            );
             """;
         command.ExecuteNonQuery();
+    }
+
+    public static string InsertPlannedRepo(string dbPath, string ticketKey, string repoKey, string justification = "")
+    {
+        string id = Guid.NewGuid().ToString("N");
+        using SqliteConnection connection = new($"Data Source={dbPath}");
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO planned_ticket_repos (Id, IssueKey, RepoKey, RepoRevision, Justification) VALUES (@id, @issue, @repo, NULL, @just);";
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@issue", ticketKey);
+        command.Parameters.AddWithValue("@repo", repoKey);
+        command.Parameters.AddWithValue("@just", justification);
+        command.ExecuteNonQuery();
+        return id;
+    }
+
+    public static string InsertPlannedRepoChange(string dbPath, string ticketKey, string ticketRepoId, string repoKey, int sequence, string filePath, string title = "")
+    {
+        string id = Guid.NewGuid().ToString("N");
+        using SqliteConnection connection = new($"Data Source={dbPath}");
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO planned_ticket_repo_changes (Id, IssueKey, TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle) VALUES (@id, @issue, @repoId, @repo, @seq, @file, @title);";
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@issue", ticketKey);
+        command.Parameters.AddWithValue("@repoId", ticketRepoId);
+        command.Parameters.AddWithValue("@repo", repoKey);
+        command.Parameters.AddWithValue("@seq", sequence);
+        command.Parameters.AddWithValue("@file", filePath);
+        command.Parameters.AddWithValue("@title", title);
+        command.ExecuteNonQuery();
+        return id;
     }
 
     public static void InsertJiraTicket(string dbPath, string key, string type, string? status, string? completionId, DateTimeOffset? completedAt)

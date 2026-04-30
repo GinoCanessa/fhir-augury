@@ -3,6 +3,7 @@ using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Jira.Common.Agent;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
@@ -77,12 +78,21 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton<AppliedTicketQueueItemStore>();
 builder.Services.AddSingleton<IProcessingWorkItemStore<AppliedTicketQueueItemRecord>>(sp => sp.GetRequiredService<AppliedTicketQueueItemStore>());
+builder.Services.AddSingleton<AppliedTicketWriteStore>();
 
 builder.Services.AddSingleton<RepoBaselineStore>();
 builder.Services.AddSingleton<RepoLockManager>();
 builder.Services.AddSingleton<IGitProcessRunner, GitProcessRunner>();
 builder.Services.AddSingleton<BuildCommandRunner>();
 builder.Services.AddSingleton<RepoWorkspaceManager>();
+builder.Services.AddSingleton<OutputDiffer>();
+builder.Services.AddSingleton<GitWorktreeCommitService>();
+
+builder.Services.AddSingleton<JiraAgentCommandRenderer>();
+builder.Services.AddSingleton<IJiraAgentCliRunner, JiraAgentCliRunner>();
+builder.Services.AddSingleton<IProcessingWorkItemHandler<AppliedTicketQueueItemRecord>, ApplierTicketHandler>();
+builder.Services.AddSingleton<ProcessingQueueRunner<AppliedTicketQueueItemRecord>>();
+builder.Services.AddHostedService<ProcessingHostedService<AppliedTicketQueueItemRecord>>();
 
 builder.Services.AddSingleton<PlannerWorkQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannerWorkQueue>());

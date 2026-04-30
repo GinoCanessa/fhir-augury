@@ -68,6 +68,78 @@ public sealed class PlannerReadOnlyDatabase : SourceDatabase
         return rows;
     }
 
+    /// <summary>
+    /// Returns the source ticket id for a given ticket key, used to populate the
+    /// agent-CLI <c>SourceTicketId</c> environment variable.
+    /// </summary>
+    public string? GetSourceTicketId(string ticketKey)
+    {
+        EnsureFileExists();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT Id FROM jira_processing_source_tickets WHERE Key = @key LIMIT 1";
+        command.Parameters.AddWithValue("@key", ticketKey);
+        object? result = command.ExecuteScalar();
+        return result is string s ? s : null;
+    }
+
+    /// <summary>Per-(ticket) planned repos.</summary>
+    public IReadOnlyList<PlannedRepoView> ListPlannedRepos(string ticketKey)
+    {
+        EnsureFileExists();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT Id, IssueKey, RepoKey, RepoRevision, Justification
+            FROM planned_ticket_repos
+            WHERE IssueKey = @key
+            ORDER BY RepoKey ASC
+            """;
+        command.Parameters.AddWithValue("@key", ticketKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<PlannedRepoView> rows = [];
+        while (reader.Read())
+        {
+            rows.Add(new PlannedRepoView(
+                Id: reader.GetString(0),
+                IssueKey: reader.GetString(1),
+                RepoKey: reader.GetString(2),
+                RepoRevision: reader.IsDBNull(3) ? null : reader.GetString(3),
+                Justification: reader.IsDBNull(4) ? string.Empty : reader.GetString(4)));
+        }
+        return rows;
+    }
+
+    /// <summary>Per-(ticket, repo) planned repo changes, ordered by ChangeSequence.</summary>
+    public IReadOnlyList<PlannedRepoChangeView> ListPlannedRepoChanges(string ticketKey, string repoKey)
+    {
+        EnsureFileExists();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT Id, IssueKey, TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle
+            FROM planned_ticket_repo_changes
+            WHERE IssueKey = @key AND RepoKey = @repo
+            ORDER BY ChangeSequence ASC
+            """;
+        command.Parameters.AddWithValue("@key", ticketKey);
+        command.Parameters.AddWithValue("@repo", repoKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<PlannedRepoChangeView> rows = [];
+        while (reader.Read())
+        {
+            rows.Add(new PlannedRepoChangeView(
+                Id: reader.GetString(0),
+                IssueKey: reader.GetString(1),
+                TicketRepoId: reader.GetString(2),
+                RepoKey: reader.GetString(3),
+                ChangeSequence: reader.GetInt32(4),
+                FilePath: reader.GetString(5),
+                ChangeTitle: reader.IsDBNull(6) ? string.Empty : reader.GetString(6)));
+        }
+        return rows;
+    }
+
     private void EnsureFileExists()
     {
         if (!File.Exists(DatabasePath))
@@ -97,3 +169,21 @@ public readonly record struct PlannerCompletedTicketView(
     string Type,
     string? CompletionId,
     DateTimeOffset? CompletedAt);
+
+/// <summary>Projection of a single planned-ticket repo row.</summary>
+public sealed record PlannedRepoView(
+    string Id,
+    string IssueKey,
+    string RepoKey,
+    string? RepoRevision,
+    string Justification);
+
+/// <summary>Projection of a single planned-ticket repo-change row.</summary>
+public sealed record PlannedRepoChangeView(
+    string Id,
+    string IssueKey,
+    string TicketRepoId,
+    string RepoKey,
+    int ChangeSequence,
+    string FilePath,
+    string ChangeTitle);
