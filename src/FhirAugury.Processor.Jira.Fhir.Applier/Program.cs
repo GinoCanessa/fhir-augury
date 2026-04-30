@@ -2,12 +2,12 @@ using FhirAugury.Common.OpenApi;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
-using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Configuration;
-using FhirAugury.Processing.Jira.Common.Filtering;
-using FhirAugury.Processing.Jira.Common.Hosting;
 using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
+using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
+using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
@@ -34,6 +34,17 @@ builder.Services.AddAuguryOpenApi(o =>
     o.Description = "Jira FHIR ticket applier processor that drives per-(ticket, repo) agent invocations against worktrees, runs the repo build, diffs output against a baseline, and locally commits.";
 });
 
+builder.Services.AddOptions<ProcessingServiceOptions>()
+    .Bind(builder.Configuration.GetSection(ProcessingServiceOptions.SectionName))
+    .Validate(options => !options.Validate().Any(), "Processing configuration is invalid.")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<JiraProcessingOptions>()
+    .Bind(builder.Configuration.GetSection(JiraProcessingOptions.SectionName))
+    .Configure(ApplierJiraProcessingDefaults.Apply)
+    .Validate(options => !ApplierJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the applier.")
+    .ValidateOnStart();
+
 builder.Services.AddOptions<ApplierOptions>()
     .Bind(builder.Configuration.GetSection(ApplierOptions.SectionName))
     .Validate(options => !options.Validate().Any(), "Processing:Applier configuration is invalid.")
@@ -42,18 +53,7 @@ builder.Services.AddOptions<ApplierOptions>()
 builder.Services.AddOptions<ApplierAuthOptions>()
     .Bind(builder.Configuration.GetSection(ApplierAuthOptions.SectionName));
 
-builder.Services.AddJiraProcessing(
-    builder.Configuration,
-    ApplierJiraProcessingDefaults.Apply,
-    new JiraProcessingFilterDefaults
-    {
-        TicketStatusesToProcess = ["Resolved - change required"],
-        TicketTypesToProcess = ["Change Request", "Technical Correction"],
-    });
-
-builder.Services.AddOptions<JiraProcessingOptions>()
-    .Validate(options => !ApplierJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the applier.")
-    .ValidateOnStart();
+builder.Services.AddSingleton<ProcessingLifecycleService>();
 
 builder.Services.AddSingleton(sp =>
 {
@@ -66,10 +66,24 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<ApplierDatabase>());
 
+builder.Services.AddSingleton(sp =>
+{
+    ApplierOptions options = sp.GetRequiredService<IOptions<ApplierOptions>>().Value;
+    return new PlannerReadOnlyDatabase(
+        Path.GetFullPath(options.PlannerDatabasePath),
+        sp.GetRequiredService<ILogger<PlannerReadOnlyDatabase>>());
+});
+
+builder.Services.AddSingleton<AppliedTicketQueueItemStore>();
+builder.Services.AddSingleton<IProcessingWorkItemStore<AppliedTicketQueueItemRecord>>(sp => sp.GetRequiredService<AppliedTicketQueueItemStore>());
+
+builder.Services.AddSingleton<PlannerWorkQueue>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannerWorkQueue>());
+
 WebApplication app = builder.Build();
 
 app.MapDefaultEndpoints();
-app.MapJiraProcessingTicketEndpoints();
+app.MapProcessingEndpoints<AppliedTicketQueueItemRecord>();
 app.MapControllers();
 app.MapAuguryOpenApi();
 
