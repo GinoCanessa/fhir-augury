@@ -9,6 +9,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
+using FhirAugury.Processor.Jira.Fhir.Applier.Push;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
@@ -90,6 +91,7 @@ builder.Services.AddSingleton<GitWorktreeCommitService>();
 
 builder.Services.AddSingleton<JiraAgentCommandRenderer>();
 builder.Services.AddSingleton<IJiraAgentCliRunner, JiraAgentCliRunner>();
+builder.Services.AddSingleton<IGitPushService, GitPushService>();
 builder.Services.AddSingleton<IProcessingWorkItemHandler<AppliedTicketQueueItemRecord>, ApplierTicketHandler>();
 builder.Services.AddSingleton<ProcessingQueueRunner<AppliedTicketQueueItemRecord>>();
 builder.Services.AddHostedService<ProcessingHostedService<AppliedTicketQueueItemRecord>>();

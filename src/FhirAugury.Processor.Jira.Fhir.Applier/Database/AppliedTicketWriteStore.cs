@@ -168,6 +168,54 @@ public sealed class AppliedTicketWriteStore
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct));
     }
 
+    public async Task<IReadOnlyList<AppliedTicketRepoRecord>> ListAppliedTicketReposAsync(string ticketKey, CancellationToken ct)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM applied_ticket_repos WHERE IssueKey = @key ORDER BY RepoKey";
+        command.Parameters.AddWithValue("@key", ticketKey);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        List<AppliedTicketRepoRecord> rows = [];
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(new AppliedTicketRepoRecord
+            {
+                RowId = reader.GetInt32(reader.GetOrdinal("RowId")),
+                Id = reader.GetString(reader.GetOrdinal("Id")),
+                IssueKey = reader.GetString(reader.GetOrdinal("IssueKey")),
+                RepoKey = reader.GetString(reader.GetOrdinal("RepoKey")),
+                BaselineCommitSha = reader.GetString(reader.GetOrdinal("BaselineCommitSha")),
+                BranchName = reader.IsDBNull(reader.GetOrdinal("BranchName")) ? null : reader.GetString(reader.GetOrdinal("BranchName")),
+                CommitSha = reader.IsDBNull(reader.GetOrdinal("CommitSha")) ? null : reader.GetString(reader.GetOrdinal("CommitSha")),
+                Outcome = reader.GetString(reader.GetOrdinal("Outcome")),
+                ErrorSummary = reader.IsDBNull(reader.GetOrdinal("ErrorSummary")) ? null : reader.GetString(reader.GetOrdinal("ErrorSummary")),
+                PushState = reader.GetString(reader.GetOrdinal("PushState")),
+                PushedAt = reader.IsDBNull(reader.GetOrdinal("PushedAt")) ? null : DateTimeOffset.Parse(reader.GetString(reader.GetOrdinal("PushedAt"))),
+                PushedCommitSha = reader.IsDBNull(reader.GetOrdinal("PushedCommitSha")) ? null : reader.GetString(reader.GetOrdinal("PushedCommitSha")),
+                AppliedAt = DateTimeOffset.Parse(reader.GetString(reader.GetOrdinal("AppliedAt"))),
+            });
+        }
+        return rows;
+    }
+
+    public async Task UpdatePushStateAsync(string repoRowId, string pushState, DateTimeOffset? pushedAt, string? pushedCommitSha, CancellationToken ct)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE applied_ticket_repos
+            SET PushState = @push,
+                PushedAt = @pushAt,
+                PushedCommitSha = @pushSha
+            WHERE Id = @id
+            """;
+        command.Parameters.AddWithValue("@push", pushState);
+        command.Parameters.AddWithValue("@pushAt", (object?)pushedAt?.ToString("O") ?? DBNull.Value);
+        command.Parameters.AddWithValue("@pushSha", (object?)pushedCommitSha ?? DBNull.Value);
+        command.Parameters.AddWithValue("@id", repoRowId);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     private static async Task DeleteWhere(SqliteConnection connection, SqliteTransaction transaction, string table, string column, string value, CancellationToken ct)
     {
         await using SqliteCommand command = connection.CreateCommand();
