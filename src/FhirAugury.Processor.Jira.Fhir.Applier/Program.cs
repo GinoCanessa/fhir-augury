@@ -8,6 +8,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
+using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
@@ -77,8 +78,17 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<AppliedTicketQueueItemStore>();
 builder.Services.AddSingleton<IProcessingWorkItemStore<AppliedTicketQueueItemRecord>>(sp => sp.GetRequiredService<AppliedTicketQueueItemStore>());
 
+builder.Services.AddSingleton<RepoBaselineStore>();
+builder.Services.AddSingleton<RepoLockManager>();
+builder.Services.AddSingleton<IGitProcessRunner, GitProcessRunner>();
+builder.Services.AddSingleton<BuildCommandRunner>();
+builder.Services.AddSingleton<RepoWorkspaceManager>();
+
 builder.Services.AddSingleton<PlannerWorkQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannerWorkQueue>());
+
+builder.Services.AddSingleton<BaselineSyncService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<BaselineSyncService>());
 
 WebApplication app = builder.Build();
 
