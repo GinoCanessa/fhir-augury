@@ -11,6 +11,14 @@ public abstract class JiraTicketDiscoveryClientBase(
     IOptions<JiraProcessingOptions> optionsAccessor,
     JiraLocalProcessingRequestFactory requestFactory) : IJiraTicketDiscoveryClient
 {
+    /// <summary>
+    /// Page size used when paginating local-processing list responses.
+    /// Must match
+    /// <c>FhirAugury.Source.Jira.Indexing.JiraLocalProcessingQueryBuilder.DefaultLimit</c>;
+    /// the server clamps each response to this many rows.
+    /// </summary>
+    private const int PageSize = 500;
+
     private readonly JiraProcessingOptions _options = optionsAccessor.Value;
 
     protected abstract string LocalProcessingTicketsPath { get; }
@@ -19,12 +27,28 @@ public abstract class JiraTicketDiscoveryClientBase(
 
     public async Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct)
     {
-        JiraLocalProcessingListRequest request = requestFactory.CreateListRequest(filters);
         string path = $"{LocalProcessingTicketsPath}?type={Uri.EscapeDataString(filters.SourceTicketShape)}";
-        using HttpResponseMessage response = await httpClient.PostAsJsonAsync(path, request, ct);
-        response.EnsureSuccessStatusCode();
-        JiraLocalProcessingListResponse? payload = await response.Content.ReadFromJsonAsync<JiraLocalProcessingListResponse>(cancellationToken: ct);
-        return payload?.Results ?? [];
+        List<JiraIssueSummaryEntry> aggregate = [];
+        for (int offset = 0; ; offset += PageSize)
+        {
+            JiraLocalProcessingListRequest request = requestFactory.CreateListRequest(filters, limit: PageSize, offset: offset);
+            using HttpResponseMessage response = await httpClient.PostAsJsonAsync(path, request, ct);
+            response.EnsureSuccessStatusCode();
+            JiraLocalProcessingListResponse? payload = await response.Content.ReadFromJsonAsync<JiraLocalProcessingListResponse>(cancellationToken: ct);
+            IReadOnlyList<JiraIssueSummaryEntry>? pageResults = payload?.Results;
+            if (pageResults is null)
+            {
+                break;
+            }
+
+            aggregate.AddRange(pageResults);
+            if (pageResults.Count < PageSize)
+            {
+                break;
+            }
+        }
+
+        return aggregate;
     }
 
     public async Task<JiraIssueSummaryEntry?> GetTicketAsync(string key, string sourceTicketShape, CancellationToken ct)
