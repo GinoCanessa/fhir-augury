@@ -8,6 +8,7 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Jira.Common.Tests.Hosting;
@@ -28,6 +29,17 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(provider.GetRequiredService<JiraAgentCommandRenderer>());
         Assert.NotNull(provider.GetRequiredService<IJiraAgentCliRunner>());
         Assert.NotNull(provider.GetRequiredService<IJiraTicketDiscoveryClient>());
+    }
+
+    [Fact]
+    public void AddJiraProcessing_RegistersJiraTicketSyncWorkerAsHostedService()
+    {
+        ServiceProvider provider = CreateServices().BuildServiceProvider();
+
+        JiraTicketSyncWorker worker = provider.GetRequiredService<JiraTicketSyncWorker>();
+        Assert.NotNull(worker);
+        Assert.Same(worker, provider.GetRequiredService<JiraTicketSyncWorker>());
+        Assert.Contains(provider.GetServices<IHostedService>(), s => ReferenceEquals(s, worker));
     }
 
     [Fact]

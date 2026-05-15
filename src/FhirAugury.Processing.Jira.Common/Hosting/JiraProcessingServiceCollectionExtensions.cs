@@ -30,6 +30,10 @@ public static class JiraProcessingServiceCollectionExtensions
     /// app.MapProcessingEndpoints&lt;JiraProcessingSourceTicketRecord&gt;();
     /// app.MapJiraProcessingTicketEndpoints();
     /// </code>
+    /// Registering this layer also wires a <see cref="JiraTicketSyncWorker"/> hosted
+    /// service that periodically refreshes the local processing work-item queue from
+    /// the Jira source on the <see cref="ProcessingServiceOptions.SyncSchedule"/>
+    /// cadence, so concrete processors do not need to add their own feeder.
     /// Concrete processors remain responsible for defining output tables, deleting/upserting prior output for the ticket,
     /// and adding extension tokens such as {repoFilters}.
     /// </summary>
@@ -81,6 +85,8 @@ public static class JiraProcessingServiceCollectionExtensions
                 : sp.GetRequiredService<DirectJiraTicketDiscoveryClient>();
         });
         services.AddSingleton<JiraTicketSyncService>();
+        services.AddSingleton<JiraTicketSyncWorker>();
+        services.AddHostedService(sp => sp.GetRequiredService<JiraTicketSyncWorker>());
         return services;
     }
 
