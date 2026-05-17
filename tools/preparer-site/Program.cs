@@ -52,6 +52,29 @@ public static class Program
             return 1;
         }
 
+        ResolvedFilters? filters;
+        try
+        {
+            filters = await FilterResolver.TryResolveAsync(resolvedDb, options, Console.Error, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (SqliteException ex)
+        {
+            await Console.Error.WriteLineAsync(
+                $"Database schema error while resolving filters from {resolvedDb}: {ex.Message}")
+                .ConfigureAwait(false);
+            return 1;
+        }
+
+        if (filters is null)
+        {
+            return 1;
+        }
+
+        EchoResolvedFilter("--spec", options.FilterSpec, filters.Specification);
+        EchoResolvedFilter("--project", options.FilterProject, filters.Project);
+        EchoResolvedFilter("--wg", options.FilterWorkGroup, filters.WorkGroup);
+
         byte[] dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
 
         SiteEmitter.Emit(resolvedOut, title, dbBytes);
@@ -62,6 +85,18 @@ public static class Program
             $"(DB inlined: {inlinedMb:0.0} MB).");
 
         return 0;
+    }
+
+    private static void EchoResolvedFilter(string flag, string? raw, string? canonical)
+    {
+        if (raw is null || canonical is null)
+        {
+            return;
+        }
+        if (!string.Equals(raw, canonical, StringComparison.Ordinal))
+        {
+            Console.WriteLine($"Resolved {flag} '{raw}' → '{canonical}'.");
+        }
     }
 
     private static async Task<long> CountPreparedTicketsAsync(string dbPath)
