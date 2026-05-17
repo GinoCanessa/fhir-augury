@@ -79,14 +79,49 @@ public static class Program
 
         // Phase 6 will substitute a pruned temp-DB path here when --prune is set.
         string sourceDbForInline = resolvedDb;
-        byte[] dbBytes = await File.ReadAllBytesAsync(sourceDbForInline).ConfigureAwait(false);
+        string? prunedTempPath = null;
+        long? prunedSize = null;
+        try
+        {
+            if (prune)
+            {
+                prunedTempPath = Path.Combine(
+                    Path.GetTempPath(),
+                    "preparer-site-pruned-" + Guid.NewGuid().ToString("N") + ".db");
+                DbPruner.Prune(resolvedDb, prunedTempPath);
+                prunedSize = new FileInfo(prunedTempPath).Length;
+                sourceDbForInline = prunedTempPath;
+            }
 
-        SiteEmitter.Emit(resolvedOut, title, dbBytes);
+            byte[] dbBytes = await File.ReadAllBytesAsync(sourceDbForInline).ConfigureAwait(false);
 
-        double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
-        Console.WriteLine(
-            $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
-            $"(DB inlined: {inlinedMb:0.0} MB{(prune ? "; prune=on (Phase 6 pending)" : string.Empty)}).");
+            SiteEmitter.Emit(resolvedOut, title, dbBytes);
+
+            double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
+            Console.WriteLine(
+                $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
+                $"(DB inlined: {inlinedMb:0.0} MB{(prune ? "; pruned" : string.Empty)}).");
+
+            if (prune && prunedSize is long pruned)
+            {
+                long sourceSize = new FileInfo(resolvedDb).Length;
+                double sourceMb = sourceSize / 1024.0 / 1024.0;
+                double prunedMb = pruned / 1024.0 / 1024.0;
+                double savedPct = sourceSize > 0
+                    ? (1.0 - (double)pruned / sourceSize) * 100.0
+                    : 0.0;
+                Console.WriteLine(
+                    $"Pruned {sourceMb:0.0} MB → {prunedMb:0.0} MB (saved {savedPct:0.0}%).");
+            }
+        }
+        finally
+        {
+            if (prunedTempPath is not null && File.Exists(prunedTempPath))
+            {
+                try { File.Delete(prunedTempPath); }
+                catch (IOException) { /* best-effort cleanup */ }
+            }
+        }
 
         return 0;
     }
