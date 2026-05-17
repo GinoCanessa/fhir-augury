@@ -167,6 +167,8 @@ public static class Program
         string? filterWorkGroup = null;
         string? jiraSourceUrl = null;
         string? jiraSourceDbPath = null;
+        string? orchestratorAddress = null;
+        bool noHydrate = false;
         bool force = false;
         bool help = false;
 
@@ -207,6 +209,13 @@ public static class Program
                     if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
                     jiraSourceDbPath = args[++i];
                     break;
+                case "--orchestrator":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    orchestratorAddress = args[++i];
+                    break;
+                case "--no-hydrate":
+                    noHydrate = true;
+                    break;
                 case "--force":
                     force = true;
                     break;
@@ -230,12 +239,14 @@ public static class Program
             FilterWorkGroup: filterWorkGroup,
             JiraSourceUrl: jiraSourceUrl,
             JiraSourceDbPath: jiraSourceDbPath,
+            OrchestratorAddress: orchestratorAddress,
+            NoHydrate: noHydrate,
             Force: force,
             Help: help);
         error = null;
         return true;
 
-        static CliOptions Default() => new(null, null, DefaultTitle, null, null, null, null, null, false, false);
+        static CliOptions Default() => new(null, null, DefaultTitle, null, null, null, null, null, null, false, false, false);
     }
 
     private static void WriteUsage(TextWriter w)
@@ -243,7 +254,8 @@ public static class Program
         w.WriteLine();
         w.WriteLine("Usage: preparer-site --db <path> [--out <path>] [--title <string>]");
         w.WriteLine("                     [--spec <name>] [--project <key>] [--wg <name|code>]");
-        w.WriteLine("                     [--jira-source <url>] [--jira-source-db <path>] [--force]");
+        w.WriteLine("                     [--jira-source <url>] [--jira-source-db <path>]");
+        w.WriteLine("                     [--orchestrator <url>] [--no-hydrate] [--force]");
         w.WriteLine();
         w.WriteLine("  --db <path>            Path to the preparer SQLite database (required).");
         w.WriteLine("  --out <path>           Output directory (default: ./cache/jira-preparer-site).");
@@ -254,6 +266,9 @@ public static class Program
         w.WriteLine("  --jira-source <url>    Base URL of the Jira source service for --wg code resolution");
         w.WriteLine("                         (default: http://localhost:5160).");
         w.WriteLine("  --jira-source-db <path> Fallback Jira source SQLite DB when the HTTP service is unreachable.");
+        w.WriteLine("  --orchestrator <url>   Base URL of the orchestrator used for opportunistic hydration");
+        w.WriteLine($"                         (default: {HydrationHttpClient.DefaultOrchestratorAddress}).");
+        w.WriteLine("  --no-hydrate           Skip auto-hydration; fail fast if the DB lacks hydration rows.");
         w.WriteLine("  --force                Overwrite an output directory produced with a different filter set.");
         w.WriteLine("  --help                 Show this help.");
     }

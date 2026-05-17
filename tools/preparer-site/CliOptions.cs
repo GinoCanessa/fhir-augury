@@ -9,5 +9,7 @@ internal sealed record CliOptions(
     string? FilterWorkGroup,
     string? JiraSourceUrl,
     string? JiraSourceDbPath,
+    string? OrchestratorAddress,
+    bool NoHydrate,
     bool Force,
     bool Help);
