@@ -25,6 +25,17 @@ ticket-prep handler completes each ticket; the site renders directly
 from them with no additional fetch. There is one canonical DB shape;
 no opt-in slimming is offered.
 
+### Auto-hydration
+
+On first run against a DB whose `prepared_ticket_hydration` table is
+missing or empty, `preparer-site` opportunistically hydrates the DB
+by calling the orchestrator at `--orchestrator <url>` (default
+`http://localhost:5150`) and writing results back to the source DB
+in place. Progress is reported on stderr as
+`[info] Hydrating N/T (eta …)` lines. Pass `--no-hydrate` to skip
+this step; the tool will then fail fast with an actionable error
+rather than producing an empty `Available values:` list.
+
 ## What this is not
 
 Not a server, not a daemon, not a long-running process. Not a
@@ -39,9 +50,15 @@ sibling tool under `tools/`).
 dotnet run --project tools/preparer-site -- \
   --db ./cache/jira-preparer.db \
   --out ./cache/jira-preparer-site \
-  --spec FHIR \
+  --spec 'FHIR Core (FHIR)' \
   --title "Preparer Report — May 2026"
 ```
+
+`--spec` matches the hydrated `Specification` value (Jira
+`customfield_11302`, e.g. `'FHIR Core (FHIR)'` or `fhir-extensions`);
+`--project` matches the Jira project key (e.g. `FHIR`). The two are
+distinct: a ticket in the `FHIR` Jira project may have any
+`Specification` value, including blank.
 
 Open `cache/jira-preparer-site/index.html` in a Chromium-family
 browser. You should see a landing page titled
@@ -58,11 +75,13 @@ list view links into the per-ticket page.
 | `--db <path>` | *required* | Path to the preparer SQLite DB. |
 | `--out <path>` | `./cache/jira-preparer-site` | Output directory; overwritten subject to the safety rail (see below). |
 | `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
-| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` matches (case-insensitive). |
+| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` (Jira `customfield_11302`) matches (case-insensitive). |
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
 | `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the preparer-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
 | `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
 | `--jira-source-db <path>` | — | Fallback Jira source SQLite DB used when the HTTP service is unreachable. |
+| `--orchestrator <url>` | `http://localhost:5150` | Base URL of the orchestrator used for opportunistic hydration (see [Auto-hydration](#auto-hydration)). |
+| `--no-hydrate` | `false` | Skip auto-hydration; fail fast (with an actionable stderr message) if the DB lacks hydration rows. |
 | `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
 | `--help` | — | Print usage and exit non-zero. |
 
