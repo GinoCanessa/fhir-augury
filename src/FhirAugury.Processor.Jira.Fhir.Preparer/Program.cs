@@ -1,4 +1,5 @@
 using FhirAugury.Common.OpenApi;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
@@ -51,6 +52,25 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, FhirTicketPrepHandler>();
+
+builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
+{
+    ProcessingServiceOptions processingOptions = sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+    JiraProcessingOptions jiraOptions = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+    string address = !string.IsNullOrWhiteSpace(processingOptions.OrchestratorAddress)
+        ? processingOptions.OrchestratorAddress
+        : !string.IsNullOrWhiteSpace(jiraOptions.OrchestratorAddress)
+            ? jiraOptions.OrchestratorAddress
+            : jiraOptions.JiraSourceAddress;
+    if (string.IsNullOrWhiteSpace(address))
+    {
+        // Best-effort default; with no configured address every hydration row will
+        // land as "unresolved" with an explanatory reason — see PreparedTicketHydrator.
+        address = "http://localhost";
+    }
+
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
 
 builder.Services.AddSingleton(sp =>
 {
