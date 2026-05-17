@@ -22,6 +22,38 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedTicketRelatedJiraRecord.CreateTable(connection);
         PreparedTicketRelatedZulipRecord.CreateTable(connection);
         PreparedTicketRelatedGitHubRecord.CreateTable(connection);
+        PreparedTicketHydrationRecord.CreateTable(connection);
+        PreparedJiraHydrationRecord.CreateTable(connection);
+        PreparedZulipHydrationRecord.CreateTable(connection);
+        PreparedGitHubHydrationRecord.CreateTable(connection);
+        PreparedRepoHydrationRecord.CreateTable(connection);
+        PreparedTicketJiraXrefRecord.CreateTable(connection);
+        EnsureHydrationCompositeUniqueIndexes(connection);
+    }
+
+    /// <summary>
+    /// CsLightDbGen does not currently expose a way to declare a composite UNIQUE index
+    /// (the <c>[LdgSQLiteIndex]</c> attribute has no Unique property), so the per-ticket
+    /// uniqueness contract for each hydration table is enforced via follow-on
+    /// <c>CREATE UNIQUE INDEX IF NOT EXISTS</c> statements, mirroring the
+    /// <see cref="JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex"/> pattern.
+    /// </summary>
+    private static void EnsureHydrationCompositeUniqueIndexes(SqliteConnection connection)
+    {
+        string[] statements =
+        [
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_jira_hydration_ticket_jira ON prepared_jira_hydration(TicketKey, JiraKey);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_zulip_hydration_ticket_thread ON prepared_zulip_hydration(TicketKey, ZulipThreadId);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_github_hydration_ticket_item ON prepared_github_hydration(TicketKey, GitHubItemId);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_repo_hydration_ticket_repo ON prepared_repo_hydration(TicketKey, Repo);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_jira_xref_ticket_jira_source ON prepared_ticket_jira_xref(TicketKey, JiraKey, Source);",
+        ];
+        foreach (string sql in statements)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
     }
 
     public async Task<PreparedTicketSaveResult> SavePreparedTicketAsync(PreparedTicketPayload payload, CancellationToken ct = default)

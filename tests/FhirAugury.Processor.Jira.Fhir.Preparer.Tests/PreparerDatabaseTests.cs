@@ -24,6 +24,33 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
+    public void Initialize_CreatesHydrationTablesAndIndexes()
+    {
+        using TestDatabase database = CreateDatabase();
+
+        Assert.True(Exists(database, "table", "prepared_ticket_hydration"));
+        Assert.True(Exists(database, "table", "prepared_jira_hydration"));
+        Assert.True(Exists(database, "table", "prepared_zulip_hydration"));
+        Assert.True(Exists(database, "table", "prepared_github_hydration"));
+        Assert.True(Exists(database, "table", "prepared_repo_hydration"));
+        Assert.True(Exists(database, "table", "prepared_ticket_jira_xref"));
+
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_hydration"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_jira_hydration"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_zulip_hydration"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_github_hydration"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_repo_hydration"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_jira_xref"));
+
+        Assert.True(HasUniqueIndexOver(database, "prepared_ticket_hydration", "TicketKey"));
+        Assert.True(HasUniqueIndexOverColumns(database, "prepared_jira_hydration", ["TicketKey", "JiraKey"]));
+        Assert.True(HasUniqueIndexOverColumns(database, "prepared_zulip_hydration", ["TicketKey", "ZulipThreadId"]));
+        Assert.True(HasUniqueIndexOverColumns(database, "prepared_github_hydration", ["TicketKey", "GitHubItemId"]));
+        Assert.True(HasUniqueIndexOverColumns(database, "prepared_repo_hydration", ["TicketKey", "Repo"]));
+        Assert.True(HasUniqueIndexOverColumns(database, "prepared_ticket_jira_xref", ["TicketKey", "JiraKey", "Source"]));
+    }
+
+    [Fact]
     public async Task SavePreparedTicket_InsertsParentAndAllRelatedRows()
     {
         using TestDatabase database = CreateDatabase();
@@ -186,6 +213,9 @@ public sealed class PreparerDatabaseTests
     }
 
     private static bool HasUniqueIndexOver(TestDatabase database, string table, string column)
+        => HasUniqueIndexOverColumns(database, table, [column]);
+
+    private static bool HasUniqueIndexOverColumns(TestDatabase database, string table, IReadOnlyList<string> expectedColumns)
     {
         using SqliteConnection connection = database.Database.OpenConnection();
         using SqliteCommand listCommand = connection.CreateCommand();
@@ -209,18 +239,25 @@ public sealed class PreparerDatabaseTests
             using SqliteCommand info = connection.CreateCommand();
             info.CommandText = $"PRAGMA index_info({name})";
             using SqliteDataReader r = info.ExecuteReader();
-            int columnCount = 0;
-            bool matchesColumn = false;
+            List<string> indexColumns = [];
             while (r.Read())
             {
-                columnCount++;
-                string colName = r.GetString(r.GetOrdinal("name"));
-                if (string.Equals(colName, column, StringComparison.Ordinal))
+                indexColumns.Add(r.GetString(r.GetOrdinal("name")));
+            }
+            if (indexColumns.Count != expectedColumns.Count)
+            {
+                continue;
+            }
+            bool allMatch = true;
+            for (int i = 0; i < indexColumns.Count; i++)
+            {
+                if (!string.Equals(indexColumns[i], expectedColumns[i], StringComparison.Ordinal))
                 {
-                    matchesColumn = true;
+                    allMatch = false;
+                    break;
                 }
             }
-            if (columnCount == 1 && matchesColumn)
+            if (allMatch)
             {
                 return true;
             }
