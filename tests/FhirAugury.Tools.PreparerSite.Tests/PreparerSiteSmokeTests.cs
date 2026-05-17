@@ -265,6 +265,41 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
+    public async Task Trim_OnLegacyDbMissingHydrationTables_BackfillsAndSucceeds()
+    {
+        using TempScope scope = new();
+        await LegacyPreparerTestDb.SeedAsync(scope.DbPath,
+        [
+            new PreparerTestDb.SourceTicketSeed("FHIR-1001", Project: "FHIR"),
+            new PreparerTestDb.SourceTicketSeed("OTHER-2001", Project: "OTHER"),
+        ]);
+
+        ResolvedFilters filters = new(Specification: null, Project: "FHIR", WorkGroup: null);
+
+        PreparerDbTrimmer.TrimResult result = await PreparerDbTrimmer.TrimAsync(scope.DbPath, filters, default);
+
+        Assert.Equal(1, result.SurvivingTicketCount);
+        Assert.NotEmpty(result.DbBytes);
+
+        string trimmedPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            await File.WriteAllBytesAsync(trimmedPath, result.DbBytes);
+            await using SqliteConnection conn = new($"Data Source={trimmedPath};Mode=ReadOnly");
+            await conn.OpenAsync();
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
+            long count = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+            Assert.Equal(1, count);
+        }
+        finally
+        {
+            try { File.Delete(trimmedPath); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
     public async Task Emit_FailsCleanly_WhenPruneFlagPassed()
     {
         using TempScope scope = new();
