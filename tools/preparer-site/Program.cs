@@ -75,6 +75,19 @@ public static class Program
         EchoResolvedFilter("--project", options.FilterProject, filters.Project);
         EchoResolvedFilter("--wg", options.FilterWorkGroup, filters.WorkGroup);
 
+        if (Directory.Exists(resolvedOut) && !options.Force)
+        {
+            MetaFilterSet? existing = OutputDirGuard.TryReadExistingMarker(resolvedOut);
+            if (existing is not null && !OutputDirGuard.FilterSetsMatch(existing, filters))
+            {
+                await Console.Error.WriteLineAsync(
+                    $"Output directory '{resolvedOut}' was produced with a different filter set. " +
+                    "Pass --force to overwrite, or choose a different --out.")
+                    .ConfigureAwait(false);
+                return 1;
+            }
+        }
+
         byte[] dbBytes;
         long? filteredCount = null;
         if (filters.HasAnyFilter)
@@ -90,6 +103,7 @@ public static class Program
         }
 
         SiteEmitter.Emit(resolvedOut, title, dbBytes);
+        OutputDirGuard.WriteMarker(resolvedOut, filters, DateTimeOffset.UtcNow);
 
         double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
         if (filteredCount is { } fc)

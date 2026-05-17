@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.PreparerSite.Tests;
 
+[Collection("ConsoleRedirect")]
 public sealed class PreparerSiteFilterTests
 {
     private sealed class TempScope : IDisposable
@@ -159,6 +160,128 @@ public sealed class PreparerSiteFilterTests
             Console.SetError(originalErr);
         }
         return (exit, capturedOut.ToString(), capturedErr.ToString());
+    }
+
+    [Fact]
+    public async Task Marker_FirstRun_WritesMetaFile_WithFilterSet()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit);
+
+        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        Assert.True(File.Exists(markerPath));
+        string json = await File.ReadAllTextAsync(markerPath);
+        Assert.Contains("\"project\": \"FHIR\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"spec\":", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"wg\":", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Marker_UnfilteredRun_WritesEmptyFiltersObject()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        Assert.True(File.Exists(markerPath));
+        string json = await File.ReadAllTextAsync(markerPath);
+        Assert.DoesNotContain("\"spec\":", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"project\":", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"wg\":", json, StringComparison.Ordinal);
+        Assert.Contains("\"filters\":", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Marker_RerunSameFilterSet_OverwritesWithoutForce()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit1, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit1);
+
+        (int exit2, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit2);
+    }
+
+    [Fact]
+    public async Task Marker_RerunDifferentFilterSet_RefusesWithoutForce_ExitsNonZero()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [
+                new("FHIR-1001", Project: "FHIR"),
+                new("CDS-1", Project: "CDS"),
+            ]);
+
+        (int exit1, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit1);
+
+        (int exit2, _, string stderr) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS");
+        Assert.NotEqual(0, exit2);
+        Assert.Contains("was produced with a different filter set", stderr, StringComparison.Ordinal);
+        Assert.Contains("--force", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Marker_RerunDifferentFilterSet_WithForce_Overwrites()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [
+                new("FHIR-1001", Project: "FHIR"),
+                new("CDS-1", Project: "CDS"),
+            ]);
+
+        (int exit1, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit1);
+
+        (int exit2, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS", "--force");
+        Assert.Equal(0, exit2);
+
+        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        string json = await File.ReadAllTextAsync(markerPath);
+        Assert.Contains("\"project\": \"CDS\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Marker_PreExistingDirNoMarker_OverwritesWithoutForce()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        Directory.CreateDirectory(scope.OutDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(scope.OutDir, "index.html"),
+            "<html>previously emitted, no marker</html>");
+
+        (int exit, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit);
+        Assert.True(File.Exists(Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName)));
     }
 
     private static byte[] ExtractInlinedDbBytes(string html)

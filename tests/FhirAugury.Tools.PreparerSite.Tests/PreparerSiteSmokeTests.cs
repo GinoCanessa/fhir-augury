@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Tools.PreparerSite.Tests;
 
+[Collection("ConsoleRedirect")]
 public sealed class PreparerSiteSmokeTests
 {
     private sealed class TempScope : IDisposable
