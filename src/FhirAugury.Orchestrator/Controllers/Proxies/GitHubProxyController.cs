@@ -105,6 +105,15 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> ListRepos(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "repos", Request, ct);
 
+    /// <summary>Get the details of a single GitHub repository by owner and name.</summary>
+    /// <param name="owner">Repository owner.</param>
+    /// <param name="name">Repository name.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("repos/{owner}/{name}")]
+    public Task<IActionResult> GetRepo(string owner, string name, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get,
+            $"repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(name)}", Request, ct);
+
     /// <summary>List the indexed git tags for a repository.</summary>
     /// <param name="owner">Repository owner.</param>
     /// <param name="name">Repository name.</param>
