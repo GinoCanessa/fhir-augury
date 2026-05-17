@@ -10,6 +10,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="FhirAugury.Tools.PreparerSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="web-assets\index.template.html" LogicalName="web-assets/index.template.html" />
+    <EmbeddedResource Include="web-assets\app.css" LogicalName="web-assets/app.css" />
+    <EmbeddedResource Include="web-assets\app.js" LogicalName="web-assets/app.js" />
+    <EmbeddedResource Include="web-assets\sql-wasm.js" LogicalName="web-assets/sql-wasm.js" />
   </ItemGroup>
 </Project>

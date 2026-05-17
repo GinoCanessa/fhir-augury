@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace FhirAugury.Tools.PreparerSite;
 
 public static class Program
@@ -56,13 +58,52 @@ public static class Program
         string resolvedDb = Path.GetFullPath(dbPath);
         string resolvedOut = Path.GetFullPath(outPath ?? Path.Combine(Directory.GetCurrentDirectory(), DefaultOutSubpath));
 
-        Console.WriteLine($"db:    {resolvedDb}");
-        Console.WriteLine($"out:   {resolvedOut}");
-        Console.WriteLine($"title: {title}");
-        Console.WriteLine($"prune: {(prune ? "true" : "false")}");
+        if (!File.Exists(resolvedDb))
+        {
+            await Console.Error.WriteLineAsync($"Database file not found: {resolvedDb}").ConfigureAwait(false);
+            return 1;
+        }
 
-        await Task.CompletedTask.ConfigureAwait(false);
+        long preparedCount;
+        try
+        {
+            preparedCount = await CountPreparedTicketsAsync(resolvedDb).ConfigureAwait(false);
+        }
+        catch (SqliteException ex)
+        {
+            await Console.Error.WriteLineAsync(
+                $"Database schema error: cannot read 'prepared_tickets' from {resolvedDb}: {ex.Message}")
+                .ConfigureAwait(false);
+            return 1;
+        }
+
+        // Phase 6 will substitute a pruned temp-DB path here when --prune is set.
+        string sourceDbForInline = resolvedDb;
+        byte[] dbBytes = await File.ReadAllBytesAsync(sourceDbForInline).ConfigureAwait(false);
+
+        SiteEmitter.Emit(resolvedOut, title, dbBytes);
+
+        double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
+        Console.WriteLine(
+            $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
+            $"(DB inlined: {inlinedMb:0.0} MB{(prune ? "; prune=on (Phase 6 pending)" : string.Empty)}).");
+
         return 0;
+    }
+
+    private static async Task<long> CountPreparedTicketsAsync(string dbPath)
+    {
+        SqliteConnectionStringBuilder builder = new()
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+        };
+        await using SqliteConnection connection = new(builder.ConnectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        await using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT count(*) FROM prepared_tickets";
+        object? result = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+        return result is long l ? l : Convert.ToInt64(result);
     }
 
     private static void WriteUsage(TextWriter w)
@@ -77,3 +118,4 @@ public static class Program
         w.WriteLine("  --help            Show this help.");
     }
 }
+
