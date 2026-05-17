@@ -201,6 +201,12 @@ docker compose --profile jira-only up -d   # Single source
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
+## Local utilities
+
+| Utility | Project | Description |
+|---------|---------|-------------|
+| Preparer site | [`tools/preparer-site`](tools/preparer-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` into a self-contained static HTML review site (sql.js in the browser; opens from `file://`). |
+
 ## Discovery
 
 Every service publishes an OpenAPI 3.1 document at
