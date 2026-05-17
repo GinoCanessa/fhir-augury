@@ -9,50 +9,29 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        string? dbPath = null;
-        string? outPath = null;
-        string title = DefaultTitle;
-        bool help = false;
-
-        for (int i = 0; i < args.Length; i++)
+        if (!TryParseArgs(args, out CliOptions options, out string? parseError))
         {
-            switch (args[i])
-            {
-                case "--db" when i + 1 < args.Length:
-                    dbPath = args[++i];
-                    break;
-                case "--out" when i + 1 < args.Length:
-                    outPath = args[++i];
-                    break;
-                case "--title" when i + 1 < args.Length:
-                    title = args[++i];
-                    break;
-                case "--help":
-                case "-h":
-                    help = true;
-                    break;
-                default:
-                    await Console.Error.WriteLineAsync($"Unknown argument: {args[i]}").ConfigureAwait(false);
-                    WriteUsage(Console.Error);
-                    return 2;
-            }
+            await Console.Error.WriteLineAsync(parseError).ConfigureAwait(false);
+            WriteUsage(Console.Error);
+            return 2;
         }
 
-        if (help)
+        if (options.Help)
         {
             WriteUsage(Console.Error);
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(dbPath))
+        if (string.IsNullOrWhiteSpace(options.DbPath))
         {
             await Console.Error.WriteLineAsync("Missing required argument: --db <path>").ConfigureAwait(false);
             WriteUsage(Console.Error);
             return 1;
         }
 
-        string resolvedDb = Path.GetFullPath(dbPath);
-        string resolvedOut = Path.GetFullPath(outPath ?? Path.Combine(Directory.GetCurrentDirectory(), DefaultOutSubpath));
+        string resolvedDb = Path.GetFullPath(options.DbPath);
+        string resolvedOut = Path.GetFullPath(options.OutPath ?? Path.Combine(Directory.GetCurrentDirectory(), DefaultOutSubpath));
+        string title = options.Title;
 
         if (!File.Exists(resolvedDb))
         {
@@ -100,15 +79,105 @@ public static class Program
         return result is long l ? l : Convert.ToInt64(result);
     }
 
+    private static bool TryParseArgs(string[] args, out CliOptions options, out string? error)
+    {
+        string? dbPath = null;
+        string? outPath = null;
+        string title = DefaultTitle;
+        string? filterSpec = null;
+        string? filterProject = null;
+        string? filterWorkGroup = null;
+        string? jiraSourceUrl = null;
+        string? jiraSourceDbPath = null;
+        bool force = false;
+        bool help = false;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            string arg = args[i];
+            switch (arg)
+            {
+                case "--db":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    dbPath = args[++i];
+                    break;
+                case "--out":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    outPath = args[++i];
+                    break;
+                case "--title":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    title = args[++i];
+                    break;
+                case "--spec":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    filterSpec = args[++i];
+                    break;
+                case "--project":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    filterProject = args[++i];
+                    break;
+                case "--wg":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    filterWorkGroup = args[++i];
+                    break;
+                case "--jira-source":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    jiraSourceUrl = args[++i];
+                    break;
+                case "--jira-source-db":
+                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
+                    jiraSourceDbPath = args[++i];
+                    break;
+                case "--force":
+                    force = true;
+                    break;
+                case "--help":
+                case "-h":
+                    help = true;
+                    break;
+                default:
+                    options = Default();
+                    error = $"Unknown argument: {arg}";
+                    return false;
+            }
+        }
+
+        options = new CliOptions(
+            DbPath: dbPath,
+            OutPath: outPath,
+            Title: title,
+            FilterSpec: filterSpec,
+            FilterProject: filterProject,
+            FilterWorkGroup: filterWorkGroup,
+            JiraSourceUrl: jiraSourceUrl,
+            JiraSourceDbPath: jiraSourceDbPath,
+            Force: force,
+            Help: help);
+        error = null;
+        return true;
+
+        static CliOptions Default() => new(null, null, DefaultTitle, null, null, null, null, null, false, false);
+    }
+
     private static void WriteUsage(TextWriter w)
     {
         w.WriteLine();
         w.WriteLine("Usage: preparer-site --db <path> [--out <path>] [--title <string>]");
+        w.WriteLine("                     [--spec <name>] [--project <key>] [--wg <name|code>]");
+        w.WriteLine("                     [--jira-source <url>] [--jira-source-db <path>] [--force]");
         w.WriteLine();
-        w.WriteLine("  --db <path>       Path to the preparer SQLite database (required).");
-        w.WriteLine("  --out <path>      Output directory (default: ./cache/jira-preparer-site).");
-        w.WriteLine($"  --title <string>  Site title (default: \"{DefaultTitle}\").");
-        w.WriteLine("  --help            Show this help.");
+        w.WriteLine("  --db <path>            Path to the preparer SQLite database (required).");
+        w.WriteLine("  --out <path>           Output directory (default: ./cache/jira-preparer-site).");
+        w.WriteLine($"  --title <string>       Site title (default: \"{DefaultTitle}\").");
+        w.WriteLine("  --spec <name>          Filter to tickets whose hydrated specification matches (case-insensitive).");
+        w.WriteLine("  --project <key>        Filter to tickets in the given Jira project key (case-insensitive).");
+        w.WriteLine("  --wg <name|code>       Filter to tickets in the given workgroup; matches name, code, or clean name.");
+        w.WriteLine("  --jira-source <url>    Base URL of the Jira source service for --wg code resolution");
+        w.WriteLine("                         (default: http://localhost:5160).");
+        w.WriteLine("  --jira-source-db <path> Fallback Jira source SQLite DB when the HTTP service is unreachable.");
+        w.WriteLine("  --force                Overwrite an output directory produced with a different filter set.");
+        w.WriteLine("  --help                 Show this help.");
     }
 }
 
