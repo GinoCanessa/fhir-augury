@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing.Hydration;
+namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.Internal;
 
 /// <summary>
 /// Inline parser for the GitHub item-id shapes the preparer-hydrator handles.

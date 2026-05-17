@@ -1,12 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.Internal;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
-using FhirAugury.Processor.Jira.Fhir.Preparer.Processing.Hydration;
 using Microsoft.Extensions.Logging;
 
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
+namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 
 /// <summary>
 /// Post-agent hydration step that fans out to the orchestrator's typed
