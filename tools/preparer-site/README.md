@@ -28,3 +28,29 @@ browser.
 | `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and `<h1>`. |
 | `--prune` | off | Inline a slimmed copy of the DB (drops fields the SPA never queries). Implemented in Phase 6. |
 | `--help` | — | Print usage and exit non-zero. |
+
+## Vendored assets
+
+The site relies on a vendored copy of [sql.js](https://github.com/sql-js/sql.js)
+to load the embedded SQLite database in the browser. The bytes ship
+as embedded resources in the C# project and are copied into
+`<out>/assets/` on each run.
+
+- Release: [`sql-js/sql.js` v1.10.3](https://github.com/sql-js/sql.js/releases/tag/v1.10.3)
+- Asset: `sqljs-wasm.zip` (contains `sql-wasm.js` + `sql-wasm.wasm`)
+- License: MIT
+- SHA-256:
+  - `sql-wasm.js` &nbsp; `558a72c3ab3415d0e6d243cfd23f9d61543600d59054b4b7b8da3cd65f6b9fd4`
+  - `sql-wasm.wasm` `d7e61b828523001f26ce0b3f88dabcf6c12e5e6edf80eb4f08b26ac7b946ff88`
+
+To refresh: download `sqljs-wasm.zip` from the chosen release,
+extract `sql-wasm.js` and `sql-wasm.wasm` into
+`tools/preparer-site/web-assets/`, update the SHA-256 values above,
+and rebuild.
+
+## Browser compatibility
+
+Tested in Chromium-family browsers opened directly from `file://`.
+Safari may refuse to load WebAssembly from `file://`; if you hit that,
+serve the output directory over `python3 -m http.server` and open
+`http://localhost:8000/` instead.

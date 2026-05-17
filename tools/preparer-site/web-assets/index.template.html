@@ -9,12 +9,14 @@
 <body>
   <header>
     <h1><!-- __TITLE__ --></h1>
+    <nav id="breadcrumb"></nav>
   </header>
   <main id="app">
-    <p>Loading…</p>
+    <p class="loading">Loading…</p>
   </main>
-  <!-- __DB_BLOB__ -->
   <script src="assets/sql-wasm.js"></script>
+  <!-- __DB_BLOB__ -->
   <script defer src="assets/app.js"></script>
 </body>
 </html>
+

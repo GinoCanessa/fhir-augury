@@ -22,5 +22,6 @@
     <EmbeddedResource Include="web-assets\app.css" LogicalName="web-assets/app.css" />
     <EmbeddedResource Include="web-assets\app.js" LogicalName="web-assets/app.js" />
     <EmbeddedResource Include="web-assets\sql-wasm.js" LogicalName="web-assets/sql-wasm.js" />
+    <EmbeddedResource Include="web-assets\sql-wasm.wasm" LogicalName="web-assets/sql-wasm.wasm" />
   </ItemGroup>
 </Project>
