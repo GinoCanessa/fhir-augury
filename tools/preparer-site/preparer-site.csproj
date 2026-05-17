@@ -11,10 +11,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
   </ItemGroup>
 
   <ItemGroup>
