@@ -75,14 +75,39 @@ public static class Program
         EchoResolvedFilter("--project", options.FilterProject, filters.Project);
         EchoResolvedFilter("--wg", options.FilterWorkGroup, filters.WorkGroup);
 
-        byte[] dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
+        byte[] dbBytes;
+        long? filteredCount = null;
+        if (filters.HasAnyFilter)
+        {
+            PreparerDbTrimmer.TrimResult trimmed =
+                await PreparerDbTrimmer.TrimAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
+            dbBytes = trimmed.DbBytes;
+            filteredCount = trimmed.SurvivingTicketCount;
+        }
+        else
+        {
+            dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
+        }
 
         SiteEmitter.Emit(resolvedOut, title, dbBytes);
 
         double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
-        Console.WriteLine(
-            $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
-            $"(DB inlined: {inlinedMb:0.0} MB).");
+        if (filteredCount is { } fc)
+        {
+            if (fc == 0)
+            {
+                Console.WriteLine("0 prepared tickets match this filter.");
+            }
+            Console.WriteLine(
+                $"Wrote {fc} prepared tickets (filtered from {preparedCount}) to " +
+                $"{Path.Combine(resolvedOut, "index.html")} (DB inlined: {inlinedMb:0.0} MB).");
+        }
+        else
+        {
+            Console.WriteLine(
+                $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
+                $"(DB inlined: {inlinedMb:0.0} MB).");
+        }
 
         return 0;
     }
