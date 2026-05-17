@@ -284,6 +284,62 @@ public sealed class PreparerSiteFilterTests
         Assert.True(File.Exists(Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName)));
     }
 
+    [Fact]
+    public async Task Render_Filtered_TitleHasSuffix()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR", WorkGroup: "FHIR Infrastructure")]);
+
+        const string customTitle = "CDS — May 2026";
+        (int exit, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--title", customTitle,
+            "--project", "FHIR", "--wg", "FHIR Infrastructure");
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        Assert.Contains(
+            $"<title>{customTitle} (filtered: project=FHIR, wg=FHIR Infrastructure)</title>",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"<h1>{customTitle} (filtered: project=FHIR, wg=FHIR Infrastructure)</h1>",
+            html,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_Filtered_FiltersGlobalIsEmitted()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        Assert.Contains("window.__FILTERS__={\"project\":\"FHIR\"};", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_Unfiltered_FiltersGlobalIsEmptyObject()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        Assert.Contains("window.__FILTERS__={};", html, StringComparison.Ordinal);
+    }
+
     private static byte[] ExtractInlinedDbBytes(string html)
     {
         const string marker = "window.__DB__='";

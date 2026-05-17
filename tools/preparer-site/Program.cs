@@ -102,7 +102,7 @@ public static class Program
             dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
         }
 
-        SiteEmitter.Emit(resolvedOut, title, dbBytes);
+        SiteEmitter.Emit(resolvedOut, title, filters, dbBytes);
         OutputDirGuard.WriteMarker(resolvedOut, filters, DateTimeOffset.UtcNow);
 
         double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;

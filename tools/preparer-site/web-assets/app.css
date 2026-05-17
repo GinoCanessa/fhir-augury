@@ -111,3 +111,24 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .muted { color: var(--muted); }
 .error { color: #c00; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
+
+#filter-banner {
+  margin-bottom: 0.75rem;
+}
+.filter-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-right: 6px;
+  border-radius: 12px;
+  background: var(--row-alt);
+  border: 1px solid var(--border);
+  font-size: 0.9em;
+  color: var(--fg);
+}
+.filter-footer {
+  margin-top: 2em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85em;
+}

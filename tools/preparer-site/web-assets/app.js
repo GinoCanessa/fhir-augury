@@ -9,6 +9,9 @@
   let db = null;
   /** @type {Set<string>} */
   const inRunKeys = new Set();
+  /** @type {{spec?: string, project?: string, wg?: string}} */
+  const ActiveFilters = (typeof window.__FILTERS__ === 'object' && window.__FILTERS__) ? window.__FILTERS__ : {};
+  const HasActiveFilters = Object.keys(ActiveFilters).length > 0;
 
   const App = {
     init: async function () {
@@ -141,8 +144,41 @@
       } catch (err) {
         renderError(main, 'Route render failed: ' + err.message);
       }
+      renderFilterFooter(main);
     },
   };
+
+  function renderFilterBanner(main) {
+    if (!HasActiveFilters) return;
+    const banner = document.createElement('div');
+    banner.id = 'filter-banner';
+    const keys = ['spec', 'project', 'wg'];
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (!ActiveFilters[k]) continue;
+      const chip = document.createElement('span');
+      chip.className = 'filter-chip';
+      chip.textContent = k + ': ' + ActiveFilters[k];
+      banner.appendChild(chip);
+    }
+    if (main.firstChild) {
+      main.insertBefore(banner, main.firstChild);
+    } else {
+      main.appendChild(banner);
+    }
+  }
+
+  function renderFilterFooter(main) {
+    if (!HasActiveFilters) return;
+    const parts = [];
+    if (ActiveFilters.spec) parts.push('spec=' + ActiveFilters.spec);
+    if (ActiveFilters.project) parts.push('project=' + ActiveFilters.project);
+    if (ActiveFilters.wg) parts.push('wg=' + ActiveFilters.wg);
+    const footer = document.createElement('p');
+    footer.className = 'filter-footer';
+    footer.textContent = 'Filtered: ' + parts.join(', ');
+    main.appendChild(footer);
+  }
 
   function query(sql, params) {
     const stmt = db.prepare(sql);
@@ -268,10 +304,15 @@
 
   const Views = {
     landing: function (main) {
+      renderFilterBanner(main);
       const totalRes = query('SELECT count(*) AS n FROM prepared_tickets', null);
       const total = totalRes.rows.length ? totalRes.rows[0].n : 0;
 
-      main.appendChild(el('p', null, total + ' prepared tickets in this run.'));
+      if (total === 0 && HasActiveFilters) {
+        main.appendChild(el('p', null, '0 prepared tickets match this filter.'));
+      } else {
+        main.appendChild(el('p', null, total + ' prepared tickets in this run.'));
+      }
 
       const grid = el('div', { class: 'summary-grid' });
       grid.appendChild(buildSummarySection(Crosscuts['by-workgroup'].title, Crosscuts['by-workgroup'].sql, 'by-workgroup'));
