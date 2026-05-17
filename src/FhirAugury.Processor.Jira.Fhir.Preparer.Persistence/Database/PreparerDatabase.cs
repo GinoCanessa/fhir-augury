@@ -13,8 +13,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 {
     public string DatabasePath { get; } = dbPath;
 
-    protected override void InitializeSchema(SqliteConnection connection)
+    /// <summary>
+    /// Idempotent. Creates every preparer table via <c>CREATE TABLE IF NOT EXISTS</c>
+    /// and follows up with the <c>CREATE UNIQUE INDEX IF NOT EXISTS</c> passes required
+    /// by CsLightDbGen's lack of composite-unique support. Safe to call against a
+    /// connection the preparer does not own (e.g., <c>preparer-site</c>'s trim-step
+    /// temp copy).
+    /// </summary>
+    public static void EnsureSchema(SqliteConnection connection)
     {
+        ArgumentNullException.ThrowIfNull(connection);
         FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord.CreateTable(connection);
         JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
         PreparedTicketRecord.CreateTable(connection);
@@ -30,6 +38,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedTicketJiraXrefRecord.CreateTable(connection);
         EnsureHydrationCompositeUniqueIndexes(connection);
     }
+
+    protected override void InitializeSchema(SqliteConnection connection)
+        => EnsureSchema(connection);
 
     /// <summary>
     /// CsLightDbGen does not currently expose a way to declare a composite UNIQUE index
