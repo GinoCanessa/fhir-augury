@@ -165,6 +165,105 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
+    public async Task Emit_HydratedDb_InlinesHydrationTables_RoundTrip()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+        await SeedHydrationAsync(scope.DbPath);
+
+        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string base64 = ExtractInlinedDbBase64(html);
+        byte[] dbBytes = Convert.FromBase64String(base64);
+
+        string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            await File.WriteAllBytesAsync(tempDbPath, dbBytes);
+
+            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+            await conn.OpenAsync();
+
+            Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_hydration"));
+            Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_jira_hydration"));
+            Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_zulip_hydration"));
+            Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_github_hydration"));
+            Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_repo_hydration"));
+            Assert.Equal(1, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_jira_xref"));
+            Assert.Equal(1, await ReadCountAsync(conn,
+                "SELECT COUNT(*) FROM prepared_github_hydration WHERE HydrationStatus = 'unresolved'"));
+        }
+        finally
+        {
+            try { File.Delete(tempDbPath); } catch { /* best-effort */ }
+        }
+    }
+
+    private static async Task<int> ReadCountAsync(SqliteConnection conn, string sql)
+    {
+        await using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        object? value = await cmd.ExecuteScalarAsync();
+        return Convert.ToInt32(value);
+    }
+
+    private static async Task SeedHydrationAsync(string dbPath)
+    {
+        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await connection.OpenAsync();
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        string hydratedAtStr = hydratedAt.ToString("O");
+
+        async Task RunAsync(string sql, (string, object)[] parameters)
+        {
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = sql;
+            foreach ((string name, object value) in parameters) cmd.Parameters.AddWithValue(name, value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        for (int i = 1; i <= 2; i++)
+        {
+            string key = $"FHIR-{1000 + i}";
+            await RunAsync(
+                "INSERT INTO prepared_ticket_hydration (Id, TicketKey, Priority, Resolution, Specification, RaisedInVersion, CommentCount, DescriptionPlain, HydratedAt, HydrationStatus) " +
+                "VALUES (@id, @key, 'Major', 'Persuasive', 'FHIR', '5.0.0', 3, 'plain body', @hat, 'resolved')",
+                [("@id", Guid.NewGuid().ToString("N")), ("@key", key), ("@hat", hydratedAtStr)]);
+            await RunAsync(
+                "INSERT INTO prepared_jira_hydration (Id, TicketKey, JiraKey, Title, Status, Type, HydratedAt, HydrationStatus) " +
+                "VALUES (@id, @key, @jk, 'Related ticket', 'Open', 'Change Request', @hat, 'resolved')",
+                [("@id", Guid.NewGuid().ToString("N")), ("@key", key), ("@jk", $"FHIR-{2000 + i}"), ("@hat", hydratedAtStr)]);
+            await RunAsync(
+                "INSERT INTO prepared_zulip_hydration (Id, TicketKey, ZulipThreadId, StreamName, Topic, MessageCount, HydratedAt, HydrationStatus) " +
+                "VALUES (@id, @key, @tid, 'implementers', 'ballot', 5, @hat, 'resolved')",
+                [("@id", Guid.NewGuid().ToString("N")), ("@key", key), ("@tid", $"implementers:topic-{i}"), ("@hat", hydratedAtStr)]);
+            // First github row resolved, second unresolved (1 unresolved total across the seed).
+            string hydrationStatus = i == 1 ? "resolved" : "unresolved";
+            string? reason = i == 1 ? null : "orchestrator 404";
+            await RunAsync(
+                "INSERT INTO prepared_github_hydration (Id, TicketKey, GitHubItemId, Owner, Repo, Number, State, IsPullRequest, HydratedAt, HydrationStatus, HydrationReason) " +
+                "VALUES (@id, @key, @itm, 'HL7', 'fhir', @num, 'open', 0, @hat, @hs, @r)",
+                [("@id", Guid.NewGuid().ToString("N")), ("@key", key), ("@itm", $"HL7/fhir#{i}"), ("@num", i), ("@hat", hydratedAtStr), ("@hs", hydrationStatus), ("@r", (object?)reason ?? DBNull.Value)]);
+            await RunAsync(
+                "INSERT INTO prepared_repo_hydration (Id, TicketKey, Repo, Description, CategoryDetail, Url, HydratedAt, HydrationStatus) " +
+                "VALUES (@id, @key, 'HL7/fhir', 'core', 'FhirCore', 'https://github.com/HL7/fhir', @hat, 'resolved')",
+                [("@id", Guid.NewGuid().ToString("N")), ("@key", key), ("@hat", hydratedAtStr)]);
+        }
+
+        await RunAsync(
+            "INSERT INTO prepared_ticket_jira_xref (Id, TicketKey, JiraKey, Source) VALUES (@id, @key, @jk, @src)",
+            [("@id", Guid.NewGuid().ToString("N")), ("@key", "FHIR-1001"), ("@jk", "FHIR-9999"), ("@src", "DuplicateOf")]);
+
+        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await cp.OpenAsync();
+        await using SqliteCommand checkpoint = cp.CreateCommand();
+        checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+        await checkpoint.ExecuteNonQueryAsync();
+    }
+
+    [Fact]
     public async Task Emit_FailsCleanly_WhenPruneFlagPassed()
     {
         using TempScope scope = new();

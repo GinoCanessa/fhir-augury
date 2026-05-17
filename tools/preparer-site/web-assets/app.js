@@ -95,6 +95,45 @@
             setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By impact', href: null }]);
             Views.crosscutIndex(main, 'by-impact');
           }
+        } else if (parts[0] === 'by-specification') {
+          if (parts.length >= 2) {
+            const sv = decodeURIComponent(parts[1]);
+            setBreadcrumb([
+              { label: 'Home', href: '#/' },
+              { label: 'By specification', href: '#/by-specification' },
+              { label: sv, href: null },
+            ]);
+            Views.list(main, { kind: 'specification', value: sv });
+          } else {
+            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By specification', href: null }]);
+            Views.crosscutIndex(main, 'by-specification');
+          }
+        } else if (parts[0] === 'by-github-state') {
+          if (parts.length >= 2) {
+            const gv = decodeURIComponent(parts[1]);
+            setBreadcrumb([
+              { label: 'Home', href: '#/' },
+              { label: 'By GitHub item state', href: '#/by-github-state' },
+              { label: gv, href: null },
+            ]);
+            Views.list(main, { kind: 'github-state', value: gv });
+          } else {
+            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By GitHub item state', href: null }]);
+            Views.crosscutIndex(main, 'by-github-state');
+          }
+        } else if (parts[0] === 'by-hydration-status') {
+          if (parts.length >= 2) {
+            const hv = decodeURIComponent(parts[1]);
+            setBreadcrumb([
+              { label: 'Home', href: '#/' },
+              { label: 'By hydration status', href: '#/by-hydration-status' },
+              { label: hv, href: null },
+            ]);
+            Views.list(main, { kind: 'hydration-status', value: hv });
+          } else {
+            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By hydration status', href: null }]);
+            Views.crosscutIndex(main, 'by-hydration-status');
+          }
         } else {
           setBreadcrumb([{ label: 'Home', href: '#/' }]);
           Views.notFound(main, hash);
@@ -188,6 +227,43 @@
         "SELECT COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') AS k FROM prepared_tickets" +
         ') GROUP BY k ORDER BY n DESC, k',
     },
+    'by-specification': {
+      title: 'By specification',
+      sql:
+        "SELECT COALESCE(NULLIF(pth.Specification, ''), '(unknown)') AS k, " +
+        '       COUNT(DISTINCT pt.Key) AS n ' +
+        'FROM prepared_tickets pt ' +
+        'LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key ' +
+        'GROUP BY k ORDER BY n DESC, k',
+    },
+    'by-github-state': {
+      title: 'By GitHub item state',
+      sql:
+        "SELECT COALESCE(NULLIF(pgh.State, ''), '(unknown)') AS k, " +
+        '       COUNT(DISTINCT pgh.TicketKey) AS n ' +
+        'FROM prepared_github_hydration pgh ' +
+        "WHERE pgh.HydrationStatus = 'resolved' " +
+        'GROUP BY k ORDER BY n DESC, k',
+    },
+    'by-hydration-status': {
+      title: 'By hydration status',
+      sql:
+        'SELECT k, COUNT(*) AS n FROM (' +
+        '  SELECT pt.Key, ' +
+        '         CASE WHEN EXISTS (' +
+        "           SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+        '           UNION ALL ' +
+        "           SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+        '           UNION ALL ' +
+        "           SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+        '           UNION ALL ' +
+        "           SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+        '           UNION ALL ' +
+        "           SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+        "         ) THEN 'has-unresolved' ELSE 'fully-resolved' END AS k " +
+        '  FROM prepared_tickets pt' +
+        ') GROUP BY k ORDER BY n DESC, k',
+    },
   };
 
   const Views = {
@@ -201,6 +277,9 @@
       grid.appendChild(buildSummarySection(Crosscuts['by-workgroup'].title, Crosscuts['by-workgroup'].sql, 'by-workgroup'));
       grid.appendChild(buildSummarySection(Crosscuts['by-recommendation'].title, Crosscuts['by-recommendation'].sql, 'by-recommendation'));
       grid.appendChild(buildSummarySection(Crosscuts['by-impact'].title, Crosscuts['by-impact'].sql, 'by-impact'));
+      grid.appendChild(buildSummarySection(Crosscuts['by-specification'].title, Crosscuts['by-specification'].sql, 'by-specification'));
+      grid.appendChild(buildSummarySection(Crosscuts['by-github-state'].title, Crosscuts['by-github-state'].sql, 'by-github-state'));
+      grid.appendChild(buildSummarySection(Crosscuts['by-hydration-status'].title, Crosscuts['by-hydration-status'].sql, 'by-hydration-status'));
       main.appendChild(grid);
 
       const nav = el('p', { class: 'muted' });
@@ -256,6 +335,44 @@
           bind = { $v: filter.value };
         }
         heading = 'Impact: ' + filter.value;
+      } else if (filter && filter.kind === 'specification') {
+        if (filter.value === '(unknown)') {
+          where =
+            ' WHERE pt.Key IN (' +
+            '   SELECT pt2.Key FROM prepared_tickets pt2 ' +
+            '   LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt2.Key ' +
+            "   WHERE COALESCE(NULLIF(pth.Specification, ''), '(unknown)') = '(unknown)'" +
+            ' )';
+        } else {
+          where = ' WHERE pt.Key IN (SELECT TicketKey FROM prepared_ticket_hydration WHERE Specification = $v)';
+          bind = { $v: filter.value };
+        }
+        heading = 'Specification: ' + filter.value;
+      } else if (filter && filter.kind === 'github-state') {
+        if (filter.value === '(unknown)') {
+          where =
+            ' WHERE pt.Key IN (' +
+            '   SELECT pgh.TicketKey FROM prepared_github_hydration pgh ' +
+            "   WHERE pgh.HydrationStatus = 'resolved' AND COALESCE(NULLIF(pgh.State, ''), '(unknown)') = '(unknown)'" +
+            ' )';
+        } else {
+          where = ' WHERE pt.Key IN (SELECT TicketKey FROM prepared_github_hydration WHERE State = $v AND HydrationStatus = \'resolved\')';
+          bind = { $v: filter.value };
+        }
+        heading = 'GitHub state: ' + filter.value;
+      } else if (filter && filter.kind === 'hydration-status') {
+        const hasUnresolvedSql =
+          ' EXISTS (SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
+          'OR EXISTS (SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
+          'OR EXISTS (SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
+          'OR EXISTS (SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
+          'OR EXISTS (SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\')';
+        if (filter.value === 'has-unresolved') {
+          where = ' WHERE (' + hasUnresolvedSql + ')';
+        } else {
+          where = ' WHERE NOT (' + hasUnresolvedSql + ')';
+        }
+        heading = 'Hydration status: ' + filter.value;
       }
       const finalSql = baseSql + where + ' ORDER BY pt.Key';
       const res = query(finalSql, bind);
@@ -346,6 +463,21 @@
       const relatedZulip = query('SELECT ZulipThreadId, Justification FROM prepared_ticket_related_zulip WHERE TicketKey = $k ORDER BY ZulipThreadId', { $k: key }).rows;
       const relatedGitHub = query('SELECT GitHubItemId, Justification FROM prepared_ticket_related_github WHERE TicketKey = $k ORDER BY GitHubItemId', { $k: key }).rows;
 
+      const hydrationParentRes = query('SELECT * FROM prepared_ticket_hydration WHERE TicketKey = $k', { $k: key });
+      const hydrationParent = hydrationParentRes.rows.length > 0 ? hydrationParentRes.rows[0] : null;
+
+      const buildMap = function (sql, idCol) {
+        const m = Object.create(null);
+        const rows = query(sql, { $k: key }).rows;
+        for (let i = 0; i < rows.length; i++) m[String(rows[i][idCol])] = rows[i];
+        return m;
+      };
+      const jiraHydration = buildMap('SELECT * FROM prepared_jira_hydration WHERE TicketKey = $k', 'JiraKey');
+      const zulipHydration = buildMap('SELECT * FROM prepared_zulip_hydration WHERE TicketKey = $k', 'ZulipThreadId');
+      const githubHydration = buildMap('SELECT * FROM prepared_github_hydration WHERE TicketKey = $k', 'GitHubItemId');
+      const repoHydration = buildMap('SELECT * FROM prepared_repo_hydration WHERE TicketKey = $k', 'Repo');
+      const jiraXref = query('SELECT * FROM prepared_ticket_jira_xref WHERE TicketKey = $k ORDER BY Source, JiraKey', { $k: key }).rows;
+
       const headerWrap = el('section', { class: 'ticket-header' });
       headerWrap.appendChild(el('h2', null, String(t.Key) + (t.Title ? ' — ' + String(t.Title) : '')));
       const dl = el('dl');
@@ -358,9 +490,20 @@
       kv('Workgroup', t.WorkGroup);
       kv('Status', t.Status);
       kv('Type', t.Type);
+      kv('Priority', hydrationParent ? hydrationParent.Priority : null);
+      kv('Resolution', hydrationParent ? hydrationParent.Resolution : null);
+      kv('Specification', hydrationParent ? hydrationParent.Specification : null);
+      kv('Raised in', hydrationParent ? hydrationParent.RaisedInVersion : null);
+      kv('Selected ballot', hydrationParent ? hydrationParent.SelectedBallot : null);
+      kv('Change category', hydrationParent ? hydrationParent.ChangeCategory : null);
+      kv('Impact', hydrationParent ? hydrationParent.Impact : null);
+      kv('Comments', hydrationParent ? hydrationParent.CommentCount : null);
       kv('Recommendation', t.Recommendation);
       kv('Saved', t.SavedAt);
       headerWrap.appendChild(dl);
+      if (hydrationParent && hydrationParent.HydrationStatus === 'unresolved') {
+        headerWrap.appendChild(el('p', { class: 'muted' }, 'Hydration unresolved: ' + String(hydrationParent.HydrationReason || '')));
+      }
       const jiraLink = el('p');
       jiraLink.appendChild(el('a', {
         href: 'https://jira.hl7.org/browse/' + encodeURIComponent(String(t.Key)),
@@ -369,6 +512,13 @@
       }, 'Open in Jira ↗'));
       headerWrap.appendChild(jiraLink);
       main.appendChild(headerWrap);
+
+      if (hydrationParent && hydrationParent.DescriptionPlain) {
+        const details = el('details');
+        details.appendChild(el('summary', null, 'Show Jira description'));
+        details.appendChild(el('pre', null, String(hydrationParent.DescriptionPlain)));
+        main.appendChild(details);
+      }
 
       const body = el('section', { class: 'ticket-body' });
       const sect = function (title, value) {
@@ -430,18 +580,29 @@
         sidebar.appendChild(ul);
       };
 
+      const appendUnresolvedBadge = function (li, hydrationRow) {
+        if (hydrationRow && hydrationRow.HydrationStatus === 'unresolved') {
+          li.appendChild(document.createTextNode(' '));
+          li.appendChild(el('span', { class: 'muted' }, '(unresolved: ' + String(hydrationRow.HydrationReason || '') + ')'));
+        }
+      };
+
       relatedList('Repos', repos, function (li, r) {
         const cat = r.RepoCategory ? ' [' + r.RepoCategory + ']' : '';
         li.appendChild(document.createTextNode(String(r.Repo) + cat));
+        const h = repoHydration[String(r.Repo)];
+        if (h && h.HydrationStatus === 'resolved' && h.Description) {
+          li.appendChild(document.createTextNode(' · ' + String(h.Description)));
+        }
+        appendUnresolvedBadge(li, h);
         if (r.Justification) {
           li.appendChild(document.createElement('br'));
           li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
         }
       });
 
-      relatedList('Related Jira tickets', relatedJira, function (li, r) {
-        const k = String(r.AssociatedTicketKey || '');
-        const linkType = r.LinkType ? ' (' + r.LinkType + ')' : '';
+      const renderJiraRelatedItem = function (li, r, hydrationRow) {
+        const k = String(r.AssociatedTicketKey || r.JiraKey || '');
         if (inRunKeys.has(k)) {
           li.appendChild(el('a', { href: '#/ticket/' + encodeURIComponent(k) }, k));
         } else {
@@ -451,15 +612,70 @@
             rel: 'noopener noreferrer',
           }, k + ' ↗'));
         }
-        li.appendChild(document.createTextNode(linkType));
+        if (hydrationRow && hydrationRow.HydrationStatus === 'resolved') {
+          const parts = [];
+          if (hydrationRow.Title) parts.push(String(hydrationRow.Title));
+          if (hydrationRow.Status) parts.push(String(hydrationRow.Status));
+          if (hydrationRow.Type) parts.push(String(hydrationRow.Type));
+          if (hydrationRow.Resolution) parts.push(String(hydrationRow.Resolution));
+          if (parts.length > 0) li.appendChild(document.createTextNode(' · ' + parts.join(' · ')));
+        }
+        if (r.LinkType) {
+          li.appendChild(document.createTextNode(' (' + r.LinkType + ')'));
+        }
+        appendUnresolvedBadge(li, hydrationRow);
         if (r.Justification) {
           li.appendChild(document.createElement('br'));
           li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
         }
+      };
+
+      relatedList('Related Jira tickets', relatedJira, function (li, r) {
+        const h = jiraHydration[String(r.AssociatedTicketKey || '')];
+        renderJiraRelatedItem(li, r, h);
       });
 
+      if (jiraXref.length > 0) {
+        sidebar.appendChild(el('h3', null, 'Other Jira-declared links'));
+        const groups = {};
+        for (let i = 0; i < jiraXref.length; i++) {
+          const src = String(jiraXref[i].Source || '');
+          if (!groups[src]) groups[src] = [];
+          groups[src].push(jiraXref[i]);
+        }
+        const sources = Object.keys(groups).sort();
+        for (let i = 0; i < sources.length; i++) {
+          sidebar.appendChild(el('h4', null, sources[i]));
+          const ul = el('ul');
+          for (let j = 0; j < groups[sources[i]].length; j++) {
+            const xref = groups[sources[i]][j];
+            const li = el('li');
+            renderJiraRelatedItem(li, { JiraKey: xref.JiraKey }, jiraHydration[String(xref.JiraKey)]);
+            ul.appendChild(li);
+          }
+          sidebar.appendChild(ul);
+        }
+      }
+
       relatedList('Related Zulip threads', relatedZulip, function (li, r) {
-        li.appendChild(document.createTextNode(String(r.ZulipThreadId)));
+        const h = zulipHydration[String(r.ZulipThreadId)];
+        if (h && h.HydrationStatus === 'resolved') {
+          const stream = h.StreamName || '';
+          const topic = h.Topic || '';
+          const headline = (stream ? stream + ' › ' : '') + topic;
+          li.appendChild(document.createTextNode(headline || String(r.ZulipThreadId)));
+          const meta = [];
+          if (h.MessageCount != null) meta.push(String(h.MessageCount) + ' messages');
+          if (h.LastMessageAt) meta.push('last ' + String(h.LastMessageAt));
+          if (meta.length > 0) li.appendChild(document.createTextNode(' · ' + meta.join(' · ')));
+          if (h.FirstMessageExcerpt) {
+            li.appendChild(document.createElement('br'));
+            li.appendChild(el('span', { class: 'muted' }, '“' + String(h.FirstMessageExcerpt) + '”'));
+          }
+        } else {
+          li.appendChild(document.createTextNode(String(r.ZulipThreadId)));
+        }
+        appendUnresolvedBadge(li, h);
         if (r.Justification) {
           li.appendChild(document.createElement('br'));
           li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
@@ -467,7 +683,23 @@
       });
 
       relatedList('Related GitHub items', relatedGitHub, function (li, r) {
-        li.appendChild(document.createTextNode(String(r.GitHubItemId)));
+        const id = String(r.GitHubItemId);
+        const h = githubHydration[id];
+        if (h && h.HydrationStatus === 'resolved') {
+          const kind = h.IsPullRequest ? '(PR)' : '(Issue)';
+          if (h.Path) {
+            li.appendChild(document.createTextNode((h.Repo ? String(h.Repo) + ': ' : '') + String(h.Path) +
+              (h.Title ? ' · ' + String(h.Title) : '')));
+          } else {
+            const headline = (h.Repo ? String(h.Repo) : '') + (h.Number != null ? '#' + h.Number : '');
+            li.appendChild(document.createTextNode((headline || id) +
+              (h.Title ? ' · ' + String(h.Title) : '') +
+              (h.State ? ' · ' + String(h.State) : '') + ' ' + kind));
+          }
+        } else {
+          li.appendChild(document.createTextNode(id));
+        }
+        appendUnresolvedBadge(li, h);
         if (r.Justification) {
           li.appendChild(document.createElement('br'));
           li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
