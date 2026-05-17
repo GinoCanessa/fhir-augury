@@ -39,6 +39,7 @@ sibling tool under `tools/`).
 dotnet run --project tools/preparer-site -- \
   --db ./cache/jira-preparer.db \
   --out ./cache/jira-preparer-site \
+  --project FHIR \
   --title "Preparer Report — May 2026"
 ```
 
