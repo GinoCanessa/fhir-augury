@@ -39,10 +39,14 @@ public static class Program
             return 1;
         }
 
+        using LegacyDbBackfill.Result backfill =
+            await LegacyDbBackfill.PrepareAsync(resolvedDb, CancellationToken.None).ConfigureAwait(false);
+        string effectiveDb = backfill.EffectivePath;
+
         long preparedCount;
         try
         {
-            preparedCount = await CountPreparedTicketsAsync(resolvedDb).ConfigureAwait(false);
+            preparedCount = await CountPreparedTicketsAsync(effectiveDb).ConfigureAwait(false);
         }
         catch (SqliteException ex)
         {
@@ -55,7 +59,7 @@ public static class Program
         ResolvedFilters? filters;
         try
         {
-            filters = await FilterResolver.TryResolveAsync(resolvedDb, options, Console.Error, CancellationToken.None)
+            filters = await FilterResolver.TryResolveAsync(effectiveDb, options, Console.Error, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (SqliteException ex)
@@ -93,13 +97,13 @@ public static class Program
         if (filters.HasAnyFilter)
         {
             PreparerDbTrimmer.TrimResult trimmed =
-                await PreparerDbTrimmer.TrimAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
+                await PreparerDbTrimmer.TrimAsync(effectiveDb, filters, CancellationToken.None).ConfigureAwait(false);
             dbBytes = trimmed.DbBytes;
             filteredCount = trimmed.SurvivingTicketCount;
         }
         else
         {
-            dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
+            dbBytes = await File.ReadAllBytesAsync(effectiveDb).ConfigureAwait(false);
         }
 
         SiteEmitter.Emit(resolvedOut, title, filters, dbBytes);
