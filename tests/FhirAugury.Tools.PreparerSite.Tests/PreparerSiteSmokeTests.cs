@@ -265,7 +265,7 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
-    public async Task Trim_OnLegacyDbMissingHydrationTables_BackfillsAndSucceeds()
+    public async Task EmitSite_OnLegacyDbMissingHydrationTables_BackfillsAndSucceeds()
     {
         using TempScope scope = new();
         await LegacyPreparerTestDb.SeedAsync(scope.DbPath,
@@ -274,29 +274,37 @@ public sealed class PreparerSiteSmokeTests
             new PreparerTestDb.SourceTicketSeed("OTHER-2001", Project: "OTHER"),
         ]);
 
-        ResolvedFilters filters = new(Specification: null, Project: "FHIR", WorkGroup: null);
-
-        PreparerDbTrimmer.TrimResult result = await PreparerDbTrimmer.TrimAsync(scope.DbPath, filters, default);
-
-        Assert.Equal(1, result.SurvivingTicketCount);
-        Assert.NotEmpty(result.DbBytes);
-
-        string trimmedPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        StringWriter capturedErr = new();
+        StringWriter capturedOut = new();
+        TextWriter originalErr = Console.Error;
+        TextWriter originalOut = Console.Out;
+        Console.SetError(capturedErr);
+        Console.SetOut(capturedOut);
+        int exit;
         try
         {
-            await File.WriteAllBytesAsync(trimmedPath, result.DbBytes);
-            await using SqliteConnection conn = new($"Data Source={trimmedPath};Mode=ReadOnly");
-            await conn.OpenAsync();
-            await using SqliteCommand cmd = conn.CreateCommand();
-            cmd.CommandText =
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
-            long count = Convert.ToInt64(await cmd.ExecuteScalarAsync());
-            Assert.Equal(1, count);
+            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR"]);
         }
         finally
         {
-            try { File.Delete(trimmedPath); } catch { /* best-effort */ }
+            Console.SetError(originalErr);
+            Console.SetOut(originalOut);
         }
+
+        string stderr = capturedErr.ToString();
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("no such table", stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("prepared_ticket_hydration", stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
+
+        // Source DB must be untouched: backfill happened on a temp copy.
+        await using SqliteConnection sourceConn = new($"Data Source={scope.DbPath};Mode=ReadOnly");
+        await sourceConn.OpenAsync();
+        await using SqliteCommand cmd = sourceConn.CreateCommand();
+        cmd.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
+        long sourceCount = Convert.ToInt64(await cmd.ExecuteScalarAsync());
+        Assert.Equal(0, sourceCount);
     }
 
     [Fact]

@@ -31,8 +31,14 @@ internal static class LegacyDbBackfill
     {
         ArgumentException.ThrowIfNullOrEmpty(sourceDbPath);
 
-        if (await HasHydrationTableAsync(sourceDbPath, ct).ConfigureAwait(false))
+        DbShape shape = await DetectShapeAsync(sourceDbPath, ct).ConfigureAwait(false);
+        if (shape != DbShape.LegacyMissingHydration)
         {
+            // Modern DB (hydration present) or not-a-preparer-DB
+            // (no `prepared_tickets` table): pass the source path
+            // through untouched. Modern DBs need no work; truly broken
+            // DBs are left to surface a clean schema error from the
+            // first downstream stage that reads `prepared_tickets`.
             return new Result(sourceDbPath, TempPath: null);
         }
 
@@ -65,7 +71,14 @@ internal static class LegacyDbBackfill
         }
     }
 
-    private static async Task<bool> HasHydrationTableAsync(string sourceDbPath, CancellationToken ct)
+    private enum DbShape
+    {
+        Modern,
+        LegacyMissingHydration,
+        NotAPreparerDb,
+    }
+
+    private static async Task<DbShape> DetectShapeAsync(string sourceDbPath, CancellationToken ct)
     {
         SqliteConnectionStringBuilder builder = new()
         {
@@ -76,9 +89,21 @@ internal static class LegacyDbBackfill
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
-        object? value = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        long count = value is long l ? l : Convert.ToInt64(value);
-        return count >= 1;
+            "SELECT name FROM sqlite_master WHERE type = 'table' " +
+            "AND name IN ('prepared_tickets', 'prepared_ticket_hydration')";
+
+        bool hasPreparedTickets = false;
+        bool hasHydration = false;
+        await using SqliteDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string name = reader.GetString(0);
+            if (name == "prepared_tickets") hasPreparedTickets = true;
+            else if (name == "prepared_ticket_hydration") hasHydration = true;
+        }
+
+        if (hasHydration) return DbShape.Modern;
+        if (hasPreparedTickets) return DbShape.LegacyMissingHydration;
+        return DbShape.NotAPreparerDb;
     }
 }
