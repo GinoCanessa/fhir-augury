@@ -9,3 +9,103 @@ public sealed record PreparedTicketRepoItem(string Repo, string RepoCategory, st
 public sealed record PreparedTicketRelatedJiraItem(string AssociatedTicketKey, string LinkType, string Justification);
 public sealed record PreparedTicketRelatedZulipItem(string ZulipThreadId, string Justification);
 public sealed record PreparedTicketRelatedGitHubItem(string GitHubItemId, string Justification);
+
+public sealed record PreparedTicketHydrationRow(
+    string TicketKey,
+    string? Priority,
+    string? Resolution,
+    string? ResolutionDescriptionPlain,
+    string? Specification,
+    string? RaisedInVersion,
+    string? SelectedBallot,
+    string? ChangeCategory,
+    string? Impact,
+    string? Labels,
+    int? CommentCount,
+    string? DescriptionPlain,
+    DateTimeOffset HydratedAt,
+    string HydrationStatus,
+    string? HydrationReason);
+
+public sealed record PreparedJiraHydrationRow(
+    string TicketKey,
+    string JiraKey,
+    string? Title,
+    string? Status,
+    string? Type,
+    string? Priority,
+    string? Resolution,
+    string? ResolutionDescriptionPlain,
+    string? WorkGroup,
+    string? Specification,
+    DateTimeOffset? UpdatedAt,
+    string? Url,
+    DateTimeOffset HydratedAt,
+    string HydrationStatus,
+    string? HydrationReason);
+
+public sealed record PreparedZulipHydrationRow(
+    string TicketKey,
+    string ZulipThreadId,
+    int? StreamId,
+    string? StreamName,
+    string? Topic,
+    int? MessageCount,
+    DateTimeOffset? FirstMessageAt,
+    DateTimeOffset? LastMessageAt,
+    string? FirstMessageExcerpt,
+    string? Url,
+    DateTimeOffset HydratedAt,
+    string HydrationStatus,
+    string? HydrationReason);
+
+public sealed record PreparedGitHubHydrationRow(
+    string TicketKey,
+    string GitHubItemId,
+    string? Owner,
+    string? Repo,
+    int? Number,
+    string? Path,
+    string? Title,
+    string? State,
+    bool? IsPullRequest,
+    string? Labels,
+    DateTimeOffset? UpdatedAt,
+    string? Url,
+    DateTimeOffset HydratedAt,
+    string HydrationStatus,
+    string? HydrationReason);
+
+public sealed record PreparedRepoHydrationRow(
+    string TicketKey,
+    string Repo,
+    string? Description,
+    string? WorkGroup,
+    string? Specification,
+    string? CategoryDetail,
+    string? Url,
+    DateTimeOffset HydratedAt,
+    string HydrationStatus,
+    string? HydrationReason);
+
+public sealed record PreparedTicketJiraXrefRow(
+    string TicketKey,
+    string JiraKey,
+    string Source);
+
+public sealed record PreparedTicketHydrationBatch(
+    string TicketKey,
+    PreparedTicketHydrationRow Parent,
+    IReadOnlyList<PreparedJiraHydrationRow> JiraRows,
+    IReadOnlyList<PreparedZulipHydrationRow> ZulipRows,
+    IReadOnlyList<PreparedGitHubHydrationRow> GitHubRows,
+    IReadOnlyList<PreparedRepoHydrationRow> RepoRows,
+    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows);
+
+public sealed record PreparedTicketHydrationReadModel(
+    PreparedTicketHydrationRow? Parent,
+    IReadOnlyList<PreparedJiraHydrationRow> JiraRows,
+    IReadOnlyList<PreparedZulipHydrationRow> ZulipRows,
+    IReadOnlyList<PreparedGitHubHydrationRow> GitHubRows,
+    IReadOnlyList<PreparedRepoHydrationRow> RepoRows,
+    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows);

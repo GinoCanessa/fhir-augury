@@ -147,6 +147,229 @@ public sealed class PreparerDatabaseTests
         Assert.Single(detail.RelatedItems.GitHubItems);
     }
 
+    [Fact]
+    public async Task SaveHydration_InsertsAllSixTables()
+    {
+        using TestDatabase database = CreateDatabase();
+        PreparedTicketHydrationBatch batch = SampleBatch("FHIR-1");
+
+        await database.Database.SaveHydrationAsync(batch);
+
+        Assert.Equal(1, Count(database, "prepared_ticket_hydration"));
+        Assert.Equal(1, Count(database, "prepared_jira_hydration"));
+        Assert.Equal(1, Count(database, "prepared_zulip_hydration"));
+        Assert.Equal(1, Count(database, "prepared_github_hydration"));
+        Assert.Equal(1, Count(database, "prepared_repo_hydration"));
+        Assert.Equal(1, Count(database, "prepared_ticket_jira_xref"));
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-1");
+        Assert.NotNull(read);
+        Assert.NotNull(read!.Parent);
+        Assert.Equal("FHIR-1", read.Parent!.TicketKey);
+        Assert.Equal("resolved", read.Parent.HydrationStatus);
+        Assert.Single(read.JiraRows);
+        Assert.Single(read.ZulipRows);
+        Assert.Single(read.GitHubRows);
+        Assert.Single(read.RepoRows);
+        Assert.Single(read.JiraXrefRows);
+    }
+
+    [Fact]
+    public async Task SaveHydration_ReplacesPriorRowsForSameTicket()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1", jiraKey: "FHIR-100"));
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1", jiraKey: "FHIR-200"));
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-1");
+
+        Assert.NotNull(read);
+        Assert.Single(read!.JiraRows);
+        Assert.Equal("FHIR-200", read.JiraRows[0].JiraKey);
+    }
+
+    [Fact]
+    public async Task SaveHydration_DoesNotTouchOtherTicketRows()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1"));
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-2"));
+
+        Assert.NotNull(await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.NotNull(await database.Database.GetHydrationAsync("FHIR-2"));
+        Assert.Equal(2, Count(database, "prepared_ticket_hydration"));
+        Assert.Equal(2, Count(database, "prepared_jira_hydration"));
+    }
+
+    [Fact]
+    public async Task SaveHydration_HonorsCompositeUniqueIndex()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1"));
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        PreparedTicketHydrationBatch duplicate = new(
+            TicketKey: "FHIR-9",
+            Parent: SampleParent("FHIR-9", hydratedAt),
+            JiraRows: [
+                SampleJiraRow("FHIR-9", "FHIR-X", hydratedAt),
+                SampleJiraRow("FHIR-9", "FHIR-X", hydratedAt),
+            ],
+            ZulipRows: [],
+            GitHubRows: [],
+            RepoRows: [],
+            JiraXrefRows: []);
+
+        await Assert.ThrowsAsync<SqliteException>(() => database.Database.SaveHydrationAsync(duplicate));
+
+        Assert.Equal(1, Count(database, "prepared_ticket_hydration"));
+        Assert.Equal(0, CountWhere(database, "prepared_ticket_hydration", "TicketKey = 'FHIR-9'"));
+        Assert.Equal(0, CountWhere(database, "prepared_jira_hydration", "TicketKey = 'FHIR-9'"));
+    }
+
+    [Fact]
+    public async Task SaveHydration_ParentUnresolvedDoesNotDropRelatedRows()
+    {
+        using TestDatabase database = CreateDatabase();
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        PreparedTicketHydrationBatch batch = new(
+            TicketKey: "FHIR-1",
+            Parent: new PreparedTicketHydrationRow(
+                TicketKey: "FHIR-1",
+                Priority: null,
+                Resolution: null,
+                ResolutionDescriptionPlain: null,
+                Specification: null,
+                RaisedInVersion: null,
+                SelectedBallot: null,
+                ChangeCategory: null,
+                Impact: null,
+                Labels: null,
+                CommentCount: null,
+                DescriptionPlain: null,
+                HydratedAt: hydratedAt,
+                HydrationStatus: "unresolved",
+                HydrationReason: "orchestrator 503"),
+            JiraRows: [SampleJiraRow("FHIR-1", "FHIR-100", hydratedAt)],
+            ZulipRows: [SampleZulipRow("FHIR-1", "implementers:ballot", hydratedAt)],
+            GitHubRows: [SampleGitHubRow("FHIR-1", "HL7/fhir#1", hydratedAt)],
+            RepoRows: [SampleRepoRow("FHIR-1", "HL7/fhir", hydratedAt)],
+            JiraXrefRows: []);
+
+        await database.Database.SaveHydrationAsync(batch);
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-1");
+        Assert.NotNull(read);
+        Assert.Equal("unresolved", read!.Parent!.HydrationStatus);
+        Assert.Single(read.JiraRows);
+        Assert.Single(read.ZulipRows);
+        Assert.Single(read.GitHubRows);
+        Assert.Single(read.RepoRows);
+    }
+
+    private static PreparedTicketHydrationBatch SampleBatch(string ticketKey, string jiraKey = "FHIR-100")
+    {
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        return new PreparedTicketHydrationBatch(
+            TicketKey: ticketKey,
+            Parent: SampleParent(ticketKey, hydratedAt),
+            JiraRows: [SampleJiraRow(ticketKey, jiraKey, hydratedAt)],
+            ZulipRows: [SampleZulipRow(ticketKey, "implementers:ballot", hydratedAt)],
+            GitHubRows: [SampleGitHubRow(ticketKey, "HL7/fhir#1", hydratedAt)],
+            RepoRows: [SampleRepoRow(ticketKey, "HL7/fhir", hydratedAt)],
+            JiraXrefRows: [new PreparedTicketJiraXrefRow(ticketKey, "FHIR-9999", "RelatedIssues")]);
+    }
+
+    private static PreparedTicketHydrationRow SampleParent(string ticketKey, DateTimeOffset hydratedAt) =>
+        new(
+            TicketKey: ticketKey,
+            Priority: "Major",
+            Resolution: "Persuasive",
+            ResolutionDescriptionPlain: "done",
+            Specification: "FHIR",
+            RaisedInVersion: "5.0.0",
+            SelectedBallot: "2026-Jan",
+            ChangeCategory: "Refinement",
+            Impact: "Compatible, substantive",
+            Labels: null,
+            CommentCount: 3,
+            DescriptionPlain: "body text",
+            HydratedAt: hydratedAt,
+            HydrationStatus: "resolved",
+            HydrationReason: null);
+
+    private static PreparedJiraHydrationRow SampleJiraRow(string ticketKey, string jiraKey, DateTimeOffset hydratedAt) =>
+        new(
+            TicketKey: ticketKey,
+            JiraKey: jiraKey,
+            Title: "title",
+            Status: "Open",
+            Type: "Change Request",
+            Priority: "Major",
+            Resolution: null,
+            ResolutionDescriptionPlain: null,
+            WorkGroup: "FHIR-I",
+            Specification: "FHIR",
+            UpdatedAt: hydratedAt,
+            Url: $"https://jira.example.com/browse/{jiraKey}",
+            HydratedAt: hydratedAt,
+            HydrationStatus: "resolved",
+            HydrationReason: null);
+
+    private static PreparedZulipHydrationRow SampleZulipRow(string ticketKey, string threadId, DateTimeOffset hydratedAt) =>
+        new(
+            TicketKey: ticketKey,
+            ZulipThreadId: threadId,
+            StreamId: 42,
+            StreamName: "implementers",
+            Topic: "ballot",
+            MessageCount: 3,
+            FirstMessageAt: hydratedAt,
+            LastMessageAt: hydratedAt,
+            FirstMessageExcerpt: "first",
+            Url: "https://chat.example.com/",
+            HydratedAt: hydratedAt,
+            HydrationStatus: "resolved",
+            HydrationReason: null);
+
+    private static PreparedGitHubHydrationRow SampleGitHubRow(string ticketKey, string itemId, DateTimeOffset hydratedAt) =>
+        new(
+            TicketKey: ticketKey,
+            GitHubItemId: itemId,
+            Owner: "HL7",
+            Repo: "fhir",
+            Number: 1,
+            Path: null,
+            Title: "title",
+            State: "open",
+            IsPullRequest: false,
+            Labels: null,
+            UpdatedAt: hydratedAt,
+            Url: $"https://github.com/{itemId}",
+            HydratedAt: hydratedAt,
+            HydrationStatus: "resolved",
+            HydrationReason: null);
+
+    private static PreparedRepoHydrationRow SampleRepoRow(string ticketKey, string repo, DateTimeOffset hydratedAt) =>
+        new(
+            TicketKey: ticketKey,
+            Repo: repo,
+            Description: "FHIR core spec",
+            WorkGroup: null,
+            Specification: null,
+            CategoryDetail: "FhirCore",
+            Url: $"https://github.com/{repo}",
+            HydratedAt: hydratedAt,
+            HydrationStatus: "resolved",
+            HydrationReason: null);
+
+    private static int CountWhere(TestDatabase database, string table, string whereClause)
+    {
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE {whereClause}";
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
     private static TestDatabase CreateDatabase()
     {
         string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
