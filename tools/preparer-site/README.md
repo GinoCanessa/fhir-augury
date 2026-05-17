@@ -54,9 +54,36 @@ in the list view links into the per-ticket page.
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--db <path>` | *required* | Path to the preparer SQLite DB. |
-| `--out <path>` | `./cache/jira-preparer-site` | Output directory; **overwritten** if it exists. |
-| `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). |
+| `--out <path>` | `./cache/jira-preparer-site` | Output directory; overwritten subject to the safety rail (see below). |
+| `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
+| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` matches (case-insensitive). |
+| `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
+| `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the preparer-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
+| `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
+| `--jira-source-db <path>` | — | Fallback Jira source SQLite DB used when the HTTP service is unreachable. |
+| `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
 | `--help` | — | Print usage and exit non-zero. |
+
+### Active filters
+
+```bash
+# Workgroup by code, falling back through the default Jira source service.
+dotnet run --project tools/preparer-site -- \
+  --db ./cache/jira-preparer.db \
+  --out ./cache/jira-preparer-site-fhir-i \
+  --wg fhir-i
+
+# Specification filter only.
+dotnet run --project tools/preparer-site -- \
+  --db ./cache/jira-preparer.db \
+  --out ./cache/jira-preparer-site-fhir-extensions \
+  --spec fhir-extensions
+```
+
+When a filter flag is supplied the inlined DB is trimmed to just the
+surviving tickets and their related rows; the active filter set is
+also surfaced in the page `<title>`, in a chip banner on the landing
+view, and in a persistent footer line on every sub-view.
 
 ## Output size
 
@@ -71,7 +98,11 @@ indexHtml ≈ dbSize × 4 / 3 + ~100 KB chrome
 At today's volume (~3,900 prepared tickets) the hydrated DB lands
 in the 70–90 MB range. Chromium and Firefox handle that file size
 fine; Safari may struggle (see [Browser compatibility](#browser-compatibility)).
-For distribution, zip the output folder.
+For distribution, zip the output folder. With one or more filter
+flags supplied, the inlined DB shrinks roughly in proportion to the
+surviving ticket count (`prepared_tickets` and all per-ticket child
+tables are trimmed and the file is `VACUUM`ed before it is
+inlined).
 
 ## Browser compatibility
 
@@ -112,8 +143,18 @@ No automated update path is planned.
 
 ## Known limitations
 
-- **No incremental mode.** Every run rewrites `<out>/` from scratch.
-  If `<out>` exists it is deleted before the new site is written.
+- **No incremental mode.** Every run rewrites `<out>/` from scratch,
+  subject to the safety rail (see below). If `<out>` exists and its
+  recorded filter set matches the current run, it is deleted before
+  the new site is written.
+- **Output directory safety rail.** Every emitted site drops a
+  `.preparer-site.meta` JSON marker recording the canonical filter
+  set. A subsequent run against the same `--out` whose filter set
+  differs (e.g., re-running a `--project FHIR` build into a folder
+  that previously held a `--wg CDS` build) refuses with a stderr
+  diagnostic; pass `--force` to overwrite anyway. Pre-existing
+  directories with no marker (i.e., produced by an earlier version of
+  the tool) are overwritten without `--force`.
 - **Substring filter only.** The list view does a debounced 150 ms
   case-insensitive substring match against
   `Key + Title + RequestSummary`. There is no full-text index, no
