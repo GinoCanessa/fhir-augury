@@ -45,9 +45,10 @@ dotnet run --project tools/preparer-site -- \
 Open `cache/jira-preparer-site/index.html` in a Chromium-family
 browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
-and three summary tables (workgroup, recommendation, impact). Each
-row in the summary tables links into a filtered list view; each row
-in the list view links into the per-ticket page.
+and six summary tables (workgroup, recommendation, impact,
+specification, GitHub item state, hydration status). Each row in
+the summary tables links into a filtered list view; each row in the
+list view links into the per-ticket page.
 
 ## Flags
 
@@ -83,7 +84,10 @@ dotnet run --project tools/preparer-site -- \
 When a filter flag is supplied the inlined DB is trimmed to just the
 surviving tickets and their related rows; the active filter set is
 also surfaced in the page `<title>`, in a chip banner on the landing
-view, and in a persistent footer line on every sub-view.
+view, and in a persistent footer line on every sub-view. If the
+filter set ANDs to zero rows the site is still emitted and the
+landing view shows `0 prepared tickets match this filter.` instead
+of the usual count line.
 
 ## Output size
 
