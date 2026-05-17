@@ -15,6 +15,16 @@ browsers. A reviewer (or workgroup co-chair) can zip the output
 folder and hand it around without any infrastructure on the
 receiving side.
 
+### Hydration
+
+The inlined DB always carries the `prepared_*_hydration` and
+`prepared_ticket_jira_xref` tables alongside the agent-authored
+`prepared_tickets*` tables. Those hydration rows are populated
+automatically by `FhirAugury.Processor.Jira.Fhir.Preparer` as the
+ticket-prep handler completes each ticket; the site renders directly
+from them with no additional fetch. There is one canonical DB shape;
+no opt-in slimming is offered.
+
 ## What this is not
 
 Not a server, not a daemon, not a long-running process. Not a
@@ -46,41 +56,22 @@ in the list view links into the per-ticket page.
 | `--db <path>` | *required* | Path to the preparer SQLite DB. |
 | `--out <path>` | `./cache/jira-preparer-site` | Output directory; **overwritten** if it exists. |
 | `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). |
-| `--prune` | off | Inline a slimmed copy of the DB; see [Output size](#output-size) below. |
 | `--help` | — | Print usage and exit non-zero. |
 
 ## Output size
 
-By default `index.html` carries the entire preparer DB as a single
+`index.html` carries the entire preparer DB (including hydration
+tables and inlined `DescriptionPlain` per ticket) as a single
 base64-inlined blob, so the file size is roughly
 
 ```
 indexHtml ≈ dbSize × 4 / 3 + ~100 KB chrome
 ```
 
-At today's volume (~3,900 prepared tickets, ~37 MB DB) that lands
-near 52 MB. Chromium and Firefox handle that file size fine; Safari
-may struggle (see [Browser compatibility](#browser-compatibility)).
-
-If you need a smaller `index.html`, pass `--prune`. The tool then
-builds a temp DB containing:
-
-- `prepared_tickets` — full table (every column is rendered or
-  filtered by the SPA).
-- `prepared_ticket_repos`, `prepared_ticket_related_jira`,
-  `prepared_ticket_related_zulip`, `prepared_ticket_related_github`
-  — full columns, filtered to rows whose `TicketKey` is in the
-  prepared-ticket set.
-- `jira_processing_source_tickets` — only `{Key, Title, WorkGroup,
-  Status, Type}` (allowlist) and only rows whose `Key` is in the
-  prepared set. `Description` and all the processing/queue columns
-  (`ProcessingStatus`, `ProcessingError`, `Started/Completed/Last…`,
-  `CompletionId`, `AgentExitCode`, `ErrorMessage`, …) are dropped.
-
-The pruned DB is `VACUUM`ed before inlining and the temp file is
-deleted in a `finally` block. The success line is followed by
-`Pruned X MB → Y MB (saved Z%).`. How much you save depends entirely
-on how much weight `Description` was carrying.
+At today's volume (~3,900 prepared tickets) the hydrated DB lands
+in the 70–90 MB range. Chromium and Firefox handle that file size
+fine; Safari may struggle (see [Browser compatibility](#browser-compatibility)).
+For distribution, zip the output folder.
 
 ## Browser compatibility
 

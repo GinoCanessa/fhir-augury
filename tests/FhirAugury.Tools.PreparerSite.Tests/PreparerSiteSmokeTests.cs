@@ -20,7 +20,7 @@ public sealed class PreparerSiteSmokeTests
         }
     }
 
-    private static async Task SeedPreparerDbAsync(string dbPath, int ticketCount = 2, int descriptionPaddingChars = 0)
+    private static async Task SeedPreparerDbAsync(string dbPath, int ticketCount = 2)
     {
         using PreparerDatabase preparer = new(dbPath, NullLogger<PreparerDatabase>.Instance);
         preparer.Initialize();
@@ -57,47 +57,42 @@ public sealed class PreparerSiteSmokeTests
             await preparer.SavePreparedTicketAsync(payload);
         }
 
-        if (descriptionPaddingChars > 0)
+        // Always seed jira_processing_source_tickets so the SPA's LEFT JOIN
+        // against it stays exercised by the smoke tests. Description is left
+        // null to keep the per-test DB compact; we are no longer in the
+        // business of stripping it.
+        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await connection.OpenAsync();
+        for (int i = 1; i <= ticketCount; i++)
         {
-            // Seed jira_processing_source_tickets so prune drops a substantial
-            // Description payload. Use raw SQL so we don't need to depend on a
-            // higher-level Jira-side API.
-            await using SqliteConnection connection = new($"Data Source={dbPath}");
-            await connection.OpenAsync();
-            string padding = new string('X', descriptionPaddingChars);
-            for (int i = 1; i <= ticketCount; i++)
-            {
-                await using SqliteCommand cmd = connection.CreateCommand();
-                cmd.CommandText =
-                    "INSERT INTO jira_processing_source_tickets " +
-                    "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
-                    "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @shape, @synced, @updated, @pac, @ps)";
-                cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
-                cmd.Parameters.AddWithValue("@key", $"FHIR-{1000 + i}");
-                cmd.Parameters.AddWithValue("@title", $"Source ticket title {i}");
-                cmd.Parameters.AddWithValue("@desc", padding);
-                cmd.Parameters.AddWithValue("@project", "FHIR");
-                cmd.Parameters.AddWithValue("@status", "Open");
-                cmd.Parameters.AddWithValue("@wg", "FHIR Infrastructure");
-                cmd.Parameters.AddWithValue("@type", "Change Request");
-                cmd.Parameters.AddWithValue("@shape", "default");
-                cmd.Parameters.AddWithValue("@synced", DateTimeOffset.UtcNow.ToString("O"));
-                cmd.Parameters.AddWithValue("@updated", DateTimeOffset.UtcNow.ToString("O"));
-                cmd.Parameters.AddWithValue("@pac", 0);
-                cmd.Parameters.AddWithValue("@ps", "Done");
-                await cmd.ExecuteNonQueryAsync();
-            }
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO jira_processing_source_tickets " +
+                "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
+                "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @shape, @synced, @updated, @pac, @ps)";
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("@key", $"FHIR-{1000 + i}");
+            cmd.Parameters.AddWithValue("@title", $"Source ticket title {i}");
+            cmd.Parameters.AddWithValue("@desc", DBNull.Value);
+            cmd.Parameters.AddWithValue("@project", "FHIR");
+            cmd.Parameters.AddWithValue("@status", "Open");
+            cmd.Parameters.AddWithValue("@wg", "FHIR Infrastructure");
+            cmd.Parameters.AddWithValue("@type", "Change Request");
+            cmd.Parameters.AddWithValue("@shape", "default");
+            cmd.Parameters.AddWithValue("@synced", DateTimeOffset.UtcNow.ToString("O"));
+            cmd.Parameters.AddWithValue("@updated", DateTimeOffset.UtcNow.ToString("O"));
+            cmd.Parameters.AddWithValue("@pac", 0);
+            cmd.Parameters.AddWithValue("@ps", "Done");
+            await cmd.ExecuteNonQueryAsync();
         }
 
         // Force the WAL to merge back into the main DB so that the tool's raw
         // File.ReadAllBytes() sees everything just written.
-        await using (SqliteConnection cp = new($"Data Source={dbPath}"))
-        {
-            await cp.OpenAsync();
-            await using SqliteCommand cmd = cp.CreateCommand();
-            cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
-            await cmd.ExecuteNonQueryAsync();
-        }
+        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await cp.OpenAsync();
+        await using SqliteCommand checkpoint = cp.CreateCommand();
+        checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+        await checkpoint.ExecuteNonQueryAsync();
     }
 
     [Fact]
@@ -170,77 +165,27 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
-    public async Task Emit_PrunedDb_ShrinksOutput()
-    {
-        using TempScope full = new();
-        using TempScope pruned = new();
-        // 8 KB of Description per ticket × 4 tickets = ~32 KB of strippable data.
-        await SeedPreparerDbAsync(full.DbPath, ticketCount: 4, descriptionPaddingChars: 8 * 1024);
-        await SeedPreparerDbAsync(pruned.DbPath, ticketCount: 4, descriptionPaddingChars: 8 * 1024);
-
-        int exitFull = await Program.Main(["--db", full.DbPath, "--out", full.OutDir]);
-        int exitPruned = await Program.Main(["--db", pruned.DbPath, "--out", pruned.OutDir, "--prune"]);
-        Assert.Equal(0, exitFull);
-        Assert.Equal(0, exitPruned);
-
-        long fullSize = new FileInfo(Path.Combine(full.OutDir, "index.html")).Length;
-        long prunedSize = new FileInfo(Path.Combine(pruned.OutDir, "index.html")).Length;
-        Assert.True(
-            prunedSize < fullSize * 0.8,
-            $"expected pruned ({prunedSize}) < 80% of full ({fullSize})");
-    }
-
-    [Fact]
-    public async Task Emit_PrunedDb_PreservesTicketContent()
+    public async Task Emit_FailsCleanly_WhenPruneFlagPassed()
     {
         using TempScope scope = new();
-        await SeedPreparerDbAsync(scope.DbPath, ticketCount: 2, descriptionPaddingChars: 1024);
+        await SeedPreparerDbAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--prune"]);
-        Assert.Equal(0, exit);
-
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        string base64 = ExtractInlinedDbBase64(html);
-        byte[] dbBytes = Convert.FromBase64String(base64);
-
-        string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        StringWriter capturedErr = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(capturedErr);
+        int exit;
         try
         {
-            await File.WriteAllBytesAsync(tempDbPath, dbBytes);
-
-            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
-            await conn.OpenAsync();
-
-            // Ticket bodies preserved.
-            await using SqliteCommand select = conn.CreateCommand();
-            select.CommandText = "SELECT RequestSummary, ProposalA, ProposalB, ProposalC, RecommendationJustification FROM prepared_tickets WHERE Key = @k";
-            select.Parameters.AddWithValue("@k", "FHIR-1001");
-            await using SqliteDataReader reader = await select.ExecuteReaderAsync();
-            Assert.True(await reader.ReadAsync());
-            Assert.Equal("Request summary body for ticket 1.", reader.GetString(0));
-            Assert.Equal("Proposal A body for ticket 1.", reader.GetString(1));
-            Assert.Equal("Proposal B body for ticket 1.", reader.GetString(2));
-            Assert.Equal("Proposal C body for ticket 1.", reader.GetString(3));
-            Assert.Equal("Recommendation justification 1.", reader.GetString(4));
-            await reader.CloseAsync();
-
-            // Source-ticket allowlist enforced — no Description column.
-            await using SqliteCommand pragma = conn.CreateCommand();
-            pragma.CommandText = "PRAGMA table_info(jira_processing_source_tickets)";
-            await using SqliteDataReader pragmaReader = await pragma.ExecuteReaderAsync();
-            HashSet<string> columns = new(StringComparer.Ordinal);
-            while (await pragmaReader.ReadAsync())
-            {
-                columns.Add(pragmaReader.GetString(1));
-            }
-            Assert.Equal(
-                new HashSet<string>(["Key", "Title", "WorkGroup", "Status", "Type"], StringComparer.Ordinal),
-                columns);
+            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--prune"]);
         }
         finally
         {
-            try { File.Delete(tempDbPath); } catch { /* best-effort */ }
+            Console.SetError(originalErr);
         }
+
+        Assert.NotEqual(0, exit);
+        string stderr = capturedErr.ToString();
+        Assert.Contains("--prune", stderr, StringComparison.Ordinal);
     }
 
     [Fact]

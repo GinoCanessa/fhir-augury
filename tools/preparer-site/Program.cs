@@ -12,7 +12,6 @@ public static class Program
         string? dbPath = null;
         string? outPath = null;
         string title = DefaultTitle;
-        bool prune = false;
         bool help = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -27,9 +26,6 @@ public static class Program
                     break;
                 case "--title" when i + 1 < args.Length:
                     title = args[++i];
-                    break;
-                case "--prune":
-                    prune = true;
                     break;
                 case "--help":
                 case "-h":
@@ -77,51 +73,14 @@ public static class Program
             return 1;
         }
 
-        // Phase 6 will substitute a pruned temp-DB path here when --prune is set.
-        string sourceDbForInline = resolvedDb;
-        string? prunedTempPath = null;
-        long? prunedSize = null;
-        try
-        {
-            if (prune)
-            {
-                prunedTempPath = Path.Combine(
-                    Path.GetTempPath(),
-                    "preparer-site-pruned-" + Guid.NewGuid().ToString("N") + ".db");
-                DbPruner.Prune(resolvedDb, prunedTempPath);
-                prunedSize = new FileInfo(prunedTempPath).Length;
-                sourceDbForInline = prunedTempPath;
-            }
+        byte[] dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
 
-            byte[] dbBytes = await File.ReadAllBytesAsync(sourceDbForInline).ConfigureAwait(false);
+        SiteEmitter.Emit(resolvedOut, title, dbBytes);
 
-            SiteEmitter.Emit(resolvedOut, title, dbBytes);
-
-            double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
-            Console.WriteLine(
-                $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
-                $"(DB inlined: {inlinedMb:0.0} MB{(prune ? "; pruned" : string.Empty)}).");
-
-            if (prune && prunedSize is long pruned)
-            {
-                long sourceSize = new FileInfo(resolvedDb).Length;
-                double sourceMb = sourceSize / 1024.0 / 1024.0;
-                double prunedMb = pruned / 1024.0 / 1024.0;
-                double savedPct = sourceSize > 0
-                    ? (1.0 - (double)pruned / sourceSize) * 100.0
-                    : 0.0;
-                Console.WriteLine(
-                    $"Pruned {sourceMb:0.0} MB → {prunedMb:0.0} MB (saved {savedPct:0.0}%).");
-            }
-        }
-        finally
-        {
-            if (prunedTempPath is not null && File.Exists(prunedTempPath))
-            {
-                try { File.Delete(prunedTempPath); }
-                catch (IOException) { /* best-effort cleanup */ }
-            }
-        }
+        double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
+        Console.WriteLine(
+            $"Wrote {preparedCount} prepared tickets to {Path.Combine(resolvedOut, "index.html")} " +
+            $"(DB inlined: {inlinedMb:0.0} MB).");
 
         return 0;
     }
@@ -144,12 +103,11 @@ public static class Program
     private static void WriteUsage(TextWriter w)
     {
         w.WriteLine();
-        w.WriteLine("Usage: preparer-site --db <path> [--out <path>] [--title <string>] [--prune]");
+        w.WriteLine("Usage: preparer-site --db <path> [--out <path>] [--title <string>]");
         w.WriteLine();
         w.WriteLine("  --db <path>       Path to the preparer SQLite database (required).");
         w.WriteLine("  --out <path>      Output directory (default: ./cache/jira-preparer-site).");
         w.WriteLine($"  --title <string>  Site title (default: \"{DefaultTitle}\").");
-        w.WriteLine("  --prune           Emit a slimmed copy of the DB (opt-in size reducer).");
         w.WriteLine("  --help            Show this help.");
     }
 }
