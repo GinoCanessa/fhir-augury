@@ -122,6 +122,14 @@ internal static class FilterResolver
         bool appendWgHint)
     {
         await stderr.WriteLineAsync($"Unknown value for {flag}: '{raw}'.").ConfigureAwait(false);
+        if (values.Count == 0)
+        {
+            await stderr.WriteLineAsync(
+                $"No values are present for {flag} in the database. The DB may not be hydrated yet — " +
+                "re-run preparer-site (drop --no-hydrate) or run FhirAugury.Processor.Jira.Fhir.Preparer to populate it.")
+                .ConfigureAwait(false);
+            return;
+        }
         await stderr.WriteLineAsync("Available values:").ConfigureAwait(false);
         List<string> sorted = [.. values];
         sorted.Sort(StringComparer.OrdinalIgnoreCase);

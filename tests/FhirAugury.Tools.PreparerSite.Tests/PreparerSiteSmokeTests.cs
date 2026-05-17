@@ -265,7 +265,7 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
-    public async Task EmitSite_OnLegacyDbMissingHydrationTables_BackfillsAndSucceeds()
+    public async Task EmitSite_OnLegacyDb_WithNoHydrate_FailsFast()
     {
         using TempScope scope = new();
         await LegacyPreparerTestDb.SeedAsync(scope.DbPath,
@@ -283,7 +283,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR"]);
+            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR", "--no-hydrate"]);
         }
         finally
         {
@@ -292,12 +292,12 @@ public sealed class PreparerSiteSmokeTests
         }
 
         string stderr = capturedErr.ToString();
-        Assert.Equal(0, exit);
-        Assert.DoesNotContain("no such table", stderr, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("prepared_ticket_hydration", stderr, StringComparison.OrdinalIgnoreCase);
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
+        Assert.NotEqual(0, exit);
+        Assert.Contains("Hydration is missing", stderr, StringComparison.Ordinal);
+        Assert.Contains(scope.DbPath, stderr, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(scope.OutDir, "index.html")));
 
-        // Source DB must be untouched: backfill happened on a temp copy.
+        // Source DB must be untouched: preflight is purely diagnostic under --no-hydrate.
         await using SqliteConnection sourceConn = new($"Data Source={scope.DbPath};Mode=ReadOnly");
         await sourceConn.OpenAsync();
         await using SqliteCommand cmd = sourceConn.CreateCommand();

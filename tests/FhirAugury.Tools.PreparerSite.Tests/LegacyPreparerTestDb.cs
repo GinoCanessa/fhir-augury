@@ -24,10 +24,12 @@ internal static class LegacyPreparerTestDb
             // EnsureSchema's EnsureCompositeUniqueIndex pass valid against the seed.
             "CREATE TABLE jira_processing_source_tickets (Key TEXT PRIMARY KEY, Project TEXT, WorkGroup TEXT, SourceTicketShape TEXT)",
             "CREATE TABLE prepared_tickets (Key TEXT PRIMARY KEY)",
-            "CREATE TABLE prepared_ticket_repos (TicketKey TEXT)",
-            "CREATE TABLE prepared_ticket_related_jira (TicketKey TEXT)",
-            "CREATE TABLE prepared_ticket_related_zulip (TicketKey TEXT)",
-            "CREATE TABLE prepared_ticket_related_github (TicketKey TEXT)",
+            // Intentionally omit prepared_ticket_repos and prepared_ticket_related_*.
+            // The bug-report legacy DB has them present in their modern shape, but
+            // creating them with stubbed columns here would conflict with the
+            // modern columns the hydrator reads after EnsureSchema's CREATE TABLE
+            // IF NOT EXISTS no-ops on an existing table. EnsureSchema will create
+            // them fresh with the correct columns when the preflight runs.
         ];
         foreach (string sql in createStatements)
         {

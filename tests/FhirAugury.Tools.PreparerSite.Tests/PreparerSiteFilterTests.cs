@@ -531,4 +531,30 @@ public sealed class PreparerSiteFilterTests
         Assert.True(filteredBytes.Length < unfilteredBytes.Length,
             $"Expected filtered bytes ({filteredBytes.Length}) < unfiltered bytes ({unfilteredBytes.Length}).");
     }
+
+    [Fact]
+    public async Task FilterResolver_EmptyValues_PrintsHydrationHint()
+    {
+        // Seed a hydrated DB whose Specification column is null for every row,
+        // so the SELECT DISTINCT in FilterResolver returns an empty list and
+        // the new empty-`Available values:` replacement message fires. The
+        // preflight sees a non-empty prepared_ticket_hydration table and
+        // hands off to FilterResolver as a result.
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-9001")],
+            specByKey: new Dictionary<string, string?>
+            {
+                ["FHIR-9001"] = null,
+            });
+
+        (int exit, _, string stderr) = await RunMainAsync(
+            "--db", scope.DbPath, "--out", scope.OutDir, "--spec", "Bogus");
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("Unknown value for --spec: 'Bogus'.", stderr, StringComparison.Ordinal);
+        Assert.Contains("No values are present for --spec in the database.", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("Available values:", stderr, StringComparison.Ordinal);
+    }
 }
