@@ -1,3 +1,4 @@
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.PreparerSite;
@@ -39,6 +40,13 @@ internal static class PreparerDbTrimmer
                 };
                 await using SqliteConnection connection = new(builder.ConnectionString);
                 await connection.OpenAsync(ct).ConfigureAwait(false);
+
+                // Legacy DBs (pre-9f068f5) may be missing the hydration and xref
+                // tables that the DELETE below joins against. Backfill them on the
+                // temp copy via the shared schema-ensure helper before any writes.
+                // Idempotent: every statement uses CREATE [TABLE|UNIQUE INDEX] IF NOT EXISTS.
+                PreparerDatabase.EnsureSchema(connection);
+
                 await using SqliteTransaction tx = (SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
                 // Trim prepared_tickets to the intersection of all active filters.
