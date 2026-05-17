@@ -79,6 +79,12 @@ public static class GitHubCatalog
             // Repos
             new ApiEndpointDescriptor("repos.list", "List repositories", "Repos",
                 HttpMethod.Get, "api/v1/repos", []),
+            new ApiEndpointDescriptor("repos.get", "Get repository", "Repos",
+                HttpMethod.Get, "api/v1/repos/{owner}/{name}",
+                [
+                    new ApiParameter("owner", ApiParameterKind.Path, Required: true, Placeholder: "HL7"),
+                    new ApiParameter("name", ApiParameterKind.Path, Required: true, Placeholder: "fhir"),
+                ]),
 
             // Tags
             new ApiEndpointDescriptor("tags.list", "Tags for repo", "Tags",
