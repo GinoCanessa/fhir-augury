@@ -16,6 +16,7 @@ public sealed class FhirTicketPrepHandler(
     JiraProcessingSourceTicketStore store,
     IJiraTicketDiscoveryClient discoveryClient,
     PreparerDatabase database,
+    PreparedTicketHydrator hydrator,
     IOptions<ProcessingServiceOptions> processingOptions,
     ILogger<FhirTicketPrepHandler> logger) : IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>
 {
@@ -67,6 +68,8 @@ public sealed class FhirTicketPrepHandler(
             await MarkErrorAsync(item, message, result.ExitCode, ct);
             throw new InvalidOperationException(message);
         }
+
+        await hydrator.HydrateAsync(item.Key, ct);
 
         DateTimeOffset completedAt = DateTimeOffset.UtcNow;
         await store.MarkCompleteAsync(item, completedAt, ct);

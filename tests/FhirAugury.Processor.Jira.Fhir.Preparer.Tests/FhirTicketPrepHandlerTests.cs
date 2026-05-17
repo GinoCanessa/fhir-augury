@@ -101,6 +101,37 @@ public sealed class FhirTicketPrepHandlerTests
         Assert.Null(fixture.Item.CompletionId);
     }
 
+    [Fact]
+    public async Task ProcessAsync_CallsHydratorAfterPreparedTicketExists()
+    {
+        using HandlerFixture fixture = new(async (_, context, database) =>
+        {
+            await database.SavePreparedTicketAsync(SamplePayload(context.TicketKey));
+            return new JiraAgentResult(0, string.Empty, string.Empty, TimeSpan.Zero, false);
+        });
+
+        await fixture.Handler.ProcessAsync(fixture.Item, CancellationToken.None);
+
+        Assert.Single(fixture.HydratorRecorder.Calls);
+        Assert.Equal("FHIR-123", fixture.HydratorRecorder.Calls[0]);
+        Assert.Equal(ProcessingStatusValues.Complete, fixture.Item.ProcessingStatus);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_HydratorThrow_PropagatesAndSkipsMarkComplete()
+    {
+        using HandlerFixture fixture = new(async (_, context, database) =>
+        {
+            await database.SavePreparedTicketAsync(SamplePayload(context.TicketKey));
+            return new JiraAgentResult(0, string.Empty, string.Empty, TimeSpan.Zero, false);
+        });
+        fixture.HydratorRecorder.OnHydrate = (_, _) => throw new InvalidOperationException("hydrator regression");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Handler.ProcessAsync(fixture.Item, CancellationToken.None));
+
+        Assert.NotEqual(ProcessingStatusValues.Complete, fixture.Item.ProcessingStatus);
+    }
+
     private static PreparedTicketPayload SamplePayload(string key) => new()
     {
         Key = key,
@@ -134,12 +165,14 @@ public sealed class FhirTicketPrepHandlerTests
             ProcessingServiceOptions processingOptions = new() { DatabasePath = DatabasePath };
             FakeRunner runner = new((command, context) => runAsync(command, context, Database));
             FakeDiscoveryClient discovery = new();
+            HydratorRecorder = new TestHydrator();
             Handler = new FhirTicketPrepHandler(
                 new JiraAgentCommandRenderer(Options.Create(jiraOptions)),
                 runner,
                 store,
                 discovery,
                 Database,
+                HydratorRecorder,
                 Options.Create(processingOptions),
                 NullLogger<FhirTicketPrepHandler>.Instance);
             Item = new JiraProcessingSourceTicketRecord
@@ -160,6 +193,7 @@ public sealed class FhirTicketPrepHandlerTests
         public PreparerDatabase Database { get; }
         public FhirTicketPrepHandler Handler { get; }
         public JiraProcessingSourceTicketRecord Item { get; }
+        public TestHydrator HydratorRecorder { get; }
 
         public void Dispose()
         {
@@ -184,5 +218,27 @@ public sealed class FhirTicketPrepHandlerTests
         public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct) => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>([]);
         public Task<JiraIssueSummaryEntry?> GetTicketAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.FromResult<JiraIssueSummaryEntry?>(null);
         public Task MarkProcessedAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class TestHydrator() : PreparedTicketHydrator(
+        new HttpClient(new NeverHandler()) { BaseAddress = new Uri("http://localhost/") },
+        new PreparerDatabase(Path.Combine(Path.GetTempPath(), "ignored.db"), NullLogger<PreparerDatabase>.Instance),
+        NullLogger<PreparedTicketHydrator>.Instance)
+    {
+        public List<string> Calls { get; } = [];
+
+        public Func<string, CancellationToken, Task>? OnHydrate { get; set; }
+
+        public override Task HydrateAsync(string ticketKey, CancellationToken ct)
+        {
+            Calls.Add(ticketKey);
+            return OnHydrate is null ? Task.CompletedTask : OnHydrate(ticketKey, ct);
+        }
+    }
+
+    private sealed class NeverHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException("TestHydrator must not invoke the inner HttpClient.");
     }
 }
