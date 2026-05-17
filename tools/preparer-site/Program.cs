@@ -39,14 +39,17 @@ public static class Program
             return 1;
         }
 
-        using LegacyDbBackfill.Result backfill =
-            await LegacyDbBackfill.PrepareAsync(resolvedDb, CancellationToken.None).ConfigureAwait(false);
-        string effectiveDb = backfill.EffectivePath;
+        HydrationPreflight.PreflightResult preflight = await HydrationPreflight.RunAsync(
+            resolvedDb, options, Console.Error, CancellationToken.None).ConfigureAwait(false);
+        if (!preflight.Proceed)
+        {
+            return 1;
+        }
 
         long preparedCount;
         try
         {
-            preparedCount = await CountPreparedTicketsAsync(effectiveDb).ConfigureAwait(false);
+            preparedCount = await CountPreparedTicketsAsync(resolvedDb).ConfigureAwait(false);
         }
         catch (SqliteException ex)
         {
@@ -59,7 +62,7 @@ public static class Program
         ResolvedFilters? filters;
         try
         {
-            filters = await FilterResolver.TryResolveAsync(effectiveDb, options, Console.Error, CancellationToken.None)
+            filters = await FilterResolver.TryResolveAsync(resolvedDb, options, Console.Error, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch (SqliteException ex)
@@ -97,13 +100,13 @@ public static class Program
         if (filters.HasAnyFilter)
         {
             PreparerDbTrimmer.TrimResult trimmed =
-                await PreparerDbTrimmer.TrimAsync(effectiveDb, filters, CancellationToken.None).ConfigureAwait(false);
+                await PreparerDbTrimmer.TrimAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
             dbBytes = trimmed.DbBytes;
             filteredCount = trimmed.SurvivingTicketCount;
         }
         else
         {
-            dbBytes = await File.ReadAllBytesAsync(effectiveDb).ConfigureAwait(false);
+            dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
         }
 
         SiteEmitter.Emit(resolvedOut, title, filters, dbBytes);
