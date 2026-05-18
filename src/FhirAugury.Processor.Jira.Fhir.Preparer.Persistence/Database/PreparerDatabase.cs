@@ -314,6 +314,72 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     }
 
     /// <summary>
+    /// Returns the workgroup display name resolved from
+    /// <c>prepared_ticket_topics.WorkGroupDisplay</c> first, falling
+    /// through to the most-recent <c>prepared_jira_hydration.WorkGroup</c>
+    /// self-row, mirroring the heading logic used by
+    /// <see cref="GetWorkGroupGroupingsAsync"/>. Returns <c>null</c> when
+    /// neither source carries a non-empty display string for
+    /// <paramref name="workGroupClean"/>. Consumed by
+    /// <c>PreparedTicketHydrationController</c>.
+    /// </summary>
+    public async Task<string?> ResolveWorkGroupDisplayNameAsync(string workGroupClean, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        return await ResolveWorkGroupDisplayAsync(connection, workGroupClean, ct);
+    }
+
+    /// <summary>
+    /// Lists the per-ticket display projection over
+    /// <c>prepared_jira_hydration</c> self-rows
+    /// (<c>JiraKey = TicketKey</c>) whose <c>WorkGroup</c> matches
+    /// <paramref name="workGroupClean"/> under the
+    /// <c>REPLACE(IFNULL(WorkGroup, ''), ' ', '')</c> convention used by
+    /// the grouping query. Rows are ordered by <c>TicketKey</c> ascending.
+    /// Returns an empty list (never throws) when no rows match.
+    /// Consumed by the <c>index-prepared-db</c> skill.
+    /// </summary>
+    public async Task<IReadOnlyList<PreparedJiraHydrationRow>> ListJiraHydrationDisplayForWorkGroupAsync(
+        string workGroupClean,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain,
+                   WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason
+            FROM prepared_jira_hydration
+            WHERE JiraKey = TicketKey
+              AND REPLACE(IFNULL(WorkGroup, ''), ' ', '') = @wg
+            ORDER BY TicketKey ASC
+            """;
+        command.Parameters.AddWithValue("@wg", workGroupClean);
+        List<PreparedJiraHydrationRow> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(new PreparedJiraHydrationRow(
+                TicketKey: reader.GetString(0),
+                JiraKey: reader.GetString(1),
+                Title: ReadNullableString(reader, 2),
+                Status: ReadNullableString(reader, 3),
+                Type: ReadNullableString(reader, 4),
+                Priority: ReadNullableString(reader, 5),
+                Resolution: ReadNullableString(reader, 6),
+                ResolutionDescriptionPlain: ReadNullableString(reader, 7),
+                WorkGroup: ReadNullableString(reader, 8),
+                Specification: ReadNullableString(reader, 9),
+                UpdatedAt: reader.IsDBNull(10) ? null : ParseDate(reader.GetString(10)),
+                Url: ReadNullableString(reader, 11),
+                HydratedAt: ParseDate(reader.GetString(12)),
+                HydrationStatus: reader.GetString(13),
+                HydrationReason: ReadNullableString(reader, 14)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
     /// Deletes the partition's topic / group / member rows in a single
     /// transaction. Always succeeds (deleting an empty partition is a
     /// no-op) — matches the source's "regenerate, do not update" stance.
