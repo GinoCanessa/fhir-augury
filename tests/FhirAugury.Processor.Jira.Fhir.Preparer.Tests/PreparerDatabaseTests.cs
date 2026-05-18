@@ -460,6 +460,220 @@ public sealed class PreparerDatabaseTests
         await command.ExecuteNonQueryAsync();
     }
 
+    [Fact]
+    public async Task GetClusteringSignalsAsync_ReturnsNull_WhenWorkgroupHasNoHydration()
+    {
+        using TestDatabase database = CreateDatabase();
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.Null(signals);
+    }
+
+    [Fact]
+    public async Task GetClusteringSignalsAsync_JoinsPreparedSummariesAndLinks()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core",
+            title: "Observation polymorphic value",
+            status: "Open");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-2",
+            jiraKey: "FHIR-2",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core",
+            title: "Companion ticket",
+            status: "Resolved");
+
+        await database.Database.SavePreparedTicketAsync(new PreparedTicketPayload
+        {
+            Key = "FHIR-1",
+            RequestSummary = "request-1",
+            CommentSummary = "comments-1",
+            LinkedTicketSummary = "linked-1",
+            RelatedTicketSummary = "related-1",
+            RelatedZulipSummary = "zulip-1",
+            RelatedGitHubSummary = "github-1",
+            ExistingProposed = "existing-1",
+            ProposalA = "A",
+            ProposalAJustification = "a",
+            ProposalAImpact = "Non-substantive",
+            ProposalB = "B",
+            ProposalBJustification = "b",
+            ProposalBImpact = "Non-substantive",
+            ProposalC = "C",
+            ProposalCJustification = "c",
+            Recommendation = "A",
+            RecommendationJustification = "because",
+            SavedAt = DateTimeOffset.Parse("2026-05-18T00:00:00Z"),
+            RelatedJiraTickets =
+            [
+                new PreparedTicketRelatedJiraPayload { AssociatedTicketKey = "FHIR-2", LinkType = "linked", Justification = "shared field" },
+                new PreparedTicketRelatedJiraPayload { AssociatedTicketKey = "FHIR-9", LinkType = "related", Justification = "near-by" },
+            ],
+        });
+        await database.Database.SavePreparedTicketAsync(new PreparedTicketPayload
+        {
+            Key = "FHIR-2",
+            RequestSummary = "request-2",
+            CommentSummary = "comments-2",
+            LinkedTicketSummary = "linked-2",
+            RelatedTicketSummary = "related-2",
+            RelatedZulipSummary = "zulip-2",
+            RelatedGitHubSummary = "github-2",
+            ExistingProposed = "existing-2",
+            ProposalA = "A",
+            ProposalAJustification = "a",
+            ProposalAImpact = "Non-substantive",
+            ProposalB = "B",
+            ProposalBJustification = "b",
+            ProposalBImpact = "Non-substantive",
+            ProposalC = "C",
+            ProposalCJustification = "c",
+            Recommendation = "A",
+            RecommendationJustification = "because",
+            SavedAt = DateTimeOffset.Parse("2026-05-18T00:00:00Z"),
+        });
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.NotNull(signals);
+        Assert.Equal("OrdersandObservations", signals!.WorkGroupClean);
+        Assert.Equal("Orders and Observations", signals.WorkGroupDisplay);
+        Assert.Equal(2, signals.Tickets.Count);
+
+        PreparedTicketClusteringSignal first = signals.Tickets[0];
+        Assert.Equal("FHIR-1", first.TicketKey);
+        Assert.Equal("Observation polymorphic value", first.Title);
+        Assert.Equal("Open", first.Status);
+        Assert.Equal("FHIR Core", first.Specification);
+        Assert.Equal("Change Request", first.Type);
+        Assert.Equal("request-1", first.RequestSummary);
+        Assert.Equal("comments-1", first.CommentSummary);
+        Assert.True(first.HasPreparedTicket);
+        Assert.Equal(2, first.Links.Count);
+        Assert.Contains(first.Links, l => l.AssociatedTicketKey == "FHIR-2" && l.LinkType == "linked");
+        Assert.Contains(first.Links, l => l.AssociatedTicketKey == "FHIR-9" && l.LinkType == "related");
+
+        PreparedTicketClusteringSignal second = signals.Tickets[1];
+        Assert.Equal("FHIR-2", second.TicketKey);
+        Assert.True(second.HasPreparedTicket);
+        Assert.Empty(second.Links);
+    }
+
+    [Fact]
+    public async Task GetClusteringSignalsAsync_UsesReplaceWorkGroupConvention()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-2",
+            jiraKey: "FHIR-2",
+            workGroup: "Patient Care",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.NotNull(signals);
+        PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
+        Assert.Equal("FHIR-1", only.TicketKey);
+    }
+
+    [Fact]
+    public async Task GetClusteringSignalsAsync_EmitsHydrationOnlyTicketWithEmptySummaries()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.NotNull(signals);
+        PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
+        Assert.Equal("FHIR-1", only.TicketKey);
+        Assert.False(only.HasPreparedTicket);
+        Assert.Equal(string.Empty, only.RequestSummary);
+        Assert.Equal(string.Empty, only.CommentSummary);
+        Assert.Equal(string.Empty, only.LinkedTicketSummary);
+        Assert.Equal(string.Empty, only.RelatedTicketSummary);
+        Assert.Equal(string.Empty, only.RelatedZulipSummary);
+        Assert.Equal(string.Empty, only.RelatedGitHubSummary);
+        Assert.Empty(only.Links);
+    }
+
+    [Fact]
+    public async Task GetClusteringSignalsAsync_IgnoresNonSelfHydrationRowsForLinks()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        // Non-self row: same TicketKey but different JiraKey — must not
+        // double-count or surface a second clustering row.
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-555",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.NotNull(signals);
+        PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
+        Assert.Equal("FHIR-1", only.TicketKey);
+    }
+
+    [Fact]
+    public async Task GetClusteringSignalsAsync_OrdersByTicketKey()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(database.Database, "FHIR-3", "FHIR-3", "Orders and Observations", "Change Request", "FHIR Core");
+        await SeedHydrationRowAsync(database.Database, "FHIR-1", "FHIR-1", "Orders and Observations", "Change Request", "FHIR Core");
+        await SeedHydrationRowAsync(database.Database, "FHIR-2", "FHIR-2", "Orders and Observations", "Change Request", "FHIR Core");
+
+        PreparedTicketClusteringSignals? signals =
+            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+
+        Assert.NotNull(signals);
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], signals!.Tickets.Select(s => s.TicketKey).ToArray());
+    }
+
+    private static async Task SeedHydrationRowAsyncShimToAvoidNameClash(
+        PreparerDatabase database, string ticketKey, string jiraKey, string workGroup, string type, string specification)
+        => await SeedHydrationRowAsync(database, ticketKey, jiraKey, workGroup, type, specification);
+
     private static PreparedTicketHydrationBatch SampleBatch(string ticketKey, string jiraKey = "FHIR-100")
     {
         DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
