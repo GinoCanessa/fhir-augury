@@ -423,3 +423,11 @@ The skill should:
 2. Parse every prep file in that directory and write
    `./cache/output/prep/OrdersAndObservations/README.md`.
 3. Report back with the ticket count and the README path written.
+
+## See also
+
+- [`index-prepared-db`](../index-prepared-db/SKILL.md) — sibling
+  skill that renders the same per-workgroup README from the
+  jira-preparer HTTP API (canonical DB) instead of the on-disk prep
+  files. Pick `index-prepared-db` when you want the preparer DB to
+  be authoritative; pick this skill when you only have prep files.
