@@ -184,6 +184,51 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         return new PreparedTicketHydrationReadModel(parent, jira, zulip, github, repos, xref);
     }
 
+    /// <summary>
+    /// Returns every <c>Key</c> in <c>prepared_tickets</c> in ascending order.
+    /// Used by the hydration sweeper as the inventory pass.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListPreparedTicketKeysAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT Key FROM prepared_tickets ORDER BY Key";
+        List<string> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Returns the set of <c>prepared_tickets.Key</c> values whose
+    /// <c>prepared_ticket_hydration</c> row is either missing or has
+    /// <c>HydrationStatus = 'unresolved'</c>. These are the keys the
+    /// hydration sweeper should re-hydrate.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListUnresolvedOrMissingHydrationKeysAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT t.Key FROM prepared_tickets t
+            LEFT JOIN prepared_ticket_hydration h ON h.TicketKey = t.Key
+            WHERE h.TicketKey IS NULL OR h.HydrationStatus = 'unresolved'
+            ORDER BY t.Key
+            """;
+        List<string> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows;
+    }
+
     public async Task<IReadOnlyList<string>> ListRelatedJiraKeysForTicketAsync(string key, CancellationToken ct = default)
         => await ReadStringColumnAsync(
             "SELECT AssociatedTicketKey FROM prepared_ticket_related_jira WHERE TicketKey = @key ORDER BY AssociatedTicketKey",
