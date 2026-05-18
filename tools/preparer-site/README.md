@@ -107,9 +107,10 @@ single filter banner. Each active filter is a chip with the shape
   build-time flags and are baked into the trimmed DB. They render
   without an `×` button — the underlying data is already trimmed so
   the chip cannot be removed.
-- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`) come from
-  clicking a row in a filterable crosscut column. They render with an
-  `×` button that drops just that one chip and re-renders the view.
+- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`, `impact:`)
+  come from clicking a row in a filterable crosscut column. They
+  render with an `×` button that drops just that one chip and
+  re-renders the view.
 
 Chips compose with logical AND, encoded in the URL hash as a
 `?dim=value&dim2=value` suffix
@@ -119,8 +120,7 @@ contract.
 
 Filterable crosscut columns auto-hide on the landing grid when their
 own dimension is already pinned by a chip OR has only one distinct
-non-`(unknown)` value in the post-chip data set. The non-filterable
-columns (impact) always render when they have data. The `(unknown)`
+non-`(unknown)` value in the post-chip data set. The `(unknown)`
 pseudo-value on a crosscut row toggles a chip with literal value
 `(unknown)`, which matches no tickets and is mainly useful for
 confirming a column has been auto-hidden because all non-unknown

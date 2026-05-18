@@ -14,7 +14,7 @@
   // and `wg` are the three the generation pipeline can pre-pin (baked
   // into the trimmed DB); `artifact` and `page` are in-page-only and
   // surface from clicking crosscut rows (Phase 4).
-  const FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page'];
+  const FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page', 'impact'];
   const GenerationDimensions = ['spec', 'project', 'wg'];
 
   // Each chip value is stored as a list (today: length one). The UX is
@@ -120,16 +120,11 @@
         } else if (parts[0] === 'by-impact') {
           if (parts.length >= 2) {
             const iv = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By impact', href: '#/by-impact' },
-              { label: iv, href: null },
-            ]);
-            Views.list(main, { kind: 'impact', value: iv });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By impact', href: null }]);
-            Views.crosscutIndex(main, 'by-impact');
+            redirectToChipListView('impact', iv);
+            return;
           }
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By impact', href: null }]);
+          Views.crosscutIndex(main, 'by-impact');
         } else if (parts[0] === 'by-specification') {
           if (parts.length >= 2) {
             const sv = decodeURIComponent(parts[1]);
@@ -427,7 +422,7 @@
     },
     'by-impact': {
       title: 'By impact',
-      dim: null,
+      dim: 'impact',
       sql: function (chipKeysSql) {
         return (
           'SELECT k, count(*) AS n FROM (' +
@@ -506,6 +501,15 @@
       case 'page':
         return {
           predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_pages WHERE Value IN (' + inList + '))',
+          params: params,
+        };
+      case 'impact':
+        return {
+          predicate:
+            'pt.Key IN (SELECT Key FROM prepared_tickets WHERE ' +
+            "COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') IN (" + inList + ') ' +
+            'OR ' +
+            "COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') IN (" + inList + '))',
           params: params,
         };
       default:
@@ -629,9 +633,7 @@
         'FROM prepared_tickets pt ' +
         'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key';
 
-      // Compose: any chip-WHERE first, then any legacy `filter` argument
-      // for non-filterable by-X routes that haven't been chipified yet
-      // (impact).
+      // Chip-composed WHERE: every active chip dimension participates.
       const chipBind = buildListChipWhere();
       const wherePredicates = [];
       /** @type {{[k: string]: any}} */
@@ -646,18 +648,6 @@
         heading = 'Filtered ticket list';
       } else {
         heading = 'All prepared tickets';
-      }
-
-      if (filter && filter.kind === 'impact') {
-        if (filter.value === '(unknown)') {
-          wherePredicates.push(
-            "(COALESCE(NULLIF(pt.ProposalAImpact, ''), '(unknown)') = '(unknown)' " +
-            "OR COALESCE(NULLIF(pt.ProposalBImpact, ''), '(unknown)') = '(unknown)')");
-        } else {
-          wherePredicates.push('(pt.ProposalAImpact = $lv OR pt.ProposalBImpact = $lv)');
-          bind.$lv = filter.value;
-        }
-        heading = 'Impact: ' + filter.value;
       }
 
       const where = wherePredicates.length > 0
