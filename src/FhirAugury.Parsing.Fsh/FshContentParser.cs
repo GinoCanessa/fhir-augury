@@ -24,7 +24,7 @@ using FshNameValue = Hl7.FhirShorthand.Serialization.Models.NameValue;
 namespace FhirAugury.Parsing.Fsh;
 
 /// <summary>
-/// Parses FSH files using ANTLR4-based parsing via fsh-processor.
+/// Parses FSH files using ANTLR4-based parsing via the Hl7.FhirShorthand.Serialization package.
 /// Extracts canonical artifact definitions and filters out non-canonical entities.
 /// </summary>
 public static class FshContentParser

@@ -137,7 +137,7 @@ FhirAugury.Parsing.Fhir/
 
 ### `FhirAugury.Parsing.Fsh`
 
-FSH (FHIR Shorthand) parsing library using ANTLR4 via the fsh-processor.
+FSH (FHIR Shorthand) parsing library using ANTLR4 via the Hl7.FhirShorthand.Serialization NuGet package.
 
 ```
 FhirAugury.Parsing.Fsh/

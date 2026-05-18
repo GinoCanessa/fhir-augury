@@ -84,7 +84,7 @@ FhirAugury.Source.Confluence   ← Common + ServiceDefaults (HTTP API controller
 FhirAugury.Source.GitHub       ← Common + ServiceDefaults (HTTP API controllers)
     ↑
 FhirAugury.Parsing.Fhir       ← Standalone library (Hl7.Fhir.R5 SDK)
-FhirAugury.Parsing.Fsh        ← Standalone library (fsh-processor ANTLR4 parser)
+FhirAugury.Parsing.Fsh        ← Standalone library (Hl7.FhirShorthand.Serialization NuGet package)
     ↑                            Both used by Source.GitHub for artifact indexing
 FhirAugury.Orchestrator        ← Common + ServiceDefaults (HTTP API, consumes source HTTP APIs)
     ↑
