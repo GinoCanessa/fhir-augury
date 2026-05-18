@@ -355,13 +355,62 @@ public sealed class PreparerSiteFilterTests
         // by-recommendation must be gone from the Crosscuts map and the
         // landing-grid order list.
         Assert.DoesNotContain("'by-recommendation'", appJs, StringComparison.Ordinal);
+        // The two pruned facets must be gone end-to-end.
+        Assert.DoesNotContain("'by-github-state'", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("'by-hydration-status'", appJs, StringComparison.Ordinal);
         // The two new filterable crosscut columns must be present.
         Assert.Contains("'by-artifact'", appJs, StringComparison.Ordinal);
         Assert.Contains("'by-page'", appJs, StringComparison.Ordinal);
+        // Impact is now wired as a filter dimension.
+        Assert.Contains("'impact'", appJs, StringComparison.Ordinal);
         // The new in-place chip-toggle wiring must be present.
         Assert.Contains("toggleChip", appJs, StringComparison.Ordinal);
         Assert.Contains("buildChipKeysSubquery", appJs, StringComparison.Ordinal);
         Assert.Contains("Show Ticket List", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_BundledAppJs_PromotesImpactToChipDimension()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // Pin the FilterableDimensions array literal exactly so a future
+        // reorder or accidental drop of 'impact' is caught.
+        Assert.Contains(
+            "FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page', 'impact']",
+            appJs,
+            StringComparison.Ordinal);
+        // Pin the chip predicate switch case and its underlying impact
+        // columns.
+        Assert.Contains("case 'impact':", appJs, StringComparison.Ordinal);
+        Assert.Contains("ProposalAImpact", appJs, StringComparison.Ordinal);
+        Assert.Contains("ProposalBImpact", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_BundledAppJs_UsesRepeatedKeyChipEncoding()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // New encoder uses URLSearchParams.append per value; decoder uses
+        // .getAll(dim). The old comma-joined form must not return.
+        Assert.Contains("params.append(", appJs, StringComparison.Ordinal);
+        Assert.Contains(".getAll(", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("values.join(',')", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
