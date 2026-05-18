@@ -10,6 +10,7 @@ namespace FhirAugury.Processing.Jira.Common.Database.Records;
 [LdgSQLiteIndex(nameof(Status))]
 [LdgSQLiteIndex(nameof(WorkGroup))]
 [LdgSQLiteIndex(nameof(Type))]
+[LdgSQLiteIndex(nameof(Specification))]
 [LdgSQLiteIndex(nameof(SourceTicketShape))]
 [LdgSQLiteIndex(nameof(LastUpdated))]
 [LdgSQLiteIndex(nameof(ProcessingStatus))]
@@ -30,6 +31,7 @@ public partial record class JiraProcessingSourceTicketRecord : IProcessingWorkIt
     public string Status { get; set; } = string.Empty;
     public string WorkGroup { get; set; } = string.Empty;
     public string Type { get; set; } = string.Empty;
+    public string Specification { get; set; } = string.Empty;
     public string SourceTicketShape { get; set; } = "fhir";
     public DateTimeOffset LastSyncedAt { get; set; }
     public DateTimeOffset? LastUpdated { get; set; }

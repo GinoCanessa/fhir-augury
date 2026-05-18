@@ -12,7 +12,6 @@ public sealed class JiraProcessingDatabase(string dbPath, ILogger<JiraProcessing
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
-        JiraProcessingSourceTicketRecord.CreateTable(connection);
-        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        JiraProcessingSourceTicketStore.EnsureSchema(connection);
     }
 }

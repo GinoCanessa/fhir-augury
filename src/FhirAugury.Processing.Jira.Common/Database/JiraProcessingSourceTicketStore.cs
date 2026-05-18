@@ -1,5 +1,6 @@
 using System.Globalization;
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Database;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Configuration;
@@ -323,8 +324,39 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_dbPath)) ?? ".");
         using SqliteConnection connection = OpenConnection();
+        EnsureSchema(connection);
+    }
+
+    /// <summary>
+    /// Idempotently creates / migrates the <c>jira_processing_source_tickets</c>
+    /// table. Adds the <c>Specification</c> column on legacy DBs *before*
+    /// invoking <see cref="JiraProcessingSourceTicketRecord.CreateTable"/>,
+    /// because the generated CreateTable issues
+    /// <c>CREATE INDEX IF NOT EXISTS ... (Specification)</c> which would
+    /// otherwise fail on a pre-feature schema.
+    /// </summary>
+    public static void EnsureSchema(SqliteConnection connection)
+    {
+        if (TableExists(connection, "jira_processing_source_tickets"))
+        {
+            SqliteSchemaHelpers.AddColumnIfMissing(
+                connection,
+                "jira_processing_source_tickets",
+                "Specification",
+                "TEXT NOT NULL DEFAULT ''");
+        }
+
         JiraProcessingSourceTicketRecord.CreateTable(connection);
         EnsureCompositeUniqueIndex(connection);
+    }
+
+    private static bool TableExists(SqliteConnection connection, string table)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @name";
+        command.Parameters.AddWithValue("@name", table);
+        object? value = command.ExecuteScalar();
+        return value is not null && value != DBNull.Value;
     }
 
     /// <summary>
