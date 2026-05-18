@@ -16,6 +16,7 @@ internal static class PreparerDbTrimmer
         "prepared_github_hydration",
         "prepared_repo_hydration",
         "prepared_ticket_repos",
+        "prepared_ticket_topic_members",
     ];
 
     public sealed record BuildResult(string TempDbPath, long SurvivingTicketCount);
