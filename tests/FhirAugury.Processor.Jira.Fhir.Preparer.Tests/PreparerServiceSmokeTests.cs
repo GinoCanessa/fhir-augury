@@ -30,6 +30,21 @@ public sealed class PreparerServiceSmokeTests
     }
 
     [Fact]
+    public async Task HydrationAdminEndpoint_ReturnsAccepted_WhenSpecBackfillNoOps()
+    {
+        // Default smoke TestApp pins BackfillOnStartup=false and seeds no
+        // jira_processing_source_tickets with empty Specification, so the
+        // admin endpoint's synchronous spec phase short-circuits to no-op
+        // and returns 202.
+        using TestApp app = new();
+        HttpClient client = app.Factory.CreateClient();
+
+        HttpResponseMessage response = await client.PostAsync("/api/v1/admin/hydration/backfill", null);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
     public async Task PreparedTicketsApi_CanQueryPersistedRows()
     {
         using TestApp app = new();
