@@ -143,6 +143,687 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    /// <summary>
+    /// Atomically replaces the grouping rows for the
+    /// <c>(WorkGroupClean, Specification, Type)</c> partition described by
+    /// <paramref name="payload"/>. Validates the payload first, then verifies
+    /// that every referenced ticket key exists in <c>prepared_tickets</c>; if
+    /// any are missing, throws <see cref="ArgumentException"/> before any
+    /// mutation. Inside a single <c>BEGIN IMMEDIATE</c> transaction the
+    /// partition's existing topic / group / member rows are deleted and the
+    /// new ones inserted.
+    /// </summary>
+    public async Task<PreparedTicketGroupingSaveResult> SaveGroupingAsync(PreparedTicketGroupingPayload payload, CancellationToken ct = default)
+    {
+        PreparedTicketGroupingPayloadValidator.ThrowIfInvalid(payload);
+        DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
+
+        await using SqliteConnection connection = OpenConnection();
+
+        IReadOnlyList<string> referencedKeys = CollectReferencedTicketKeys(payload);
+        if (referencedKeys.Count > 0)
+        {
+            IReadOnlyList<string> missing = await FindMissingPreparedTicketKeysAsync(connection, referencedKeys, ct);
+            if (missing.Count > 0)
+            {
+                throw new ArgumentException($"Unknown prepared ticket keys: {string.Join(", ", missing)}.", nameof(payload));
+            }
+        }
+
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_topic_members
+                WHERE TopicRowId IN (
+                    SELECT RowId FROM prepared_ticket_topics
+                    WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type
+                )
+                """,
+                ct,
+                ("@wg", payload.WorkGroupClean),
+                ("@spec", payload.Specification),
+                ("@type", payload.Type));
+
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_topic_groups
+                WHERE TopicRowId IN (
+                    SELECT RowId FROM prepared_ticket_topics
+                    WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type
+                )
+                """,
+                ct,
+                ("@wg", payload.WorkGroupClean),
+                ("@spec", payload.Specification),
+                ("@type", payload.Type));
+
+            await ExecuteAsync(
+                connection,
+                "DELETE FROM prepared_ticket_topics WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type",
+                ct,
+                ("@wg", payload.WorkGroupClean),
+                ("@spec", payload.Specification),
+                ("@type", payload.Type));
+
+            int topicRows = 0;
+            int topicGroupRows = 0;
+            int memberRows = 0;
+            foreach (PreparedTicketTopicPayload topic in payload.Topics)
+            {
+                int topicRowId = await InsertTopicAsync(connection, payload, topic, savedAt, ct);
+                topicRows++;
+                for (int groupIndex = 0; groupIndex < topic.LinkedTicketGroups.Count; groupIndex++)
+                {
+                    PreparedTicketTopicGroupPayload group = topic.LinkedTicketGroups[groupIndex];
+                    int groupRowId = await InsertTopicGroupAsync(connection, topicRowId, groupIndex, group, savedAt, ct);
+                    topicGroupRows++;
+                    foreach (PreparedTicketTopicGroupMemberPayload member in group.Members)
+                    {
+                        await InsertTopicMemberAsync(connection, topicRowId, groupRowId, member.TicketKey, member.Order, ct);
+                        memberRows++;
+                    }
+                }
+
+                for (int remainingIndex = 0; remainingIndex < topic.RemainingTicketKeys.Count; remainingIndex++)
+                {
+                    string remainingKey = topic.RemainingTicketKeys[remainingIndex];
+                    await InsertTopicMemberAsync(connection, topicRowId, topicGroupRowId: null, remainingKey, remainingIndex, ct);
+                    memberRows++;
+                }
+            }
+
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return new PreparedTicketGroupingSaveResult(
+                payload.WorkGroupClean,
+                payload.Specification,
+                payload.Type,
+                topicRows,
+                topicGroupRows,
+                memberRows);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Reads the full grouping shape for a single
+    /// <c>(WorkGroupClean, Specification, Type)</c> partition. Returns
+    /// <c>null</c> only when the partition has no topic rows <em>and</em> no
+    /// prep tickets attributable to it via the
+    /// <c>prepared_jira_hydration</c> self-join. Topics are sorted in C#:
+    /// hinted topics first (ascending by hint); unhinted topics second,
+    /// sorted descending by total member count and then ascending by
+    /// short description (ordinal-ignore-case).
+    /// </summary>
+    /// <remarks>
+    /// The <c>WorkGroupClean</c> → <c>WorkGroup</c> display-name mapping
+    /// is convention-bound: <c>REPLACE(j.WorkGroup, ' ', '') = @wg</c>,
+    /// matching the <c>nameClean</c> convention used by
+    /// <c>orchestrate-prep</c>. Tickets with no self-row in
+    /// <c>prepared_jira_hydration</c> (<c>JiraKey = TicketKey</c>) are
+    /// counted in <c>UnattributedTicketCount</c> but are intentionally
+    /// excluded from <c>IndividualTicketKeys</c>.
+    /// </remarks>
+    public async Task<PreparedTicketGroupingPartition?> GetGroupingAsync(string workGroupClean, string specification, string type, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        PreparedTicketGroupingPartition? partition = await BuildPartitionAsync(connection, workGroupClean, workGroupDisplay: null, specification, type, ct);
+        if (partition is null)
+        {
+            return null;
+        }
+
+        return partition;
+    }
+
+    /// <summary>
+    /// Workgroup-wide aggregate. Discovers all <c>(Specification, Type)</c>
+    /// partitions that either have topic rows or have at least one
+    /// hydrated prep ticket attributable to the workgroup. Returns
+    /// <c>null</c> when neither source produces a row.
+    /// </summary>
+    public async Task<PreparedTicketGroupingWorkGroupView?> GetWorkGroupGroupingsAsync(string workGroupClean, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        IReadOnlyList<(string Specification, string Type)> partitions = await DiscoverWorkGroupPartitionsAsync(connection, workGroupClean, ct);
+        string? workGroupDisplay = await ResolveWorkGroupDisplayAsync(connection, workGroupClean, ct);
+        if (partitions.Count == 0 && workGroupDisplay is null)
+        {
+            return null;
+        }
+
+        string displayName = workGroupDisplay ?? workGroupClean;
+        List<PreparedTicketGroupingPartition> built = [];
+        foreach ((string specification, string type) in partitions)
+        {
+            PreparedTicketGroupingPartition? partition = await BuildPartitionAsync(connection, workGroupClean, displayName, specification, type, ct);
+            if (partition is not null)
+            {
+                built.Add(partition);
+            }
+        }
+
+        return new PreparedTicketGroupingWorkGroupView(workGroupClean, displayName, built);
+    }
+
+    /// <summary>
+    /// Deletes the partition's topic / group / member rows in a single
+    /// transaction. Always succeeds (deleting an empty partition is a
+    /// no-op) — matches the source's "regenerate, do not update" stance.
+    /// </summary>
+    public async Task DeleteGroupingAsync(string workGroupClean, string specification, string type, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_topic_members
+                WHERE TopicRowId IN (
+                    SELECT RowId FROM prepared_ticket_topics
+                    WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type
+                )
+                """,
+                ct,
+                ("@wg", workGroupClean),
+                ("@spec", specification),
+                ("@type", type));
+
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_topic_groups
+                WHERE TopicRowId IN (
+                    SELECT RowId FROM prepared_ticket_topics
+                    WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type
+                )
+                """,
+                ct,
+                ("@wg", workGroupClean),
+                ("@spec", specification),
+                ("@type", type));
+
+            await ExecuteAsync(
+                connection,
+                "DELETE FROM prepared_ticket_topics WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type",
+                ct,
+                ("@wg", workGroupClean),
+                ("@spec", specification),
+                ("@type", type));
+
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static IReadOnlyList<string> CollectReferencedTicketKeys(PreparedTicketGroupingPayload payload)
+    {
+        HashSet<string> set = new(StringComparer.Ordinal);
+        foreach (PreparedTicketTopicPayload topic in payload.Topics)
+        {
+            foreach (PreparedTicketTopicGroupPayload group in topic.LinkedTicketGroups)
+            {
+                foreach (PreparedTicketTopicGroupMemberPayload member in group.Members)
+                {
+                    set.Add(member.TicketKey);
+                }
+            }
+
+            foreach (string remaining in topic.RemainingTicketKeys)
+            {
+                set.Add(remaining);
+            }
+        }
+
+        return [.. set];
+    }
+
+    private static async Task<IReadOnlyList<string>> FindMissingPreparedTicketKeysAsync(SqliteConnection connection, IReadOnlyList<string> keys, CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        List<string> parameterNames = new(keys.Count);
+        for (int i = 0; i < keys.Count; i++)
+        {
+            string name = $"@k{i}";
+            parameterNames.Add(name);
+            command.Parameters.AddWithValue(name, keys[i]);
+        }
+
+        command.CommandText = $"SELECT Key FROM prepared_tickets WHERE Key IN ({string.Join(", ", parameterNames)})";
+        HashSet<string> found = new(StringComparer.Ordinal);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            found.Add(reader.GetString(0));
+        }
+
+        List<string> missing = [];
+        foreach (string key in keys)
+        {
+            if (!found.Contains(key))
+            {
+                missing.Add(key);
+            }
+        }
+
+        missing.Sort(StringComparer.Ordinal);
+        return missing;
+    }
+
+    private static async Task<int> InsertTopicAsync(SqliteConnection connection, PreparedTicketGroupingPayload payload, PreparedTicketTopicPayload topic, DateTimeOffset savedAt, CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO prepared_ticket_topics
+            (Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint, SavedAt)
+            VALUES
+            (@Id, @WorkGroupClean, @WorkGroupDisplay, @Specification, @Type, @ShortDescription, @LongerDescription, @RenderOrderHint, @SavedAt);
+            SELECT last_insert_rowid();
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@WorkGroupClean", payload.WorkGroupClean);
+        command.Parameters.AddWithValue("@WorkGroupDisplay", payload.WorkGroupDisplay);
+        command.Parameters.AddWithValue("@Specification", payload.Specification);
+        command.Parameters.AddWithValue("@Type", payload.Type);
+        command.Parameters.AddWithValue("@ShortDescription", topic.ShortDescription);
+        command.Parameters.AddWithValue("@LongerDescription", topic.LongerDescription);
+        command.Parameters.AddWithValue("@RenderOrderHint", (object?)topic.RenderOrderHint ?? DBNull.Value);
+        command.Parameters.AddWithValue("@SavedAt", Format(savedAt));
+        object? scalar = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<int> InsertTopicGroupAsync(SqliteConnection connection, int topicRowId, int orderInTopic, PreparedTicketTopicGroupPayload group, DateTimeOffset savedAt, CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO prepared_ticket_topic_groups
+            (Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic, SavedAt)
+            VALUES
+            (@Id, @TopicRowId, @FirstTicketKey, @Rationale, @OrderInTopic, @SavedAt);
+            SELECT last_insert_rowid();
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@TopicRowId", topicRowId);
+        command.Parameters.AddWithValue("@FirstTicketKey", group.FirstTicketKey);
+        command.Parameters.AddWithValue("@Rationale", group.Rationale);
+        command.Parameters.AddWithValue("@OrderInTopic", orderInTopic);
+        command.Parameters.AddWithValue("@SavedAt", Format(savedAt));
+        object? scalar = await command.ExecuteScalarAsync(ct);
+        return Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task InsertTopicMemberAsync(SqliteConnection connection, int topicRowId, int? topicGroupRowId, string ticketKey, int orderInContainer, CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO prepared_ticket_topic_members
+            (Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer)
+            VALUES
+            (@Id, @TopicRowId, @TopicGroupRowId, @TicketKey, @OrderInContainer)
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@TopicRowId", topicRowId);
+        command.Parameters.AddWithValue("@TopicGroupRowId", (object?)topicGroupRowId ?? DBNull.Value);
+        command.Parameters.AddWithValue("@TicketKey", ticketKey);
+        command.Parameters.AddWithValue("@OrderInContainer", orderInContainer);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<PreparedTicketGroupingPartition?> BuildPartitionAsync(SqliteConnection connection, string workGroupClean, string? workGroupDisplay, string specification, string type, CancellationToken ct)
+    {
+        List<TopicRow> topicRows = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT RowId, Id, WorkGroupDisplay, ShortDescription, LongerDescription, RenderOrderHint, SavedAt
+                FROM prepared_ticket_topics
+                WHERE WorkGroupClean = @wg AND Specification = @spec AND Type = @type
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            command.Parameters.AddWithValue("@spec", specification);
+            command.Parameters.AddWithValue("@type", type);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                topicRows.Add(new TopicRow(
+                    RowId: reader.GetInt32(0),
+                    Id: reader.GetString(1),
+                    WorkGroupDisplay: reader.GetString(2),
+                    ShortDescription: reader.GetString(3),
+                    LongerDescription: reader.GetString(4),
+                    RenderOrderHint: reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    SavedAt: DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)));
+            }
+        }
+
+        List<string> individualKeys = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT t.Key
+                FROM prepared_tickets t
+                INNER JOIN prepared_jira_hydration j
+                  ON j.TicketKey = t.Key AND j.JiraKey = t.Key
+                WHERE REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                  AND IFNULL(j.Type, '') = @type
+                  AND IFNULL(j.Specification, 'Unspecified') = @spec
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM prepared_ticket_topic_members m
+                      INNER JOIN prepared_ticket_topics topic ON topic.RowId = m.TopicRowId
+                      WHERE m.TicketKey = t.Key
+                        AND topic.WorkGroupClean = @wg
+                        AND topic.Specification = @spec
+                        AND topic.Type = @type
+                  )
+                ORDER BY t.Key
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            command.Parameters.AddWithValue("@spec", specification);
+            command.Parameters.AddWithValue("@type", type);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                individualKeys.Add(reader.GetString(0));
+            }
+        }
+
+        int unattributedCount;
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT COUNT(*) FROM prepared_tickets t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM prepared_jira_hydration j
+                    WHERE j.TicketKey = t.Key AND j.JiraKey = t.Key
+                )
+                """;
+            object? scalar = await command.ExecuteScalarAsync(ct);
+            unattributedCount = Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+        }
+
+        if (topicRows.Count == 0 && individualKeys.Count == 0)
+        {
+            return null;
+        }
+
+        List<PreparedTicketTopic> topics = [];
+        DateTimeOffset? lastSavedAt = null;
+        foreach (TopicRow topicRow in topicRows)
+        {
+            (IReadOnlyList<PreparedTicketTopicGroup> groups, IReadOnlyList<string> remaining) = await LoadTopicContentsAsync(connection, topicRow.RowId, ct);
+            topics.Add(new PreparedTicketTopic(
+                topicRow.Id,
+                topicRow.ShortDescription,
+                topicRow.LongerDescription,
+                topicRow.RenderOrderHint,
+                topicRow.SavedAt,
+                groups,
+                remaining));
+            if (lastSavedAt is null || topicRow.SavedAt > lastSavedAt.Value)
+            {
+                lastSavedAt = topicRow.SavedAt;
+            }
+        }
+
+        topics.Sort((a, b) =>
+        {
+            bool aHinted = a.RenderOrderHint.HasValue;
+            bool bHinted = b.RenderOrderHint.HasValue;
+            if (aHinted && bHinted)
+            {
+                int byHint = a.RenderOrderHint!.Value.CompareTo(b.RenderOrderHint!.Value);
+                if (byHint != 0)
+                {
+                    return byHint;
+                }
+
+                return string.Compare(a.ShortDescription, b.ShortDescription, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (aHinted != bHinted)
+            {
+                return aHinted ? -1 : 1;
+            }
+
+            int aTotal = TopicTotalCount(a);
+            int bTotal = TopicTotalCount(b);
+            int byCount = bTotal.CompareTo(aTotal);
+            if (byCount != 0)
+            {
+                return byCount;
+            }
+
+            return string.Compare(a.ShortDescription, b.ShortDescription, StringComparison.OrdinalIgnoreCase);
+        });
+
+        string resolvedDisplay = workGroupDisplay
+            ?? (topicRows.Count > 0 ? topicRows[0].WorkGroupDisplay : workGroupClean);
+
+        return new PreparedTicketGroupingPartition(
+            workGroupClean,
+            resolvedDisplay,
+            specification,
+            type,
+            topics,
+            individualKeys,
+            unattributedCount,
+            lastSavedAt);
+    }
+
+    private static int TopicTotalCount(PreparedTicketTopic topic)
+    {
+        int total = topic.RemainingTicketKeys.Count;
+        foreach (PreparedTicketTopicGroup group in topic.LinkedTicketGroups)
+        {
+            total += group.Members.Count;
+        }
+
+        return total;
+    }
+
+    private static async Task<(IReadOnlyList<PreparedTicketTopicGroup> Groups, IReadOnlyList<string> Remaining)> LoadTopicContentsAsync(SqliteConnection connection, int topicRowId, CancellationToken ct)
+    {
+        List<TopicGroupRow> groupRows = [];
+        Dictionary<int, List<PreparedTicketTopicGroupMember>> membersByGroupRowId = [];
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT RowId, Id, FirstTicketKey, Rationale, OrderInTopic, SavedAt
+                FROM prepared_ticket_topic_groups
+                WHERE TopicRowId = @topic
+                ORDER BY OrderInTopic
+                """;
+            command.Parameters.AddWithValue("@topic", topicRowId);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                int rowId = reader.GetInt32(0);
+                List<PreparedTicketTopicGroupMember> members = [];
+                membersByGroupRowId[rowId] = members;
+                groupRows.Add(new TopicGroupRow(
+                    RowId: rowId,
+                    Id: reader.GetString(1),
+                    FirstTicketKey: reader.GetString(2),
+                    Rationale: reader.GetString(3),
+                    OrderInTopic: reader.GetInt32(4),
+                    SavedAt: DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                    Members: members));
+            }
+        }
+
+        List<string> remaining = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT TopicGroupRowId, TicketKey, OrderInContainer
+                FROM prepared_ticket_topic_members
+                WHERE TopicRowId = @topic
+                ORDER BY (TopicGroupRowId IS NULL), TopicGroupRowId, OrderInContainer
+                """;
+            command.Parameters.AddWithValue("@topic", topicRowId);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string ticketKey = reader.GetString(1);
+                int order = reader.GetInt32(2);
+                if (reader.IsDBNull(0))
+                {
+                    remaining.Add(ticketKey);
+                    continue;
+                }
+
+                int groupRowId = reader.GetInt32(0);
+                if (membersByGroupRowId.TryGetValue(groupRowId, out List<PreparedTicketTopicGroupMember>? bucket))
+                {
+                    bucket.Add(new PreparedTicketTopicGroupMember(ticketKey, order));
+                }
+            }
+        }
+
+        List<PreparedTicketTopicGroup> groups = new(groupRows.Count);
+        foreach (TopicGroupRow row in groupRows)
+        {
+            groups.Add(new PreparedTicketTopicGroup(
+                row.Id,
+                row.FirstTicketKey,
+                row.Rationale,
+                row.OrderInTopic,
+                row.SavedAt,
+                row.Members));
+        }
+
+        return (groups, remaining);
+    }
+
+    private static async Task<IReadOnlyList<(string Specification, string Type)>> DiscoverWorkGroupPartitionsAsync(SqliteConnection connection, string workGroupClean, CancellationToken ct)
+    {
+        HashSet<(string, string)> seen = [];
+        List<(string, string)> ordered = [];
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT DISTINCT Specification, Type
+                FROM prepared_ticket_topics
+                WHERE WorkGroupClean = @wg
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                (string, string) tuple = (reader.GetString(0), reader.GetString(1));
+                if (seen.Add(tuple))
+                {
+                    ordered.Add(tuple);
+                }
+            }
+        }
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT DISTINCT IFNULL(j.Specification, 'Unspecified'), IFNULL(j.Type, '')
+                FROM prepared_jira_hydration j
+                WHERE j.JiraKey = j.TicketKey
+                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                  AND j.Type IS NOT NULL AND j.Type <> ''
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                (string, string) tuple = (reader.GetString(0), reader.GetString(1));
+                if (seen.Add(tuple))
+                {
+                    ordered.Add(tuple);
+                }
+            }
+        }
+
+        ordered.Sort((a, b) =>
+        {
+            int bySpec = string.Compare(a.Item1, b.Item1, StringComparison.OrdinalIgnoreCase);
+            if (bySpec != 0)
+            {
+                return bySpec;
+            }
+
+            return string.Compare(a.Item2, b.Item2, StringComparison.OrdinalIgnoreCase);
+        });
+        return ordered;
+    }
+
+    private static async Task<string?> ResolveWorkGroupDisplayAsync(SqliteConnection connection, string workGroupClean, CancellationToken ct)
+    {
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT WorkGroupDisplay FROM prepared_ticket_topics
+                WHERE WorkGroupClean = @wg
+                ORDER BY SavedAt DESC LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            object? scalar = await command.ExecuteScalarAsync(ct);
+            if (scalar is string display && !string.IsNullOrWhiteSpace(display))
+            {
+                return display;
+            }
+        }
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT j.WorkGroup FROM prepared_jira_hydration j
+                WHERE j.JiraKey = j.TicketKey
+                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                ORDER BY j.HydratedAt DESC LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            object? scalar = await command.ExecuteScalarAsync(ct);
+            if (scalar is string display && !string.IsNullOrWhiteSpace(display))
+            {
+                return display;
+            }
+        }
+
+        return null;
+    }
+
+    private readonly record struct TopicRow(
+        int RowId,
+        string Id,
+        string WorkGroupDisplay,
+        string ShortDescription,
+        string LongerDescription,
+        int? RenderOrderHint,
+        DateTimeOffset SavedAt);
+
+    private sealed record TopicGroupRow(
+        int RowId,
+        string Id,
+        string FirstTicketKey,
+        string Rationale,
+        int OrderInTopic,
+        DateTimeOffset SavedAt,
+        List<PreparedTicketTopicGroupMember> Members);
+
+
     public async Task<bool> PreparedTicketExistsAsync(string key, CancellationToken ct = default)
     {
         await using SqliteConnection connection = OpenConnection();
@@ -719,6 +1400,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             await ExecuteAsync(connection, $"DELETE FROM {table} WHERE TicketKey = @key", ct, ("@key", key));
         }
+
+        // Grouping cascade: a per-ticket overwrite removes the ticket's
+        // grouping-member rows so it cannot remain pinned to a Topic / Linked
+        // Ticket Group that no longer represents its current state. Topic and
+        // group rows are intentionally left in place — source guidance is
+        // "re-runs replace, do not merge"; the next per-partition PUT will
+        // overwrite stale topic rows wholesale.
+        await ExecuteAsync(connection, "DELETE FROM prepared_ticket_topic_members WHERE TicketKey = @key", ct, ("@key", key));
 
         await ExecuteAsync(connection, "DELETE FROM prepared_tickets WHERE Key = @key", ct, ("@key", key));
     }
