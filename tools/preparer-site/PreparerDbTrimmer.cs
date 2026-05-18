@@ -18,9 +18,17 @@ internal static class PreparerDbTrimmer
         "prepared_ticket_repos",
     ];
 
-    public sealed record TrimResult(byte[] DbBytes, long SurvivingTicketCount);
+    public sealed record BuildResult(byte[] DbBytes, long SurvivingTicketCount);
 
-    public static async Task<TrimResult> TrimAsync(
+    /// <summary>
+    /// Copies the source preparer DB to a temp file, runs the filter-aware
+    /// trim (which is a no-op when all <paramref name="filters"/> are
+    /// inactive — the WHERE predicates collapse to TRUE), vacuums, and
+    /// returns the resulting bytes along with the surviving ticket count.
+    /// The pipeline always runs so downstream backfill steps can hang off
+    /// of it; with no filters the surviving count equals the source count.
+    /// </summary>
+    public static async Task<BuildResult> BuildAsync(
         string sourceDbPath,
         ResolvedFilters filters,
         CancellationToken ct)
@@ -112,7 +120,7 @@ internal static class PreparerDbTrimmer
             SqliteConnection.ClearAllPools();
 
             byte[] bytes = await File.ReadAllBytesAsync(tempPath, ct).ConfigureAwait(false);
-            return new TrimResult(bytes, surviving);
+            return new BuildResult(bytes, surviving);
         }
         finally
         {

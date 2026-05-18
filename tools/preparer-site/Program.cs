@@ -101,19 +101,15 @@ public static class Program
             }
         }
 
-        byte[] dbBytes;
-        long? filteredCount = null;
-        if (filters.HasAnyFilter)
-        {
-            PreparerDbTrimmer.TrimResult trimmed =
-                await PreparerDbTrimmer.TrimAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
-            dbBytes = trimmed.DbBytes;
-            filteredCount = trimmed.SurvivingTicketCount;
-        }
-        else
-        {
-            dbBytes = await File.ReadAllBytesAsync(resolvedDb).ConfigureAwait(false);
-        }
+        // Always run through the temp-DB build pipeline so that downstream
+        // steps (related-fields backfill in a later phase) have a consistent
+        // seam to hang off of. With no active filters the trim DELETE is a
+        // no-op (its WHERE clause collapses to TRUE for NULL bound params)
+        // and the surviving count equals the source count.
+        PreparerDbTrimmer.BuildResult built =
+            await PreparerDbTrimmer.BuildAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
+        byte[] dbBytes = built.DbBytes;
+        long? filteredCount = filters.HasAnyFilter ? built.SurvivingTicketCount : null;
 
         SiteEmitter.Emit(resolvedOut, title, filters, dbBytes);
         OutputDirGuard.WriteMarker(resolvedOut, filters, DateTimeOffset.UtcNow);

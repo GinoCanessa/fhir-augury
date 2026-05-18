@@ -98,6 +98,35 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
+    public async Task Emit_WithoutFilters_StillRoundTripsAllTickets()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath, ticketCount: 3);
+
+        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string base64 = ExtractInlinedDbBase64(html);
+        byte[] dbBytes = Convert.FromBase64String(base64);
+
+        string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            await File.WriteAllBytesAsync(tempDbPath, dbBytes);
+            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+            await conn.OpenAsync();
+            Assert.Equal(3, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_tickets"));
+            Assert.Equal(3, await ReadCountAsync(conn,
+                "SELECT COUNT(*) FROM jira_processing_source_tickets"));
+        }
+        finally
+        {
+            try { File.Delete(tempDbPath); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
     public async Task Emit_WritesIndexHtml_WithInlinedDb()
     {
         using TempScope scope = new();
