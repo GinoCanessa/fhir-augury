@@ -10,7 +10,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\brianpos-fsh-processor\fsh-processor\Hl7.FhirShorthand.Serialization.csproj" />
+    <PackageReference Include="Hl7.FhirShorthand.Serialization" Version="1.0.0-alpha.1" />
   </ItemGroup>
 
 </Project>
