@@ -143,3 +143,27 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   color: var(--fg);
   outline: none;
 }
+.summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.summary-row .show-ticket-list {
+  font-size: 0.9rem;
+}
+.crosscut-row {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--link);
+  text-align: left;
+  cursor: pointer;
+}
+.crosscut-row:hover,
+.crosscut-row:focus {
+  text-decoration: underline;
+  outline: none;
+}

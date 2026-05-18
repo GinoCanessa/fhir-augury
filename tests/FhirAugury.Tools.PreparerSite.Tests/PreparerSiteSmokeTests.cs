@@ -508,6 +508,98 @@ public sealed class PreparerSiteSmokeTests
         }
     }
 
+    [Fact]
+    public async Task InlinedDb_ArtifactCrosscut_GroupsAndCounts()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        string jiraSourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-src.db");
+        try
+        {
+            // T1 (FHIR-1001): Observation, Patient.
+            // T2 (FHIR-1002): Observation.
+            await CreateFakeJiraSourceDbAsync(jiraSourcePath, new Dictionary<string, string?>
+            {
+                ["FHIR-1001"] = "Observation, Patient",
+                ["FHIR-1002"] = "Observation",
+            });
+
+            int exit = await Program.Main([
+                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--jira-source-db", jiraSourcePath,
+            ]);
+            Assert.Equal(0, exit);
+
+            await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+            // Mirror the SPA's by-artifact crosscut SQL (no chip WHERE here).
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n " +
+                "FROM prepared_ticket_artifacts " +
+                "WHERE TicketKey IN (SELECT Key FROM prepared_tickets) " +
+                "GROUP BY Value ORDER BY n DESC, k";
+            await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+            List<(string K, long N)> rows = [];
+            while (await reader.ReadAsync())
+            {
+                rows.Add((reader.GetString(0), reader.GetInt64(1)));
+            }
+            Assert.Equal(new[] { ("Observation", 2L), ("Patient", 1L) }, rows);
+        }
+        finally
+        {
+            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task InlinedDb_PageCrosscut_GroupsAndCounts()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        string jiraSourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-src.db");
+        try
+        {
+            // jira_baldef rows seeded: FHIR-1001 → security; FHIR-1002 →
+            // security, terminologies.
+            await CreateFakeJiraSourceDbAsync(
+                jiraSourcePath,
+                artifactsByKey: new Dictionary<string, string?>(),
+                baldefByKey: new Dictionary<string, (string?, string?)>
+                {
+                    ["FHIR-1001"] = (null, "security"),
+                    ["FHIR-1002"] = (null, "security, terminologies"),
+                });
+
+            int exit = await Program.Main([
+                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--jira-source-db", jiraSourcePath,
+            ]);
+            Assert.Equal(0, exit);
+
+            await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n " +
+                "FROM prepared_ticket_pages " +
+                "WHERE TicketKey IN (SELECT Key FROM prepared_tickets) " +
+                "GROUP BY Value ORDER BY n DESC, k";
+            await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+            List<(string K, long N)> rows = [];
+            while (await reader.ReadAsync())
+            {
+                rows.Add((reader.GetString(0), reader.GetInt64(1)));
+            }
+            Assert.Equal(new[] { ("security", 2L), ("terminologies", 1L) }, rows);
+        }
+        finally
+        {
+            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+        }
+    }
+
     private static async Task CreateFakeJiraSourceDbAsync(
         string dbPath,
         IReadOnlyDictionary<string, string?> artifactsByKey,

@@ -93,30 +93,30 @@
           Views.ticket(main, key);
         } else if (parts[0] === 'by-workgroup') {
           if (parts.length >= 2) {
+            // Backwards-compat: deep-links like #/by-workgroup/Foo are
+            // redirected into the equivalent chip-applied list view.
             const wg = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By workgroup', href: '#/by-workgroup' },
-              { label: wg, href: null },
-            ]);
-            Views.list(main, { kind: 'workgroup', value: wg });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By workgroup', href: null }]);
-            Views.crosscutIndex(main, 'by-workgroup');
+            redirectToChipListView('wg', wg);
+            return;
           }
-        } else if (parts[0] === 'by-recommendation') {
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By workgroup', href: null }]);
+          Views.crosscutIndex(main, 'by-workgroup');
+        } else if (parts[0] === 'by-artifact') {
           if (parts.length >= 2) {
-            const rv = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By recommendation', href: '#/by-recommendation' },
-              { label: rv, href: null },
-            ]);
-            Views.list(main, { kind: 'recommendation', value: rv });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By recommendation', href: null }]);
-            Views.crosscutIndex(main, 'by-recommendation');
+            const av = decodeURIComponent(parts[1]);
+            redirectToChipListView('artifact', av);
+            return;
           }
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By artifact', href: null }]);
+          Views.crosscutIndex(main, 'by-artifact');
+        } else if (parts[0] === 'by-page') {
+          if (parts.length >= 2) {
+            const pv = decodeURIComponent(parts[1]);
+            redirectToChipListView('page', pv);
+            return;
+          }
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By page', href: null }]);
+          Views.crosscutIndex(main, 'by-page');
         } else if (parts[0] === 'by-impact') {
           if (parts.length >= 2) {
             const iv = decodeURIComponent(parts[1]);
@@ -133,16 +133,11 @@
         } else if (parts[0] === 'by-specification') {
           if (parts.length >= 2) {
             const sv = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By specification', href: '#/by-specification' },
-              { label: sv, href: null },
-            ]);
-            Views.list(main, { kind: 'specification', value: sv });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By specification', href: null }]);
-            Views.crosscutIndex(main, 'by-specification');
+            redirectToChipListView('spec', sv);
+            return;
           }
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By specification', href: null }]);
+          Views.crosscutIndex(main, 'by-specification');
         } else if (parts[0] === 'by-github-state') {
           if (parts.length >= 2) {
             const gv = decodeURIComponent(parts[1]);
@@ -349,6 +344,16 @@
   window.__preparerToggleChip = toggleChip;
   window.__preparerCurrentHashSuffix = currentHashSuffix;
 
+  function redirectToChipListView(dim, value) {
+    // Deep-link compatibility for `#/by-<dim>/<value>`: convert into the
+    // canonical chip-applied `#/list?dim=value` form. Trigger a hashchange
+    // by assigning a new hash; the router re-runs and picks up the chip.
+    if (FilterableDimensions.indexOf(dim) < 0) return;
+    const params = new URLSearchParams();
+    params.set(dim, value);
+    window.location.hash = '#/list?' + params.toString();
+  }
+
   function query(sql, params) {
     const stmt = db.prepare(sql);
     if (params) stmt.bind(params);
@@ -411,90 +416,253 @@
   const Crosscuts = {
     'by-workgroup': {
       title: 'By workgroup',
-      sql:
-        "SELECT COALESCE(NULLIF(jst.WorkGroup, ''), '(unknown)') AS k, count(*) AS n " +
-        'FROM prepared_tickets pt ' +
-        'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
-        'GROUP BY k ORDER BY n DESC, k',
+      dim: 'wg',
+      sql: function (chipKeysSql) {
+        return (
+          "SELECT COALESCE(NULLIF(jst.WorkGroup, ''), '(unknown)') AS k, count(*) AS n " +
+          'FROM prepared_tickets pt ' +
+          'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
+          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
-    'by-recommendation': {
-      title: 'By recommendation',
-      sql:
-        "SELECT COALESCE(NULLIF(Recommendation, ''), '(unknown)') AS k, count(*) AS n " +
-        'FROM prepared_tickets GROUP BY k ORDER BY n DESC, k',
+    'by-artifact': {
+      title: 'By artifact',
+      dim: 'artifact',
+      sql: function (chipKeysSql) {
+        return (
+          'SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n ' +
+          'FROM prepared_ticket_artifacts ' +
+          'WHERE TicketKey IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
+    },
+    'by-page': {
+      title: 'By page',
+      dim: 'page',
+      sql: function (chipKeysSql) {
+        return (
+          'SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n ' +
+          'FROM prepared_ticket_pages ' +
+          'WHERE TicketKey IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
     'by-impact': {
       title: 'By impact',
-      sql:
-        'SELECT k, count(*) AS n FROM (' +
-        "SELECT COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') AS k FROM prepared_tickets " +
-        'UNION ALL ' +
-        "SELECT COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') AS k FROM prepared_tickets" +
-        ') GROUP BY k ORDER BY n DESC, k',
+      dim: null,
+      sql: function (chipKeysSql) {
+        return (
+          'SELECT k, count(*) AS n FROM (' +
+          "SELECT COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') AS k FROM prepared_tickets " +
+          'WHERE Key IN (' + chipKeysSql + ') ' +
+          'UNION ALL ' +
+          "SELECT COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') AS k FROM prepared_tickets " +
+          'WHERE Key IN (' + chipKeysSql + ')' +
+          ') GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
     'by-specification': {
       title: 'By specification',
-      sql:
-        "SELECT COALESCE(NULLIF(pth.Specification, ''), '(unknown)') AS k, " +
-        '       COUNT(DISTINCT pt.Key) AS n ' +
-        'FROM prepared_tickets pt ' +
-        'LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key ' +
-        'GROUP BY k ORDER BY n DESC, k',
+      dim: 'spec',
+      sql: function (chipKeysSql) {
+        return (
+          "SELECT COALESCE(NULLIF(pth.Specification, ''), '(unknown)') AS k, " +
+          '       COUNT(DISTINCT pt.Key) AS n ' +
+          'FROM prepared_tickets pt ' +
+          'LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key ' +
+          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
     'by-github-state': {
       title: 'By GitHub item state',
-      sql:
-        "SELECT COALESCE(NULLIF(pgh.State, ''), '(unknown)') AS k, " +
-        '       COUNT(DISTINCT pgh.TicketKey) AS n ' +
-        'FROM prepared_github_hydration pgh ' +
-        "WHERE pgh.HydrationStatus = 'resolved' " +
-        'GROUP BY k ORDER BY n DESC, k',
+      dim: null,
+      sql: function (chipKeysSql) {
+        return (
+          "SELECT COALESCE(NULLIF(pgh.State, ''), '(unknown)') AS k, " +
+          '       COUNT(DISTINCT pgh.TicketKey) AS n ' +
+          'FROM prepared_github_hydration pgh ' +
+          "WHERE pgh.HydrationStatus = 'resolved' " +
+          'AND pgh.TicketKey IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
     'by-hydration-status': {
       title: 'By hydration status',
-      sql:
-        'SELECT k, COUNT(*) AS n FROM (' +
-        '  SELECT pt.Key, ' +
-        '         CASE WHEN EXISTS (' +
-        "           SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-        '           UNION ALL ' +
-        "           SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-        '           UNION ALL ' +
-        "           SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-        '           UNION ALL ' +
-        "           SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-        '           UNION ALL ' +
-        "           SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-        "         ) THEN 'has-unresolved' ELSE 'fully-resolved' END AS k " +
-        '  FROM prepared_tickets pt' +
-        ') GROUP BY k ORDER BY n DESC, k',
+      dim: null,
+      sql: function (chipKeysSql) {
+        return (
+          'SELECT k, COUNT(*) AS n FROM (' +
+          '  SELECT pt.Key, ' +
+          '         CASE WHEN EXISTS (' +
+          "           SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+          '           UNION ALL ' +
+          "           SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+          '           UNION ALL ' +
+          "           SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+          '           UNION ALL ' +
+          "           SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+          '           UNION ALL ' +
+          "           SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
+          "         ) THEN 'has-unresolved' ELSE 'fully-resolved' END AS k " +
+          '  FROM prepared_tickets pt ' +
+          '  WHERE pt.Key IN (' + chipKeysSql + ')' +
+          ') GROUP BY k ORDER BY n DESC, k'
+        );
+      },
     },
   };
+
+  // Order of columns on the landing page. by-recommendation is gone;
+  // by-artifact and by-page are new.
+  const LandingCrosscutOrder = [
+    'by-workgroup',
+    'by-artifact',
+    'by-page',
+    'by-impact',
+    'by-specification',
+    'by-github-state',
+    'by-hydration-status',
+  ];
+
+  // ------- Chip-composed WHERE for the ticket list and crosscuts -------
+
+  // Maps a chip dimension to the predicate it injects against pt.Key,
+  // plus the params object to bind. Used by both Views.list and the
+  // crosscut SQL builders.
+  function chipPredicateAndParams(dim, values, paramPrefix) {
+    if (!values || values.length === 0) return null;
+    const placeholders = [];
+    /** @type {{[k: string]: string}} */
+    const params = {};
+    for (let i = 0; i < values.length; i++) {
+      const pname = '$' + paramPrefix + dim + i;
+      placeholders.push(pname);
+      params[pname] = values[i];
+    }
+    const inList = placeholders.join(', ');
+    switch (dim) {
+      case 'spec':
+        return {
+          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_hydration WHERE Specification IN (' + inList + '))',
+          params: params,
+        };
+      case 'wg':
+        return {
+          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE WorkGroup IN (' + inList + '))',
+          params: params,
+        };
+      case 'project':
+        return {
+          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE Project IN (' + inList + '))',
+          params: params,
+        };
+      case 'artifact':
+        return {
+          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_artifacts WHERE Value IN (' + inList + '))',
+          params: params,
+        };
+      case 'page':
+        return {
+          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_pages WHERE Value IN (' + inList + '))',
+          params: params,
+        };
+      default:
+        return null;
+    }
+  }
+
+  // Returns { sql, params } where `sql` is a subquery yielding the set of
+  // ticket keys that survive the active chip filter (excluding the chip
+  // dimensions named in `excludeDims`). Used to scope crosscut counts to
+  // the post-chip data set without zeroing out the column being filtered.
+  function buildChipKeysSubquery(excludeDims) {
+    const excludeSet = {};
+    if (excludeDims) {
+      for (let i = 0; i < excludeDims.length; i++) excludeSet[excludeDims[i]] = true;
+    }
+    const predicates = [];
+    /** @type {{[k: string]: string}} */
+    const params = {};
+    let idx = 0;
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      if (excludeSet[dim]) continue;
+      const values = ActiveChips[dim];
+      const part = chipPredicateAndParams(dim, values, 'ckq' + idx + '_');
+      if (!part) continue;
+      predicates.push(part.predicate);
+      for (const p in part.params) params[p] = part.params[p];
+      idx++;
+    }
+    if (predicates.length === 0) {
+      return { sql: 'SELECT Key FROM prepared_tickets', params: {} };
+    }
+    return {
+      sql: 'SELECT pt.Key FROM prepared_tickets pt WHERE ' + predicates.join(' AND '),
+      params: params,
+    };
+  }
+
+  // Returns { where, params } scoping Views.list's main SELECT by every
+  // active chip dimension. Empty where when no chips are active.
+  function buildListChipWhere() {
+    const predicates = [];
+    /** @type {{[k: string]: string}} */
+    const params = {};
+    let idx = 0;
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      const values = ActiveChips[dim];
+      const part = chipPredicateAndParams(dim, values, 'cw' + idx + '_');
+      if (!part) continue;
+      predicates.push(part.predicate);
+      for (const p in part.params) params[p] = part.params[p];
+      idx++;
+    }
+    if (predicates.length === 0) {
+      return { where: '', params: null };
+    }
+    return { where: ' WHERE ' + predicates.join(' AND '), params: params };
+  }
 
   const Views = {
     landing: function (main) {
       renderChipBanner(main);
-      const totalRes = query('SELECT count(*) AS n FROM prepared_tickets', null);
+
+      // Post-chip surviving ticket count.
+      const chipKeys = buildChipKeysSubquery([]);
+      const totalRes = query('SELECT count(*) AS n FROM (' + chipKeys.sql + ')', chipKeys.params);
       const total = totalRes.rows.length ? totalRes.rows[0].n : 0;
 
-      if (total === 0 && hasAnyActiveChips()) {
-        main.appendChild(el('p', null, '0 prepared tickets match this filter.'));
-      } else {
-        main.appendChild(el('p', null, total + ' prepared tickets in this run.'));
-      }
+      const summaryRow = el('p', { class: 'summary-row' });
+      const countSpan = el('span', null,
+        (total === 0 && hasAnyActiveChips())
+          ? '0 prepared tickets match this filter.'
+          : (total + ' prepared tickets in this run.'));
+      summaryRow.appendChild(countSpan);
+
+      const showListLink = el('a', { href: '#/list' + currentHashSuffix(), class: 'show-ticket-list' },
+        'Show Ticket List →');
+      summaryRow.appendChild(showListLink);
+      main.appendChild(summaryRow);
 
       const grid = el('div', { class: 'summary-grid' });
-      grid.appendChild(buildSummarySection(Crosscuts['by-workgroup'].title, Crosscuts['by-workgroup'].sql, 'by-workgroup'));
-      grid.appendChild(buildSummarySection(Crosscuts['by-recommendation'].title, Crosscuts['by-recommendation'].sql, 'by-recommendation'));
-      grid.appendChild(buildSummarySection(Crosscuts['by-impact'].title, Crosscuts['by-impact'].sql, 'by-impact'));
-      grid.appendChild(buildSummarySection(Crosscuts['by-specification'].title, Crosscuts['by-specification'].sql, 'by-specification'));
-      grid.appendChild(buildSummarySection(Crosscuts['by-github-state'].title, Crosscuts['by-github-state'].sql, 'by-github-state'));
-      grid.appendChild(buildSummarySection(Crosscuts['by-hydration-status'].title, Crosscuts['by-hydration-status'].sql, 'by-hydration-status'));
+      for (let i = 0; i < LandingCrosscutOrder.length; i++) {
+        const route = LandingCrosscutOrder[i];
+        const cfg = Crosscuts[route];
+        if (!cfg) continue;
+        const section = buildSummarySectionFor(route, true);
+        if (section) grid.appendChild(section);
+      }
       main.appendChild(grid);
-
-      const nav = el('p', { class: 'muted' });
-      nav.appendChild(el('a', { href: '#/list' }, 'Browse all tickets →'));
-      main.appendChild(nav);
     },
 
     crosscutIndex: function (main, route) {
@@ -505,9 +673,17 @@
       }
       renderChipBanner(main);
       main.appendChild(el('h2', null, cfg.title));
-      const section = buildSummarySection(cfg.title, cfg.sql, route);
-      // buildSummarySection already wraps in <section> with its own <h2>; unwrap.
-      while (section.firstChild) main.appendChild(section.firstChild);
+      const section = buildSummarySectionFor(route, false);
+      if (section) {
+        // Unwrap the inner section into main; strip the duplicate <h2>
+        // emitted by buildSummarySectionFor.
+        while (section.firstChild) {
+          const child = section.firstChild;
+          section.removeChild(child);
+          if (child.tagName && child.tagName.toLowerCase() === 'h2') continue;
+          main.appendChild(child);
+        }
+      }
     },
 
     list: function (main, filter) {
@@ -518,76 +694,68 @@
         'pt.RequestSummary AS _SearchBody ' +
         'FROM prepared_tickets pt ' +
         'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key';
-      let where = '';
-      let bind = null;
-      let heading = 'All prepared tickets';
-      if (filter && filter.kind === 'workgroup') {
+
+      // Compose: any chip-WHERE first, then any legacy `filter` argument
+      // for non-filterable by-X routes that haven't been chipified yet
+      // (impact / github-state / hydration-status).
+      const chipBind = buildListChipWhere();
+      const wherePredicates = [];
+      /** @type {{[k: string]: any}} */
+      const bind = {};
+      if (chipBind.where) {
+        wherePredicates.push('(' + chipBind.where.replace(/^ WHERE /, '') + ')');
+        for (const k in chipBind.params) bind[k] = chipBind.params[k];
+      }
+
+      let heading;
+      if (hasAnyActiveChips()) {
+        heading = 'Filtered ticket list';
+      } else {
+        heading = 'All prepared tickets';
+      }
+
+      if (filter && filter.kind === 'impact') {
         if (filter.value === '(unknown)') {
-          where = " WHERE COALESCE(NULLIF(jst.WorkGroup, ''), '(unknown)') = '(unknown)'";
+          wherePredicates.push(
+            "(COALESCE(NULLIF(pt.ProposalAImpact, ''), '(unknown)') = '(unknown)' " +
+            "OR COALESCE(NULLIF(pt.ProposalBImpact, ''), '(unknown)') = '(unknown)')");
         } else {
-          where = ' WHERE jst.WorkGroup = $v';
-          bind = { $v: filter.value };
-        }
-        heading = 'Workgroup: ' + filter.value;
-      } else if (filter && filter.kind === 'recommendation') {
-        if (filter.value === '(unknown)') {
-          where = " WHERE COALESCE(NULLIF(pt.Recommendation, ''), '(unknown)') = '(unknown)'";
-        } else {
-          where = ' WHERE pt.Recommendation = $v';
-          bind = { $v: filter.value };
-        }
-        heading = 'Recommendation: ' + filter.value;
-      } else if (filter && filter.kind === 'impact') {
-        if (filter.value === '(unknown)') {
-          where =
-            " WHERE COALESCE(NULLIF(pt.ProposalAImpact, ''), '(unknown)') = '(unknown)' " +
-            "    OR COALESCE(NULLIF(pt.ProposalBImpact, ''), '(unknown)') = '(unknown)'";
-        } else {
-          where = ' WHERE pt.ProposalAImpact = $v OR pt.ProposalBImpact = $v';
-          bind = { $v: filter.value };
+          wherePredicates.push('(pt.ProposalAImpact = $lv OR pt.ProposalBImpact = $lv)');
+          bind.$lv = filter.value;
         }
         heading = 'Impact: ' + filter.value;
-      } else if (filter && filter.kind === 'specification') {
-        if (filter.value === '(unknown)') {
-          where =
-            ' WHERE pt.Key IN (' +
-            '   SELECT pt2.Key FROM prepared_tickets pt2 ' +
-            '   LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt2.Key ' +
-            "   WHERE COALESCE(NULLIF(pth.Specification, ''), '(unknown)') = '(unknown)'" +
-            ' )';
-        } else {
-          where = ' WHERE pt.Key IN (SELECT TicketKey FROM prepared_ticket_hydration WHERE Specification = $v)';
-          bind = { $v: filter.value };
-        }
-        heading = 'Specification: ' + filter.value;
       } else if (filter && filter.kind === 'github-state') {
         if (filter.value === '(unknown)') {
-          where =
-            ' WHERE pt.Key IN (' +
+          wherePredicates.push(
+            ' pt.Key IN (' +
             '   SELECT pgh.TicketKey FROM prepared_github_hydration pgh ' +
             "   WHERE pgh.HydrationStatus = 'resolved' AND COALESCE(NULLIF(pgh.State, ''), '(unknown)') = '(unknown)'" +
-            ' )';
+            ' )');
         } else {
-          where = ' WHERE pt.Key IN (SELECT TicketKey FROM prepared_github_hydration WHERE State = $v AND HydrationStatus = \'resolved\')';
-          bind = { $v: filter.value };
+          wherePredicates.push(" pt.Key IN (SELECT TicketKey FROM prepared_github_hydration WHERE State = $lv AND HydrationStatus = 'resolved')");
+          bind.$lv = filter.value;
         }
         heading = 'GitHub state: ' + filter.value;
       } else if (filter && filter.kind === 'hydration-status') {
         const hasUnresolvedSql =
-          ' EXISTS (SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
-          'OR EXISTS (SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
-          'OR EXISTS (SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
-          'OR EXISTS (SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\') ' +
-          'OR EXISTS (SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = \'unresolved\')';
+          " EXISTS (SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
+          "OR EXISTS (SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
+          "OR EXISTS (SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
+          "OR EXISTS (SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
+          "OR EXISTS (SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved')";
         if (filter.value === 'has-unresolved') {
-          where = ' WHERE (' + hasUnresolvedSql + ')';
+          wherePredicates.push(' (' + hasUnresolvedSql + ')');
         } else {
-          where = ' WHERE NOT (' + hasUnresolvedSql + ')';
+          wherePredicates.push(' NOT (' + hasUnresolvedSql + ')');
         }
         heading = 'Hydration status: ' + filter.value;
       }
+
+      const where = wherePredicates.length > 0
+        ? ' WHERE ' + wherePredicates.join(' AND ')
+        : '';
       const finalSql = baseSql + where + ' ORDER BY pt.Key';
-      const res = query(finalSql, bind);
+      const res = query(finalSql, Object.keys(bind).length > 0 ? bind : null);
 
       main.appendChild(el('h2', null, heading + ' (' + res.rows.length + ')'));
 
@@ -931,10 +1099,38 @@
     },
   };
 
-  function buildSummarySection(title, sql, routePrefix) {
+  // Builds a crosscut <section> for `route` (e.g., 'by-workgroup'). When
+  // `applyAutoHide` is true (landing grid), returns null if the column
+  // should be hidden because its own dimension is pinned by a chip or
+  // has ≤ 1 distinct non-null value in the post-chip data set.
+  function buildSummarySectionFor(route, applyAutoHide) {
+    const cfg = Crosscuts[route];
+    if (!cfg) return null;
+
+    // Exclude the column's own dim from the chip WHERE so the column
+    // doesn't pre-filter against the value it's about to render.
+    const ownDim = cfg.dim;
+    const chipKeys = ownDim
+      ? buildChipKeysSubquery([ownDim])
+      : buildChipKeysSubquery([]);
+    const sql = (typeof cfg.sql === 'function') ? cfg.sql(chipKeys.sql) : cfg.sql;
+    const res = query(sql, Object.keys(chipKeys.params).length > 0 ? chipKeys.params : null);
+
+    if (applyAutoHide && ownDim) {
+      // Hide if the dim is already pinned by an active chip.
+      if (ActiveChips[ownDim] && ActiveChips[ownDim].length > 0) return null;
+      // Hide if there is ≤ 1 distinct non-"(unknown)" value in the
+      // post-chip data set (column would add only noise).
+      let distinctReal = 0;
+      for (let i = 0; i < res.rows.length; i++) {
+        const k = res.rows[i].k;
+        if (k != null && String(k) !== '' && String(k) !== '(unknown)') distinctReal++;
+      }
+      if (distinctReal <= 1) return null;
+    }
+
     const section = el('section');
-    section.appendChild(el('h2', null, title));
-    const res = query(sql, null);
+    section.appendChild(el('h2', null, cfg.title));
     if (res.rows.length === 0) {
       section.appendChild(el('p', { class: 'muted' }, 'No data.'));
       return section;
@@ -942,7 +1138,7 @@
     const table = el('table');
     const thead = el('thead');
     const headRow = el('tr');
-    headRow.appendChild(el('th', null, title.replace(/^By /, '')));
+    headRow.appendChild(el('th', null, cfg.title.replace(/^By /, '')));
     headRow.appendChild(el('th', null, 'Count'));
     thead.appendChild(headRow);
     table.appendChild(thead);
@@ -952,7 +1148,19 @@
       const tr = el('tr');
       const keyCell = el('td');
       const keyText = String(r.k != null ? r.k : '');
-      keyCell.appendChild(el('a', { href: '#/' + routePrefix + '/' + encodeURIComponent(keyText) }, keyText));
+      if (ownDim) {
+        // Filterable column: row toggles the chip on the current view.
+        const btn = el('button', { type: 'button', class: 'crosscut-row' }, keyText);
+        (function (capturedDim, capturedValue) {
+          btn.addEventListener('click', function () {
+            toggleChip(capturedDim, capturedValue);
+          });
+        })(ownDim, keyText);
+        keyCell.appendChild(btn);
+      } else {
+        // Non-filterable column: row stays a navigation link.
+        keyCell.appendChild(el('a', { href: '#/' + route + '/' + encodeURIComponent(keyText) }, keyText));
+      }
       tr.appendChild(keyCell);
       tr.appendChild(el('td', null, String(r.n)));
       tbody.appendChild(tr);

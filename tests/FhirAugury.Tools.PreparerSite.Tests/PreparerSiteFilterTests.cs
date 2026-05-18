@@ -343,6 +343,30 @@ public sealed class PreparerSiteFilterTests
     }
 
     [Fact]
+    public async Task Render_BundledAppJs_DropsRecommendationColumn_AddsArtifactPageColumns()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // by-recommendation must be gone from the Crosscuts map and the
+        // landing-grid order list.
+        Assert.DoesNotContain("'by-recommendation'", appJs, StringComparison.Ordinal);
+        // The two new filterable crosscut columns must be present.
+        Assert.Contains("'by-artifact'", appJs, StringComparison.Ordinal);
+        Assert.Contains("'by-page'", appJs, StringComparison.Ordinal);
+        // The new in-place chip-toggle wiring must be present.
+        Assert.Contains("toggleChip", appJs, StringComparison.Ordinal);
+        Assert.Contains("buildChipKeysSubquery", appJs, StringComparison.Ordinal);
+        Assert.Contains("Show Ticket List", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Render_BundledAppJs_ContainsUnifiedChipBanner()
     {
         using TempScope scope = new();
