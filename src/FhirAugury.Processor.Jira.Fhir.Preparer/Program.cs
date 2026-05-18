@@ -73,6 +73,24 @@ builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
 
+builder.Services.AddHttpClient<SpecificationBackfillService>((sp, client) =>
+{
+    JiraProcessingOptions jiraOptions = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+    string address = jiraOptions.JiraSourceAddress;
+    if (string.IsNullOrWhiteSpace(address))
+    {
+        address = PreparerJiraProcessingDefaults.JiraSourceAddress;
+    }
+
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddOptions<HydrationOptions>()
+    .Bind(builder.Configuration.GetSection($"{PreparerServiceOptions.SectionName}:Hydration"))
+    .Validate(options => !options.Validate().Any(), "Processing:Hydration configuration is invalid.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<PreparedHydrationSweeper>();
+
 builder.Services.AddSingleton(sp =>
 {
     PreparerServiceOptions options = sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;

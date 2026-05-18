@@ -66,4 +66,25 @@ public sealed class PreparerServiceOptionsTests
         Assert.Empty(emptyOptions.WorkGroupsToInclude!);
         Assert.Empty(emptyOptions.TicketTypesToProcess!);
     }
+
+    [Fact]
+    public void HydrationDefaults_PinsBackfillOnStartupTrue_AndMaxParallelism4()
+    {
+        PreparerServiceOptions processing = new();
+
+        Assert.True(processing.Hydration.BackfillOnStartup);
+        Assert.Equal(4, processing.Hydration.MaxParallelism);
+        Assert.Null(processing.Hydration.JiraSourceDbPath);
+    }
+
+    [Fact]
+    public void HydrationValidate_ReturnsError_WhenMaxParallelismLessThanOne()
+    {
+        PreparerServiceOptions processing = new();
+        processing.Hydration.MaxParallelism = 0;
+
+        List<string> errors = processing.Validate().ToList();
+
+        Assert.Contains(errors, error => error.Contains("MaxParallelism", StringComparison.Ordinal));
+    }
 }

@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 
@@ -17,5 +18,20 @@ public sealed class PreparerServiceOptions : ProcessingServiceOptions
         StartProcessingOnStartup = true;
         Ports.Http = 5171;
         OrchestratorAddress = "http://localhost:5150";
+    }
+
+    public HydrationOptions Hydration { get; set; } = new();
+
+    public new IEnumerable<string> Validate()
+    {
+        foreach (string error in base.Validate())
+        {
+            yield return error;
+        }
+
+        foreach (string error in Hydration.Validate())
+        {
+            yield return error;
+        }
     }
 }
