@@ -708,23 +708,99 @@
       const table = el('table');
       const thead = el('thead');
       const headRow = el('tr');
-      ['Key', 'Title', 'Workgroup', 'Status', 'Type', 'Impact A', 'Impact B'].forEach(function (c) {
-        headRow.appendChild(el('th', null, c));
-      });
+
+      const columns = [
+        { label: 'Key',       get: function (r) { return String(r.Key || ''); },             cmp: 'key' },
+        { label: 'Title',     get: function (r) { return String(r.Title || ''); },           cmp: 'ci' },
+        { label: 'Workgroup', get: function (r) { return String(r.WorkGroup || ''); },       cmp: 'ci' },
+        { label: 'Status',    get: function (r) { return String(r.Status || ''); },          cmp: 'ci' },
+        { label: 'Type',      get: function (r) { return String(r.Type || ''); },            cmp: 'ci' },
+        { label: 'Impact A',  get: function (r) { return String(r.ProposalAImpact || ''); }, cmp: 'ci' },
+        { label: 'Impact B',  get: function (r) { return String(r.ProposalBImpact || ''); }, cmp: 'ci' },
+      ];
+
+      // Per-mount sort state — resets every time the list view re-renders
+      // because `let` locals live in the closure created by this call.
+      let sortCol = 'Key';
+      let sortDir = 'asc';
+
+      const headerCells = [];
+      for (let ci = 0; ci < columns.length; ci++) {
+        const col = columns[ci];
+        const th = el('th', { class: 'sortable', role: 'button', tabindex: '0', 'aria-sort': 'none' }, col.label);
+        const onActivate = (function (label) {
+          return function () {
+            if (sortCol === label) {
+              sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+            } else {
+              sortCol = label;
+              sortDir = 'asc';
+            }
+            renderRows(input.value);
+            updateHeaderAffordances();
+          };
+        })(col.label);
+        th.addEventListener('click', onActivate);
+        th.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            onActivate();
+          }
+        });
+        headerCells.push({ th: th, label: col.label });
+        headRow.appendChild(th);
+      }
       thead.appendChild(headRow);
       table.appendChild(thead);
+
+      function updateHeaderAffordances() {
+        for (let i = 0; i < headerCells.length; i++) {
+          const cell = headerCells[i];
+          const active = (cell.label === sortCol);
+          const glyph = active ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
+          cell.th.textContent = cell.label + glyph;
+          cell.th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+        }
+      }
+
+      function compareFor(cmpType) {
+        if (cmpType === 'key') {
+          return function (a, b) {
+            return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+          };
+        }
+        return function (a, b) {
+          return a.localeCompare(b, undefined, { sensitivity: 'base' });
+        };
+      }
 
       const tbody = el('tbody');
       const renderRows = function (needle) {
         clearChildren(tbody);
         const n = needle.toLowerCase();
-        let shown = 0;
+        const filtered = [];
         for (let i = 0; i < res.rows.length; i++) {
           const r = res.rows[i];
           if (n.length > 0) {
             const hay = String(r.Key || '') + '\n' + String(r.Title || '') + '\n' + String(r._SearchBody || '');
             if (hay.toLowerCase().indexOf(n) < 0) continue;
           }
+          filtered.push(r);
+        }
+
+        let activeCol = null;
+        for (let i = 0; i < columns.length; i++) {
+          if (columns[i].label === sortCol) { activeCol = columns[i]; break; }
+        }
+        if (activeCol) {
+          const cmp = compareFor(activeCol.cmp);
+          const dirMul = (sortDir === 'desc') ? -1 : 1;
+          const get = activeCol.get;
+          filtered.sort(function (a, b) { return cmp(get(a), get(b)) * dirMul; });
+        }
+
+        for (let i = 0; i < filtered.length; i++) {
+          const r = filtered[i];
           const tr = el('tr');
           const keyCell = el('td');
           keyCell.appendChild(el('a', { href: '#/ticket/' + encodeURIComponent(String(r.Key)) }, String(r.Key)));
@@ -736,9 +812,8 @@
           tr.appendChild(el('td', null, String(r.ProposalAImpact || '')));
           tr.appendChild(el('td', null, String(r.ProposalBImpact || '')));
           tbody.appendChild(tr);
-          shown++;
         }
-        countSpan.textContent = needle.length > 0 ? (shown + ' of ' + res.rows.length) : String(res.rows.length);
+        countSpan.textContent = needle.length > 0 ? (filtered.length + ' of ' + res.rows.length) : String(res.rows.length);
       };
 
       table.appendChild(tbody);
@@ -750,6 +825,7 @@
         debounce = window.setTimeout(function () { renderRows(input.value); }, 150);
       });
       renderRows('');
+      updateHeaderAffordances();
     },
 
     ticket: function (main, key) {

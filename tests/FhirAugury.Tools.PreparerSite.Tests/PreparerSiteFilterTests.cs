@@ -433,11 +433,16 @@ public sealed class PreparerSiteFilterTests
         Assert.Equal(0, exit);
 
         string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
-        // Pin the new seven-column header literal exactly.
-        Assert.Contains(
-            "['Key', 'Title', 'Workgroup', 'Status', 'Type', 'Impact A', 'Impact B']",
-            appJs,
-            StringComparison.Ordinal);
+        // Pin the seven-column set via the per-mount columns descriptor
+        // (Phase 3 replaced the inline header array literal with a
+        // descriptor list that the header loop and renderRows share).
+        Assert.Contains("label: 'Key'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Title'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Workgroup'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Status'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Type'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Impact A'", appJs, StringComparison.Ordinal);
+        Assert.Contains("label: 'Impact B'", appJs, StringComparison.Ordinal);
         // The old eight-column header literal must be gone.
         Assert.DoesNotContain(
             "'Recommendation', 'Impact', 'Saved'",
@@ -457,6 +462,30 @@ public sealed class PreparerSiteFilterTests
             "pt.Recommendation, pt.ProposalAImpact, pt.ProposalBImpact, pt.SavedAt",
             appJs,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_BundledAppJs_ListTableHeadersAreSortable()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // aria-sort attribute powers the active sort affordance.
+        Assert.Contains("aria-sort", appJs, StringComparison.Ordinal);
+        // Key column uses natural-numeric compare so FHIR-5079 < FHIR-50710.
+        Assert.Contains("numeric: true", appJs, StringComparison.Ordinal);
+        // Sort state model uses sortCol / sortDir locals (renaming these
+        // is a deliberate forcing-function for this iteration).
+        Assert.Contains("sortCol", appJs, StringComparison.Ordinal);
+        Assert.Contains("sortDir", appJs, StringComparison.Ordinal);
+        // CSS hook for sortable headers.
+        Assert.Contains("'sortable'", appJs, StringComparison.Ordinal);
     }
 
     [Fact]

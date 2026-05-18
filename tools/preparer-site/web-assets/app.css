@@ -68,6 +68,10 @@ thead th {
   background: var(--card);
   border-bottom: 2px solid var(--border);
 }
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--link); }
+thead th.sortable[aria-sort="ascending"],
+thead th.sortable[aria-sort="descending"] { color: var(--link); }
 tbody tr:nth-child(even) { background: var(--row-alt); }
 .summary-grid {
   display: grid;
