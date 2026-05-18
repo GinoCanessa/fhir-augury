@@ -83,6 +83,17 @@
         } else if (parts[0] === 'list') {
           setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'List', href: null }]);
           Views.list(main, null);
+        } else if (parts[0] === 'topics') {
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'Topics', href: null }]);
+          Views.topics(main);
+        } else if (parts[0] === 'topic' && parts.length >= 2) {
+          const topicId = decodeURIComponent(parts[1]);
+          setBreadcrumb([
+            { label: 'Home', href: '#/' },
+            { label: 'Topics', href: '#/topics' + currentHashSuffix() },
+            { label: topicId, href: null },
+          ]);
+          Views.topic(main, topicId);
         } else if (parts[0] === 'ticket' && parts.length >= 2) {
           const key = decodeURIComponent(parts[1]);
           setBreadcrumb([
@@ -601,6 +612,64 @@
       return { where: '', params: null };
     }
     return { where: ' WHERE ' + predicates.join(' AND '), params: params };
+  }
+
+  // Returns { where, params } scoping the topic-list SELECT (alias `t`)
+  // by every active chip dimension. Direct-column dimensions
+  // (`wg`, `spec`, `type`) translate into case-insensitive IN-lists on
+  // columns of prepared_ticket_topics; the remaining dimensions
+  // (`artifact`, `page`, `impact`, `project`) translate into a
+  // member-ticket subquery built from `buildChipKeysSubquery` with the
+  // direct-column dims excluded (so they aren't double-applied).
+  function buildTopicChipWhere() {
+    const predicates = ['1=1'];
+    /** @type {{[k: string]: string}} */
+    const params = {};
+    let idx = 0;
+
+    function pushInList(column, values) {
+      const placeholders = [];
+      for (let i = 0; i < values.length; i++) {
+        const pname = '$tw' + idx + '_' + i;
+        placeholders.push(pname);
+        params[pname] = String(values[i]).toLowerCase();
+      }
+      predicates.push('LOWER(' + column + ') IN (' + placeholders.join(', ') + ')');
+      idx++;
+    }
+
+    const wgValues = ActiveChips['wg'];
+    if (wgValues && wgValues.length > 0) pushInList('t.WorkGroupClean', wgValues);
+    const specValues = ActiveChips['spec'];
+    if (specValues && specValues.length > 0) pushInList('t.Specification', specValues);
+    const typeValues = ActiveChips['type'];
+    if (typeValues && typeValues.length > 0) pushInList('t.Type', typeValues);
+
+    // Member-ticket dimensions: build the surviving-key subquery without
+    // the direct-column dims (they're already applied above).
+    const memberDims = ['artifact', 'page', 'impact', 'project'];
+    let anyMember = false;
+    for (let i = 0; i < memberDims.length; i++) {
+      const dim = memberDims[i];
+      const values = ActiveChips[dim];
+      if (values && values.length > 0) { anyMember = true; break; }
+    }
+    if (anyMember) {
+      const sub = buildChipKeysSubquery(['wg', 'spec', 'type']);
+      // Params are namespaced ($ckq…) and disjoint from the topic
+      // chip-where's $tw… params, so merge them directly.
+      for (const k in sub.params) params[k] = sub.params[k];
+      predicates.push(
+        't.RowId IN (SELECT m.TopicRowId FROM prepared_ticket_topic_members m ' +
+        'WHERE m.TicketKey IN (' + sub.sql + '))'
+      );
+      idx++;
+    }
+
+    return {
+      where: ' WHERE ' + predicates.join(' AND '),
+      params: Object.keys(params).length > 0 ? params : null,
+    };
   }
 
   const Views = {
@@ -1127,6 +1196,190 @@
     notFound: function (main, hash) {
       main.appendChild(el('p', { class: 'error' }, 'No view for route ' + hash + '.'));
       main.appendChild(el('p', null, el('a', { href: '#/' }, '← Home')));
+    },
+
+    topics: function (main) {
+      renderChipBanner(main);
+
+      const chip = buildTopicChipWhere();
+      const baseSql =
+        'SELECT t.Id AS Id, t.ShortDescription AS ShortDescription, ' +
+        '       t.LongerDescription AS LongerDescription, ' +
+        '       t.WorkGroupDisplay AS WorkGroupDisplay, ' +
+        '       t.WorkGroupClean AS WorkGroupClean, ' +
+        '       t.Specification AS Specification, t.Type AS Type, ' +
+        '       t.RenderOrderHint AS RenderOrderHint, ' +
+        '       (SELECT COUNT(*) FROM prepared_ticket_topic_groups g WHERE g.TopicRowId = t.RowId) AS GroupCount, ' +
+        '       (SELECT COUNT(*) FROM prepared_ticket_topic_members m WHERE m.TopicRowId = t.RowId) AS TicketCount ' +
+        'FROM prepared_ticket_topics t';
+      const orderBy =
+        ' ORDER BY (CASE WHEN t.RenderOrderHint IS NULL THEN 1 ELSE 0 END), ' +
+        't.RenderOrderHint ASC, t.ShortDescription ASC';
+      const finalSql = baseSql + chip.where + orderBy;
+      const res = query(finalSql, chip.params);
+
+      const heading = hasAnyActiveChips() ? 'Filtered topic list' : 'Topics';
+      main.appendChild(el('h2', null, heading + ' (' + res.rows.length + ')'));
+
+      if (res.rows.length === 0) {
+        main.appendChild(el('p', { class: 'muted' },
+          hasAnyActiveChips() ? 'No topics match this filter.' : 'No topics in this run.'));
+        return;
+      }
+
+      const filterRow = el('div', { class: 'filter-row' });
+      const input = el('input', {
+        type: 'text',
+        placeholder: 'Filter by topic description…',
+        autocomplete: 'off',
+      });
+      filterRow.appendChild(input);
+      main.appendChild(filterRow);
+
+      const countWrap = el('p', { class: 'muted' });
+      const countSpan = el('span', null, String(res.rows.length));
+      countWrap.appendChild(countSpan);
+      countWrap.appendChild(document.createTextNode(' rows'));
+      main.appendChild(countWrap);
+
+      const columns = [
+        { label: 'Topic',     get: function (r) { return String(r.ShortDescription || ''); }, cmp: 'ci' },
+        { label: 'Workgroup', get: function (r) { return String(r.WorkGroupDisplay || ''); }, cmp: 'ci' },
+        { label: 'Spec',      get: function (r) { return String(r.Specification || ''); },   cmp: 'ci' },
+        { label: 'Type',      get: function (r) { return String(r.Type || ''); },            cmp: 'ci' },
+        { label: 'Groups',    get: function (r) { return String(r.GroupCount != null ? r.GroupCount : ''); }, cmp: 'num' },
+        { label: 'Tickets',   get: function (r) { return String(r.TicketCount != null ? r.TicketCount : ''); }, cmp: 'num' },
+      ];
+
+      const table = el('table');
+      const thead = el('thead');
+      const headRow = el('tr');
+
+      // No initial sort column — keep the SQL-driven order
+      // (`RenderOrderHint` then `ShortDescription`) on first render.
+      let sortCol = null;
+      let sortDir = 'asc';
+
+      const headerCells = [];
+      for (let ci = 0; ci < columns.length; ci++) {
+        const col = columns[ci];
+        const th = el('th', { class: 'sortable', role: 'button', tabindex: '0', 'aria-sort': 'none' }, col.label);
+        const onActivate = (function (label) {
+          return function () {
+            if (sortCol === label) {
+              sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+            } else {
+              sortCol = label;
+              sortDir = 'asc';
+            }
+            renderRows(input.value);
+            updateHeaderAffordances();
+          };
+        })(col.label);
+        th.addEventListener('click', onActivate);
+        th.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            onActivate();
+          }
+        });
+        headerCells.push({ th: th, label: col.label });
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      function updateHeaderAffordances() {
+        for (let i = 0; i < headerCells.length; i++) {
+          const cell = headerCells[i];
+          const active = (cell.label === sortCol);
+          const glyph = active ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
+          cell.th.textContent = cell.label + glyph;
+          cell.th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+        }
+      }
+
+      function compareFor(cmpType) {
+        if (cmpType === 'num') {
+          return function (a, b) {
+            const na = Number(a);
+            const nb = Number(b);
+            if (!isFinite(na) && !isFinite(nb)) return 0;
+            if (!isFinite(na)) return 1;
+            if (!isFinite(nb)) return -1;
+            return na - nb;
+          };
+        }
+        return function (a, b) {
+          return a.localeCompare(b, undefined, { sensitivity: 'base' });
+        };
+      }
+
+      const tbody = el('tbody');
+      const renderRows = function (needle) {
+        clearChildren(tbody);
+        const n = needle.toLowerCase();
+        const filtered = [];
+        for (let i = 0; i < res.rows.length; i++) {
+          const r = res.rows[i];
+          if (n.length > 0) {
+            const hay = String(r.ShortDescription || '') + '\n' + String(r.LongerDescription || '');
+            if (hay.toLowerCase().indexOf(n) < 0) continue;
+          }
+          filtered.push(r);
+        }
+
+        if (sortCol) {
+          let activeCol = null;
+          for (let i = 0; i < columns.length; i++) {
+            if (columns[i].label === sortCol) { activeCol = columns[i]; break; }
+          }
+          if (activeCol) {
+            const cmp = compareFor(activeCol.cmp);
+            const dirMul = (sortDir === 'desc') ? -1 : 1;
+            const get = activeCol.get;
+            filtered.sort(function (a, b) { return cmp(get(a), get(b)) * dirMul; });
+          }
+        }
+
+        const suffix = currentHashSuffix();
+        for (let i = 0; i < filtered.length; i++) {
+          const r = filtered[i];
+          const tr = el('tr');
+          const topicCell = el('td');
+          topicCell.appendChild(el('a', {
+            href: '#/topic/' + encodeURIComponent(String(r.Id)) + suffix,
+          }, String(r.ShortDescription || '')));
+          tr.appendChild(topicCell);
+          tr.appendChild(el('td', null, String(r.WorkGroupDisplay || '')));
+          tr.appendChild(el('td', null, String(r.Specification || '')));
+          tr.appendChild(el('td', null, String(r.Type || '')));
+          tr.appendChild(el('td', null, String(r.GroupCount != null ? r.GroupCount : '')));
+          tr.appendChild(el('td', null, String(r.TicketCount != null ? r.TicketCount : '')));
+          tbody.appendChild(tr);
+        }
+        countSpan.textContent = needle.length > 0
+          ? (filtered.length + ' of ' + res.rows.length)
+          : String(res.rows.length);
+      };
+
+      table.appendChild(tbody);
+      main.appendChild(table);
+
+      let debounce = 0;
+      input.addEventListener('input', function () {
+        if (debounce) window.clearTimeout(debounce);
+        debounce = window.setTimeout(function () { renderRows(input.value); }, 150);
+      });
+      renderRows('');
+      updateHeaderAffordances();
+    },
+
+    topic: function (main, topicId) {
+      // Placeholder — implemented in Phase 4.
+      renderChipBanner(main);
+      main.appendChild(el('p', { class: 'error' }, 'Topic detail view not yet implemented for ' + topicId + '.'));
+      main.appendChild(el('p', null, el('a', { href: '#/topics' + currentHashSuffix() }, '← Back to topics')));
     },
   };
 
