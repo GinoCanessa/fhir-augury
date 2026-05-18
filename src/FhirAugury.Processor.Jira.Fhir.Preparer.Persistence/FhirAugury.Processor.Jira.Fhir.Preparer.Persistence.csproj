@@ -15,4 +15,8 @@
     <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processing.Jira.Common\FhirAugury.Processing.Jira.Common.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
+  </ItemGroup>
 </Project>
