@@ -25,6 +25,25 @@ ticket-prep handler completes each ticket; the site renders directly
 from them with no additional fetch. There is one canonical DB shape;
 no opt-in slimming is offered.
 
+### Related-artifact / related-page surface
+
+To support the SPA's "By artifact" and "By page" crosscut columns the
+emitted DB carries two normalized child tables:
+
+| Table | Columns | Source |
+|-------|---------|--------|
+| `prepared_ticket_artifacts` | `TicketKey TEXT, Value TEXT, PRIMARY KEY (TicketKey, Value)` | `jira_issues.RelatedArtifacts` + `jira_baldef.RelatedArtifacts` |
+| `prepared_ticket_pages` | `TicketKey TEXT, Value TEXT, PRIMARY KEY (TicketKey, Value)` | `jira_baldef.RelatedPages` |
+
+Values are comma-split, trimmed, and case-insensitively de-duplicated
+per ticket with first-seen casing preserved (matching the
+`index-planned` skill's "Related artifact normalization" rule). The
+tables are always created in the inlined DB; rows are only populated
+when `--jira-source-db <path>` is provided (the upstream HTTP DTO does
+not currently carry these fields). Without `--jira-source-db` the
+tables are present but empty and the SPA auto-hides the corresponding
+columns.
+
 ### Auto-hydration
 
 On first run against a DB whose `prepared_ticket_hydration` table is
@@ -117,7 +136,7 @@ hand-patched.
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
 | `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the preparer-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
 | `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
-| `--jira-source-db <path>` | — | Fallback Jira source SQLite DB used when the HTTP service is unreachable. |
+| `--jira-source-db <path>` | — | Fallback Jira source SQLite DB used when the HTTP service is unreachable. Also the source for the SPA's "By artifact" and "By page" crosscut columns; without it those tables are present but empty. |
 | `--orchestrator <url>` | `http://localhost:5150` | Base URL of the orchestrator used for opportunistic hydration (see [Auto-hydration](#auto-hydration)). |
 | `--no-hydrate` | `false` | Skip auto-hydration; fail fast (with an actionable stderr message) if the DB lacks hydration rows. |
 | `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |

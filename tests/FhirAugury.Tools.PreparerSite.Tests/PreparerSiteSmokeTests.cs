@@ -140,13 +140,21 @@ public sealed class PreparerSiteSmokeTests
         string html = await File.ReadAllTextAsync(indexPath);
         Assert.Contains("window.__DB__='", html, StringComparison.Ordinal);
 
-        long dbSize = new FileInfo(scope.DbPath).Length;
-        long expectedMin = (long)(dbSize * 4.0 / 3.0) - 16;
-        long expectedMax = (long)(dbSize * 4.0 / 3.0) + 16;
-        int start = html.IndexOf("window.__DB__='", StringComparison.Ordinal) + "window.__DB__='".Length;
-        int end = html.IndexOf('\'', start);
-        int b64Length = end - start;
-        Assert.InRange(b64Length, expectedMin, expectedMax);
+        // The inlined DB is always a fresh build (trim + backfill + VACUUM),
+        // so the byte size is independent of the source DB size and can
+        // include extra schema (e.g., prepared_ticket_artifacts /
+        // prepared_ticket_pages). Validate that the base64 round-trips into
+        // a non-empty payload that's at least within a few SQLite-page
+        // multiples of the source size, and that decoding succeeds.
+        string base64 = ExtractInlinedDbBase64(html);
+        byte[] dbBytes = Convert.FromBase64String(base64);
+
+        long sourceSize = new FileInfo(scope.DbPath).Length;
+        // Allow up to 64 KiB of extra schema overhead on top of the source size
+        // and at least the source size (VACUUM can shrink, but not below the
+        // surviving-row payload). The intent is to catch gross inlining bugs,
+        // not to pin a precise byte count.
+        Assert.InRange(dbBytes.Length, sourceSize - 64 * 1024, sourceSize + 64 * 1024);
     }
 
     [Fact]
@@ -414,6 +422,151 @@ public sealed class PreparerSiteSmokeTests
         Assert.NotEqual(0, exit);
         string stderr = capturedErr.ToString();
         Assert.Contains("schema", stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Emit_WithoutJiraSourceDb_CreatesEmptyArtifactTables()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        StringWriter capturedErr = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(capturedErr);
+        int exit;
+        try
+        {
+            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+
+        Assert.Equal(0, exit);
+        Assert.Contains("Related-artifact/page backfill skipped", capturedErr.ToString(), StringComparison.Ordinal);
+
+        await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+        Assert.Equal(1, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prepared_ticket_artifacts'"));
+        Assert.Equal(1, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prepared_ticket_pages'"));
+        Assert.Equal(0, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_artifacts"));
+        Assert.Equal(0, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_pages"));
+    }
+
+    [Fact]
+    public async Task Emit_WithJiraSourceDb_PopulatesArtifactTables()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        string jiraSourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-src.db");
+        try
+        {
+            await CreateFakeJiraSourceDbAsync(jiraSourcePath, new Dictionary<string, string?>
+            {
+                ["FHIR-1001"] = "Observation, Patient, Observation",
+                ["FHIR-1002"] = " Encounter ,, Observation ",
+            });
+
+            int exit = await Program.Main([
+                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--jira-source-db", jiraSourcePath,
+            ]);
+            Assert.Equal(0, exit);
+
+            await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT TicketKey, Value FROM prepared_ticket_artifacts " +
+                "ORDER BY TicketKey, Value";
+            await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+            List<(string Key, string Value)> rows = [];
+            while (await reader.ReadAsync())
+            {
+                rows.Add((reader.GetString(0), reader.GetString(1)));
+            }
+            // Per-ticket case-insensitive de-dup; "Observation" appears once
+            // per ticket even though it was listed twice.
+            Assert.Equal(
+                new[]
+                {
+                    ("FHIR-1001", "Observation"),
+                    ("FHIR-1001", "Patient"),
+                    ("FHIR-1002", "Encounter"),
+                    ("FHIR-1002", "Observation"),
+                },
+                rows);
+
+            // No jira_baldef rows seeded, so pages table is empty.
+            Assert.Equal(0, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_pages"));
+        }
+        finally
+        {
+            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+        }
+    }
+
+    private static async Task CreateFakeJiraSourceDbAsync(
+        string dbPath,
+        IReadOnlyDictionary<string, string?> artifactsByKey,
+        IReadOnlyDictionary<string, (string? Artifacts, string? Pages)>? baldefByKey = null)
+    {
+        await using SqliteConnection conn = new($"Data Source={dbPath}");
+        await conn.OpenAsync();
+        await using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            // Minimal schemas — only the columns the backfill reads.
+            cmd.CommandText = """
+                CREATE TABLE jira_issues (
+                  Key TEXT PRIMARY KEY,
+                  RelatedArtifacts TEXT
+                );
+                CREATE TABLE jira_baldef (
+                  Key TEXT PRIMARY KEY,
+                  RelatedArtifacts TEXT,
+                  RelatedPages TEXT
+                );
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        foreach ((string key, string? raw) in artifactsByKey)
+        {
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText = "INSERT INTO jira_issues (Key, RelatedArtifacts) VALUES (@k, @v)";
+            cmd.Parameters.AddWithValue("@k", key);
+            cmd.Parameters.AddWithValue("@v", (object?)raw ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        if (baldefByKey is not null)
+        {
+            foreach ((string key, (string? artifacts, string? pages)) in baldefByKey)
+            {
+                await using SqliteCommand cmd = conn.CreateCommand();
+                cmd.CommandText =
+                    "INSERT INTO jira_baldef (Key, RelatedArtifacts, RelatedPages) " +
+                    "VALUES (@k, @a, @p)";
+                cmd.Parameters.AddWithValue("@k", key);
+                cmd.Parameters.AddWithValue("@a", (object?)artifacts ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@p", (object?)pages ?? DBNull.Value);
+                await cmd.ExecuteNonQueryAsync();
+            }
+        }
+    }
+
+    private static async Task<SqliteConnection> OpenInlinedDbAsync(string outDir)
+    {
+        string html = await File.ReadAllTextAsync(Path.Combine(outDir, "index.html"));
+        string base64 = ExtractInlinedDbBase64(html);
+        byte[] bytes = Convert.FromBase64String(base64);
+        string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        await File.WriteAllBytesAsync(tempDbPath, bytes);
+        SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+        await conn.OpenAsync();
+        return conn;
     }
 
     private static string ExtractInlinedDbBase64(string html)

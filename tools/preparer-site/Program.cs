@@ -102,13 +102,29 @@ public static class Program
         }
 
         // Always run through the temp-DB build pipeline so that downstream
-        // steps (related-fields backfill in a later phase) have a consistent
-        // seam to hang off of. With no active filters the trim DELETE is a
-        // no-op (its WHERE clause collapses to TRUE for NULL bound params)
-        // and the surviving count equals the source count.
+        // steps (related-fields backfill below) have a consistent seam to
+        // hang off of. With no active filters the trim DELETE is a no-op
+        // (its WHERE clause collapses to TRUE for NULL bound params) and
+        // the surviving count equals the source count.
         PreparerDbTrimmer.BuildResult built =
             await PreparerDbTrimmer.BuildAsync(resolvedDb, filters, CancellationToken.None).ConfigureAwait(false);
-        byte[] dbBytes = built.DbBytes;
+        byte[] dbBytes;
+        try
+        {
+            // Backfill the new prepared_ticket_artifacts / prepared_ticket_pages
+            // child tables from the upstream Jira source DB, then VACUUM the
+            // temp DB before reading bytes. Tables are always created so the
+            // SPA's crosscut SQL never fails on a missing schema.
+            await RelatedFieldsBackfill.ApplyAsync(
+                built.TempDbPath, options.JiraSourceDbPath, Console.Error, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            dbBytes = await File.ReadAllBytesAsync(built.TempDbPath).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { File.Delete(built.TempDbPath); } catch { /* best-effort */ }
+        }
         long? filteredCount = filters.HasAnyFilter ? built.SurvivingTicketCount : null;
 
         SiteEmitter.Emit(resolvedOut, title, filters, dbBytes);
