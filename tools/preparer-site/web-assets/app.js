@@ -155,14 +155,14 @@
       }
     }
     if (!queryPart) return result;
-    // URLSearchParams handles `+`, `%xx`, repeated keys, etc.
+    // URLSearchParams handles `+`, `%xx`, repeated keys, etc. Each
+    // dimension may appear multiple times (e.g., `impact=A&impact=B`);
+    // values are never comma-split because impact values legitimately
+    // contain commas (e.g., "Compatible, substantive").
     const params = new URLSearchParams(queryPart);
     for (let i = 0; i < FilterableDimensions.length; i++) {
       const dim = FilterableDimensions[i];
-      const raw = params.get(dim);
-      if (raw == null || raw.length === 0) continue;
-      // Comma-separated list of values per dimension.
-      const values = raw.split(',').map(function (v) { return v.trim(); }).filter(function (v) { return v.length > 0; });
+      const values = params.getAll(dim).filter(function (v) { return v.length > 0; });
       if (values.length === 0) continue;
       // Merge with GenerationChips (already in `result[dim]`); if a value
       // is already present (case-insensitive) keep it; otherwise append.
@@ -205,7 +205,12 @@
       const dim = FilterableDimensions[i];
       const values = chips[dim];
       if (!values || values.length === 0) continue;
-      params.set(dim, values.join(','));
+      // Repeated-key encoding (one `dim=value` per value) so values
+      // containing `,` (e.g., "Compatible, substantive") survive a
+      // round-trip without being split.
+      for (let j = 0; j < values.length; j++) {
+        params.append(dim, values[j]);
+      }
     }
     const s = params.toString();
     return s.length > 0 ? '?' + s : '';
