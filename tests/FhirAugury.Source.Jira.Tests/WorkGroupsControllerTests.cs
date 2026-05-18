@@ -120,7 +120,8 @@ public class WorkGroupsControllerTests : IDisposable
         }
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.ListWorkGroups());
-        List<JiraWorkGroupSummaryEntry> rows = Assert.IsType<List<JiraWorkGroupSummaryEntry>>(ok.Value);
+        JiraWorkGroupListResponse response = Assert.IsType<JiraWorkGroupListResponse>(ok.Value);
+        List<JiraWorkGroupSummaryEntry> rows = response.Items;
 
         Assert.Equal(3, rows.Count);
         // 50 FHIR Infrastructure, 50 Patient Care (alphabetical), 5 Orphan
@@ -136,9 +137,63 @@ public class WorkGroupsControllerTests : IDisposable
         Assert.Equal(20, rows[0].IssueCountClosed);
 
         Assert.Null(rows[2].WorkGroupCode);
-        Assert.Null(rows[2].WorkGroupNameClean);
+        Assert.Equal("OrphanWG", rows[2].WorkGroupNameClean);
         Assert.Null(rows[2].WorkGroupDefinition);
         Assert.Null(rows[2].WorkGroupRetired);
+
+        Assert.True(response.CatalogJoinDegraded, "Orphan WG (no Code) should flag catalog as degraded.");
+    }
+
+    [Fact]
+    public void List_HealthyCatalog_NotDegraded()
+    {
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            Hl7WorkGroupRecord fhir = NewHl7Wg("fhir", "FHIR Infrastructure", "FHIRInfrastructure");
+            Hl7WorkGroupRecord pc = NewHl7Wg("pc", "Patient Care", "PatientCare");
+            Hl7WorkGroupRecord.Insert(conn, fhir);
+            Hl7WorkGroupRecord.Insert(conn, pc);
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("FHIR Infrastructure", fhir.Id, issueCount: 10));
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("Patient Care", pc.Id, issueCount: 5));
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.ListWorkGroups());
+        JiraWorkGroupListResponse response = Assert.IsType<JiraWorkGroupListResponse>(ok.Value);
+
+        Assert.False(response.CatalogJoinDegraded);
+        Assert.Equal(2, response.Items.Count);
+        Assert.All(response.Items, e => Assert.False(string.IsNullOrEmpty(e.WorkGroupNameClean)));
+    }
+
+    [Fact]
+    public void List_EmptyResult_IsDegraded()
+    {
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.ListWorkGroups());
+        JiraWorkGroupListResponse response = Assert.IsType<JiraWorkGroupListResponse>(ok.Value);
+
+        Assert.True(response.CatalogJoinDegraded);
+        Assert.Empty(response.Items);
+    }
+
+    [Fact]
+    public void List_DegradedCatalog_LocallyDerivesNameClean()
+    {
+        // No hl7_workgroups rows at all → every entry comes back with a
+        // locally-derived nameClean and the response is flagged degraded.
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("Orders & Observations", null, issueCount: 7));
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("FHIR Infrastructure", null, issueCount: 3));
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.ListWorkGroups());
+        JiraWorkGroupListResponse response = Assert.IsType<JiraWorkGroupListResponse>(ok.Value);
+
+        Assert.True(response.CatalogJoinDegraded);
+        Assert.Equal(2, response.Items.Count);
+        JiraWorkGroupSummaryEntry orders = response.Items.Single(e => e.Name == "Orders & Observations");
+        Assert.Equal("OrdersAndObservations", orders.WorkGroupNameClean);
+        Assert.Null(orders.WorkGroupCode);
     }
 
     [Fact]

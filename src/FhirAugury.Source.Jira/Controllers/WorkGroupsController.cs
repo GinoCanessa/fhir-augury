@@ -1,3 +1,4 @@
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -37,12 +38,18 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
             """;
 
         List<JiraWorkGroupSummaryEntry> rows = [];
+        bool anyMissingCode = false;
         using SqliteDataReader r = cmd.ExecuteReader();
         while (r.Read())
         {
+            string name = r.GetString(0);
+            string? code = r.IsDBNull(15) ? null : r.GetString(15);
+            string? catalogNameClean = r.IsDBNull(17) ? null : r.GetString(17);
+            string nameClean = catalogNameClean ?? Hl7WorkGroupNameCleaner.Clean(name);
+            if (code is null) anyMissingCode = true;
             rows.Add(new JiraWorkGroupSummaryEntry
             {
-                Name = r.GetString(0),
+                Name = name,
                 IssueCount = r.GetInt32(1),
                 IssueCountSubmitted = r.GetInt32(2),
                 IssueCountTriaged = r.GetInt32(3),
@@ -57,13 +64,15 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
                 IssueCountWithdrawn = r.GetInt32(12),
                 IssueCountDeferred = r.GetInt32(13),
                 IssueCountOther = r.GetInt32(14),
-                WorkGroupCode = r.IsDBNull(15) ? null : r.GetString(15),
+                WorkGroupCode = code,
                 WorkGroupDefinition = r.IsDBNull(16) ? null : r.GetString(16),
-                WorkGroupNameClean = r.IsDBNull(17) ? null : r.GetString(17),
+                WorkGroupNameClean = nameClean,
                 WorkGroupRetired = r.IsDBNull(18) ? null : r.GetBoolean(18),
             });
         }
-        return Ok(rows);
+
+        bool catalogJoinDegraded = rows.Count == 0 || anyMissingCode;
+        return Ok(new JiraWorkGroupListResponse(catalogJoinDegraded, rows));
     }
 
     /// <summary>

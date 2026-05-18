@@ -87,8 +87,13 @@ public record JiraProjectUpdateRequest(bool Enabled, int? BaselineValue = null);
 /// <summary>
 /// Per-work-group projection returned by <c>GET /api/v1/work-groups</c>.
 /// Joins the Jira-side index (<c>jira_index_workgroups</c>) with the
-/// canonical HL7 catalog (<c>hl7_workgroups</c>). Canonical fields are
-/// nullable because some Jira free-text work groups have no HL7 match.
+/// canonical HL7 catalog (<c>hl7_workgroups</c>). Catalog-side fields
+/// (<see cref="WorkGroupCode"/>, <see cref="WorkGroupDefinition"/>,
+/// <see cref="WorkGroupRetired"/>) remain nullable when the HL7 join
+/// is empty; <see cref="WorkGroupNameClean"/> is always populated —
+/// the server falls back to
+/// <see cref="FhirAugury.Common.WorkGroups.Hl7WorkGroupNameCleaner.Clean(string?)"/>
+/// over <see cref="Name"/> when the catalog row is absent.
 /// </summary>
 public record JiraWorkGroupSummaryEntry
 {
@@ -109,6 +114,18 @@ public record JiraWorkGroupSummaryEntry
     public int IssueCountOther { get; init; }
     public string? WorkGroupCode { get; init; }
     public string? WorkGroupDefinition { get; init; }
-    public string? WorkGroupNameClean { get; init; }
+    public required string WorkGroupNameClean { get; init; }
     public bool? WorkGroupRetired { get; init; }
 }
+
+/// <summary>
+/// Envelope returned by <c>GET /api/v1/work-groups</c>. The
+/// <see cref="CatalogJoinDegraded"/> flag signals that the HL7
+/// catalog join was empty or partial (at least one row has a null
+/// <see cref="JiraWorkGroupSummaryEntry.WorkGroupCode"/>). Downstream
+/// orchestrators surface this as a "proceed with warning" banner
+/// rather than aborting (see D2/D4 in the source feature request).
+/// </summary>
+public record JiraWorkGroupListResponse(
+    bool CatalogJoinDegraded,
+    List<JiraWorkGroupSummaryEntry> Items);
