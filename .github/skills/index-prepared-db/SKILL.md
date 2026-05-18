@@ -33,8 +33,10 @@ The skill talks to three HTTP surfaces, in this order, all via
    ```
 
    Use the response's `code`, `nameClean`, and (when present)
-   `retired` fields directly. Per the `fhir-augury-cli` skill, **do
-   not re-derive `nameClean`** — pass it through to the preparer.
+   `retired` fields directly. The unified `WorkGroupResolver` will
+   accept any of `code`, `name`, or `nameClean` on the preparer
+   routes, but **`nameClean` is the canonical form** for folder paths
+   and URL segments; surface `name` for human-facing headings.
 
 2. **preparer — grouping** (default base URL
    `http://localhost:5171`):
@@ -392,12 +394,20 @@ single trailing `Unspecified` section. Render only when non-empty.
   renderable. Report any hydrated-without-partition keys in the
   per-workgroup summary so the engineer can act on them, but never
   render them in the README.
-- **Workgroup-clean asymmetry is a known risk.** The jira-source
-  `nameClean` comes from `Hl7WorkGroupNameCleaner.Clean`; the
-  preparer matches on `REPLACE(WorkGroup, ' ', '')`. The two can
-  disagree on names with hyphens or punctuation. The skill passes
-  the jira-source `nameClean` through unchanged; if the preparer
-  responds empty, report it as such in the run report.
+- **Workgroup-clean slugs are unified.** Both jira-source and the
+  preparer now use `Hl7WorkGroupNameCleaner.Clean` as the canonical
+  slug rule; the historical asymmetry between jira-source's
+  `nameClean` and the preparer's `REPLACE(WorkGroup, ' ', '')` is
+  gone. The preparer controllers accept `name` or `nameClean` form
+  interchangeably (defensive normalisation), and the jira-source
+  `/work-groups/{groupCode}/issues` endpoint accepts all three forms
+  (`code`, `name`, `nameClean`) via the shared `WorkGroupResolver`.
+  When the `list-jira-workgroups` envelope reports
+  `catalogJoinDegraded: true`, surface a single banner at the top
+  of the run report and proceed — every entry's `nameClean` is
+  still populated (the server falls back to
+  `Hl7WorkGroupNameCleaner.Clean(name)` when the HL7 catalog join
+  is empty).
 
 ## Example invocations
 

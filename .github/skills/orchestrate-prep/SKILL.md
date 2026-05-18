@@ -59,18 +59,24 @@ The user must provide or you must determine:
 
 ## Work-Group Names
 
-Work-group records returned by `list-jira-workgroups`
-include `code`, `name`, and `nameClean` directly. **Use `nameClean`
-verbatim** for output subdirectory names — do not derive it locally.
+Work-group records returned by `list-jira-workgroups` include `code`,
+`name`, and `nameClean` directly, plus a top-level
+`catalogJoinDegraded` flag on the response envelope. Selectors may
+be supplied as any of the three forms — the shared
+`WorkGroupResolver` (see `FhirAugury.Common.WorkGroups`) accepts
+`code`, `name`, or `nameClean` interchangeably and falls back to
+fuzzy display-name matching (Jaro-Winkler ≥ 0.92) when no exact
+match is found.
 
-> Note: the API surface is in the process of being updated to expose
-> `code` and `nameClean` alongside `name`. They are present in the JSON
-> payload even if the typed contract has not been regenerated yet. Read
-> them straight from the JSON.
-
-If a work group is supplied as `code`, match it against the `code` field;
-if supplied as `name` or `nameClean`, match against those fields (case
-insensitive). Reject the run with a clear error if no match is found.
+- **Use `nameClean` verbatim for output subdirectory names** — folder
+  paths must stay stable across runs.
+- **Use `name` for human-facing labels** — README headings, run
+  reports, and skill prose all render the display name.
+- **`catalogJoinDegraded` is a proceed-with-warning signal.** Show a
+  single top-of-run banner when set; do not abort. Every entry's
+  `nameClean` is still populated — the server falls back to
+  `Hl7WorkGroupNameCleaner.Clean(name)` when the HL7 catalog join
+  is empty.
 
 ## Jira-source operations used
 

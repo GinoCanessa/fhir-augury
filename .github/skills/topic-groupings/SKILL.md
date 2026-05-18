@@ -41,8 +41,10 @@ write endpoint:
    ```
 
    Use the response's `code`, `nameClean`, and (when present)
-   `retired` fields directly. Per the `fhir-augury-cli` skill, **do
-   not re-derive `nameClean`** — pass it through to the preparer.
+   `retired` fields directly. The unified `WorkGroupResolver` will
+   accept any of `code`, `name`, or `nameClean` on the preparer
+   routes, but **`nameClean` is the canonical form** for folder paths
+   and URL segments; surface `name` for human-facing headings.
 
 2. **preparer — clustering signals** (default base URL
    `http://localhost:5171`):
@@ -385,15 +387,20 @@ to the per-workgroup section of the run report:
   `bugreport.md`) and `plan.md` are not consumed by this skill —
   this skill is invoked directly by the user (or by
   `orchestrate-topic-groupings`).
-- **Never re-derive `nameClean`.** Always use the catalog's
-  `nameClean` verbatim. The `index-prepared-db` skill documents the
-  asymmetry between jira-source's `nameClean` (from
-  `Hl7WorkGroupNameCleaner.Clean`) and the preparer's
-  `REPLACE(WorkGroup, ' ', '')` rule; the clustering-signals
-  endpoint uses the preparer rule. If the catalog `nameClean`
-  resolves to zero clustering signals despite a non-empty hydration
-  response (and zero PUTs go out), **flag this in the run report
-  and skip the workgroup**.
+- **Selectors accept name, nameClean, or code.** The
+  `prepared-ticket-*` controllers and the jira-source
+  `/work-groups/{groupCode}/issues` endpoint route selectors through
+  the shared `WorkGroupResolver`. Pass any of the three forms
+  interchangeably; the canonical
+  `Hl7WorkGroupNameCleaner.Clean(name)` slug is what reaches the DB.
+  The unification migration (`prepared-jira-hydration-clean-v1`)
+  re-derived every existing slug under the cleaner, so the asymmetry
+  between jira-source's `nameClean` and the preparer's
+  `REPLACE(WorkGroup, ' ', '')` rule is no longer a concern: both
+  surfaces now use `Hl7WorkGroupNameCleaner.Clean`. If the
+  clustering-signals endpoint resolves to zero signals despite a
+  non-empty hydration response (and zero PUTs go out), **flag this
+  in the run report and skip the workgroup**.
 - **Hydration freshness is the caller's problem.** This skill does
   not trigger the hydration sweeper. Stale hydration means stale
   partitions; run the sweeper first when freshness matters.
