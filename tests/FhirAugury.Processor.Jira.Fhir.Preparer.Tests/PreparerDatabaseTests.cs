@@ -297,6 +297,169 @@ public sealed class PreparerDatabaseTests
         Assert.Single(read.RepoRows);
     }
 
+    [Fact]
+    public async Task ListJiraHydrationDisplayForWorkGroupAsync_ReturnsEmpty_WhenNoRows()
+    {
+        using TestDatabase database = CreateDatabase();
+
+        IReadOnlyList<PreparedJiraHydrationRow> rows =
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public async Task ListJiraHydrationDisplayForWorkGroupAsync_ReturnsOnlySelfRows()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-555",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        IReadOnlyList<PreparedJiraHydrationRow> rows =
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+
+        PreparedJiraHydrationRow only = Assert.Single(rows);
+        Assert.Equal("FHIR-1", only.TicketKey);
+        Assert.Equal("FHIR-1", only.JiraKey);
+    }
+
+    [Fact]
+    public async Task ListJiraHydrationDisplayForWorkGroupAsync_MatchesWorkGroupClean()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-2",
+            jiraKey: "FHIR-2",
+            workGroup: "Patient Care",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        IReadOnlyList<PreparedJiraHydrationRow> rows =
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+
+        PreparedJiraHydrationRow only = Assert.Single(rows);
+        Assert.Equal("FHIR-1", only.TicketKey);
+        Assert.Equal("Orders and Observations", only.WorkGroup);
+    }
+
+    [Fact]
+    public async Task ListJiraHydrationDisplayForWorkGroupAsync_OrdersByTicketKey()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-3",
+            jiraKey: "FHIR-3",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-2",
+            jiraKey: "FHIR-2",
+            workGroup: "Orders and Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        IReadOnlyList<PreparedJiraHydrationRow> rows =
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], rows.Select(r => r.TicketKey).ToArray());
+    }
+
+    [Fact]
+    public async Task ListJiraHydrationDisplayForWorkGroupAsync_IncludesNonOkStatus()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-404",
+            jiraKey: "FHIR-404",
+            workGroup: "Orders and Observations",
+            type: null,
+            specification: null,
+            title: null,
+            status: null,
+            hydrationStatus: "NotFound",
+            hydrationReason: "jira returned 404");
+
+        IReadOnlyList<PreparedJiraHydrationRow> rows =
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+
+        PreparedJiraHydrationRow only = Assert.Single(rows);
+        Assert.Equal("FHIR-404", only.TicketKey);
+        Assert.Equal("NotFound", only.HydrationStatus);
+        Assert.Equal("jira returned 404", only.HydrationReason);
+        Assert.Null(only.Title);
+        Assert.Null(only.Status);
+        Assert.Null(only.Type);
+        Assert.Null(only.Specification);
+    }
+
+    private static async Task SeedHydrationRowAsync(
+        PreparerDatabase database,
+        string ticketKey,
+        string jiraKey,
+        string workGroup,
+        string? type,
+        string? specification,
+        string? title = "title",
+        string? status = "Open",
+        string hydrationStatus = "resolved",
+        string? hydrationReason = null)
+    {
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = database.OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO prepared_jira_hydration
+            (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
+            VALUES
+            (@id, @ticket, @jira, @title, @status, @type, NULL, NULL, NULL, @workGroup, @specification, @updatedAt, @url, @hydratedAt, @hydrationStatus, @hydrationReason)
+            """;
+        command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@ticket", ticketKey);
+        command.Parameters.AddWithValue("@jira", jiraKey);
+        command.Parameters.AddWithValue("@title", (object?)title ?? DBNull.Value);
+        command.Parameters.AddWithValue("@status", (object?)status ?? DBNull.Value);
+        command.Parameters.AddWithValue("@type", (object?)type ?? DBNull.Value);
+        command.Parameters.AddWithValue("@workGroup", workGroup);
+        command.Parameters.AddWithValue("@specification", (object?)specification ?? DBNull.Value);
+        command.Parameters.AddWithValue("@updatedAt", hydratedAt.ToString("O"));
+        command.Parameters.AddWithValue("@url", $"https://jira.example.com/{jiraKey}");
+        command.Parameters.AddWithValue("@hydratedAt", hydratedAt.ToString("O"));
+        command.Parameters.AddWithValue("@hydrationStatus", hydrationStatus);
+        command.Parameters.AddWithValue("@hydrationReason", (object?)hydrationReason ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static PreparedTicketHydrationBatch SampleBatch(string ticketKey, string jiraKey = "FHIR-100")
     {
         DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
