@@ -9,9 +9,30 @@
   let db = null;
   /** @type {Set<string>} */
   const inRunKeys = new Set();
-  /** @type {{spec?: string, project?: string, wg?: string}} */
-  const ActiveFilters = (typeof window.__FILTERS__ === 'object' && window.__FILTERS__) ? window.__FILTERS__ : {};
-  const HasActiveFilters = Object.keys(ActiveFilters).length > 0;
+
+  // Chip dimensions that can appear as filter chips. `spec`, `project`,
+  // and `wg` are the three the generation pipeline can pre-pin (baked
+  // into the trimmed DB); `artifact` and `page` are in-page-only and
+  // surface from clicking crosscut rows (Phase 4).
+  const FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page'];
+  const GenerationDimensions = ['spec', 'project', 'wg'];
+
+  // Each chip value is stored as a list (today: length one). The UX is
+  // single-value per dimension but the underlying state is forward-proofed
+  // for a future "let me OR two artifacts together" enhancement.
+  /** @type {{[k: string]: string[]}} */
+  const GenerationChips = {};
+  (function seedGenerationChips() {
+    const raw = (typeof window.__FILTERS__ === 'object' && window.__FILTERS__) ? window.__FILTERS__ : {};
+    for (let i = 0; i < GenerationDimensions.length; i++) {
+      const dim = GenerationDimensions[i];
+      if (typeof raw[dim] === 'string' && raw[dim].length > 0) {
+        GenerationChips[dim] = [raw[dim]];
+      }
+    }
+  })();
+  /** @type {{[k: string]: string[]}} */
+  let ActiveChips = {};
 
   const App = {
     init: async function () {
@@ -42,8 +63,19 @@
     route: function () {
       const main = document.getElementById('app');
       clearChildren(main);
-      const hash = window.location.hash || '#/';
-      const parts = hash.replace(/^#\/?/, '').split('/').filter(function (p) { return p.length > 0; });
+      const fullHash = window.location.hash || '#/';
+
+      // Split path and chip-query suffix. Encoded as a `?` after the
+      // route path inside the hash, e.g. `#/list?wg=PA&artifact=Observation`.
+      // GenerationChips always win — if both URL and generation pin a
+      // dimension, the GenerationChips value is preserved.
+      const stripped = fullHash.replace(/^#\/?/, '');
+      const queryIdx = stripped.indexOf('?');
+      const pathPart = queryIdx >= 0 ? stripped.slice(0, queryIdx) : stripped;
+      const queryPart = queryIdx >= 0 ? stripped.slice(queryIdx + 1) : '';
+      ActiveChips = parseChipsFromQuery(queryPart);
+
+      const parts = pathPart.split('/').filter(function (p) { return p.length > 0; });
       try {
         if (parts.length === 0) {
           setBreadcrumb([{ label: 'Home', href: null }]);
@@ -139,27 +171,172 @@
           }
         } else {
           setBreadcrumb([{ label: 'Home', href: '#/' }]);
-          Views.notFound(main, hash);
+          Views.notFound(main, fullHash);
         }
       } catch (err) {
         renderError(main, 'Route render failed: ' + err.message);
       }
-      renderFilterFooter(main);
     },
   };
 
-  function renderFilterBanner(main) {
-    if (!HasActiveFilters) return;
+  // ------- Chip-state helpers -------
+
+  function parseChipsFromQuery(queryPart) {
+    /** @type {{[k: string]: string[]}} */
+    const result = {};
+    // Seed from GenerationChips first so they always survive.
+    for (const k in GenerationChips) {
+      if (GenerationChips[k] && GenerationChips[k].length > 0) {
+        result[k] = GenerationChips[k].slice();
+      }
+    }
+    if (!queryPart) return result;
+    // URLSearchParams handles `+`, `%xx`, repeated keys, etc.
+    const params = new URLSearchParams(queryPart);
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      const raw = params.get(dim);
+      if (raw == null || raw.length === 0) continue;
+      // Comma-separated list of values per dimension.
+      const values = raw.split(',').map(function (v) { return v.trim(); }).filter(function (v) { return v.length > 0; });
+      if (values.length === 0) continue;
+      // Merge with GenerationChips (already in `result[dim]`); if a value
+      // is already present (case-insensitive) keep it; otherwise append.
+      const existing = result[dim] ? result[dim].slice() : [];
+      const seen = {};
+      for (let j = 0; j < existing.length; j++) seen[existing[j].toLowerCase()] = true;
+      for (let j = 0; j < values.length; j++) {
+        if (!seen[values[j].toLowerCase()]) {
+          existing.push(values[j]);
+          seen[values[j].toLowerCase()] = true;
+        }
+      }
+      result[dim] = existing;
+    }
+    return result;
+  }
+
+  function getInPageChips() {
+    // ActiveChips minus the generation pins (those can't be removed from
+    // the URL). Returned shape matches ActiveChips: { dim: string[] }.
+    /** @type {{[k: string]: string[]}} */
+    const out = {};
+    for (const dim in ActiveChips) {
+      const all = ActiveChips[dim] || [];
+      const gen = GenerationChips[dim] || [];
+      const genSet = {};
+      for (let i = 0; i < gen.length; i++) genSet[gen[i].toLowerCase()] = true;
+      const remaining = [];
+      for (let i = 0; i < all.length; i++) {
+        if (!genSet[all[i].toLowerCase()]) remaining.push(all[i]);
+      }
+      if (remaining.length > 0) out[dim] = remaining;
+    }
+    return out;
+  }
+
+  function buildChipQuerySuffix(chips) {
+    const params = new URLSearchParams();
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      const values = chips[dim];
+      if (!values || values.length === 0) continue;
+      params.set(dim, values.join(','));
+    }
+    const s = params.toString();
+    return s.length > 0 ? '?' + s : '';
+  }
+
+  function currentHashSuffix() {
+    return buildChipQuerySuffix(getInPageChips());
+  }
+
+  function setHashChips(inPageChips) {
+    const fullHash = window.location.hash || '#/';
+    const stripped = fullHash.replace(/^#\/?/, '');
+    const queryIdx = stripped.indexOf('?');
+    const pathPart = queryIdx >= 0 ? stripped.slice(0, queryIdx) : stripped;
+    const suffix = buildChipQuerySuffix(inPageChips);
+    window.location.hash = '#/' + pathPart + suffix;
+  }
+
+  function toggleChip(dim, value) {
+    if (FilterableDimensions.indexOf(dim) < 0) return;
+    const current = getInPageChips();
+    const existing = current[dim] ? current[dim].slice() : [];
+    const lc = value.toLowerCase();
+    let removed = false;
+    for (let i = existing.length - 1; i >= 0; i--) {
+      if (existing[i].toLowerCase() === lc) {
+        existing.splice(i, 1);
+        removed = true;
+      }
+    }
+    if (removed) {
+      if (existing.length === 0) delete current[dim];
+      else current[dim] = existing;
+    } else {
+      // Single-value UX: replace any other in-page values in this dim.
+      current[dim] = [value];
+    }
+    setHashChips(current);
+  }
+
+  function removeChipValue(dim, value) {
+    const current = getInPageChips();
+    const existing = current[dim] ? current[dim].slice() : [];
+    const lc = value.toLowerCase();
+    const filtered = existing.filter(function (v) { return v.toLowerCase() !== lc; });
+    if (filtered.length === 0) delete current[dim];
+    else current[dim] = filtered;
+    setHashChips(current);
+  }
+
+  function isGenerationChip(dim, value) {
+    const gen = GenerationChips[dim] || [];
+    const lc = value.toLowerCase();
+    for (let i = 0; i < gen.length; i++) {
+      if (gen[i].toLowerCase() === lc) return true;
+    }
+    return false;
+  }
+
+  function hasAnyActiveChips() {
+    for (const dim in ActiveChips) {
+      if (ActiveChips[dim] && ActiveChips[dim].length > 0) return true;
+    }
+    return false;
+  }
+
+  function renderChipBanner(main) {
+    if (!hasAnyActiveChips()) return;
     const banner = document.createElement('div');
     banner.id = 'filter-banner';
-    const keys = ['spec', 'project', 'wg'];
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      if (!ActiveFilters[k]) continue;
-      const chip = document.createElement('span');
-      chip.className = 'filter-chip';
-      chip.textContent = k + ': ' + ActiveFilters[k];
-      banner.appendChild(chip);
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      const values = ActiveChips[dim] || [];
+      for (let j = 0; j < values.length; j++) {
+        const value = values[j];
+        const chip = document.createElement('span');
+        chip.className = 'filter-chip';
+        chip.appendChild(document.createTextNode(dim + ': ' + value));
+        if (!isGenerationChip(dim, value)) {
+          // Wrap dim+value in a closure-stable pair to avoid loop var bugs
+          // in the click handler.
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'chip-remove';
+          removeBtn.setAttribute('aria-label', 'Remove ' + dim + ' filter ' + value);
+          removeBtn.appendChild(document.createTextNode('×'));
+          (function (capturedDim, capturedValue) {
+            removeBtn.addEventListener('click', function () {
+              removeChipValue(capturedDim, capturedValue);
+            });
+          })(dim, value);
+          chip.appendChild(removeBtn);
+        }
+        banner.appendChild(chip);
+      }
     }
     if (main.firstChild) {
       main.insertBefore(banner, main.firstChild);
@@ -168,17 +345,9 @@
     }
   }
 
-  function renderFilterFooter(main) {
-    if (!HasActiveFilters) return;
-    const parts = [];
-    if (ActiveFilters.spec) parts.push('spec=' + ActiveFilters.spec);
-    if (ActiveFilters.project) parts.push('project=' + ActiveFilters.project);
-    if (ActiveFilters.wg) parts.push('wg=' + ActiveFilters.wg);
-    const footer = document.createElement('p');
-    footer.className = 'filter-footer';
-    footer.textContent = 'Filtered: ' + parts.join(', ');
-    main.appendChild(footer);
-  }
+  // Expose toggleChip for crosscut-row click handlers added in Phase 4.
+  window.__preparerToggleChip = toggleChip;
+  window.__preparerCurrentHashSuffix = currentHashSuffix;
 
   function query(sql, params) {
     const stmt = db.prepare(sql);
@@ -304,11 +473,11 @@
 
   const Views = {
     landing: function (main) {
-      renderFilterBanner(main);
+      renderChipBanner(main);
       const totalRes = query('SELECT count(*) AS n FROM prepared_tickets', null);
       const total = totalRes.rows.length ? totalRes.rows[0].n : 0;
 
-      if (total === 0 && HasActiveFilters) {
+      if (total === 0 && hasAnyActiveChips()) {
         main.appendChild(el('p', null, '0 prepared tickets match this filter.'));
       } else {
         main.appendChild(el('p', null, total + ' prepared tickets in this run.'));
@@ -334,6 +503,7 @@
         Views.notFound(main, '#/' + route);
         return;
       }
+      renderChipBanner(main);
       main.appendChild(el('h2', null, cfg.title));
       const section = buildSummarySection(cfg.title, cfg.sql, route);
       // buildSummarySection already wraps in <section> with its own <h2>; unwrap.
@@ -341,6 +511,7 @@
     },
 
     list: function (main, filter) {
+      renderChipBanner(main);
       const baseSql =
         'SELECT pt.Key, jst.Title, jst.WorkGroup, jst.Status, jst.Type, ' +
         'pt.Recommendation, pt.ProposalAImpact, pt.ProposalBImpact, pt.SavedAt, ' +

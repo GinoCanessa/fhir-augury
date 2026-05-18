@@ -116,19 +116,30 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   margin-bottom: 0.75rem;
 }
 .filter-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 2px 8px;
   margin-right: 6px;
+  margin-bottom: 4px;
   border-radius: 12px;
   background: var(--row-alt);
   border: 1px solid var(--border);
   font-size: 0.9em;
   color: var(--fg);
 }
-.filter-footer {
-  margin-top: 2em;
-  padding-top: 0.5em;
-  border-top: 1px solid var(--border);
+.chip-remove {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 0 0 2px;
+  font-size: inherit;
+  line-height: 1;
   color: var(--muted);
-  font-size: 0.85em;
+  cursor: pointer;
+}
+.chip-remove:hover,
+.chip-remove:focus {
+  color: var(--fg);
+  outline: none;
 }

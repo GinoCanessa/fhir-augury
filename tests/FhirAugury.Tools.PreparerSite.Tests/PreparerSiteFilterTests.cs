@@ -342,6 +342,33 @@ public sealed class PreparerSiteFilterTests
         Assert.Contains("window.__FILTERS__={};", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Render_BundledAppJs_ContainsUnifiedChipBanner()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        // The emitted assets/app.js should ship the new unified chip
+        // banner pipeline and no longer reference the removed
+        // renderFilterFooter helper.
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        Assert.Contains("renderChipBanner", appJs, StringComparison.Ordinal);
+        Assert.Contains("FilterableDimensions", appJs, StringComparison.Ordinal);
+        Assert.Contains("GenerationChips", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("renderFilterFooter", appJs, StringComparison.Ordinal);
+
+        // The bundled index.html template should no longer ship the
+        // server-rendered <div id="filter-banner"> placeholder — the
+        // banner is created per-render by app.js now.
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        Assert.DoesNotContain("<div id=\"filter-banner\"></div>", html, StringComparison.Ordinal);
+    }
+
     private static byte[] ExtractInlinedDbBytes(string html)
     {
         const string marker = "window.__DB__='";
