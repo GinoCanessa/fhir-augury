@@ -1,4 +1,6 @@
 using System.Globalization;
+using FhirAugury.Common.Database;
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
@@ -23,6 +25,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     public static void EnsureSchema(SqliteConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
+        EnsureSchema(connection, logger: null);
+    }
+
+    /// <summary>
+    /// Logger-aware overload used by the instance bootstrap path; <see cref="EnsureSchema(SqliteConnection)"/>
+    /// remains available for ad-hoc callers (e.g. <c>preparer-site</c>'s trim-step temp copy).
+    /// </summary>
+    internal static void EnsureSchema(SqliteConnection connection, ILogger? logger)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
         JiraProcessingSourceTicketStore.EnsureSchema(connection);
         PreparedTicketRecord.CreateTable(connection);
         PreparedTicketRepoRecord.CreateTable(connection);
@@ -38,12 +50,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedTicketTopicRecord.CreateTable(connection);
         PreparedTicketTopicGroupRecord.CreateTable(connection);
         PreparedTicketTopicMemberRecord.CreateTable(connection);
+        EnsureMigrationsTable(connection);
+        EnsureHydrationWorkGroupCleanColumn(connection);
         EnsureHydrationCompositeUniqueIndexes(connection);
         EnsureGroupingCompositeUniqueIndexes(connection);
+        RunMigrationsIfNeeded(connection, logger);
     }
 
     protected override void InitializeSchema(SqliteConnection connection)
-        => EnsureSchema(connection);
+        => EnsureSchema(connection, Logger);
 
     /// <summary>
     /// CsLightDbGen does not currently expose a way to declare a composite UNIQUE index
@@ -95,6 +110,137 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             command.CommandText = sql;
             command.ExecuteNonQuery();
         }
+    }
+
+    /// <summary>
+    /// Ensures the <c>schema_migrations</c> sentinel table exists. Sentinel
+    /// rows are used by <see cref="RunMigrationsIfNeeded"/> to make
+    /// one-shot data migrations (e.g. the stored-WorkGroupClean backfill)
+    /// idempotent across restarts.
+    /// </summary>
+    private static void EnsureMigrationsTable(SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS schema_migrations(
+                Name TEXT PRIMARY KEY,
+                AppliedAt TEXT NOT NULL)
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Adds the stored <c>WorkGroupClean</c> column to
+    /// <c>prepared_jira_hydration</c> on legacy DBs that predate this
+    /// column (CsLightDbGen emits it for fresh DBs). Pairs with the
+    /// generator-emitted <c>IDX_prepared_jira_hydration_WorkGroupClean</c>
+    /// non-unique index so SELECTs filtered by the slug stay fast.
+    /// </summary>
+    private static void EnsureHydrationWorkGroupCleanColumn(SqliteConnection connection)
+    {
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_jira_hydration",
+            "WorkGroupClean",
+            "TEXT NULL");
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "CREATE INDEX IF NOT EXISTS IDX_prepared_jira_hydration_WorkGroupClean " +
+            "ON prepared_jira_hydration(WorkGroupClean)";
+        command.ExecuteNonQuery();
+    }
+
+    private const string HydrationCleanMigrationName = "prepared-jira-hydration-clean-v1";
+
+    /// <summary>
+    /// Runs every one-shot data migration whose sentinel is not yet present.
+    /// Each migration is wrapped in a single <c>BEGIN IMMEDIATE</c> /
+    /// <c>COMMIT</c> transaction so partial work cannot leak; the sentinel
+    /// is only written after the transaction commits.
+    /// </summary>
+    private static void RunMigrationsIfNeeded(SqliteConnection connection, ILogger? logger)
+    {
+        if (!MigrationHasRun(connection, HydrationCleanMigrationName))
+        {
+            BackfillJiraHydrationWorkGroupClean(connection, logger);
+            MarkMigrationApplied(connection, HydrationCleanMigrationName);
+        }
+    }
+
+    private static bool MigrationHasRun(SqliteConnection connection, string name)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM schema_migrations WHERE Name = @name";
+        command.Parameters.AddWithValue("@name", name);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static void MarkMigrationApplied(SqliteConnection connection, string name)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "INSERT OR IGNORE INTO schema_migrations(Name, AppliedAt) VALUES (@name, @appliedAt)";
+        command.Parameters.AddWithValue("@name", name);
+        command.Parameters.AddWithValue(
+            "@appliedAt",
+            DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Re-derives <c>WorkGroupClean</c> from <c>WorkGroup</c> via
+    /// <see cref="Hl7WorkGroupNameCleaner.Clean(string?)"/> for every
+    /// row whose stored slug is stale or absent. Runs as a single
+    /// transaction; on the hydration table (bounded by hydrated-ticket
+    /// count, on the order of 10⁴–10⁵ rows) a single transaction is
+    /// acceptable and keeps the migration atomic.
+    /// </summary>
+    private static void BackfillJiraHydrationWorkGroupClean(SqliteConnection connection, ILogger? logger)
+    {
+        List<(int RowId, string? WorkGroup, string? Existing)> rows = [];
+        using (SqliteCommand select = connection.CreateCommand())
+        {
+            select.CommandText = "SELECT RowId, WorkGroup, WorkGroupClean FROM prepared_jira_hydration";
+            using SqliteDataReader reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                int rowId = reader.GetInt32(0);
+                string? wg = reader.IsDBNull(1) ? null : reader.GetString(1);
+                string? existing = reader.IsDBNull(2) ? null : reader.GetString(2);
+                rows.Add((rowId, wg, existing));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            logger?.LogInformation(
+                "Backfilled WorkGroupClean on prepared_jira_hydration: rowsScanned=0 rowsUpdated=0");
+            return;
+        }
+
+        using SqliteTransaction tx = connection.BeginTransaction(System.Data.IsolationLevel.Serializable);
+        int updated = 0;
+        using (SqliteCommand update = connection.CreateCommand())
+        {
+            update.Transaction = tx;
+            update.CommandText = "UPDATE prepared_jira_hydration SET WorkGroupClean = @clean WHERE RowId = @rowId";
+            SqliteParameter cleanParam = update.Parameters.Add("@clean", SqliteType.Text);
+            SqliteParameter rowIdParam = update.Parameters.Add("@rowId", SqliteType.Integer);
+            foreach ((int rowId, string? wg, string? existing) in rows)
+            {
+                string newCleanRaw = Hl7WorkGroupNameCleaner.Clean(wg);
+                string? newClean = string.IsNullOrEmpty(newCleanRaw) ? null : newCleanRaw;
+                if (string.Equals(newClean, existing, StringComparison.Ordinal)) continue;
+                cleanParam.Value = (object?)newClean ?? DBNull.Value;
+                rowIdParam.Value = rowId;
+                update.ExecuteNonQuery();
+                updated++;
+            }
+        }
+        tx.Commit();
+        logger?.LogInformation(
+            "Backfilled WorkGroupClean on prepared_jira_hydration: rowsScanned={Scanned} rowsUpdated={Updated}",
+            rows.Count, updated);
     }
 
     public async Task<PreparedTicketSaveResult> SavePreparedTicketAsync(PreparedTicketPayload payload, CancellationToken ct = default)
@@ -263,10 +409,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// short description (ordinal-ignore-case).
     /// </summary>
     /// <remarks>
-    /// The <c>WorkGroupClean</c> → <c>WorkGroup</c> display-name mapping
-    /// is convention-bound: <c>REPLACE(j.WorkGroup, ' ', '') = @wg</c>,
-    /// matching the <c>nameClean</c> convention used by
-    /// <c>orchestrate-prep</c>. Tickets with no self-row in
+    /// The <c>WorkGroupClean</c> → <c>WorkGroup</c> display-name mapping is
+    /// served by the stored <c>prepared_jira_hydration.WorkGroupClean</c>
+    /// column (populated on insert via
+    /// <see cref="Hl7WorkGroupNameCleaner.Clean(string?)"/> and backfilled
+    /// on schema migration); SELECTs match on
+    /// <c>j.WorkGroupClean = @wg</c>. Tickets with no self-row in
     /// <c>prepared_jira_hydration</c> (<c>JiraKey = TicketKey</c>) are
     /// counted in <c>UnattributedTicketCount</c> but are intentionally
     /// excluded from <c>IndividualTicketKeys</c>.
@@ -334,7 +482,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// the <c>topic-groupings</c> skill. For every <c>prepared_jira_hydration</c>
     /// self-row (<c>JiraKey = TicketKey</c>) whose <c>WorkGroup</c>
     /// matches <paramref name="workGroupClean"/> under the
-    /// <c>REPLACE(IFNULL(WorkGroup, ''), ' ', '')</c> convention used
+    /// stored <c>WorkGroupClean</c> column populated via
+    /// <c>Hl7WorkGroupNameCleaner.Clean</c> on insert
     /// by the rest of the preparer, this method:
     /// <list type="bullet">
     ///   <item>Pulls the partition / display fields
@@ -380,7 +529,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 FROM prepared_jira_hydration j
                 LEFT JOIN prepared_tickets t ON t.Key = j.TicketKey
                 WHERE j.JiraKey = j.TicketKey
-                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                  AND j.WorkGroupClean = @wg
                 ORDER BY j.TicketKey ASC
                 """;
             command.Parameters.AddWithValue("@wg", workGroupClean);
@@ -419,7 +568,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 FROM prepared_ticket_related_jira r
                 INNER JOIN prepared_jira_hydration j
                   ON j.TicketKey = r.TicketKey AND j.JiraKey = j.TicketKey
-                WHERE REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                WHERE j.WorkGroupClean = @wg
                 ORDER BY r.TicketKey ASC, r.AssociatedTicketKey ASC
                 """;
             command.Parameters.AddWithValue("@wg", workGroupClean);
@@ -448,7 +597,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// <c>prepared_jira_hydration</c> self-rows
     /// (<c>JiraKey = TicketKey</c>) whose <c>WorkGroup</c> matches
     /// <paramref name="workGroupClean"/> under the
-    /// <c>REPLACE(IFNULL(WorkGroup, ''), ' ', '')</c> convention used by
+    /// stored <c>WorkGroupClean</c> column (populated via
+    /// <c>Hl7WorkGroupNameCleaner.Clean</c> on insert) used by
     /// the grouping query. Rows are ordered by <c>TicketKey</c> ascending.
     /// Returns an empty list (never throws) when no rows match.
     /// Consumed by the <c>index-prepared-db</c> skill.
@@ -464,7 +614,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                    WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason
             FROM prepared_jira_hydration
             WHERE JiraKey = TicketKey
-              AND REPLACE(IFNULL(WorkGroup, ''), ' ', '') = @wg
+              AND WorkGroupClean = @wg
             ORDER BY TicketKey ASC
             """;
         command.Parameters.AddWithValue("@wg", workGroupClean);
@@ -698,7 +848,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 FROM prepared_tickets t
                 INNER JOIN prepared_jira_hydration j
                   ON j.TicketKey = t.Key AND j.JiraKey = t.Key
-                WHERE REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                WHERE j.WorkGroupClean = @wg
                   AND IFNULL(j.Type, '') = @type
                   AND IFNULL(j.Specification, 'Unspecified') = @spec
                   AND NOT EXISTS (
@@ -921,7 +1071,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 SELECT DISTINCT IFNULL(j.Specification, 'Unspecified'), IFNULL(j.Type, '')
                 FROM prepared_jira_hydration j
                 WHERE j.JiraKey = j.TicketKey
-                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                  AND j.WorkGroupClean = @wg
                   AND j.Type IS NOT NULL AND j.Type <> ''
                 """;
             command.Parameters.AddWithValue("@wg", workGroupClean);
@@ -971,7 +1121,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             command.CommandText = """
                 SELECT j.WorkGroup FROM prepared_jira_hydration j
                 WHERE j.JiraKey = j.TicketKey
-                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                  AND j.WorkGroupClean = @wg
                 ORDER BY j.HydratedAt DESC LIMIT 1
                 """;
             command.Parameters.AddWithValue("@wg", workGroupClean);
@@ -1209,10 +1359,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.CommandText = """
             INSERT INTO prepared_jira_hydration
             (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain,
-             WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
+             WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
             VALUES
             (@Id, @TicketKey, @JiraKey, @Title, @Status, @Type, @Priority, @Resolution, @ResolutionDescriptionPlain,
-             @WorkGroup, @Specification, @UpdatedAt, @Url, @HydratedAt, @HydrationStatus, @HydrationReason)
+             @WorkGroup, @WorkGroupClean, @Specification, @UpdatedAt, @Url, @HydratedAt, @HydrationStatus, @HydrationReason)
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("@TicketKey", row.TicketKey);
@@ -1224,6 +1374,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         AddNullable(command, "@Resolution", row.Resolution);
         AddNullable(command, "@ResolutionDescriptionPlain", row.ResolutionDescriptionPlain);
         AddNullable(command, "@WorkGroup", row.WorkGroup);
+        string workGroupCleanRaw = Hl7WorkGroupNameCleaner.Clean(row.WorkGroup);
+        AddNullable(command, "@WorkGroupClean", string.IsNullOrEmpty(workGroupCleanRaw) ? null : workGroupCleanRaw);
         AddNullable(command, "@Specification", row.Specification);
         AddNullable(command, "@UpdatedAt", row.UpdatedAt.HasValue ? Format(row.UpdatedAt.Value) : null);
         AddNullable(command, "@Url", row.Url);

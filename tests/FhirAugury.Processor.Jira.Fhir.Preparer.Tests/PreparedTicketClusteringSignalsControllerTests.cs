@@ -10,7 +10,7 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
 public sealed class PreparedTicketClusteringSignalsControllerTests
 {
-    private const string WorkGroupClean = "OrdersandObservations";
+    private const string WorkGroupClean = "OrdersAndObservations";
     private const string WorkGroupDisplay = "Orders and Observations";
     private const string Specification = "FHIR Core";
     private const string Type = "Change Request";
@@ -94,9 +94,9 @@ public sealed class PreparedTicketClusteringSignalsControllerTests
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO prepared_jira_hydration
-            (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
+            (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
             VALUES
-            (@id, @ticket, @ticket, @title, @status, @type, @priority, NULL, NULL, @workGroup, @specification, @updatedAt, @url, @hydratedAt, 'resolved', NULL)
+            (@id, @ticket, @ticket, @title, @status, @type, @priority, NULL, NULL, @workGroup, @workGroupClean, @specification, @updatedAt, @url, @hydratedAt, 'resolved', NULL)
             """;
         command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("@ticket", ticketKey);
@@ -105,6 +105,7 @@ public sealed class PreparedTicketClusteringSignalsControllerTests
         command.Parameters.AddWithValue("@type", Type);
         command.Parameters.AddWithValue("@priority", "Major");
         command.Parameters.AddWithValue("@workGroup", WorkGroupDisplay);
+        command.Parameters.AddWithValue("@workGroupClean", FhirAugury.Common.WorkGroups.Hl7WorkGroupNameCleaner.Clean(WorkGroupDisplay));
         command.Parameters.AddWithValue("@specification", Specification);
         command.Parameters.AddWithValue("@updatedAt", hydratedAt.ToString("O"));
         command.Parameters.AddWithValue("@url", $"https://jira.example.com/{ticketKey}");

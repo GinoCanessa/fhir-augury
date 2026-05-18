@@ -303,7 +303,7 @@ public sealed class PreparerDatabaseTests
         using TestDatabase database = CreateDatabase();
 
         IReadOnlyList<PreparedJiraHydrationRow> rows =
-            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersAndObservations");
 
         Assert.Empty(rows);
     }
@@ -328,7 +328,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         IReadOnlyList<PreparedJiraHydrationRow> rows =
-            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersAndObservations");
 
         PreparedJiraHydrationRow only = Assert.Single(rows);
         Assert.Equal("FHIR-1", only.TicketKey);
@@ -355,7 +355,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         IReadOnlyList<PreparedJiraHydrationRow> rows =
-            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersAndObservations");
 
         PreparedJiraHydrationRow only = Assert.Single(rows);
         Assert.Equal("FHIR-1", only.TicketKey);
@@ -389,7 +389,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         IReadOnlyList<PreparedJiraHydrationRow> rows =
-            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersAndObservations");
 
         Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], rows.Select(r => r.TicketKey).ToArray());
     }
@@ -411,7 +411,7 @@ public sealed class PreparerDatabaseTests
             hydrationReason: "jira returned 404");
 
         IReadOnlyList<PreparedJiraHydrationRow> rows =
-            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersandObservations");
+            await database.Database.ListJiraHydrationDisplayForWorkGroupAsync("OrdersAndObservations");
 
         PreparedJiraHydrationRow only = Assert.Single(rows);
         Assert.Equal("FHIR-404", only.TicketKey);
@@ -440,9 +440,9 @@ public sealed class PreparerDatabaseTests
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO prepared_jira_hydration
-            (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
+            (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason)
             VALUES
-            (@id, @ticket, @jira, @title, @status, @type, NULL, NULL, NULL, @workGroup, @specification, @updatedAt, @url, @hydratedAt, @hydrationStatus, @hydrationReason)
+            (@id, @ticket, @jira, @title, @status, @type, NULL, NULL, NULL, @workGroup, @workGroupClean, @specification, @updatedAt, @url, @hydratedAt, @hydrationStatus, @hydrationReason)
             """;
         command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("@ticket", ticketKey);
@@ -451,6 +451,8 @@ public sealed class PreparerDatabaseTests
         command.Parameters.AddWithValue("@status", (object?)status ?? DBNull.Value);
         command.Parameters.AddWithValue("@type", (object?)type ?? DBNull.Value);
         command.Parameters.AddWithValue("@workGroup", workGroup);
+        string workGroupCleanRaw = FhirAugury.Common.WorkGroups.Hl7WorkGroupNameCleaner.Clean(workGroup);
+        command.Parameters.AddWithValue("@workGroupClean", string.IsNullOrEmpty(workGroupCleanRaw) ? (object)DBNull.Value : workGroupCleanRaw);
         command.Parameters.AddWithValue("@specification", (object?)specification ?? DBNull.Value);
         command.Parameters.AddWithValue("@updatedAt", hydratedAt.ToString("O"));
         command.Parameters.AddWithValue("@url", $"https://jira.example.com/{jiraKey}");
@@ -466,7 +468,7 @@ public sealed class PreparerDatabaseTests
         using TestDatabase database = CreateDatabase();
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.Null(signals);
     }
@@ -545,10 +547,10 @@ public sealed class PreparerDatabaseTests
         });
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.NotNull(signals);
-        Assert.Equal("OrdersandObservations", signals!.WorkGroupClean);
+        Assert.Equal("OrdersAndObservations", signals!.WorkGroupClean);
         Assert.Equal("Orders and Observations", signals.WorkGroupDisplay);
         Assert.Equal(2, signals.Tickets.Count);
 
@@ -591,7 +593,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.NotNull(signals);
         PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
@@ -611,7 +613,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.NotNull(signals);
         PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
@@ -648,7 +650,7 @@ public sealed class PreparerDatabaseTests
             specification: "FHIR Core");
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.NotNull(signals);
         PreparedTicketClusteringSignal only = Assert.Single(signals!.Tickets);
@@ -664,7 +666,7 @@ public sealed class PreparerDatabaseTests
         await SeedHydrationRowAsync(database.Database, "FHIR-2", "FHIR-2", "Orders and Observations", "Change Request", "FHIR Core");
 
         PreparedTicketClusteringSignals? signals =
-            await database.Database.GetClusteringSignalsAsync("OrdersandObservations");
+            await database.Database.GetClusteringSignalsAsync("OrdersAndObservations");
 
         Assert.NotNull(signals);
         Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], signals!.Tickets.Select(s => s.TicketKey).ToArray());
@@ -904,16 +906,146 @@ public sealed class PreparerDatabaseTests
         return Convert.ToInt32(command.ExecuteScalar());
     }
 
+    [Fact]
+    public void Initialize_HydrationWorkGroupCleanIndex_Exists()
+    {
+        using TestDatabase database = CreateDatabase();
+        Assert.True(HasIndexOver(database, "prepared_jira_hydration", "WorkGroupClean"));
+    }
+
+    [Fact]
+    public async Task InsertJiraHydration_PopulatesWorkGroupClean_FromCleaner()
+    {
+        using TestDatabase database = CreateDatabase();
+
+        await using (SqliteConnection conn = database.Database.OpenConnection())
+        await using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO prepared_ticket_hydration (Id, TicketKey, HydratedAt, HydrationStatus) VALUES (@id, 'FHIR-1', @at, 'resolved')";
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await SeedHydrationRowAsync(
+            database.Database,
+            ticketKey: "FHIR-1",
+            jiraKey: "FHIR-1",
+            workGroup: "Orders & Observations",
+            type: "Change Request",
+            specification: "FHIR Core");
+
+        await using SqliteConnection check = database.Database.OpenConnection();
+        await using SqliteCommand readCmd = check.CreateCommand();
+        readCmd.CommandText = "SELECT WorkGroupClean FROM prepared_jira_hydration WHERE TicketKey='FHIR-1'";
+        object? scalar = await readCmd.ExecuteScalarAsync();
+        Assert.Equal("OrdersAndObservations", scalar);
+    }
+
+    [Fact]
+    public async Task BackfillJiraHydrationWorkGroupClean_v1_PopulatesAndIsIdempotent()
+    {
+        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        PreparerDatabase db1 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db1.Initialize();
+
+        // Simulate a pre-migration row: stored WorkGroupClean is NULL.
+        await using (SqliteConnection seed = db1.OpenConnection())
+        {
+            await using SqliteCommand insert = seed.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO prepared_jira_hydration
+                (Id, TicketKey, JiraKey, Title, Status, Type, WorkGroup, WorkGroupClean, HydratedAt, HydrationStatus)
+                VALUES (@id, 'FHIR-1', 'FHIR-1', 'title', 'Open', 'CR', 'Orders & Observations', NULL, @at, 'resolved')
+                """;
+            insert.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await insert.ExecuteNonQueryAsync();
+
+            // Force the migration to re-run by deleting its sentinel.
+            await using SqliteCommand delSentinel = seed.CreateCommand();
+            delSentinel.CommandText = "DELETE FROM schema_migrations WHERE Name = 'prepared-jira-hydration-clean-v1'";
+            await delSentinel.ExecuteNonQueryAsync();
+        }
+        db1.Dispose();
+
+        // Re-open: EnsureSchema runs, sentinel is missing, backfill runs.
+        PreparerDatabase db2 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db2.Initialize();
+        try
+        {
+            await using SqliteConnection check = db2.OpenConnection();
+            await using SqliteCommand readCmd = check.CreateCommand();
+            readCmd.CommandText = "SELECT WorkGroupClean FROM prepared_jira_hydration WHERE TicketKey='FHIR-1'";
+            object? scalar = await readCmd.ExecuteScalarAsync();
+            Assert.Equal("OrdersAndObservations", scalar);
+
+            await using SqliteCommand sentinelCmd = check.CreateCommand();
+            sentinelCmd.CommandText = "SELECT 1 FROM schema_migrations WHERE Name = 'prepared-jira-hydration-clean-v1'";
+            Assert.NotNull(await sentinelCmd.ExecuteScalarAsync());
+        }
+        finally
+        {
+            db2.Dispose();
+        }
+
+        // Open a third time — sentinel is now present, migration is a no-op.
+        PreparerDatabase db3 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db3.Initialize();
+        try
+        {
+            await using SqliteConnection check = db3.OpenConnection();
+            await using SqliteCommand readCmd = check.CreateCommand();
+            readCmd.CommandText = "SELECT WorkGroupClean FROM prepared_jira_hydration WHERE TicketKey='FHIR-1'";
+            object? scalar = await readCmd.ExecuteScalarAsync();
+            Assert.Equal("OrdersAndObservations", scalar);
+        }
+        finally
+        {
+            db3.Dispose();
+        }
+
+        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+    }
+
+    private static bool HasIndexOver(TestDatabase database, string table, string column)
+    {
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand list = connection.CreateCommand();
+        list.CommandText = $"PRAGMA index_list({table})";
+        List<string> names = [];
+        using (SqliteDataReader reader = list.ExecuteReader())
+        {
+            while (reader.Read()) names.Add(reader.GetString(reader.GetOrdinal("name")));
+        }
+        foreach (string name in names)
+        {
+            using SqliteCommand info = connection.CreateCommand();
+            info.CommandText = $"PRAGMA index_info({name})";
+            using SqliteDataReader r = info.ExecuteReader();
+            while (r.Read())
+            {
+                if (string.Equals(r.GetString(r.GetOrdinal("name")), column, StringComparison.Ordinal))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     private sealed class TestDatabase(string directory, PreparerDatabase database) : IDisposable
     {
         public PreparerDatabase Database { get; } = database;
+        public string Directory { get; } = directory;
 
         public void Dispose()
         {
             Database.Dispose();
             try
             {
-                Directory.Delete(directory, recursive: true);
+                System.IO.Directory.Delete(Directory, recursive: true);
             }
             catch (IOException)
             {

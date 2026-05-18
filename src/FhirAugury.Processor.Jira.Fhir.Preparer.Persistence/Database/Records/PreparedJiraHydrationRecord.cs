@@ -6,6 +6,7 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 [LdgSQLiteIndex(nameof(TicketKey))]
 [LdgSQLiteIndex(nameof(JiraKey))]
 [LdgSQLiteIndex(nameof(HydrationStatus))]
+[LdgSQLiteIndex(nameof(WorkGroupClean))]
 public partial record class PreparedJiraHydrationRecord
 {
     [LdgSQLiteKey]
@@ -23,6 +24,7 @@ public partial record class PreparedJiraHydrationRecord
     public string? Resolution { get; set; }
     public string? ResolutionDescriptionPlain { get; set; }
     public string? WorkGroup { get; set; }
+    public string? WorkGroupClean { get; set; }
     public string? Specification { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
     public string? Url { get; set; }
