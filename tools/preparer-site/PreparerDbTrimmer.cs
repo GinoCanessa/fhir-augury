@@ -30,6 +30,11 @@ internal static class PreparerDbTrimmer
     /// to it; the caller owns the temp file and must delete it.
     /// VACUUM is NOT run here — see <c>RelatedFieldsBackfill.ApplyAsync</c>,
     /// which runs as the final pass before bytes are read.
+    /// As part of the same transaction, orphan rows in
+    /// <c>prepared_ticket_topic_groups</c> and <c>prepared_ticket_topics</c>
+    /// (i.e., rows whose every member ticket was trimmed) are removed
+    /// after the per-ticket child-table trim so the inlined DB never
+    /// ships empty topics.
     /// </summary>
     public static async Task<BuildResult> BuildAsync(
         string sourceDbPath,
@@ -79,6 +84,29 @@ internal static class PreparerDbTrimmer
                 cmd.Transaction = tx;
                 cmd.CommandText =
                     $"DELETE FROM {table} WHERE TicketKey NOT IN (SELECT Key FROM prepared_tickets)";
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            // Drop orphan topic groups first (so the topics delete sees an
+            // accurate post-trim view of which topics still have members),
+            // then drop orphan topics. Both are no-ops when no filters are
+            // active because every member row survived above.
+            await using (SqliteCommand cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText =
+                    "DELETE FROM prepared_ticket_topic_groups WHERE RowId NOT IN (" +
+                    "SELECT DISTINCT TopicGroupRowId FROM prepared_ticket_topic_members " +
+                    "WHERE TopicGroupRowId IS NOT NULL)";
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            await using (SqliteCommand cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText =
+                    "DELETE FROM prepared_ticket_topics WHERE RowId NOT IN (" +
+                    "SELECT DISTINCT TopicRowId FROM prepared_ticket_topic_members)";
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
