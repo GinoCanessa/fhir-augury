@@ -52,6 +52,77 @@ public sealed class PreparerServiceSmokeTests
         Assert.Equal("FHIR-123", row.Key);
     }
 
+    [Fact]
+    public async Task Startup_RunsHydrationSweep_AgainstUnreachableUpstream_LeavesUnresolvedRows()
+    {
+        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "service-smoke-sweep", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        // Seed one prepared_tickets row before the host starts so the startup
+        // sweep finds an eligible ticket. No source-ticket rows are seeded, so
+        // the Specification backfill short-circuits and the per-ticket sweep
+        // is the only pass that runs.
+        using (PreparerDatabase seedDb = new(dbPath, Microsoft.Extensions.Logging.Abstractions.NullLogger<PreparerDatabase>.Instance))
+        {
+            seedDb.Initialize();
+            await seedDb.SavePreparedTicketAsync(SamplePayload("FHIR-9001"));
+        }
+
+        Dictionary<string, string?> config = new()
+        {
+            ["Processing:DatabasePath"] = dbPath,
+            ["Processing:StartProcessingOnStartup"] = "false",
+            ["Processing:Hydration:BackfillOnStartup"] = "true",
+            ["Processing:OrchestratorAddress"] = $"http://127.0.0.1:{FindFreePort()}",
+            ["Processing:Jira:JiraSourceAddress"] = $"http://127.0.0.1:{FindFreePort()}",
+            ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
+        };
+
+        using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(config));
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IJiraTicketDiscoveryClient>();
+                services.AddSingleton<IJiraTicketDiscoveryClient, FakeDiscoveryClient>();
+            });
+        });
+
+        // Trigger startup. If the sweeper failed, this would throw because
+        // ValidateOnStart + HydrationSweeperUnavailableException both abort.
+        _ = factory.CreateClient();
+
+        using PreparerDatabase verify = new(dbPath, Microsoft.Extensions.Logging.Abstractions.NullLogger<PreparerDatabase>.Instance);
+        verify.Initialize();
+        FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models.PreparedTicketHydrationReadModel? read = await verify.GetHydrationAsync("FHIR-9001");
+        Assert.NotNull(read);
+        Assert.Equal("unresolved", read!.Parent!.HydrationStatus);
+
+        factory.Dispose();
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private static int FindFreePort()
+    {
+        System.Net.Sockets.TcpListener probe = new(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        try
+        {
+            return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        }
+        finally
+        {
+            probe.Stop();
+        }
+    }
+
     private static PreparedTicketPayload SamplePayload(string key) => new()
     {
         Key = key,
@@ -78,6 +149,7 @@ public sealed class PreparerServiceSmokeTests
             {
                 ["Processing:DatabasePath"] = DatabasePath,
                 ["Processing:StartProcessingOnStartup"] = "false",
+                ["Processing:Hydration:BackfillOnStartup"] = "false",
                 ["Processing:Jira:JiraSourceAddress"] = "http://localhost:5160",
                 ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
             };
