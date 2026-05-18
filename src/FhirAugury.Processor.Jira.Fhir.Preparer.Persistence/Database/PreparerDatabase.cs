@@ -330,6 +330,120 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     }
 
     /// <summary>
+    /// Returns the per-ticket analytic / clustering projection used by
+    /// the <c>topic-groupings</c> skill. For every <c>prepared_jira_hydration</c>
+    /// self-row (<c>JiraKey = TicketKey</c>) whose <c>WorkGroup</c>
+    /// matches <paramref name="workGroupClean"/> under the
+    /// <c>REPLACE(IFNULL(WorkGroup, ''), ' ', '')</c> convention used
+    /// by the rest of the preparer, this method:
+    /// <list type="bullet">
+    ///   <item>Pulls the partition / display fields
+    ///   (<c>Title</c>, <c>Status</c>, <c>Specification</c>, <c>Type</c>)
+    ///   from the hydration row.</item>
+    ///   <item>Left-joins <c>prepared_tickets</c> to pull the
+    ///   <c>RequestSummary</c> / <c>CommentSummary</c> /
+    ///   <c>LinkedTicketSummary</c> / <c>RelatedTicketSummary</c> /
+    ///   <c>RelatedZulipSummary</c> / <c>RelatedGitHubSummary</c>
+    ///   analytic text fields. Tickets without a
+    ///   <c>prepared_tickets</c> row are still emitted with empty
+    ///   summaries and <c>HasPreparedTicket = false</c> so the
+    ///   clustering skill can drop them before building any payload.</item>
+    ///   <item>Pulls every <c>prepared_ticket_related_jira</c> row for
+    ///   those keys to populate the per-ticket <c>Links</c> list.</item>
+    /// </list>
+    /// Returns <c>null</c> when the workgroup has zero hydration self-rows.
+    /// Read-only — does not touch the hydration sweeper or the
+    /// grouping tables.
+    /// </summary>
+    public async Task<PreparedTicketClusteringSignals?> GetClusteringSignalsAsync(string workGroupClean, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+
+        List<PreparedTicketClusteringSignal> tickets = [];
+        Dictionary<string, List<PreparedTicketClusteringLink>> linksByTicket = new(StringComparer.Ordinal);
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT j.TicketKey,
+                       j.Title,
+                       j.Status,
+                       j.Specification,
+                       j.Type,
+                       t.RequestSummary,
+                       t.CommentSummary,
+                       t.LinkedTicketSummary,
+                       t.RelatedTicketSummary,
+                       t.RelatedZulipSummary,
+                       t.RelatedGitHubSummary,
+                       CASE WHEN t.Key IS NULL THEN 0 ELSE 1 END AS HasPreparedTicket
+                FROM prepared_jira_hydration j
+                LEFT JOIN prepared_tickets t ON t.Key = j.TicketKey
+                WHERE j.JiraKey = j.TicketKey
+                  AND REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                ORDER BY j.TicketKey ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string ticketKey = reader.GetString(0);
+                List<PreparedTicketClusteringLink> ticketLinks = [];
+                linksByTicket[ticketKey] = ticketLinks;
+                tickets.Add(new PreparedTicketClusteringSignal(
+                    TicketKey: ticketKey,
+                    Title: ReadNullableString(reader, 1),
+                    Status: ReadNullableString(reader, 2),
+                    Specification: ReadNullableString(reader, 3),
+                    Type: ReadNullableString(reader, 4),
+                    RequestSummary: ReadNullableString(reader, 5) ?? string.Empty,
+                    CommentSummary: ReadNullableString(reader, 6) ?? string.Empty,
+                    LinkedTicketSummary: ReadNullableString(reader, 7) ?? string.Empty,
+                    RelatedTicketSummary: ReadNullableString(reader, 8) ?? string.Empty,
+                    RelatedZulipSummary: ReadNullableString(reader, 9) ?? string.Empty,
+                    RelatedGitHubSummary: ReadNullableString(reader, 10) ?? string.Empty,
+                    HasPreparedTicket: reader.GetInt32(11) == 1,
+                    Links: ticketLinks));
+            }
+        }
+
+        if (tickets.Count == 0)
+        {
+            return null;
+        }
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT r.TicketKey, r.AssociatedTicketKey, r.LinkType, r.Justification
+                FROM prepared_ticket_related_jira r
+                INNER JOIN prepared_jira_hydration j
+                  ON j.TicketKey = r.TicketKey AND j.JiraKey = j.TicketKey
+                WHERE REPLACE(IFNULL(j.WorkGroup, ''), ' ', '') = @wg
+                ORDER BY r.TicketKey ASC, r.AssociatedTicketKey ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string ticketKey = reader.GetString(0);
+                if (!linksByTicket.TryGetValue(ticketKey, out List<PreparedTicketClusteringLink>? bucket))
+                {
+                    continue;
+                }
+
+                bucket.Add(new PreparedTicketClusteringLink(
+                    AssociatedTicketKey: reader.GetString(1),
+                    LinkType: reader.GetString(2),
+                    Justification: reader.GetString(3)));
+            }
+        }
+
+        string? workGroupDisplay = await ResolveWorkGroupDisplayAsync(connection, workGroupClean, ct);
+        return new PreparedTicketClusteringSignals(workGroupClean, workGroupDisplay, tickets);
+    }
+
+    /// <summary>
     /// Lists the per-ticket display projection over
     /// <c>prepared_jira_hydration</c> self-rows
     /// (<c>JiraKey = TicketKey</c>) whose <c>WorkGroup</c> matches
