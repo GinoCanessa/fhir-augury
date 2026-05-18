@@ -24,6 +24,37 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
+    public void Initialize_CreatesGroupingTablesAndIndexes()
+    {
+        using TestDatabase database = CreateDatabase();
+
+        Assert.True(Exists(database, "table", "prepared_ticket_topics"));
+        Assert.True(Exists(database, "table", "prepared_ticket_topic_groups"));
+        Assert.True(Exists(database, "table", "prepared_ticket_topic_members"));
+
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_topics"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_topic_groups"));
+        Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_topic_members"));
+
+        Assert.True(HasUniqueIndexOver(database, "prepared_ticket_topics", "Id"));
+        Assert.True(HasUniqueIndexOver(database, "prepared_ticket_topic_groups", "Id"));
+        Assert.True(HasUniqueIndexOver(database, "prepared_ticket_topic_members", "Id"));
+
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_topics",
+            ["WorkGroupClean", "Specification", "Type", "ShortDescription"]));
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_topic_groups",
+            ["TopicRowId", "FirstTicketKey"]));
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_topic_members",
+            ["TopicRowId", "TicketKey"]));
+    }
+
+    [Fact]
     public void Initialize_CreatesHydrationTablesAndIndexes()
     {
         using TestDatabase database = CreateDatabase();

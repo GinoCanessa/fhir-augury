@@ -35,7 +35,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedGitHubHydrationRecord.CreateTable(connection);
         PreparedRepoHydrationRecord.CreateTable(connection);
         PreparedTicketJiraXrefRecord.CreateTable(connection);
+        PreparedTicketTopicRecord.CreateTable(connection);
+        PreparedTicketTopicGroupRecord.CreateTable(connection);
+        PreparedTicketTopicMemberRecord.CreateTable(connection);
         EnsureHydrationCompositeUniqueIndexes(connection);
+        EnsureGroupingCompositeUniqueIndexes(connection);
     }
 
     protected override void InitializeSchema(SqliteConnection connection)
@@ -57,6 +61,33 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_github_hydration_ticket_item ON prepared_github_hydration(TicketKey, GitHubItemId);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_repo_hydration_ticket_repo ON prepared_repo_hydration(TicketKey, Repo);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_jira_xref_ticket_jira_source ON prepared_ticket_jira_xref(TicketKey, JiraKey, Source);",
+        ];
+        foreach (string sql in statements)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Per-partition composite-unique indexes for the grouping tables. As with
+    /// <see cref="EnsureHydrationCompositeUniqueIndexes"/>, CsLightDbGen's
+    /// <c>[LdgSQLiteIndex]</c> attribute does not support <c>Unique</c>, so the
+    /// uniqueness contract is enforced here via follow-on
+    /// <c>CREATE UNIQUE INDEX IF NOT EXISTS</c> statements. The
+    /// "each ticket appears in at most one Topic within a partition" invariant
+    /// cannot be a single SQLite UNIQUE (the partition triple lives on
+    /// <c>prepared_ticket_topics</c>, members live on <c>prepared_ticket_topic_members</c>);
+    /// it is enforced in C# inside <c>SaveGroupingAsync</c> + the payload validator.
+    /// </summary>
+    private static void EnsureGroupingCompositeUniqueIndexes(SqliteConnection connection)
+    {
+        string[] statements =
+        [
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_topics_partition_short ON prepared_ticket_topics(WorkGroupClean, Specification, Type, ShortDescription);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_topic_groups_topic_first ON prepared_ticket_topic_groups(TopicRowId, FirstTicketKey);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_topic_members_topic_ticket ON prepared_ticket_topic_members(TopicRowId, TicketKey);",
         ];
         foreach (string sql in statements)
         {
