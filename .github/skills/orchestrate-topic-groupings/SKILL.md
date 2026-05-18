@@ -192,11 +192,27 @@ run-level report containing:
 
 ## Important Rules
 
-- **Never re-derive `nameClean`.** Always use the catalog's
-  `nameClean` verbatim.
+- **Selectors accept `name`, `nameClean`, or `code` interchangeably.**
+  The HTTP / CLI layer routes every selector through the shared
+  `WorkGroupResolver`, so any of `Orders & Observations`,
+  `OrdersAndObservations`, or `oo` will resolve to the same canonical
+  workgroup. Folder slugs are still produced by
+  `Hl7WorkGroupNameCleaner.Clean` so output paths stay stable.
+- **`catalogJoinDegraded` is a proceed-with-warning signal.** When the
+  `list-jira-workgroups` envelope returns `catalogJoinDegraded: true`,
+  surface a single top-of-run banner; do not abort. The one exception
+  is `selector=all` combined with `wipe-first`, which still requires
+  an explicit confirmation (see D4).
 - **Each workgroup is processed independently.** Sub-agents do not
   share state (apart from the read-only catalog the orchestrator
   fetched once).
+- **Cached-artifact caveat.** Cached `temp/` / `scratch/` directories
+  produced by earlier runs may reference the previous (preparer
+  `REPLACE`-based) slug form (e.g. `OrdersandObservations`) instead
+  of the canonical cleaner output (`OrdersAndObservations`). The
+  `ticket-topics-clean-v1` migration does **not** rewrite these
+  cached directories. Regenerate any cached output you need to
+  reproduce after the migration runs.
 - **`wipe-first` against `all` is destructive.** Confirm with the
   user, or default to `partition`, when the selector is `all`.
 - **Do not consume `plan.md` or any session artifacts.** This skill

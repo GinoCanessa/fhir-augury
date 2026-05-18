@@ -320,6 +320,17 @@ scratch), use
 but be aware that this clears the flag for **every** ticket, not just
 the ones in your current scope.
 
+## Cached-Artifact Caveat
+
+Cached `temp/` / `scratch/` directories produced by earlier runs may
+reference the previous (preparer `REPLACE`-based) slug form (e.g.
+`OrdersandObservations`) instead of the canonical
+`Hl7WorkGroupNameCleaner.Clean` output (e.g.
+`OrdersAndObservations`). The `ticket-topics-clean-v1` migration in
+the preparer DB does **not** rewrite these cached directories.
+Regenerate any cached output you need to reproduce after the
+migration has run.
+
 ## Example Invocation
 
 User: *"Prepare unprocessed tickets, saving reports to

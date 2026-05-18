@@ -151,6 +151,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     }
 
     private const string HydrationCleanMigrationName = "prepared-jira-hydration-clean-v1";
+    private const string TicketTopicsCleanMigrationName = "ticket-topics-clean-v1";
 
     /// <summary>
     /// Runs every one-shot data migration whose sentinel is not yet present.
@@ -164,6 +165,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             BackfillJiraHydrationWorkGroupClean(connection, logger);
             MarkMigrationApplied(connection, HydrationCleanMigrationName);
+        }
+
+        if (!MigrationHasRun(connection, TicketTopicsCleanMigrationName))
+        {
+            BackfillTicketTopicsWorkGroupClean(connection, logger);
+            MarkMigrationApplied(connection, TicketTopicsCleanMigrationName);
         }
     }
 
@@ -240,6 +247,125 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         tx.Commit();
         logger?.LogInformation(
             "Backfilled WorkGroupClean on prepared_jira_hydration: rowsScanned={Scanned} rowsUpdated={Updated}",
+            rows.Count, updated);
+    }
+
+    /// <summary>
+    /// Re-derives <c>WorkGroupClean</c> for every row of
+    /// <c>prepared_ticket_topics</c> from <c>WorkGroupDisplay</c> via
+    /// <see cref="Hl7WorkGroupNameCleaner.Clean(string?)"/>. Aborts with
+    /// <see cref="WorkGroupCleanReslugAbortedException"/> (and leaves the
+    /// sentinel un-written) if the reslug would violate the
+    /// <c>idx_prepared_ticket_topics_partition_short</c> UNIQUE index by
+    /// collapsing two distinct rows onto a single
+    /// <c>(newClean, Specification, Type, ShortDescription)</c> tuple.
+    /// </summary>
+    private static void BackfillTicketTopicsWorkGroupClean(SqliteConnection connection, ILogger? logger)
+    {
+        List<(int RowId, string WorkGroupDisplay, string ExistingClean, string Specification, string Type, string ShortDescription)> rows = [];
+        using (SqliteCommand select = connection.CreateCommand())
+        {
+            select.CommandText =
+                "SELECT RowId, WorkGroupDisplay, WorkGroupClean, Specification, Type, ShortDescription " +
+                "FROM prepared_ticket_topics";
+            using SqliteDataReader reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add((
+                    reader.GetInt32(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetString(5)));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            logger?.LogInformation(
+                "Reslugged WorkGroupClean on prepared_ticket_topics: rowsScanned=0 rowsUpdated=0 collisionsAborted=0");
+            return;
+        }
+
+        // Pre-flight collision check. The destination uniqueness key is
+        // (WorkGroupClean, Specification, Type, ShortDescription). If two
+        // rows with different RowIds would map to the same destination
+        // tuple after the reslug — or a row would land on top of an
+        // unchanged row that already occupies the destination — abort
+        // without writing.
+        Dictionary<(string Clean, string Spec, string Type, string Short), int> targets = new(64);
+        Dictionary<(string Clean, string Spec, string Type, string Short), int> unchanged = new(64);
+        List<(int RowId, string? NewClean)> plan = [];
+        foreach (var row in rows)
+        {
+            string newCleanRaw = Hl7WorkGroupNameCleaner.Clean(row.WorkGroupDisplay);
+            string newClean = string.IsNullOrEmpty(newCleanRaw) ? row.ExistingClean : newCleanRaw;
+            (string Clean, string Spec, string Type, string Short) key = (newClean, row.Specification, row.Type, row.ShortDescription);
+            if (string.Equals(newClean, row.ExistingClean, StringComparison.Ordinal))
+            {
+                unchanged[key] = row.RowId;
+            }
+            else if (targets.TryGetValue(key, out int otherRowId))
+            {
+                logger?.LogError(
+                    "Reslug collision: RowIds {A} and {B} would both map to ({Clean}, {Spec}, {Type}, {Short})",
+                    otherRowId, row.RowId, key.Clean, key.Spec, key.Type, key.Short);
+                throw new WorkGroupCleanReslugAbortedException(
+                    $"Reslug collision on prepared_ticket_topics: RowIds {otherRowId} and {row.RowId} would both map to ({key.Clean}, {key.Spec}, {key.Type}, {key.Short})");
+            }
+            else
+            {
+                targets[key] = row.RowId;
+                plan.Add((row.RowId, newClean));
+            }
+        }
+        foreach (var kvp in targets)
+        {
+            if (unchanged.TryGetValue(kvp.Key, out int unchangedRowId) && unchangedRowId != kvp.Value)
+            {
+                logger?.LogError(
+                    "Reslug collision: RowId {A} would land on RowId {B} at ({Clean}, {Spec}, {Type}, {Short})",
+                    kvp.Value, unchangedRowId, kvp.Key.Clean, kvp.Key.Spec, kvp.Key.Type, kvp.Key.Short);
+                throw new WorkGroupCleanReslugAbortedException(
+                    $"Reslug collision on prepared_ticket_topics: RowId {kvp.Value} would land on existing RowId {unchangedRowId} at ({kvp.Key.Clean}, {kvp.Key.Spec}, {kvp.Key.Type}, {kvp.Key.Short})");
+            }
+        }
+
+        using SqliteTransaction tx = connection.BeginTransaction(System.Data.IsolationLevel.Serializable);
+        int updated = 0;
+        using (SqliteCommand update = connection.CreateCommand())
+        {
+            update.Transaction = tx;
+            update.CommandText = "UPDATE prepared_ticket_topics SET WorkGroupClean = @clean WHERE RowId = @rowId";
+            SqliteParameter cleanParam = update.Parameters.Add("@clean", SqliteType.Text);
+            SqliteParameter rowIdParam = update.Parameters.Add("@rowId", SqliteType.Integer);
+            foreach ((int rowId, string? newClean) in plan)
+            {
+                cleanParam.Value = (object?)newClean ?? DBNull.Value;
+                rowIdParam.Value = rowId;
+                update.ExecuteNonQuery();
+                updated++;
+            }
+        }
+
+        // Final integrity check before committing.
+        using (SqliteCommand integrity = connection.CreateCommand())
+        {
+            integrity.Transaction = tx;
+            integrity.CommandText = "PRAGMA integrity_check";
+            object? scalar = integrity.ExecuteScalar();
+            string result = scalar?.ToString() ?? string.Empty;
+            if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new WorkGroupCleanReslugAbortedException(
+                    $"PRAGMA integrity_check failed mid-migration: {result}");
+            }
+        }
+
+        tx.Commit();
+        logger?.LogInformation(
+            "Reslugged WorkGroupClean on prepared_ticket_topics: rowsScanned={Scanned} rowsUpdated={Updated} collisionsAborted=0",
             rows.Count, updated);
     }
 

@@ -1035,6 +1035,130 @@ public sealed class PreparerDatabaseTests
         return false;
     }
 
+    [Fact]
+    public async Task BackfillTicketTopicsWorkGroupClean_v1_HappyPath_ReslugsAndIsIdempotent()
+    {
+        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        PreparerDatabase db1 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db1.Initialize();
+
+        await using (SqliteConnection seed = db1.OpenConnection())
+        {
+            await using SqliteCommand insert = seed.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO prepared_ticket_topics
+                (Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint, SavedAt)
+                VALUES (@id, 'Orders&Observations', 'Orders & Observations', 'FHIR Core', 'Change Request', 'Topic A', 'desc', NULL, @at)
+                """;
+            insert.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await insert.ExecuteNonQueryAsync();
+
+            await using SqliteCommand delSentinel = seed.CreateCommand();
+            delSentinel.CommandText = "DELETE FROM schema_migrations WHERE Name = 'ticket-topics-clean-v1'";
+            await delSentinel.ExecuteNonQueryAsync();
+        }
+        db1.Dispose();
+
+        PreparerDatabase db2 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db2.Initialize();
+        try
+        {
+            await using SqliteConnection check = db2.OpenConnection();
+            await using SqliteCommand readCmd = check.CreateCommand();
+            readCmd.CommandText = "SELECT WorkGroupClean FROM prepared_ticket_topics LIMIT 1";
+            object? scalar = await readCmd.ExecuteScalarAsync();
+            Assert.Equal("OrdersAndObservations", scalar);
+
+            await using SqliteCommand sentinelCmd = check.CreateCommand();
+            sentinelCmd.CommandText = "SELECT 1 FROM schema_migrations WHERE Name = 'ticket-topics-clean-v1'";
+            Assert.NotNull(await sentinelCmd.ExecuteScalarAsync());
+        }
+        finally
+        {
+            db2.Dispose();
+        }
+
+        // Re-open: sentinel present, migration is a no-op.
+        PreparerDatabase db3 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db3.Initialize();
+        try
+        {
+            await using SqliteConnection check = db3.OpenConnection();
+            await using SqliteCommand readCmd = check.CreateCommand();
+            readCmd.CommandText = "SELECT WorkGroupClean FROM prepared_ticket_topics LIMIT 1";
+            object? scalar = await readCmd.ExecuteScalarAsync();
+            Assert.Equal("OrdersAndObservations", scalar);
+        }
+        finally
+        {
+            db3.Dispose();
+        }
+
+        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+    }
+
+    [Fact]
+    public async Task BackfillTicketTopicsWorkGroupClean_v1_CollisionPath_Aborts()
+    {
+        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        PreparerDatabase db1 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db1.Initialize();
+
+        // Two rows whose existing WorkGroupClean differ but whose reslug
+        // target (cleaner over WorkGroupDisplay) would collapse onto the
+        // same (Clean, Spec, Type, Short) tuple. The pre-migration state
+        // is reachable because the existing WorkGroupClean values are
+        // different.
+        await using (SqliteConnection seed = db1.OpenConnection())
+        {
+            await using SqliteCommand i1 = seed.CreateCommand();
+            i1.CommandText = """
+                INSERT INTO prepared_ticket_topics
+                (Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint, SavedAt)
+                VALUES (@id, 'OrdersAndObservations', 'Orders & Observations', 'FHIR Core', 'Change Request', 'Topic A', 'd1', NULL, @at)
+                """;
+            i1.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            i1.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await i1.ExecuteNonQueryAsync();
+
+            await using SqliteCommand i2 = seed.CreateCommand();
+            i2.CommandText = """
+                INSERT INTO prepared_ticket_topics
+                (Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint, SavedAt)
+                VALUES (@id, 'Orders_And_Observations', 'Orders & Observations', 'FHIR Core', 'Change Request', 'Topic A', 'd2', NULL, @at)
+                """;
+            i2.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            i2.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await i2.ExecuteNonQueryAsync();
+
+            await using SqliteCommand delSentinel = seed.CreateCommand();
+            delSentinel.CommandText = "DELETE FROM schema_migrations WHERE Name = 'ticket-topics-clean-v1'";
+            await delSentinel.ExecuteNonQueryAsync();
+        }
+        db1.Dispose();
+
+        PreparerDatabase db2 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        Assert.Throws<WorkGroupCleanReslugAbortedException>(() => db2.Initialize());
+        db2.Dispose();
+
+        // Re-open with fresh handle to confirm sentinel was NOT written.
+        // We can't re-run Initialize on the same db that threw; open a new one
+        // and inspect the table directly.
+        PreparerDatabase db3 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        // Initialize will throw again because the duplicate still exists.
+        Assert.Throws<WorkGroupCleanReslugAbortedException>(() => db3.Initialize());
+        db3.Dispose();
+
+        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+    }
+
     private sealed class TestDatabase(string directory, PreparerDatabase database) : IDisposable
     {
         public PreparerDatabase Database { get; } = database;
