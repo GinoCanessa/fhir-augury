@@ -1376,10 +1376,135 @@
     },
 
     topic: function (main, topicId) {
-      // Placeholder — implemented in Phase 4.
+      const head = query(
+        'SELECT * FROM prepared_ticket_topics WHERE Id = $id',
+        { $id: topicId });
+      if (head.rows.length === 0) {
+        renderChipBanner(main);
+        main.appendChild(el('p', { class: 'error' }, 'No topic with id ' + topicId + '.'));
+        main.appendChild(el('p', null, el('a', {
+          href: '#/topics' + currentHashSuffix(),
+        }, '← Back to topics')));
+        return;
+      }
+      const t = head.rows[0];
+
+      // Overwrite the route-time breadcrumb placeholder with the
+      // resolved short description.
+      setBreadcrumb([
+        { label: 'Home', href: '#/' },
+        { label: 'Topics', href: '#/topics' + currentHashSuffix() },
+        { label: String(t.ShortDescription || topicId), href: null },
+      ]);
+
       renderChipBanner(main);
-      main.appendChild(el('p', { class: 'error' }, 'Topic detail view not yet implemented for ' + topicId + '.'));
-      main.appendChild(el('p', null, el('a', { href: '#/topics' + currentHashSuffix() }, '← Back to topics')));
+
+      const headerSection = el('section', { class: 'topic-detail' });
+      headerSection.appendChild(el('h2', null, String(t.ShortDescription || '')));
+      const metaParts = [];
+      if (t.WorkGroupDisplay) metaParts.push(String(t.WorkGroupDisplay));
+      if (t.Specification) metaParts.push(String(t.Specification));
+      if (t.Type) metaParts.push(String(t.Type));
+      if (metaParts.length > 0) {
+        headerSection.appendChild(el('p', { class: 'topic-meta' }, metaParts.join(' · ')));
+      }
+      if (t.LongerDescription) {
+        headerSection.appendChild(el('p', { class: 'topic-longer' }, String(t.LongerDescription)));
+      }
+      main.appendChild(headerSection);
+
+      const groupsRes = query(
+        'SELECT RowId, Id, FirstTicketKey, Rationale, OrderInTopic ' +
+        'FROM prepared_ticket_topic_groups WHERE TopicRowId = $rid ' +
+        'ORDER BY OrderInTopic, RowId',
+        { $rid: t.RowId });
+
+      const membersRes = query(
+        'SELECT m.TopicGroupRowId, m.OrderInContainer, m.TicketKey, ' +
+        '       jst.Title, jst.Status, jst.Type ' +
+        'FROM prepared_ticket_topic_members m ' +
+        'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = m.TicketKey ' +
+        'WHERE m.TopicRowId = $rid ' +
+        'ORDER BY m.OrderInContainer, m.TicketKey',
+        { $rid: t.RowId });
+
+      // Partition members by TopicGroupRowId.
+      /** @type {{[rowId: string]: any[]}} */
+      const byGroup = Object.create(null);
+      const ungrouped = [];
+      for (let i = 0; i < membersRes.rows.length; i++) {
+        const m = membersRes.rows[i];
+        if (m.TopicGroupRowId == null) {
+          ungrouped.push(m);
+        } else {
+          const k = String(m.TopicGroupRowId);
+          if (!byGroup[k]) byGroup[k] = [];
+          byGroup[k].push(m);
+        }
+      }
+
+      function renderTicketTable(items) {
+        const table = el('table');
+        const thead = el('thead');
+        const headRow = el('tr');
+        headRow.appendChild(el('th', null, 'Key'));
+        headRow.appendChild(el('th', null, 'Title'));
+        headRow.appendChild(el('th', null, 'Status'));
+        headRow.appendChild(el('th', null, 'Type'));
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = el('tbody');
+        for (let i = 0; i < items.length; i++) {
+          const r = items[i];
+          const tr = el('tr');
+          const keyCell = el('td');
+          keyCell.appendChild(el('a', {
+            href: '#/ticket/' + encodeURIComponent(String(r.TicketKey)),
+          }, String(r.TicketKey)));
+          tr.appendChild(keyCell);
+          tr.appendChild(el('td', null, String(r.Title || '')));
+          tr.appendChild(el('td', null, String(r.Status || '')));
+          tr.appendChild(el('td', null, String(r.Type || '')));
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        return table;
+      }
+
+      for (let gi = 0; gi < groupsRes.rows.length; gi++) {
+        const g = groupsRes.rows[gi];
+        const section = el('section', { class: 'topic-group' });
+        section.appendChild(el('h3', null, 'Group: ' + String(g.FirstTicketKey || '')));
+        if (g.Rationale) {
+          const p = el('p', { class: 'muted' });
+          p.appendChild(document.createTextNode('Rationale: '));
+          p.appendChild(document.createTextNode(String(g.Rationale)));
+          section.appendChild(p);
+        }
+        const items = byGroup[String(g.RowId)] || [];
+        if (items.length === 0) {
+          section.appendChild(el('p', { class: 'muted' }, 'No tickets in this group.'));
+        } else {
+          section.appendChild(renderTicketTable(items));
+        }
+        main.appendChild(section);
+      }
+
+      if (ungrouped.length > 0) {
+        const section = el('section', { class: 'topic-group' });
+        section.appendChild(el('h3', null,
+          groupsRes.rows.length > 0 ? 'Other tickets in this topic' : 'Tickets in this topic'));
+        section.appendChild(renderTicketTable(ungrouped));
+        main.appendChild(section);
+      }
+
+      if (groupsRes.rows.length === 0 && ungrouped.length === 0) {
+        main.appendChild(el('p', { class: 'muted' }, 'No tickets in this topic.'));
+      }
+
+      const back = el('p', { class: 'topic-back' });
+      back.appendChild(el('a', { href: '#/topics' + currentHashSuffix() }, '← Back to topics'));
+      main.appendChild(back);
     },
   };
 
