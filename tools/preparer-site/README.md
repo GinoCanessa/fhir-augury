@@ -93,8 +93,8 @@ browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
 on the left and a `Show Ticket List →` shortcut on the right of the
 same row, followed by a grid of crosscut summary tables (workgroup,
-artifact, page, impact, specification). Each filterable row in the
-summary tables toggles a chip on the current view; each row in the
+type, artifact, page, impact, specification). Each filterable row in
+the summary tables toggles a chip on the current view; each row in the
 list view links into the per-ticket page.
 
 ## Filter chips
@@ -107,10 +107,27 @@ single filter banner. Each active filter is a chip with the shape
   build-time flags and are baked into the trimmed DB. They render
   without an `×` button — the underlying data is already trimmed so
   the chip cannot be removed.
-- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`, `impact:`)
-  come from clicking a row in a filterable crosscut column. They
-  render with an `×` button that drops just that one chip and
-  re-renders the view.
+- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`, `impact:`,
+  `type:`) come from clicking a row in a filterable crosscut column.
+  They render with an `×` button that drops just that one chip and
+  re-renders the view. `type:` is in-page-only — there is no
+  `--type` generation-time flag.
+
+## Ticket list view
+
+The `#/list` view (and any crosscut redirect into it) renders a
+seven-column table: `Key`, `Title`, `Workgroup`, `Status`, `Type`,
+`Impact A`, `Impact B`. The per-ticket `Recommendation` prose and the
+`SavedAt` timestamp are intentionally not surfaced here — both remain
+visible on the per-ticket detail page.
+
+Each column header is clickable (or activatable with Enter/Space) to
+sort the post-filter row set by that column. The first click sorts
+ascending; clicking the active column again toggles to descending. The
+active column shows a `▲` / `▼` glyph and an `aria-sort` attribute.
+The `Key` column uses a numeric-aware compare so `FHIR-5079` sorts
+before `FHIR-50710`. Sort state is per-mount: leaving and re-entering
+the list view resets the default sort to `Key` ascending.
 
 Chips compose with logical AND, encoded in the URL hash as a
 `?dim=value&dim2=value` suffix
