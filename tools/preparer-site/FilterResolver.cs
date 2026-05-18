@@ -126,7 +126,7 @@ internal static class FilterResolver
         {
             await stderr.WriteLineAsync(
                 $"No values are present for {flag} in the database. The DB may not be hydrated yet — " +
-                "re-run preparer-site (drop --no-hydrate) or run FhirAugury.Processor.Jira.Fhir.Preparer to populate it.")
+                "run FhirAugury.Processor.Jira.Fhir.Preparer against it to populate hydration.")
                 .ConfigureAwait(false);
             return;
         }

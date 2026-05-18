@@ -45,8 +45,6 @@ public sealed class PreparerSiteFilterTests
                 "--wg", "Z",
                 "--jira-source", "http://localhost:5160",
                 "--jira-source-db", "/tmp/x.db",
-                "--orchestrator", "http://localhost:5150",
-                "--no-hydrate",
                 "--force",
             ]);
         }

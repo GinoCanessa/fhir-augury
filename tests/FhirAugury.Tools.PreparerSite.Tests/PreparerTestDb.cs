@@ -102,6 +102,24 @@ internal static class PreparerTestDb
                 await cmd.ExecuteNonQueryAsync();
             }
         }
+        else
+        {
+            // preparer-site requires a hydrated DB; seed a baseline hydration row
+            // per ticket so smoke / filter tests don't all need to spell out specByKey.
+            string hydratedAt = DateTimeOffset.UtcNow.ToString("O");
+            foreach (SourceTicketSeed ticket in tickets)
+            {
+                await using SqliteCommand cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    "INSERT INTO prepared_ticket_hydration " +
+                    "(Id, TicketKey, HydratedAt, HydrationStatus) " +
+                    "VALUES (@id, @key, @hat, 'resolved')";
+                cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+                cmd.Parameters.AddWithValue("@key", ticket.Key);
+                cmd.Parameters.AddWithValue("@hat", hydratedAt);
+                await cmd.ExecuteNonQueryAsync();
+            }
+        }
 
         if (seedAllChildTables)
         {

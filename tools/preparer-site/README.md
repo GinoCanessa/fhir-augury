@@ -19,11 +19,13 @@ receiving side.
 
 The inlined DB always carries the `prepared_*_hydration` and
 `prepared_ticket_jira_xref` tables alongside the agent-authored
-`prepared_tickets*` tables. Those hydration rows are populated
-automatically by `FhirAugury.Processor.Jira.Fhir.Preparer` as the
-ticket-prep handler completes each ticket; the site renders directly
-from them with no additional fetch. There is one canonical DB shape;
-no opt-in slimming is offered.
+`prepared_tickets*` tables. Those hydration rows are populated by
+`FhirAugury.Processor.Jira.Fhir.Preparer`: per-ticket as each ticket is
+prepared, plus a full sweep at service startup and on demand via
+`POST /api/v1/admin/hydration/backfill`. **`preparer-site` is a pure
+consumer of an already-hydrated DB** — if `prepared_ticket_hydration`
+is missing or empty the tool fails fast with an actionable error
+pointing operators at the service.
 
 ### Related-artifact / related-page surface
 
@@ -44,16 +46,23 @@ not currently carry these fields). Without `--jira-source-db` the
 tables are present but empty and the SPA auto-hides the corresponding
 columns.
 
-### Auto-hydration
+### Prerequisite: hydrated DB
 
-On first run against a DB whose `prepared_ticket_hydration` table is
-missing or empty, `preparer-site` opportunistically hydrates the DB
-by calling the orchestrator at `--orchestrator <url>` (default
-`http://localhost:5150`) and writing results back to the source DB
-in place. Progress is reported on stderr as
-`[info] Hydrating N/T (eta …)` lines. Pass `--no-hydrate` to skip
-this step; the tool will then fail fast with an actionable error
-rather than producing an empty `Available values:` list.
+`preparer-site` no longer hydrates anything itself. The preparer
+service (`FhirAugury.Processor.Jira.Fhir.Preparer`) owns the full
+hydration surface: per-ticket hydration as each ticket is prepared,
+plus a full sweep at service startup and the on-demand
+`POST /api/v1/admin/hydration/backfill` admin endpoint. Run the
+preparer service against your DB once before invoking `preparer-site`.
+
+If the DB has no `prepared_ticket_hydration` rows when `preparer-site`
+opens it, the tool exits non-zero with:
+
+```
+Database '<path>' is not hydrated. Run FhirAugury.Processor.Jira.Fhir.Preparer
+against it first (the service hydrates on startup, or POST
+/api/v1/admin/hydration/backfill on a running service).
+```
 
 ## What this is not
 
@@ -118,60 +127,19 @@ a chip with literal value `(unknown)`, which matches no tickets and is
 mainly useful for confirming a column has been auto-hidden because all
 non-unknown values were already pinned.
 
-## Backfill
-
-`preparer-site --backfill-spec` is a one-off maintenance pass that
-populates the `Specification` column on
-`jira_processing_source_tickets` for rows where it is empty (or NULL
-on legacy DBs from before the column existed). It does **not** emit
-the site; the run exits as soon as the backfill completes.
-
-```bash
-dotnet run --project tools/preparer-site -- \
-  --db ./cache/jira-preparer.db \
-  --backfill-spec
-```
-
-Resolution order matches `--wg`:
-
-1. **HTTP — Jira source service** (`--jira-source <url>`, default
-   `http://localhost:5160`). Pages
-   `POST /api/v1/local-processing/tickets?type=fhir` 500 tickets at
-   a time and builds a `Key → Specification` map.
-2. **SQLite fallback — `--jira-source-db <path>`**, used when the
-   HTTP service is unreachable. Queries `jira_issues` in batches.
-
-If neither is reachable the run exits non-zero with an actionable
-stderr message naming both flags. Rows whose resolved `Specification`
-is empty are left as `""` so the next run self-heals once upstream
-has the data; rows not found in the Jira source are also left alone
-and reported in the summary line:
-
-```
-Backfilled Specification on 412 rows (3 left empty, 0 not found in Jira source).
-```
-
-The migration that adds the column on legacy DBs runs as part of
-`JiraProcessingSourceTicketStore.EnsureSchema`, so the backfill is
-safe to run against any DB shape — fresh, legacy, or already
-hand-patched.
-
 ## Flags
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--db <path>` | *required* | Path to the preparer SQLite DB. |
+| `--db <path>` | *required* | Path to the preparer SQLite DB. Must already be hydrated (the preparer service handles that — see [Prerequisite: hydrated DB](#prerequisite-hydrated-db)). |
 | `--out <path>` | `./cache/jira-preparer-site` | Output directory; overwritten subject to the safety rail (see below). |
 | `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
 | `--spec <name>` | — | Filter to tickets whose hydrated `Specification` (Jira `customfield_11302`) matches (case-insensitive). |
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
 | `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the preparer-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
 | `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
-| `--jira-source-db <path>` | — | Fallback Jira source SQLite DB used when the HTTP service is unreachable. Also the source for the SPA's "By artifact" and "By page" crosscut columns; without it those tables are present but empty. |
-| `--orchestrator <url>` | `http://localhost:5150` | Base URL of the orchestrator used for opportunistic hydration (see [Auto-hydration](#auto-hydration)). |
-| `--no-hydrate` | `false` | Skip auto-hydration; fail fast (with an actionable stderr message) if the DB lacks hydration rows. |
+| `--jira-source-db <path>` | — | Jira source SQLite DB. Fallback for `--wg` resolution when the HTTP service is unreachable, and the source for the SPA's "By artifact" and "By page" crosscut columns; without it those tables are present but empty. |
 | `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
-| `--backfill-spec` | `false` | One-off backfill of `jira_processing_source_tickets.Specification` from the Jira source service / DB; do not emit the site. See [Backfill](#backfill). |
 | `--help` | — | Print usage and exit non-zero. |
 
 ### Active filters

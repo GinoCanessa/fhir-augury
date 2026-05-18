@@ -88,6 +88,21 @@ public sealed class PreparerSiteSmokeTests
             await cmd.ExecuteNonQueryAsync();
         }
 
+        // preparer-site requires a hydrated DB; seed a baseline hydration row
+        // per ticket so smoke tests can exercise the emitter without re-seeding.
+        string hydratedAt = DateTimeOffset.UtcNow.ToString("O");
+        for (int i = 1; i <= ticketCount; i++)
+        {
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO prepared_ticket_hydration " +
+                "(Id, TicketKey, HydratedAt, HydrationStatus) " +
+                "VALUES (@id, @key, @hat, 'resolved')";
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("@key", $"FHIR-{1000 + i}");
+            cmd.Parameters.AddWithValue("@hat", hydratedAt);
+            await cmd.ExecuteNonQueryAsync();
+        }
         // Force the WAL to merge back into the main DB so that the tool's raw
         // File.ReadAllBytes() sees everything just written.
         await using SqliteConnection cp = new($"Data Source={dbPath}");
@@ -263,6 +278,11 @@ public sealed class PreparerSiteSmokeTests
             await cmd.ExecuteNonQueryAsync();
         }
 
+        // SeedPreparerDbAsync now seeds baseline hydration rows up front so
+        // the hydration assertion passes for every smoke test; clear them
+        // before inserting the richer per-ticket fixtures this test expects.
+        await RunAsync("DELETE FROM prepared_ticket_hydration", []);
+
         for (int i = 1; i <= 2; i++)
         {
             string key = $"FHIR-{1000 + i}";
@@ -303,14 +323,27 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
-    public async Task EmitSite_OnLegacyDb_WithNoHydrate_FailsFast()
+    public async Task EmitSite_OnUnhydratedDb_FailsFastWithActionableError()
     {
+        // Replaces the previous LegacyPreparerTestDb test. preparer-site no
+        // longer hydrates anything itself; if the DB has no
+        // prepared_ticket_hydration rows the tool exits non-zero and points
+        // the operator at the preparer service.
         using TempScope scope = new();
-        await LegacyPreparerTestDb.SeedAsync(scope.DbPath,
-        [
-            new PreparerTestDb.SourceTicketSeed("FHIR-1001", Project: "FHIR"),
-            new PreparerTestDb.SourceTicketSeed("OTHER-2001", Project: "OTHER"),
-        ]);
+        // Seed only the source-ticket surface (no prepared_ticket_hydration).
+        using PreparerDatabase preparer = new(scope.DbPath, NullLogger<PreparerDatabase>.Instance);
+        preparer.Initialize();
+        await using SqliteConnection cn = new($"Data Source={scope.DbPath}");
+        await cn.OpenAsync();
+        await using SqliteCommand insert = cn.CreateCommand();
+        insert.CommandText =
+            "INSERT INTO jira_processing_source_tickets " +
+            "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
+            "VALUES (@id, @key, 'T', NULL, 'FHIR', 'Open', 'WG', 'CR', '', 'default', @t, @t, 0, 'Done')";
+        insert.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+        insert.Parameters.AddWithValue("@key", "FHIR-1001");
+        insert.Parameters.AddWithValue("@t", DateTimeOffset.UtcNow.ToString("O"));
+        await insert.ExecuteNonQueryAsync();
 
         StringWriter capturedErr = new();
         StringWriter capturedOut = new();
@@ -321,7 +354,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR", "--no-hydrate"]);
+            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR"]);
         }
         finally
         {
@@ -331,18 +364,9 @@ public sealed class PreparerSiteSmokeTests
 
         string stderr = capturedErr.ToString();
         Assert.NotEqual(0, exit);
-        Assert.Contains("Hydration is missing", stderr, StringComparison.Ordinal);
-        Assert.Contains(scope.DbPath, stderr, StringComparison.Ordinal);
+        Assert.Contains("not hydrated", stderr, StringComparison.Ordinal);
+        Assert.Contains("FhirAugury.Processor.Jira.Fhir.Preparer", stderr, StringComparison.Ordinal);
         Assert.False(File.Exists(Path.Combine(scope.OutDir, "index.html")));
-
-        // Source DB must be untouched: preflight is purely diagnostic under --no-hydrate.
-        await using SqliteConnection sourceConn = new($"Data Source={scope.DbPath};Mode=ReadOnly");
-        await sourceConn.OpenAsync();
-        await using SqliteCommand cmd = sourceConn.CreateCommand();
-        cmd.CommandText =
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
-        long sourceCount = Convert.ToInt64(await cmd.ExecuteScalarAsync());
-        Assert.Equal(0, sourceCount);
     }
 
     [Fact]
@@ -421,7 +445,9 @@ public sealed class PreparerSiteSmokeTests
 
         Assert.NotEqual(0, exit);
         string stderr = capturedErr.ToString();
-        Assert.Contains("schema", stderr, StringComparison.OrdinalIgnoreCase);
+        // The hydration assertion now fires first against a schema-less DB
+        // (no prepared_ticket_hydration table) with an actionable message.
+        Assert.Contains("not hydrated", stderr, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
