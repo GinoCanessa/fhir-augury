@@ -622,6 +622,33 @@
       const showListLink = el('a', { href: '#/list' + currentHashSuffix(), class: 'show-ticket-list' },
         'Show Ticket List →');
       summaryRow.appendChild(showListLink);
+
+      // Topic surface affordance: render `Show Topic List →` next to
+      // the ticket-list link. The trimmer guarantees no orphan topics
+      // ship in the inlined DB, so the probe just counts surviving
+      // topic rows. Defensive try/catch handles older inlined DBs
+      // emitted before the topic tables existed.
+      let topicsTotal = 0;
+      try {
+        const topicsRes = query('SELECT count(*) AS n FROM prepared_ticket_topics', null);
+        topicsTotal = (topicsRes.rows.length > 0 && topicsRes.rows[0].n != null)
+          ? Number(topicsRes.rows[0].n) : 0;
+      } catch (e) {
+        topicsTotal = 0;
+      }
+      if (topicsTotal > 0) {
+        const showTopicLink = el('a', {
+          href: '#/topics' + currentHashSuffix(),
+          class: 'show-topic-list',
+        }, 'Show Topic List →');
+        summaryRow.appendChild(showTopicLink);
+      } else {
+        const disabled = el('span', {
+          class: 'show-topic-list show-topic-list-disabled',
+          title: 'No topics in this run.',
+        }, 'Show Topic List →');
+        summaryRow.appendChild(disabled);
+      }
       main.appendChild(summaryRow);
 
       const grid = el('div', { class: 'summary-grid' });

@@ -156,6 +156,15 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .summary-row .show-ticket-list {
   font-size: 0.9rem;
 }
+.summary-row .show-topic-list {
+  font-size: 0.9rem;
+  margin-left: 0.5rem;
+}
+.show-topic-list-disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
 .crosscut-row {
   background: none;
   border: none;
