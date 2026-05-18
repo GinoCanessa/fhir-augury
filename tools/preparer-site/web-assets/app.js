@@ -14,7 +14,7 @@
   // and `wg` are the three the generation pipeline can pre-pin (baked
   // into the trimmed DB); `artifact` and `page` are in-page-only and
   // surface from clicking crosscut rows (Phase 4).
-  const FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page', 'impact'];
+  const FilterableDimensions = ['spec', 'project', 'wg', 'type', 'artifact', 'page', 'impact'];
   const GenerationDimensions = ['spec', 'project', 'wg'];
 
   // Each chip value is stored as a list (today: length one). The UX is
@@ -101,6 +101,14 @@
           }
           setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By workgroup', href: null }]);
           Views.crosscutIndex(main, 'by-workgroup');
+        } else if (parts[0] === 'by-type') {
+          if (parts.length >= 2) {
+            const tv = decodeURIComponent(parts[1]);
+            redirectToChipListView('type', tv);
+            return;
+          }
+          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By type', href: null }]);
+          Views.crosscutIndex(main, 'by-type');
         } else if (parts[0] === 'by-artifact') {
           if (parts.length >= 2) {
             const av = decodeURIComponent(parts[1]);
@@ -401,6 +409,19 @@
         );
       },
     },
+    'by-type': {
+      title: 'By type',
+      dim: 'type',
+      sql: function (chipKeysSql) {
+        return (
+          "SELECT COALESCE(NULLIF(jst.Type, ''), '(unknown)') AS k, count(*) AS n " +
+          'FROM prepared_tickets pt ' +
+          'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
+          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
+          'GROUP BY k ORDER BY n DESC, k'
+        );
+      },
+    },
     'by-artifact': {
       title: 'By artifact',
       dim: 'artifact',
@@ -460,6 +481,7 @@
   // by-artifact and by-page are new.
   const LandingCrosscutOrder = [
     'by-workgroup',
+    'by-type',
     'by-artifact',
     'by-page',
     'by-impact',
@@ -491,6 +513,11 @@
       case 'wg':
         return {
           predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE WorkGroup IN (' + inList + '))',
+          params: params,
+        };
+      case 'type':
+        return {
+          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE Type IN (' + inList + '))',
           params: params,
         };
       case 'project':

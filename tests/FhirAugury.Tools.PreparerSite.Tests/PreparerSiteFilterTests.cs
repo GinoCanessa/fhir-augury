@@ -384,7 +384,7 @@ public sealed class PreparerSiteFilterTests
         // Pin the FilterableDimensions array literal exactly so a future
         // reorder or accidental drop of 'impact' is caught.
         Assert.Contains(
-            "FilterableDimensions = ['spec', 'project', 'wg', 'artifact', 'page', 'impact']",
+            "FilterableDimensions = ['spec', 'project', 'wg', 'type', 'artifact', 'page', 'impact']",
             appJs,
             StringComparison.Ordinal);
         // Pin the chip predicate switch case and its underlying impact
@@ -392,6 +392,33 @@ public sealed class PreparerSiteFilterTests
         Assert.Contains("case 'impact':", appJs, StringComparison.Ordinal);
         Assert.Contains("ProposalAImpact", appJs, StringComparison.Ordinal);
         Assert.Contains("ProposalBImpact", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Render_BundledAppJs_PromotesTypeToChipDimension()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // Pin the FilterableDimensions array literal exactly so a future
+        // reorder or accidental drop of 'type' is caught.
+        Assert.Contains(
+            "FilterableDimensions = ['spec', 'project', 'wg', 'type', 'artifact', 'page', 'impact']",
+            appJs,
+            StringComparison.Ordinal);
+        // Chip predicate branch must exist for 'type'.
+        Assert.Contains("case 'type':", appJs, StringComparison.Ordinal);
+        // Crosscut config entry for by-type must exist.
+        Assert.Contains("'by-type': {", appJs, StringComparison.Ordinal);
+        // Route handler branch must exist for by-type so deep-links and
+        // the bare crosscut page both resolve.
+        Assert.Contains("parts[0] === 'by-type'", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
