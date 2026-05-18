@@ -660,7 +660,7 @@
       renderChipBanner(main);
       const baseSql =
         'SELECT pt.Key, jst.Title, jst.WorkGroup, jst.Status, jst.Type, ' +
-        'pt.Recommendation, pt.ProposalAImpact, pt.ProposalBImpact, pt.SavedAt, ' +
+        'pt.ProposalAImpact, pt.ProposalBImpact, ' +
         'pt.RequestSummary AS _SearchBody ' +
         'FROM prepared_tickets pt ' +
         'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key';
@@ -708,7 +708,7 @@
       const table = el('table');
       const thead = el('thead');
       const headRow = el('tr');
-      ['Key', 'Title', 'Workgroup', 'Status', 'Type', 'Recommendation', 'Impact', 'Saved'].forEach(function (c) {
+      ['Key', 'Title', 'Workgroup', 'Status', 'Type', 'Impact A', 'Impact B'].forEach(function (c) {
         headRow.appendChild(el('th', null, c));
       });
       thead.appendChild(headRow);
@@ -733,11 +733,8 @@
           tr.appendChild(el('td', null, String(r.WorkGroup || '')));
           tr.appendChild(el('td', null, String(r.Status || '')));
           tr.appendChild(el('td', null, String(r.Type || '')));
-          tr.appendChild(el('td', null, String(r.Recommendation || '')));
-          tr.appendChild(el('td', null,
-            'A: ' + String(r.ProposalAImpact || '') +
-            ' · B: ' + String(r.ProposalBImpact || '')));
-          tr.appendChild(el('td', null, String(r.SavedAt || '')));
+          tr.appendChild(el('td', null, String(r.ProposalAImpact || '')));
+          tr.appendChild(el('td', null, String(r.ProposalBImpact || '')));
           tbody.appendChild(tr);
           shown++;
         }

@@ -422,6 +422,44 @@ public sealed class PreparerSiteFilterTests
     }
 
     [Fact]
+    public async Task Render_BundledAppJs_ListTableUsesTrimmedColumnSet()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        // Pin the new seven-column header literal exactly.
+        Assert.Contains(
+            "['Key', 'Title', 'Workgroup', 'Status', 'Type', 'Impact A', 'Impact B']",
+            appJs,
+            StringComparison.Ordinal);
+        // The old eight-column header literal must be gone.
+        Assert.DoesNotContain(
+            "'Recommendation', 'Impact', 'Saved'",
+            appJs,
+            StringComparison.Ordinal);
+        // The combined-impact cell text must be gone.
+        Assert.DoesNotContain(
+            "'A: ' + String(r.ProposalAImpact",
+            appJs,
+            StringComparison.Ordinal);
+        // Both proposal impacts must still be referenced individually.
+        Assert.Contains("r.ProposalAImpact", appJs, StringComparison.Ordinal);
+        Assert.Contains("r.ProposalBImpact", appJs, StringComparison.Ordinal);
+        // SELECT list must be trimmed: no Recommendation, no SavedAt in
+        // the list-view base SQL.
+        Assert.DoesNotContain(
+            "pt.Recommendation, pt.ProposalAImpact, pt.ProposalBImpact, pt.SavedAt",
+            appJs,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Render_BundledAppJs_UsesRepeatedKeyChipEncoding()
     {
         using TempScope scope = new();
