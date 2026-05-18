@@ -7,6 +7,7 @@ public static class JiraSourceTicketPredicateBuilder
         ArgumentNullException.ThrowIfNull(filters);
         HashSet<string>? statuses = ToSet(filters.TicketStatuses);
         HashSet<string>? projects = ToSet(filters.Projects);
+        HashSet<string>? specifications = ToSet(filters.Specifications);
         HashSet<string>? workGroups = ToSet(filters.WorkGroups);
         HashSet<string>? types = ToSet(filters.TicketTypes);
         string shape = filters.SourceTicketShape;
@@ -15,6 +16,7 @@ public static class JiraSourceTicketPredicateBuilder
             string.Equals(candidate.SourceTicketShape, shape, StringComparison.OrdinalIgnoreCase) &&
             Matches(projects, candidate.Project) &&
             Matches(statuses, candidate.Status) &&
+            Matches(specifications, candidate.Specification) &&
             Matches(workGroups, candidate.WorkGroup) &&
             Matches(types, candidate.Type);
     }

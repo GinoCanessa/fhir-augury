@@ -67,4 +67,44 @@ public class JiraProcessingFilterResolverTests
         Assert.Equal("fhir", filters.SourceTicketShape);
         Assert.False(request.ProcessedLocally);
     }
+
+    [Fact]
+    public void Resolve_Specifications_RoundTripFromOptions()
+    {
+        JiraProcessingFilterResolver resolver = new();
+
+        ResolvedJiraProcessingFilters filters = resolver.Resolve(new JiraProcessingOptions
+        {
+            AgentCliCommand = "agent {ticketKey}",
+            JiraSourceAddress = "http://source",
+            SpecificationsToInclude = ["fhir-core", "fhir-extensions"],
+        });
+
+        Assert.Equal(["fhir-core", "fhir-extensions"], filters.Specifications);
+    }
+
+    [Fact]
+    public void Resolve_Specifications_FallsBackToDefault_WhenOptionsNull()
+    {
+        JiraProcessingFilterResolver resolver = new(new JiraProcessingFilterDefaults { SpecificationsToInclude = ["fhir-core"] });
+
+        ResolvedJiraProcessingFilters filters = resolver.Resolve(new JiraProcessingOptions { AgentCliCommand = "agent {ticketKey}", JiraSourceAddress = "http://source" });
+
+        Assert.Equal(["fhir-core"], filters.Specifications);
+    }
+
+    [Fact]
+    public void CreateLocalProcessingRequest_MapsSpecifications()
+    {
+        ResolvedJiraProcessingFilters filters = new()
+        {
+            Specifications = ["fhir-core", "fhir-extensions"],
+            SourceTicketShape = "fhir",
+        };
+        JiraLocalProcessingRequestFactory factory = new();
+
+        FhirAugury.Common.Api.JiraLocalProcessingListRequest request = factory.CreateListRequest(filters);
+
+        Assert.Equal(["fhir-core", "fhir-extensions"], request.Specifications);
+    }
 }

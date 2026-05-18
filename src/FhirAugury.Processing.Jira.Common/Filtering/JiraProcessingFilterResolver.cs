@@ -13,6 +13,7 @@ public sealed class JiraProcessingFilterResolver(JiraProcessingFilterDefaults? d
         {
             TicketStatuses = ResolveList(options.TicketStatusesToProcess, _defaults.TicketStatusesToProcess),
             Projects = ResolveList(options.ProjectsToInclude, _defaults.ProjectsToInclude),
+            Specifications = ResolveList(options.SpecificationsToInclude, _defaults.SpecificationsToInclude),
             WorkGroups = ResolveList(options.WorkGroupsToInclude, _defaults.WorkGroupsToInclude),
             TicketTypes = ResolveList(options.TicketTypesToProcess, _defaults.TicketTypesToProcess),
             SourceTicketShape = string.IsNullOrWhiteSpace(options.SourceTicketShape) ? "fhir" : options.SourceTicketShape,

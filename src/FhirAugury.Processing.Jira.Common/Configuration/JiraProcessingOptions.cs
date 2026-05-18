@@ -6,6 +6,7 @@ public class JiraProcessingOptions
 
     public List<string>? TicketStatusesToProcess { get; set; }
     public List<string>? ProjectsToInclude { get; set; }
+    public List<string>? SpecificationsToInclude { get; set; }
     public List<string>? WorkGroupsToInclude { get; set; }
     public List<string>? TicketTypesToProcess { get; set; }
     public string AgentCliCommand { get; set; } = string.Empty;

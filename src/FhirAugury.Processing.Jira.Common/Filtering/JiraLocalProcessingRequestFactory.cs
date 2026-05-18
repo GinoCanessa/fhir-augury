@@ -11,6 +11,7 @@ public sealed class JiraLocalProcessingRequestFactory
         {
             Statuses = ToList(filters.TicketStatuses),
             Projects = ToList(filters.Projects),
+            Specifications = ToList(filters.Specifications),
             WorkGroups = ToList(filters.WorkGroups),
             Types = ToList(filters.TicketTypes),
             ProcessedLocally = false,

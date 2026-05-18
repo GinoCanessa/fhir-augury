@@ -6,5 +6,6 @@ public interface IJiraProcessingTicketFilterCandidate
     string Status { get; }
     string WorkGroup { get; }
     string Type { get; }
+    string Specification { get; }
     string SourceTicketShape { get; }
 }
