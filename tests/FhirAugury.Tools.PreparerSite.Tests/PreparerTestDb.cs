@@ -12,7 +12,8 @@ internal static class PreparerTestDb
         string Project = "FHIR",
         string WorkGroup = "FHIR Infrastructure",
         string Status = "Open",
-        string Type = "Change Request");
+        string Type = "Change Request",
+        string Specification = "");
 
     public static async Task SeedAsync(
         string dbPath,
@@ -65,8 +66,8 @@ internal static class PreparerTestDb
             await using SqliteCommand cmd = connection.CreateCommand();
             cmd.CommandText =
                 "INSERT INTO jira_processing_source_tickets " +
-                "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
-                "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @shape, @synced, @updated, @pac, @ps)";
+                "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
+                "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @spec, @shape, @synced, @updated, @pac, @ps)";
             cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
             cmd.Parameters.AddWithValue("@key", ticket.Key);
             cmd.Parameters.AddWithValue("@title", $"Source ticket title {ticket.Key}");
@@ -75,6 +76,7 @@ internal static class PreparerTestDb
             cmd.Parameters.AddWithValue("@status", ticket.Status);
             cmd.Parameters.AddWithValue("@wg", ticket.WorkGroup);
             cmd.Parameters.AddWithValue("@type", ticket.Type);
+            cmd.Parameters.AddWithValue("@spec", ticket.Specification);
             cmd.Parameters.AddWithValue("@shape", "default");
             cmd.Parameters.AddWithValue("@synced", DateTimeOffset.UtcNow.ToString("O"));
             cmd.Parameters.AddWithValue("@updated", DateTimeOffset.UtcNow.ToString("O"));

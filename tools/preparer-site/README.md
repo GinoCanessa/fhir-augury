@@ -68,6 +68,44 @@ specification, GitHub item state, hydration status). Each row in
 the summary tables links into a filtered list view; each row in the
 list view links into the per-ticket page.
 
+## Backfill
+
+`preparer-site --backfill-spec` is a one-off maintenance pass that
+populates the `Specification` column on
+`jira_processing_source_tickets` for rows where it is empty (or NULL
+on legacy DBs from before the column existed). It does **not** emit
+the site; the run exits as soon as the backfill completes.
+
+```bash
+dotnet run --project tools/preparer-site -- \
+  --db ./cache/jira-preparer.db \
+  --backfill-spec
+```
+
+Resolution order matches `--wg`:
+
+1. **HTTP — Jira source service** (`--jira-source <url>`, default
+   `http://localhost:5160`). Pages
+   `POST /api/v1/local-processing/tickets?type=fhir` 500 tickets at
+   a time and builds a `Key → Specification` map.
+2. **SQLite fallback — `--jira-source-db <path>`**, used when the
+   HTTP service is unreachable. Queries `jira_issues` in batches.
+
+If neither is reachable the run exits non-zero with an actionable
+stderr message naming both flags. Rows whose resolved `Specification`
+is empty are left as `""` so the next run self-heals once upstream
+has the data; rows not found in the Jira source are also left alone
+and reported in the summary line:
+
+```
+Backfilled Specification on 412 rows (3 left empty, 0 not found in Jira source).
+```
+
+The migration that adds the column on legacy DBs runs as part of
+`JiraProcessingSourceTicketStore.EnsureSchema`, so the backfill is
+safe to run against any DB shape — fresh, legacy, or already
+hand-patched.
+
 ## Flags
 
 | Flag | Default | Notes |
@@ -83,6 +121,7 @@ list view links into the per-ticket page.
 | `--orchestrator <url>` | `http://localhost:5150` | Base URL of the orchestrator used for opportunistic hydration (see [Auto-hydration](#auto-hydration)). |
 | `--no-hydrate` | `false` | Skip auto-hydration; fail fast (with an actionable stderr message) if the DB lacks hydration rows. |
 | `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
+| `--backfill-spec` | `false` | One-off backfill of `jira_processing_source_tickets.Specification` from the Jira source service / DB; do not emit the site. See [Backfill](#backfill). |
 | `--help` | — | Print usage and exit non-zero. |
 
 ### Active filters

@@ -39,6 +39,12 @@ public static class Program
             return 1;
         }
 
+        if (options.BackfillSpec)
+        {
+            return await SpecificationBackfill.RunAsync(resolvedDb, options, Console.Error, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
         HydrationPreflight.PreflightResult preflight = await HydrationPreflight.RunAsync(
             resolvedDb, options, Console.Error, CancellationToken.None).ConfigureAwait(false);
         if (!preflight.Proceed)
@@ -173,6 +179,7 @@ public static class Program
         string? orchestratorAddress = null;
         bool noHydrate = false;
         bool force = false;
+        bool backfillSpec = false;
         bool help = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -222,6 +229,9 @@ public static class Program
                 case "--force":
                     force = true;
                     break;
+                case "--backfill-spec":
+                    backfillSpec = true;
+                    break;
                 case "--help":
                 case "-h":
                     help = true;
@@ -245,11 +255,12 @@ public static class Program
             OrchestratorAddress: orchestratorAddress,
             NoHydrate: noHydrate,
             Force: force,
+            BackfillSpec: backfillSpec,
             Help: help);
         error = null;
         return true;
 
-        static CliOptions Default() => new(null, null, DefaultTitle, null, null, null, null, null, null, false, false, false);
+        static CliOptions Default() => new(null, null, DefaultTitle, null, null, null, null, null, null, false, false, false, false);
     }
 
     private static void WriteUsage(TextWriter w)
@@ -273,6 +284,8 @@ public static class Program
         w.WriteLine($"                         (default: {HydrationHttpClient.DefaultOrchestratorAddress}).");
         w.WriteLine("  --no-hydrate           Skip auto-hydration; fail fast if the DB lacks hydration rows.");
         w.WriteLine("  --force                Overwrite an output directory produced with a different filter set.");
+        w.WriteLine("  --backfill-spec        Backfill the Specification column on jira_processing_source_tickets");
+        w.WriteLine("                         from the Jira source service / DB; do not emit the site.");
         w.WriteLine("  --help                 Show this help.");
     }
 }

@@ -12,4 +12,5 @@ internal sealed record CliOptions(
     string? OrchestratorAddress,
     bool NoHydrate,
     bool Force,
+    bool BackfillSpec,
     bool Help);

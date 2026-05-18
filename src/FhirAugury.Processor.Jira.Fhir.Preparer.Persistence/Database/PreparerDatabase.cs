@@ -23,8 +23,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     public static void EnsureSchema(SqliteConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord.CreateTable(connection);
-        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        JiraProcessingSourceTicketStore.EnsureSchema(connection);
         PreparedTicketRecord.CreateTable(connection);
         PreparedTicketRepoRecord.CreateTable(connection);
         PreparedTicketRelatedJiraRecord.CreateTable(connection);

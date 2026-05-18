@@ -69,8 +69,8 @@ public sealed class PreparerSiteSmokeTests
             await using SqliteCommand cmd = connection.CreateCommand();
             cmd.CommandText =
                 "INSERT INTO jira_processing_source_tickets " +
-                "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
-                "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @shape, @synced, @updated, @pac, @ps)";
+                "(Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape, LastSyncedAt, LastUpdated, ProcessingAttemptCount, ProcessingStatus) " +
+                "VALUES (@id, @key, @title, @desc, @project, @status, @wg, @type, @spec, @shape, @synced, @updated, @pac, @ps)";
             cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
             cmd.Parameters.AddWithValue("@key", $"FHIR-{1000 + i}");
             cmd.Parameters.AddWithValue("@title", $"Source ticket title {i}");
@@ -79,6 +79,7 @@ public sealed class PreparerSiteSmokeTests
             cmd.Parameters.AddWithValue("@status", "Open");
             cmd.Parameters.AddWithValue("@wg", "FHIR Infrastructure");
             cmd.Parameters.AddWithValue("@type", "Change Request");
+            cmd.Parameters.AddWithValue("@spec", "");
             cmd.Parameters.AddWithValue("@shape", "default");
             cmd.Parameters.AddWithValue("@synced", DateTimeOffset.UtcNow.ToString("O"));
             cmd.Parameters.AddWithValue("@updated", DateTimeOffset.UtcNow.ToString("O"));
