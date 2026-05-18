@@ -82,10 +82,41 @@ distinct: a ticket in the `FHIR` Jira project may have any
 Open `cache/jira-preparer-site/index.html` in a Chromium-family
 browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
-and six summary tables (workgroup, recommendation, impact,
-specification, GitHub item state, hydration status). Each row in
-the summary tables links into a filtered list view; each row in the
-list view links into the per-ticket page.
+on the left and a `Show Ticket List →` shortcut on the right of the
+same row, followed by a grid of crosscut summary tables (workgroup,
+artifact, page, impact, specification, GitHub item state, hydration
+status). Each filterable row in the summary tables toggles a chip on
+the current view; each row in the list view links into the per-ticket
+page.
+
+## Filter chips
+
+The landing page, the list view, and crosscut sub-views share a
+single filter banner. Each active filter is a chip with the shape
+`dim: value`:
+
+- **Generation chips** (`spec:`, `project:`, `wg:`) come from the
+  build-time flags and are baked into the trimmed DB. They render
+  without an `×` button — the underlying data is already trimmed so
+  the chip cannot be removed.
+- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`) come from
+  clicking a row in a filterable crosscut column. They render with an
+  `×` button that drops just that one chip and re-renders the view.
+
+Chips compose with logical AND, encoded in the URL hash as a
+`?dim=value&dim2=value` suffix
+(e.g., `#/list?wg=Patient%20Administration&artifact=Observation`).
+This encoding is internal to the SPA and not a stable external link
+contract.
+
+Filterable crosscut columns auto-hide on the landing grid when their
+own dimension is already pinned by a chip OR has only one distinct
+non-`(unknown)` value in the post-chip data set. The non-filterable
+columns (impact, GitHub state, hydration status) always render when
+they have data. The `(unknown)` pseudo-value on a crosscut row toggles
+a chip with literal value `(unknown)`, which matches no tickets and is
+mainly useful for confirming a column has been auto-hidden because all
+non-unknown values were already pinned.
 
 ## Backfill
 
@@ -161,11 +192,11 @@ dotnet run --project tools/preparer-site -- \
 
 When a filter flag is supplied the inlined DB is trimmed to just the
 surviving tickets and their related rows; the active filter set is
-also surfaced in the page `<title>`, in a chip banner on the landing
-view, and in a persistent footer line on every sub-view. If the
-filter set ANDs to zero rows the site is still emitted and the
-landing view shows `0 prepared tickets match this filter.` instead
-of the usual count line.
+also surfaced in the page `<title>` and as a non-removable
+generation chip in the banner on every view except the per-ticket
+detail page. If the filter set ANDs to zero rows the site is still
+emitted and the landing view shows `0 prepared tickets match this
+filter.` instead of the usual count line.
 
 ## Output size
 
