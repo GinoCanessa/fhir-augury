@@ -64,6 +64,33 @@ against it first (the service hydrates on startup, or POST
 /api/v1/admin/hydration/backfill on a running service).
 ```
 
+### Topic surface
+
+The inlined DB also carries the agent-authored topic layer
+(`prepared_ticket_topics`, `prepared_ticket_topic_groups`,
+`prepared_ticket_topic_members`). When at least one topic row
+survives the trim, the landing page renders a `Show Topic List →`
+affordance next to `Show Ticket List →`. The topic list view
+(`#/topics`) is sortable on `Topic` / `Workgroup` / `Spec` / `Type`
+/ `Groups` / `Tickets`, defaults to `RenderOrderHint` ascending
+(NULLs last) then `ShortDescription`, and composes with the same
+filter-chip banner as the other views. Each topic links into
+`#/topic/<id>`, which shows the topic's short and longer
+descriptions, one section per linked-ticket group with its
+rationale, and a trailing "Other tickets in this topic" section
+for ungrouped members.
+
+When the inlined DB has zero topic rows (older preparer DBs, or a
+trim that removed every topic's members), the affordance renders
+as a greyed-out span with a `title="No topics in this run."`
+tooltip rather than a live link. The orphan removal that keeps
+this honest runs inside the same trim transaction, so a filtered
+run never ships topics whose only members were trimmed away.
+
+Per-ticket detail pages render one `Member of topic: <ShortDescription>`
+line per topic membership (sorted by short description). Tickets
+that aren't in any topic show no such line.
+
 ## What this is not
 
 Not a server, not a daemon, not a long-running process. Not a
@@ -92,10 +119,14 @@ Open `cache/jira-preparer-site/index.html` in a Chromium-family
 browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
 on the left and a `Show Ticket List →` shortcut on the right of the
-same row, followed by a grid of crosscut summary tables (workgroup,
-type, artifact, page, impact, specification). Each filterable row in
-the summary tables toggles a chip on the current view; each row in the
-list view links into the per-ticket page.
+same row (followed by `Show Topic List →` when the run carries any
+topic rows), followed by a grid of crosscut summary tables
+(workgroup, type, artifact, page, impact, specification). Each
+filterable row in the summary tables toggles a chip on the current
+view; each row in the list view links into the per-ticket page; the
+topic list view (`#/topics`) and per-topic detail view
+(`#/topic/<id>`) reach the agent-authored topic layer described
+under [Topic surface](#topic-surface).
 
 ## Filter chips
 
