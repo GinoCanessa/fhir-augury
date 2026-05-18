@@ -56,6 +56,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 Status = ticket.Status,
                 WorkGroup = ticket.WorkGroup,
                 Type = ticket.Type,
+                Specification = ticket.Specification,
                 SourceTicketShape = sourceTicketShape,
                 LastSyncedAt = now,
                 LastUpdated = ticket.UpdatedAt,
@@ -70,6 +71,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         existing.Status = ticket.Status;
         existing.WorkGroup = ticket.WorkGroup;
         existing.Type = ticket.Type;
+        existing.Specification = ticket.Specification;
         existing.LastSyncedAt = now;
         existing.LastUpdated = ticket.UpdatedAt;
         if (resetProcessingStatus)
@@ -379,11 +381,11 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO jira_processing_source_tickets
-            (Id, Key, Title, Description, Project, Status, WorkGroup, Type, SourceTicketShape, LastSyncedAt, LastUpdated,
+            (Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape, LastSyncedAt, LastUpdated,
              StartedProcessingAt, CompletedProcessingAt, LastProcessingAttemptAt, ProcessingStatus, ProcessingError, ProcessingAttemptCount,
              CompletionId, ErrorMessage, AgentExitCode, ErrorOccurredAt)
             VALUES
-            (@Id, @Key, @Title, @Description, @Project, @Status, @WorkGroup, @Type, @SourceTicketShape, @LastSyncedAt, @LastUpdated,
+            (@Id, @Key, @Title, @Description, @Project, @Status, @WorkGroup, @Type, @Specification, @SourceTicketShape, @LastSyncedAt, @LastUpdated,
              @StartedProcessingAt, @CompletedProcessingAt, @LastProcessingAttemptAt, @ProcessingStatus, @ProcessingError, @ProcessingAttemptCount,
              @CompletionId, @ErrorMessage, @AgentExitCode, @ErrorOccurredAt)
             """;
@@ -403,6 +405,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 Status = @Status,
                 WorkGroup = @WorkGroup,
                 Type = @Type,
+                Specification = @Specification,
                 LastSyncedAt = @LastSyncedAt,
                 LastUpdated = @LastUpdated,
                 StartedProcessingAt = @StartedProcessingAt,
@@ -431,6 +434,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         command.Parameters.AddWithValue("@Status", record.Status);
         command.Parameters.AddWithValue("@WorkGroup", record.WorkGroup);
         command.Parameters.AddWithValue("@Type", record.Type);
+        command.Parameters.AddWithValue("@Specification", record.Specification);
         command.Parameters.AddWithValue("@SourceTicketShape", record.SourceTicketShape);
         command.Parameters.AddWithValue("@LastSyncedAt", Format(record.LastSyncedAt));
         command.Parameters.AddWithValue("@LastUpdated", FormatNullable(record.LastUpdated));
@@ -473,6 +477,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         Status = reader.GetString(reader.GetOrdinal("Status")),
         WorkGroup = reader.GetString(reader.GetOrdinal("WorkGroup")),
         Type = reader.GetString(reader.GetOrdinal("Type")),
+        Specification = reader.GetString(reader.GetOrdinal("Specification")),
         SourceTicketShape = reader.GetString(reader.GetOrdinal("SourceTicketShape")),
         LastSyncedAt = ParseDate(reader, "LastSyncedAt") ?? DateTimeOffset.MinValue,
         LastUpdated = ParseDate(reader, "LastUpdated"),

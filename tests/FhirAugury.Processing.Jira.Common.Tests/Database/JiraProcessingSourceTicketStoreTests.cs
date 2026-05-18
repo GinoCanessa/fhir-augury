@@ -277,6 +277,97 @@ public class JiraProcessingSourceTicketStoreTests
         Assert.NotEqual(0, row.RowId);
     }
 
+    [Fact]
+    public async Task Upsert_PersistsSpecification_OnInsert()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+
+        await store.UpsertAsync(CreateTicket("FHIR-1", specification: "fhir-extensions"), "fhir", false, CancellationToken.None);
+
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Equal("fhir-extensions", reloaded.Specification);
+    }
+
+    [Fact]
+    public async Task Upsert_UpdatesSpecification_OnExistingTicket()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        await store.UpsertAsync(CreateTicket("FHIR-1", specification: "fhir-core"), "fhir", false, CancellationToken.None);
+
+        await store.UpsertAsync(CreateTicket("FHIR-1", specification: "fhir-extensions"), "fhir", false, CancellationToken.None);
+
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Equal("fhir-extensions", reloaded.Specification);
+    }
+
+    [Fact]
+    public async Task Upsert_DefaultsSpecification_ToEmptyString()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+
+        await store.UpsertAsync(CreateTicket("FHIR-1"), "fhir", false, CancellationToken.None);
+
+        JiraProcessingSourceTicketRecord? reloaded = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
+        Assert.NotNull(reloaded);
+        Assert.Equal(string.Empty, reloaded.Specification);
+    }
+
+    [Fact]
+    public async Task EnsureSchema_AddsSpecification_ToLegacyDb()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, $"jira-processing-legacy-{Guid.NewGuid():N}.db");
+        // Hand-write a legacy (pre-Specification) schema, mirroring the CsLightDbGen
+        // CREATE TABLE shape but with the Specification column omitted.
+        await using (SqliteConnection seed = new($"Data Source={path}"))
+        {
+            await seed.OpenAsync();
+            await using SqliteCommand cmd = seed.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE jira_processing_source_tickets (
+                    RowId INTEGER UNIQUE PRIMARY KEY NOT NULL,
+                    Id TEXT UNIQUE NOT NULL,
+                    Key TEXT NOT NULL,
+                    Title TEXT NOT NULL,
+                    Description TEXT,
+                    Project TEXT NOT NULL,
+                    Status TEXT NOT NULL,
+                    WorkGroup TEXT NOT NULL,
+                    Type TEXT NOT NULL,
+                    SourceTicketShape TEXT NOT NULL,
+                    LastSyncedAt TEXT NOT NULL,
+                    LastUpdated TEXT,
+                    StartedProcessingAt TEXT,
+                    CompletedProcessingAt TEXT,
+                    LastProcessingAttemptAt TEXT,
+                    ProcessingStatus TEXT,
+                    ProcessingError TEXT,
+                    ProcessingAttemptCount INTEGER NOT NULL,
+                    CompletionId TEXT,
+                    ErrorMessage TEXT,
+                    AgentExitCode INTEGER,
+                    ErrorOccurredAt TEXT
+                );
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Constructing the store triggers EnsureSchema, which must add Specification.
+        JiraProcessingSourceTicketStore store = new(path);
+
+        await using SqliteConnection verify = new($"Data Source={path}");
+        await verify.OpenAsync();
+        Dictionary<string, (int Pk, string Type)> columns = ReadTableInfo(verify, "jira_processing_source_tickets");
+        Assert.True(columns.ContainsKey("Specification"), "Specification column should exist after EnsureSchema");
+
+        // Upsert + readback should succeed against the migrated DB.
+        await store.UpsertAsync(CreateTicket("FHIR-9", specification: "fhir-core"), "fhir", false, CancellationToken.None);
+        JiraProcessingSourceTicketRecord? row = await store.GetByKeyAsync("FHIR-9", "fhir", CancellationToken.None);
+        Assert.NotNull(row);
+        Assert.Equal("fhir-core", row.Specification);
+    }
+
     private static Dictionary<string, (int Pk, string Type)> ReadTableInfo(SqliteConnection connection, string table)
     {
         Dictionary<string, (int Pk, string Type)> columns = [];
@@ -343,7 +434,11 @@ public class JiraProcessingSourceTicketStoreTests
         return new JiraProcessingSourceTicketStore(path, filters);
     }
 
-    private static JiraIssueSummaryEntry CreateTicket(string key, string title = "Title", string status = "Triaged") => new()
+    private static JiraIssueSummaryEntry CreateTicket(
+        string key,
+        string title = "Title",
+        string status = "Triaged",
+        string specification = "") => new()
     {
         Key = key,
         ProjectKey = "FHIR",
@@ -351,6 +446,7 @@ public class JiraProcessingSourceTicketStoreTests
         Type = "Change Request",
         Status = status,
         WorkGroup = "Infrastructure",
+        Specification = specification,
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 }
