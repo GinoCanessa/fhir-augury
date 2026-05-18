@@ -10,7 +10,11 @@ public static class JiraWorkGroupTools
     [McpServerTool, Description(
         "List all Jira work groups joined with the canonical HL7 catalog. " +
         "Each entry includes name, code, nameClean (PascalCase slug suitable for URLs and folder names), " +
-        "definition, retired, and issueCount.")]
+        "definition, retired, and issueCount. The response is an envelope object " +
+        "with a top-level catalogJoinDegraded boolean (true when the HL7 catalog " +
+        "join was empty or missing codes) and an items array. The shared " +
+        "WorkGroupResolver accepts any of name, nameClean, or code; orchestrators " +
+        "use catalogJoinDegraded as a proceed-with-warning signal.")]
     public static async Task<string> ListJiraWorkGroups(
         IHttpClientFactory httpClientFactory,
         CancellationToken cancellationToken = default)

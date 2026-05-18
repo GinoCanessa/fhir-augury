@@ -46,6 +46,36 @@ public class JiraWorkGroupToolsTests
     }
 
     [Fact]
+    public async Task ListJiraWorkGroups_PassesThroughEnvelopeShape()
+    {
+        string json = """
+            {
+              "catalogJoinDegraded": true,
+              "items": [
+                {
+                  "name": "Orders & Observations",
+                  "issueCount": 42,
+                  "workGroupCode": "oo",
+                  "workGroupNameClean": "OrdersAndObservations",
+                  "workGroupDefinition": null,
+                  "workGroupRetired": false
+                }
+              ]
+            }
+            """;
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
+
+        string result = await JiraWorkGroupTools.ListJiraWorkGroups(factory);
+
+        // MCP tool is a JSON pass-through; the envelope shape (degraded flag
+        // + items array) must survive verbatim so model-side consumers can
+        // observe the degraded signal.
+        Assert.Contains("\"catalogJoinDegraded\": true", result);
+        Assert.Contains("\"items\"", result);
+        Assert.Contains("\"workGroupNameClean\": \"OrdersAndObservations\"", result);
+    }
+
+    [Fact]
     public async Task ListJiraWorkGroupIssues_ReturnsFormattedJson()
     {
         string json = """

@@ -156,4 +156,61 @@ public class ListJiraDimensionHandlerTests
 
         Assert.Empty(ListJiraDimensionHandler.ProjectItems("workgroups", response, limit: null));
     }
+
+    [Fact]
+    public void ProjectItems_Workgroups_HandlesEnvelopeShape()
+    {
+        // The Phase 2 envelope shape: { catalogJoinDegraded, items: [...] }.
+        JsonElement response = Parse("""
+            {
+              "catalogJoinDegraded": true,
+              "items": [
+                {
+                  "name": "Orders & Observations",
+                  "issueCount": 42,
+                  "workGroupCode": "oo",
+                  "workGroupNameClean": "OrdersAndObservations",
+                  "workGroupDefinition": null,
+                  "workGroupRetired": false
+                }
+              ]
+            }
+            """);
+
+        List<object> items = ListJiraDimensionHandler.ProjectItems("workgroups", response, limit: null);
+
+        string serialized = JsonSerializer.Serialize(items);
+        JsonElement re = Parse(serialized);
+        Assert.Single(items);
+        Assert.Equal("OrdersAndObservations", re[0].GetProperty("nameClean").GetString());
+        Assert.Equal("oo", re[0].GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void ExtractCatalogJoinDegraded_EnvelopeTrue()
+    {
+        JsonElement response = Parse("""{ "catalogJoinDegraded": true, "items": [] }""");
+        Assert.True(ListJiraDimensionHandler.ExtractCatalogJoinDegraded("workgroups", response));
+    }
+
+    [Fact]
+    public void ExtractCatalogJoinDegraded_EnvelopeFalse()
+    {
+        JsonElement response = Parse("""{ "catalogJoinDegraded": false, "items": [] }""");
+        Assert.False(ListJiraDimensionHandler.ExtractCatalogJoinDegraded("workgroups", response));
+    }
+
+    [Fact]
+    public void ExtractCatalogJoinDegraded_LegacyBareArray_ReturnsNull()
+    {
+        JsonElement response = Parse("""[{ "name": "x", "issueCount": 1 }]""");
+        Assert.Null(ListJiraDimensionHandler.ExtractCatalogJoinDegraded("workgroups", response));
+    }
+
+    [Fact]
+    public void ExtractCatalogJoinDegraded_NonWorkgroupsDimension_ReturnsNull()
+    {
+        JsonElement response = Parse("""{ "catalogJoinDegraded": true, "items": [] }""");
+        Assert.Null(ListJiraDimensionHandler.ExtractCatalogJoinDegraded("statuses", response));
+    }
 }
