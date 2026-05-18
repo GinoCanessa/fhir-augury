@@ -138,32 +138,6 @@
           }
           setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By specification', href: null }]);
           Views.crosscutIndex(main, 'by-specification');
-        } else if (parts[0] === 'by-github-state') {
-          if (parts.length >= 2) {
-            const gv = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By GitHub item state', href: '#/by-github-state' },
-              { label: gv, href: null },
-            ]);
-            Views.list(main, { kind: 'github-state', value: gv });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By GitHub item state', href: null }]);
-            Views.crosscutIndex(main, 'by-github-state');
-          }
-        } else if (parts[0] === 'by-hydration-status') {
-          if (parts.length >= 2) {
-            const hv = decodeURIComponent(parts[1]);
-            setBreadcrumb([
-              { label: 'Home', href: '#/' },
-              { label: 'By hydration status', href: '#/by-hydration-status' },
-              { label: hv, href: null },
-            ]);
-            Views.list(main, { kind: 'hydration-status', value: hv });
-          } else {
-            setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By hydration status', href: null }]);
-            Views.crosscutIndex(main, 'by-hydration-status');
-          }
         } else {
           setBreadcrumb([{ label: 'Home', href: '#/' }]);
           Views.notFound(main, fullHash);
@@ -480,44 +454,6 @@
         );
       },
     },
-    'by-github-state': {
-      title: 'By GitHub item state',
-      dim: null,
-      sql: function (chipKeysSql) {
-        return (
-          "SELECT COALESCE(NULLIF(pgh.State, ''), '(unknown)') AS k, " +
-          '       COUNT(DISTINCT pgh.TicketKey) AS n ' +
-          'FROM prepared_github_hydration pgh ' +
-          "WHERE pgh.HydrationStatus = 'resolved' " +
-          'AND pgh.TicketKey IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
-    },
-    'by-hydration-status': {
-      title: 'By hydration status',
-      dim: null,
-      sql: function (chipKeysSql) {
-        return (
-          'SELECT k, COUNT(*) AS n FROM (' +
-          '  SELECT pt.Key, ' +
-          '         CASE WHEN EXISTS (' +
-          "           SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-          '           UNION ALL ' +
-          "           SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-          '           UNION ALL ' +
-          "           SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-          '           UNION ALL ' +
-          "           SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-          '           UNION ALL ' +
-          "           SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved' " +
-          "         ) THEN 'has-unresolved' ELSE 'fully-resolved' END AS k " +
-          '  FROM prepared_tickets pt ' +
-          '  WHERE pt.Key IN (' + chipKeysSql + ')' +
-          ') GROUP BY k ORDER BY n DESC, k'
-        );
-      },
-    },
   };
 
   // Order of columns on the landing page. by-recommendation is gone;
@@ -528,8 +464,6 @@
     'by-page',
     'by-impact',
     'by-specification',
-    'by-github-state',
-    'by-hydration-status',
   ];
 
   // ------- Chip-composed WHERE for the ticket list and crosscuts -------
@@ -697,7 +631,7 @@
 
       // Compose: any chip-WHERE first, then any legacy `filter` argument
       // for non-filterable by-X routes that haven't been chipified yet
-      // (impact / github-state / hydration-status).
+      // (impact).
       const chipBind = buildListChipWhere();
       const wherePredicates = [];
       /** @type {{[k: string]: any}} */
@@ -724,31 +658,6 @@
           bind.$lv = filter.value;
         }
         heading = 'Impact: ' + filter.value;
-      } else if (filter && filter.kind === 'github-state') {
-        if (filter.value === '(unknown)') {
-          wherePredicates.push(
-            ' pt.Key IN (' +
-            '   SELECT pgh.TicketKey FROM prepared_github_hydration pgh ' +
-            "   WHERE pgh.HydrationStatus = 'resolved' AND COALESCE(NULLIF(pgh.State, ''), '(unknown)') = '(unknown)'" +
-            ' )');
-        } else {
-          wherePredicates.push(" pt.Key IN (SELECT TicketKey FROM prepared_github_hydration WHERE State = $lv AND HydrationStatus = 'resolved')");
-          bind.$lv = filter.value;
-        }
-        heading = 'GitHub state: ' + filter.value;
-      } else if (filter && filter.kind === 'hydration-status') {
-        const hasUnresolvedSql =
-          " EXISTS (SELECT 1 FROM prepared_ticket_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
-          "OR EXISTS (SELECT 1 FROM prepared_jira_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
-          "OR EXISTS (SELECT 1 FROM prepared_zulip_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
-          "OR EXISTS (SELECT 1 FROM prepared_github_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved') " +
-          "OR EXISTS (SELECT 1 FROM prepared_repo_hydration WHERE TicketKey = pt.Key AND HydrationStatus = 'unresolved')";
-        if (filter.value === 'has-unresolved') {
-          wherePredicates.push(' (' + hasUnresolvedSql + ')');
-        } else {
-          wherePredicates.push(' NOT (' + hasUnresolvedSql + ')');
-        }
-        heading = 'Hydration status: ' + filter.value;
       }
 
       const where = wherePredicates.length > 0

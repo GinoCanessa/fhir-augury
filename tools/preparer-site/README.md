@@ -93,10 +93,9 @@ browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
 on the left and a `Show Ticket List →` shortcut on the right of the
 same row, followed by a grid of crosscut summary tables (workgroup,
-artifact, page, impact, specification, GitHub item state, hydration
-status). Each filterable row in the summary tables toggles a chip on
-the current view; each row in the list view links into the per-ticket
-page.
+artifact, page, impact, specification). Each filterable row in the
+summary tables toggles a chip on the current view; each row in the
+list view links into the per-ticket page.
 
 ## Filter chips
 
@@ -121,11 +120,11 @@ contract.
 Filterable crosscut columns auto-hide on the landing grid when their
 own dimension is already pinned by a chip OR has only one distinct
 non-`(unknown)` value in the post-chip data set. The non-filterable
-columns (impact, GitHub state, hydration status) always render when
-they have data. The `(unknown)` pseudo-value on a crosscut row toggles
-a chip with literal value `(unknown)`, which matches no tickets and is
-mainly useful for confirming a column has been auto-hidden because all
-non-unknown values were already pinned.
+columns (impact) always render when they have data. The `(unknown)`
+pseudo-value on a crosscut row toggles a chip with literal value
+`(unknown)`, which matches no tickets and is mainly useful for
+confirming a column has been auto-hidden because all non-unknown
+values were already pinned.
 
 ## Flags
 
