@@ -697,4 +697,294 @@ public sealed class PreparerSiteSmokeTests
         Assert.True(end > start, "inlined DB closing quote not found");
         return html.Substring(start, end - start);
     }
+
+    /// <summary>
+    /// Seeds two topics with one group and three member rows. Assumes
+    /// <see cref="SeedPreparerDbAsync"/> has already inserted tickets
+    /// <c>FHIR-1001</c> and <c>FHIR-1002</c>.
+    ///
+    /// Topic 1 (RenderOrderHint=1) — "Observation status semantics":
+    ///   - Group 1 (FirstTicketKey="FHIR-1001"): FHIR-1001 (OrderInContainer=0)
+    ///   - Ungrouped: FHIR-1002 (OrderInContainer=1)
+    /// Topic 2 (RenderOrderHint=NULL) — "Reference target widening":
+    ///   - Ungrouped: FHIR-1002 (OrderInContainer=0)
+    /// </summary>
+    private static async Task SeedTopicsAsync(string dbPath)
+    {
+        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await connection.OpenAsync();
+        string savedAt = DateTimeOffset.UtcNow.ToString("O");
+
+        async Task<int> InsertTopicAsync(string id, string shortDesc, string longDesc, int? hint)
+        {
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO prepared_ticket_topics " +
+                "(Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, " +
+                " ShortDescription, LongerDescription, RenderOrderHint, SavedAt) " +
+                "VALUES (@id, @wgc, @wgd, @spec, @type, @sd, @ld, @hint, @sa); " +
+                "SELECT last_insert_rowid()";
+            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Parameters.AddWithValue("@wgc", "fhir-i");
+            cmd.Parameters.AddWithValue("@wgd", "FHIR Infrastructure");
+            cmd.Parameters.AddWithValue("@spec", "FHIR Core");
+            cmd.Parameters.AddWithValue("@type", "Change Request");
+            cmd.Parameters.AddWithValue("@sd", shortDesc);
+            cmd.Parameters.AddWithValue("@ld", longDesc);
+            cmd.Parameters.AddWithValue("@hint", (object?)hint ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@sa", savedAt);
+            object? scalar = await cmd.ExecuteScalarAsync();
+            return Convert.ToInt32(scalar);
+        }
+
+        async Task<int> InsertGroupAsync(int topicRowId, string firstTicketKey, string rationale, int orderInTopic)
+        {
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO prepared_ticket_topic_groups " +
+                "(Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic, SavedAt) " +
+                "VALUES (@id, @trid, @ftk, @rat, @oit, @sa); " +
+                "SELECT last_insert_rowid()";
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("@trid", topicRowId);
+            cmd.Parameters.AddWithValue("@ftk", firstTicketKey);
+            cmd.Parameters.AddWithValue("@rat", rationale);
+            cmd.Parameters.AddWithValue("@oit", orderInTopic);
+            cmd.Parameters.AddWithValue("@sa", savedAt);
+            object? scalar = await cmd.ExecuteScalarAsync();
+            return Convert.ToInt32(scalar);
+        }
+
+        async Task InsertMemberAsync(int topicRowId, int? groupRowId, string ticketKey, int orderInContainer)
+        {
+            await using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO prepared_ticket_topic_members " +
+                "(Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) " +
+                "VALUES (@id, @trid, @grid, @tk, @oc)";
+            cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+            cmd.Parameters.AddWithValue("@trid", topicRowId);
+            cmd.Parameters.AddWithValue("@grid", (object?)groupRowId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@tk", ticketKey);
+            cmd.Parameters.AddWithValue("@oc", orderInContainer);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        int topic1Rid = await InsertTopicAsync(
+            "00000000000000000000000000000001",
+            "Observation status semantics",
+            "Longer description for topic 1.",
+            1);
+        int topic2Rid = await InsertTopicAsync(
+            "00000000000000000000000000000002",
+            "Reference target widening",
+            "Longer description for topic 2.",
+            null);
+
+        int group1Rid = await InsertGroupAsync(topic1Rid, "FHIR-1001", "Initial grouping rationale.", 0);
+
+        await InsertMemberAsync(topic1Rid, group1Rid, "FHIR-1001", 0);
+        await InsertMemberAsync(topic1Rid, null, "FHIR-1002", 1);
+        await InsertMemberAsync(topic2Rid, null, "FHIR-1002", 0);
+
+        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await cp.OpenAsync();
+        await using SqliteCommand checkpoint = cp.CreateCommand();
+        checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+        await checkpoint.ExecuteNonQueryAsync();
+    }
+
+    [Fact]
+    public async Task InlinedDb_TopicList_RoundTripsAllRows()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+        await SeedTopicsAsync(scope.DbPath);
+
+        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+        Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_topics"));
+        Assert.Equal(1, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_topic_groups"));
+        Assert.Equal(3, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_topic_members"));
+
+        // Mirror the SPA's Views.topics ORDER BY (no chip filter): hint
+        // ASC with NULL last, then ShortDescription ASC.
+        await using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT t.ShortDescription, " +
+            "  (SELECT COUNT(*) FROM prepared_ticket_topic_groups g WHERE g.TopicRowId = t.RowId) AS GroupCount, " +
+            "  (SELECT COUNT(*) FROM prepared_ticket_topic_members m WHERE m.TopicRowId = t.RowId) AS TicketCount " +
+            "FROM prepared_ticket_topics t " +
+            "ORDER BY (CASE WHEN t.RenderOrderHint IS NULL THEN 1 ELSE 0 END), " +
+            "         t.RenderOrderHint ASC, t.ShortDescription ASC";
+        await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+        List<(string Short, long Groups, long Tickets)> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
+        }
+        Assert.Equal(
+            new[]
+            {
+                ("Observation status semantics", 1L, 2L),
+                ("Reference target widening", 0L, 1L),
+            },
+            rows);
+    }
+
+    [Fact]
+    public async Task InlinedDb_TopicDetail_PartitionsGroupAndOther()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+        await SeedTopicsAsync(scope.DbPath);
+
+        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+
+        // Look up topic 1's RowId by Id (mirrors how Views.topic loads it
+        // from the URL parameter).
+        long topicRowId;
+        await using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            cmd.CommandText =
+                "SELECT RowId FROM prepared_ticket_topics WHERE Id = @id";
+            cmd.Parameters.AddWithValue("@id", "00000000000000000000000000000001");
+            object? scalar = await cmd.ExecuteScalarAsync();
+            Assert.NotNull(scalar);
+            topicRowId = Convert.ToInt64(scalar);
+        }
+
+        // Mirror Views.topic's per-topic member query verbatim.
+        await using SqliteCommand mcmd = conn.CreateCommand();
+        mcmd.CommandText =
+            "SELECT m.TopicGroupRowId, m.OrderInContainer, m.TicketKey, " +
+            "       jst.Title, jst.Status, jst.Type " +
+            "FROM prepared_ticket_topic_members m " +
+            "LEFT JOIN jira_processing_source_tickets jst ON jst.Key = m.TicketKey " +
+            "WHERE m.TopicRowId = @rid " +
+            "ORDER BY m.OrderInContainer, m.TicketKey";
+        mcmd.Parameters.AddWithValue("@rid", topicRowId);
+        await using SqliteDataReader mreader = await mcmd.ExecuteReaderAsync();
+        List<(long? Group, long Order, string Key)> rows = [];
+        while (await mreader.ReadAsync())
+        {
+            long? group = mreader.IsDBNull(0) ? null : mreader.GetInt64(0);
+            rows.Add((group, mreader.GetInt64(1), mreader.GetString(2)));
+        }
+
+        // Two members; FHIR-1001 in the group set, FHIR-1002 ungrouped.
+        Assert.Equal(2, rows.Count);
+        Assert.NotNull(rows[0].Group);
+        Assert.Equal(0, rows[0].Order);
+        Assert.Equal("FHIR-1001", rows[0].Key);
+        Assert.Null(rows[1].Group);
+        Assert.Equal(1, rows[1].Order);
+        Assert.Equal("FHIR-1002", rows[1].Key);
+    }
+
+    [Fact]
+    public async Task InlinedDb_TrimDropsOrphanTopic_WhenFiltered()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath, ticketCount: 3);
+        await SeedTopicsAsync(scope.DbPath);
+
+        // Make ticket 3 belong to a different workgroup so the --wg trim
+        // drops it. Seed a third topic whose only member is ticket 3 so
+        // the trim leaves it orphaned (and the new Phase 1 logic must
+        // remove it).
+        await using (SqliteConnection mutate = new($"Data Source={scope.DbPath}"))
+        {
+            await mutate.OpenAsync();
+            await using (SqliteCommand cmd = mutate.CreateCommand())
+            {
+                cmd.CommandText = "UPDATE jira_processing_source_tickets " +
+                    "SET WorkGroup = @wg WHERE Key = 'FHIR-1003'";
+                cmd.Parameters.AddWithValue("@wg", "Patient Administration");
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            long topic3RowId;
+            await using (SqliteCommand cmd = mutate.CreateCommand())
+            {
+                cmd.CommandText =
+                    "INSERT INTO prepared_ticket_topics " +
+                    "(Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, " +
+                    " ShortDescription, LongerDescription, RenderOrderHint, SavedAt) " +
+                    "VALUES (@id, @wgc, @wgd, @spec, @type, @sd, @ld, @hint, @sa); " +
+                    "SELECT last_insert_rowid()";
+                cmd.Parameters.AddWithValue("@id", "00000000000000000000000000000003");
+                cmd.Parameters.AddWithValue("@wgc", "pa");
+                cmd.Parameters.AddWithValue("@wgd", "Patient Administration");
+                cmd.Parameters.AddWithValue("@spec", "FHIR Core");
+                cmd.Parameters.AddWithValue("@type", "Change Request");
+                cmd.Parameters.AddWithValue("@sd", "Patient name handling");
+                cmd.Parameters.AddWithValue("@ld", "Longer description for topic 3.");
+                cmd.Parameters.AddWithValue("@hint", DBNull.Value);
+                cmd.Parameters.AddWithValue("@sa", DateTimeOffset.UtcNow.ToString("O"));
+                object? scalar = await cmd.ExecuteScalarAsync();
+                topic3RowId = Convert.ToInt64(scalar);
+            }
+
+            long group3RowId;
+            await using (SqliteCommand cmd = mutate.CreateCommand())
+            {
+                cmd.CommandText =
+                    "INSERT INTO prepared_ticket_topic_groups " +
+                    "(Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic, SavedAt) " +
+                    "VALUES (@id, @trid, @ftk, @rat, 0, @sa); SELECT last_insert_rowid()";
+                cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+                cmd.Parameters.AddWithValue("@trid", topic3RowId);
+                cmd.Parameters.AddWithValue("@ftk", "FHIR-1003");
+                cmd.Parameters.AddWithValue("@rat", "Solo rationale.");
+                cmd.Parameters.AddWithValue("@sa", DateTimeOffset.UtcNow.ToString("O"));
+                object? scalar = await cmd.ExecuteScalarAsync();
+                group3RowId = Convert.ToInt64(scalar);
+            }
+
+            await using (SqliteCommand cmd = mutate.CreateCommand())
+            {
+                cmd.CommandText =
+                    "INSERT INTO prepared_ticket_topic_members " +
+                    "(Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) " +
+                    "VALUES (@id, @trid, @grid, 'FHIR-1003', 0)";
+                cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+                cmd.Parameters.AddWithValue("@trid", topic3RowId);
+                cmd.Parameters.AddWithValue("@grid", group3RowId);
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            await using SqliteCommand checkpoint = mutate.CreateCommand();
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+            await checkpoint.ExecuteNonQueryAsync();
+        }
+
+        int exit = await Program.Main([
+            "--db", scope.DbPath,
+            "--out", scope.OutDir,
+            "--wg", "FHIR Infrastructure",
+        ]);
+        Assert.Equal(0, exit);
+
+        await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+        // Tickets 1 and 2 survive; ticket 3 is trimmed.
+        Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_tickets"));
+        // Topics 1 and 2 survive; topic 3 (orphaned by the trim) is gone.
+        Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_topics"));
+        Assert.Equal(0, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM prepared_ticket_topics WHERE Id = '00000000000000000000000000000003'"));
+        // Group 1 survives (its member FHIR-1001 is still in the run);
+        // group 3 is orphaned and dropped.
+        Assert.Equal(1, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_topic_groups"));
+        Assert.Equal(0, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM prepared_ticket_topic_groups WHERE FirstTicketKey = 'FHIR-1003'"));
+        // Members for FHIR-1003 were removed by the per-ticket trim.
+        Assert.Equal(0, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM prepared_ticket_topic_members WHERE TicketKey = 'FHIR-1003'"));
+    }
 }

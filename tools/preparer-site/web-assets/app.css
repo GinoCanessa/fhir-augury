@@ -180,3 +180,16 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   text-decoration: underline;
   outline: none;
 }
+.topic-meta {
+  color: var(--muted);
+  margin-top: 0;
+}
+.topic-longer {
+  white-space: pre-wrap;
+}
+.topic-group {
+  margin-top: 1.5rem;
+}
+.topic-back {
+  margin-top: 1rem;
+}

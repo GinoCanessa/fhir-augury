@@ -993,6 +993,32 @@
       headerWrap.appendChild(jiraLink);
       main.appendChild(headerWrap);
 
+      // Topic back-link(s): if this ticket is a member of one or more
+      // topics, render one `Member of topic: <ShortDescription>` line
+      // per topic, sorted by short description for deterministic order.
+      // Defensive try/catch: older inlined DBs may pre-date the topic
+      // schema entirely.
+      let topicMemberships = { rows: [] };
+      try {
+        topicMemberships = query(
+          'SELECT t.Id AS TopicId, t.ShortDescription AS Short ' +
+          'FROM prepared_ticket_topic_members m ' +
+          'INNER JOIN prepared_ticket_topics t ON t.RowId = m.TopicRowId ' +
+          'WHERE m.TicketKey = $k ORDER BY t.ShortDescription',
+          { $k: key });
+      } catch (e) {
+        topicMemberships = { rows: [] };
+      }
+      for (let ti = 0; ti < topicMemberships.rows.length; ti++) {
+        const tr = topicMemberships.rows[ti];
+        const p = el('p', { class: 'topic-back' });
+        p.appendChild(document.createTextNode('Member of topic: '));
+        p.appendChild(el('a', {
+          href: '#/topic/' + encodeURIComponent(String(tr.TopicId)) + currentHashSuffix(),
+        }, String(tr.Short || '')));
+        main.appendChild(p);
+      }
+
       if (hydrationParent && hydrationParent.DescriptionPlain) {
         const details = el('details');
         details.appendChild(el('summary', null, 'Show Jira description'));
