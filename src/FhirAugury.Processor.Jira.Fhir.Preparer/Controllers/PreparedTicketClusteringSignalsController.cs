@@ -1,3 +1,4 @@
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -29,6 +30,11 @@ public sealed class PreparedTicketClusteringSignalsController(PreparerDatabase d
     /// catalog" without inspecting an envelope (this mirrors the
     /// grouping controller's <c>GetWorkGroup</c> behaviour, which also
     /// 404s when the workgroup is empty).
+    /// <paramref name="workGroupClean"/> may arrive in any of
+    /// <c>name</c> / <c>nameClean</c> form — the controller normalises
+    /// it via <see cref="Hl7WorkGroupNameCleaner.Clean(string?)"/>
+    /// defensively. The <c>code</c> form requires pre-resolution at the
+    /// orchestrator / CLI / MCP layer.
     /// </summary>
     [HttpGet("{workGroupClean}")]
     [ProducesResponseType(typeof(PreparedTicketClusteringSignalsDto), StatusCodes.Status200OK)]
@@ -37,7 +43,9 @@ public sealed class PreparedTicketClusteringSignalsController(PreparerDatabase d
         string workGroupClean,
         CancellationToken ct)
     {
-        PreparedTicketClusteringSignals? signals = await database.GetClusteringSignalsAsync(workGroupClean, ct);
+        string cleaned = Hl7WorkGroupNameCleaner.Clean(workGroupClean);
+        string canonical = string.IsNullOrEmpty(cleaned) ? workGroupClean : cleaned;
+        PreparedTicketClusteringSignals? signals = await database.GetClusteringSignalsAsync(canonical, ct);
         if (signals is null)
         {
             return NotFound();

@@ -17,7 +17,10 @@ namespace FhirAugury.Source.Jira.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1")]
-public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
+public class WorkGroupsController(
+    JiraDatabase db,
+    IOptions<JiraServiceOptions> optionsAccessor,
+    WorkGroupResolverFactory resolverFactory) : ControllerBase
 {
     [HttpGet("work-groups")]
     public IActionResult ListWorkGroups()
@@ -76,12 +79,21 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
     }
 
     /// <summary>
-    /// Lists issues for a specific work group identified by its HL7 work group code
-    /// (e.g. <c>fhir</c>, <c>pc</c>). The code is resolved against
-    /// <c>hl7_workgroups.Code</c>, with <c>NameClean</c> accepted as an alternate so
-    /// callers may also pass the cleaned-name form.
+    /// Lists issues for a specific work group identified by any of its
+    /// canonical identifiers — HL7 <c>Code</c> (e.g. <c>fhir</c>, <c>pc</c>),
+    /// display <c>Name</c> (e.g. <c>"Orders &amp; Observations"</c>), or
+    /// PascalCase <c>NameClean</c> (e.g. <c>FHIRInfrastructure</c>). The
+    /// route parameter is resolved through the shared
+    /// <see cref="WorkGroupResolver"/> so callers may submit any of the
+    /// three forms interchangeably. On <see cref="WorkGroupResolveOutcome.Ambiguous"/>
+    /// returns 409 with the candidate list; on
+    /// <see cref="WorkGroupResolveOutcome.NotFound"/> preserves the
+    /// historical "unknown group → empty list" 200 response so callers
+    /// (e.g. the index-prepared-db skill) do not need bespoke 404 handling.
     /// </summary>
     [HttpGet("work-groups/{groupCode}/issues")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public IActionResult GetIssuesForWorkGroupCode(
         [FromRoute] string groupCode,
         [FromQuery] int? limit,
@@ -91,12 +103,19 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
     }
 
     /// <summary>
-    /// Lists issues filtered by an optional HL7 work group code and/or canonical
-    /// work group name. When neither filter is supplied, returns all issues paged
-    /// by <paramref name="limit"/> / <paramref name="offset"/>. When both are
-    /// supplied, the filters are AND-ed together.
+    /// Lists issues filtered by an optional HL7 work group selector
+    /// (<c>code</c>, <c>name</c>, or <c>nameClean</c> form) on either
+    /// the <c>groupCode</c> or <c>groupName</c> query parameter, both
+    /// routed through the shared <see cref="WorkGroupResolver"/>. When
+    /// neither filter is supplied, returns all issues paged by
+    /// <paramref name="limit"/> / <paramref name="offset"/>. When both
+    /// are supplied, the filters are AND-ed together. On
+    /// <see cref="WorkGroupResolveOutcome.Ambiguous"/> returns 409 with
+    /// the candidate list.
     /// </summary>
     [HttpGet("work-groups/issues")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public IActionResult GetIssuesForWorkGroup(
         [FromQuery] string? groupCode,
         [FromQuery] string? groupName,
@@ -110,6 +129,7 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
     {
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
+        WorkGroupResolver resolver = resolverFactory.Create(connection);
         int maxResults = Math.Min(limit ?? 50, 500);
         int skip = Math.Max(offset ?? 0, 0);
 
@@ -119,25 +139,29 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
 
         if (!string.IsNullOrWhiteSpace(groupCode))
         {
-            // Resolve groupCode (HL7 Code, with NameClean as alternate) to the
-            // canonical free-text Name persisted on jira_issues.WorkGroup. An
-            // unknown code yields no matches (empty list), preserving the
-            // historical "unknown group returns empty list" behaviour.
-            string? resolvedFromCode = ResolveWorkGroupNameByCode(connection, groupCode);
-            if (resolvedFromCode is null)
+            WorkGroupResolveResult result = resolver.Resolve(groupCode);
+            if (result.Outcome == WorkGroupResolveOutcome.Ambiguous)
+            {
+                return Conflict(BuildAmbiguousProblemDetails(result));
+            }
+            if (result.Outcome != WorkGroupResolveOutcome.Found)
             {
                 return Ok(new List<JiraIssueSummaryEntry>());
             }
             conditions.Add("WorkGroup = @code");
-            cmd.Parameters.AddWithValue("@code", resolvedFromCode);
+            cmd.Parameters.AddWithValue("@code", result.Match!.Name);
         }
 
         if (!string.IsNullOrWhiteSpace(groupName))
         {
-            // groupName matches the canonical free-text WorkGroup name on the
-            // issue. Accept either the index Name as authoritative or fall
-            // through to direct equality on the raw value.
-            string resolvedName = ResolveWorkGroupNameByName(connection, groupName) ?? groupName;
+            WorkGroupResolveResult result = resolver.Resolve(groupName);
+            string resolvedName = result.Outcome == WorkGroupResolveOutcome.Found
+                ? result.Match!.Name
+                : groupName;
+            if (result.Outcome == WorkGroupResolveOutcome.Ambiguous)
+            {
+                return Conflict(BuildAmbiguousProblemDetails(result));
+            }
             conditions.Add("WorkGroup = @name");
             cmd.Parameters.AddWithValue("@name", resolvedName);
         }
@@ -156,27 +180,18 @@ public class WorkGroupsController(JiraDatabase db, IOptions<JiraServiceOptions> 
         return Ok(results);
     }
 
-    private static string? ResolveWorkGroupNameByCode(SqliteConnection connection, string groupCode)
+    private static ProblemDetails BuildAmbiguousProblemDetails(WorkGroupResolveResult result) => new()
     {
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT iw.Name FROM jira_index_workgroups iw
-              JOIN hl7_workgroups hwg ON hwg.Id = iw.WorkGroupId
-             WHERE hwg.Code = @g
-                OR hwg.NameClean = @g
-             LIMIT 1
-            """;
-        cmd.Parameters.AddWithValue("@g", groupCode);
-        object? result = cmd.ExecuteScalar();
-        return result is string s ? s : null;
-    }
-
-    private static string? ResolveWorkGroupNameByName(SqliteConnection connection, string groupName)
-    {
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = "SELECT Name FROM jira_index_workgroups WHERE Name = @g LIMIT 1";
-        cmd.Parameters.AddWithValue("@g", groupName);
-        object? result = cmd.ExecuteScalar();
-        return result is string s ? s : null;
-    }
+        Title = "Ambiguous work-group selector",
+        Detail = $"'{result.Input}' matched multiple work groups within the ambiguity delta. Refine using code or nameClean.",
+        Status = StatusCodes.Status409Conflict,
+        Extensions =
+        {
+            ["input"] = result.Input,
+            ["score"] = result.Score,
+            ["candidates"] = result.Candidates
+                .Select(c => new { code = c.Dto.Code, name = c.Dto.Name, nameClean = c.Dto.NameClean, score = c.Score })
+                .ToArray(),
+        },
+    };
 }

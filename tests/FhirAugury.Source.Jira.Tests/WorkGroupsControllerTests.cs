@@ -1,9 +1,11 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Controllers;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,7 +24,8 @@ public class WorkGroupsControllerTests : IDisposable
         _dbPath = Path.Combine(Path.GetTempPath(), $"jira_wg_ctrl_{Guid.NewGuid():N}.db");
         _db = new JiraDatabase(_dbPath, NullLogger<JiraDatabase>.Instance);
         _db.Initialize();
-        _controller = new WorkGroupsController(_db, Options.Create(new JiraServiceOptions()));
+        WorkGroupResolverFactory factory = new(new JiraHl7WorkGroupStore());
+        _controller = new WorkGroupsController(_db, Options.Create(new JiraServiceOptions()), factory);
     }
 
     public void Dispose()
@@ -299,5 +302,46 @@ public class WorkGroupsControllerTests : IDisposable
         Hl7WorkGroupRecord.Insert(conn, fhir);
         JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("FHIR Infrastructure", fhir.Id, issueCount: 1, submitted: 1));
         JiraIssueRecord.Insert(conn, NewIssue("FHIR-1", "FHIR Infrastructure"));
+    }
+
+    [Fact]
+    public void Get_LookupByFuzzyName_PathParam_ResolvesToCanonicalNameAndReturnsIssues()
+    {
+        SeedFhirWithOneIssue();
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroupCode("FHIR Infrastrucutre", limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Single(issues);
+    }
+
+    [Fact]
+    public void Get_LookupByDisplayName_PathParam_ResolvesToCanonicalNameAndReturnsIssues()
+    {
+        SeedFhirWithOneIssue();
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetIssuesForWorkGroupCode("FHIR Infrastructure", limit: null, offset: null));
+        List<JiraIssueSummaryEntry> issues = Assert.IsType<List<JiraIssueSummaryEntry>>(ok.Value);
+        Assert.Single(issues);
+    }
+
+    [Fact]
+    public void Get_AmbiguousSelector_Returns409WithCandidates()
+    {
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            Hl7WorkGroupRecord a = NewHl7Wg("a", "Acme Workimg Group", "AcmeWorkimgGroup");
+            Hl7WorkGroupRecord b = NewHl7Wg("b", "Acme Workirg Group", "AcmeWorkirgGroup");
+            Hl7WorkGroupRecord.Insert(conn, a);
+            Hl7WorkGroupRecord.Insert(conn, b);
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("Acme Workimg Group", a.Id, issueCount: 1));
+            JiraIndexWorkGroupRecord.Insert(conn, NewIndexWg("Acme Workirg Group", b.Id, issueCount: 1));
+        }
+
+        IActionResult result = _controller.GetIssuesForWorkGroupCode("Acme Working Group", limit: null, offset: null);
+
+        ConflictObjectResult conflict = Assert.IsType<ConflictObjectResult>(result);
+        ProblemDetails problem = Assert.IsType<ProblemDetails>(conflict.Value);
+        Assert.Equal("Ambiguous work-group selector", problem.Title);
+        Assert.NotNull(problem.Extensions["candidates"]);
     }
 }

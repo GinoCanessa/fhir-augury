@@ -1,3 +1,4 @@
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -65,6 +66,18 @@ public sealed record PreparedTicketGroupingSaveResultDto(
 
 public static class PreparedTicketGroupingDtoMapper
 {
+    /// <summary>
+    /// Builds the persistence payload from the HTTP request. The
+    /// <paramref name="workGroupClean"/> argument may arrive in any of
+    /// <c>name</c> / <c>nameClean</c> / <c>code</c> form, or as the
+    /// canonical cleaner slug already — the mapper normalises it via
+    /// <see cref="Hl7WorkGroupNameCleaner.Clean(string?)"/> defensively so
+    /// the persisted column is always in the canonical form. The
+    /// <c>code</c> form is preserved as-is when the cleaner produces an
+    /// empty string; resolution from short codes (e.g. <c>"oo"</c> ->
+    /// <c>"OrdersAndObservations"</c>) is the responsibility of the
+    /// orchestrator / CLI / MCP layer where the HL7 catalog is available.
+    /// </summary>
     public static PreparedTicketGroupingPayload ToPayload(
         string workGroupClean,
         string specification,
@@ -72,9 +85,11 @@ public static class PreparedTicketGroupingDtoMapper
         PreparedTicketGroupingPutRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        string cleaned = Hl7WorkGroupNameCleaner.Clean(workGroupClean);
+        string canonical = string.IsNullOrEmpty(cleaned) ? workGroupClean : cleaned;
         return new PreparedTicketGroupingPayload
         {
-            WorkGroupClean = workGroupClean,
+            WorkGroupClean = canonical,
             WorkGroupDisplay = request.WorkGroupDisplay,
             Specification = specification,
             Type = type,

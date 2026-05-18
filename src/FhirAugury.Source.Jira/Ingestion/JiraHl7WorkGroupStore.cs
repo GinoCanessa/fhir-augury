@@ -8,7 +8,7 @@ namespace FhirAugury.Source.Jira.Ingestion;
 /// Jira-source implementation of <see cref="IHl7WorkGroupStore"/> over the
 /// CsLightDbGen-generated <see cref="Hl7WorkGroupRecord"/>.
 /// </summary>
-internal sealed class JiraHl7WorkGroupStore : IHl7WorkGroupStore
+public sealed class JiraHl7WorkGroupStore : IHl7WorkGroupStore
 {
     public IReadOnlyList<Hl7WorkGroupDto> LoadAll(SqliteConnection connection)
     {

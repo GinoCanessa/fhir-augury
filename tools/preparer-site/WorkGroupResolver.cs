@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
+using FhirAugury.Common.WorkGroups;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.PreparerSite;
@@ -16,6 +17,23 @@ internal static class WorkGroupResolver
 
     internal sealed record WorkGroupDto(string? Name, string? WorkGroupCode, string? WorkGroupNameClean);
 
+    /// <summary>
+    /// Resolves the user-supplied selector (any of <c>code</c>,
+    /// <c>nameClean</c>, or <c>name</c>) against the jira-source catalog.
+    /// Prefers the live HTTP endpoint; on connection failure (or when
+    /// <paramref name="jiraSourceDbPath"/> is supplied), falls back to a
+    /// read-only SQLite query against the jira-source DB. Returns the
+    /// canonical workgroup <c>Name</c> (the value persisted on
+    /// <c>jira_issues.WorkGroup</c>) or <c>null</c> when no match exists.
+    /// </summary>
+    /// <remarks>
+    /// Uses the shared <see cref="FhirAugury.Common.WorkGroups.WorkGroupResolver"/>
+    /// for the in-process matching pass so behaviour stays consistent
+    /// with the jira-source endpoint and CLI. On
+    /// <see cref="WorkGroupResolveOutcome.Ambiguous"/> the resolver
+    /// refuses to silently pick — this method returns <c>null</c> in
+    /// that case, mirroring the previous "no-match" behaviour.
+    /// </remarks>
     public static async Task<string?> TryResolveAsync(
         string raw,
         string? httpUrl,
@@ -38,18 +56,7 @@ internal static class WorkGroupResolver
             else
             {
                 List<WorkGroupDto> groups = await ReadWorkGroupsAsync(response, ct).ConfigureAwait(false);
-                foreach (WorkGroupDto group in groups)
-                {
-                    if (CaseInsensitiveEquals(group.WorkGroupCode, raw) ||
-                        CaseInsensitiveEquals(group.WorkGroupNameClean, raw) ||
-                        CaseInsensitiveEquals(group.Name, raw))
-                    {
-                        return group.Name;
-                    }
-                }
-                // HTTP succeeded but no match — do not fall through to DB; the
-                // service is authoritative on what workgroups exist.
-                return null;
+                return ResolveUsingSharedResolver(raw, groups);
             }
         }
         catch (HttpRequestException ex)
@@ -89,17 +96,46 @@ internal static class WorkGroupResolver
         };
         await using SqliteConnection connection = new(builder.ConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        List<WorkGroupDto> snapshot = await LoadSnapshotFromDbAsync(connection, ct).ConfigureAwait(false);
+        return ResolveUsingSharedResolver(raw, snapshot);
+    }
+
+    private static string? ResolveUsingSharedResolver(string raw, IReadOnlyList<WorkGroupDto> groups)
+    {
+        List<Hl7WorkGroupDto> snapshot = new(groups.Count);
+        foreach (WorkGroupDto g in groups)
+        {
+            if (string.IsNullOrEmpty(g.Name)) continue;
+            snapshot.Add(new Hl7WorkGroupDto(
+                Code: g.WorkGroupCode ?? string.Empty,
+                Name: g.Name,
+                Definition: null,
+                Retired: false,
+                NameClean: g.WorkGroupNameClean ?? Hl7WorkGroupNameCleaner.Clean(g.Name)));
+        }
+        FhirAugury.Common.WorkGroups.WorkGroupResolver resolver =
+            new FhirAugury.Common.WorkGroups.WorkGroupResolver(snapshot);
+        WorkGroupResolveResult result = resolver.Resolve(raw);
+        return result.Outcome == WorkGroupResolveOutcome.Found ? result.Match!.Name : null;
+    }
+
+    private static async Task<List<WorkGroupDto>> LoadSnapshotFromDbAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        List<WorkGroupDto> result = [];
         await using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
-            "SELECT iw.Name FROM jira_index_workgroups iw " +
-            "JOIN hl7_workgroups hwg ON hwg.Id = iw.WorkGroupId " +
-            "WHERE hwg.Code = @g COLLATE NOCASE " +
-            "   OR hwg.NameClean = @g COLLATE NOCASE " +
-            "   OR iw.Name = @g COLLATE NOCASE " +
-            "LIMIT 1";
-        cmd.Parameters.AddWithValue("@g", raw);
-        object? result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        return result as string;
+            "SELECT iw.Name, hwg.Code, hwg.NameClean FROM jira_index_workgroups iw " +
+            "LEFT JOIN hl7_workgroups hwg ON hwg.Id = iw.WorkGroupId";
+        await using SqliteDataReader reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string? name = reader.IsDBNull(0) ? null : reader.GetString(0);
+            string? code = reader.IsDBNull(1) ? null : reader.GetString(1);
+            string? nameClean = reader.IsDBNull(2) ? null : reader.GetString(2);
+            result.Add(new WorkGroupDto(name, code, nameClean));
+        }
+        return result;
     }
 
     // Tolerates both the legacy bare-array shape and the new
@@ -159,7 +195,4 @@ internal static class WorkGroupResolver
         }
         return null;
     }
-
-    private static bool CaseInsensitiveEquals(string? a, string? b)
-        => a is not null && b is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 }
