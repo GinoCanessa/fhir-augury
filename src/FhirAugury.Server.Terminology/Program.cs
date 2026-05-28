@@ -3,6 +3,7 @@ using FhirAugury.Server.Terminology.Configuration;
 using FhirAugury.Server.Terminology.Database;
 using FhirAugury.Server.Terminology.Hosting;
 using FhirAugury.Server.Terminology.Ingestion;
+using FhirAugury.Server.Terminology.Matching;
 using FhirPkg;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -82,6 +83,11 @@ builder.Services.AddSingleton<FhirPackageSource>();
 builder.Services.AddSingleton<TerminologyArtifactNormalizer>();
 builder.Services.AddSingleton<TerminologyIngestionPipeline>();
 builder.Services.AddSingleton<TerminologyIndexStatusTracker>();
+
+// Matching pipeline (Phase 3+)
+builder.Services.AddSingleton<SubmissionNormalizer>();
+builder.Services.AddSingleton<LexicalMatcher>();
+builder.Services.AddSingleton<ITerminologyMatcher>(sp => sp.GetRequiredService<LexicalMatcher>());
 
 // Startup rebuild — runs after Kestrel binds.
 builder.Services.AddSingleton<TerminologyStartupRebuildService>();
