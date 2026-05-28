@@ -146,9 +146,12 @@ public class CheckController : ControllerBase
         // Embeddings/hybrid require the provider to be enabled.
         if ((effectiveMode == "embeddings" || effectiveMode == "hybrid") && !_options.Embeddings.Enabled)
         {
+            string errorCode = effectiveMode == "hybrid"
+                ? "embeddings_unavailable_for_hybrid"
+                : "mode_unavailable";
             return BadRequest(new
             {
-                error = "mode_unavailable",
+                error = errorCode,
                 requested = effectiveMode,
                 details = "Embeddings are disabled in this deployment.",
                 enabled_modes = EnabledModes(),

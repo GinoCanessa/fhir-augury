@@ -138,6 +138,21 @@ public class CheckControllerTests : IClassFixture<CheckTestFactory>
     }
 
     [Fact]
+    public async Task Check_Returns400_WhenHybridRequested_AndEmbeddingsDisabled()
+    {
+        using HttpClient client = _factory.CreateClient();
+        string fhir = """{"resourceType": "CodeSystem", "url": "http://example.org/cs/anything"}""";
+
+        HttpResponseMessage response = await PostFhir(client,
+            "/api/v1/terminology/check?mode=hybrid", fhir);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("embeddings_unavailable_for_hybrid", body.GetProperty("error").GetString());
+        Assert.Equal("hybrid", body.GetProperty("requested").GetString());
+    }
+
+    [Fact]
     public async Task Check_Returns413_WhenSubmissionExceedsCap()
     {
         using HttpClient client = _factory.CreateClient();

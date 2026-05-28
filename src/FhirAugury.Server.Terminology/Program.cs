@@ -4,6 +4,7 @@ using FhirAugury.Server.Terminology.Database;
 using FhirAugury.Server.Terminology.Hosting;
 using FhirAugury.Server.Terminology.Ingestion;
 using FhirAugury.Server.Terminology.Matching;
+using FhirAugury.Server.Terminology.Matching.Embeddings;
 using FhirPkg;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -88,6 +89,15 @@ builder.Services.AddSingleton<TerminologyIndexStatusTracker>();
 builder.Services.AddSingleton<SubmissionNormalizer>();
 builder.Services.AddSingleton<LexicalMatcher>();
 builder.Services.AddSingleton<ITerminologyMatcher>(sp => sp.GetRequiredService<LexicalMatcher>());
+
+// Embeddings provider (v1 ships NullEmbeddingProvider only; validated
+// at startup so any non-"none" provider value is rejected upfront).
+builder.Services.AddSingleton<IEmbeddingProvider, NullEmbeddingProvider>();
+builder.Services.AddSingleton<EmbeddingMatcher>();
+builder.Services.AddSingleton<HybridMatcher>();
+builder.Services.AddSingleton<ITerminologyMatcher>(sp => sp.GetRequiredService<EmbeddingMatcher>());
+builder.Services.AddSingleton<ITerminologyMatcher>(sp => sp.GetRequiredService<HybridMatcher>());
+
 builder.Services.AddSingleton<MatcherSelector>();
 
 // Startup rebuild — runs after Kestrel binds.
