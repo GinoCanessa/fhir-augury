@@ -88,6 +88,7 @@ builder.Services.AddSingleton<TerminologyIndexStatusTracker>();
 builder.Services.AddSingleton<SubmissionNormalizer>();
 builder.Services.AddSingleton<LexicalMatcher>();
 builder.Services.AddSingleton<ITerminologyMatcher>(sp => sp.GetRequiredService<LexicalMatcher>());
+builder.Services.AddSingleton<MatcherSelector>();
 
 // Startup rebuild — runs after Kestrel binds.
 builder.Services.AddSingleton<TerminologyStartupRebuildService>();

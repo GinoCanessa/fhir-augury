@@ -50,14 +50,18 @@ public sealed class TerminologyResourceParser
 
         Resource? parsed;
         IEnumerable<Hl7.Fhir.Utility.CodedException> issues;
-        bool ok = version switch
+        _ = version switch
         {
             FhirMajorVersion.R4 => _r4.TryDeserializeResource(ref reader, out parsed!, out issues!),
             FhirMajorVersion.R5 => _r5.TryDeserializeResource(ref reader, out parsed!, out issues!),
             _ => throw new ArgumentOutOfRangeException(nameof(version), version, null),
         };
 
-        if (!ok || parsed is null) return null;
+        // Accept the typed object even when TryDeserializeResource flagged
+        // non-fatal issues (e.g. missing CodeSystem.status). Submissions
+        // routed through /check may be partial drafts on purpose — the
+        // matcher's job is to score them, not validate them.
+        if (parsed is null) return null;
         if (parsed is CodeSystem or ValueSet) return parsed;
         return null;
     }
