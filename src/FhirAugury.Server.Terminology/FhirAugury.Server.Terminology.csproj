@@ -13,8 +13,8 @@
   <ItemGroup>
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
-    <PackageReference Include="Hl7.Fhir.R4" Version="6.1.1" />
-    <PackageReference Include="Hl7.Fhir.R5" Version="6.1.1" />
+    <PackageReference Include="Hl7.Fhir.R4" Version="6.1.1" Aliases="FhirR4" />
+    <PackageReference Include="Hl7.Fhir.R5" Version="6.1.1" Aliases="FhirR5" />
     <PackageReference Include="fhir-pkg-lib" Version="2026.324.1648" />
   </ItemGroup>
 

@@ -1,11 +1,17 @@
 using FhirAugury.Common.OpenApi;
 using FhirAugury.Server.Terminology.Configuration;
+using FhirAugury.Server.Terminology.Database;
+using FhirAugury.Server.Terminology.Hosting;
+using FhirAugury.Server.Terminology.Ingestion;
+using FhirPkg;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -43,7 +49,59 @@ builder.Services.AddAuguryOpenApi(o =>
     o.Description = "THO overlap check for submitted CodeSystem / ValueSet resources.";
 });
 
+// Database
+builder.Services.AddSingleton(sp =>
+{
+    TerminologyServiceOptions opts = sp.GetRequiredService<IOptions<TerminologyServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(opts.DatabasePath);
+    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+    TerminologyDatabase db = new TerminologyDatabase(
+        dbPath,
+        sp.GetRequiredService<ILogger<TerminologyDatabase>>());
+    db.Initialize();
+    return db;
+});
+
+// FhirPkg (THO package acquisition)
+{
+    TerminologyServiceOptions bootstrap = builder.Configuration
+        .GetSection(TerminologyServiceOptions.SectionName)
+        .Get<TerminologyServiceOptions>() ?? new TerminologyServiceOptions();
+
+    string cachePath = Path.GetFullPath(bootstrap.CachePath);
+    Directory.CreateDirectory(cachePath);
+
+    builder.Services.AddFhirPackageManagement(o =>
+    {
+        FhirPackageSource.ApplyOptions(o, bootstrap);
+    });
+}
+
+builder.Services.AddSingleton<TerminologyResourceParser>();
+builder.Services.AddSingleton<FhirPackageSource>();
+builder.Services.AddSingleton<TerminologyArtifactNormalizer>();
+builder.Services.AddSingleton<TerminologyIngestionPipeline>();
+builder.Services.AddSingleton<TerminologyIndexStatusTracker>();
+
+// Startup rebuild — runs after Kestrel binds.
+builder.Services.AddSingleton<TerminologyStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TerminologyStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<TerminologyStartupRebuildService>());
+
 WebApplication app = builder.Build();
+TerminologyServiceOptions termOpts = app.Services.GetRequiredService<IOptions<TerminologyServiceOptions>>().Value;
+
+// ── Validate project config ─────────────────────────────────────
+{
+    List<string> validationErrors = termOpts.Validate().ToList();
+    if (validationErrors.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Invalid Terminology service configuration:" + Environment.NewLine +
+            string.Join(Environment.NewLine, validationErrors));
+    }
+}
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
