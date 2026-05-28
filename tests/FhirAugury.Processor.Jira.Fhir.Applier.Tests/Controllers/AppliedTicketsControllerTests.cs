@@ -44,7 +44,7 @@ public class AppliedTicketsControllerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        TestDbCleanup.DeleteDirectoryTree(_root);
     }
 
     private AppliedTicketsController NewController(IGitPushService push, IEnumerable<string>? configuredRepoFullNames = null)

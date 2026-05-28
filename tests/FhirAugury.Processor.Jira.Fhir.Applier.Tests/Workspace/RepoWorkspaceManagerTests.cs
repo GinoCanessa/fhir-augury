@@ -14,8 +14,8 @@ public class RepoWorkspaceManagerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_workingDir)) Directory.Delete(_workingDir, true);
-        if (File.Exists(_dbPath)) File.Delete(_dbPath);
+        TestDbCleanup.DeleteDatabaseFile(_dbPath);
+        TestDbCleanup.DeleteDirectoryTree(_workingDir);
     }
 
     private (RepoWorkspaceManager Manager, FakeGitProcessRunner Git, RepoBaselineStore Baselines, ApplierRepoOptions Repo) NewSut(

@@ -16,8 +16,8 @@ public class BaselineSyncServiceTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_workingDir)) Directory.Delete(_workingDir, true);
-        if (File.Exists(_dbPath)) File.Delete(_dbPath);
+        TestDbCleanup.DeleteDatabaseFile(_dbPath);
+        TestDbCleanup.DeleteDirectoryTree(_workingDir);
     }
 
     private (BaselineSyncService Svc, RepoBaselineStore Baselines, RepoWorkspaceManager Manager, FakeGitProcessRunner Git, ApplierRepoOptions Repo, ApplierOptions Options) NewSut(

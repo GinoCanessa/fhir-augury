@@ -121,7 +121,7 @@ public class PlannerReadOnlyDatabaseTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_path)) File.Delete(_path);
+        TestDbCleanup.DeleteDatabaseFile(_path);
     }
 
     [Fact]

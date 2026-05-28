@@ -16,10 +16,7 @@ public class ApplierDatabaseTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_dbPath))
-        {
-            File.Delete(_dbPath);
-        }
+        TestDbCleanup.DeleteDatabaseFile(_dbPath);
     }
 
     [Fact]

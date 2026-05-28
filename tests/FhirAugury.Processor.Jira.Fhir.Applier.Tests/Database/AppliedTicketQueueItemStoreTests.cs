@@ -17,7 +17,7 @@ public class AppliedTicketQueueItemStoreTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_path)) File.Delete(_path);
+        TestDbCleanup.DeleteDatabaseFile(_path);
     }
 
     [Fact]

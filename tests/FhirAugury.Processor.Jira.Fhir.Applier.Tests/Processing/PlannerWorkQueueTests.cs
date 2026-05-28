@@ -19,8 +19,8 @@ public class PlannerWorkQueueTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_plannerPath)) File.Delete(_plannerPath);
-        if (File.Exists(_applierPath)) File.Delete(_applierPath);
+        TestDbCleanup.DeleteDatabaseFile(_plannerPath);
+        TestDbCleanup.DeleteDatabaseFile(_applierPath);
     }
 
     private PlannerWorkQueue NewQueue(IReadOnlyCollection<string>? typeFilter = null)
