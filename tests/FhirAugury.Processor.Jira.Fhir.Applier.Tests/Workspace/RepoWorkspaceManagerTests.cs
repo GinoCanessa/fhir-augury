@@ -57,7 +57,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureCloneAsync_ClonesWhenMissing()
     {
-        var (manager, git, _, repo) = NewSut("/bin/true");
+        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.True());
         string clonePath = await manager.EnsureCloneAsync(repo, default);
         Assert.True(Directory.Exists(clonePath));
         Assert.Contains(git.Calls, c => c.Arguments.StartsWith("clone --branch main"));
@@ -66,7 +66,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureCloneAsync_FetchAndResetWhenPresent()
     {
-        var (manager, git, _, repo) = NewSut("/bin/true");
+        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.True());
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -80,9 +80,11 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_SnapshotsOnlyOutputRoots()
     {
-        // shell command writes to output/ but also writes a sibling source file the
+        // build command writes to output/ but also writes a sibling source file the
         // baseline must NOT include
-        string buildCmd = "/bin/sh -c \"mkdir -p output && echo hi > output/sample.txt && echo other > sibling.txt\"";
+        string buildCmd = PlatformBuildCommands.WriteFiles(
+            ("output/sample.txt", "hi"),
+            ("sibling.txt", "other"));
         var (manager, git, baselines, repo) = NewSut(buildCmd);
 
         string clonePath = manager.PrimaryClonePath(repo);
@@ -106,7 +108,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_WipesPriorBaseline()
     {
-        string buildCmd = "/bin/sh -c \"mkdir -p output && echo new > output/new.txt\"";
+        string buildCmd = PlatformBuildCommands.WriteFiles(("output/new.txt", "new"));
         var (manager, git, _, repo) = NewSut(buildCmd);
 
         string clonePath = manager.PrimaryClonePath(repo);
@@ -126,7 +128,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_PropagatesBuildFailure()
     {
-        var (manager, git, _, repo) = NewSut("/bin/sh -c \"echo nope >&2 && exit 2\"");
+        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.ExitWithStderr("nope", 2));
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
         git.Respond("rev-parse HEAD", new GitProcessResult(0, "abc", string.Empty));
@@ -139,7 +141,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureWorktreeAsync_RequiresPriorBaseline()
     {
-        var (manager, _, _, repo) = NewSut("/bin/true");
+        var (manager, _, _, repo) = NewSut(PlatformBuildCommands.True());
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -150,7 +152,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureWorktreeAsync_CleansStaleDirAndCopiesBaseline()
     {
-        var (manager, git, baselines, repo) = NewSut("/bin/true");
+        var (manager, git, baselines, repo) = NewSut(PlatformBuildCommands.True());
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 

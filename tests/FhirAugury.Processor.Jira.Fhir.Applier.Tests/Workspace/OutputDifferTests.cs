@@ -28,7 +28,7 @@ public class OutputDifferTests : IDisposable
         {
             Owner = "HL7",
             Name = "fhir",
-            BuildCommand = "/bin/true",
+            BuildCommand = PlatformBuildCommands.True(),
             OutputRoots = ["output/**"],
         };
         OutputDiffer differ = new(Options.Create(options), NullLogger<OutputDiffer>.Instance);

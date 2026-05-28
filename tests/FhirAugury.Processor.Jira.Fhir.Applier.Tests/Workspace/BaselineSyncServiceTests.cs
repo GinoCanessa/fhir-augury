@@ -73,7 +73,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_RebuildsAllRepos()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut("/bin/sh -c \"mkdir -p output && echo hi > output/x.txt\"");
+        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -86,7 +86,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_SkipsWhenNewerThanMinAge()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut("/bin/sh -c \"mkdir -p output && echo hi > output/x.txt\"");
+        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -102,7 +102,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_RebuildsWhenOlderThanMinAge()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut("/bin/sh -c \"mkdir -p output && echo hi > output/x.txt\"");
+        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -117,7 +117,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_SwallowsPerRepoFailures()
     {
-        var (svc, _, _, _, _, options) = NewSut("/bin/sh -c \"exit 1\"");
+        var (svc, _, _, _, _, options) = NewSut(PlatformBuildCommands.ExitWithCode(1));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -129,7 +129,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_BlocksWhileRepoLockHeld()
     {
-        var (_, baselines, manager, git, repo, options) = NewSut("/bin/sh -c \"mkdir -p output && echo hi > output/x.txt\"");
+        var (_, baselines, manager, git, repo, options) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 

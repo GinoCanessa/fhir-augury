@@ -57,7 +57,7 @@ public class AppliedTicketsControllerTests : IDisposable
             Repos = (configuredRepoFullNames ?? ["HL7/fhir"]).Select(fn =>
             {
                 string[] p = fn.Split('/');
-                return new ApplierRepoOptions { Owner = p[0], Name = p[1], BuildCommand = "/usr/bin/true", OutputRoots = ["output/**"] };
+                return new ApplierRepoOptions { Owner = p[0], Name = p[1], BuildCommand = PlatformBuildCommands.True(), OutputRoots = ["output/**"] };
             }).ToList(),
         };
         return new AppliedTicketsController(_writeStore, push, _lockManager, Options.Create(options));

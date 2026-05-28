@@ -61,8 +61,9 @@ public class ApplierTicketHandlerTests : IDisposable
     private SutBundle NewSut(
         string ticketKey,
         IEnumerable<string>? configuredRepoFullNames = null,
-        string buildCommand = "/usr/bin/true")
+        string? buildCommand = null)
     {
+        string effectiveBuildCommand = buildCommand ?? PlatformBuildCommands.True();
         ApplierDatabase database = new(_applierDb, NullLogger<ApplierDatabase>.Instance);
         database.Initialize();
 
@@ -70,7 +71,7 @@ public class ApplierTicketHandlerTests : IDisposable
         {
             Owner = "HL7",
             Name = "fhir",
-            BuildCommand = buildCommand,
+            BuildCommand = effectiveBuildCommand,
             OutputRoots = ["output/**"],
             PrimaryBranch = "master",
         };
@@ -82,7 +83,7 @@ public class ApplierTicketHandlerTests : IDisposable
                 {
                     Owner = parts[0],
                     Name = parts[1],
-                    BuildCommand = buildCommand,
+                    BuildCommand = effectiveBuildCommand,
                     OutputRoots = ["output/**"],
                     PrimaryBranch = "master",
                 };
@@ -237,7 +238,7 @@ public class ApplierTicketHandlerTests : IDisposable
     [Fact]
     public async Task BuildFailure_PersistsAggregateFailed_WithBuildFailedOutcome()
     {
-        SutBundle sut = NewSut("FHIR-3", buildCommand: "/bin/sh -c \"exit 1\"");
+        SutBundle sut = NewSut("FHIR-3", buildCommand: PlatformBuildCommands.ExitWithCode(1));
         SeedPlanner("FHIR-3", [("HL7/fhir", "output/x.txt")]);
 
         sut.Agent.Behaviour = _ => new JiraAgentResult(0, string.Empty, string.Empty, TimeSpan.Zero, false);
