@@ -174,6 +174,31 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  server-terminology:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Server.Terminology/Dockerfile
+    profiles: ["full", "terminology"]
+    volumes:
+      - server-terminology-cache:/app/cache
+      - server-terminology-data:/app/data
+    ports:
+      - "5300:5300"
+    environment:
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__CachePath=/app/cache/fhir-packages
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__DatabasePath=/app/data/server.terminology.db
+      # Embeddings are disabled by default; only NullEmbeddingProvider ships in v1.
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__Provider=none
+      # - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__Enabled=false
+      # - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__ProviderEndpoint=
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5300/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
 volumes:
   jira-cache:
   jira-data:
@@ -185,3 +210,5 @@ volumes:
   github-data:
   preparer-data:
   orchestrator-data:
+  server-terminology-cache:
+  server-terminology-data:

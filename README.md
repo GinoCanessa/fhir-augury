@@ -83,6 +83,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | GitHub | [5190](http://localhost:5190/health) | HL7 GitHub issues, PRs, and commits |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | MCP server (HTTP/SSE transport) |
 | Dev UI | [5210](http://localhost:5210) | Blazor Server operational dashboard |
+| Terminology Server | [5300](http://localhost:5300/health) | THO overlap check for submitted CodeSystem / ValueSet resources |
 
 ## Features
 
@@ -172,12 +173,14 @@ See `mcp-config-examples/` for ready-to-use configuration files.
 | `processing` | Jira + Jira FHIR Preparer | Local processing API/queue; agent runtime must be supplied separately |
 | `jira-zulip` | Jira + Zulip + Orchestrator | Common subset |
 | `jira-only` | Jira only | Single source standalone |
+| `terminology` | Terminology Server | THO overlap check standalone (no dependency on the Source/Orchestrator stack) |
 
 ```bash
-docker compose --profile full up -d        # Everything
-docker compose --profile processing up -d  # Jira + preparer API/queue
-docker compose --profile jira-zulip up -d  # Subset
-docker compose --profile jira-only up -d   # Single source
+docker compose --profile full up -d         # Everything
+docker compose --profile processing up -d   # Jira + preparer API/queue
+docker compose --profile jira-zulip up -d   # Subset
+docker compose --profile jira-only up -d    # Single source
+docker compose --profile terminology up -d  # Terminology server only
 ```
 
 ## Components
@@ -190,6 +193,7 @@ docker compose --profile jira-only up -d   # Single source
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
+| Terminology Server | `src/FhirAugury.Server.Terminology` | Server-class service: scores a submitted FHIR CodeSystem/ValueSet against THO (`hl7.terminology.r4`/`r5`) and returns ranked overlap candidates (`/api/v1/terminology/check`) |
 | Common | `src/FhirAugury.Common` | Shared types, API contracts, utilities |
 | Parsing (FHIR) | `src/FhirAugury.Parsing.Fhir` | FHIR XML/JSON StructureDefinition and canonical artifact parsing |
 | Parsing (FSH) | `src/FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) and sushi-config.yaml parsing |

@@ -96,6 +96,31 @@ IResourceBuilder<ProjectResource> serverTerminology = builder.AddProject<Project
     })
     .WithExplicitStart();
 
+serverTerminology.WithCommand(
+    name: "terminology-refresh",
+    displayName: "Refresh THO index",
+    executeCommand: async context =>
+    {
+        using HttpClient http = new();
+        try
+        {
+            HttpResponseMessage response = await http.PostAsync(
+                "http://localhost:5300/api/v1/terminology/index/refresh",
+                content: null,
+                context.CancellationToken);
+            if (response.IsSuccessStatusCode)
+                return CommandResults.Success();
+
+            string body = await response.Content.ReadAsStringAsync(context.CancellationToken);
+            return CommandResults.Failure($"HTTP {(int)response.StatusCode}: {body}");
+        }
+        catch (HttpRequestException ex)
+        {
+            return CommandResults.Failure($"Cannot reach terminology server: {ex.Message}");
+        }
+    },
+    commandOptions: new CommandOptions { Description = "Queues a fresh THO NPM package download + re-index pass." });
+
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>
