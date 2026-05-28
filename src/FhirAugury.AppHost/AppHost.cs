@@ -86,6 +86,16 @@ IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugu
     .WaitFor(planner)
     .WithExplicitStart();
 
+// ── Server services ─────────────────────────────────────────────
+IResourceBuilder<ProjectResource> serverTerminology = builder.AddProject<Projects.FhirAugury_Server_Terminology>("server-terminology")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5300;
+        e.TargetPort = 5300;
+        e.IsProxied = false;
+    })
+    .WithExplicitStart();
+
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>

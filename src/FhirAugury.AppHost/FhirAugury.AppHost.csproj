@@ -19,6 +19,7 @@
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer\FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner\FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Applier\FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
+    <ProjectReference Include="..\FhirAugury.Server.Terminology\FhirAugury.Server.Terminology.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "FhirAugury.Server.Terminology": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "http://localhost:5300"
+    }
+  }
+}
