@@ -1,3 +1,4 @@
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.PreparerSite;
@@ -54,6 +55,13 @@ internal static class PreparerDbTrimmer
             };
             await using SqliteConnection connection = new(builder.ConnectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
+
+            // Self-migrate older preparer DBs that predate later schema
+            // additions (e.g., the prepared_ticket_topic* tables). EnsureSchema
+            // is idempotent — every statement is CREATE [TABLE|INDEX] IF NOT
+            // EXISTS — so this is a no-op on already-current DBs and never
+            // touches existing rows.
+            PreparerDatabase.EnsureSchema(connection);
 
             await using SqliteTransaction tx = (SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
