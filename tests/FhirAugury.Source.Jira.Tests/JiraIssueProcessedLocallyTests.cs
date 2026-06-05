@@ -20,7 +20,7 @@ public class JiraIssueProcessedLocallyTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private static JiraIssueRecord NewIssue(string key, DateTimeOffset? processedAt = null)

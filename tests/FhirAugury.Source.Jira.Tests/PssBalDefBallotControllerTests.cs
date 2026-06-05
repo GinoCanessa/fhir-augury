@@ -34,7 +34,7 @@ public class PssBalDefBallotControllerTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private static bool PayloadContainsKey(object? value, string expectedKey)
