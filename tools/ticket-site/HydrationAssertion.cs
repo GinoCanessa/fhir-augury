@@ -1,6 +1,6 @@
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 /// <summary>
 /// Fail-fast assertion that the preparer DB has already been hydrated.

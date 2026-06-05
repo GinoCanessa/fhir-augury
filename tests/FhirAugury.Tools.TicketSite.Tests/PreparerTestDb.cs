@@ -3,7 +3,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace FhirAugury.Tools.PreparerSite.Tests;
+namespace FhirAugury.Tools.TicketSite.Tests;
 
 internal static class PreparerTestDb
 {

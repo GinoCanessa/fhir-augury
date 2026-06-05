@@ -19,5 +19,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite.Tests" />
   </ItemGroup>
 </Project>

@@ -1,7 +1,10 @@
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 internal sealed record CliOptions(
-    string? DbPath,
+    string? PreparerDbPath,
+    bool PreparerDbSupplied,
+    string? PlannerDbPath,
+    bool PlannerDbSupplied,
     string? OutPath,
     string Title,
     string? FilterSpec,

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace FhirAugury.Tools.PreparerSite.Tests;
+namespace FhirAugury.Tools.TicketSite.Tests;
 
 public class WorkGroupResolverParseTests
 {

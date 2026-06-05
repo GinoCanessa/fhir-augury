@@ -1,4 +1,4 @@
-# preparer-site
+# ticket-site
 
 A small `dotnet`-run utility that reads a Jira preparer SQLite
 database (produced by `FhirAugury.Processor.Jira.Fhir.Preparer`) and
@@ -22,7 +22,7 @@ The inlined DB always carries the `prepared_*_hydration` and
 `prepared_tickets*` tables. Those hydration rows are populated by
 `FhirAugury.Processor.Jira.Fhir.Preparer`: per-ticket as each ticket is
 prepared, plus a full sweep at service startup and on demand via
-`POST /api/v1/admin/hydration/backfill`. **`preparer-site` is a pure
+`POST /api/v1/admin/hydration/backfill`. **`ticket-site` is a pure
 consumer of an already-hydrated DB** — if `prepared_ticket_hydration`
 is missing or empty the tool fails fast with an actionable error
 pointing operators at the service.
@@ -48,14 +48,14 @@ columns.
 
 ### Prerequisite: hydrated DB
 
-`preparer-site` no longer hydrates anything itself. The preparer
+`ticket-site` no longer hydrates anything itself. The preparer
 service (`FhirAugury.Processor.Jira.Fhir.Preparer`) owns the full
 hydration surface: per-ticket hydration as each ticket is prepared,
 plus a full sweep at service startup and the on-demand
 `POST /api/v1/admin/hydration/backfill` admin endpoint. Run the
-preparer service against your DB once before invoking `preparer-site`.
+preparer service against your DB once before invoking `ticket-site`.
 
-If the DB has no `prepared_ticket_hydration` rows when `preparer-site`
+If the DB has no `prepared_ticket_hydration` rows when `ticket-site`
 opens it, the tool exits non-zero with:
 
 ```
@@ -102,9 +102,9 @@ sibling tool under `tools/`).
 ## Quick start
 
 ```bash
-dotnet run --project tools/preparer-site -- \
+dotnet run --project tools/ticket-site -- \
   --db ./cache/jira-preparer.db \
-  --out ./cache/jira-preparer-site \
+  --out ./cache/jira-ticket-site \
   --spec 'FHIR Core (FHIR)' \
   --title "Preparer Report — May 2026"
 ```
@@ -115,7 +115,7 @@ dotnet run --project tools/preparer-site -- \
 distinct: a ticket in the `FHIR` Jira project may have any
 `Specification` value, including blank.
 
-Open `cache/jira-preparer-site/index.html` in a Chromium-family
+Open `cache/jira-ticket-site/index.html` in a Chromium-family
 browser. You should see a landing page titled
 *"Preparer Report — May 2026"* with `N prepared tickets in this run.`
 on the left and a `Show Ticket List →` shortcut on the right of the
@@ -179,7 +179,7 @@ values were already pinned.
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--db <path>` | *required* | Path to the preparer SQLite DB. Must already be hydrated (the preparer service handles that — see [Prerequisite: hydrated DB](#prerequisite-hydrated-db)). |
-| `--out <path>` | `./cache/jira-preparer-site` | Output directory; overwritten subject to the safety rail (see below). |
+| `--out <path>` | `./cache/jira-ticket-site` | Output directory; overwritten subject to the safety rail (see below). |
 | `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
 | `--spec <name>` | — | Filter to tickets whose hydrated `Specification` (Jira `customfield_11302`) matches (case-insensitive). |
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
@@ -193,15 +193,15 @@ values were already pinned.
 
 ```bash
 # Workgroup by code, falling back through the default Jira source service.
-dotnet run --project tools/preparer-site -- \
+dotnet run --project tools/ticket-site -- \
   --db ./cache/jira-preparer.db \
-  --out ./cache/jira-preparer-site-fhir-i \
+  --out ./cache/jira-ticket-site-fhir-i \
   --wg fhir-i
 
 # Specification filter only.
-dotnet run --project tools/preparer-site -- \
+dotnet run --project tools/ticket-site -- \
   --db ./cache/jira-preparer.db \
-  --out ./cache/jira-preparer-site-fhir-extensions \
+  --out ./cache/jira-ticket-site-fhir-extensions \
   --spec fhir-extensions
 ```
 
@@ -240,7 +240,7 @@ directly from `file://`. Safari may refuse to load WebAssembly from
 `http://localhost:8000/` instead:
 
 ```bash
-cd ./cache/jira-preparer-site
+cd ./cache/jira-ticket-site
 python3 -m http.server
 ```
 
@@ -263,9 +263,9 @@ To refresh:
 
 1. Download `sqljs-wasm.zip` from the chosen `sql-js/sql.js` release.
 2. Extract `sql-wasm.js` and `sql-wasm.wasm` into
-   `tools/preparer-site/web-assets/`.
+   `tools/ticket-site/web-assets/`.
 3. Update the SHA-256 values above (`shasum -a 256 sql-wasm.*`).
-4. Rebuild (`dotnet build tools/preparer-site/preparer-site.csproj`).
+4. Rebuild (`dotnet build tools/ticket-site/ticket-site.csproj`).
 
 No automated update path is planned.
 
@@ -276,7 +276,7 @@ No automated update path is planned.
   recorded filter set matches the current run, it is deleted before
   the new site is written.
 - **Output directory safety rail.** Every emitted site drops a
-  `.preparer-site.meta` JSON marker recording the canonical filter
+  `.ticket-site.meta` JSON marker recording the canonical filter
   set. A subsequent run against the same `--out` whose filter set
   differs (e.g., re-running a `--project FHIR` build into a folder
   that previously held a `--wg CDS` build) refuses with a stderr

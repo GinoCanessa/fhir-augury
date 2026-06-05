@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\src\common.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Tools.TicketSite</RootNamespace>
+    <AssemblyName>ticket-site</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Planner.Persistence\FhirAugury.Processor.Jira.Fhir.Planner.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Discussion sub-site (preparer-based) -->
+    <EmbeddedResource Include="web-assets\discussion\index.template.html" LogicalName="web-assets/discussion/index.template.html" />
+    <EmbeddedResource Include="web-assets\discussion\app.css" LogicalName="web-assets/discussion/app.css" />
+    <EmbeddedResource Include="web-assets\discussion\app.js" LogicalName="web-assets/discussion/app.js" />
+    <!-- Applying sub-site (planner-based) -->
+    <EmbeddedResource Include="web-assets\applying\index.template.html" LogicalName="web-assets/applying/index.template.html" />
+    <EmbeddedResource Include="web-assets\applying\app.css" LogicalName="web-assets/applying/app.css" />
+    <EmbeddedResource Include="web-assets\applying\app.js" LogicalName="web-assets/applying/app.js" />
+    <!-- Shared sql.js bytes (emitted into each sub-site's assets/) -->
+    <EmbeddedResource Include="web-assets\shared\sql-wasm.js" LogicalName="web-assets/shared/sql-wasm.js" />
+    <EmbeddedResource Include="web-assets\shared\sql-wasm.wasm" LogicalName="web-assets/shared/sql-wasm.wasm" />
+    <!-- Chooser landing page -->
+    <EmbeddedResource Include="web-assets\chooser\index.template.html" LogicalName="web-assets/chooser/index.template.html" />
+    <EmbeddedResource Include="web-assets\chooser\chooser.css" LogicalName="web-assets/chooser/chooser.css" />
+  </ItemGroup>
+</Project>

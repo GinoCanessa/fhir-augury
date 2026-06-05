@@ -1,6 +1,6 @@
-using FhirAugury.Tools.PreparerSite;
+using FhirAugury.Tools.TicketSite;
 
-namespace FhirAugury.Tools.PreparerSite.Tests;
+namespace FhirAugury.Tools.TicketSite.Tests;
 
 public sealed class RelatedFieldsBackfillTests
 {

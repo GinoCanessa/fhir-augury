@@ -1,6 +1,6 @@
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.PreparerSite.Tests;
+namespace FhirAugury.Tools.TicketSite.Tests;
 
 [Collection("ConsoleRedirect")]
 public sealed class PreparerSiteFilterTests
@@ -38,7 +38,7 @@ public sealed class PreparerSiteFilterTests
         {
             await Program.Main(
             [
-                "--db", scope.DbPath,
+                "--preparer-db", scope.DbPath,
                 "--out", scope.OutDir,
                 "--spec", "X",
                 "--project", "Y",
@@ -71,7 +71,7 @@ public sealed class PreparerSiteFilterTests
             });
 
         (int exit, _, string stderr) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--spec", "Bogus");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--spec", "Bogus");
 
         Assert.NotEqual(0, exit);
         Assert.Contains("Unknown value for --spec: 'Bogus'.", stderr, StringComparison.Ordinal);
@@ -93,7 +93,7 @@ public sealed class PreparerSiteFilterTests
             ]);
 
         (int exit, _, string stderr) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "Bogus");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "Bogus");
 
         Assert.NotEqual(0, exit);
         Assert.Contains("Unknown value for --project: 'Bogus'.", stderr, StringComparison.Ordinal);
@@ -116,7 +116,7 @@ public sealed class PreparerSiteFilterTests
         string token = "fa-unknown-" + Guid.NewGuid().ToString("N");
 
         (int exit, _, string stderr) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--wg", token);
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--wg", token);
 
         Assert.NotEqual(0, exit);
         Assert.Contains($"Unknown value for --wg: '{token}'.", stderr, StringComparison.Ordinal);
@@ -135,7 +135,7 @@ public sealed class PreparerSiteFilterTests
             [new("FHIR-1001", Project: "FHIR")]);
 
         (int exit, string stdout, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "fhir");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "fhir");
 
         Assert.Equal(0, exit);
         Assert.Contains("Resolved --project 'fhir' → 'FHIR'.", stdout, StringComparison.Ordinal);
@@ -171,10 +171,10 @@ public sealed class PreparerSiteFilterTests
             [new("FHIR-1001", Project: "FHIR")]);
 
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit);
 
-        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        string markerPath = Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName);
         Assert.True(File.Exists(markerPath));
         string json = await File.ReadAllTextAsync(markerPath);
         Assert.Contains("\"project\": \"FHIR\"", json, StringComparison.Ordinal);
@@ -190,10 +190,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        string markerPath = Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName);
         Assert.True(File.Exists(markerPath));
         string json = await File.ReadAllTextAsync(markerPath);
         Assert.DoesNotContain("\"spec\":", json, StringComparison.Ordinal);
@@ -211,11 +211,11 @@ public sealed class PreparerSiteFilterTests
             [new("FHIR-1001", Project: "FHIR")]);
 
         (int exit1, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit1);
 
         (int exit2, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit2);
     }
 
@@ -231,11 +231,11 @@ public sealed class PreparerSiteFilterTests
             ]);
 
         (int exit1, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit1);
 
         (int exit2, _, string stderr) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS");
         Assert.NotEqual(0, exit2);
         Assert.Contains("was produced with a different filter set", stderr, StringComparison.Ordinal);
         Assert.Contains("--force", stderr, StringComparison.Ordinal);
@@ -253,14 +253,14 @@ public sealed class PreparerSiteFilterTests
             ]);
 
         (int exit1, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit1);
 
         (int exit2, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS", "--force");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "CDS", "--force");
         Assert.Equal(0, exit2);
 
-        string markerPath = Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName);
+        string markerPath = Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName);
         string json = await File.ReadAllTextAsync(markerPath);
         Assert.Contains("\"project\": \"CDS\"", json, StringComparison.Ordinal);
     }
@@ -274,14 +274,15 @@ public sealed class PreparerSiteFilterTests
             [new("FHIR-1001", Project: "FHIR")]);
 
         Directory.CreateDirectory(scope.OutDir);
+        Directory.CreateDirectory(Path.Combine(scope.OutDir, "discussion"));
         await File.WriteAllTextAsync(
-            Path.Combine(scope.OutDir, "index.html"),
+            Path.Combine(scope.OutDir, "discussion", "index.html"),
             "<html>previously emitted, no marker</html>");
 
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit);
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, OutputDirGuard.MarkerFileName)));
+        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName)));
     }
 
     [Fact]
@@ -294,11 +295,11 @@ public sealed class PreparerSiteFilterTests
 
         const string customTitle = "CDS — May 2026";
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--title", customTitle,
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--title", customTitle,
             "--project", "FHIR", "--wg", "FHIR Infrastructure");
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         Assert.Contains(
             $"<title>{customTitle} (filtered: project=FHIR, wg=FHIR Infrastructure)</title>",
             html,
@@ -318,10 +319,10 @@ public sealed class PreparerSiteFilterTests
             [new("FHIR-1001", Project: "FHIR")]);
 
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         Assert.Contains("window.__FILTERS__={\"project\":\"FHIR\"};", html, StringComparison.Ordinal);
     }
 
@@ -333,10 +334,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         Assert.Contains("window.__FILTERS__={};", html, StringComparison.Ordinal);
     }
 
@@ -348,10 +349,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // by-recommendation must be gone from the Crosscuts map and the
         // landing-grid order list.
         Assert.DoesNotContain("'by-recommendation'", appJs, StringComparison.Ordinal);
@@ -377,10 +378,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // Pin the FilterableDimensions array literal exactly so a future
         // reorder or accidental drop of 'impact' is caught.
         Assert.Contains(
@@ -402,10 +403,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // Pin the FilterableDimensions array literal exactly so a future
         // reorder or accidental drop of 'type' is caught.
         Assert.Contains(
@@ -429,10 +430,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // Pin the seven-column set via the per-mount columns descriptor
         // (Phase 3 replaced the inline header array literal with a
         // descriptor list that the header loop and renderRows share).
@@ -472,10 +473,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // aria-sort attribute powers the active sort affordance.
         Assert.Contains("aria-sort", appJs, StringComparison.Ordinal);
         // Key column uses natural-numeric compare so FHIR-5079 < FHIR-50710.
@@ -496,10 +497,10 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         // New encoder uses URLSearchParams.append per value; decoder uses
         // .getAll(dim). The old comma-joined form must not return.
         Assert.Contains("params.append(", appJs, StringComparison.Ordinal);
@@ -515,13 +516,13 @@ public sealed class PreparerSiteFilterTests
             scope.DbPath,
             [new("FHIR-1001", Project: "FHIR")]);
 
-        (int exit, _, _) = await RunMainAsync("--db", scope.DbPath, "--out", scope.OutDir);
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
         Assert.Equal(0, exit);
 
         // The emitted assets/app.js should ship the new unified chip
         // banner pipeline and no longer reference the removed
         // renderFilterFooter helper.
-        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "assets", "app.js"));
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
         Assert.Contains("renderChipBanner", appJs, StringComparison.Ordinal);
         Assert.Contains("FilterableDimensions", appJs, StringComparison.Ordinal);
         Assert.Contains("GenerationChips", appJs, StringComparison.Ordinal);
@@ -530,7 +531,7 @@ public sealed class PreparerSiteFilterTests
         // The bundled index.html template should no longer ship the
         // server-rendered <div id="filter-banner"> placeholder — the
         // banner is created per-render by app.js now.
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         Assert.DoesNotContain("<div id=\"filter-banner\"></div>", html, StringComparison.Ordinal);
     }
 
@@ -575,10 +576,10 @@ public sealed class PreparerSiteFilterTests
             seedAllChildTables: true);
 
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         byte[] dbBytes = ExtractInlinedDbBytes(html);
         string tempDb = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         try
@@ -623,13 +624,13 @@ public sealed class PreparerSiteFilterTests
             });
 
         (int exit, _, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir,
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir,
             "--project", "FHIR",
             "--wg", "FHIR Infrastructure",
             "--spec", "FHIR");
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         byte[] dbBytes = ExtractInlinedDbBytes(html);
         string tempDb = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         try
@@ -662,12 +663,12 @@ public sealed class PreparerSiteFilterTests
             ]);
 
         (int exit, string stdout, _) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir,
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir,
             "--project", "FHIR", "--wg", "Clinical Decision Support");
         Assert.Equal(0, exit);
         Assert.Contains("0 prepared tickets match this filter.", stdout, StringComparison.Ordinal);
 
-        string indexPath = Path.Combine(scope.OutDir, "index.html");
+        string indexPath = Path.Combine(scope.OutDir, "discussion", "index.html");
         Assert.True(File.Exists(indexPath));
         string html = await File.ReadAllTextAsync(indexPath);
         byte[] dbBytes = ExtractInlinedDbBytes(html);
@@ -709,16 +710,16 @@ public sealed class PreparerSiteFilterTests
         await PreparerTestDb.SeedAsync(filteredScope.DbPath, seeds, seedAllChildTables: true);
 
         (int unfilteredExit, _, _) = await RunMainAsync(
-            "--db", unfilteredScope.DbPath, "--out", unfilteredScope.OutDir);
+            "--preparer-db", unfilteredScope.DbPath, "--out", unfilteredScope.OutDir);
         Assert.Equal(0, unfilteredExit);
         (int filteredExit, _, _) = await RunMainAsync(
-            "--db", filteredScope.DbPath, "--out", filteredScope.OutDir, "--project", "FHIR");
+            "--preparer-db", filteredScope.DbPath, "--out", filteredScope.OutDir, "--project", "FHIR");
         Assert.Equal(0, filteredExit);
 
         byte[] unfilteredBytes = ExtractInlinedDbBytes(
-            await File.ReadAllTextAsync(Path.Combine(unfilteredScope.OutDir, "index.html")));
+            await File.ReadAllTextAsync(Path.Combine(unfilteredScope.OutDir, "discussion", "index.html")));
         byte[] filteredBytes = ExtractInlinedDbBytes(
-            await File.ReadAllTextAsync(Path.Combine(filteredScope.OutDir, "index.html")));
+            await File.ReadAllTextAsync(Path.Combine(filteredScope.OutDir, "discussion", "index.html")));
 
         Assert.True(filteredBytes.Length < unfilteredBytes.Length,
             $"Expected filtered bytes ({filteredBytes.Length}) < unfiltered bytes ({unfilteredBytes.Length}).");
@@ -742,7 +743,7 @@ public sealed class PreparerSiteFilterTests
             });
 
         (int exit, _, string stderr) = await RunMainAsync(
-            "--db", scope.DbPath, "--out", scope.OutDir, "--spec", "Bogus");
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--spec", "Bogus");
 
         Assert.NotEqual(0, exit);
         Assert.Contains("Unknown value for --spec: 'Bogus'.", stderr, StringComparison.Ordinal);

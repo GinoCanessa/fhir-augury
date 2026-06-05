@@ -205,7 +205,7 @@ docker compose --profile jira-only up -d   # Single source
 
 | Utility | Project | Description |
 |---------|---------|-------------|
-| Preparer site | [`tools/preparer-site`](tools/preparer-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` into a self-contained static HTML review site (sql.js in the browser; opens from `file://`). |
+| Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` (Tickets for Discussion) or a `cache/jira-planner.db` (Tickets for Applying) into a self-contained static HTML review sub-site (sql.js in the browser; opens from `file://`). A chooser landing page at `<out>/index.html` links into whichever sub-site(s) have been built. |
 
 ## Discovery
 

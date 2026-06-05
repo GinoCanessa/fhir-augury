@@ -2,32 +2,38 @@ using System.Net;
 using System.Reflection;
 using System.Text.Json;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
-internal static class SiteEmitter
+/// <summary>
+/// Emits the discussion (preparer) sub-site under
+/// <c>&lt;rootOut&gt;/discussion/</c>. Identical SPA shape to the original
+/// preparer-site SPA; only the resource path prefix moved to
+/// <c>web-assets/discussion/</c> and the shared sql.js bytes are pulled
+/// from <c>web-assets/shared/</c>.
+/// </summary>
+internal static class PreparerSubSiteEmitter
 {
-    private const string ResourcePrefix = "web-assets/";
-    private const string TemplateName = "web-assets/index.template.html";
+    public const string SubSiteFolder = "discussion";
+    public const string Kind = "preparer";
+
+    private const string DiscussionPrefix = "web-assets/discussion/";
+    private const string SharedPrefix = "web-assets/shared/";
+    private const string TemplateName = "web-assets/discussion/index.template.html";
     private const string TitleMarker = "<!-- __TITLE__ -->";
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string FiltersMarker = "<!-- __FILTERS__ -->";
 
-    // PERF: Convert.ToBase64String(byte[]) allocates the full string up front
-    // (no streaming overload exists). For a 39 MB input expect ~39 MB array +
-    // ~52 MB string + a StreamWriter buffer ≈ ~100 MB transient peak. If we
-    // later hit a memory ceiling, switch to Convert.ToBase64CharArray in 1 MB
-    // chunks (-> 1.33 MB output per chunk).
-    internal static void Emit(string outDir, string baseTitle, ResolvedFilters filters, byte[] dbBytes)
+    public static void Emit(string subSiteOut, string baseTitle, ResolvedFilters filters, byte[] dbBytes)
     {
-        if (Directory.Exists(outDir))
+        if (Directory.Exists(subSiteOut))
         {
-            Directory.Delete(outDir, recursive: true);
+            Directory.Delete(subSiteOut, recursive: true);
         }
-        Directory.CreateDirectory(outDir);
-        string assetsDir = Path.Combine(outDir, "assets");
+        Directory.CreateDirectory(subSiteOut);
+        string assetsDir = Path.Combine(subSiteOut, "assets");
         Directory.CreateDirectory(assetsDir);
 
-        Assembly asm = typeof(SiteEmitter).Assembly;
+        Assembly asm = typeof(PreparerSubSiteEmitter).Assembly;
         string[] resourceNames = asm.GetManifestResourceNames();
 
         string fullTitle = baseTitle + filters.ToTitleSuffix();
@@ -38,12 +44,9 @@ internal static class SiteEmitter
 
         foreach (string name in resourceNames)
         {
-            if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            string relative = name.Substring(ResourcePrefix.Length);
+            bool isDiscussion = name.StartsWith(DiscussionPrefix, StringComparison.Ordinal);
+            bool isShared = name.StartsWith(SharedPrefix, StringComparison.Ordinal);
+            if (!isDiscussion && !isShared) continue;
 
             using Stream stream = asm.GetManifestResourceStream(name)
                 ?? throw new InvalidOperationException($"Missing embedded resource: {name}");
@@ -56,10 +59,13 @@ internal static class SiteEmitter
                     .Replace(TitleMarker, encodedTitle, StringComparison.Ordinal)
                     .Replace(FiltersMarker, filtersScript, StringComparison.Ordinal)
                     .Replace(DbBlobMarker, blobScript, StringComparison.Ordinal);
-                File.WriteAllText(Path.Combine(outDir, "index.html"), html);
+                File.WriteAllText(Path.Combine(subSiteOut, "index.html"), html);
             }
             else
             {
+                string relative = isDiscussion
+                    ? name.Substring(DiscussionPrefix.Length)
+                    : name.Substring(SharedPrefix.Length);
                 string outFile = Path.Combine(assetsDir, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
                 using FileStream fs = File.Create(outFile);
@@ -78,4 +84,3 @@ internal static class SiteEmitter
         return $"<script>window.__FILTERS__={json};</script>";
     }
 }
-

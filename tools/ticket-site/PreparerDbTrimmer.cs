@@ -1,7 +1,7 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 internal static class PreparerDbTrimmer
 {

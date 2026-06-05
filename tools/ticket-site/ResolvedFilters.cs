@@ -1,4 +1,4 @@
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 internal sealed record ResolvedFilters(
     string? Specification,

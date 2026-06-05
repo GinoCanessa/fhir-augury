@@ -1,6 +1,6 @@
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 /// <summary>
 /// Final pass in the trimmed-DB build pipeline. Creates the two normalized

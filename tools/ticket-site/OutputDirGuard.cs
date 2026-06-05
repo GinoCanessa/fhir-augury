@@ -1,10 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 internal sealed class MetaFilterSet
 {
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
     [JsonPropertyName("filters")]
     public MetaFilters Filters { get; set; } = new();
 
@@ -26,7 +29,7 @@ internal sealed class MetaFilters
 
 internal static class OutputDirGuard
 {
-    public const string MarkerFileName = ".preparer-site.meta";
+    public const string MarkerFileName = ".ticket-site.meta";
 
     private static readonly JsonSerializerOptions WriteOptions = new()
     {
@@ -34,9 +37,9 @@ internal static class OutputDirGuard
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static MetaFilterSet? TryReadExistingMarker(string outDir)
+    public static MetaFilterSet? TryReadExistingMarker(string subSiteOut)
     {
-        string markerPath = Path.Combine(outDir, MarkerFileName);
+        string markerPath = Path.Combine(subSiteOut, MarkerFileName);
         if (!File.Exists(markerPath))
         {
             return null;
@@ -56,10 +59,11 @@ internal static class OutputDirGuard
         }
     }
 
-    public static void WriteMarker(string outDir, ResolvedFilters filters, DateTimeOffset createdAt)
+    public static void WriteMarker(string subSiteOut, string kind, ResolvedFilters filters, DateTimeOffset createdAt)
     {
         MetaFilterSet payload = new()
         {
+            Kind = kind,
             Filters = new MetaFilters
             {
                 Spec = filters.Specification,
@@ -69,7 +73,8 @@ internal static class OutputDirGuard
             CreatedAt = createdAt.ToString("O"),
         };
         string json = JsonSerializer.Serialize(payload, WriteOptions);
-        File.WriteAllText(Path.Combine(outDir, MarkerFileName), json);
+        Directory.CreateDirectory(subSiteOut);
+        File.WriteAllText(Path.Combine(subSiteOut, MarkerFileName), json);
     }
 
     public static bool FilterSetsMatch(MetaFilterSet? existing, ResolvedFilters incoming)
@@ -82,5 +87,11 @@ internal static class OutputDirGuard
         return string.Equals(existingFilters.Spec, incoming.Specification, StringComparison.Ordinal)
             && string.Equals(existingFilters.Project, incoming.Project, StringComparison.Ordinal)
             && string.Equals(existingFilters.Wg, incoming.WorkGroup, StringComparison.Ordinal);
+    }
+
+    public static bool KindMatches(MetaFilterSet? existing, string incomingKind)
+    {
+        if (existing is null) return true; // first build into this folder
+        return string.IsNullOrEmpty(existing.Kind) || string.Equals(existing.Kind, incomingKind, StringComparison.Ordinal);
     }
 }

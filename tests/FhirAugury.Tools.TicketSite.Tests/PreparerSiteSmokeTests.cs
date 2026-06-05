@@ -1,10 +1,10 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
-using FhirAugury.Tools.PreparerSite;
+using FhirAugury.Tools.TicketSite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace FhirAugury.Tools.PreparerSite.Tests;
+namespace FhirAugury.Tools.TicketSite.Tests;
 
 [Collection("ConsoleRedirect")]
 public sealed class PreparerSiteSmokeTests
@@ -118,10 +118,10 @@ public sealed class PreparerSiteSmokeTests
         using TempScope scope = new();
         await SeedPreparerDbAsync(scope.DbPath, ticketCount: 3);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
         byte[] dbBytes = Convert.FromBase64String(base64);
 
@@ -147,10 +147,10 @@ public sealed class PreparerSiteSmokeTests
         using TempScope scope = new();
         await SeedPreparerDbAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
 
         Assert.Equal(0, exit);
-        string indexPath = Path.Combine(scope.OutDir, "index.html");
+        string indexPath = Path.Combine(scope.OutDir, "discussion", "index.html");
         Assert.True(File.Exists(indexPath));
         string html = await File.ReadAllTextAsync(indexPath);
         Assert.Contains("window.__DB__='", html, StringComparison.Ordinal);
@@ -178,10 +178,10 @@ public sealed class PreparerSiteSmokeTests
         using TempScope scope = new();
         await SeedPreparerDbAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
-        string assetsDir = Path.Combine(scope.OutDir, "assets");
+        string assetsDir = Path.Combine(scope.OutDir, "discussion", "assets");
         Assert.True(File.Exists(Path.Combine(assetsDir, "sql-wasm.js")));
         Assert.True(File.Exists(Path.Combine(assetsDir, "sql-wasm.wasm")));
         Assert.True(File.Exists(Path.Combine(assetsDir, "app.js")));
@@ -195,13 +195,13 @@ public sealed class PreparerSiteSmokeTests
         await SeedPreparerDbAsync(scope.DbPath);
 
         const string customTitle = "CDS — May 2026";
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--title", customTitle]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir, "--title", customTitle]);
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         Assert.Contains($"<title>{customTitle}</title>", html, StringComparison.Ordinal);
         Assert.Contains($"<h1>{customTitle}</h1>", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("<title>Preparer Report</title>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("<title>Ticket Site</title>", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -210,12 +210,12 @@ public sealed class PreparerSiteSmokeTests
         using TempScope scope = new();
         await SeedPreparerDbAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("<title>Preparer Report</title>", html, StringComparison.Ordinal);
-        Assert.Contains("<h1>Preparer Report</h1>", html, StringComparison.Ordinal);
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
+        Assert.Contains("<title>Ticket Site</title>", html, StringComparison.Ordinal);
+        Assert.Contains("<h1>Ticket Site</h1>", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -225,10 +225,10 @@ public sealed class PreparerSiteSmokeTests
         await SeedPreparerDbAsync(scope.DbPath);
         await SeedHydrationAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
-        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
         byte[] dbBytes = Convert.FromBase64String(base64);
 
@@ -354,7 +354,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR"]);
+            exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR"]);
         }
         finally
         {
@@ -366,7 +366,7 @@ public sealed class PreparerSiteSmokeTests
         Assert.NotEqual(0, exit);
         Assert.Contains("not hydrated", stderr, StringComparison.Ordinal);
         Assert.Contains("FhirAugury.Processor.Jira.Fhir.Preparer", stderr, StringComparison.Ordinal);
-        Assert.False(File.Exists(Path.Combine(scope.OutDir, "index.html")));
+        Assert.False(File.Exists(Path.Combine(scope.OutDir, "discussion", "index.html")));
     }
 
     [Fact]
@@ -381,7 +381,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir, "--prune"]);
+            exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir, "--prune"]);
         }
         finally
         {
@@ -405,7 +405,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", bogus, "--out", scope.OutDir]);
+            exit = await Program.Main(["--preparer-db", bogus, "--out", scope.OutDir]);
         }
         finally
         {
@@ -436,7 +436,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+            exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         }
         finally
         {
@@ -462,7 +462,7 @@ public sealed class PreparerSiteSmokeTests
         int exit;
         try
         {
-            exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+            exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         }
         finally
         {
@@ -497,7 +497,7 @@ public sealed class PreparerSiteSmokeTests
             });
 
             int exit = await Program.Main([
-                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--preparer-db", scope.DbPath, "--out", scope.OutDir,
                 "--jira-source-db", jiraSourcePath,
             ]);
             Assert.Equal(0, exit);
@@ -552,7 +552,7 @@ public sealed class PreparerSiteSmokeTests
             });
 
             int exit = await Program.Main([
-                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--preparer-db", scope.DbPath, "--out", scope.OutDir,
                 "--jira-source-db", jiraSourcePath,
             ]);
             Assert.Equal(0, exit);
@@ -600,7 +600,7 @@ public sealed class PreparerSiteSmokeTests
                 });
 
             int exit = await Program.Main([
-                "--db", scope.DbPath, "--out", scope.OutDir,
+                "--preparer-db", scope.DbPath, "--out", scope.OutDir,
                 "--jira-source-db", jiraSourcePath,
             ]);
             Assert.Equal(0, exit);
@@ -677,7 +677,7 @@ public sealed class PreparerSiteSmokeTests
 
     private static async Task<SqliteConnection> OpenInlinedDbAsync(string outDir)
     {
-        string html = await File.ReadAllTextAsync(Path.Combine(outDir, "index.html"));
+        string html = await File.ReadAllTextAsync(Path.Combine(outDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
         byte[] bytes = Convert.FromBase64String(base64);
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
@@ -801,7 +801,7 @@ public sealed class PreparerSiteSmokeTests
         await SeedPreparerDbAsync(scope.DbPath);
         await SeedTopicsAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
         await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
@@ -841,7 +841,7 @@ public sealed class PreparerSiteSmokeTests
         await SeedPreparerDbAsync(scope.DbPath);
         await SeedTopicsAsync(scope.DbPath);
 
-        int exit = await Program.Main(["--db", scope.DbPath, "--out", scope.OutDir]);
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
 
         await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
@@ -965,7 +965,7 @@ public sealed class PreparerSiteSmokeTests
         }
 
         int exit = await Program.Main([
-            "--db", scope.DbPath,
+            "--preparer-db", scope.DbPath,
             "--out", scope.OutDir,
             "--wg", "FHIR Infrastructure",
         ]);

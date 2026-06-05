@@ -5,7 +5,7 @@ using System.Text.Json;
 using FhirAugury.Common.WorkGroups;
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.PreparerSite;
+namespace FhirAugury.Tools.TicketSite;
 
 internal static class WorkGroupResolver
 {
