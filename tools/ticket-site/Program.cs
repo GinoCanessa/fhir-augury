@@ -119,7 +119,7 @@ public static class Program
             try
             {
                 await RelatedFieldsBackfill.ApplyAsync(built.TempDbPath, opts.JiraSourceDbPath, Console.Error, CancellationToken.None).ConfigureAwait(false);
-                dbBytes = await File.ReadAllBytesAsync(built.TempDbPath).ConfigureAwait(false);
+                dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
             }
             finally
             {
@@ -168,7 +168,7 @@ public static class Program
             try
             {
                 long plannedCount = built.SurvivingTicketCount;
-                byte[] dbBytes = await File.ReadAllBytesAsync(built.TempDbPath).ConfigureAwait(false);
+                byte[] dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
                 PlannerSubSiteEmitter.Emit(subOut, siteTitle, f, dbBytes);
                 OutputDirGuard.WriteMarker(subOut, PlannerSubSiteEmitter.Kind, f, DateTimeOffset.UtcNow);
 
@@ -228,6 +228,58 @@ public static class Program
         cmd.CommandText = sql;
         object? result = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
         return result is long l ? l : Convert.ToInt64(result);
+    }
+
+    // Read the just-trimmed temp DB tolerating a transient Windows sharing
+    // violation. With Pooling=false on the temp-DB SqliteConnection (see
+    // PreparerDbTrimmer / PlannerDbTrimmer / RelatedFieldsBackfill), the
+    // native file handle is released synchronously on Dispose; AV scanners
+    // and the OS file-cache flush can then briefly hold the freshly
+    // released file in a way that races a vanilla File.ReadAllBytesAsync.
+    //
+    // Approach:
+    //   1. Open with FileShare.ReadWrite | Delete so any concurrent reader
+    //      (AV scanner) that uses FileShare.Read does not block us.
+    //   2. Retry on IOException / UnauthorizedAccessException with linear
+    //      backoff up to ~10s total. Any genuine still-alive writer would
+    //      persist longer than that, so a hard throw is still meaningful.
+    //   3. Use stream.Length once at open and ReadExactly to guard against
+    //      a silently truncated read — a short DB inlined into HTML would
+    //      be worse than a loud failure.
+    private static async Task<byte[]> ReadAllBytesWithTransientRetryAsync(string path)
+    {
+        const int maxAttempts = 20;
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await using FileStream stream = new(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 64 * 1024,
+                    useAsync: true);
+
+                long length = stream.Length;
+                if (length > int.MaxValue)
+                {
+                    throw new IOException($"Temp DB at '{path}' is too large to inline ({length} bytes).");
+                }
+
+                byte[] buffer = new byte[length];
+                await stream.ReadExactlyAsync(buffer.AsMemory()).ConfigureAwait(false);
+                return buffer;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt)).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt)).ConfigureAwait(false);
+            }
+        }
     }
 
     private static bool TryParseArgs(string[] args, out CliOptions options, out string? error)
