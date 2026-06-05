@@ -27,5 +27,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Planner\FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Planner.Persistence\FhirAugury.Processor.Jira.Fhir.Planner.Persistence.csproj" />
   </ItemGroup>
 </Project>

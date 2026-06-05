@@ -1,6 +1,6 @@
 using CsLightDbGen.SQLiteGenerator;
 
-namespace FhirAugury.Processor.Jira.Fhir.Planner.Database.Records;
+namespace FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.Records;
 
 [LdgSQLiteTable("planned_ticket_repos")]
 [LdgSQLiteIndex(nameof(IssueKey))]

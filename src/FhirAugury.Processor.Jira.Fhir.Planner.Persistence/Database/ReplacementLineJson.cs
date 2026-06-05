@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace FhirAugury.Processor.Jira.Fhir.Planner.Database;
+namespace FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 
 public static class ReplacementLineJson
 {

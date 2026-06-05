@@ -1,4 +1,4 @@
-using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 

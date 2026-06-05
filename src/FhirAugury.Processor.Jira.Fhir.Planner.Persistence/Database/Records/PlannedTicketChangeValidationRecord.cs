@@ -1,13 +1,12 @@
 using CsLightDbGen.SQLiteGenerator;
 
-namespace FhirAugury.Processor.Jira.Fhir.Planner.Database.Records;
+namespace FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.Records;
 
-[LdgSQLiteTable("planned_ticket_repo_impacts")]
+[LdgSQLiteTable("planned_ticket_change_validations")]
 [LdgSQLiteIndex(nameof(IssueKey))]
 [LdgSQLiteIndex(nameof(TicketRepoId))]
 [LdgSQLiteIndex(nameof(RepoKey))]
-[LdgSQLiteIndex(nameof(TicketRepoChangeId))]
-public partial record class PlannedTicketRepoImpactRecord
+public partial record class PlannedTicketChangeValidationRecord
 {
     [LdgSQLiteKey]
     public int RowId { get; set; }
@@ -18,7 +17,6 @@ public partial record class PlannedTicketRepoImpactRecord
     public required string IssueKey { get; set; }
     public required string TicketRepoId { get; set; }
     public required string RepoKey { get; set; }
-    public string? TicketRepoChangeId { get; set; }
-    public required string AffectedFilePath { get; set; }
-    public string HowAffected { get; set; } = string.Empty;
+    public int ValidationSequence { get; set; }
+    public string Action { get; set; } = string.Empty;
 }

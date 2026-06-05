@@ -6,7 +6,7 @@ using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
-using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
