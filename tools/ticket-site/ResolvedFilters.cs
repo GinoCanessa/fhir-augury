@@ -5,6 +5,8 @@ internal sealed record ResolvedFilters(
     string? Project,
     string? WorkGroup)
 {
+    public static ResolvedFilters None { get; } = new(null, null, null);
+
     public bool HasAnyFilter => Specification is not null || Project is not null || WorkGroup is not null;
 
     public string ToTitleSuffix()

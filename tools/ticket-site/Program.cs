@@ -145,56 +145,44 @@ public static class Program
 
         async Task<int> EmitPlannerSubSiteAsync(CliOptions opts, string db, string root, string subOut, string siteTitle)
         {
-            // Phase 5 emits a self-migrating bytewise copy of the planner DB
-            // (no trim filters yet — that lands in Phase 6 with PlannerDbTrimmer).
-            // Self-migrate by opening the DB with PlannerDatabase.EnsureSchema so
-            // older planner DBs gain the new hydration / topic tables.
-            string tempCopy = Path.Combine(Path.GetTempPath(), $"ticket-site-planner-{Guid.NewGuid():N}.db");
+            ResolvedFilters f = new(opts.FilterSpec, opts.FilterProject, opts.FilterWorkGroup);
+            if (!CheckGuard(subOut, PlannerSubSiteEmitter.Kind, f, opts.Force, out string? guardError))
+            {
+                await Console.Error.WriteLineAsync(guardError!).ConfigureAwait(false);
+                return 1;
+            }
+
+            // Always go through the trim pipeline so older planner DBs self-migrate
+            // and so downstream emit sees a consistent (filter, VACUUM) DB shape.
+            PlannerDbTrimmer.BuildResult built;
             try
             {
-                File.Copy(db, tempCopy, overwrite: true);
-                await using (SqliteConnection conn = new($"Data Source={tempCopy};Pooling=false"))
-                {
-                    await conn.OpenAsync();
-                    PlannerDatabase.EnsureSchema(conn);
-                    await using SqliteCommand vacuum = conn.CreateCommand();
-                    vacuum.CommandText = "VACUUM";
-                    await vacuum.ExecuteNonQueryAsync();
-                }
-                // Force-release any pooled handles so File.ReadAllBytesAsync below
-                // can open the file in shared-read mode without contention on Windows.
-                SqliteConnection.ClearAllPools();
+                built = await PlannerDbTrimmer.BuildAsync(db, f, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (SqliteException ex)
+            {
+                await Console.Error.WriteLineAsync($"Database schema error: cannot trim planner DB at {db}: {ex.Message}").ConfigureAwait(false);
+                return 1;
+            }
 
-                long plannedCount;
-                try
-                {
-                    plannedCount = await CountAsync(tempCopy, "SELECT count(*) FROM planned_tickets").ConfigureAwait(false);
-                }
-                catch (SqliteException ex)
-                {
-                    await Console.Error.WriteLineAsync($"Database schema error: cannot read 'planned_tickets' from {db}: {ex.Message}").ConfigureAwait(false);
-                    return 1;
-                }
-
-                ResolvedFilters f = new(opts.FilterSpec, opts.FilterProject, opts.FilterWorkGroup);
-
-                if (!CheckGuard(subOut, PlannerSubSiteEmitter.Kind, f, opts.Force, out string? guardError))
-                {
-                    await Console.Error.WriteLineAsync(guardError!).ConfigureAwait(false);
-                    return 1;
-                }
-
-                byte[] dbBytes = await File.ReadAllBytesAsync(tempCopy).ConfigureAwait(false);
+            try
+            {
+                long plannedCount = built.SurvivingTicketCount;
+                byte[] dbBytes = await File.ReadAllBytesAsync(built.TempDbPath).ConfigureAwait(false);
                 PlannerSubSiteEmitter.Emit(subOut, siteTitle, f, dbBytes);
                 OutputDirGuard.WriteMarker(subOut, PlannerSubSiteEmitter.Kind, f, DateTimeOffset.UtcNow);
 
                 double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
+                if (f.HasAnyFilter && plannedCount == 0)
+                {
+                    Console.WriteLine("0 planned tickets match this filter.");
+                }
                 Console.WriteLine($"Wrote {plannedCount} planned tickets to {Path.Combine(subOut, "index.html")} (DB inlined: {inlinedMb:0.0} MB).");
                 return 0;
             }
             finally
             {
-                try { File.Delete(tempCopy); } catch { }
+                try { File.Delete(built.TempDbPath); } catch { }
             }
         }
     }
