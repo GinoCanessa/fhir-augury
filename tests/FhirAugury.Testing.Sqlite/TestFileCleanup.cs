@@ -11,15 +11,16 @@ namespace FhirAugury.Testing.Sqlite;
 public static class TestFileCleanup
 {
     /// <summary>
-    /// Clears all SQLite connection pools and forces a full GC pass so finalizers
-    /// release any lingering native file handles before a delete is attempted.
+    /// Clears all SQLite connection pools. Note that <see cref="SqliteConnection.ClearAllPools"/>
+    /// is a process-global operation that can race with active connections in parallel xUnit
+    /// classes. The retry-based <see cref="SafeDeleteFile"/> / <see cref="SafeDeleteDirectory"/>
+    /// helpers call this only on retry (not eagerly) to minimize the race window. We deliberately
+    /// do NOT force a GC pass here — forcing finalization while another thread holds an open
+    /// <see cref="SqliteConnection"/> can surface as <c>ObjectDisposedException: 'SQLitePCL.sqlite3'</c>.
     /// </summary>
     public static void ClearSqlitePools()
     {
         SqliteConnection.ClearAllPools();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
     }
 
     /// <summary>
