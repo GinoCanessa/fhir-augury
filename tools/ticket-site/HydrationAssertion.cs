@@ -4,7 +4,7 @@ namespace FhirAugury.Tools.TicketSite;
 
 /// <summary>
 /// Fail-fast assertion that the preparer DB has already been hydrated.
-/// <c>preparer-site</c> is a pure consumer of a hydrated DB now; the
+/// <c>ticket-site</c> discussion sub-site is a pure consumer of a hydrated DB now; the
 /// preparer service owns the hydration sweep (startup + admin
 /// endpoint). If the DB does not carry a <c>prepared_ticket_hydration</c>
 /// table with at least one row, the tool aborts with an actionable

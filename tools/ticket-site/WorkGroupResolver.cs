@@ -10,7 +10,7 @@ namespace FhirAugury.Tools.TicketSite;
 internal static class WorkGroupResolver
 {
     // TODO: Reference PreparerJiraProcessingDefaults.JiraSourceAddress directly
-    // once the preparer-site tool takes a project reference to
+    // once the ticket-site tool takes a project reference to
     // FhirAugury.Processor.Jira.Fhir.Preparer. Today it does not, so we
     // duplicate the default here.
     private const string DefaultJiraSourceAddress = "http://localhost:5160";

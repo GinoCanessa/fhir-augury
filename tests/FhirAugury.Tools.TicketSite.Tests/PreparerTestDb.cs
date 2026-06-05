@@ -104,7 +104,7 @@ internal static class PreparerTestDb
         }
         else
         {
-            // preparer-site requires a hydrated DB; seed a baseline hydration row
+            // discussion sub-site requires a hydrated DB; seed a baseline hydration row
             // per ticket so smoke / filter tests don't all need to spell out specByKey.
             string hydratedAt = DateTimeOffset.UtcNow.ToString("O");
             foreach (SourceTicketSeed ticket in tickets)

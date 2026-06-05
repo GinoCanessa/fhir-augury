@@ -20,6 +20,15 @@ This skill is a **sibling** of `index-prepared`, not a replacement.
 `index-prepared` continues to own the file-driven path; pick this skill
 when you want the preparer DB to be authoritative.
 
+> **Related (future)**: an `index-planned-db` sibling skill is now
+> feasible against the planner service's `/api/v1/planned-*` HTTP
+> surface (added in slot `0604-01`). That skill — not yet written —
+> would mirror this one's shape against the planner's
+> `planned-ticket-hydration` and `planned-ticket-topics` endpoints
+> and serve the **applying** half of the reviewer workflow. The
+> reviewer tool that consumes either DB has been unified under
+> [`tools/ticket-site`](../../../tools/ticket-site/README.md).
+
 ## Data Access
 
 The skill talks to three HTTP surfaces, in this order, all via

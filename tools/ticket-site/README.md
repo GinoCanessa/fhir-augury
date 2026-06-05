@@ -1,19 +1,34 @@
 # ticket-site
 
-A small `dotnet`-run utility that reads a Jira preparer SQLite
-database (produced by `FhirAugury.Processor.Jira.Fhir.Preparer`) and
-emits a self-contained static HTML site for human review. The site
-loads the database into [sql.js](https://sql.js.org/) in the browser
-and renders list, per-ticket, and a few cross-cut views.
+A small `dotnet`-run utility that turns a Jira-FHIR processor SQLite
+database (preparer or planner) into a self-contained static HTML
+sub-site for human review. A chooser landing page links to whichever
+sub-site(s) have been built into the same output root.
+
+- `--preparer-db <path>` → emits the **Tickets for Discussion**
+  (discussion) sub-site under `<out>/discussion/`, with the
+  preparer-side SPA (list, per-ticket, crosscut, topic views).
+- `--planner-db <path>` → emits the **Tickets for Applying**
+  (applying) sub-site under `<out>/applying/`, with the
+  planner-side SPA (list, per-ticket, topics with `SpannedRepos`).
+- After either run, `<out>/index.html` is regenerated as a static
+  chooser landing page. Sub-sites that haven't been built into this
+  `<out>` show greyed cards.
+
+Exactly one of `--preparer-db` / `--planner-db` is required;
+supplying both (or neither) fails with exit code 2. Both pages load
+the SQLite database into [sql.js](https://sql.js.org/) in the browser
+and require no network at runtime.
 
 ## What this is
 
-A zero-server review surface for an entire preparer run. One
-`index.html`, one `assets/` folder of vendored JS/CSS/wasm, no
-network at runtime. Opens straight from `file://` in Chromium-family
-browsers. A reviewer (or workgroup co-chair) can zip the output
-folder and hand it around without any infrastructure on the
-receiving side.
+A zero-server review surface for an entire preparer or planner run.
+One `<out>/index.html` chooser, one `<out>/<sub-site>/index.html` per
+sub-site, one `<out>/<sub-site>/assets/` folder of vendored
+JS/CSS/wasm per sub-site, no network at runtime. Opens straight from
+`file://` in Chromium-family browsers. A reviewer (or workgroup
+co-chair) can zip the output folder and hand it around without any
+infrastructure on the receiving side.
 
 ### Hydration
 
@@ -103,11 +118,23 @@ sibling tool under `tools/`).
 
 ```bash
 dotnet run --project tools/ticket-site -- \
-  --db ./cache/jira-preparer.db \
+  --preparer-db ./cache/jira-preparer.db \
   --out ./cache/jira-ticket-site \
   --spec 'FHIR Core (FHIR)' \
-  --title "Preparer Report — May 2026"
+  --title "Discussion — May 2026"
 ```
+
+Or, for the planner-side applying sub-site:
+
+```bash
+dotnet run --project tools/ticket-site -- \
+  --planner-db ./cache/jira-planner.db \
+  --out ./cache/jira-ticket-site \
+  --title "Applying — May 2026"
+```
+
+Building both into the same `--out` is the expected workflow — the
+chooser at `<out>/index.html` will then surface both cards as live.
 
 `--spec` matches the hydrated `Specification` value (Jira
 `customfield_11302`, e.g. `'FHIR Core (FHIR)'` or `fhir-extensions`);
@@ -178,16 +205,17 @@ values were already pinned.
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--db <path>` | *required* | Path to the preparer SQLite DB. Must already be hydrated (the preparer service handles that — see [Prerequisite: hydrated DB](#prerequisite-hydrated-db)). |
-| `--out <path>` | `./cache/jira-ticket-site` | Output directory; overwritten subject to the safety rail (see below). |
-| `--title <string>` | `"Preparer Report"` | Threads through to `<title>` and the landing-page `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
-| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` (Jira `customfield_11302`) matches (case-insensitive). |
+| `--preparer-db <path>` | `./cache/jira-preparer.db` (only applied if the flag is supplied) | Builds the **discussion** sub-site under `<out>/discussion/`. Must already be hydrated (the preparer service handles that — see [Prerequisite: hydrated DB](#prerequisite-hydrated-db)). Mutually exclusive with `--planner-db`. |
+| `--planner-db <path>` | `./cache/jira-planner.db` (only applied if the flag is supplied) | Builds the **applying** sub-site under `<out>/applying/`. Older planner DBs self-migrate during the trim step. Mutually exclusive with `--preparer-db`. |
+| `--out <path>` | `./cache/jira-ticket-site` | Output root. Contains the chooser `index.html` plus whichever sub-site folders have been built. Sub-site delete is per-folder, so building one sub-site never wipes the other. |
+| `--title <string>` | `"Ticket Site"` | Threads through to each sub-site's `<title>` and landing `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
+| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` matches (case-insensitive). |
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
-| `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the preparer-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
+| `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the processor-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
 | `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
 | `--jira-source-db <path>` | — | Jira source SQLite DB. Fallback for `--wg` resolution when the HTTP service is unreachable, and the source for the SPA's "By artifact" and "By page" crosscut columns; without it those tables are present but empty. |
-| `--force` | `false` | Overwrite an output directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
-| `--help` | — | Print usage and exit non-zero. |
+| `--force` | `false` | Overwrite a sub-site directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
+| `--help` | — | Print usage and exit 0. |
 
 ### Active filters
 

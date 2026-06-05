@@ -7,7 +7,7 @@ namespace FhirAugury.Tools.TicketSite;
 /// <summary>
 /// Emits the discussion (preparer) sub-site under
 /// <c>&lt;rootOut&gt;/discussion/</c>. Identical SPA shape to the original
-/// preparer-site SPA; only the resource path prefix moved to
+/// ticket-site discussion-sub-site SPA; only the resource path prefix moved to
 /// <c>web-assets/discussion/</c> and the shared sql.js bytes are pulled
 /// from <c>web-assets/shared/</c>.
 /// </summary>

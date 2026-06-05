@@ -1,4 +1,4 @@
-// preparer-site SPA — vanilla JS, sql.js in the browser, hash router.
+// ticket-site discussion-sub-site SPA — vanilla JS, sql.js in the browser, hash router.
 // SECURITY: all ticket content is user-supplied text. Render via
 // textContent / createElement only — never innerHTML.
 

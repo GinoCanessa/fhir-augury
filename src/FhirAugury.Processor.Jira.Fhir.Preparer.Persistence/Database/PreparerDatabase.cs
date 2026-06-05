@@ -21,7 +21,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// Idempotent. Creates every preparer table via <c>CREATE TABLE IF NOT EXISTS</c>
     /// and follows up with the <c>CREATE UNIQUE INDEX IF NOT EXISTS</c> passes required
     /// by CsLightDbGen's lack of composite-unique support. Safe to call against a
-    /// connection the preparer does not own (e.g., <c>preparer-site</c>'s trim-step
+    /// connection the preparer does not own (e.g., <c>ticket-site</c> discussion sub-site's trim-step
     /// temp copy).
     /// </summary>
     public static void EnsureSchema(SqliteConnection connection)
@@ -32,7 +32,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 
     /// <summary>
     /// Logger-aware overload used by the instance bootstrap path; <see cref="EnsureSchema(SqliteConnection)"/>
-    /// remains available for ad-hoc callers (e.g. <c>preparer-site</c>'s trim-step temp copy).
+    /// remains available for ad-hoc callers (e.g. <c>ticket-site</c> discussion sub-site's trim-step temp copy).
     /// </summary>
     internal static void EnsureSchema(SqliteConnection connection, ILogger? logger)
     {
