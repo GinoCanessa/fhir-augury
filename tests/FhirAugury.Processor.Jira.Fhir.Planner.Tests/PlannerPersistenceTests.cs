@@ -13,7 +13,7 @@ public sealed class PlannerPersistenceTests
     public void EnsureSchema_CreatesAllHydrationAndTopicTables()
     {
         using DatabaseFixture fixture = new();
-        SqliteConnection conn = OpenConn(fixture.Path);
+        using SqliteConnection conn = OpenConn(fixture.Path);
 
         string[] expected =
         [
@@ -681,7 +681,7 @@ public sealed class PlannerPersistenceTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(_dir);
         }
     }
 }

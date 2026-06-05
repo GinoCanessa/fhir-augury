@@ -90,7 +90,7 @@ public sealed class PlannedHydrationSweeperTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(_dir);
         }
     }
 }
@@ -146,7 +146,7 @@ public sealed class PlannerHydrationSweeperHostedServiceTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(_dir);
         }
     }
 }
@@ -220,7 +220,7 @@ public sealed class PlannerHydrationAdminControllerTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(_dir);
         }
     }
 }

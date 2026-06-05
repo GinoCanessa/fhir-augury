@@ -187,13 +187,7 @@ public sealed class PlannerTicketHandlerTests
         public void Dispose()
         {
             Database.Dispose();
-            try
-            {
-                Directory.Delete(_directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(_directory);
         }
     }
 
