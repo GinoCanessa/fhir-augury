@@ -125,6 +125,34 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Fact]
+    public async Task PlannedTicketClusteringSignals_Returns404_WhenEmpty()
+    {
+        HttpClient client = _fixture.Factory.CreateClient();
+        HttpResponseMessage response = await client.GetAsync("/api/v1/planned-ticket-clustering-signals/UnknownWorkgroup");
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PlannedTicketClusteringSignals_Returns200WithEnvelope_WhenSignalsExist()
+    {
+        await _fixture.SeedAsync();
+        await _fixture.SeedSourceTicketAsync("FHIR-1000", "FHIR Infrastructure", "Change Request", "FHIR");
+        await _fixture.SeedJiraHydrationSelfRowAsync("FHIR-1000", "FHIR Infrastructure");
+
+        HttpClient client = _fixture.Factory.CreateClient();
+        PlannedTicketClusteringSignalsDto? body =
+            await client.GetFromJsonAsync<PlannedTicketClusteringSignalsDto>("/api/v1/planned-ticket-clustering-signals/FHIRInfrastructure");
+
+        Assert.NotNull(body);
+        Assert.Equal("FHIRInfrastructure", body!.WorkGroupClean);
+        Assert.Equal("FHIR Infrastructure", body.WorkGroupDisplay);
+        PlannedTicketClusteringSignalDto only = Assert.Single(body.Tickets);
+        Assert.Equal("FHIR-1000", only.IssueKey);
+        Assert.True(only.HasPlannedTicket);
+        Assert.Equal("resolved", only.HydrationStatus);
+    }
+
     public sealed class Fixture : IDisposable
     {
         public WebApplicationFactory<Program> Factory { get; }
@@ -209,6 +237,41 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
                 RepoRows: [],
                 JiraXrefRows: []);
             await ((IHydrationTargetDatabase)Database).SaveHydrationAsync(batch, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Seeds a <c>jira_processing_source_tickets</c> row through raw SQL.
+        /// The clustering-signals anchor joins through this table, so tests
+        /// that exercise the read endpoint need at least one row here.
+        /// </summary>
+        public async Task SeedSourceTicketAsync(string key, string workGroupDisplay, string type, string specification)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using SqliteConnection connection = Database.OpenConnection();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT OR IGNORE INTO jira_processing_source_tickets
+                    (Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape,
+                     LastSyncedAt, LastUpdated, StartedProcessingAt, CompletedProcessingAt, LastProcessingAttemptAt,
+                     ProcessingStatus, ProcessingError, ProcessingAttemptCount,
+                     CompletionId, ErrorMessage, AgentExitCode, ErrorOccurredAt)
+                VALUES
+                    (@Id, @Key, @Title, NULL, @Project, @Status, @WorkGroup, @Type, @Specification, @SourceTicketShape,
+                     @LastSyncedAt, NULL, NULL, NULL, NULL,
+                     NULL, NULL, 0,
+                     NULL, NULL, NULL, NULL)
+                """;
+            command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
+            command.Parameters.AddWithValue("@Key", key);
+            command.Parameters.AddWithValue("@Title", $"title-{key}");
+            command.Parameters.AddWithValue("@Project", "FHIR");
+            command.Parameters.AddWithValue("@Status", "Open");
+            command.Parameters.AddWithValue("@WorkGroup", workGroupDisplay);
+            command.Parameters.AddWithValue("@Type", type);
+            command.Parameters.AddWithValue("@Specification", specification);
+            command.Parameters.AddWithValue("@SourceTicketShape", "fhir");
+            command.Parameters.AddWithValue("@LastSyncedAt", now.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
+            await command.ExecuteNonQueryAsync();
         }
 
         public void Dispose()

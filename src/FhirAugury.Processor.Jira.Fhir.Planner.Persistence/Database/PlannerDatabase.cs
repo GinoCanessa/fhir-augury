@@ -1062,6 +1062,233 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         return rows;
     }
 
+    /// <summary>
+    /// Returns the per-ticket clustering signal projection the
+    /// <c>planner-topic-groupings</c> skill needs to bucket tickets
+    /// into Topics / Linked Ticket Groups for one workgroup. Returns
+    /// <c>null</c> when the workgroup has zero
+    /// <c>planned_jira_hydration</c> self-rows (controller 404s).
+    /// <para>
+    /// The anchor differs from the preparer-side query: it joins
+    /// <c>jira_processing_source_tickets</c> (the source-of-truth
+    /// workgroup filter) so tickets that are planned but lack a
+    /// self-Jira hydration row entirely are still surfaced with
+    /// <c>HydrationStatus = null</c>. The skill enforces Open
+    /// Question 3's abort contract on either <c>null</c> or any
+    /// non-<c>"resolved"</c> value.
+    /// </para>
+    /// Per-ticket repo / repo-change / repo-impact rows are pulled in
+    /// three follow-up queries scoped through
+    /// <c>planned_jira_hydration</c> for indexed-scope efficiency and
+    /// then bucketed by <c>IssueKey</c>. Tickets without matching
+    /// rows get empty lists.
+    /// </summary>
+    public async Task<PlannedTicketClusteringSignals?> GetClusteringSignalsAsync(string workGroupClean, CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+
+        List<PlannedTicketClusteringSignal> tickets = [];
+        Dictionary<string, List<string>> reposByTicket = new(StringComparer.Ordinal);
+        Dictionary<string, List<PlannedTicketClusteringRepoChange>> changesByTicket = new(StringComparer.Ordinal);
+        Dictionary<string, List<PlannedTicketClusteringRepoImpact>> impactsByTicket = new(StringComparer.Ordinal);
+
+        // 1) Anchor: every jira_processing_source_tickets row whose
+        //    WorkGroup (display form) is associated with the requested
+        //    workgroup-clean slug. The planner stores WorkGroup as the
+        //    display form on jira_processing_source_tickets and as the
+        //    cleaned form on planned_jira_hydration; we resolve the
+        //    display form via the inner subquery (hydration always
+        //    carries WorkGroupClean), then filter src by that display
+        //    form. Tickets with no self-hydration row still appear (their
+        //    HydrationStatus comes back NULL via the LEFT JOIN). Tickets
+        //    that have neither a planned_tickets row nor a hydration
+        //    self-row are filtered out (they cannot be partitioned and
+        //    have nothing to write).
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT src.Key AS IssueKey,
+                       COALESCE(j.Title, src.Title) AS Title,
+                       COALESCE(j.Status, src.Status) AS Status,
+                       COALESCE(j.Specification, src.Specification) AS Specification,
+                       COALESCE(j.Type, src.Type) AS Type,
+                       j.HydrationStatus,
+                       COALESCE(pt.ResolutionSummary, '') AS ResolutionSummary,
+                       COALESCE(pt.FeatureProposal, '')   AS FeatureProposal,
+                       COALESCE(pt.DesignRationale, '')   AS DesignRationale,
+                       CASE WHEN pt.Key IS NULL THEN 0 ELSE 1 END AS HasPlannedTicket
+                FROM jira_processing_source_tickets src
+                LEFT JOIN planned_jira_hydration j
+                       ON j.IssueKey = src.Key AND j.JiraKey = j.IssueKey
+                LEFT JOIN planned_tickets pt
+                       ON pt.Key = src.Key
+                WHERE src.WorkGroup IN (
+                        SELECT DISTINCT j2.WorkGroup
+                        FROM planned_jira_hydration j2
+                        WHERE j2.WorkGroupClean = @wg
+                          AND j2.JiraKey = j2.IssueKey
+                          AND j2.WorkGroup IS NOT NULL
+                      )
+                  AND (pt.Key IS NOT NULL OR j.IssueKey IS NOT NULL)
+                ORDER BY src.Key ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string issueKey = reader.GetString(0);
+                List<string> repos = [];
+                List<PlannedTicketClusteringRepoChange> changes = [];
+                List<PlannedTicketClusteringRepoImpact> impacts = [];
+                reposByTicket[issueKey] = repos;
+                changesByTicket[issueKey] = changes;
+                impactsByTicket[issueKey] = impacts;
+                tickets.Add(new PlannedTicketClusteringSignal(
+                    IssueKey: issueKey,
+                    Title: ReadNullableString(reader, 1),
+                    Status: ReadNullableString(reader, 2),
+                    Specification: ReadNullableString(reader, 3),
+                    Type: ReadNullableString(reader, 4),
+                    HydrationStatus: ReadNullableString(reader, 5),
+                    ResolutionSummary: ReadNullableString(reader, 6) ?? string.Empty,
+                    FeatureProposal: ReadNullableString(reader, 7) ?? string.Empty,
+                    DesignRationale: ReadNullableString(reader, 8) ?? string.Empty,
+                    HasPlannedTicket: reader.GetInt32(9) == 1,
+                    Repos: repos,
+                    RepoChanges: changes,
+                    RepoImpacts: impacts));
+            }
+        }
+
+        if (tickets.Count == 0)
+        {
+            return null;
+        }
+
+        // 2) Per-ticket repos.
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT r.IssueKey, r.RepoKey
+                FROM planned_ticket_repos r
+                INNER JOIN planned_jira_hydration j
+                        ON j.IssueKey = r.IssueKey AND j.JiraKey = j.IssueKey
+                WHERE j.WorkGroupClean = @wg
+                ORDER BY r.IssueKey ASC, r.RepoKey ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string issueKey = reader.GetString(0);
+                if (reposByTicket.TryGetValue(issueKey, out List<string>? bucket))
+                {
+                    bucket.Add(reader.GetString(1));
+                }
+            }
+        }
+
+        // 3) Per-ticket repo changes.
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT c.IssueKey, c.RepoKey, c.FilePath
+                FROM planned_ticket_repo_changes c
+                INNER JOIN planned_jira_hydration j
+                        ON j.IssueKey = c.IssueKey AND j.JiraKey = j.IssueKey
+                WHERE j.WorkGroupClean = @wg
+                ORDER BY c.IssueKey ASC, c.RepoKey ASC, c.FilePath ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string issueKey = reader.GetString(0);
+                if (changesByTicket.TryGetValue(issueKey, out List<PlannedTicketClusteringRepoChange>? bucket))
+                {
+                    bucket.Add(new PlannedTicketClusteringRepoChange(
+                        RepoKey: reader.GetString(1),
+                        FilePath: reader.GetString(2)));
+                }
+            }
+        }
+
+        // 4) Per-ticket repo impacts.
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT i.IssueKey, i.RepoKey, i.AffectedFilePath
+                FROM planned_ticket_repo_impacts i
+                INNER JOIN planned_jira_hydration j
+                        ON j.IssueKey = i.IssueKey AND j.JiraKey = j.IssueKey
+                WHERE j.WorkGroupClean = @wg
+                ORDER BY i.IssueKey ASC, i.RepoKey ASC, i.AffectedFilePath ASC
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string issueKey = reader.GetString(0);
+                if (impactsByTicket.TryGetValue(issueKey, out List<PlannedTicketClusteringRepoImpact>? bucket))
+                {
+                    bucket.Add(new PlannedTicketClusteringRepoImpact(
+                        RepoKey: reader.GetString(1),
+                        AffectedFilePath: reader.GetString(2)));
+                }
+            }
+        }
+
+        string? workGroupDisplay = await ResolveWorkGroupDisplayAsync(connection, workGroupClean, ct);
+        return new PlannedTicketClusteringSignals(workGroupClean, workGroupDisplay, tickets);
+    }
+
+    /// <summary>
+    /// Resolves the display form of a workgroup-clean slug. Tries the
+    /// most-recent <c>planned_ticket_topics.WorkGroupDisplay</c> first,
+    /// then falls back to the most-recent
+    /// <c>planned_jira_hydration.WorkGroup</c> self-row. Mirrors the
+    /// preparer's two-tier fallback. Returns <c>null</c> when both
+    /// tiers come up empty.
+    /// </summary>
+    private static async Task<string?> ResolveWorkGroupDisplayAsync(SqliteConnection connection, string workGroupClean, CancellationToken ct)
+    {
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT WorkGroupDisplay FROM planned_ticket_topics
+                WHERE WorkGroupClean = @wg
+                ORDER BY SavedAt DESC LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            object? scalar = await command.ExecuteScalarAsync(ct);
+            if (scalar is string display && !string.IsNullOrWhiteSpace(display))
+            {
+                return display;
+            }
+        }
+
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT j.WorkGroup FROM planned_jira_hydration j
+                WHERE j.JiraKey = j.IssueKey
+                  AND j.WorkGroupClean = @wg
+                ORDER BY j.HydratedAt DESC LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@wg", workGroupClean);
+            object? scalar = await command.ExecuteScalarAsync(ct);
+            if (scalar is string display && !string.IsNullOrWhiteSpace(display))
+            {
+                return display;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadNullableString(SqliteDataReader reader, int ordinal)
+        => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
     // ---------------------------------------------------------------------
     // Helpers
 
