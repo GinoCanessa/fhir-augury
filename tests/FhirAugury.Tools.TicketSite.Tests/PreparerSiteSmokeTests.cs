@@ -16,8 +16,8 @@ public sealed class PreparerSiteSmokeTests
 
         public void Dispose()
         {
-            try { if (File.Exists(DbPath)) File.Delete(DbPath); } catch { /* best-effort */ }
-            try { if (Directory.Exists(OutDir)) Directory.Delete(OutDir, recursive: true); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(DbPath);
+            TestFileCleanup.SafeDeleteDirectory(OutDir);
         }
     }
 
@@ -137,7 +137,7 @@ public sealed class PreparerSiteSmokeTests
         }
         finally
         {
-            try { File.Delete(tempDbPath); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(tempDbPath);
         }
     }
 
@@ -251,7 +251,7 @@ public sealed class PreparerSiteSmokeTests
         }
         finally
         {
-            try { File.Delete(tempDbPath); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(tempDbPath);
         }
     }
 
@@ -530,7 +530,7 @@ public sealed class PreparerSiteSmokeTests
         }
         finally
         {
-            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(jiraSourcePath);
         }
     }
 
@@ -575,7 +575,7 @@ public sealed class PreparerSiteSmokeTests
         }
         finally
         {
-            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(jiraSourcePath);
         }
     }
 
@@ -622,7 +622,7 @@ public sealed class PreparerSiteSmokeTests
         }
         finally
         {
-            try { File.Delete(jiraSourcePath); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(jiraSourcePath);
         }
     }
 

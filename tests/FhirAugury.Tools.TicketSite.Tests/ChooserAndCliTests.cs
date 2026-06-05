@@ -12,9 +12,9 @@ public sealed class ChooserAndCliTests
 
         public void Dispose()
         {
-            try { if (File.Exists(PreparerDbPath)) File.Delete(PreparerDbPath); } catch { }
-            try { if (File.Exists(PlannerDbPath)) File.Delete(PlannerDbPath); } catch { }
-            try { if (Directory.Exists(OutDir)) Directory.Delete(OutDir, recursive: true); } catch { }
+            TestFileCleanup.SafeDeleteFile(PreparerDbPath);
+            TestFileCleanup.SafeDeleteFile(PlannerDbPath);
+            TestFileCleanup.SafeDeleteDirectory(OutDir);
         }
     }
 
@@ -164,7 +164,7 @@ public sealed class ChooserAndCliTests
         }
         finally
         {
-            try { Directory.Delete(dir, recursive: true); } catch { }
+            TestFileCleanup.SafeDeleteDirectory(dir);
         }
     }
 

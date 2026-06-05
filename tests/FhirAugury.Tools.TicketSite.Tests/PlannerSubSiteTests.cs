@@ -14,8 +14,8 @@ public sealed class PlannerSubSiteTests
         public string OutDir { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         public void Dispose()
         {
-            try { if (File.Exists(DbPath)) File.Delete(DbPath); } catch { }
-            try { if (Directory.Exists(OutDir)) Directory.Delete(OutDir, recursive: true); } catch { }
+            TestFileCleanup.SafeDeleteFile(DbPath);
+            TestFileCleanup.SafeDeleteDirectory(OutDir);
         }
     }
 
@@ -117,7 +117,7 @@ public sealed class PlannerSubSiteTests
         }
         finally
         {
-            try { File.Delete(built.TempDbPath); } catch { }
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
         }
     }
 
@@ -145,7 +145,7 @@ public sealed class PlannerSubSiteTests
         }
         finally
         {
-            try { File.Delete(built.TempDbPath); } catch { }
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
         }
     }
 
@@ -163,7 +163,7 @@ public sealed class PlannerSubSiteTests
             cmd.CommandText = "CREATE TABLE planned_tickets (RowId INTEGER PRIMARY KEY, Id TEXT, Key TEXT, Resolution TEXT, ResolutionSummary TEXT, FeatureProposal TEXT, DesignRationale TEXT, SavedAt TEXT)";
             await cmd.ExecuteNonQueryAsync();
         }
-        SqliteConnection.ClearAllPools();
+        TestFileCleanup.ClearSqlitePools();
 
         PlannerDbTrimmer.BuildResult built = await PlannerDbTrimmer.BuildAsync(scope.DbPath, ResolvedFilters.None, CancellationToken.None);
         try
@@ -177,7 +177,7 @@ public sealed class PlannerSubSiteTests
         }
         finally
         {
-            try { File.Delete(built.TempDbPath); } catch { }
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
         }
     }
 
@@ -211,7 +211,7 @@ public sealed class PlannerSubSiteTests
         }
         finally
         {
-            try { File.Delete(tempDbPath); } catch { }
+            TestFileCleanup.SafeDeleteFile(tempDbPath);
         }
     }
 }

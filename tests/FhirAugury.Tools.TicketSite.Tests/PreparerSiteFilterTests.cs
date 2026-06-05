@@ -12,8 +12,8 @@ public sealed class PreparerSiteFilterTests
 
         public void Dispose()
         {
-            try { if (File.Exists(DbPath)) File.Delete(DbPath); } catch { /* best-effort */ }
-            try { if (Directory.Exists(OutDir)) Directory.Delete(OutDir, recursive: true); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(DbPath);
+            TestFileCleanup.SafeDeleteDirectory(OutDir);
         }
     }
 
@@ -601,7 +601,7 @@ public sealed class PreparerSiteFilterTests
         }
         finally
         {
-            try { File.Delete(tempDb); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(tempDb);
         }
     }
 
@@ -647,7 +647,7 @@ public sealed class PreparerSiteFilterTests
         }
         finally
         {
-            try { File.Delete(tempDb); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(tempDb);
         }
     }
 
@@ -684,7 +684,7 @@ public sealed class PreparerSiteFilterTests
         }
         finally
         {
-            try { File.Delete(tempDb); } catch { /* best-effort */ }
+            TestFileCleanup.SafeDeleteFile(tempDb);
         }
     }
 
