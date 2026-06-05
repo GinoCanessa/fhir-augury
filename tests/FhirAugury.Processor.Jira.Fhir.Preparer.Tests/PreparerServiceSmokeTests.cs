@@ -115,13 +115,7 @@ public sealed class PreparerServiceSmokeTests
         Assert.Equal("unresolved", read!.Parent!.HydrationStatus);
 
         factory.Dispose();
-        try
-        {
-            Directory.Delete(directory, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     private static int FindFreePort()
@@ -185,13 +179,7 @@ public sealed class PreparerServiceSmokeTests
         public void Dispose()
         {
             Factory.Dispose();
-            try
-            {
-                Directory.Delete(_directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(_directory);
         }
     }
 

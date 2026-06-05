@@ -1008,7 +1008,7 @@ public sealed class PreparerDatabaseTests
             db3.Dispose();
         }
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     private static bool HasIndexOver(TestDatabase database, string table, string column)
@@ -1098,7 +1098,7 @@ public sealed class PreparerDatabaseTests
             db3.Dispose();
         }
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     [Fact]
@@ -1156,7 +1156,7 @@ public sealed class PreparerDatabaseTests
         Assert.Throws<WorkGroupCleanReslugAbortedException>(() => db3.Initialize());
         db3.Dispose();
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     private sealed class TestDatabase(string directory, PreparerDatabase database) : IDisposable
@@ -1167,13 +1167,7 @@ public sealed class PreparerDatabaseTests
         public void Dispose()
         {
             Database.Dispose();
-            try
-            {
-                System.IO.Directory.Delete(Directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(Directory);
         }
     }
 }

@@ -167,13 +167,7 @@ public sealed class PreparedTicketClusteringSignalsControllerTests
         public void Dispose()
         {
             Database.Dispose();
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(directory);
         }
     }
 }
