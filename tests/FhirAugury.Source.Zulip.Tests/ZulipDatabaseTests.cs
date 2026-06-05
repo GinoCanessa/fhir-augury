@@ -22,7 +22,7 @@ public class ZulipDatabaseTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     [Fact]
@@ -249,7 +249,7 @@ public class ZulipDatabaseTests : IDisposable
         }
         finally
         {
-            try { File.Delete(dbPath2); } catch { }
+            TestFileCleanup.SafeDeleteFile(dbPath2);
         }
     }
 

@@ -14,10 +14,12 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Using Include="FhirAugury.Testing.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />
+    <ProjectReference Include="..\FhirAugury.Testing.Sqlite\FhirAugury.Testing.Sqlite.csproj" />
   </ItemGroup>
 
 </Project>
