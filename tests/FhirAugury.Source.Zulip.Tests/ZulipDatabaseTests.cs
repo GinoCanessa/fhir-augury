@@ -214,7 +214,7 @@ public class ZulipDatabaseTests : IDisposable
         try
         {
             // Create a bare DB with the old schema (no BaselineValue column)
-            using (SqliteConnection rawConn = new SqliteConnection($"Data Source={dbPath2}"))
+            using (SqliteConnection rawConn = new SqliteConnection($"Data Source={dbPath2};Pooling=False"))
             {
                 rawConn.Open();
                 using SqliteCommand cmd = rawConn.CreateCommand();

@@ -23,7 +23,7 @@ public sealed class PreparerSiteFilterTests
         using TempScope scope = new();
         // Create a schema-less SQLite file so the run fails downstream, but the
         // parser still has to accept the new flags first.
-        await using (SqliteConnection conn = new($"Data Source={scope.DbPath}"))
+        await using (SqliteConnection conn = new($"Data Source={scope.DbPath};Pooling=False"))
         {
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
@@ -585,7 +585,7 @@ public sealed class PreparerSiteFilterTests
         try
         {
             await File.WriteAllBytesAsync(tempDb, dbBytes);
-            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
 
             Assert.Equal(2, await CountAsync(conn, "prepared_tickets"));
@@ -636,7 +636,7 @@ public sealed class PreparerSiteFilterTests
         try
         {
             await File.WriteAllBytesAsync(tempDb, dbBytes);
-            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
 
             Assert.Equal(1, await CountAsync(conn, "prepared_tickets"));
@@ -678,7 +678,7 @@ public sealed class PreparerSiteFilterTests
         try
         {
             await File.WriteAllBytesAsync(tempDb, dbBytes);
-            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDb};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
             Assert.Equal(0, await CountAsync(conn, "prepared_tickets"));
         }

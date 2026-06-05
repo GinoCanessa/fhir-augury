@@ -62,7 +62,7 @@ public sealed class PreparerSiteSmokeTests
         // against it stays exercised by the smoke tests. Description is left
         // null to keep the per-test DB compact; we are no longer in the
         // business of stripping it.
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         for (int i = 1; i <= ticketCount; i++)
         {
@@ -105,7 +105,7 @@ public sealed class PreparerSiteSmokeTests
         }
         // Force the WAL to merge back into the main DB so that the tool's raw
         // File.ReadAllBytes() sees everything just written.
-        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await using SqliteConnection cp = new($"Data Source={dbPath};Pooling=False");
         await cp.OpenAsync();
         await using SqliteCommand checkpoint = cp.CreateCommand();
         checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
@@ -129,7 +129,7 @@ public sealed class PreparerSiteSmokeTests
         try
         {
             await File.WriteAllBytesAsync(tempDbPath, dbBytes);
-            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
             Assert.Equal(3, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_tickets"));
             Assert.Equal(3, await ReadCountAsync(conn,
@@ -237,7 +237,7 @@ public sealed class PreparerSiteSmokeTests
         {
             await File.WriteAllBytesAsync(tempDbPath, dbBytes);
 
-            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
 
             Assert.Equal(2, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_hydration"));
@@ -265,7 +265,7 @@ public sealed class PreparerSiteSmokeTests
 
     private static async Task SeedHydrationAsync(string dbPath)
     {
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
         string hydratedAtStr = hydratedAt.ToString("O");
@@ -315,7 +315,7 @@ public sealed class PreparerSiteSmokeTests
             "INSERT INTO prepared_ticket_jira_xref (Id, TicketKey, JiraKey, Source) VALUES (@id, @key, @jk, @src)",
             [("@id", Guid.NewGuid().ToString("N")), ("@key", "FHIR-1001"), ("@jk", "FHIR-9999"), ("@src", "DuplicateOf")]);
 
-        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await using SqliteConnection cp = new($"Data Source={dbPath};Pooling=False");
         await cp.OpenAsync();
         await using SqliteCommand checkpoint = cp.CreateCommand();
         checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
@@ -333,7 +333,7 @@ public sealed class PreparerSiteSmokeTests
         // Seed only the source-ticket surface (no prepared_ticket_hydration).
         using PreparerDatabase preparer = new(scope.DbPath, NullLogger<PreparerDatabase>.Instance);
         preparer.Initialize();
-        await using SqliteConnection cn = new($"Data Source={scope.DbPath}");
+        await using SqliteConnection cn = new($"Data Source={scope.DbPath};Pooling=False");
         await cn.OpenAsync();
         await using SqliteCommand insert = cn.CreateCommand();
         insert.CommandText =
@@ -422,7 +422,7 @@ public sealed class PreparerSiteSmokeTests
     {
         using TempScope scope = new();
         // Create a valid but schema-less SQLite file: open, run a no-op, close.
-        await using (SqliteConnection conn = new($"Data Source={scope.DbPath}"))
+        await using (SqliteConnection conn = new($"Data Source={scope.DbPath};Pooling=False"))
         {
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
@@ -631,7 +631,7 @@ public sealed class PreparerSiteSmokeTests
         IReadOnlyDictionary<string, string?> artifactsByKey,
         IReadOnlyDictionary<string, (string? Artifacts, string? Pages)>? baldefByKey = null)
     {
-        await using SqliteConnection conn = new($"Data Source={dbPath}");
+        await using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         await conn.OpenAsync();
         await using (SqliteCommand cmd = conn.CreateCommand())
         {
@@ -682,7 +682,7 @@ public sealed class PreparerSiteSmokeTests
         byte[] bytes = Convert.FromBase64String(base64);
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         await File.WriteAllBytesAsync(tempDbPath, bytes);
-        SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+        SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
         await conn.OpenAsync();
         return conn;
     }
@@ -711,7 +711,7 @@ public sealed class PreparerSiteSmokeTests
     /// </summary>
     private static async Task SeedTopicsAsync(string dbPath)
     {
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         string savedAt = DateTimeOffset.UtcNow.ToString("O");
 
@@ -787,7 +787,7 @@ public sealed class PreparerSiteSmokeTests
         await InsertMemberAsync(topic1Rid, null, "FHIR-1002", 1);
         await InsertMemberAsync(topic2Rid, null, "FHIR-1002", 0);
 
-        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await using SqliteConnection cp = new($"Data Source={dbPath};Pooling=False");
         await cp.OpenAsync();
         await using SqliteCommand checkpoint = cp.CreateCommand();
         checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
@@ -898,7 +898,7 @@ public sealed class PreparerSiteSmokeTests
         // drops it. Seed a third topic whose only member is ticket 3 so
         // the trim leaves it orphaned (and the new Phase 1 logic must
         // remove it).
-        await using (SqliteConnection mutate = new($"Data Source={scope.DbPath}"))
+        await using (SqliteConnection mutate = new($"Data Source={scope.DbPath};Pooling=False"))
         {
             await mutate.OpenAsync();
             await using (SqliteCommand cmd = mutate.CreateCommand())

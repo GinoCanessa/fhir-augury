@@ -33,10 +33,22 @@ public abstract class SourceDatabase : IDisposable
         // by PRAGMA busy_timeout, so shared cache + WAL surfaces "database table is
         // locked" errors under normal concurrency. WAL with private caches provides
         // proper non-blocking reader/writer concurrency.
+        //
+        // Disable Microsoft.Data.Sqlite connection pooling. The pool keeps native
+        // sqlite3 handles alive past SqliteConnection.Dispose. In production this
+        // is a marginal latency optimization that does not justify the cleanup
+        // hazard it creates in xUnit-parallel tests: any test that ever falls
+        // back to SqliteConnection.ClearAllPools() (a process-global hammer) can
+        // dispose native handles currently in use by concurrent tests, surfacing
+        // as `ObjectDisposedException: 'SQLitePCL.sqlite3'`. The per-request open
+        // cost without pooling is ~5ms on Windows — acceptable for this app's
+        // request rate. PRAGMA setup in `OpenConnection` is unaffected (it runs
+        // on every open regardless of pool state).
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
             Mode = mode,
+            Pooling = false,
         }.ToString();
     }
 

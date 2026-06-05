@@ -31,7 +31,7 @@ public class JiraWorkgroupSchemaMigrationTests : IDisposable
 
         // Pre-seed a legacy jira_workgroups schema without the WorkGroupCode column
         // or its index. Mirrors the column shape that existed prior to Phase 3.
-        using (SqliteConnection seed = new($"Data Source={dbPath}"))
+        using (SqliteConnection seed = new($"Data Source={dbPath};Pooling=False"))
         {
             seed.Open();
             using SqliteCommand create = seed.CreateCommand();
@@ -85,7 +85,7 @@ public class JiraWorkgroupSchemaMigrationTests : IDisposable
 
     private static bool ColumnExists(string dbPath, string table, string column)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath}");
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         conn.Open();
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = $"PRAGMA table_info({table})";
@@ -102,7 +102,7 @@ public class JiraWorkgroupSchemaMigrationTests : IDisposable
 
     private static bool IndexExists(string dbPath, string indexName)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath}");
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         conn.Open();
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='index' AND name=@n";

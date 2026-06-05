@@ -132,7 +132,7 @@ public class PlannerWorkQueueTests : IDisposable
 
     private static void BumpPlannerCompletionId(string dbPath, string key, string newCompletionId)
     {
-        using Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={dbPath}");
+        using Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
         command.CommandText = "UPDATE jira_processing_source_tickets SET CompletionId = @cid WHERE Key = @key";

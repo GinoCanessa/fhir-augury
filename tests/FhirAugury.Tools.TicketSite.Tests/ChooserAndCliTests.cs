@@ -170,7 +170,7 @@ public sealed class ChooserAndCliTests
 
     private static void SeedMinimalPlannerDb(string dbPath)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath}");
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         conn.Open();
         FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.PlannerDatabase.EnsureSchema(conn);
         using SqliteCommand cmd = conn.CreateCommand();

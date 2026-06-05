@@ -19,7 +19,7 @@ public static class PlannerFixture
 
     public static void CreateSchema(string dbPath)
     {
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
@@ -58,7 +58,7 @@ public static class PlannerFixture
     public static string InsertPlannedRepo(string dbPath, string ticketKey, string repoKey, string justification = "")
     {
         string id = Guid.NewGuid().ToString("N");
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "INSERT INTO planned_ticket_repos (Id, IssueKey, RepoKey, RepoRevision, Justification) VALUES (@id, @issue, @repo, NULL, @just);";
@@ -73,7 +73,7 @@ public static class PlannerFixture
     public static string InsertPlannedRepoChange(string dbPath, string ticketKey, string ticketRepoId, string repoKey, int sequence, string filePath, string title = "")
     {
         string id = Guid.NewGuid().ToString("N");
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "INSERT INTO planned_ticket_repo_changes (Id, IssueKey, TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle) VALUES (@id, @issue, @repoId, @repo, @seq, @file, @title);";
@@ -90,7 +90,7 @@ public static class PlannerFixture
 
     public static void InsertJiraTicket(string dbPath, string key, string type, string? status, string? completionId, DateTimeOffset? completedAt)
     {
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "INSERT INTO jira_processing_source_tickets (Id, Key, Type, ProcessingStatus, CompletionId, CompletedProcessingAt) VALUES (@id, @key, @type, @status, @cid, @completed);";
@@ -105,7 +105,7 @@ public static class PlannerFixture
 
     public static void InsertPlannedTicket(string dbPath, string key)
     {
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "INSERT INTO planned_tickets (Id, Key) VALUES (@id, @key);";

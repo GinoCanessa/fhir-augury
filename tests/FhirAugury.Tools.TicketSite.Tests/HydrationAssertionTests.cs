@@ -45,7 +45,7 @@ public sealed class HydrationAssertionTests
     {
         string dbPath = NewDbPath();
         // Empty SQLite file, no preparer tables at all.
-        await using (SqliteConnection cn = new($"Data Source={dbPath}"))
+        await using (SqliteConnection cn = new($"Data Source={dbPath};Pooling=False"))
         {
             await cn.OpenAsync();
             await using SqliteCommand cmd = cn.CreateCommand();

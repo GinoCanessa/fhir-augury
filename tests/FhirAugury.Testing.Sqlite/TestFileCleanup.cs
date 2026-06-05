@@ -24,13 +24,19 @@ public static class TestFileCleanup
     }
 
     /// <summary>
-    /// Clears SQLite pools, forces finalization, and retries recursive directory delete
-    /// a few times to tolerate file handles still being released.
-    /// The first attempt does NOT clear pools, to avoid disrupting connections held
-    /// by parallel tests; pools are cleared lazily only when a retry is needed.
-    /// No-ops when the path is null/empty or the directory does not exist.
+    /// Retries recursive directory delete a few times to tolerate file handles
+    /// still being released. The first attempt does NOT clear pools, to avoid
+    /// disrupting connections held by parallel tests; pools are cleared lazily
+    /// only when a retry is needed. The retry fallback exists because
+    /// <see cref="SqliteConnection.ClearPool"/> (called per-instance by
+    /// <see cref="SourceDatabase.Dispose"/>) only releases the pooled native
+    /// handle synchronously inside the runtime, but Windows can take a brief
+    /// moment to release the underlying file lock. Test-only raw
+    /// <see cref="SqliteConnection"/>s use <c>;Pooling=False</c> in their
+    /// connection strings so they never need this fallback. No-ops when the
+    /// path is null/empty or the directory does not exist.
     /// </summary>
-    public static void SafeDeleteDirectory(string path, int maxAttempts = 5)
+    public static void SafeDeleteDirectory(string path, int maxAttempts = 12)
     {
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
             return;
@@ -56,15 +62,13 @@ public static class TestFileCleanup
     }
 
     /// <summary>
-    /// Clears SQLite pools, forces finalization, and retries deletion of a single
-    /// SQLite database file a few times to tolerate file handles still being released.
-    /// Also best-effort deletes the matching <c>-wal</c> and <c>-shm</c> sidecar
-    /// files written by SQLite's WAL journal mode.
-    /// The first attempt does NOT clear pools, to avoid disrupting connections held
-    /// by parallel tests; pools are cleared lazily only when a retry is needed.
-    /// No-ops when the path is null/empty or the file does not exist.
+    /// Retries deletion of a single SQLite database file a few times to tolerate
+    /// file handles still being released. Same lazy-pool-clear-on-retry semantics
+    /// as <see cref="SafeDeleteDirectory"/>. Also best-effort deletes the matching
+    /// <c>-wal</c> and <c>-shm</c> sidecar files written by SQLite's WAL journal
+    /// mode. No-ops when the path is null/empty or the file does not exist.
     /// </summary>
-    public static void SafeDeleteFile(string path, int maxAttempts = 5)
+    public static void SafeDeleteFile(string path, int maxAttempts = 12)
     {
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return;

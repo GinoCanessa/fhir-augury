@@ -57,7 +57,7 @@ public class ApplierDatabaseTests : IDisposable
 
     private HashSet<string> ListTables()
     {
-        using SqliteConnection connection = new($"Data Source={_dbPath}");
+        using SqliteConnection connection = new($"Data Source={_dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "SELECT name FROM sqlite_master WHERE type='table';";
@@ -72,7 +72,7 @@ public class ApplierDatabaseTests : IDisposable
 
     private HashSet<string> ListColumns(string table)
     {
-        using SqliteConnection connection = new($"Data Source={_dbPath}");
+        using SqliteConnection connection = new($"Data Source={_dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = $"PRAGMA table_info({table});";
@@ -87,7 +87,7 @@ public class ApplierDatabaseTests : IDisposable
 
     private bool HasUniqueIndexOver(string table, IReadOnlyList<string> expectedColumns)
     {
-        using SqliteConnection connection = new($"Data Source={_dbPath}");
+        using SqliteConnection connection = new($"Data Source={_dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand listCommand = connection.CreateCommand();
         listCommand.CommandText = $"PRAGMA index_list({table});";

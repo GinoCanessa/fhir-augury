@@ -83,7 +83,7 @@ public sealed class PreparedTicketWriteHandlerTests
 
     private static int Count(string dbPath, string table)
     {
-        using SqliteConnection connection = new($"Data Source={dbPath}");
+        using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = $"SELECT COUNT(*) FROM {table}";

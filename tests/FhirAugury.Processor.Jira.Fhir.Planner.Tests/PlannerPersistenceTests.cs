@@ -516,7 +516,7 @@ public sealed class PlannerPersistenceTests
 
     private static SqliteConnection OpenConn(string path)
     {
-        SqliteConnection conn = new($"Data Source={path}");
+        SqliteConnection conn = new($"Data Source={path};Pooling=False");
         conn.Open();
         return conn;
     }

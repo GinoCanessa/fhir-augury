@@ -134,7 +134,7 @@ public sealed class PlannerSubSiteTests
             Assert.Equal(0, built.SurvivingTicketCount);
 
             // Confirm child tables also got trimmed.
-            await using SqliteConnection conn = new($"Data Source={built.TempDbPath};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={built.TempDbPath};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT (SELECT count(*) FROM planned_ticket_repos), (SELECT count(*) FROM planned_ticket_repo_changes)";
@@ -156,7 +156,7 @@ public sealed class PlannerSubSiteTests
         // should self-heal by calling PlannerDatabase.EnsureSchema and produce
         // a fully-tabled output.
         using TempScope scope = new();
-        await using (SqliteConnection conn = new($"Data Source={scope.DbPath}"))
+        await using (SqliteConnection conn = new($"Data Source={scope.DbPath};Pooling=False"))
         {
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
@@ -168,7 +168,7 @@ public sealed class PlannerSubSiteTests
         PlannerDbTrimmer.BuildResult built = await PlannerDbTrimmer.BuildAsync(scope.DbPath, ResolvedFilters.None, CancellationToken.None);
         try
         {
-            await using SqliteConnection conn = new($"Data Source={built.TempDbPath};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={built.TempDbPath};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='planned_ticket_topic_repos'";
@@ -202,7 +202,7 @@ public sealed class PlannerSubSiteTests
         try
         {
             await File.WriteAllBytesAsync(tempDbPath, dbBytes);
-            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly");
+            await using SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
             await conn.OpenAsync();
             await using SqliteCommand cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT count(*) FROM planned_ticket_topic_repos";

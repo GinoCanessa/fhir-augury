@@ -59,7 +59,7 @@ internal static class PreparerTestDb
             await preparer.SavePreparedTicketAsync(payload);
         }
 
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         foreach (SourceTicketSeed ticket in tickets)
         {
@@ -152,7 +152,7 @@ internal static class PreparerTestDb
             }
         }
 
-        await using SqliteConnection cp = new($"Data Source={dbPath}");
+        await using SqliteConnection cp = new($"Data Source={dbPath};Pooling=False");
         await cp.OpenAsync();
         await using SqliteCommand checkpoint = cp.CreateCommand();
         checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";

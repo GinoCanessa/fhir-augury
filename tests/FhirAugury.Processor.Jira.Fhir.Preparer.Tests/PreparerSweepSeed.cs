@@ -35,7 +35,7 @@ internal static class PreparerSweepSeed
 
     public static async Task InsertHydrationRowAsync(string dbPath, string ticketKey, string status)
     {
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         await using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =

@@ -266,6 +266,7 @@ public class DictionaryDatabaseTests : IDisposable
         {
             DataSource = dbPath,
             Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
         }.ToString();
         SqliteConnection conn = new SqliteConnection(cs);
         conn.Open();
