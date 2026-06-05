@@ -8,6 +8,7 @@ using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Planner.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 using Microsoft.Data.Sqlite;
@@ -49,6 +50,7 @@ public sealed class PlannerTicketHandlerTests
 
         Assert.True(await fixture.Database.PlanExistsAsync(fixture.Item.Key));
         Assert.Equal(ProcessingStatusValues.Complete, fixture.Item.ProcessingStatus);
+        Assert.Equal(1, fixture.Hydrator.Calls);
     }
 
     [Fact]
@@ -66,6 +68,7 @@ public sealed class PlannerTicketHandlerTests
         Assert.False(await fixture.Database.PlanExistsAsync(fixture.Item.Key));
         Assert.Equal(ProcessingStatusValues.Error, fixture.Item.ProcessingStatus);
         Assert.Equal(2, fixture.Item.AgentExitCode);
+        Assert.Equal(0, fixture.Hydrator.Calls);
     }
 
     [Fact]
@@ -149,6 +152,7 @@ public sealed class PlannerTicketHandlerTests
             FakeRunner runner = new((command, context) => runAsync(command, context, Database));
             FakeDiscoveryClient discovery = new();
             PlannerAgentCommandTokenProvider tokenProvider = new(Options.Create(plannerOptions));
+            Hydrator = new NoOpHydrator(Database);
             Handler = new PlannerTicketHandler(
                 new JiraAgentCommandRenderer(Options.Create(jiraOptions)),
                 runner,
@@ -156,6 +160,7 @@ public sealed class PlannerTicketHandlerTests
                 discovery,
                 tokenProvider,
                 Database,
+                Hydrator,
                 Options.Create(processingOptions),
                 Options.Create(plannerOptions),
                 NullLogger<PlannerTicketHandler>.Instance);
@@ -177,6 +182,7 @@ public sealed class PlannerTicketHandlerTests
         public PlannerDatabase Database { get; }
         public PlannerTicketHandler Handler { get; }
         public JiraProcessingSourceTicketRecord Item { get; }
+        public NoOpHydrator Hydrator { get; }
 
         public void Dispose()
         {
@@ -201,5 +207,16 @@ public sealed class PlannerTicketHandlerTests
         public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct) => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>([]);
         public Task<JiraIssueSummaryEntry?> GetTicketAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.FromResult<JiraIssueSummaryEntry?>(null);
         public Task MarkProcessedAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    public sealed class NoOpHydrator(PlannerDatabase database)
+        : PlannedTicketHydrator(new HttpClient { BaseAddress = new Uri("http://unused/") }, database, NullLogger<PlannedTicketHydrator>.Instance)
+    {
+        public int Calls { get; private set; }
+        public override Task HydrateAsync(string issueKey, CancellationToken ct)
+        {
+            Calls++;
+            return Task.CompletedTask;
+        }
     }
 }

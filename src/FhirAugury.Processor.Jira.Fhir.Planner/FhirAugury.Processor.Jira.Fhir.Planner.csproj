@@ -17,5 +17,6 @@
     <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processing.Jira.Common\FhirAugury.Processing.Jira.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner.Persistence\FhirAugury.Processor.Jira.Fhir.Planner.Persistence.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner.Hydration\FhirAugury.Processor.Jira.Fhir.Planner.Hydration.csproj" />
   </ItemGroup>
 </Project>
