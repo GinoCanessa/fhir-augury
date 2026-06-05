@@ -25,14 +25,14 @@ public static class TestFileCleanup
     /// <summary>
     /// Clears SQLite pools, forces finalization, and retries recursive directory delete
     /// a few times to tolerate file handles still being released.
+    /// The first attempt does NOT clear pools, to avoid disrupting connections held
+    /// by parallel tests; pools are cleared lazily only when a retry is needed.
     /// No-ops when the path is null/empty or the directory does not exist.
     /// </summary>
     public static void SafeDeleteDirectory(string path, int maxAttempts = 5)
     {
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
             return;
-
-        ClearSqlitePools();
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -43,10 +43,12 @@ public static class TestFileCleanup
             }
             catch (IOException) when (attempt < maxAttempts)
             {
+                ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
             }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts)
             {
+                ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
             }
         }
@@ -57,14 +59,14 @@ public static class TestFileCleanup
     /// SQLite database file a few times to tolerate file handles still being released.
     /// Also best-effort deletes the matching <c>-wal</c> and <c>-shm</c> sidecar
     /// files written by SQLite's WAL journal mode.
+    /// The first attempt does NOT clear pools, to avoid disrupting connections held
+    /// by parallel tests; pools are cleared lazily only when a retry is needed.
     /// No-ops when the path is null/empty or the file does not exist.
     /// </summary>
     public static void SafeDeleteFile(string path, int maxAttempts = 5)
     {
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
             return;
-
-        ClearSqlitePools();
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -75,10 +77,12 @@ public static class TestFileCleanup
             }
             catch (IOException) when (attempt < maxAttempts)
             {
+                ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
             }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts)
             {
+                ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
             }
         }

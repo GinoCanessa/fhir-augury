@@ -24,7 +24,7 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private static GitHubIssueRecord MakeIssue(string repo, int number, string title, string? body = null) => new()

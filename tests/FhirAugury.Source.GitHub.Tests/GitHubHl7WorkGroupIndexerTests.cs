@@ -29,8 +29,8 @@ public sealed class GitHubHl7WorkGroupIndexerTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
-        try { if (Directory.Exists(_workDir)) Directory.Delete(_workDir, recursive: true); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_workDir);
     }
 
     private string WriteFixture(string body)

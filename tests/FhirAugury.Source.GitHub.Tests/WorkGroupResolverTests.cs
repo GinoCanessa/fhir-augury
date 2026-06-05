@@ -26,7 +26,7 @@ public sealed class WorkGroupResolverTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private void Seed(params (string Code, string Name, bool Retired)[] rows)
