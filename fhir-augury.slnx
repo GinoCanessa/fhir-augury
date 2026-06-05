@@ -20,6 +20,7 @@
     <Project Path="src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj" />
     <Project Path="src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner/FhirAugury.Processor.Jira.Fhir.Planner.csproj" />

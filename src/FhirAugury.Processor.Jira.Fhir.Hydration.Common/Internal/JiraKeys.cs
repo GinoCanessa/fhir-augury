@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.Internal;
+namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 
 internal static partial class JiraKeys
 {

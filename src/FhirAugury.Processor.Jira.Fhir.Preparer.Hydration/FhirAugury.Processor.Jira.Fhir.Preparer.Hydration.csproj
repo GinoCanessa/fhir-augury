@@ -11,6 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Hydration.Common\FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
   </ItemGroup>
 

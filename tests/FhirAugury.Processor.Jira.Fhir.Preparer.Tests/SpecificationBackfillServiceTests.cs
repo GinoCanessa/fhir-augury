@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;

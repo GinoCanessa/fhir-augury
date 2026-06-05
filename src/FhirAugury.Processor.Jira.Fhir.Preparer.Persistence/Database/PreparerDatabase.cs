@@ -2,6 +2,7 @@ using System.Globalization;
 using FhirAugury.Common.Database;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -11,7 +12,8 @@ using Microsoft.Extensions.Logging;
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 
 public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> logger, bool readOnly = false)
-    : FhirAugury.Processing.Common.Database.ProcessingDatabase(dbPath, logger, readOnly)
+    : FhirAugury.Processing.Common.Database.ProcessingDatabase(dbPath, logger, readOnly),
+      IHydrationTargetDatabase
 {
     public string DatabasePath { get; } = dbPath;
 
@@ -1333,6 +1335,86 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Explicit-interface mapping from the shared neutral
+    /// <see cref="HydrationBatch"/> shape onto the preparer's concrete
+    /// <see cref="PreparedTicketHydrationBatch"/>. The field shapes are
+    /// identical by design, so this is a mechanical 1:1 copy that
+    /// delegates to the existing <see cref="SaveHydrationAsync(PreparedTicketHydrationBatch, CancellationToken)"/>.
+    /// </summary>
+    Task IHydrationTargetDatabase.SaveHydrationAsync(HydrationBatch batch, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        PreparedTicketHydrationRow parent = new(
+            TicketKey: batch.Parent.TicketKey,
+            Priority: batch.Parent.Priority,
+            Resolution: batch.Parent.Resolution,
+            ResolutionDescriptionPlain: batch.Parent.ResolutionDescriptionPlain,
+            Specification: batch.Parent.Specification,
+            RaisedInVersion: batch.Parent.RaisedInVersion,
+            SelectedBallot: batch.Parent.SelectedBallot,
+            ChangeCategory: batch.Parent.ChangeCategory,
+            Impact: batch.Parent.Impact,
+            Labels: batch.Parent.Labels,
+            CommentCount: batch.Parent.CommentCount,
+            DescriptionPlain: batch.Parent.DescriptionPlain,
+            HydratedAt: batch.Parent.HydratedAt,
+            HydrationStatus: batch.Parent.HydrationStatus,
+            HydrationReason: batch.Parent.HydrationReason);
+
+        List<PreparedJiraHydrationRow> jiraRows = new(batch.JiraRows.Count);
+        foreach (HydrationJiraRow r in batch.JiraRows)
+        {
+            jiraRows.Add(new PreparedJiraHydrationRow(
+                r.TicketKey, r.JiraKey, r.Title, r.Status, r.Type, r.Priority,
+                r.Resolution, r.ResolutionDescriptionPlain, r.WorkGroup, r.Specification,
+                r.UpdatedAt, r.Url, r.HydratedAt, r.HydrationStatus, r.HydrationReason));
+        }
+
+        List<PreparedZulipHydrationRow> zulipRows = new(batch.ZulipRows.Count);
+        foreach (HydrationZulipRow r in batch.ZulipRows)
+        {
+            zulipRows.Add(new PreparedZulipHydrationRow(
+                r.TicketKey, r.ZulipThreadId, r.StreamId, r.StreamName, r.Topic,
+                r.MessageCount, r.FirstMessageAt, r.LastMessageAt, r.FirstMessageExcerpt,
+                r.Url, r.HydratedAt, r.HydrationStatus, r.HydrationReason));
+        }
+
+        List<PreparedGitHubHydrationRow> githubRows = new(batch.GitHubRows.Count);
+        foreach (HydrationGitHubRow r in batch.GitHubRows)
+        {
+            githubRows.Add(new PreparedGitHubHydrationRow(
+                r.TicketKey, r.GitHubItemId, r.Owner, r.Repo, r.Number, r.Path,
+                r.Title, r.State, r.IsPullRequest, r.Labels, r.UpdatedAt, r.Url,
+                r.HydratedAt, r.HydrationStatus, r.HydrationReason));
+        }
+
+        List<PreparedRepoHydrationRow> repoRows = new(batch.RepoRows.Count);
+        foreach (HydrationRepoRow r in batch.RepoRows)
+        {
+            repoRows.Add(new PreparedRepoHydrationRow(
+                r.TicketKey, r.Repo, r.Description, r.WorkGroup, r.Specification,
+                r.CategoryDetail, r.Url, r.HydratedAt, r.HydrationStatus, r.HydrationReason));
+        }
+
+        List<PreparedTicketJiraXrefRow> xrefRows = new(batch.JiraXrefRows.Count);
+        foreach (HydrationJiraXrefRow r in batch.JiraXrefRows)
+        {
+            xrefRows.Add(new PreparedTicketJiraXrefRow(r.TicketKey, r.JiraKey, r.Source));
+        }
+
+        PreparedTicketHydrationBatch concrete = new(
+            TicketKey: batch.TicketKey,
+            Parent: parent,
+            JiraRows: jiraRows,
+            ZulipRows: zulipRows,
+            GitHubRows: githubRows,
+            RepoRows: repoRows,
+            JiraXrefRows: xrefRows);
+
+        return SaveHydrationAsync(concrete, ct);
     }
 
     public async Task<PreparedTicketHydrationReadModel?> GetHydrationAsync(string key, CancellationToken ct = default)

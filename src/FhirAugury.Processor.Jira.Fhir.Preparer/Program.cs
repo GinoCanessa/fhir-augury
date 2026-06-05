@@ -8,6 +8,7 @@ using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Hosting;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hosting;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
@@ -47,7 +48,7 @@ builder.Services.AddOptions<PreparerServiceOptions>()
 // Register the hydration sweeper hosted service BEFORE AddJiraProcessing so it
 // starts before ProcessingHostedService<JiraProcessingSourceTicketRecord> and
 // JiraTicketSyncWorker. Microsoft.Extensions.Hosting honors registration order.
-builder.Services.AddHostedService<HydrationSweeperHostedService>();
+builder.Services.AddHostedService<FhirAugury.Processor.Jira.Fhir.Preparer.Hosting.HydrationSweeperHostedService>();
 
 builder.Services.AddJiraProcessing(
     builder.Configuration,

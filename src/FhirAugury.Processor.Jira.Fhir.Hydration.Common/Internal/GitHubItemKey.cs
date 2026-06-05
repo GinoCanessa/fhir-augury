@@ -1,12 +1,12 @@
 using System.Text.RegularExpressions;
 
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.Internal;
+namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 
 /// <summary>
-/// Inline parser for the GitHub item-id shapes the preparer-hydrator handles.
+/// Inline parser for the GitHub item-id shapes the hydrator handles.
 /// Mirrors the spirit of <c>GitHubUrlHelper.ResolveXRef</c>/<c>TryParseFileId</c>
 /// in <c>FhirAugury.Source.GitHub</c>; duplicated here to avoid a project
-/// reference into source-service internals (see plan §Phase 4 Step 2).
+/// reference into source-service internals.
 /// </summary>
 internal static partial class GitHubItemKey
 {

@@ -1,4 +1,4 @@
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.Internal;
+namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 
 /// <summary>
 /// Subset of <c>ItemResponse</c> shape returned by Source.Jira / Source.GitHub.

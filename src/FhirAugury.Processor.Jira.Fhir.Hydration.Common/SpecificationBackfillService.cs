@@ -6,7 +6,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
+namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 
 /// <summary>
 /// Service-side <c>jira_processing_source_tickets.Specification</c>
@@ -18,10 +18,11 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Lifted from <c>tools/preparer-site/SpecificationBackfill</c>. The
-/// hard-fail surfacing is now a typed result (<see cref="SpecificationBackfillResult.Failure"/>)
-/// instead of a CLI exit code: callers (the startup hosted service vs.
-/// the admin endpoint) decide how to react.
+/// Lifted from the preparer-side hydration project so the planner can
+/// share the same backfill behavior. The hard-fail surfacing is a typed
+/// result (<see cref="SpecificationBackfillResult.Failure"/>) instead
+/// of a CLI exit code: callers (the startup hosted service vs. the
+/// admin endpoint) decide how to react.
 /// </para>
 /// <para>
 /// Idempotent: the eligibility query only returns rows whose
@@ -37,11 +38,11 @@ public class SpecificationBackfillService(
     private const int BulkPageSize = 500;
     private const int SqliteInBatchSize = 500;
 
-    public virtual async Task<SpecificationBackfillResult> RunAsync(string preparerDbPath, CancellationToken ct)
+    public virtual async Task<SpecificationBackfillResult> RunAsync(string processorDbPath, CancellationToken ct)
     {
-        ArgumentException.ThrowIfNullOrEmpty(preparerDbPath);
+        ArgumentException.ThrowIfNullOrEmpty(processorDbPath);
 
-        List<string> emptyKeys = await SpecificationBackfillQueries.ListEmptySpecificationKeysAsync(preparerDbPath, ct).ConfigureAwait(false);
+        List<string> emptyKeys = await SpecificationBackfillQueries.ListEmptySpecificationKeysAsync(processorDbPath, ct).ConfigureAwait(false);
         if (emptyKeys.Count == 0)
         {
             logger.LogInformation("Specification backfill skipped: no jira_processing_source_tickets rows with empty Specification.");
@@ -87,7 +88,7 @@ public class SpecificationBackfillService(
             return new SpecificationBackfillResult(0, 0, 0, new SpecificationBackfillFailure(detail, null, null));
         }
 
-        (int updated, int stillEmpty, int notFound) = await ApplyAsync(preparerDbPath, emptyKeys, resolved, ct).ConfigureAwait(false);
+        (int updated, int stillEmpty, int notFound) = await ApplyAsync(processorDbPath, emptyKeys, resolved, ct).ConfigureAwait(false);
         logger.LogInformation(
             "Specification backfill complete: {Updated} updated, {StillEmpty} left empty, {NotFound} not found in Jira source.",
             updated,
