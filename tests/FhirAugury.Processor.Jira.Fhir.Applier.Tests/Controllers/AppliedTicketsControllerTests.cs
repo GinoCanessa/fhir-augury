@@ -5,6 +5,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Push;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -44,7 +45,7 @@ public class AppliedTicketsControllerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        TestFileCleanup.SafeDeleteDirectory(_root);
     }
 
     private AppliedTicketsController NewController(IGitPushService push, IEnumerable<string>? configuredRepoFullNames = null)

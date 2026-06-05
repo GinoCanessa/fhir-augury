@@ -8,6 +8,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Workspace;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -46,7 +47,7 @@ public class ApplierTicketHandlerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        TestFileCleanup.SafeDeleteDirectory(_root);
     }
 
     private sealed record SutBundle(

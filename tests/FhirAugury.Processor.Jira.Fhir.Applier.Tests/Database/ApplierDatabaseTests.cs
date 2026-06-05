@@ -1,5 +1,5 @@
-using System.IO;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -16,10 +16,7 @@ public class ApplierDatabaseTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_dbPath))
-        {
-            File.Delete(_dbPath);
-        }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     [Fact]

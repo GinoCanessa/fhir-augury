@@ -1,4 +1,3 @@
-using System.IO;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
@@ -7,6 +6,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Database;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -19,8 +19,8 @@ public class PlannerWorkQueueTests : IDisposable
 
     public void Dispose()
     {
-        if (File.Exists(_plannerPath)) File.Delete(_plannerPath);
-        if (File.Exists(_applierPath)) File.Delete(_applierPath);
+        TestFileCleanup.SafeDeleteFile(_plannerPath);
+        TestFileCleanup.SafeDeleteFile(_applierPath);
     }
 
     private PlannerWorkQueue NewQueue(IReadOnlyCollection<string>? typeFilter = null)

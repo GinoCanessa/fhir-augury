@@ -2,6 +2,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -14,8 +15,8 @@ public class RepoWorkspaceManagerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_workingDir)) Directory.Delete(_workingDir, true);
-        if (File.Exists(_dbPath)) File.Delete(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_workingDir);
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private (RepoWorkspaceManager Manager, FakeGitProcessRunner Git, RepoBaselineStore Baselines, ApplierRepoOptions Repo) NewSut(
@@ -175,7 +176,7 @@ public class RepoWorkspaceManagerTests : IDisposable
         // delete the dir so the manager's "if Directory.Exists" guard runs.
         git.Respond("worktree remove", () =>
         {
-            if (Directory.Exists(worktree)) Directory.Delete(worktree, true);
+            TestFileCleanup.SafeDeleteDirectory(worktree);
             return new GitProcessResult(0, string.Empty, string.Empty);
         });
 

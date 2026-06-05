@@ -4,6 +4,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -16,8 +17,8 @@ public class BaselineSyncServiceTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_workingDir)) Directory.Delete(_workingDir, true);
-        if (File.Exists(_dbPath)) File.Delete(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_workingDir);
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private (BaselineSyncService Svc, RepoBaselineStore Baselines, RepoWorkspaceManager Manager, FakeGitProcessRunner Git, ApplierRepoOptions Repo, ApplierOptions Options) NewSut(
