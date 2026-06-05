@@ -53,6 +53,8 @@ internal static class PlannerDbTrimmer
             {
                 DataSource = tempPath,
                 Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false, // one-shot trim; downstream File.ReadAllBytes
+                                 // must see no pooled native handle on tempPath.
             };
             await using (SqliteConnection connection = new(builder.ConnectionString))
             {
@@ -150,7 +152,6 @@ internal static class PlannerDbTrimmer
                 vacuum.CommandText = "VACUUM";
                 await vacuum.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
-            SqliteConnection.ClearAllPools();
 
             return new BuildResult(tempPath, surviving);
         }

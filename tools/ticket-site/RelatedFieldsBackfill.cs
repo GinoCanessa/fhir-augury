@@ -41,6 +41,9 @@ internal static class RelatedFieldsBackfill
         {
             DataSource = tempDbPath,
             Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false, // one-shot schema/backfill + VACUUM; downstream
+                             // File.ReadAllBytes must see no pooled native
+                             // handle on tempDbPath.
         };
 
         await using (SqliteConnection connection = new(builder.ConnectionString))
@@ -80,8 +83,6 @@ internal static class RelatedFieldsBackfill
             cmd.CommandText = "VACUUM";
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
-
-        SqliteConnection.ClearAllPools();
     }
 
     private static async Task EnsureSchemaAsync(SqliteConnection connection, CancellationToken ct)
@@ -138,6 +139,10 @@ internal static class RelatedFieldsBackfill
         {
             DataSource = jiraSourceDbPath,
             Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false, // one-shot per PopulateAsync call; preserves the
+                             // pre-edit behaviour of the now-removed
+                             // SqliteConnection.ClearAllPools() that also
+                             // cleared this source pool.
         };
         await using SqliteConnection sourceConn = new(sourceBuilder.ConnectionString);
         await sourceConn.OpenAsync(ct).ConfigureAwait(false);

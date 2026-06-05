@@ -52,6 +52,8 @@ internal static class PreparerDbTrimmer
             {
                 DataSource = tempPath,
                 Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false, // one-shot trim; downstream File.ReadAllBytes
+                                 // must see no pooled native handle on tempPath.
             };
             await using SqliteConnection connection = new(builder.ConnectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
