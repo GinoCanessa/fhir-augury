@@ -36,6 +36,9 @@
     <!-- Shared sql.js bytes (emitted into each sub-site's assets/) -->
     <EmbeddedResource Include="web-assets\shared\sql-wasm.js" LogicalName="web-assets/shared/sql-wasm.js" />
     <EmbeddedResource Include="web-assets\shared\sql-wasm.wasm" LogicalName="web-assets/shared/sql-wasm.wasm" />
+    <!-- Shared Markdown renderer + sanitizer (emitted into each sub-site's assets/) -->
+    <EmbeddedResource Include="web-assets\shared\marked.min.js" LogicalName="web-assets/shared/marked.min.js" />
+    <EmbeddedResource Include="web-assets\shared\purify.min.js" LogicalName="web-assets/shared/purify.min.js" />
     <!-- Chooser landing page -->
     <EmbeddedResource Include="web-assets\chooser\index.template.html" LogicalName="web-assets/chooser/index.template.html" />
     <EmbeddedResource Include="web-assets\chooser\chooser.css" LogicalName="web-assets/chooser/chooser.css" />
