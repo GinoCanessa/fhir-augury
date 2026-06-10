@@ -164,12 +164,17 @@
       { '$k': key });
 
     let html = '<h2>' + escape(summary.Key) + ' — ' + escape(ticketTitle(summary.Key)) + '</h2>';
-    html += '<h3>Resolution summary</h3><div class="md">' + md(summary.ResolutionSummary) + '</div>';
-    html += '<h3>Feature proposal</h3><div class="md">' + md(summary.FeatureProposal) + '</div>';
-    html += '<h3>Design rationale</h3><div class="md">' + md(summary.DesignRationale) + '</div>';
+    function section(label, bodyHtml, open) {
+      return '<details class="accordion"' + (open ? ' open' : '') + '>' +
+        '<summary><h3>' + escape(label) + '</h3></summary>' +
+        '<div class="accordion-body">' + bodyHtml + '</div></details>';
+    }
+    html += section('Resolution summary', '<div class="md">' + md(summary.ResolutionSummary) + '</div>', true);
+    html += section('Feature proposal', '<div class="md">' + md(summary.FeatureProposal) + '</div>', false);
+    html += section('Design rationale', '<div class="md">' + md(summary.DesignRationale) + '</div>', false);
 
     repos.forEach(repo => {
-      html += '<section class="repo-section"><h3>Repo: ' + escape(repo.RepoKey) + '</h3>';
+      html += '<details class="accordion repo-section"><summary><h3>Repo: ' + escape(repo.RepoKey) + '</h3></summary><div class="accordion-body">';
       if (repo.RepoRevision) html += '<p class="muted">Revision: ' + escape(repo.RepoRevision) + '</p>';
       if (repo.Justification) html += '<div class="md">' + md(repo.Justification) + '</div>';
 
@@ -217,7 +222,7 @@
         repoQuestions.forEach(q => html += '<li><div class="md">' + md(q.Question) + '</div></li>');
         html += '</ul>';
       }
-      html += '</section>';
+      html += '</div></details>';
     });
 
     app.innerHTML = html;
