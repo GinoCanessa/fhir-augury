@@ -86,6 +86,46 @@ pre {
   margin: 1.5rem 0;
 }
 
+/* Collapsible section chrome (applying ticket detail). Scoped to .accordion so
+   sanitized Markdown content may contain its own <details>/<summary> untouched. */
+.accordion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}
+.accordion > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--chip-bg);
+  color: var(--chip-fg);
+  font-weight: 600;
+  border-radius: 6px;
+}
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary::before {
+  content: '▸';
+  transition: transform 0.15s;
+}
+.accordion[open] > summary::before { transform: rotate(90deg); }
+.accordion[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.accordion > summary:hover { color: var(--accent); }
+.accordion > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.accordion > summary h3 { margin: 0; font-size: 1rem; display: inline; }
+.accordion-body { padding: 0.25rem 0.75rem 0.75rem; }
+
+.accordion.repo-section {
+  border-left: 3px solid var(--accent);
+  padding-left: 0;
+  margin: 0.75rem 0;
+}
+
 .muted { color: var(--muted); }
 .tooltip { border-bottom: 1px dotted var(--muted); cursor: help; }
 
