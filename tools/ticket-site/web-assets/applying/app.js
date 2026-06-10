@@ -38,6 +38,18 @@
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // Render authored Markdown prose to sanitized HTML for innerHTML.
+  // marked parses Markdown (raw-HTML passthrough enabled); DOMPurify is the
+  // single sanitization layer. Ticket content is untrusted. If either global is
+  // missing, degrade to today's escaped-paragraph behavior rather than throwing.
+  function md(s) {
+    if (s == null || s === '') return '';
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+      return '<p>' + escape(s) + '</p>';
+    }
+    return DOMPurify.sanitize(marked.parse(String(s)));
+  }
+
   function query(sql, params) {
     const stmt = db.prepare(sql);
     if (params) stmt.bind(params);
@@ -152,21 +164,21 @@
       { '$k': key });
 
     let html = '<h2>' + escape(summary.Key) + ' — ' + escape(ticketTitle(summary.Key)) + '</h2>';
-    html += '<h3>Resolution summary</h3><p>' + escape(summary.ResolutionSummary) + '</p>';
-    html += '<h3>Feature proposal</h3><p>' + escape(summary.FeatureProposal) + '</p>';
-    html += '<h3>Design rationale</h3><p>' + escape(summary.DesignRationale) + '</p>';
+    html += '<h3>Resolution summary</h3><div class="md">' + md(summary.ResolutionSummary) + '</div>';
+    html += '<h3>Feature proposal</h3><div class="md">' + md(summary.FeatureProposal) + '</div>';
+    html += '<h3>Design rationale</h3><div class="md">' + md(summary.DesignRationale) + '</div>';
 
     repos.forEach(repo => {
       html += '<section class="repo-section"><h3>Repo: ' + escape(repo.RepoKey) + '</h3>';
       if (repo.RepoRevision) html += '<p class="muted">Revision: ' + escape(repo.RepoRevision) + '</p>';
-      if (repo.Justification) html += '<p>' + escape(repo.Justification) + '</p>';
+      if (repo.Justification) html += '<div class="md">' + md(repo.Justification) + '</div>';
 
       const repoChanges = changes.filter(c => c.RepoKey === repo.RepoKey);
       if (repoChanges.length) {
         html += '<h4>Changes</h4><ul>';
         repoChanges.forEach(c => {
-          html += '<li><strong>' + escape(c.ChangeTitle) + '</strong> — <code>' + escape(c.FilePath) + '</code><br/>' +
-            escape(c.ChangeDescription);
+          html += '<li><strong>' + escape(c.ChangeTitle) + '</strong> — <code>' + escape(c.FilePath) + '</code>' +
+            '<div class="md">' + md(c.ChangeDescription) + '</div>';
           try {
             const lines = JSON.parse(c.ReplacementLines || '[]');
             if (lines.length) {
@@ -181,28 +193,28 @@
       const repoImpacts = impacts.filter(i => i.RepoKey === repo.RepoKey);
       if (repoImpacts.length) {
         html += '<h4>Impacts</h4><ul>';
-        repoImpacts.forEach(i => html += '<li><code>' + escape(i.AffectedFilePath) + '</code> — ' + escape(i.HowAffected) + '</li>');
+        repoImpacts.forEach(i => html += '<li><code>' + escape(i.AffectedFilePath) + '</code> — <div class="md">' + md(i.HowAffected) + '</div></li>');
         html += '</ul>';
       }
 
       const repoValidations = validations.filter(v => v.RepoKey === repo.RepoKey);
       if (repoValidations.length) {
         html += '<h4>Change validations</h4><ul>';
-        repoValidations.forEach(v => html += '<li>' + escape(v.Action) + '</li>');
+        repoValidations.forEach(v => html += '<li><div class="md">' + md(v.Action) + '</div></li>');
         html += '</ul>';
       }
 
       const repoTests = tests.filter(t => t.RepoKey === repo.RepoKey);
       if (repoTests.length) {
         html += '<h4>Testing considerations</h4><ul>';
-        repoTests.forEach(t => html += '<li>' + escape(t.Consideration) + '</li>');
+        repoTests.forEach(t => html += '<li><div class="md">' + md(t.Consideration) + '</div></li>');
         html += '</ul>';
       }
 
       const repoQuestions = questions.filter(q => q.RepoKey === repo.RepoKey);
       if (repoQuestions.length) {
         html += '<h4>Open questions</h4><ul>';
-        repoQuestions.forEach(q => html += '<li>' + escape(q.Question) + '</li>');
+        repoQuestions.forEach(q => html += '<li><div class="md">' + md(q.Question) + '</div></li>');
         html += '</ul>';
       }
       html += '</section>';
@@ -251,7 +263,7 @@
       { '$r': topic.RowId });
 
     let html = '<h2>' + escape(topic.ShortDescription) + '</h2>';
-    html += '<p>' + escape(topic.LongerDescription) + '</p>';
+    html += '<div class="md">' + md(topic.LongerDescription) + '</div>';
     html += '<h3>Spanned repos</h3><ul>';
     repos.forEach(r => html += '<li>' + escape(r.RepoKey) + '</li>');
     html += '</ul>';
