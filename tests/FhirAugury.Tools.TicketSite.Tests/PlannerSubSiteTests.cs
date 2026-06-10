@@ -117,6 +117,11 @@ public sealed class PlannerSubSiteTests
         string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "applying", "assets", "app.js"));
         Assert.Contains("marked.parse(", appJs, StringComparison.Ordinal);
         Assert.Contains("DOMPurify.sanitize(", appJs, StringComparison.Ordinal);
+        // Pin the collapsible accordion structure emitted by renderTicket.
+        Assert.Contains("<details class=\"accordion\"", appJs, StringComparison.Ordinal);
+        Assert.Contains("' open'", appJs, StringComparison.Ordinal);
+        Assert.Contains("Resolution summary", appJs, StringComparison.Ordinal);
+        Assert.Contains("accordion repo-section", appJs, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", OutputDirGuard.MarkerFileName)));
     }
 
