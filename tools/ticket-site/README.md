@@ -166,8 +166,14 @@ dotnet run --project tools/ticket-site -- \
   --title "Applying — May 2026"
 ```
 
+
 Building both into the same `--out` is the expected workflow — the
 chooser at `<out>/index.html` will then surface both cards as live.
+E.g.:
+
+```bash
+dotnet run --project tools/ticket-site -- --planner-db ./cache/jira-planner.db --preparer-db ./cache/jira-preparer.db --out ./cache/jira-ticket-site --title "June 10, 2026"
+```
 
 `--spec` matches the hydrated `Specification` value (Jira
 `customfield_11302`, e.g. `'FHIR Core (FHIR)'` or `fhir-extensions`);
