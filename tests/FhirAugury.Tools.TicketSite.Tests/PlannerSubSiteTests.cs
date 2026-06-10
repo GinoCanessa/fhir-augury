@@ -97,10 +97,26 @@ public sealed class PlannerSubSiteTests
         // Sub-site script tags present
         Assert.Contains("assets/sql-wasm.js", html, StringComparison.Ordinal);
         Assert.Contains("assets/app.js", html, StringComparison.Ordinal);
+        // Vendored Markdown renderer + sanitizer referenced...
+        Assert.Contains("assets/marked.min.js", html, StringComparison.Ordinal);
+        Assert.Contains("assets/purify.min.js", html, StringComparison.Ordinal);
+        // ...and loaded BEFORE app.js (otherwise md() silently falls back to escape).
+        int markedIdx = html.IndexOf("assets/marked.min.js", StringComparison.Ordinal);
+        int purifyIdx = html.IndexOf("assets/purify.min.js", StringComparison.Ordinal);
+        int appIdx = html.IndexOf("assets/app.js", StringComparison.Ordinal);
+        Assert.True(markedIdx >= 0 && markedIdx < appIdx);
+        Assert.True(purifyIdx >= 0 && purifyIdx < appIdx);
         // Shared sql.js bytes emitted into the applying sub-site's assets/
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "assets", "sql-wasm.js")));
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "assets", "sql-wasm.wasm")));
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "assets", "app.js")));
+        // Vendored Markdown libs emitted into the applying sub-site's assets/
+        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "assets", "marked.min.js")));
+        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "assets", "purify.min.js")));
+        // The emitted app.js wires the marked -> DOMPurify render path (no JS test harness).
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "applying", "assets", "app.js"));
+        Assert.Contains("marked.parse(", appJs, StringComparison.Ordinal);
+        Assert.Contains("DOMPurify.sanitize(", appJs, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", OutputDirGuard.MarkerFileName)));
     }
 

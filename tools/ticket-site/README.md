@@ -376,6 +376,31 @@ To refresh:
 
 No automated update path is planned.
 
+### Markdown rendering (applying sub-site)
+
+The applying (planned) sub-site renders long-form prose fields
+(Resolution summary, Feature proposal, Design rationale, and per-repo
+prose) as Markdown. Two more libraries ship the same way — embedded
+under `web-assets/shared/` and copied into **each sub-site's**
+`assets/` folder on emit:
+
+- [`marked`](https://github.com/markedjs/marked) **18.0.5** —
+  vendored as `marked.min.js` (the package's `lib/marked.umd.js`
+  UMD/global build; marked 18 ships no separate minified browser
+  build). Parses Markdown to HTML. License: MIT.
+  - SHA-256: `2dc4769dfde29f51c7aca1a539c6407c789c8ea644cf8b7d01ded28a9c1d800b`
+- [`DOMPurify`](https://github.com/cure53/DOMPurify) **3.4.8** —
+  vendored as `purify.min.js` (`dist/purify.min.js` UMD build).
+  Sanitizes the rendered HTML before it reaches `innerHTML`; it is
+  the single sanitization layer for untrusted ticket prose.
+  License: Apache-2.0 / MPL-2.0.
+  - SHA-256: `b656113abe5f9b5f2c30c8b10462b7b4e947e10a49f561058822bc48e9601b4a`
+
+Identifiers, keys, titles, file paths and code blocks stay HTML-escaped;
+only authored prose is routed through `marked` + `DOMPurify`. To refresh,
+re-download the pinned versions into `web-assets/shared/`, update the
+hashes above, and rebuild.
+
 ## Known limitations
 
 - **No incremental mode for a single sub-site.** Every run rewrites
