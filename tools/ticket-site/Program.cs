@@ -118,6 +118,10 @@ public static class Program
             byte[] dbBytes;
             try
             {
+                await JiraContentBackfill.ApplyAsync(built.TempDbPath, "prepared_tickets",
+                    "prepared_ticket_jira_content", opts.JiraSourceDbPath,
+                    finalizeWithVacuum: false, Console.Error,
+                    CancellationToken.None).ConfigureAwait(false);
                 await RelatedFieldsBackfill.ApplyAsync(built.TempDbPath, opts.JiraSourceDbPath, Console.Error, CancellationToken.None).ConfigureAwait(false);
                 dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
             }
@@ -168,6 +172,10 @@ public static class Program
             try
             {
                 long plannedCount = built.SurvivingTicketCount;
+                await JiraContentBackfill.ApplyAsync(built.TempDbPath, "planned_tickets",
+                    "planned_ticket_jira_content", opts.JiraSourceDbPath,
+                    finalizeWithVacuum: true, Console.Error,
+                    CancellationToken.None).ConfigureAwait(false);
                 byte[] dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
                 PlannerSubSiteEmitter.Emit(subOut, siteTitle, f, dbBytes);
                 OutputDirGuard.WriteMarker(subOut, PlannerSubSiteEmitter.Kind, f, DateTimeOffset.UtcNow);
