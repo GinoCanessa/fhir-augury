@@ -110,6 +110,58 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 .ticket-header dt { font-weight: 600; color: var(--muted); }
 .ticket-header dd { margin: 0; }
+.ticket-header dd a { color: var(--link); }
+
+/* Collapsible section chrome (discussion ticket detail). Ported from the
+   applying sub-site, adapted to discussion's CSS variables. Scoped to
+   .accordion so sanitized HTML content may carry its own <details>/<summary>
+   untouched. */
+.accordion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}
+.accordion > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--row-alt);
+  color: var(--link);
+  font-weight: 600;
+  border-radius: 6px;
+}
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary::before {
+  content: '▸';
+  transition: transform 0.15s;
+}
+.accordion[open] > summary::before { transform: rotate(90deg); }
+.accordion[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.accordion > summary:hover { color: var(--link); }
+.accordion > summary:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.accordion > summary h3 { margin: 0; font-size: 1rem; display: inline; color: inherit; }
+.accordion-body { padding: 0.25rem 0.75rem 0.75rem; }
+.accordion.repo-section {
+  border-left: 3px solid var(--link);
+  padding-left: 0;
+  margin: 0.75rem 0;
+}
+
+/* Rendered (sanitized) HTML prose blocks (discussion request/resolution). */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0.4rem 0; }
+.md ul, .md ol { margin: 0.4rem 0; padding-left: 1.4rem; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.8rem 0 0.4rem 0; }
+.md code { background: var(--row-alt); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.md pre { margin: 0.4rem 0; }
+.md a { color: var(--link); }
 .related-sidebar { margin-top: 2rem; font-size: 0.9rem; }
 .related-sidebar ul { padding-left: 1.25rem; }
 .muted { color: var(--muted); }

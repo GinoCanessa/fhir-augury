@@ -78,18 +78,17 @@
       const parts = pathPart.split('/').filter(function (p) { return p.length > 0; });
       try {
         if (parts.length === 0) {
-          setBreadcrumb([{ label: 'Home', href: null }]);
+          setBreadcrumb([]);
           Views.landing(main);
         } else if (parts[0] === 'list') {
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'List', href: null }]);
+          setBreadcrumb([{ label: 'List', href: null }]);
           Views.list(main, null);
         } else if (parts[0] === 'topics') {
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'Topics', href: null }]);
+          setBreadcrumb([{ label: 'Topics', href: null }]);
           Views.topics(main);
         } else if (parts[0] === 'topic' && parts.length >= 2) {
           const topicId = decodeURIComponent(parts[1]);
           setBreadcrumb([
-            { label: 'Home', href: '#/' },
             { label: 'Topics', href: '#/topics' + currentHashSuffix() },
             { label: topicId, href: null },
           ]);
@@ -97,7 +96,6 @@
         } else if (parts[0] === 'ticket' && parts.length >= 2) {
           const key = decodeURIComponent(parts[1]);
           setBreadcrumb([
-            { label: 'Home', href: '#/' },
             { label: 'List', href: '#/list' },
             { label: key, href: null },
           ]);
@@ -110,7 +108,7 @@
             redirectToChipListView('wg', wg);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By workgroup', href: null }]);
+          setBreadcrumb([{ label: 'By workgroup', href: null }]);
           Views.crosscutIndex(main, 'by-workgroup');
         } else if (parts[0] === 'by-type') {
           if (parts.length >= 2) {
@@ -118,7 +116,7 @@
             redirectToChipListView('type', tv);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By type', href: null }]);
+          setBreadcrumb([{ label: 'By type', href: null }]);
           Views.crosscutIndex(main, 'by-type');
         } else if (parts[0] === 'by-artifact') {
           if (parts.length >= 2) {
@@ -126,7 +124,7 @@
             redirectToChipListView('artifact', av);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By artifact', href: null }]);
+          setBreadcrumb([{ label: 'By artifact', href: null }]);
           Views.crosscutIndex(main, 'by-artifact');
         } else if (parts[0] === 'by-page') {
           if (parts.length >= 2) {
@@ -134,7 +132,7 @@
             redirectToChipListView('page', pv);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By page', href: null }]);
+          setBreadcrumb([{ label: 'By page', href: null }]);
           Views.crosscutIndex(main, 'by-page');
         } else if (parts[0] === 'by-impact') {
           if (parts.length >= 2) {
@@ -142,7 +140,7 @@
             redirectToChipListView('impact', iv);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By impact', href: null }]);
+          setBreadcrumb([{ label: 'By impact', href: null }]);
           Views.crosscutIndex(main, 'by-impact');
         } else if (parts[0] === 'by-specification') {
           if (parts.length >= 2) {
@@ -150,10 +148,10 @@
             redirectToChipListView('spec', sv);
             return;
           }
-          setBreadcrumb([{ label: 'Home', href: '#/' }, { label: 'By specification', href: null }]);
+          setBreadcrumb([{ label: 'By specification', href: null }]);
           Views.crosscutIndex(main, 'by-specification');
         } else {
-          setBreadcrumb([{ label: 'Home', href: '#/' }]);
+          setBreadcrumb([]);
           Views.notFound(main, fullHash);
         }
       } catch (err) {
@@ -394,10 +392,37 @@
     main.appendChild(el('p', { class: 'error' }, msg));
   }
 
-  function setBreadcrumb(parts) {
+  // SECURITY: deliberate, sanitizer-gated exception to this file's
+  // "never innerHTML" rule. The request/resolution HTML is authored Jira
+  // content; DOMPurify is the single sanitization layer. Degrades to escaped
+  // text (textContent) when DOMPurify is unavailable.
+  function htmlBlock(rawHtml) {
+    const div = el('div', { class: 'md' });
+    if (rawHtml == null || rawHtml === '') return div;
+    if (typeof DOMPurify === 'undefined') { div.textContent = String(rawHtml); return div; }
+    div.innerHTML = DOMPurify.sanitize(String(rawHtml));
+    return div;
+  }
+
+  function accordion(labelText, bodyNode, open) {
+    const d = el('details', open ? { class: 'accordion', open: '' } : { class: 'accordion' });
+    const s = el('summary'); s.appendChild(el('h3', null, labelText)); d.appendChild(s);
+    const body = el('div', { class: 'accordion-body' }); body.appendChild(bodyNode); d.appendChild(body);
+    return d;
+  }
+
+  function setBreadcrumb(tail) {
     const bc = document.getElementById('breadcrumb');
     if (!bc) return;
     clearChildren(bc);
+    const hasTail = Array.isArray(tail) && tail.length > 0;
+    const parts = [
+      { label: 'Chooser', href: '../index.html' },
+      { label: 'Discussion', href: hasTail ? '#/' : null },
+    ];
+    if (hasTail) {
+      for (let i = 0; i < tail.length; i++) parts.push(tail[i]);
+    }
     for (let i = 0; i < parts.length; i++) {
       if (i > 0) bc.appendChild(document.createTextNode(' › '));
       const p = parts[i];
@@ -965,7 +990,12 @@
         dl.appendChild(el('dt', null, k));
         dl.appendChild(el('dd', null, v == null || v === '' ? '—' : String(v)));
       };
-      kv('Key', t.Key);
+      dl.appendChild(el('dt', null, 'Key'));
+      dl.appendChild(el('dd', null, el('a', {
+        href: 'https://jira.hl7.org/browse/' + encodeURIComponent(String(t.Key)),
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      }, String(t.Key))));
       kv('Title', t.Title);
       kv('Workgroup', t.WorkGroup);
       kv('Status', t.Status);
@@ -984,14 +1014,34 @@
       if (hydrationParent && hydrationParent.HydrationStatus === 'unresolved') {
         headerWrap.appendChild(el('p', { class: 'muted' }, 'Hydration unresolved: ' + String(hydrationParent.HydrationReason || '')));
       }
-      const jiraLink = el('p');
-      jiraLink.appendChild(el('a', {
-        href: 'https://jira.hl7.org/browse/' + encodeURIComponent(String(t.Key)),
-        target: '_blank',
-        rel: 'noopener noreferrer',
-      }, 'Open in Jira ↗'));
-      headerWrap.appendChild(jiraLink);
       main.appendChild(headerWrap);
+
+      // HTML request / resolution (sourced from prepared_ticket_jira_content,
+      // backfilled at emit time from jira.db). Older inlined DBs lack the
+      // table, so query defensively. Prefer the authored HTML; fall back to
+      // the already-inlined plain-text variant rendered as an escaped <pre>
+      // (never through htmlBlock — plain text may contain literal <…>).
+      let content = { rows: [] };
+      try {
+        content = query('SELECT DescriptionHtml, ResolutionDescriptionHtml FROM prepared_ticket_jira_content WHERE TicketKey = $k', { $k: key });
+      } catch (e) { content = { rows: [] }; }
+      const c = content.rows[0] || {};
+
+      const descHtml = c.DescriptionHtml;
+      const descPlain = hydrationParent ? hydrationParent.DescriptionPlain : null;
+      if (descHtml != null && descHtml !== '') {
+        main.appendChild(accordion('Original request', htmlBlock(descHtml), true));
+      } else if (descPlain != null && descPlain !== '') {
+        main.appendChild(accordion('Original request', el('pre', null, String(descPlain)), true));
+      }
+
+      const resHtml = c.ResolutionDescriptionHtml;
+      const resPlain = hydrationParent ? hydrationParent.ResolutionDescriptionPlain : null;
+      if (resHtml != null && resHtml !== '') {
+        main.appendChild(accordion('Proposed / accepted resolution', htmlBlock(resHtml), true));
+      } else if (resPlain != null && resPlain !== '') {
+        main.appendChild(accordion('Proposed / accepted resolution', el('pre', null, String(resPlain)), true));
+      }
 
       // Topic back-link(s): if this ticket is a member of one or more
       // topics, render one `Member of topic: <ShortDescription>` line
@@ -1019,23 +1069,14 @@
         main.appendChild(p);
       }
 
-      if (hydrationParent && hydrationParent.DescriptionPlain) {
-        const details = el('details');
-        details.appendChild(el('summary', null, 'Show Jira description'));
-        details.appendChild(el('pre', null, String(hydrationParent.DescriptionPlain)));
-        main.appendChild(details);
-      }
-
       const body = el('section', { class: 'ticket-body' });
       const sect = function (title, value) {
         if (value == null || value === '') return;
-        body.appendChild(el('h2', null, title));
-        body.appendChild(el('pre', null, String(value)));
+        body.appendChild(accordion(title, el('pre', null, String(value)), false));
       };
       const subsect = function (title, value) {
         if (value == null || value === '') return;
-        body.appendChild(el('h3', null, title));
-        body.appendChild(el('pre', null, String(value)));
+        body.appendChild(accordion(title, el('pre', null, String(value)), false));
       };
 
       sect('Request Summary', t.RequestSummary);
@@ -1047,26 +1088,22 @@
       sect('Existing Proposed', t.ExistingProposed);
 
       if (t.ProposalA || t.ProposalAJustification || t.ProposalAImpact) {
-        body.appendChild(el('h2', null, 'Proposal A'));
-        if (t.ProposalA) body.appendChild(el('pre', null, String(t.ProposalA)));
-        subsect('Justification', t.ProposalAJustification);
-        subsect('Impact', t.ProposalAImpact);
+        sect('Proposal A', t.ProposalA);
+        subsect('Proposal A — Justification', t.ProposalAJustification);
+        subsect('Proposal A — Impact', t.ProposalAImpact);
       }
       if (t.ProposalB || t.ProposalBJustification || t.ProposalBImpact) {
-        body.appendChild(el('h2', null, 'Proposal B'));
-        if (t.ProposalB) body.appendChild(el('pre', null, String(t.ProposalB)));
-        subsect('Justification', t.ProposalBJustification);
-        subsect('Impact', t.ProposalBImpact);
+        sect('Proposal B', t.ProposalB);
+        subsect('Proposal B — Justification', t.ProposalBJustification);
+        subsect('Proposal B — Impact', t.ProposalBImpact);
       }
       if (t.ProposalC || t.ProposalCJustification) {
-        body.appendChild(el('h2', null, 'Proposal C'));
-        if (t.ProposalC) body.appendChild(el('pre', null, String(t.ProposalC)));
-        subsect('Justification', t.ProposalCJustification);
+        sect('Proposal C', t.ProposalC);
+        subsect('Proposal C — Justification', t.ProposalCJustification);
       }
       if (t.Recommendation || t.RecommendationJustification) {
-        body.appendChild(el('h2', null, 'Recommendation'));
-        if (t.Recommendation) body.appendChild(el('pre', null, String(t.Recommendation)));
-        subsect('Justification', t.RecommendationJustification);
+        sect('Recommendation', t.Recommendation);
+        subsect('Recommendation — Justification', t.RecommendationJustification);
       }
 
       main.appendChild(body);
@@ -1418,7 +1455,6 @@
       // Overwrite the route-time breadcrumb placeholder with the
       // resolved short description.
       setBreadcrumb([
-        { label: 'Home', href: '#/' },
         { label: 'Topics', href: '#/topics' + currentHashSuffix() },
         { label: String(t.ShortDescription || topicId), href: null },
       ]);
