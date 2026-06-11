@@ -163,6 +163,38 @@ public sealed class PreparerSiteFilterTests
     }
 
     [Fact]
+    public async Task Render_DiscussionSpa_HasChooserBreadcrumbRoot_AndJiraContentWiring()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001", Project: "FHIR")]);
+
+        (int exit, _, _) = await RunMainAsync("--preparer-db", scope.DbPath, "--out", scope.OutDir);
+        Assert.Equal(0, exit);
+
+        // index.html must load DOMPurify before app.js (sanitizer-gated HTML).
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
+        int purifyIdx = html.IndexOf("assets/purify.min.js", StringComparison.Ordinal);
+        int appIdx = html.IndexOf("assets/app.js", StringComparison.Ordinal);
+        Assert.True(purifyIdx >= 0, "discussion index.html must load purify.min.js");
+        Assert.True(appIdx >= 0, "discussion index.html must load app.js");
+        Assert.True(purifyIdx < appIdx, "purify.min.js must load before app.js");
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
+        // Breadcrumb roots back to the chooser; the legacy "Open in Jira" link
+        // is gone (the Key is now the Jira link).
+        Assert.Contains("'../index.html'", appJs, StringComparison.Ordinal);
+        Assert.Contains("'Discussion'", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("Open in Jira", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("Show Jira description", appJs, StringComparison.Ordinal);
+        // New sanitized-HTML helper + content-table query.
+        Assert.Contains("function htmlBlock", appJs, StringComparison.Ordinal);
+        Assert.Contains("function accordion", appJs, StringComparison.Ordinal);
+        Assert.Contains("prepared_ticket_jira_content", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Marker_FirstRun_WritesMetaFile_WithFilterSet()
     {
         using TempScope scope = new();

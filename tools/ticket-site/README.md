@@ -70,6 +70,40 @@ not currently carry these fields). Without `--jira-source-db` the
 tables are present but empty and the SPA auto-hides the corresponding
 columns. The applying sub-site does not consume these tables.
 
+### Authored request / resolution HTML (both sub-sites)
+
+Both ticket views render the authored Jira **request** and
+**resolution** prose. The HTML for these lives only in the Jira source
+DB (`jira_issues.Description` / `jira_issues.ResolutionDescription`), so
+the emitter inlines a small per-ticket child table:
+
+| Table | Columns | Source |
+|-------|---------|--------|
+| `prepared_ticket_jira_content` (discussion) | `TicketKey TEXT PRIMARY KEY, DescriptionHtml TEXT, ResolutionDescriptionHtml TEXT` | `jira_issues.Description` / `jira_issues.ResolutionDescription` |
+| `planned_ticket_jira_content` (applying) | `TicketKey TEXT PRIMARY KEY, DescriptionHtml TEXT, ResolutionDescriptionHtml TEXT` | `jira_issues.Description` / `jira_issues.ResolutionDescription` |
+
+The table is always created in the inlined DB; rows are only populated
+when `--jira-source-db <path>` is supplied, and only for tickets where
+at least one of the two HTML values is present (the table stays sparse).
+This means the **applying** sub-site now also runs an emit-time
+jira-source backfill (previously only the discussion side did). On the
+planner path this backfill owns the final `VACUUM`/checkpoint, so the
+new table and rows are written into the inlined DB with no leftover
+`-wal`/`-shm` sidecars.
+
+Rendering is graceful:
+
+- Authored HTML is sanitized via `DOMPurify` before display (the single
+  XSS sanitization layer; if DOMPurify is unavailable the content
+  degrades to escaped text).
+- When no HTML is present, the SPA falls back to the already-inlined
+  plain-text variants (`*Plain` columns on the hydration tables),
+  rendered as an escaped `<pre>` (never through the sanitizer).
+- Each section is hidden only when both the HTML and plain variants are
+  empty, so a reviewer without `--jira-source-db` still sees useful
+  content.
+
+
 ### Prerequisite: hydrated DB
 
 `ticket-site` no longer hydrates anything itself. Each processor
@@ -267,6 +301,17 @@ links into the per-ticket detail (`#/ticket/<key>`), which groups
 content by repo (changes, impacts, validations, testing
 considerations, open questions).
 
+The `#/list` view is sortable (click any header; `Key` ascending by
+default) and filterable (a live text box matches `Key`, `Title`,
+`Workgroup`, `Spec`, and `Repos`, with a "N of M" count). The header is
+a title plus a `Chooser › Applying › …` breadcrumb that routes back to
+the chooser. The per-ticket detail leads with a **Ticket summary**
+expander (the `Key` links to Jira) followed by **Original request** /
+**Proposed / accepted resolution** sections (see [Authored request /
+resolution HTML](#authored-request--resolution-html-both-sub-sites)),
+then the resolution summary, feature proposal, design rationale, and the
+per-repo groups.
+
 ## Flags
 
 | Flag | Default | Notes |
@@ -279,7 +324,7 @@ considerations, open questions).
 | `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
 | `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the processor-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
 | `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
-| `--jira-source-db <path>` | — | Jira source SQLite DB. Fallback for `--wg` resolution when the HTTP service is unreachable, and the source for the discussion sub-site's "By artifact" and "By page" crosscut columns (planner side does not consume these tables); without it those discussion-side tables are present but empty. |
+| `--jira-source-db <path>` | — | Jira source SQLite DB. Fallback for `--wg` resolution when the HTTP service is unreachable; the source for the discussion sub-site's "By artifact" and "By page" crosscut columns; and the source for the authored request/resolution HTML (`*_ticket_jira_content`) on **both** sub-sites. Without it the related-artifact/page tables and the jira-content table are present but empty (the SPA falls back to inlined plain text where available). |
 | `--force` | `false` | Overwrite a sub-site directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
 | `--help` | — | Print usage and exit 0. |
 

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Tools.TicketSite.Tests;
 
+[Collection("ConsoleRedirect")]
 public sealed class PlannerSubSiteTests
 {
     private sealed class TempScope : IDisposable
@@ -234,5 +235,161 @@ public sealed class PlannerSubSiteTests
         {
             TestFileCleanup.SafeDeleteFile(tempDbPath);
         }
+    }
+
+    [Fact]
+    public async Task Emit_WithJiraSourceDb_PopulatesJiraContent()
+    {
+        using TempScope scope = new();
+        await SeedAsync(scope.DbPath, planCount: 2);
+
+        string jiraSourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-src.db");
+        try
+        {
+            await CreateFakeJiraSourceDbAsync(jiraSourcePath, new Dictionary<string, (string?, string?)>
+            {
+                ["FHIR-1001"] = ("<p>Request 1001</p>", "<p>Resolution 1001</p>"),
+                ["FHIR-1002"] = (null, "<p>Resolution 1002</p>"),
+            });
+
+            int exit = await Program.Main([
+                "--planner-db", scope.DbPath, "--out", scope.OutDir,
+                "--jira-source-db", jiraSourcePath,
+            ]);
+            Assert.Equal(0, exit);
+
+            // Decode the inlined planner DB. This specifically guards the
+            // finalizeWithVacuum path: if the VACUUM/checkpoint failed, the new
+            // table + rows would be missing from the inlined bytes.
+            await using SqliteConnection conn = await OpenInlinedPlannerDbAsync(scope.OutDir);
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT TicketKey, DescriptionHtml, ResolutionDescriptionHtml " +
+                "FROM planned_ticket_jira_content ORDER BY TicketKey";
+            await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+            List<(string Key, string? Desc, string? Res)> rows = [];
+            while (await reader.ReadAsync())
+            {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+            Assert.Equal(
+                new[]
+                {
+                    ("FHIR-1001", (string?)"<p>Request 1001</p>", (string?)"<p>Resolution 1001</p>"),
+                    ("FHIR-1002", (string?)null, (string?)"<p>Resolution 1002</p>"),
+                },
+                rows);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(jiraSourcePath);
+        }
+    }
+
+    [Fact]
+    public async Task Emit_WithoutJiraSourceDb_CreatesEmptyJiraContentTable()
+    {
+        using TempScope scope = new();
+        await SeedAsync(scope.DbPath, planCount: 2);
+
+        StringWriter capturedErr = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(capturedErr);
+        int exit;
+        try
+        {
+            exit = await Program.Main(["--planner-db", scope.DbPath, "--out", scope.OutDir]);
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+
+        Assert.Equal(0, exit);
+        Assert.Contains("Jira request/resolution backfill skipped", capturedErr.ToString(), StringComparison.Ordinal);
+
+        await using SqliteConnection conn = await OpenInlinedPlannerDbAsync(scope.OutDir);
+        await using SqliteCommand existsCmd = conn.CreateCommand();
+        existsCmd.CommandText =
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='planned_ticket_jira_content'";
+        Assert.Equal(1L, (long)(await existsCmd.ExecuteScalarAsync())!);
+
+        await using SqliteCommand countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT count(*) FROM planned_ticket_jira_content";
+        Assert.Equal(0L, (long)(await countCmd.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task PlannerSubSite_HasChooserBreadcrumbRoot_AndJiraContentWiring()
+    {
+        using TempScope scope = new();
+        await SeedAsync(scope.DbPath, planCount: 2);
+
+        int exit = await Program.Main(["--planner-db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "applying", "index.html"));
+        Assert.Contains("id=\"breadcrumb\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Back to chooser", html, StringComparison.Ordinal);
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "applying", "assets", "app.js"));
+        Assert.Contains("'../index.html'", appJs, StringComparison.Ordinal);
+        Assert.Contains("'Applying'", appJs, StringComparison.Ordinal);
+        Assert.Contains("planned_ticket_jira_content", appJs, StringComparison.Ordinal);
+        Assert.Contains("function sanitizeHtml", appJs, StringComparison.Ordinal);
+        Assert.Contains("function setBreadcrumb", appJs, StringComparison.Ordinal);
+        Assert.Contains("Filter by key, title, workgroup, spec, or repos", appJs, StringComparison.Ordinal);
+        Assert.Contains("Ticket summary", appJs, StringComparison.Ordinal);
+    }
+
+    private static async Task CreateFakeJiraSourceDbAsync(
+        string dbPath,
+        IReadOnlyDictionary<string, (string? Description, string? ResolutionDescription)> contentByKey)
+    {
+        await using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
+        await conn.OpenAsync();
+        await using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            // Minimal schema — only the columns JiraContentBackfill reads.
+            cmd.CommandText = """
+                CREATE TABLE jira_issues (
+                  Key TEXT PRIMARY KEY,
+                  Description TEXT,
+                  ResolutionDescription TEXT
+                );
+                """;
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        foreach ((string key, (string? description, string? resolution)) in contentByKey)
+        {
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO jira_issues (Key, Description, ResolutionDescription) VALUES (@k, @d, @r)";
+            cmd.Parameters.AddWithValue("@k", key);
+            cmd.Parameters.AddWithValue("@d", (object?)description ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@r", (object?)resolution ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task<SqliteConnection> OpenInlinedPlannerDbAsync(string outDir)
+    {
+        string html = await File.ReadAllTextAsync(Path.Combine(outDir, "applying", "index.html"));
+        const string marker = "window.__DB__='";
+        int start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "inlined DB marker not found");
+        start += marker.Length;
+        int end = html.IndexOf('\'', start);
+        Assert.True(end > start, "inlined DB closing quote not found");
+        byte[] bytes = Convert.FromBase64String(html.Substring(start, end - start));
+        string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
+        await File.WriteAllBytesAsync(tempDbPath, bytes);
+        SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
+        await conn.OpenAsync();
+        return conn;
     }
 }

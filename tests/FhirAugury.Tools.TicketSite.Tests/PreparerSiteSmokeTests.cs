@@ -535,6 +535,91 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
+    public async Task Emit_WithJiraSourceDb_PopulatesJiraContent()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        string jiraSourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-src.db");
+        try
+        {
+            await CreateFakeJiraSourceDbAsync(
+                jiraSourcePath,
+                artifactsByKey: new Dictionary<string, string?>(),
+                contentByKey: new Dictionary<string, (string?, string?)>
+                {
+                    ["FHIR-1001"] = ("<p>Request 1001</p>", "<p>Resolution 1001</p>"),
+                    // Resolution-only row: still surfaces because at least one
+                    // value is present.
+                    ["FHIR-1002"] = (null, "<p>Resolution 1002</p>"),
+                });
+
+            int exit = await Program.Main([
+                "--preparer-db", scope.DbPath, "--out", scope.OutDir,
+                "--jira-source-db", jiraSourcePath,
+            ]);
+            Assert.Equal(0, exit);
+
+            await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+            Assert.Equal(1, await ReadCountAsync(conn,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prepared_ticket_jira_content'"));
+
+            await using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText =
+                "SELECT TicketKey, DescriptionHtml, ResolutionDescriptionHtml " +
+                "FROM prepared_ticket_jira_content ORDER BY TicketKey";
+            await using SqliteDataReader reader = await cmd.ExecuteReaderAsync();
+            List<(string Key, string? Desc, string? Res)> rows = [];
+            while (await reader.ReadAsync())
+            {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+            Assert.Equal(
+                new[]
+                {
+                    ("FHIR-1001", (string?)"<p>Request 1001</p>", (string?)"<p>Resolution 1001</p>"),
+                    ("FHIR-1002", (string?)null, (string?)"<p>Resolution 1002</p>"),
+                },
+                rows);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(jiraSourcePath);
+        }
+    }
+
+    [Fact]
+    public async Task Emit_WithoutJiraSourceDb_CreatesEmptyJiraContentTable()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        StringWriter capturedErr = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(capturedErr);
+        int exit;
+        try
+        {
+            exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+
+        Assert.Equal(0, exit);
+        Assert.Contains("Jira request/resolution backfill skipped", capturedErr.ToString(), StringComparison.Ordinal);
+
+        await using SqliteConnection conn = await OpenInlinedDbAsync(scope.OutDir);
+        Assert.Equal(1, await ReadCountAsync(conn,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prepared_ticket_jira_content'"));
+        Assert.Equal(0, await ReadCountAsync(conn, "SELECT COUNT(*) FROM prepared_ticket_jira_content"));
+    }
+
+    [Fact]
     public async Task InlinedDb_ArtifactCrosscut_GroupsAndCounts()
     {
         using TempScope scope = new();
@@ -629,17 +714,20 @@ public sealed class PreparerSiteSmokeTests
     private static async Task CreateFakeJiraSourceDbAsync(
         string dbPath,
         IReadOnlyDictionary<string, string?> artifactsByKey,
-        IReadOnlyDictionary<string, (string? Artifacts, string? Pages)>? baldefByKey = null)
+        IReadOnlyDictionary<string, (string? Artifacts, string? Pages)>? baldefByKey = null,
+        IReadOnlyDictionary<string, (string? Description, string? ResolutionDescription)>? contentByKey = null)
     {
         await using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         await conn.OpenAsync();
         await using (SqliteCommand cmd = conn.CreateCommand())
         {
-            // Minimal schemas — only the columns the backfill reads.
+            // Minimal schemas — only the columns the backfills read.
             cmd.CommandText = """
                 CREATE TABLE jira_issues (
                   Key TEXT PRIMARY KEY,
-                  RelatedArtifacts TEXT
+                  RelatedArtifacts TEXT,
+                  Description TEXT,
+                  ResolutionDescription TEXT
                 );
                 CREATE TABLE jira_baldef (
                   Key TEXT PRIMARY KEY,
@@ -657,6 +745,22 @@ public sealed class PreparerSiteSmokeTests
             cmd.Parameters.AddWithValue("@k", key);
             cmd.Parameters.AddWithValue("@v", (object?)raw ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync();
+        }
+
+        if (contentByKey is not null)
+        {
+            foreach ((string key, (string? description, string? resolution)) in contentByKey)
+            {
+                await using SqliteCommand cmd = conn.CreateCommand();
+                cmd.CommandText =
+                    "INSERT INTO jira_issues (Key, Description, ResolutionDescription) " +
+                    "VALUES (@k, @d, @r) " +
+                    "ON CONFLICT(Key) DO UPDATE SET Description = @d, ResolutionDescription = @r";
+                cmd.Parameters.AddWithValue("@k", key);
+                cmd.Parameters.AddWithValue("@d", (object?)description ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@r", (object?)resolution ?? DBNull.Value);
+                await cmd.ExecuteNonQueryAsync();
+            }
         }
 
         if (baldefByKey is not null)
