@@ -50,6 +50,58 @@
     return DOMPurify.sanitize(marked.parse(String(s)));
   }
 
+  // Sanitize authored HTML (jira request/resolution) for innerHTML. DOMPurify
+  // is the single sanitization layer; ticket content is untrusted. Degrades to
+  // an escaped paragraph if DOMPurify is missing. NOTE: callers pass HTML here;
+  // plain-text fallbacks must go through escape()+<pre>, never this helper.
+  function sanitizeHtml(s) {
+    if (s == null || s === '') return '';
+    if (typeof DOMPurify === 'undefined') return '<p>' + escape(s) + '</p>';
+    return DOMPurify.sanitize(String(s));
+  }
+
+  // Minimal DOM helpers (mirror the discussion sub-site). Scoped to the new
+  // sortable/searchable list + breadcrumb code, which needs event wiring; the
+  // other renderX functions remain string builders.
+  function el(tag, attrs, child) {
+    const node = document.createElement(tag);
+    if (attrs) {
+      for (const k in attrs) {
+        if (k === 'class') node.className = attrs[k];
+        else node.setAttribute(k, attrs[k]);
+      }
+    }
+    if (child != null) {
+      if (typeof child === 'string') node.textContent = child;
+      else if (child instanceof Node) node.appendChild(child);
+    }
+    return node;
+  }
+
+  function clearChildren(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function setBreadcrumb(tail) {
+    const bc = document.getElementById('breadcrumb');
+    if (!bc) return;
+    clearChildren(bc);
+    const hasTail = Array.isArray(tail) && tail.length > 0;
+    const parts = [
+      { label: 'Chooser', href: '../index.html' },
+      { label: 'Applying', href: hasTail ? '#/' : null },
+    ];
+    if (hasTail) {
+      for (let i = 0; i < tail.length; i++) parts.push(tail[i]);
+    }
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) bc.appendChild(document.createTextNode(' › '));
+      const p = parts[i];
+      if (p.href) bc.appendChild(el('a', { href: p.href }, p.label));
+      else bc.appendChild(document.createTextNode(p.label));
+    }
+  }
+
   function query(sql, params) {
     const stmt = db.prepare(sql);
     if (params) stmt.bind(params);
@@ -117,30 +169,160 @@
       '       COALESCE(jh.Title, "(unknown)") AS Title, ' +
       '       COALESCE(jh.WorkGroup, "(unknown)") AS WorkGroup, ' +
       '       COALESCE(jh.Specification, "(unknown)") AS Specification, ' +
-      '       (SELECT GROUP_CONCAT(DISTINCT RepoKey) FROM planned_ticket_repos r WHERE r.IssueKey = pt.Key) AS Repos, ' +
+      '       (SELECT GROUP_CONCAT(RepoKey) FROM (SELECT RepoKey FROM planned_ticket_repos r WHERE r.IssueKey = pt.Key ORDER BY RepoKey)) AS Repos, ' +
       '       (SELECT count(*) FROM planned_ticket_repo_changes c WHERE c.IssueKey = pt.Key) AS Changes ' +
       'FROM planned_tickets pt ' +
       'LEFT JOIN planned_jira_hydration jh ON jh.IssueKey = pt.Key AND jh.JiraKey = pt.Key ' +
       'ORDER BY pt.Key');
-    let html = '<h2>Planned tickets</h2>';
-    html += '<table><thead><tr><th>Key</th><th>Title</th><th>Workgroup</th><th>Spec</th><th>Repos</th><th>Changes</th></tr></thead><tbody>';
-    rows.forEach(r => {
-      html += '<tr>' +
-        '<td><a href="#/ticket/' + encodeURIComponent(r.Key) + '">' + escape(r.Key) + '</a></td>' +
-        '<td>' + escape(r.Title) + '</td>' +
-        '<td>' + escape(r.WorkGroup) + '</td>' +
-        '<td>' + escape(r.Specification) + '</td>' +
-        '<td>' + escape(r.Repos || '') + '</td>' +
-        '<td>' + (r.Changes || 0) + '</td>' +
-        '</tr>';
+
+    clearChildren(app);
+    app.appendChild(el('h2', null, 'Planned tickets (' + rows.length + ')'));
+
+    const filterRow = el('div', { class: 'filter-row' });
+    const input = el('input', {
+      type: 'text',
+      placeholder: 'Filter by key, title, workgroup, spec, or repos…',
+      autocomplete: 'off',
     });
-    html += '</tbody></table>';
-    app.innerHTML = html;
+    filterRow.appendChild(input);
+    app.appendChild(filterRow);
+
+    const countWrap = el('p', { class: 'muted' });
+    const countSpan = el('span', null, String(rows.length));
+    countWrap.appendChild(countSpan);
+    countWrap.appendChild(document.createTextNode(' rows'));
+    app.appendChild(countWrap);
+
+    const columns = [
+      { label: 'Key',       field: 'Key',           cmp: 'key', link: true },
+      { label: 'Title',     field: 'Title',         cmp: 'ci' },
+      { label: 'Workgroup', field: 'WorkGroup',     cmp: 'ci' },
+      { label: 'Spec',      field: 'Specification', cmp: 'ci' },
+      { label: 'Repos',     field: 'Repos',         cmp: 'ci' },
+      { label: 'Changes',   field: 'Changes',       cmp: 'num' },
+    ];
+
+    let sortCol = 'Key';
+    let sortDir = 'asc';
+
+    const table = el('table');
+    const thead = el('thead');
+    const headRow = el('tr');
+    const headerCells = [];
+    for (let ci = 0; ci < columns.length; ci++) {
+      const col = columns[ci];
+      const th = el('th', { class: 'sortable', role: 'button', tabindex: '0', 'aria-sort': 'none' }, col.label);
+      const onActivate = (function (label) {
+        return function () {
+          if (sortCol === label) {
+            sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+          } else {
+            sortCol = label;
+            sortDir = 'asc';
+          }
+          renderRows(input.value);
+          updateHeaderAffordances();
+        };
+      })(col.label);
+      th.addEventListener('click', onActivate);
+      th.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onActivate(); }
+      });
+      headerCells.push({ th: th, label: col.label });
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    function updateHeaderAffordances() {
+      for (let i = 0; i < headerCells.length; i++) {
+        const cell = headerCells[i];
+        const active = (cell.label === sortCol);
+        const glyph = active ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
+        cell.th.textContent = cell.label + glyph;
+        cell.th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+      }
+    }
+
+    function compareFor(cmpType) {
+      if (cmpType === 'key') {
+        return function (a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }); };
+      }
+      if (cmpType === 'num') {
+        return function (a, b) { return (parseFloat(a) || 0) - (parseFloat(b) || 0); };
+      }
+      return function (a, b) { return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }); };
+    }
+
+    const tbody = el('tbody');
+    const renderRows = function (needle) {
+      clearChildren(tbody);
+      const n = (needle || '').toLowerCase();
+      const filtered = [];
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (n.length > 0) {
+          // Search the actual row fields (exclude Changes), case-insensitive.
+          const hay = String(r.Key || '') + '\n' + String(r.Title || '') + '\n' +
+            String(r.WorkGroup || '') + '\n' + String(r.Specification || '') + '\n' + String(r.Repos || '');
+          if (hay.toLowerCase().indexOf(n) < 0) continue;
+        }
+        filtered.push(r);
+      }
+
+      let activeCol = null;
+      for (let i = 0; i < columns.length; i++) {
+        if (columns[i].label === sortCol) { activeCol = columns[i]; break; }
+      }
+      if (activeCol) {
+        const cmp = compareFor(activeCol.cmp);
+        const dirMul = (sortDir === 'desc') ? -1 : 1;
+        const field = activeCol.field;
+        filtered.sort(function (a, b) { return cmp(a[field], b[field]) * dirMul; });
+      }
+
+      for (let i = 0; i < filtered.length; i++) {
+        const r = filtered[i];
+        const tr = el('tr');
+        const keyCell = el('td');
+        keyCell.appendChild(el('a', { href: '#/ticket/' + encodeURIComponent(String(r.Key)) }, String(r.Key)));
+        tr.appendChild(keyCell);
+        tr.appendChild(el('td', null, String(r.Title || '')));
+        tr.appendChild(el('td', null, String(r.WorkGroup || '')));
+        tr.appendChild(el('td', null, String(r.Specification || '')));
+        tr.appendChild(el('td', null, String(r.Repos || '')));
+        tr.appendChild(el('td', null, String(r.Changes || 0)));
+        tbody.appendChild(tr);
+      }
+      countSpan.textContent = (needle && needle.length > 0) ? (filtered.length + ' of ' + rows.length) : String(rows.length);
+    };
+
+    table.appendChild(tbody);
+    app.appendChild(table);
+
+    let debounce = 0;
+    input.addEventListener('input', function () {
+      if (debounce) window.clearTimeout(debounce);
+      debounce = window.setTimeout(function () { renderRows(input.value); }, 150);
+    });
+    renderRows('');
+    updateHeaderAffordances();
   }
 
   function renderTicket(key) {
     const summary = query(
-      'SELECT Key, ResolutionSummary, FeatureProposal, DesignRationale FROM planned_tickets WHERE Key = $k',
+      'SELECT pt.Key AS Key, pt.ResolutionSummary, pt.FeatureProposal, pt.DesignRationale, ' +
+      '       jh.Title AS Title, jh.WorkGroup AS WorkGroup, jh.Status AS Status, jh.Type AS Type, ' +
+      '       jh.Url AS Url, ' +
+      '       COALESCE(th.Specification, jh.Specification) AS Specification, ' +
+      '       COALESCE(th.Priority, jh.Priority) AS Priority, ' +
+      '       COALESCE(th.Resolution, jh.Resolution) AS Resolution, ' +
+      '       th.DescriptionPlain AS DescriptionPlain, ' +
+      '       COALESCE(th.ResolutionDescriptionPlain, jh.ResolutionDescriptionPlain) AS ResolutionDescriptionPlain ' +
+      'FROM planned_tickets pt ' +
+      'LEFT JOIN planned_jira_hydration jh ON jh.IssueKey = pt.Key AND jh.JiraKey = pt.Key ' +
+      'LEFT JOIN planned_ticket_hydration th ON th.IssueKey = pt.Key ' +
+      'WHERE pt.Key = $k',
       { '$k': key })[0];
     if (!summary) { app.innerHTML = '<p>Ticket not found.</p>'; return; }
     const repos = query(
@@ -163,12 +345,62 @@
       'SELECT RepoKey, QuestionSequence, Question FROM planned_ticket_open_questions WHERE IssueKey = $k ORDER BY QuestionSequence',
       { '$k': key });
 
-    let html = '<h2>' + escape(summary.Key) + ' — ' + escape(ticketTitle(summary.Key)) + '</h2>';
+    // HTML request / resolution (planned_ticket_jira_content, backfilled at
+    // emit time from jira.db). Older inlined DBs lack the table, so query
+    // defensively.
+    let content = [];
+    try {
+      content = query(
+        'SELECT DescriptionHtml, ResolutionDescriptionHtml FROM planned_ticket_jira_content WHERE TicketKey = $k',
+        { '$k': key });
+    } catch (e) { content = []; }
+    const c = content[0] || {};
+
     function section(label, bodyHtml, open) {
       return '<details class="accordion"' + (open ? ' open' : '') + '>' +
         '<summary><h3>' + escape(label) + '</h3></summary>' +
         '<div class="accordion-body">' + bodyHtml + '</div></details>';
     }
+
+    const title = summary.Title || ticketTitle(summary.Key);
+    let html = '<h2>' + escape(summary.Key) + ' — ' + escape(title) + '</h2>';
+
+    // Ticket summary key/value table (first section). Key links to Jira.
+    const fb = v => (v == null || v === '') ? '(unknown)' : escape(v);
+    let dl = '<dl class="ticket-summary">';
+    dl += '<dt>Key</dt><dd><a href="https://jira.hl7.org/browse/' + encodeURIComponent(String(summary.Key)) +
+      '" target="_blank" rel="noopener noreferrer">' + escape(summary.Key) + '</a></dd>';
+    dl += '<dt>Title</dt><dd>' + fb(summary.Title) + '</dd>';
+    dl += '<dt>Workgroup</dt><dd>' + fb(summary.WorkGroup) + '</dd>';
+    dl += '<dt>Status</dt><dd>' + fb(summary.Status) + '</dd>';
+    dl += '<dt>Type</dt><dd>' + fb(summary.Type) + '</dd>';
+    dl += '<dt>Specification</dt><dd>' + fb(summary.Specification) + '</dd>';
+    dl += '<dt>Priority</dt><dd>' + fb(summary.Priority) + '</dd>';
+    dl += '<dt>Resolution</dt><dd>' + fb(summary.Resolution) + '</dd>';
+    if (summary.Url) {
+      dl += '<dt>Url</dt><dd><a href="' + escape(summary.Url) + '" target="_blank" rel="noopener noreferrer">' + escape(summary.Url) + '</a></dd>';
+    } else {
+      dl += '<dt>Url</dt><dd>—</dd>';
+    }
+    dl += '</dl>';
+    html += section('Ticket summary', dl, true);
+
+    // Original request: authored HTML, else plain-text (escaped <pre>).
+    const descHtml = c.DescriptionHtml;
+    if (descHtml != null && descHtml !== '') {
+      html += section('Original request', '<div class="md">' + sanitizeHtml(descHtml) + '</div>', false);
+    } else if (summary.DescriptionPlain != null && summary.DescriptionPlain !== '') {
+      html += section('Original request', '<pre>' + escape(summary.DescriptionPlain) + '</pre>', false);
+    }
+
+    // Proposed / accepted resolution: authored HTML, else plain-text.
+    const resHtml = c.ResolutionDescriptionHtml;
+    if (resHtml != null && resHtml !== '') {
+      html += section('Proposed / accepted resolution', '<div class="md">' + sanitizeHtml(resHtml) + '</div>', false);
+    } else if (summary.ResolutionDescriptionPlain != null && summary.ResolutionDescriptionPlain !== '') {
+      html += section('Proposed / accepted resolution', '<pre>' + escape(summary.ResolutionDescriptionPlain) + '</pre>', false);
+    }
+
     html += section('Resolution summary', '<div class="md">' + md(summary.ResolutionSummary) + '</div>', true);
     html += section('Feature proposal', '<div class="md">' + md(summary.FeatureProposal) + '</div>', false);
     html += section('Design rationale', '<div class="md">' + md(summary.DesignRationale) + '</div>', false);
@@ -283,11 +515,22 @@
 
   function route() {
     const hash = window.location.hash.replace(/^#/, '') || '/';
-    if (hash === '/' || hash === '') { renderLanding(); return; }
-    if (hash === '/list') { renderList(); return; }
-    if (hash === '/topics') { renderTopicList(); return; }
-    if (hash.startsWith('/ticket/')) { renderTicket(decodeURIComponent(hash.slice('/ticket/'.length))); return; }
-    if (hash.startsWith('/topic/')) { renderTopicDetail(decodeURIComponent(hash.slice('/topic/'.length))); return; }
+    if (hash === '/' || hash === '') { setBreadcrumb([]); renderLanding(); return; }
+    if (hash === '/list') { setBreadcrumb([{ label: 'List', href: null }]); renderList(); return; }
+    if (hash === '/topics') { setBreadcrumb([{ label: 'Topics', href: null }]); renderTopicList(); return; }
+    if (hash.startsWith('/ticket/')) {
+      const key = decodeURIComponent(hash.slice('/ticket/'.length));
+      setBreadcrumb([{ label: 'List', href: '#/list' }, { label: key, href: null }]);
+      renderTicket(key);
+      return;
+    }
+    if (hash.startsWith('/topic/')) {
+      const id = decodeURIComponent(hash.slice('/topic/'.length));
+      setBreadcrumb([{ label: 'Topics', href: '#/topics' }, { label: id, href: null }]);
+      renderTopicDetail(id);
+      return;
+    }
+    setBreadcrumb([]);
     app.innerHTML = '<p>Unknown route.</p>';
   }
 

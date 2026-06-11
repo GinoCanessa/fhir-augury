@@ -38,6 +38,7 @@ body {
 .breadcrumb { margin-bottom: 0.5rem; font-size: 0.9rem; }
 .breadcrumb a { color: var(--muted); text-decoration: none; }
 .breadcrumb a:hover { color: var(--accent); }
+#breadcrumb { color: var(--muted); }
 
 h1, h2 { margin: 0.5rem 0 1rem 0; }
 h3 { margin: 1.5rem 0 0.5rem 0; }
@@ -67,6 +68,31 @@ th, td {
 }
 
 th { font-weight: 600; background: var(--chip-bg); color: var(--chip-fg); }
+
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--accent); }
+thead th.sortable[aria-sort="ascending"],
+thead th.sortable[aria-sort="descending"] { color: var(--accent); }
+
+.filter-row { margin-bottom: 0.75rem; }
+.filter-row input[type="text"] {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ticket-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+.ticket-summary dt { font-weight: 600; color: var(--muted); }
+.ticket-summary dd { margin: 0; }
 
 a { color: var(--accent); }
 
