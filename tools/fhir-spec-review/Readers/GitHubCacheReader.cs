@@ -41,6 +41,21 @@ internal sealed class GitHubCacheReader : IDisposable
 
     public string RepoFullName => _repo;
 
+    /// <summary>Reads the build version from <c>publish.ini</c> <c>[FHIR] version</c>, or "unknown".</summary>
+    public string ReadBuildVersion()
+    {
+        string publishIniPath = Path.Combine(_cloneRoot, "publish.ini");
+        if (!File.Exists(publishIniPath)) return "unknown";
+        foreach ((string key, string value) in ReadIniSection(publishIniPath, "FHIR"))
+        {
+            if (key.Equals("version", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+        return "unknown";
+    }
+
     /// <summary>True if the clone working tree (with a <c>source/</c> folder) is present.</summary>
     public bool CloneRootExists => Directory.Exists(_cloneRoot) && Directory.Exists(Path.Combine(_cloneRoot, "source"));
 

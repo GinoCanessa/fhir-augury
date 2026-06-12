@@ -71,8 +71,7 @@ public static class Program
     // Phase 1 skeleton: the verb bodies are filled in by later phases.
     private static Task<int> RunProcessAsync(ProcessOptions options)
     {
-        Console.Error.WriteLine("'process' is not yet implemented.");
-        return Task.FromResult(1);
+        return ProcessRunner.RunAsync(options, ConsoleLogger.Instance);
     }
 
     private static Task<int> RunReportAsync(ReportOptions options)
