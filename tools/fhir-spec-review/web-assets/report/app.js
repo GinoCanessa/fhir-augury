@@ -126,7 +126,8 @@
       if (artifacts.length > 0) {
         var aHeaders = ['FHIR id', 'Name', 'Type', 'Source dir', 'Definition', 'Intro', 'Notes', 'Status', 'Standards'];
         var aRows = artifacts.map(function (a) {
-          return [a.FhirId, a.Name, a.ArtifactType || '', boolText(a.SourceDirectoryExists),
+          var idLink = el('a', { href: '#/wg/' + encodeURIComponent(key) + '/artifact/' + a.Id }, a.FhirId);
+          return [idLink, a.Name, a.ArtifactType || '', boolText(a.SourceDirectoryExists),
             boolText(a.SourceDefinitionExists), a.IntroPageFilename || '', a.NotesPageFilename || '',
             a.Status || '', a.StandardsStatus || ''];
         });
@@ -135,14 +136,15 @@
         main.appendChild(el('p', { class: 'muted' }, 'No artifacts.'));
       }
 
-      // Pages
+      // Pages (narrative pages only — artifact intro/notes live on the artifact detail)
       main.appendChild(el('h3', null, 'Pages (' + pages.length + ')'));
       if (pages.length > 0) {
         var pHeaders = ['Page', 'Maturity', 'Standards', 'Conformant', 'Non-conf.', 'Removed',
           'Unknown', 'Typos', 'Images', 'Prior ver.', 'Zulip', 'Confluence'];
         var pAlign = [false, false, false, true, true, true, true, true, true, true, true, true];
         var pRows = pages.map(function (p) {
-          return [p.PageFileName, p.MaturityLabel || '', p.StandardsStatus || '',
+          var pageLink = el('a', { href: '#/wg/' + encodeURIComponent(key) + '/page/' + p.Id }, p.PageFileName);
+          return [pageLink, p.MaturityLabel || '', p.StandardsStatus || '',
             num(p.ConformantTotalCount), num(p.NonConformantTotalCount), num(p.RemovedFhirArtifactCount),
             num(p.UnknownWordCount), num(p.TypoWordCount), num(p.ImagesWithIssuesCount),
             num(p.PriorFhirVersionReferenceCount), num(p.ZulipLinkCount), num(p.ConfluenceLinkCount)];
@@ -150,41 +152,6 @@
         main.appendChild(buildTable(pHeaders, pRows, pAlign));
       } else {
         main.appendChild(el('p', { class: 'muted' }, 'No pages.'));
-      }
-
-      // Findings: removed FHIR artifact references
-      var removed = loadRemovedRefs(key);
-      if (removed.length > 0) {
-        main.appendChild(el('h3', null, 'Removed FHIR artifact references (' + removed.length + ')'));
-        main.appendChild(buildTable(
-          ['Page', 'Word', 'Class', 'Source pointer', 'Snippet'],
-          removed.map(function (r) {
-            return [r.PageFileName, r.Word, r.ArtifactClass || '', r.SourceRelativePath || '', snippet(r.ContextSnippet)];
-          })));
-      }
-
-      // Findings: unknown words & typos
-      var unknown = loadUnknownWords(key);
-      if (unknown.length > 0) {
-        main.appendChild(el('h3', null, 'Unknown words & typos (' + unknown.length + ')'));
-        main.appendChild(buildTable(
-          ['Page', 'Word', 'Typo?', 'Correction', 'Source pointer', 'Snippet'],
-          unknown.map(function (u) {
-            return [u.PageFileName, u.Word, u.IsTypo ? 'yes' : 'no', u.Correction || '',
-              u.SourceRelativePath || '', snippet(u.ContextSnippet)];
-          })));
-      }
-
-      // Findings: image issues
-      var images = loadImageIssues(key);
-      if (images.length > 0) {
-        main.appendChild(el('h3', null, 'Image issues (' + images.length + ')'));
-        main.appendChild(buildTable(
-          ['Page', 'Source', 'Missing alt', 'Not in figure', 'Snippet'],
-          images.map(function (im) {
-            return [im.PageFileName, im.Source, im.MissingAlt ? 'yes' : 'no',
-              im.NotInFigure ? 'yes' : 'no', snippet(im.ContextSnippet)];
-          })));
       }
 
       // Unassigned-only: removed-baseline entities + duplicate artifact keys
@@ -398,41 +365,17 @@
 
   function loadArtifacts(key) {
     return query(
-      'SELECT FhirId, Name, ArtifactType, SourceDirectoryExists, SourceDefinitionExists, ' +
+      'SELECT Id, FhirId, Name, ArtifactType, SourceDirectoryExists, SourceDefinitionExists, ' +
       'IntroPageFilename, NotesPageFilename, Status, StandardsStatus FROM artifacts ' +
       'WHERE ' + wgWhere(key) + ' ORDER BY FhirId COLLATE NOCASE', wgParams(key)).rows;
   }
 
   function loadPages(key) {
     return query(
-      'SELECT PageFileName, MaturityLabel, StandardsStatus, ConformantTotalCount, NonConformantTotalCount, ' +
+      'SELECT Id, PageFileName, MaturityLabel, StandardsStatus, ConformantTotalCount, NonConformantTotalCount, ' +
       'RemovedFhirArtifactCount, UnknownWordCount, TypoWordCount, ImagesWithIssuesCount, ' +
       'PriorFhirVersionReferenceCount, ZulipLinkCount, ConfluenceLinkCount FROM pages ' +
-      'WHERE ' + wgWhere(key) + ' ORDER BY PageFileName COLLATE NOCASE', wgParams(key)).rows;
-  }
-
-  function loadRemovedRefs(key) {
-    return query(
-      'SELECT p.PageFileName, p.SourceRelativePath, r.Word, r.ArtifactClass, r.ContextSnippet ' +
-      'FROM page_removed_fhir_artifacts r JOIN pages p ON p.Id = r.PageId ' +
-      'WHERE ' + wgWhere(key, 'p.') + ' ORDER BY p.PageFileName COLLATE NOCASE, r.Word COLLATE NOCASE',
-      wgParams(key)).rows;
-  }
-
-  function loadUnknownWords(key) {
-    return query(
-      'SELECT p.PageFileName, p.SourceRelativePath, u.Word, u.IsTypo, u.Correction, u.ContextSnippet ' +
-      'FROM page_unknown_words u JOIN pages p ON p.Id = u.PageId ' +
-      'WHERE ' + wgWhere(key, 'p.') + ' ORDER BY p.PageFileName COLLATE NOCASE, u.Word COLLATE NOCASE',
-      wgParams(key)).rows;
-  }
-
-  function loadImageIssues(key) {
-    return query(
-      'SELECT p.PageFileName, i.Source, i.MissingAlt, i.NotInFigure, i.ContextSnippet ' +
-      'FROM page_images i JOIN pages p ON p.Id = i.PageId ' +
-      'WHERE ' + wgWhere(key, 'p.') + ' ORDER BY p.PageFileName COLLATE NOCASE, i.Source COLLATE NOCASE',
-      wgParams(key)).rows;
+      'WHERE ' + wgWhere(key) + ' AND ArtifactId IS NULL ORDER BY PageFileName COLLATE NOCASE', wgParams(key)).rows;
   }
 
   function loadRemovedBaseline() {
