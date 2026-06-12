@@ -21,6 +21,7 @@ public sealed class ReviewDatabase : SourceDatabase
         SpecPageRemovedFhirArtifactRecord.DefaultTableName,
         SpecPageRecord.DefaultTableName,
         ArtifactRecord.DefaultTableName,
+        DuplicateArtifactKeyRecord.DefaultTableName,
         RemovedBaselineEntityRecord.DefaultTableName,
         WorkgroupRecord.DefaultTableName,
         ReviewRunRecord.DefaultTableName,
@@ -34,6 +35,7 @@ public sealed class ReviewDatabase : SourceDatabase
     protected override void InitializeSchema(SqliteConnection connection)
     {
         ArtifactRecord.CreateTable(connection);
+        DuplicateArtifactKeyRecord.CreateTable(connection);
         SpecPageRecord.CreateTable(connection);
         SpecPageImageRecord.CreateTable(connection);
         SpecPageUnknownWordRecord.CreateTable(connection);
