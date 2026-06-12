@@ -76,8 +76,7 @@ public static class Program
 
     private static Task<int> RunReportAsync(ReportOptions options)
     {
-        Console.Error.WriteLine("'report' is not yet implemented.");
-        return Task.FromResult(1);
+        return ReportRunner.RunAsync(options);
     }
 
     private static bool HasHelpFlag(string[] args) =>
