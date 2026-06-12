@@ -100,6 +100,19 @@ public sealed class ReportEmitterTests : IDisposable
             WorkGroupCode = null,
         }, insertPrimaryKey: true);
 
+        conn.Insert(new DuplicateArtifactKeyRecord
+        {
+            Id = DuplicateArtifactKeyRecord.GetIndex(),
+            RepoFullName = "HL7/fhir",
+            FhirId = "operationoutcome-issue-source",
+            KeptName = "OOIssueCol",
+            DuplicateName = "OOSourceFile",
+            KeptCanonicalUrl = "http://hl7.org/fhir/StructureDefinition/operationoutcome-issue-source",
+            DuplicateCanonicalUrl = "http://hl7.org/fhir/StructureDefinition/operationoutcome-issue-source",
+            ArtifactType = "extension",
+            WorkGroupCode = "fhir",
+        }, insertPrimaryKey: true);
+
         return dbPath;
     }
 
@@ -129,6 +142,10 @@ public sealed class ReportEmitterTests : IDisposable
         Assert.True(File.Exists(Path.Combine(outDir, "unassigned.html")));
         string unassigned = File.ReadAllText(Path.Combine(outDir, "unassigned.html"));
         Assert.Contains("removedpage.html", unassigned);
+
+        // duplicate-artifact-key findings (null WG) also land in the Unassigned page
+        Assert.Contains("Duplicate artifact keys", unassigned);
+        Assert.Contains("operationoutcome-issue-source", unassigned);
     }
 
     [Fact]

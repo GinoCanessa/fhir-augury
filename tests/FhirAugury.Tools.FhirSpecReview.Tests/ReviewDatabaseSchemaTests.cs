@@ -30,6 +30,7 @@ public sealed class ReviewDatabaseSchemaTests : IDisposable
         "page_unknown_words",
         "page_removed_fhir_artifacts",
         "removed_baseline_entities",
+        "duplicate_artifact_keys",
         "workgroups",
         "review_runs",
     ];

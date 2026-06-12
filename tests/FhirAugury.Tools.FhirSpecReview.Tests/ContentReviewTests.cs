@@ -141,6 +141,116 @@ public sealed class ContentReviewTests : IDisposable
         Assert.Equal("6.0.0-test", (string?)Scalar(db, "SELECT BuildVersion FROM review_runs LIMIT 1"));
     }
 
+    [Fact]
+    public async Task Process_With_Duplicate_Canonical_Url_Skips_Duplicate_And_Records_Finding()
+    {
+        // ---- minimal clone tree (publish.ini + empty source) ----
+        string cacheDir = Path.Combine(_tempDir, "cache");
+        string cloneRoot = Path.Combine(cacheDir, "github", "repos", "HL7_fhir", "clone");
+        Directory.CreateDirectory(Path.Combine(cloneRoot, "source"));
+
+        File.WriteAllText(Path.Combine(cloneRoot, "publish.ini"), """
+            [FHIR]
+            version = 6.0.0-test
+            [pages]
+            [page-titles]
+            """);
+
+        // ---- github source db: two extensions sharing one canonical URL ----
+        const string sharedUrl = "http://hl7.org/fhir/StructureDefinition/operationoutcome-issue-source";
+        string githubDb = Path.Combine(_tempDir, "github.db");
+        using (GitHubDatabase db = new(githubDb, NullLogger<GitHubDatabase>.Instance))
+        {
+            db.Initialize();
+        }
+        using (SqliteConnection conn = new($"Data Source={githubDb};Pooling=False"))
+        {
+            conn.Open();
+            conn.Insert(new GitHubStructureDefinitionRecord
+            {
+                Id = GitHubStructureDefinitionRecord.GetIndex(),
+                RepoFullName = Repo,
+                FilePath = "source/operationoutcome/structuredefinition-OOSourceFile.xml",
+                Url = sharedUrl,
+                Name = "OOSourceFile",
+                ArtifactClass = "Extension",
+                Kind = "complex-type",
+                Status = "active",
+                WorkGroup = "fhir",
+            }, insertPrimaryKey: true);
+            conn.Insert(new GitHubStructureDefinitionRecord
+            {
+                Id = GitHubStructureDefinitionRecord.GetIndex(),
+                RepoFullName = Repo,
+                FilePath = "source/operationoutcome/structuredefinition-OOIssueCol.xml",
+                Url = sharedUrl,
+                Name = "OOIssueCol",
+                ArtifactClass = "Extension",
+                Kind = "complex-type",
+                Status = "active",
+                WorkGroup = "fhir",
+            }, insertPrimaryKey: true);
+            conn.Insert(new Hl7WorkGroupRecord
+            {
+                Id = Hl7WorkGroupRecord.GetIndex(),
+                Code = "fhir",
+                Name = "FHIR Infrastructure",
+                Definition = null,
+                Retired = false,
+                NameClean = "fhirinfrastructure",
+            }, insertPrimaryKey: true);
+        }
+
+        // ---- fhir-spec.db / dictionary.db / baseline site ----
+        string fhirSpecDb = Path.Combine(_tempDir, "fhir-spec.db");
+        SeedFhirSpecDb(fhirSpecDb);
+
+        string dictDb = Path.Combine(_tempDir, "dictionary.db");
+        using (SqliteConnection conn = new($"Data Source={dictDb};Pooling=False"))
+        {
+            conn.Open();
+            Exec(conn, "CREATE TABLE words (Word TEXT); CREATE TABLE typos (Typo TEXT, Correction TEXT);");
+        }
+
+        string siteDir = Path.Combine(_tempDir, "site");
+        Directory.CreateDirectory(siteDir);
+
+        string reviewDb = Path.Combine(_tempDir, "review.db");
+
+        ProcessOptions options = new(
+            GitHubDbPath: githubDb,
+            GitHubCachePath: cacheDir,
+            Repo: Repo,
+            FhirSpecDbPath: fhirSpecDb,
+            BaselineRelease: "R5",
+            BaselineSitePath: siteDir,
+            DictionaryDbPath: dictDb,
+            ReviewDbPath: reviewDb,
+            DropTables: true);
+
+        // Must not throw despite the colliding (RepoFullName, FhirId).
+        int exit = await RunRedirectedAsync(options);
+        Assert.Equal(0, exit);
+
+        using SqliteConnection rdb = new($"Data Source={reviewDb};Pooling=False");
+        rdb.Open();
+
+        // Exactly one artifacts row for the colliding FhirId.
+        Assert.Equal(1L, ScalarLong(rdb,
+            "SELECT COUNT(*) FROM artifacts WHERE FhirId='operationoutcome-issue-source'"));
+
+        // Exactly one finding, with the deterministically-kept/skipped names + URLs.
+        Assert.Equal(1L, ScalarLong(rdb, "SELECT COUNT(*) FROM duplicate_artifact_keys"));
+        Assert.Equal("OOIssueCol", (string?)Scalar(rdb,
+            "SELECT KeptName FROM duplicate_artifact_keys WHERE FhirId='operationoutcome-issue-source'"));
+        Assert.Equal("OOSourceFile", (string?)Scalar(rdb,
+            "SELECT DuplicateName FROM duplicate_artifact_keys WHERE FhirId='operationoutcome-issue-source'"));
+        Assert.Equal(sharedUrl, (string?)Scalar(rdb,
+            "SELECT KeptCanonicalUrl FROM duplicate_artifact_keys WHERE FhirId='operationoutcome-issue-source'"));
+        Assert.Equal(sharedUrl, (string?)Scalar(rdb,
+            "SELECT DuplicateCanonicalUrl FROM duplicate_artifact_keys WHERE FhirId='operationoutcome-issue-source'"));
+    }
+
     private static async Task<int> RunRedirectedAsync(ProcessOptions options)
     {
         TextWriter origOut = Console.Out;
