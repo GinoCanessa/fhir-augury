@@ -33,6 +33,9 @@ public sealed class ReviewDatabaseSchemaTests : IDisposable
         "duplicate_artifact_keys",
         "workgroups",
         "review_runs",
+        "artifact_elements",
+        "artifact_operations",
+        "artifact_search_parameters",
     ];
 
     [Fact]
@@ -66,7 +69,36 @@ public sealed class ReviewDatabaseSchemaTests : IDisposable
         Assert.True(ColumnExists(dbPath, "page_removed_fhir_artifacts", "ContextSnippet"));
         Assert.True(ColumnExists(dbPath, "page_images", "ContextSnippet"));
 
+        Assert.True(ColumnExists(dbPath, "artifact_elements", "ExternalRequiredBinding"));
+        Assert.True(ColumnExists(dbPath, "artifact_operations", "OperationId"));
+        Assert.True(ColumnExists(dbPath, "artifact_search_parameters", "SearchParamId"));
+
         Assert.Empty(db.FindMissingRequiredColumns());
+    }
+
+    [Fact]
+    public void FindMissingRequiredColumns_Detects_Missing_Inventory_Table()
+    {
+        // Seed a DB that has every table EXCEPT artifact_elements, then confirm
+        // the fast-fail guard reports the missing columns.
+        string dbPath = Path.Combine(_tempDir, "legacy.db");
+        using (ReviewDatabase db = new(dbPath, NullLogger<ReviewDatabase>.Instance))
+        {
+            db.Initialize();
+        }
+
+        using (SqliteConnection conn = new($"Data Source={dbPath};Pooling=False"))
+        {
+            conn.Open();
+            using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText = "DROP TABLE artifact_elements";
+            cmd.ExecuteNonQuery();
+        }
+
+        using ReviewDatabase reopened = new(dbPath, NullLogger<ReviewDatabase>.Instance);
+        List<(string Table, string Column)> missing = reopened.FindMissingRequiredColumns();
+        Assert.NotEmpty(missing);
+        Assert.Contains(missing, m => m.Table == "artifact_elements");
     }
 
     private static bool ColumnExists(string dbPath, string table, string column)

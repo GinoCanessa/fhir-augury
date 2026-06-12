@@ -16,6 +16,9 @@ public sealed class ReviewDatabase : SourceDatabase
 {
     private static readonly string[] s_tableNames =
     [
+        ArtifactElementRecord.DefaultTableName,
+        ArtifactOperationRecord.DefaultTableName,
+        ArtifactSearchParameterRecord.DefaultTableName,
         SpecPageImageRecord.DefaultTableName,
         SpecPageUnknownWordRecord.DefaultTableName,
         SpecPageRemovedFhirArtifactRecord.DefaultTableName,
@@ -43,6 +46,9 @@ public sealed class ReviewDatabase : SourceDatabase
         RemovedBaselineEntityRecord.CreateTable(connection);
         WorkgroupRecord.CreateTable(connection);
         ReviewRunRecord.CreateTable(connection);
+        ArtifactElementRecord.CreateTable(connection);
+        ArtifactOperationRecord.CreateTable(connection);
+        ArtifactSearchParameterRecord.CreateTable(connection);
 
         // [LdgSQLiteIndex] has no Unique flag — add composite UNIQUE indexes here
         // (repo convention) so re-inserts can SelectSingle-then-update cleanly.
@@ -75,6 +81,45 @@ public sealed class ReviewDatabase : SourceDatabase
         (SpecPageUnknownWordRecord.DefaultTableName, nameof(SpecPageUnknownWordRecord.ContextSnippet)),
         (SpecPageRemovedFhirArtifactRecord.DefaultTableName, nameof(SpecPageRemovedFhirArtifactRecord.ContextSnippet)),
         (SpecPageImageRecord.DefaultTableName, nameof(SpecPageImageRecord.ContextSnippet)),
+
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.ArtifactId)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.Path)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.IsRequired)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.MaxCardinality)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.IsTrialUse)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.HasFixed)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.HasPattern)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.RequiredBinding)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.RequiredBindingValueSet)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.ExternalRequiredBinding)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.MeaningWhenMissing)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.IsModifier)),
+        (ArtifactElementRecord.DefaultTableName, nameof(ArtifactElementRecord.ElementOrder)),
+
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.ArtifactId)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.OperationId)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.Code)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.Name)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.OperationKind)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.Status)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.StandardsStatus)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.FhirMaturity)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.IsExperimental)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.WorkGroup)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.Description)),
+        (ArtifactOperationRecord.DefaultTableName, nameof(ArtifactOperationRecord.OperationOrder)),
+
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.ArtifactId)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.SearchParamId)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.Name)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.Status)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.FhirMaturity)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.StandardsStatus)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.IsExperimental)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.WorkGroup)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.SearchType)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.Description)),
+        (ArtifactSearchParameterRecord.DefaultTableName, nameof(ArtifactSearchParameterRecord.ParamOrder)),
     ];
 
     /// <summary>
