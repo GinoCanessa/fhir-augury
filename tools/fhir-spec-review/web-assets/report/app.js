@@ -92,14 +92,15 @@
           return;
         }
 
-        var headers = ['Work group', 'Artifacts', 'Pages', 'Conformant', 'Non-conformant',
+        var headers = ['Code', 'Work group', 'Artifacts', 'Pages', 'Conformant', 'Non-conformant',
           'Removed refs', 'Unknown', 'Typos', 'Image issues'];
         var rows = shown.map(function (g) {
+          var code = g.key === UNASSIGNED ? '' : g.key;
           var link = el('a', { href: '#/wg/' + encodeURIComponent(g.key) }, g.name);
-          return [link, num(g.artifacts), num(g.pages), num(g.conformant), num(g.nonConformant),
+          return [code, link, num(g.artifacts), num(g.pages), num(g.conformant), num(g.nonConformant),
             num(g.removed), num(g.unknown), num(g.typos), num(g.images)];
         });
-        tableWrap.appendChild(buildTable(headers, rows, [false, true, true, true, true, true, true, true, true]));
+        tableWrap.appendChild(buildTable(headers, rows, [false, false, true, true, true, true, true, true, true, true]));
       }
 
       search.addEventListener('input', function () { renderTable(search.value); });
