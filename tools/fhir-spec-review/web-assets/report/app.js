@@ -51,6 +51,9 @@
         if (parts.length === 0) {
           setBreadcrumb([]);
           Views.landing(main);
+        } else if (parts[0] === 'wg' && parts[2] === 'page' && parts[3]) {
+          var pageCode = decodeURIComponent(parts[1]);
+          Views.page(main, pageCode, Number(parts[3]));
         } else if (parts[0] === 'wg' && parts.length >= 2) {
           var key = decodeURIComponent(parts[1]);
           Views.workGroup(main, key);
@@ -202,6 +205,21 @@
             })));
         }
       }
+    },
+
+    page: function (main, code, id) {
+      var page = loadPageById(id);
+      if (!page) {
+        setBreadcrumb([{ label: 'Not found', href: null }]);
+        renderError(main, 'Page not found: ' + id);
+        return;
+      }
+      setBreadcrumb([
+        { label: wgBreadcrumbLabel(code), href: '#/wg/' + encodeURIComponent(code) },
+        { label: String(page.PageFileName), href: null }
+      ]);
+      main.appendChild(el('h2', null, String(page.PageFileName)));
+      renderPageDetailBlock(main, page);
     }
   };
 
@@ -322,6 +340,29 @@
       'FROM duplicate_artifact_keys ORDER BY FhirId', null).rows;
   }
 
+  function loadPageById(id) {
+    var res = query('SELECT * FROM pages WHERE Id = ?', [id]);
+    return res.rows.length > 0 ? res.rows[0] : null;
+  }
+
+  function loadRemovedRefsForPage(pageId) {
+    return query(
+      'SELECT Word, ArtifactClass, ContextSnippet FROM page_removed_fhir_artifacts ' +
+      'WHERE PageId = ? ORDER BY Word COLLATE NOCASE', [pageId]).rows;
+  }
+
+  function loadUnknownWordsForPage(pageId) {
+    return query(
+      'SELECT Word, IsTypo, Correction, ContextSnippet FROM page_unknown_words ' +
+      'WHERE PageId = ? ORDER BY Word COLLATE NOCASE', [pageId]).rows;
+  }
+
+  function loadImageIssuesForPage(pageId) {
+    return query(
+      'SELECT Source, MissingAlt, NotInFigure, ContextSnippet FROM page_images ' +
+      'WHERE PageId = ? ORDER BY Source COLLATE NOCASE', [pageId]).rows;
+  }
+
   // For the unassigned bucket a bare `= ?` never matches NULL, so use an
   // explicit IS NULL / '' predicate; otherwise match the code directly.
   function wgWhere(key, prefix) {
@@ -336,6 +377,113 @@
   }
 
   // ---- rendering helpers --------------------------------------------------
+
+  function wgBreadcrumbLabel(code) {
+    if (code === UNASSIGNED) return UNASSIGNED_LABEL;
+    var name = workGroupName(code);
+    return name === code ? code : name + ' (' + code + ')';
+  }
+
+  // Builds the full single-page detail block (General Information, Conformance
+  // Language Summary, removed-literal / unknown-word / image-issue tables, and
+  // the JSON-array marker/note lists) into `container`. Shared by the page view
+  // and the artifact view (which inlines its intro/notes pages).
+  function renderPageDetailBlock(container, page) {
+    // General Information
+    container.appendChild(el('h3', null, 'General Information'));
+    var info = [
+      ['Page File Name', page.PageFileName == null ? '' : String(page.PageFileName)],
+      ['Responsible Workgroup', page.ResponsibleWorkGroupName == null ? '' : String(page.ResponsibleWorkGroupName)],
+      ['Maturity Label', page.MaturityLabel == null ? '' : String(page.MaturityLabel)],
+      ['Maturity Level', page.MaturityLevel == null ? '' : String(page.MaturityLevel)],
+      ['Standards Status', page.StandardsStatus == null ? '' : String(page.StandardsStatus)],
+      ['Exists In publish.ini', boolText(page.ExistsInPublishIni)],
+      ['Exists In Source', boolText(page.ExistsInSource)],
+      ['Exists In Baseline Site', boolText(page.ExistsInBaselineSite)],
+      ['deprecated literal count', num(page.DeprecatedLiteralCount)],
+      ['Zulip Link Count', num(page.ZulipLinkCount)],
+      ['Confluence Link Count', num(page.ConfluenceLinkCount)],
+      ['Prior FHIR version reference count', num(page.PriorFhirVersionReferenceCount)]
+    ];
+    container.appendChild(buildTable(['Field', 'Value'], info, [false, false]));
+
+    // Conformance Language Summary
+    container.appendChild(el('h3', null, 'Conformance Language Summary'));
+    var conf = [
+      ['SHALL', num(page.ConformantShallCount), num(page.NonConformantShallCount)],
+      ['SHALL NOT', num(page.ConformantShallNotCount), num(page.NonConformantShallNotCount)],
+      ['SHOULD', num(page.ConformantShouldCount), num(page.NonConformantShouldCount)],
+      ['SHOULD NOT', num(page.ConformantShouldNotCount), num(page.NonConformantShouldNotCount)],
+      ['MAY', num(page.ConformantMayCount), num(page.NonConformantMayCount)],
+      ['MAY NOT', num(page.ConformantMayNotCount), num(page.NonConformantMayNotCount)]
+    ];
+    container.appendChild(buildTable(['Keyword', 'Conformant', 'Non-conformant'], conf, [false, true, true]));
+
+    // Possibly Removed FHIR Artifact Literals
+    var removed = loadRemovedRefsForPage(page.Id);
+    container.appendChild(el('h3', null, 'Possibly Removed FHIR Artifact Literals (' + removed.length + ')'));
+    if (removed.length > 0) {
+      container.appendChild(buildTable(
+        ['Word', 'Class', 'Snippet'],
+        removed.map(function (r) { return [r.Word, r.ArtifactClass || '', snippet(r.ContextSnippet)]; })));
+    } else {
+      container.appendChild(el('p', { class: 'muted' }, 'No possibly-removed literals found.'));
+    }
+
+    // Unknown Words
+    var unknown = loadUnknownWordsForPage(page.Id);
+    container.appendChild(el('h3', null, 'Unknown Words (' + unknown.length + ')'));
+    if (unknown.length > 0) {
+      container.appendChild(buildTable(
+        ['Word', 'Typo?', 'Correction', 'Snippet'],
+        unknown.map(function (u) {
+          return [u.Word, u.IsTypo ? 'yes' : 'no', u.Correction || '', snippet(u.ContextSnippet)];
+        })));
+    } else {
+      container.appendChild(el('p', { class: 'muted' }, 'No unknown words found.'));
+    }
+
+    // Images with Issues
+    var images = loadImageIssuesForPage(page.Id);
+    container.appendChild(el('h3', null, 'Images with Issues (' + images.length + ')'));
+    if (images.length > 0) {
+      container.appendChild(buildTable(
+        ['Source', 'Missing alt', 'Not in figure', 'Snippet'],
+        images.map(function (im) {
+          return [im.Source, im.MissingAlt ? 'yes' : 'no', im.NotInFigure ? 'yes' : 'no', snippet(im.ContextSnippet)];
+        })));
+    } else {
+      container.appendChild(el('p', { class: 'muted' }, 'No images with issues found.'));
+    }
+
+    // Possible Incomplete Markers / Reader Review Notes (JSON-array TEXT columns)
+    renderJsonList(container, 'Possible Incomplete Markers', page.PossibleIncompleteMarkers);
+    renderJsonList(container, 'Reader Review Notes', page.ReaderReviewNotes);
+  }
+
+  // Parses a JSON-array TEXT column and renders it as a <ul>. Parsing is guarded
+  // so malformed JSON degrades to an empty section rather than throwing.
+  function renderJsonList(container, title, jsonText) {
+    var items = [];
+    if (jsonText != null && jsonText !== '') {
+      try {
+        var parsed = JSON.parse(String(jsonText));
+        if (Array.isArray(parsed)) items = parsed;
+      } catch (err) {
+        items = [];
+      }
+    }
+    container.appendChild(el('h3', null, title + ' (' + items.length + ')'));
+    if (items.length === 0) {
+      container.appendChild(el('p', { class: 'muted' }, 'None.'));
+      return;
+    }
+    var ul = el('ul');
+    for (var i = 0; i < items.length; i++) {
+      ul.appendChild(el('li', null, items[i] == null ? '' : String(items[i])));
+    }
+    container.appendChild(ul);
+  }
 
   function renderProvenance() {
     var node = document.getElementById('provenance');
