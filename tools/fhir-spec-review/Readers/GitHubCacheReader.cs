@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Xml.Linq;
 using FhirAugury.Source.GitHub.Cache;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
@@ -60,10 +61,53 @@ internal sealed class GitHubCacheReader : IDisposable
     public bool CloneRootExists => Directory.Exists(_cloneRoot) && Directory.Exists(Path.Combine(_cloneRoot, "source"));
 
     /// <summary>Resolves a work-group code to its display name, or returns the code if unknown.</summary>
-    public string? ResolveWorkGroupName(string? code) =>
-        string.IsNullOrWhiteSpace(code)
-            ? null
-            : _workGroupNamesByCode.TryGetValue(code, out string? name) ? name : code;
+    public string? ResolveWorkGroupName(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        if (_workGroupNamesByCode.TryGetValue(code, out string? name)) return name;
+        if (_fallbackWorkGroupNamesByCode.TryGetValue(code, out string? fallback)) return fallback;
+        return code;
+    }
+
+    /// <summary>
+    /// Embedded HL7 work-group code→name map, used because the indexed
+    /// <c>hl7_workgroups</c> table is empty in current caches. Covers the codes
+    /// observed in the build plus common aliases. Grouping correctness depends
+    /// only on the code; the display name is a nicety.
+    /// </summary>
+    private static readonly FrozenDictionary<string, string> _fallbackWorkGroupNamesByCode =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["fhir"] = "FHIR Infrastructure",
+            ["fhir-i"] = "FHIR Infrastructure",
+            ["fhiri"] = "FHIR Infrastructure",
+            ["inm"] = "Infrastructure And Messaging",
+            ["ii"] = "Imaging Integration",
+            ["oo"] = "Orders and Observations",
+            ["pa"] = "Patient Administration",
+            ["pc"] = "Patient Care",
+            ["cds"] = "Clinical Decision Support",
+            ["cqi"] = "Clinical Quality Information",
+            ["cg"] = "Clinical Genomics",
+            ["brr"] = "Biomedical Research and Regulation",
+            ["dev"] = "Health Care Devices",
+            ["devices"] = "Health Care Devices",
+            ["fm"] = "Financial Management",
+            ["phx"] = "Pharmacy",
+            ["pher"] = "Public Health",
+            ["sd"] = "FHIR Infrastructure",
+            ["sec"] = "Security",
+            ["security"] = "Security",
+            ["cic"] = "Clinical Interoperability Council",
+            ["ehr"] = "Electronic Health Records",
+            ["its"] = "Implementable Technology Specifications",
+            ["mnm"] = "Modeling and Methodology",
+            ["us"] = "US Realm Steering Committee",
+            ["v2"] = "V2 Management Group",
+            ["aid"] = "Adverse Event Reporting and Patient Safety",
+            ["pcwg"] = "Patient Care",
+            ["mobile"] = "FHIR Infrastructure",
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Loads the sanitized current-build vocabulary (structures, element paths, search-param names).</summary>
     public SpecVocabulary LoadCurrentVocabulary()
@@ -195,6 +239,8 @@ internal sealed class GitHubCacheReader : IDisposable
 
             (string? dirRel, string? defRel) = GetExpectedLocations(artifactType, fhirId, baseShort);
 
+            string? workGroupCode = ResolveArtifactWorkGroupCode(sd);
+
             bool? dirExists = null;
             bool? defExists = null;
             string? introFilename = null;
@@ -235,11 +281,69 @@ internal sealed class GitHubCacheReader : IDisposable
             artifacts.Add(new ArtifactInfo(
                 fhirId, sd.Name, artifactType, dirRel, dirExists, defExists,
                 introFilename, notesFilename,
-                sd.WorkGroup, ResolveWorkGroupName(sd.WorkGroup),
+                workGroupCode, ResolveWorkGroupName(workGroupCode),
                 sd.Status, sd.FhirMaturity, sd.StandardsStatus, sd.Url));
         }
 
         return artifacts;
+    }
+
+    /// <summary>
+    /// Resolves an artifact's responsible work-group code with a fallback chain
+    /// that needs no github.db re-ingestion: <c>sd.WorkGroup</c> (resolved code,
+    /// usually null in current caches) → <c>sd.WorkGroupRaw</c> (the indexer's
+    /// captured code) → the <c>structuredefinition-wg</c> extension
+    /// <c>valueCode</c> read from the artifact's authoritative definition XML at
+    /// <c>sd.FilePath</c>. Returns null when none resolve (legitimately Unassigned).
+    /// </summary>
+    private string? ResolveArtifactWorkGroupCode(GitHubStructureDefinitionRecord sd)
+    {
+        if (!string.IsNullOrWhiteSpace(sd.WorkGroup)) return sd.WorkGroup;
+        if (!string.IsNullOrWhiteSpace(sd.WorkGroupRaw)) return sd.WorkGroupRaw;
+        return ExtractWgExtensionCode(sd.FilePath);
+    }
+
+    /// <summary>
+    /// Reads the <c>structuredefinition-wg</c> extension <c>valueCode</c> from a
+    /// structure-definition XML file located at <paramref name="filePathRelative"/>
+    /// (relative to the clone root, forward slashes). Returns null when the path is
+    /// missing, escapes the clone root, can't be parsed, or has no wg extension.
+    /// </summary>
+    private string? ExtractWgExtensionCode(string? filePathRelative)
+    {
+        if (string.IsNullOrWhiteSpace(filePathRelative)) return null;
+
+        string combined = Path.GetFullPath(Path.Combine(
+            _cloneRoot, filePathRelative.Replace('/', Path.DirectorySeparatorChar)));
+        string normalizedRoot = Path.GetFullPath(_cloneRoot);
+        if (!combined.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(combined, normalizedRoot, StringComparison.Ordinal))
+        {
+            _logger.LogWarning("Refusing to read '{Path}' outside the clone root.", filePathRelative);
+            return null;
+        }
+        if (!File.Exists(combined)) return null;
+
+        try
+        {
+            XDocument doc = XDocument.Load(combined);
+            XNamespace fhir = "http://hl7.org/fhir";
+            foreach (XElement extension in doc.Descendants(fhir + "extension"))
+            {
+                string? url = (string?)extension.Attribute("url");
+                if (url is null) continue;
+                if (!url.EndsWith("structuredefinition-wg", StringComparison.Ordinal)) continue;
+
+                string? code = (string?)extension.Element(fhir + "valueCode")?.Attribute("value");
+                if (!string.IsNullOrWhiteSpace(code)) return code;
+            }
+        }
+        catch (System.Xml.XmlException ex)
+        {
+            _logger.LogDebug("Could not parse '{Path}' for wg extension: {Message}", filePathRelative, ex.Message);
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -75,6 +75,87 @@ public sealed class ReadersTests : IDisposable
         Assert.Null(reader.ReadRawMarkup("../../../../etc/passwd"));
     }
 
+    [Fact]
+    public void EnumerateArtifacts_WorkGroup_FallsBack_To_Wg_Extension_In_DefinitionXml()
+    {
+        string cacheDir = Path.Combine(_tempDir, "cache-wgext");
+        string cloneRoot = Path.Combine(cacheDir, "github", "repos", "HL7_fhir", "clone");
+        Directory.CreateDirectory(Path.Combine(cloneRoot, "source", "observation"));
+
+        File.WriteAllText(
+            Path.Combine(cloneRoot, "source", "observation", "structuredefinition-Observation.xml"),
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <StructureDefinition xmlns="http://hl7.org/fhir">
+              <extension url="http://hl7.org/fhir/StructureDefinition/structuredefinition-wg">
+                <valueCode value="oo"/>
+              </extension>
+              <url value="http://hl7.org/fhir/StructureDefinition/Observation"/>
+            </StructureDefinition>
+            """);
+
+        string dbPath = Path.Combine(_tempDir, "github-wgext.db");
+        SeedArtifactWgDb(dbPath,
+            filePath: "source/observation/structuredefinition-Observation.xml",
+            url: "http://hl7.org/fhir/StructureDefinition/Observation",
+            name: "Observation",
+            workGroup: null,
+            workGroupRaw: null);
+
+        using GitHubCacheReader reader = new(dbPath, cacheDir, Repo, NullLogger.Instance);
+        ArtifactInfo observation = Assert.Single(reader.EnumerateArtifacts());
+        Assert.Equal("oo", observation.WorkGroupCode);
+        Assert.Equal("Orders and Observations", observation.WorkGroupName);
+    }
+
+    [Fact]
+    public void EnumerateArtifacts_WorkGroup_Uses_WorkGroupRaw_Without_Reading_File()
+    {
+        string cacheDir = Path.Combine(_tempDir, "cache-wgraw");
+        string cloneRoot = Path.Combine(cacheDir, "github", "repos", "HL7_fhir", "clone");
+        Directory.CreateDirectory(Path.Combine(cloneRoot, "source"));
+
+        string dbPath = Path.Combine(_tempDir, "github-wgraw.db");
+        SeedArtifactWgDb(dbPath,
+            filePath: "source/account/structuredefinition-Account.xml",
+            url: "http://hl7.org/fhir/StructureDefinition/Account",
+            name: "Account",
+            workGroup: null,
+            workGroupRaw: "pa");
+
+        using GitHubCacheReader reader = new(dbPath, cacheDir, Repo, NullLogger.Instance);
+        ArtifactInfo account = Assert.Single(reader.EnumerateArtifacts());
+        Assert.Equal("pa", account.WorkGroupCode);
+        Assert.Equal("Patient Administration", account.WorkGroupName);
+    }
+
+    private static void SeedArtifactWgDb(
+        string dbPath, string filePath, string url, string name, string? workGroup, string? workGroupRaw)
+    {
+        using (GitHubDatabase db = new(dbPath, NullLogger<GitHubDatabase>.Instance))
+        {
+            db.Initialize();
+        }
+
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
+        conn.Open();
+        conn.Insert(new GitHubStructureDefinitionRecord
+        {
+            Id = GitHubStructureDefinitionRecord.GetIndex(),
+            RepoFullName = Repo,
+            FilePath = filePath,
+            Url = url,
+            Name = name,
+            ArtifactClass = "Resource",
+            Kind = "resource",
+            Status = "active",
+            WorkGroup = workGroup,
+            WorkGroupRaw = workGroupRaw,
+            FhirMaturity = 5,
+            StandardsStatus = "trial-use",
+        }, insertPrimaryKey: true);
+    }
+
     private static void SeedGitHubDb(string dbPath)
     {
         using (GitHubDatabase db = new(dbPath, NullLogger<GitHubDatabase>.Instance))
