@@ -37,7 +37,7 @@ internal static class ReportRunner
             return 1;
         }
 
-        ReportEmitter emitter = new(reviewDb);
+        ReviewSpaEmitter emitter = new(reviewDb);
         emitter.Emit(outDir);
 
         Console.WriteLine($"Wrote report to {Path.Combine(outDir, "index.html")}.");
