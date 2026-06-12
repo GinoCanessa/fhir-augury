@@ -29,6 +29,7 @@ internal sealed record NarrativePageInfo(
 /// <param name="Status">Publication status.</param>
 /// <param name="MaturityLevel">FHIR Maturity Model level.</param>
 /// <param name="StandardsStatus">Standards status.</param>
+/// <param name="CanonicalUrl">Source canonical URL (<c>sd.Url</c>) the <see cref="FhirId"/> was derived from; null when unavailable.</param>
 internal sealed record ArtifactInfo(
     string FhirId,
     string Name,
@@ -42,4 +43,5 @@ internal sealed record ArtifactInfo(
     string? WorkGroupName,
     string? Status,
     int? MaturityLevel,
-    string? StandardsStatus);
+    string? StandardsStatus,
+    string? CanonicalUrl);

@@ -236,7 +236,7 @@ internal sealed class GitHubCacheReader : IDisposable
                 fhirId, sd.Name, artifactType, dirRel, dirExists, defExists,
                 introFilename, notesFilename,
                 sd.WorkGroup, ResolveWorkGroupName(sd.WorkGroup),
-                sd.Status, sd.FhirMaturity, sd.StandardsStatus));
+                sd.Status, sd.FhirMaturity, sd.StandardsStatus, sd.Url));
         }
 
         return artifacts;
