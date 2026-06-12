@@ -58,7 +58,7 @@ internal sealed class ReportEmitter
 
         // Removed-baseline entities are recorded with no work group; surface them
         // under an Unassigned bucket so they are never dropped from the report.
-        if (HasRemovedBaselineEntities(conn)) wgNames.TryAdd(UnassignedKey, UnassignedLabel);
+        if (HasRemovedBaselineEntities(conn) || HasDuplicateArtifactKeys(conn)) wgNames.TryAdd(UnassignedKey, UnassignedLabel);
 
         if (wgNames.Count == 0) wgNames[UnassignedKey] = UnassignedLabel;
 
@@ -199,6 +199,7 @@ internal sealed class ReportEmitter
         if (key == UnassignedKey)
         {
             body.Append(RenderRemovedBaseline(conn));
+            body.Append(RenderDuplicateArtifactKeys(conn));
         }
 
         File.WriteAllText(Path.Combine(outDir, WgFileName(key)), Page(name, body.ToString()));
@@ -278,6 +279,40 @@ internal sealed class ReportEmitter
         return sb.ToString();
     }
 
+    private string RenderDuplicateArtifactKeys(SqliteConnection conn)
+    {
+        List<string[]> rows = [];
+        using (SqliteCommand cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT FhirId, KeptName, DuplicateName, KeptCanonicalUrl, DuplicateCanonicalUrl, ArtifactType FROM duplicate_artifact_keys ORDER BY FhirId";
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add([
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? "" : reader.GetString(3),
+                    reader.IsDBNull(4) ? "" : reader.GetString(4),
+                    reader.IsDBNull(5) ? "" : reader.GetString(5),
+                ]);
+            }
+        }
+        if (rows.Count == 0) return string.Empty;
+
+        StringBuilder sb = new();
+        sb.Append($"<h3>Duplicate artifact keys ({rows.Count})</h3>");
+        sb.Append("<table><thead><tr><th>FHIR id</th><th>Kept</th><th>Skipped</th><th>Kept URL</th><th>Skipped URL</th><th>Type</th></tr></thead><tbody>");
+        foreach (string[] row in rows)
+        {
+            sb.Append("<tr>");
+            foreach (string cell in row) sb.Append($"<td>{Enc(cell)}</td>");
+            sb.Append("</tr>");
+        }
+        sb.Append("</tbody></table>");
+        return sb.ToString();
+    }
+
     private static string RenderProvenance(RunInfo? run)
     {
         if (run is null) return "<p class=\"prov\">No review run recorded.</p>";
@@ -292,6 +327,13 @@ internal sealed class ReportEmitter
     {
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1 FROM removed_baseline_entities LIMIT 1";
+        return cmd.ExecuteScalar() is not null;
+    }
+
+    private static bool HasDuplicateArtifactKeys(SqliteConnection conn)
+    {
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM duplicate_artifact_keys LIMIT 1";
         return cmd.ExecuteScalar() is not null;
     }
 
