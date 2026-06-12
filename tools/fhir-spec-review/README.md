@@ -44,6 +44,17 @@ fhir-spec-review report \
     --force
 ```
 
+_or_ as single-line:
+
+ 
+```
+dotnet run --project .\tools\fhir-spec-review\fhir-spec-review.csproj process --github-db ./cache/github.db --github-cache ./cache --repo HL7/fhir --fhir-spec-db ./cache/fhir-spec.db --baseline-release R5 --baseline-site C:\ai\support\fhir-r5 --dictionary-db ./cache/dictionary.db --review-db ./cache/fhir-spec-review.db --fhir-r6-db ./cache/fhir-r6.db --drop-tables
+
+dotnet run --project .\tools\fhir-spec-review\fhir-spec-review.csproj report --review-db ./cache/fhir-spec-review.db --out ./cache/fhir-spec-review-site --force
+```
+
+
+
 ### `process` options
 
 | Flag | Default | Notes |
