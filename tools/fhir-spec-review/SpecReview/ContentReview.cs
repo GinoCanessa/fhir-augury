@@ -37,6 +37,9 @@ internal sealed class ContentReview
 
     private static readonly char[] s_wgSplitChars = [' ', '[', ']', '%'];
 
+    /// <summary>Maximum length of a context snippet stored with a finding (single line).</summary>
+    private const int SnippetMaxLength = 200;
+
     private static readonly Regex s_incompleteMarkerRegex = new(
         @"\b(to-do|todo|to\s+do|will\s+consider|\.\.\.|future\s+versions)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -293,6 +296,7 @@ internal sealed class ContentReview
             MaturityLabel = artifact.Status,
             MaturityLevel = artifact.MaturityLevel,
             StandardsStatus = artifact.StandardsStatus,
+            SourceRelativePath = relativePath,
         };
         conn.Insert(page, insertPrimaryKey: true);
 
@@ -320,6 +324,7 @@ internal sealed class ContentReview
                 : _baselinePresence.PageFileNames.Contains(info.PageFileName),
             ResponsibleWorkGroupCode = info.WorkGroupCode,
             ResponsibleWorkGroupName = info.WorkGroupName,
+            SourceRelativePath = $"source/{info.PageFileName}",
         };
         conn.Insert(page, insertPrimaryKey: true);
 
@@ -380,7 +385,7 @@ internal sealed class ContentReview
             + (page.NonConformantShouldCount ?? 0) + (page.NonConformantShouldNotCount ?? 0)
             + (page.NonConformantMayCount ?? 0) + (page.NonConformantMayNotCount ?? 0);
 
-        PageCheckState state = new(conn, page.Id);
+        PageCheckState state = new(conn, page.Id, visibleText);
         if (page.PageFileName != "credits.html")
         {
             ProcessWords(state, visibleText);
@@ -405,14 +410,16 @@ internal sealed class ContentReview
 
     private sealed class PageCheckState
     {
-        public PageCheckState(SqliteConnection conn, int pageId)
+        public PageCheckState(SqliteConnection conn, int pageId, string visibleText)
         {
             Conn = conn;
             PageId = pageId;
+            VisibleText = visibleText;
         }
 
         public SqliteConnection Conn { get; }
         public int PageId { get; }
+        public string VisibleText { get; }
         public int PriorFhirVersionCount;
         public int DeprecatedLiteralCount;
         public int UnknownWordCount;
@@ -556,6 +563,7 @@ internal sealed class ContentReview
                     PageId = state.PageId,
                     Word = word,
                     ArtifactClass = baselineClass ?? "Unknown",
+                    ContextSnippet = MakeTextSnippet(state.VisibleText, word),
                 };
                 state.Conn.Insert(removed, insertPrimaryKey: true);
             }
@@ -644,6 +652,7 @@ internal sealed class ContentReview
                         Source = src,
                         MissingAlt = missingAlt,
                         NotInFigure = notInFigure,
+                        ContextSnippet = MakeMarkupSnippet(img),
                     };
                     conn.Insert(record, insertPrimaryKey: true);
                 }
@@ -652,6 +661,20 @@ internal sealed class ContentReview
         return issues;
     }
 
+    /// <summary>
+    /// Builds a short, single-line snippet of an element's surrounding markup
+    /// (the parent's outer HTML when available, else the element's own), with
+    /// whitespace collapsed and capped at <see cref="SnippetMaxLength"/>.
+    /// </summary>
+    private static string? MakeMarkupSnippet(IElement element)
+    {
+        string markup = element.ParentElement?.OuterHtml ?? element.OuterHtml;
+        if (string.IsNullOrEmpty(markup)) return null;
+
+        string collapsed = Regex.Replace(markup, @"\s+", " ").Trim();
+        if (collapsed.Length > SnippetMaxLength) collapsed = collapsed[..SnippetMaxLength].Trim();
+        return collapsed.Length == 0 ? null : collapsed;
+    }
     private void RecordRemovedBaselineEntities(
         SqliteConnection conn, HashSet<string> currentArtifactSanitized, HashSet<string> currentPageFileNames)
     {
@@ -694,8 +717,33 @@ internal sealed class ContentReview
             Word = word,
             IsTypo = isTypo,
             Correction = correction,
+            ContextSnippet = MakeTextSnippet(state.VisibleText, word),
         };
         state.Conn.Insert(record, insertPrimaryKey: true);
+    }
+
+    /// <summary>
+    /// Builds a short, single-line context snippet centred on the first
+    /// occurrence of <paramref name="word"/> within <paramref name="text"/>.
+    /// Collapses whitespace and caps the result at <see cref="SnippetMaxLength"/>.
+    /// Returns null when the text or word is empty.
+    /// </summary>
+    private static string? MakeTextSnippet(string? text, string? word)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(word)) return null;
+
+        int idx = text.IndexOf(word, StringComparison.Ordinal);
+        if (idx < 0) idx = 0;
+
+        int half = (SnippetMaxLength - word.Length) / 2;
+        if (half < 0) half = 0;
+        int start = Math.Max(0, idx - half);
+        int end = Math.Min(text.Length, idx + word.Length + half);
+
+        string window = text[start..end];
+        string collapsed = Regex.Replace(window, @"\s+", " ").Trim();
+        if (collapsed.Length > SnippetMaxLength) collapsed = collapsed[..SnippetMaxLength].Trim();
+        return collapsed.Length == 0 ? null : collapsed;
     }
 
     private static string? SerializeMatches(Regex regex, string text)

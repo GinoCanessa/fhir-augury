@@ -17,4 +17,7 @@ public partial record class SpecPageUnknownWordRecord
 
     /// <summary>Suggested correction when <see cref="IsTypo"/> is true; otherwise null.</summary>
     public string? Correction { get; set; } = null;
+
+    /// <summary>Short single-line snippet of surrounding visible text around the match.</summary>
+    public string? ContextSnippet { get; set; } = null;
 }

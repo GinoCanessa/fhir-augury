@@ -55,6 +55,35 @@ public sealed class ReviewDatabaseSchemaTests : IDisposable
     }
 
     [Fact]
+    public void Initialize_Creates_FindingPointer_And_Snippet_Columns()
+    {
+        string dbPath = Path.Combine(_tempDir, "columns.db");
+        using ReviewDatabase db = new(dbPath, NullLogger<ReviewDatabase>.Instance);
+        db.Initialize();
+
+        Assert.True(ColumnExists(dbPath, "pages", "SourceRelativePath"));
+        Assert.True(ColumnExists(dbPath, "page_unknown_words", "ContextSnippet"));
+        Assert.True(ColumnExists(dbPath, "page_removed_fhir_artifacts", "ContextSnippet"));
+        Assert.True(ColumnExists(dbPath, "page_images", "ContextSnippet"));
+
+        Assert.Empty(db.FindMissingRequiredColumns());
+    }
+
+    private static bool ColumnExists(string dbPath, string table, string column)
+    {
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
+        conn.Open();
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info(\"{table}\")";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    [Fact]
     public void DropTables_Removes_All_Tables()
     {
         string dbPath = Path.Combine(_tempDir, "drop.db");

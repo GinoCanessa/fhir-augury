@@ -132,6 +132,21 @@ public sealed class ContentReviewTests : IDisposable
         // image issue row
         Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM page_images WHERE PageId=$id AND Source='diagram.png' AND MissingAlt=1", pageId));
 
+        // Phase 2: finding pointers + context snippets
+        Assert.Equal("source/foo.html", (string?)Scalar(db, "SELECT SourceRelativePath FROM pages WHERE Id=$id", pageId));
+
+        string? removedSnippet = (string?)Scalar(db, "SELECT ContextSnippet FROM page_removed_fhir_artifacts WHERE PageId=$id AND Word='Conformance'", pageId);
+        Assert.False(string.IsNullOrEmpty(removedSnippet));
+        Assert.Contains("Conformance", removedSnippet);
+
+        string? unknownSnippet = (string?)Scalar(db, "SELECT ContextSnippet FROM page_unknown_words WHERE PageId=$id AND Word='Zorblax'", pageId);
+        Assert.False(string.IsNullOrEmpty(unknownSnippet));
+        Assert.Contains("Zorblax", unknownSnippet);
+
+        string? imageSnippet = (string?)Scalar(db, "SELECT ContextSnippet FROM page_images WHERE PageId=$id AND Source='diagram.png'", pageId);
+        Assert.False(string.IsNullOrEmpty(imageSnippet));
+        Assert.Contains("diagram.png", imageSnippet);
+
         // baseline-presence removed entities
         Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM removed_baseline_entities WHERE EntityKind='page' AND Name='removedpage.html'"));
         Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM removed_baseline_entities WHERE EntityKind='artifact' AND Name='olddir'"));

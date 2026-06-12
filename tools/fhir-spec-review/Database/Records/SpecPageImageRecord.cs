@@ -15,4 +15,7 @@ public partial record class SpecPageImageRecord
     public required string Source { get; set; }
     public required bool MissingAlt { get; set; }
     public required bool NotInFigure { get; set; }
+
+    /// <summary>Short single-line snippet of the image element's surrounding markup.</summary>
+    public string? ContextSnippet { get; set; } = null;
 }

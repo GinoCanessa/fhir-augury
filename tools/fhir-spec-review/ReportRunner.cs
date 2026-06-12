@@ -1,4 +1,6 @@
+using FhirAugury.Tools.FhirSpecReview.Database;
 using FhirAugury.Tools.FhirSpecReview.Report;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Tools.FhirSpecReview;
 
@@ -12,6 +14,19 @@ internal static class ReportRunner
         {
             await Console.Error.WriteLineAsync($"Review DB not found: {reviewDb}").ConfigureAwait(false);
             return 1;
+        }
+
+        using (ReviewDatabase db = new(reviewDb, NullLogger.Instance, readOnly: true))
+        {
+            List<(string Table, string Column)> missingColumns = db.FindMissingRequiredColumns();
+            if (missingColumns.Count > 0)
+            {
+                string cols = string.Join(", ", missingColumns.Select(c => $"{c.Table}.{c.Column}"));
+                await Console.Error.WriteLineAsync(
+                    $"Review DB schema is out of date (missing: {cols}). " +
+                    "Regenerate the review DB with this build's process.").ConfigureAwait(false);
+                return 1;
+            }
         }
 
         string outDir = Path.GetFullPath(options.OutPath);

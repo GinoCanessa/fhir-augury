@@ -64,6 +64,47 @@ public sealed class ReviewDatabase : SourceDatabase
         }
     }
 
+    /// <summary>
+    /// Columns this build requires that were added after the original schema.
+    /// CsLightDbGen emits only <c>CREATE TABLE IF NOT EXISTS</c> (no
+    /// <c>ALTER TABLE ADD COLUMN</c>), so these only materialize on a fresh DB.
+    /// </summary>
+    private static readonly (string Table, string Column)[] s_requiredColumns =
+    [
+        (SpecPageRecord.DefaultTableName, nameof(SpecPageRecord.SourceRelativePath)),
+        (SpecPageUnknownWordRecord.DefaultTableName, nameof(SpecPageUnknownWordRecord.ContextSnippet)),
+        (SpecPageRemovedFhirArtifactRecord.DefaultTableName, nameof(SpecPageRemovedFhirArtifactRecord.ContextSnippet)),
+        (SpecPageImageRecord.DefaultTableName, nameof(SpecPageImageRecord.ContextSnippet)),
+    ];
+
+    /// <summary>
+    /// Returns the build-required columns missing from the existing DB (checked
+    /// via <c>PRAGMA table_info</c>). Empty when the schema is current. Used to
+    /// fail fast against a legacy review DB rather than crash mid-insert.
+    /// </summary>
+    public List<(string Table, string Column)> FindMissingRequiredColumns()
+    {
+        using SqliteConnection connection = OpenConnection();
+        List<(string Table, string Column)> missing = [];
+        foreach ((string table, string column) in s_requiredColumns)
+        {
+            if (!ColumnExists(connection, table, column)) missing.Add((table, column));
+        }
+        return missing;
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string table, string column)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info(\"{table}\")";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     private static void ExecuteNonQuery(SqliteConnection connection, string sql)
     {
         using SqliteCommand cmd = connection.CreateCommand();

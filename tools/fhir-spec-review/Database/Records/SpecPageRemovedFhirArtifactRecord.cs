@@ -20,4 +20,7 @@ public partial record class SpecPageRemovedFhirArtifactRecord
 
     /// <summary>Baseline artifact class (e.g. resource/element/searchparam), when known.</summary>
     public string? ArtifactClass { get; set; } = null;
+
+    /// <summary>Short single-line snippet of surrounding visible text around the match.</summary>
+    public string? ContextSnippet { get; set; } = null;
 }

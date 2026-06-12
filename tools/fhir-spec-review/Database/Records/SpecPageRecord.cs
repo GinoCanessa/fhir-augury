@@ -77,4 +77,7 @@ public partial record class SpecPageRecord
 
     /// <summary>JSON array (TEXT) of reader-review note strings.</summary>
     public string? ReaderReviewNotes { get; set; } = null;
+
+    /// <summary>Path to the page's source file relative to the clone root (e.g. <c>source/patient/patient-notes.xml</c>).</summary>
+    public string? SourceRelativePath { get; set; } = null;
 }

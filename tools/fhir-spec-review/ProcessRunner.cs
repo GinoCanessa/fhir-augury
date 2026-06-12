@@ -78,6 +78,16 @@ internal static class ProcessRunner
         if (options.DropTables) reviewDb.DropTables();
         reviewDb.Initialize();
 
+        List<(string Table, string Column)> missingColumns = reviewDb.FindMissingRequiredColumns();
+        if (missingColumns.Count > 0)
+        {
+            string cols = string.Join(", ", missingColumns.Select(c => $"{c.Table}.{c.Column}"));
+            await Console.Error.WriteLineAsync(
+                $"Existing review DB schema is out of date (missing: {cols}). " +
+                "Rerun process with --drop-tables (schema changed).").ConfigureAwait(false);
+            return 1;
+        }
+
         Console.WriteLine($"Reviewing build {buildVersion} (baseline {options.BaselineRelease})...");
         ContentReview review = new(
             currentVocab, baselineVocab, dict, cacheReader, reviewDb, presence,
