@@ -89,9 +89,32 @@ internal static class ProcessRunner
         }
 
         Console.WriteLine($"Reviewing build {buildVersion} (baseline {options.BaselineRelease})...");
+
+        FhirR6DetailReader? r6Reader = null;
+        int? r6PackageKey = null;
+        string fhirR6Db = Path.GetFullPath(options.FhirR6DbPath);
+        if (File.Exists(fhirR6Db))
+        {
+            FhirR6DetailReader candidate = new(fhirR6Db);
+            r6PackageKey = candidate.ResolvePackageKey(out string? r6Error);
+            if (r6PackageKey is null)
+            {
+                logger.LogWarning("Skipping artifact inventory: {Error}", r6Error);
+            }
+            else
+            {
+                r6Reader = candidate;
+                Console.WriteLine($"Loading artifact inventory from {fhirR6Db}...");
+            }
+        }
+        else
+        {
+            Console.WriteLine($"fhir-r6.db not found at {fhirR6Db}; skipping artifact Element/Operations/SearchParameter inventory.");
+        }
+
         ContentReview review = new(
             currentVocab, baselineVocab, dict, cacheReader, reviewDb, presence,
-            options.Repo, options.BaselineRelease, logger);
+            options.Repo, options.BaselineRelease, logger, r6Reader, r6PackageKey);
         review.Run(buildVersion);
 
         Console.WriteLine($"Review written to {reviewDbPath}.");

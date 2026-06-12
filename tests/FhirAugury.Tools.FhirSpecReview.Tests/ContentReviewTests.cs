@@ -85,6 +85,10 @@ public sealed class ContentReviewTests : IDisposable
         Directory.CreateDirectory(Path.Combine(siteDir, "olddir"));
         File.WriteAllText(Path.Combine(siteDir, "removedpage.html"), "<html/>");
 
+        // ---- fhir-r6.db (artifact inventory) ----
+        string fhirR6Db = Path.Combine(_tempDir, "fhir-r6.db");
+        SeedFhirR6Db(fhirR6Db);
+
         string reviewDb = Path.Combine(_tempDir, "review.db");
 
         ProcessOptions options = new(
@@ -96,6 +100,7 @@ public sealed class ContentReviewTests : IDisposable
             BaselineSitePath: siteDir,
             DictionaryDbPath: dictDb,
             ReviewDbPath: reviewDb,
+            FhirR6DbPath: fhirR6Db,
             DropTables: true);
 
         int exit = await RunRedirectedAsync(options);
@@ -154,6 +159,65 @@ public sealed class ContentReviewTests : IDisposable
         // provenance
         Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM review_runs"));
         Assert.Equal("6.0.0-test", (string?)Scalar(db, "SELECT BuildVersion FROM review_runs LIMIT 1"));
+
+        // Phase 3: artifact inventory populated from fhir-r6.db for Patient.
+        long artifactId = (long)Scalar(db, "SELECT Id FROM artifacts WHERE FhirId='Patient'")!;
+        Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_elements WHERE ArtifactId=$id AND Path='Patient.gender'", artifactId));
+        Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_operations WHERE ArtifactId=$id AND OperationId='Patient-match'", artifactId));
+        Assert.Equal(1L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_search_parameters WHERE ArtifactId=$id AND SearchParamId='Patient-active'", artifactId));
+    }
+
+    [Fact]
+    public async Task Process_With_Missing_FhirR6Db_Succeeds_With_Empty_Inventory()
+    {
+        string cacheDir = Path.Combine(_tempDir, "cache");
+        string cloneRoot = Path.Combine(cacheDir, "github", "repos", "HL7_fhir", "clone");
+        Directory.CreateDirectory(Path.Combine(cloneRoot, "source"));
+        File.WriteAllText(Path.Combine(cloneRoot, "publish.ini"), """
+            [FHIR]
+            version = 6.0.0-test
+            [pages]
+            [page-titles]
+            """);
+
+        string githubDb = Path.Combine(_tempDir, "github.db");
+        SeedGitHubDb(githubDb);
+
+        string fhirSpecDb = Path.Combine(_tempDir, "fhir-spec.db");
+        SeedFhirSpecDb(fhirSpecDb);
+
+        string dictDb = Path.Combine(_tempDir, "dictionary.db");
+        using (SqliteConnection conn = new($"Data Source={dictDb};Pooling=False"))
+        {
+            conn.Open();
+            Exec(conn, "CREATE TABLE words (Word TEXT); CREATE TABLE typos (Typo TEXT, Correction TEXT);");
+        }
+
+        string siteDir = Path.Combine(_tempDir, "site");
+        Directory.CreateDirectory(siteDir);
+
+        string reviewDb = Path.Combine(_tempDir, "review.db");
+
+        ProcessOptions options = new(
+            GitHubDbPath: githubDb,
+            GitHubCachePath: cacheDir,
+            Repo: Repo,
+            FhirSpecDbPath: fhirSpecDb,
+            BaselineRelease: "R5",
+            BaselineSitePath: siteDir,
+            DictionaryDbPath: dictDb,
+            ReviewDbPath: reviewDb,
+            FhirR6DbPath: Path.Combine(_tempDir, "does-not-exist.db"),
+            DropTables: true);
+
+        int exit = await RunRedirectedAsync(options);
+        Assert.Equal(0, exit);
+
+        using SqliteConnection db = new($"Data Source={reviewDb};Pooling=False");
+        db.Open();
+        Assert.Equal(0L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_elements"));
+        Assert.Equal(0L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_operations"));
+        Assert.Equal(0L, ScalarLong(db, "SELECT COUNT(*) FROM artifact_search_parameters"));
     }
 
     [Fact]
@@ -241,6 +305,7 @@ public sealed class ContentReviewTests : IDisposable
             BaselineSitePath: siteDir,
             DictionaryDbPath: dictDb,
             ReviewDbPath: reviewDb,
+            FhirR6DbPath: Path.Combine(_tempDir, "no-r6.db"),
             DropTables: true);
 
         // Must not throw despite the colliding (RepoFullName, FhirId).
@@ -342,6 +407,38 @@ public sealed class ContentReviewTests : IDisposable
             INSERT INTO Structures VALUES (5, 'Conformance', 'Resource');
             INSERT INTO Elements VALUES (5, 'Account.status');
             INSERT INTO SearchParameters VALUES (5, 'identifier');
+            """);
+    }
+
+    private static void SeedFhirR6Db(string dbPath)
+    {
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
+        conn.Open();
+        Exec(conn, """
+            CREATE TABLE Packages (Key INTEGER PRIMARY KEY, Name TEXT, PackageId TEXT, FhirVersionShort TEXT, ShortName TEXT);
+            CREATE TABLE Structures (Key INTEGER PRIMARY KEY, PackageKey INTEGER, Id TEXT, Name TEXT);
+            CREATE TABLE Elements (
+                PackageKey INTEGER, Key INTEGER PRIMARY KEY, StructureKey INTEGER, ResourceFieldOrder INTEGER,
+                Path TEXT, MinCardinality INTEGER, MaxCardinalityString TEXT, StandardStatus TEXT,
+                FixedValue TEXT, PatternValue TEXT, ValueSetBindingStrength TEXT, BindingValueSet TEXT,
+                MeaningWhenMissing TEXT, IsModifier INTEGER);
+            CREATE TABLE Operations (
+                Key INTEGER PRIMARY KEY, PackageKey INTEGER, Id TEXT, Code TEXT, Name TEXT, Kind TEXT,
+                Status TEXT, StandardStatus TEXT, FhirMaturity INTEGER, IsExperimental INTEGER,
+                WorkGroup TEXT, Description TEXT, ResourceTypes TEXT, AdditionalResourceTypes TEXT);
+            CREATE TABLE SearchParameters (
+                Key INTEGER PRIMARY KEY, PackageKey INTEGER, Id TEXT, Name TEXT, Status TEXT,
+                FhirMaturity INTEGER, StandardStatus TEXT, IsExperimental INTEGER, WorkGroup TEXT,
+                SearchType TEXT, Description TEXT, BaseResources TEXT, AdditionalBaseResources TEXT);
+
+            INSERT INTO Packages VALUES (1, 'hl7.fhir.r6.core', 'hl7.fhir.r6.core', '6.0', 'R6');
+            INSERT INTO Structures VALUES (10, 1, 'Patient', 'Patient');
+            INSERT INTO Elements VALUES
+                (1, 100, 10, 0, 'Patient.gender', 1, '1', '', NULL, NULL, 'Required', 'http://hl7.org/fhir/ValueSet/administrative-gender', NULL, 0);
+            INSERT INTO Operations VALUES
+                (200, 1, 'Patient-match', 'match', 'Patient Match', 'operation', 'active', 'trial-use', 2, 0, 'pa', 'Match a patient', 'Patient', NULL);
+            INSERT INTO SearchParameters VALUES
+                (300, 1, 'Patient-active', 'active', 'active', 3, 'normative', 0, 'pa', 'token', 'Active flag', 'Patient', NULL);
             """);
     }
 

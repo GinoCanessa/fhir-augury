@@ -122,6 +122,8 @@ internal sealed class ContentReview
     private readonly BaselinePresence _baselinePresence;
     private readonly string _repo;
     private readonly string _baselineRelease;
+    private readonly FhirR6DetailReader? _r6Reader;
+    private readonly int? _r6PackageKey;
     private readonly ILogger _logger;
     private readonly HtmlParser _htmlParser = new();
 
@@ -138,7 +140,9 @@ internal sealed class ContentReview
         BaselinePresence baselinePresence,
         string repo,
         string baselineRelease,
-        ILogger logger)
+        ILogger logger,
+        FhirR6DetailReader? r6Reader = null,
+        int? r6PackageKey = null)
     {
         _current = current;
         _baseline = baseline;
@@ -148,6 +152,8 @@ internal sealed class ContentReview
         _baselinePresence = baselinePresence;
         _repo = repo;
         _baselineRelease = baselineRelease;
+        _r6Reader = r6Reader;
+        _r6PackageKey = r6PackageKey;
         _logger = logger;
 
         _haveCurrent = !current.IsEmpty;
@@ -235,6 +241,8 @@ internal sealed class ContentReview
         };
         conn.Insert(record, insertPrimaryKey: true);
 
+        PersistArtifactInventory(conn, record.Id, info.FhirId);
+
         if (info.SourceDirRelative is null) return;
 
         if (info.IntroPageFilename is not null)
@@ -244,6 +252,94 @@ internal sealed class ContentReview
         if (info.NotesPageFilename is not null)
         {
             ReviewArtifactPage(conn, record, info, info.NotesPageFilename);
+        }
+    }
+
+    /// <summary>
+    /// Persists the current-build Element / Operations / Search-Parameter
+    /// inventory for an artifact from <c>cache/fhir-r6.db</c> (when a reader is
+    /// configured). Operations and search parameters are scoped by
+    /// <paramref name="fhirId"/> resource membership; elements require resolving
+    /// the artifact to an R6 <c>Structures.Key</c> (non-resource artifacts that
+    /// don't resolve simply get no elements). Best-effort and non-fatal.
+    /// </summary>
+    private void PersistArtifactInventory(SqliteConnection conn, int artifactId, string fhirId)
+    {
+        if (_r6Reader is null || _r6PackageKey is null) return;
+
+        int packageKey = _r6PackageKey.Value;
+
+        try
+        {
+            List<ArtifactOperationDetail> operations = _r6Reader.LoadOperations(packageKey, fhirId);
+            foreach (ArtifactOperationDetail op in operations)
+            {
+                conn.Insert(new ArtifactOperationRecord
+                {
+                    Id = ArtifactOperationRecord.GetIndex(),
+                    ArtifactId = artifactId,
+                    OperationId = op.OperationId,
+                    Code = op.Code,
+                    Name = op.Name,
+                    OperationKind = op.OperationKind,
+                    Status = op.Status,
+                    StandardsStatus = op.StandardsStatus,
+                    FhirMaturity = op.FhirMaturity,
+                    IsExperimental = op.IsExperimental,
+                    WorkGroup = op.WorkGroup,
+                    Description = op.Description,
+                    OperationOrder = op.OperationOrder,
+                }, insertPrimaryKey: true);
+            }
+
+            List<ArtifactSearchParameterDetail> searchParameters = _r6Reader.LoadSearchParameters(packageKey, fhirId);
+            foreach (ArtifactSearchParameterDetail sp in searchParameters)
+            {
+                conn.Insert(new ArtifactSearchParameterRecord
+                {
+                    Id = ArtifactSearchParameterRecord.GetIndex(),
+                    ArtifactId = artifactId,
+                    SearchParamId = sp.SearchParamId,
+                    Name = sp.Name,
+                    Status = sp.Status,
+                    FhirMaturity = sp.FhirMaturity,
+                    StandardsStatus = sp.StandardsStatus,
+                    IsExperimental = sp.IsExperimental,
+                    WorkGroup = sp.WorkGroup,
+                    SearchType = sp.SearchType,
+                    Description = sp.Description,
+                    ParamOrder = sp.ParamOrder,
+                }, insertPrimaryKey: true);
+            }
+
+            int? structureKey = _r6Reader.ResolveStructureKey(packageKey, fhirId);
+            if (structureKey is null) return;
+
+            List<ArtifactElementDetail> elements = _r6Reader.LoadElements(packageKey, structureKey.Value);
+            foreach (ArtifactElementDetail el in elements)
+            {
+                conn.Insert(new ArtifactElementRecord
+                {
+                    Id = ArtifactElementRecord.GetIndex(),
+                    ArtifactId = artifactId,
+                    Path = el.Path,
+                    IsRequired = el.IsRequired,
+                    MaxCardinality = el.MaxCardinality,
+                    IsTrialUse = el.IsTrialUse,
+                    HasFixed = el.HasFixed,
+                    HasPattern = el.HasPattern,
+                    RequiredBinding = el.RequiredBinding,
+                    RequiredBindingValueSet = el.RequiredBindingValueSet,
+                    ExternalRequiredBinding = el.ExternalRequiredBinding,
+                    MeaningWhenMissing = el.MeaningWhenMissing,
+                    IsModifier = el.IsModifier,
+                    ElementOrder = el.ElementOrder,
+                }, insertPrimaryKey: true);
+            }
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException ex)
+        {
+            _logger.LogWarning(ex, "Failed to load R6 inventory for artifact '{FhirId}'; skipping inventory.", fhirId);
         }
     }
 

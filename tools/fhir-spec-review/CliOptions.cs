@@ -10,6 +10,7 @@ internal sealed record ProcessOptions(
     string? BaselineSitePath,
     string DictionaryDbPath,
     string ReviewDbPath,
+    string FhirR6DbPath,
     bool DropTables);
 
 /// <summary>Parsed options for the <c>report</c> verb.</summary>
@@ -27,6 +28,7 @@ internal static class CliOptions
     public const string DefaultBaselineRelease = "R5";
     public const string DefaultDictionaryDb = "./cache/dictionary.db";
     public const string DefaultReviewDb = "./cache/fhir-spec-review.db";
+    public const string DefaultFhirR6Db = "./cache/fhir-r6.db";
     public const string DefaultOut = "./cache/fhir-spec-review-site";
 
     /// <summary>Parses <c>process</c> verb arguments (everything after the verb token).</summary>
@@ -40,6 +42,7 @@ internal static class CliOptions
         string? baselineSite = null;
         string dictionaryDb = DefaultDictionaryDb;
         string reviewDb = DefaultReviewDb;
+        string fhirR6Db = DefaultFhirR6Db;
         bool dropTables = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -72,6 +75,9 @@ internal static class CliOptions
                 case "--review-db":
                     if (!TryTakeValue(args, ref i, arg, out reviewDb, out error)) { options = DefaultProcess(); return false; }
                     break;
+                case "--fhir-r6-db":
+                    if (!TryTakeValue(args, ref i, arg, out fhirR6Db, out error)) { options = DefaultProcess(); return false; }
+                    break;
                 case "--drop-tables":
                     dropTables = true;
                     break;
@@ -84,7 +90,7 @@ internal static class CliOptions
 
         options = new ProcessOptions(
             githubDb, githubCache, repo, fhirSpecDb, baselineRelease,
-            baselineSite, dictionaryDb, reviewDb, dropTables);
+            baselineSite, dictionaryDb, reviewDb, fhirR6Db, dropTables);
         error = null;
         return true;
     }
@@ -137,7 +143,7 @@ internal static class CliOptions
 
     private static ProcessOptions DefaultProcess() => new(
         DefaultGitHubDb, DefaultGitHubCache, DefaultRepo, DefaultFhirSpecDb,
-        DefaultBaselineRelease, null, DefaultDictionaryDb, DefaultReviewDb, false);
+        DefaultBaselineRelease, null, DefaultDictionaryDb, DefaultReviewDb, DefaultFhirR6Db, false);
 
     private static ReportOptions DefaultReport() => new(DefaultReviewDb, DefaultOut, false);
 }

@@ -101,6 +101,7 @@ public static class Program
               --baseline-site <path>     Published baseline site folder (required)
               --dictionary-db <path>     Dictionary DB (default: ./cache/dictionary.db)
               --review-db <path>         Output review SQLite DB (default: ./cache/fhir-spec-review.db)
+              --fhir-r6-db <path>        Current-build R6 vocabulary DB for artifact inventory (default: ./cache/fhir-r6.db; missing file = inventory skipped)
               --drop-tables              Drop and recreate the review schema first
 
             report options:

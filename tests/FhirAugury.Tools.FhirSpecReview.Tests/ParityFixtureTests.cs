@@ -78,6 +78,7 @@ public sealed class ParityFixtureTests : IDisposable
             BaselineSitePath: siteDir,
             DictionaryDbPath: dictDb,
             ReviewDbPath: reviewDb,
+            FhirR6DbPath: Path.Combine(_tempDir, "no-r6.db"),
             DropTables: true);
 
         int exit = await RunRedirectedAsync(options);
