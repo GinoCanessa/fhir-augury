@@ -45,3 +45,45 @@ internal sealed record ArtifactInfo(
     int? MaturityLevel,
     string? StandardsStatus,
     string? CanonicalUrl);
+
+/// <summary>One element-review row sourced from the current-build R6 vocabulary.</summary>
+internal sealed record ArtifactElementDetail(
+    string Path,
+    bool IsRequired,
+    string? MaxCardinality,
+    bool IsTrialUse,
+    bool HasFixed,
+    bool HasPattern,
+    bool RequiredBinding,
+    string? RequiredBindingValueSet,
+    bool ExternalRequiredBinding,
+    string? MeaningWhenMissing,
+    bool IsModifier,
+    int ElementOrder);
+
+/// <summary>One operation-inventory row sourced from the current-build R6 vocabulary.</summary>
+internal sealed record ArtifactOperationDetail(
+    string OperationId,
+    string? Code,
+    string? Name,
+    string? OperationKind,
+    string? Status,
+    string? StandardsStatus,
+    int? FhirMaturity,
+    bool? IsExperimental,
+    string? WorkGroup,
+    string? Description,
+    int OperationOrder);
+
+/// <summary>One search-parameter-inventory row sourced from the current-build R6 vocabulary.</summary>
+internal sealed record ArtifactSearchParameterDetail(
+    string SearchParamId,
+    string? Name,
+    string? Status,
+    int? FhirMaturity,
+    string? StandardsStatus,
+    bool? IsExperimental,
+    string? WorkGroup,
+    string? SearchType,
+    string? Description,
+    int ParamOrder);
