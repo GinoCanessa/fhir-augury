@@ -16,9 +16,12 @@ It has two verbs:
 - **`report`** — reads the review DB and emits a single self-contained report:
   an `index.html` plus an `assets/` folder. The review DB is inlined as base64
   and loaded in-browser via sql.js (no network), giving a type-to-filter
-  work-group picker and per-work-group artifact/page/findings views. The index
-  tables are now an in-page searchable view rather than a per-workgroup static
-  HTML site.
+  work-group picker (with a **Code** column) and drill-down detail views. Each
+  work-group page lists just two linked tables — Artifacts and narrative Pages —
+  and every row links to a per-artifact or per-page **detail view** (replacing
+  the old inline per-work-group findings dump). The artifact detail additionally
+  shows current-build Element Review / Operations / Search Parameters inventory
+  sourced from `fhir-r6.db`.
 
 ## Usage
 
@@ -32,6 +35,7 @@ fhir-spec-review process \
     --baseline-site C:\ai\support\fhir-r5 \
     --dictionary-db ./cache/dictionary.db \
     --review-db ./cache/fhir-spec-review.db \
+    --fhir-r6-db ./cache/fhir-r6.db \
     --drop-tables
 
 fhir-spec-review report \
@@ -52,6 +56,7 @@ fhir-spec-review report \
 | `--baseline-site` | *(required)* | Published baseline site folder, for presence tracking. |
 | `--dictionary-db` | `./cache/dictionary.db` | External dictionary DB (read-only). |
 | `--review-db` | `./cache/fhir-spec-review.db` | Output review SQLite DB. |
+| `--fhir-r6-db` | `./cache/fhir-r6.db` | Current-build FHIR R6 vocabulary DB (read-only); source of each artifact's Element / Operations / Search Parameter inventory. If the file is missing the inventory step is skipped (non-fatal); other checks are unaffected. |
 | `--drop-tables` | off | Drop and recreate the review schema first. |
 
 ### `report` options
@@ -66,6 +71,10 @@ fhir-spec-review report \
 
 - `fhir-spec.db` and `dictionary.db` are upstream-produced read-only reference
   DBs (gitignored, live under `cache/`).
+- `fhir-r6.db` is the upstream CI-build R6 vocabulary (gitignored, under
+  `cache/`); read-only, optional. When present it provides the per-artifact
+  Element / Operations / Search Parameter inventory shown on the artifact detail
+  view. When absent, inventory is simply omitted.
 - `--baseline-site` is a rendered, per-artifact published-release site (e.g. a
   local `fhir-r5` site). It is required and drives baseline **presence**
   tracking (pages/artifacts removed since the baseline).
@@ -82,3 +91,7 @@ fhir-spec-review report \
   not active).
 - The legacy `create-dict-db` verb is dropped; the dictionary is consumed from
   `cache/dictionary.db`.
+- Artifact **Operation parameters** are not persisted — only operation-level rows
+  appear in the artifact detail's Operations table.
+- The report has no automated DOM test harness; routing/rendering changes are
+  verified manually (the C# emitter tests cover asset/schema integrity only).
