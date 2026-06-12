@@ -54,6 +54,9 @@
         } else if (parts[0] === 'wg' && parts[2] === 'page' && parts[3]) {
           var pageCode = decodeURIComponent(parts[1]);
           Views.page(main, pageCode, Number(parts[3]));
+        } else if (parts[0] === 'wg' && parts[2] === 'artifact' && parts[3]) {
+          var artifactCode = decodeURIComponent(parts[1]);
+          Views.artifact(main, artifactCode, Number(parts[3]));
         } else if (parts[0] === 'wg' && parts.length >= 2) {
           var key = decodeURIComponent(parts[1]);
           Views.workGroup(main, key);
@@ -220,8 +223,110 @@
       ]);
       main.appendChild(el('h2', null, String(page.PageFileName)));
       renderPageDetailBlock(main, page);
+    },
+
+    artifact: function (main, code, id) {
+      var artifact = loadArtifactById(id);
+      if (!artifact) {
+        setBreadcrumb([{ label: 'Not found', href: null }]);
+        renderError(main, 'Artifact not found: ' + id);
+        return;
+      }
+      setBreadcrumb([
+        { label: wgBreadcrumbLabel(code), href: '#/wg/' + encodeURIComponent(code) },
+        { label: String(artifact.FhirId), href: null }
+      ]);
+      main.appendChild(el('h2', null, 'Artifact ' + String(artifact.Name) + ' (' + String(artifact.FhirId) + ')'));
+
+      // Urgent Item Checklist (static reviewer reminders).
+      main.appendChild(el('h3', null, 'Urgent Item Checklist'));
+      var checklist = el('ul');
+      [
+        'Confirm workgroup disposition vote has been recorded and sent to FMG.',
+        'Confirm the resource boundaries and relationships are documented.',
+        'Confirm every element has a clear definition and short description.',
+        'Confirm required bindings and search parameters are correct.',
+        'Confirm examples validate against the current build.'
+      ].forEach(function (item) { checklist.appendChild(el('li', null, item)); });
+      main.appendChild(checklist);
+
+      // Inlined intro + notes page-detail blocks (intro first, then notes).
+      var pages = loadArtifactPages(id);
+      var ordered = orderArtifactPages(pages, artifact);
+      for (var i = 0; i < ordered.length; i++) {
+        main.appendChild(el('h3', null, ordered[i].label));
+        renderPageDetailBlock(main, ordered[i].page);
+      }
+
+      // Element Review
+      var elements = loadArtifactElements(id);
+      main.appendChild(el('h3', null, 'Element Review (' + elements.length + ')'));
+      if (elements.length > 0) {
+        main.appendChild(buildTable(
+          ['Path', 'Is Required', 'Max Cardinality', 'Trial Use', 'Has fixed[x]', 'Has pattern[x]',
+            'Required Binding', 'External Required Binding', 'meaningWhenMissing', 'Is Modifier'],
+          elements.map(function (e) {
+            return [e.Path, boolText(e.IsRequired), e.MaxCardinality || '', boolText(e.IsTrialUse),
+              boolText(e.HasFixed), boolText(e.HasPattern), boolText(e.RequiredBinding),
+              boolText(e.ExternalRequiredBinding), e.MeaningWhenMissing || '', boolText(e.IsModifier)];
+          })));
+      } else {
+        main.appendChild(el('p', { class: 'muted' }, 'No elements found.'));
+      }
+
+      // Operations
+      var operations = loadArtifactOperations(id);
+      main.appendChild(el('h3', null, 'Operations (' + operations.length + ')'));
+      if (operations.length > 0) {
+        main.appendChild(buildTable(
+          ['Id', 'Code', 'Name', 'Kind', 'Status', 'Standards', 'FMM', 'Description'],
+          operations.map(function (o) {
+            return [o.OperationId, o.Code || '', o.Name || '', o.OperationKind || '', o.Status || '',
+              o.StandardsStatus || '', o.FhirMaturity == null ? '' : String(o.FhirMaturity), o.Description || ''];
+          })));
+      } else {
+        main.appendChild(el('p', { class: 'muted' }, 'No operations found.'));
+      }
+
+      // Search Parameters
+      var searchParams = loadArtifactSearchParameters(id);
+      main.appendChild(el('h3', null, 'Search Parameters (' + searchParams.length + ')'));
+      if (searchParams.length > 0) {
+        main.appendChild(buildTable(
+          ['Id', 'Name', 'Publication Status', 'FMM', 'Standards Status', 'IsExperimental',
+            'WorkGroup', 'Search Type', 'Description'],
+          searchParams.map(function (s) {
+            return [s.SearchParamId, s.Name || '', s.Status || '',
+              s.FhirMaturity == null ? '' : String(s.FhirMaturity), s.StandardsStatus || '',
+              boolText(s.IsExperimental), s.WorkGroup || '', s.SearchType || '', s.Description || ''];
+          })));
+      } else {
+        main.appendChild(el('p', { class: 'muted' }, 'No search parameters found.'));
+      }
     }
   };
+
+  // Orders an artifact's linked pages intro-first then notes, labelling each by
+  // matching the artifact's Intro/Notes page filenames; any other linked page
+  // keeps its file name as the label and sorts last.
+  function orderArtifactPages(pages, artifact) {
+    var result = [];
+    for (var i = 0; i < pages.length; i++) {
+      var p = pages[i];
+      var label;
+      var rank;
+      if (artifact.IntroPageFilename != null && p.PageFileName === artifact.IntroPageFilename) {
+        label = 'Information Page'; rank = 0;
+      } else if (artifact.NotesPageFilename != null && p.PageFileName === artifact.NotesPageFilename) {
+        label = 'Notes Page'; rank = 1;
+      } else {
+        label = String(p.PageFileName); rank = 2;
+      }
+      result.push({ page: p, label: label, rank: rank });
+    }
+    result.sort(function (a, b) { return a.rank - b.rank; });
+    return result;
+  }
 
   // ---- data access --------------------------------------------------------
 
@@ -361,6 +466,35 @@
     return query(
       'SELECT Source, MissingAlt, NotInFigure, ContextSnippet FROM page_images ' +
       'WHERE PageId = ? ORDER BY Source COLLATE NOCASE', [pageId]).rows;
+  }
+
+  function loadArtifactById(id) {
+    var res = query('SELECT * FROM artifacts WHERE Id = ?', [id]);
+    return res.rows.length > 0 ? res.rows[0] : null;
+  }
+
+  function loadArtifactPages(artifactId) {
+    return query('SELECT * FROM pages WHERE ArtifactId = ? ORDER BY PageFileName COLLATE NOCASE', [artifactId]).rows;
+  }
+
+  function loadArtifactElements(artifactId) {
+    return query(
+      'SELECT Path, IsRequired, MaxCardinality, IsTrialUse, HasFixed, HasPattern, ' +
+      'RequiredBinding, ExternalRequiredBinding, MeaningWhenMissing, IsModifier ' +
+      'FROM artifact_elements WHERE ArtifactId = ? ORDER BY ElementOrder', [artifactId]).rows;
+  }
+
+  function loadArtifactOperations(artifactId) {
+    return query(
+      'SELECT OperationId, Code, Name, OperationKind, Status, StandardsStatus, FhirMaturity, Description ' +
+      'FROM artifact_operations WHERE ArtifactId = ? ORDER BY OperationOrder', [artifactId]).rows;
+  }
+
+  function loadArtifactSearchParameters(artifactId) {
+    return query(
+      'SELECT SearchParamId, Name, Status, FhirMaturity, StandardsStatus, IsExperimental, ' +
+      'WorkGroup, SearchType, Description ' +
+      'FROM artifact_search_parameters WHERE ArtifactId = ? ORDER BY ParamOrder', [artifactId]).rows;
   }
 
   // For the unassigned bucket a bare `= ?` never matches NULL, so use an
