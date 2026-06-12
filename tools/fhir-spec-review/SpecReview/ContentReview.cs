@@ -157,9 +157,28 @@ internal sealed class ContentReview
         using SqliteConnection conn = _reviewDb.OpenConnection();
 
         List<ArtifactInfo> artifacts = _cache.EnumerateArtifacts();
+
+        // Impose a stable order so the kept-vs-skipped choice on a duplicate
+        // FhirId is deterministic (EnumerateArtifacts/SelectList has no ORDER BY).
+        artifacts.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
+
         HashSet<string> currentArtifactSanitized = new(StringComparer.OrdinalIgnoreCase);
+
+        // Dedup on (RepoFullName, FhirId) before insert: the artifacts table has a
+        // UNIQUE index on that key, so a duplicate FhirId (e.g. two extensions
+        // sharing one canonical URL) would otherwise crash the run. Keep the first,
+        // skip the rest, and record each collision as a finding. Ordinal comparison
+        // matches SQLite's default BINARY collation on the UNIQUE index.
+        Dictionary<string, ArtifactInfo> firstByFhirId = new(StringComparer.Ordinal);
         foreach (ArtifactInfo artifact in artifacts)
         {
+            if (firstByFhirId.TryGetValue(artifact.FhirId, out ArtifactInfo? kept))
+            {
+                RecordDuplicateArtifactKey(conn, kept, artifact);
+                continue;
+            }
+
+            firstByFhirId[artifact.FhirId] = artifact;
             ProcessArtifact(conn, artifact, currentArtifactSanitized);
         }
 
@@ -223,6 +242,35 @@ internal sealed class ContentReview
         {
             ReviewArtifactPage(conn, record, info, info.NotesPageFilename);
         }
+    }
+
+    /// <summary>
+    /// Records a <c>(RepoFullName, FhirId)</c> collision: <paramref name="kept"/>
+    /// is the first artifact for the FhirId (retained), <paramref name="duplicate"/>
+    /// is a subsequent one (skipped — not inserted, pages not reviewed). Each
+    /// skipped duplicate becomes its own finding row. A plain insert is used (no
+    /// <c>ignoreDuplicates</c>): the table has no semantic UNIQUE index, so
+    /// <c>INSERT OR IGNORE</c> would have no useful target.
+    /// </summary>
+    private void RecordDuplicateArtifactKey(SqliteConnection conn, ArtifactInfo kept, ArtifactInfo duplicate)
+    {
+        _logger.LogWarning(
+            "Duplicate artifact FhirId '{FhirId}': keeping '{KeptName}' ({KeptUrl}), skipping '{DuplicateName}' ({DuplicateUrl}).",
+            duplicate.FhirId, kept.Name, kept.CanonicalUrl, duplicate.Name, duplicate.CanonicalUrl);
+
+        DuplicateArtifactKeyRecord record = new()
+        {
+            Id = DuplicateArtifactKeyRecord.GetIndex(),
+            RepoFullName = _repo,
+            FhirId = duplicate.FhirId,
+            KeptName = kept.Name,
+            DuplicateName = duplicate.Name,
+            KeptCanonicalUrl = kept.CanonicalUrl,
+            DuplicateCanonicalUrl = duplicate.CanonicalUrl,
+            ArtifactType = duplicate.ArtifactType,
+            WorkGroupCode = duplicate.WorkGroupCode,
+        };
+        conn.Insert(record, insertPrimaryKey: true);
     }
 
     private void ReviewArtifactPage(SqliteConnection conn, ArtifactRecord artifact, ArtifactInfo info, string pageFileName)
