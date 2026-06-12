@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\src\common.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Tools.FhirSpecReview</RootNamespace>
+    <AssemblyName>fhir-spec-review</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" Version="1.3.*" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Source.GitHub\FhirAugury.Source.GitHub.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Tools.FhirSpecReview.Tests" />
+  </ItemGroup>
+</Project>
