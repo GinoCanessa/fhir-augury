@@ -58,6 +58,11 @@ builder.Services.AddSingleton<BallotNotesHydrator>();
 
 WebApplication app = builder.Build();
 
+// Eagerly initialize the database so its schema exists for the notes-site
+// renderer even before the first hydrate request (the singleton is otherwise
+// created lazily on first controller resolution).
+_ = app.Services.GetRequiredService<BallotNotesDatabase>();
+
 app.MapDefaultEndpoints();
 app.MapControllers();
 app.MapAuguryOpenApi();
