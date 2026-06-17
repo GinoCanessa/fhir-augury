@@ -76,18 +76,22 @@ public sealed class BallotNotesDatabase : SourceDatabase
         evidence.SavedAt = now;
 
         ExistingNoteProse? existing = ReadExistingProse(connection, evidence.NoteId);
-        if (existing is { } prior)
+        if (existing is { AuthoredAt: not null } prior)
         {
+            // Preserve an authored note across re-hydration: prose, NeedsNote,
+            // AuthoredAt, and the authored "Generated" timestamp all carry forward.
             evidence.ProposedBallotNoteHtml = prior.ProposedBallotNoteHtml;
             evidence.RollupSummaryMarkdown = prior.RollupSummaryMarkdown;
             evidence.NotesForReviewerMarkdown = prior.NotesForReviewerMarkdown;
             evidence.SourceFilesNote = prior.SourceFilesNote;
             evidence.NeedsNote = prior.NeedsNote;
             evidence.AuthoredAt = prior.AuthoredAt;
-            evidence.GeneratedAt = prior.AuthoredAt is not null ? prior.GeneratedAt : now;
+            evidence.GeneratedAt = prior.GeneratedAt;
         }
         else
         {
+            // First hydration or an evidence-only re-hydration: the fresh evidence
+            // (including any resolver SourceFilesNote) stands and "Generated" is now.
             evidence.GeneratedAt = now;
         }
 

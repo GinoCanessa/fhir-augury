@@ -28,6 +28,7 @@
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner/FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Applier/FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
+    <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
@@ -52,6 +53,7 @@
     <Project Path="tests/FhirAugury.Tools.TicketSite.Tests/FhirAugury.Tools.TicketSite.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.FhirSpecReview.Tests/FhirAugury.Tools.FhirSpecReview.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.NotesSite.Tests/FhirAugury.Tools.NotesSite.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/notes-site/notes-site.csproj" />
