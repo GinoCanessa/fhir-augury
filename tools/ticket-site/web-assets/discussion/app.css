@@ -245,3 +245,29 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .topic-back {
   margin-top: 1rem;
 }
+
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 1rem;
+  right: 1.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.5rem;
+  font-size: 0.8rem;
+  color: #1e7e34;
+}
+@media (prefers-color-scheme: dark) {
+  .copy-ai-status { color: #7ee2a8; }
+}

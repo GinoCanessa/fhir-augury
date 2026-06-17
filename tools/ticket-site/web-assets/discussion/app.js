@@ -56,6 +56,7 @@
         return;
       }
 
+      installCopyButton();
       window.addEventListener('hashchange', App.route);
       App.route();
     },
@@ -63,6 +64,7 @@
     route: function () {
       const main = document.getElementById('app');
       clearChildren(main);
+      clearCopyExport();
       const fullHash = window.location.hash || '#/';
 
       // Split path and chip-query suffix. Encoded as a `?` after the
@@ -1254,6 +1256,23 @@
       const back = el('p', { class: 'muted' });
       back.appendChild(el('a', { href: '#/list' }, '← Back to list'));
       main.appendChild(back);
+
+      setCopyExport(function () {
+        return serializeTicketMarkdown({
+          t: t,
+          hydrationParent: hydrationParent,
+          repos: repos,
+          relatedJira: relatedJira,
+          relatedZulip: relatedZulip,
+          relatedGitHub: relatedGitHub,
+          jiraHydration: jiraHydration,
+          zulipHydration: zulipHydration,
+          githubHydration: githubHydration,
+          repoHydration: repoHydration,
+          jiraXref: jiraXref,
+          topicMemberships: topicMemberships.rows,
+        });
+      });
     },
 
     notFound: function (main, hash) {
@@ -1639,6 +1658,279 @@
     table.appendChild(tbody);
     section.appendChild(table);
     return section;
+  }
+
+  // ---- Copy for AI (shared convention; identical across tools) -------------
+  // A top-right "Copy for AI" button on detail/leaf views. It serializes the
+  // current view from the in-memory rows to markdown (CurrentExport) and writes
+  // it to the clipboard, with an execCommand fallback for file:// where the
+  // async Clipboard API is unavailable. Detail views opt in via setCopyExport();
+  // the router hides the button again via clearCopyExport() on every route.
+
+  var CurrentExport = null;
+
+  function installCopyButton() {
+    if (document.querySelector('.copy-ai')) return;
+    var header = document.querySelector('header');
+    if (!header) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-ai';
+    btn.hidden = true;
+    btn.textContent = '📋 Copy for AI';
+    var status = document.createElement('span');
+    status.className = 'copy-ai-status';
+    status.setAttribute('role', 'status');
+    btn.addEventListener('click', function () {
+      try {
+        var md = CurrentExport && CurrentExport();
+        if (md) copyForAi(md);
+        else setCopyStatus('Nothing to copy');
+      } catch (e) {
+        setCopyStatus('Copy failed');
+      }
+    });
+    header.appendChild(btn);
+    header.appendChild(status);
+  }
+
+  function setCopyStatus(msg) {
+    var status = document.querySelector('.copy-ai-status');
+    if (status) status.textContent = msg;
+  }
+
+  function setCopyExport(fn) {
+    CurrentExport = fn;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = false;
+    setCopyStatus('');
+  }
+
+  function clearCopyExport() {
+    CurrentExport = null;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = true;
+    setCopyStatus('');
+  }
+
+  function copyForAi(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setCopyStatus('Copied!'); },
+        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
+      );
+    } else {
+      setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+    }
+  }
+
+  function copyViaTextarea(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  function mdEscapeCell(s) {
+    if (s == null) return '';
+    return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  }
+
+  function mdTable(headers, rows) {
+    var out = '| ' + headers.map(mdEscapeCell).join(' | ') + ' |\n';
+    out += '| ' + headers.map(function () { return '---'; }).join(' | ') + ' |\n';
+    for (var i = 0; i < rows.length; i++) {
+      out += '| ' + rows[i].map(mdEscapeCell).join(' | ') + ' |\n';
+    }
+    return out;
+  }
+  // ---- end Copy for AI shared convention ----------------------------------
+
+  // ---- Copy for AI serializer (discussion / preparer specific) ------------
+
+  function serializeTicketMarkdown(ctx) {
+    var t = ctx.t || {};
+    var hp = ctx.hydrationParent;
+    var out = '# ' + String(t.Key || '') + (t.Title ? ' — ' + String(t.Title) : '') + '\n\n';
+
+    out += mdTable(['Field', 'Value'], [
+      ['Key', String(t.Key || '')],
+      ['Title', t.Title == null ? '' : String(t.Title)],
+      ['Workgroup', t.WorkGroup == null ? '' : String(t.WorkGroup)],
+      ['Status', t.Status == null ? '' : String(t.Status)],
+      ['Type', t.Type == null ? '' : String(t.Type)],
+      ['Priority', hp && hp.Priority != null ? String(hp.Priority) : ''],
+      ['Resolution', hp && hp.Resolution != null ? String(hp.Resolution) : ''],
+      ['Specification', hp && hp.Specification != null ? String(hp.Specification) : ''],
+      ['Raised in', hp && hp.RaisedInVersion != null ? String(hp.RaisedInVersion) : ''],
+      ['Selected ballot', hp && hp.SelectedBallot != null ? String(hp.SelectedBallot) : ''],
+      ['Change category', hp && hp.ChangeCategory != null ? String(hp.ChangeCategory) : ''],
+      ['Impact', hp && hp.Impact != null ? String(hp.Impact) : ''],
+      ['Comments', hp && hp.CommentCount != null ? String(hp.CommentCount) : ''],
+      ['Recommendation', t.Recommendation == null ? '' : String(t.Recommendation)],
+      ['Saved', t.SavedAt == null ? '' : String(t.SavedAt)]
+    ]) + '\n';
+
+    if (ctx.topicMemberships && ctx.topicMemberships.length > 0) {
+      for (var ti = 0; ti < ctx.topicMemberships.length; ti++) {
+        out += 'Member of topic: ' + String(ctx.topicMemberships[ti].Short || '') + '\n';
+      }
+      out += '\n';
+    }
+
+    // Original request / resolution — prefer the *Plain text (D2).
+    out += mdProseSection('Original request', hp ? hp.DescriptionPlain : null);
+    out += mdProseSection('Proposed / accepted resolution', hp ? hp.ResolutionDescriptionPlain : null);
+
+    // Prose sections (mirror sect/subsect) — only when present.
+    out += mdProseSection('Request Summary', t.RequestSummary);
+    out += mdProseSection('Comment Summary', t.CommentSummary);
+    out += mdProseSection('Linked Ticket Summary', t.LinkedTicketSummary);
+    out += mdProseSection('Related Ticket Summary', t.RelatedTicketSummary);
+    out += mdProseSection('Related Zulip Summary', t.RelatedZulipSummary);
+    out += mdProseSection('Related GitHub Summary', t.RelatedGitHubSummary);
+    out += mdProseSection('Existing Proposed', t.ExistingProposed);
+
+    if (t.ProposalA || t.ProposalAJustification || t.ProposalAImpact) {
+      out += mdProseSection('Proposal A', t.ProposalA);
+      out += mdProseSection('Proposal A — Justification', t.ProposalAJustification);
+      out += mdProseSection('Proposal A — Impact', t.ProposalAImpact);
+    }
+    if (t.ProposalB || t.ProposalBJustification || t.ProposalBImpact) {
+      out += mdProseSection('Proposal B', t.ProposalB);
+      out += mdProseSection('Proposal B — Justification', t.ProposalBJustification);
+      out += mdProseSection('Proposal B — Impact', t.ProposalBImpact);
+    }
+    if (t.ProposalC || t.ProposalCJustification) {
+      out += mdProseSection('Proposal C', t.ProposalC);
+      out += mdProseSection('Proposal C — Justification', t.ProposalCJustification);
+    }
+    if (t.Recommendation || t.RecommendationJustification) {
+      out += mdProseSection('Recommendation', t.Recommendation);
+      out += mdProseSection('Recommendation — Justification', t.RecommendationJustification);
+    }
+
+    out += '## Related items\n\n';
+
+    var repos = ctx.repos || [];
+    out += '### Repos (' + repos.length + ')\n\n';
+    if (repos.length > 0) {
+      out += mdTable(['Repo', 'Category', 'Detail', 'Justification'],
+        repos.map(function (r) {
+          return [String(r.Repo || ''), String(r.RepoCategory || ''),
+            repoHydrationDetail(ctx.repoHydration[String(r.Repo)]), String(r.Justification || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var relatedJira = ctx.relatedJira || [];
+    out += '### Related Jira tickets (' + relatedJira.length + ')\n\n';
+    if (relatedJira.length > 0) {
+      out += mdTable(['Key', 'Link type', 'Detail', 'Justification'],
+        relatedJira.map(function (r) {
+          return [String(r.AssociatedTicketKey || ''), String(r.LinkType || ''),
+            jiraHydrationDetail(ctx.jiraHydration[String(r.AssociatedTicketKey || '')]), String(r.Justification || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var jiraXref = ctx.jiraXref || [];
+    if (jiraXref.length > 0) {
+      out += '### Other Jira-declared links (' + jiraXref.length + ')\n\n';
+      out += mdTable(['Source', 'Key', 'Detail'],
+        jiraXref.map(function (x) {
+          return [String(x.Source || ''), String(x.JiraKey || ''),
+            jiraHydrationDetail(ctx.jiraHydration[String(x.JiraKey)])];
+        })) + '\n';
+    }
+
+    var relatedZulip = ctx.relatedZulip || [];
+    out += '### Related Zulip threads (' + relatedZulip.length + ')\n\n';
+    if (relatedZulip.length > 0) {
+      out += mdTable(['Thread', 'Detail', 'Justification'],
+        relatedZulip.map(function (r) {
+          return [String(r.ZulipThreadId || ''),
+            zulipHydrationDetail(ctx.zulipHydration[String(r.ZulipThreadId)]), String(r.Justification || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var relatedGitHub = ctx.relatedGitHub || [];
+    out += '### Related GitHub items (' + relatedGitHub.length + ')\n\n';
+    if (relatedGitHub.length > 0) {
+      out += mdTable(['Item', 'Detail', 'Justification'],
+        relatedGitHub.map(function (r) {
+          return [String(r.GitHubItemId || ''),
+            githubHydrationDetail(ctx.githubHydration[String(r.GitHubItemId)]), String(r.Justification || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    return out;
+  }
+
+  function mdProseSection(title, value) {
+    if (value == null || String(value).trim() === '') return '';
+    return '## ' + title + '\n\n' + String(value).trim() + '\n\n';
+  }
+
+  function repoHydrationDetail(h) {
+    if (!h) return '';
+    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
+    return (h.HydrationStatus === 'resolved' && h.Description) ? String(h.Description) : '';
+  }
+
+  function jiraHydrationDetail(h) {
+    if (!h) return '';
+    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
+    if (h.HydrationStatus !== 'resolved') return '';
+    var parts = [];
+    if (h.Title) parts.push(String(h.Title));
+    if (h.Status) parts.push(String(h.Status));
+    if (h.Type) parts.push(String(h.Type));
+    if (h.Resolution) parts.push(String(h.Resolution));
+    return parts.join(' · ');
+  }
+
+  function zulipHydrationDetail(h) {
+    if (!h) return '';
+    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
+    if (h.HydrationStatus !== 'resolved') return '';
+    var stream = h.StreamName || '';
+    var headline = (stream ? stream + ' › ' : '') + (h.Topic || '');
+    var detail = headline;
+    var meta = [];
+    if (h.MessageCount != null) meta.push(String(h.MessageCount) + ' messages');
+    if (h.LastMessageAt) meta.push('last ' + String(h.LastMessageAt));
+    if (meta.length > 0) detail += (detail ? ' · ' : '') + meta.join(' · ');
+    if (h.FirstMessageExcerpt) detail += (detail ? ' · ' : '') + '“' + String(h.FirstMessageExcerpt) + '”';
+    return detail;
+  }
+
+  function githubHydrationDetail(h) {
+    if (!h) return '';
+    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
+    if (h.HydrationStatus !== 'resolved') return '';
+    var kind = h.IsPullRequest ? '(PR)' : '(Issue)';
+    if (h.Path) {
+      return (h.Repo ? String(h.Repo) + ': ' : '') + String(h.Path) + (h.Title ? ' · ' + String(h.Title) : '');
+    }
+    var headline = (h.Repo ? String(h.Repo) : '') + (h.Number != null ? '#' + h.Number : '');
+    return headline + (h.Title ? ' · ' + String(h.Title) : '') + (h.State ? ' · ' + String(h.State) : '') + ' ' + kind;
   }
 
   if (document.readyState === 'loading') {

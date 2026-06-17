@@ -189,6 +189,28 @@ public sealed class PreparerSiteSmokeTests
     }
 
     [Fact]
+    public async Task Emit_App_Js_Ships_CopyForAi_Affordance()
+    {
+        using TempScope scope = new();
+        await SeedPreparerDbAsync(scope.DbPath);
+
+        int exit = await Program.Main(["--preparer-db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        string assetsDir = Path.Combine(scope.OutDir, "discussion", "assets");
+        string appJs = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.js"));
+        Assert.Contains("Copy for AI", appJs);
+        Assert.Contains("copyForAi", appJs);
+        Assert.Contains("installCopyButton", appJs);
+        Assert.Contains("setCopyExport", appJs);
+        Assert.Contains("clearCopyExport", appJs);
+        Assert.Contains("execCommand", appJs);
+
+        string appCss = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.css"));
+        Assert.Contains(".copy-ai", appCss);
+    }
+
+    [Fact]
     public async Task Emit_RespectsTitle_WhenProvided()
     {
         using TempScope scope = new();
