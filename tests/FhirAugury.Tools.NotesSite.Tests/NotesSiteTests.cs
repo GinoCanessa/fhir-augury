@@ -163,6 +163,32 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Equal(1, exit);
     }
 
+    [Fact]
+    public void Emit_App_Js_Ships_CopyForAi_Affordance()
+    {
+        string dbPath = Path.Combine(_tempDir, "copy-ai.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+        }
+
+        string outDir = Path.Combine(_tempDir, "copy-ai-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        Assert.Contains("Copy for AI", appJs);
+        Assert.Contains("copyForAi", appJs);
+        Assert.Contains("installCopyButton", appJs);
+        Assert.Contains("setCopyExport", appJs);
+        Assert.Contains("clearCopyExport", appJs);
+        Assert.Contains("execCommand", appJs);
+        Assert.Contains("htmlToMarkdown", appJs);
+
+        string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
+        Assert.Contains(".copy-ai", appCss);
+    }
+
     private static long Count(SqliteConnection conn, string sql)
     {
         using SqliteCommand cmd = conn.CreateCommand();

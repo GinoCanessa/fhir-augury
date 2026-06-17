@@ -16,6 +16,7 @@
     init: async function () {
       var main = document.getElementById('app');
       renderProvenance();
+      installCopyButton();
       try {
         // initSqlJs is global, set by sql-wasm.js.
         // eslint-disable-next-line no-undef
@@ -40,6 +41,7 @@
     route: function () {
       var main = document.getElementById('app');
       clearChildren(main);
+      clearCopyExport();
       var hash = window.location.hash || '#/';
       var stripped = hash.replace(/^#\/?/, '');
       var parts = stripped.split('/').filter(function (p) { return p.length > 0; });
@@ -293,6 +295,8 @@
       renderSourceFiles(main, noteId, n);
       renderCommits(main, noteId);
       renderTickets(main, noteId);
+
+      setCopyExport(function () { return serializeNoteMarkdown(noteId, n); });
 
       main.appendChild(el('p', { class: 'back-link' }, el('a', { href: '#/' }, '← Back to all notes')));
     }
@@ -592,6 +596,272 @@
     if (isNaN(d.getTime())) return s;
     var iso = d.toISOString();
     return iso.slice(0, 10) + ' ' + iso.slice(11, 16) + 'Z';
+  }
+
+  // ---- Copy for AI (shared convention; identical across tools) -------------
+  // A top-right "Copy for AI" button on detail/leaf views. It serializes the
+  // current view from the in-memory rows to markdown (CurrentExport) and writes
+  // it to the clipboard, with an execCommand fallback for file:// where the
+  // async Clipboard API is unavailable. Detail views opt in via setCopyExport();
+  // the router hides the button again via clearCopyExport() on every route.
+
+  var CurrentExport = null;
+
+  function installCopyButton() {
+    if (document.querySelector('.copy-ai')) return;
+    var header = document.querySelector('header');
+    if (!header) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-ai';
+    btn.hidden = true;
+    btn.textContent = '📋 Copy for AI';
+    var status = document.createElement('span');
+    status.className = 'copy-ai-status';
+    status.setAttribute('role', 'status');
+    btn.addEventListener('click', function () {
+      try {
+        var md = CurrentExport && CurrentExport();
+        if (md) copyForAi(md);
+        else setCopyStatus('Nothing to copy');
+      } catch (e) {
+        setCopyStatus('Copy failed');
+      }
+    });
+    header.appendChild(btn);
+    header.appendChild(status);
+  }
+
+  function setCopyStatus(msg) {
+    var status = document.querySelector('.copy-ai-status');
+    if (status) status.textContent = msg;
+  }
+
+  function setCopyExport(fn) {
+    CurrentExport = fn;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = false;
+    setCopyStatus('');
+  }
+
+  function clearCopyExport() {
+    CurrentExport = null;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = true;
+    setCopyStatus('');
+  }
+
+  function copyForAi(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setCopyStatus('Copied!'); },
+        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
+      );
+    } else {
+      setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+    }
+  }
+
+  function copyViaTextarea(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  function mdEscapeCell(s) {
+    if (s == null) return '';
+    return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  }
+
+  function mdTable(headers, rows) {
+    var out = '| ' + headers.map(mdEscapeCell).join(' | ') + ' |\n';
+    out += '| ' + headers.map(function () { return '---'; }).join(' | ') + ' |\n';
+    for (var i = 0; i < rows.length; i++) {
+      out += '| ' + rows[i].map(mdEscapeCell).join(' | ') + ' |\n';
+    }
+    return out;
+  }
+  // ---- end Copy for AI shared convention ----------------------------------
+
+  // ---- Copy for AI serializer (notes-site specific) -----------------------
+
+  function serializeNoteMarkdown(noteId, note) {
+    var out = '# ' + String(note.Name || noteId) + ' (' + String(note.Type || '') + ')\n\n';
+
+    var since = String(note.SinceShortSha || note.SinceSha || '');
+    var head = String(note.HeadShortSha || note.HeadSha || '');
+    out += mdTable(['Field', 'Value'], [
+      ['NoteId', String(note.NoteId || noteId)],
+      ['Repository', String(note.RepoOwner || '') + '/' + String(note.RepoName || '')],
+      ['Category', note.RepoCategory == null ? '' : String(note.RepoCategory)],
+      ['Workgroup', note.WorkGroup == null ? '' : String(note.WorkGroup)],
+      ['Window', (since || head) ? (since + ' .. ' + head) : ''],
+      ['Commits in window', String(note.CommitsInWindow == null ? 0 : note.CommitsInWindow)],
+      ['Tickets attributed', String(note.TicketsAttributed == null ? 0 : note.TicketsAttributed)],
+      ['Needs note', String(note.NeedsNote || 'unknown')],
+      ['Generated', note.GeneratedAt == null ? '' : String(note.GeneratedAt)]
+    ]) + '\n';
+
+    // Ballot-note HTML fields converted to markdown; roll-up / reviewer fields
+    // are authored markdown and pass through verbatim (D2).
+    out += serializeNoteSection('Proposed ballot note', htmlToMarkdown(note.ProposedBallotNoteHtml), 'No proposed ballot note drafted.');
+    out += serializeNoteSection('Current ballot note (at HEAD)', htmlToMarkdown(note.CurrentBallotNoteHtml), 'No current ballot note.');
+    out += serializeNoteSection('Roll-up summary (after-applied)', note.RollupSummaryMarkdown == null ? '' : String(note.RollupSummaryMarkdown), 'None.');
+    out += serializeNoteSection('Notes for reviewer', note.NotesForReviewerMarkdown == null ? '' : String(note.NotesForReviewerMarkdown), 'None.');
+
+    var files = query(
+      'SELECT Path, Role, TouchedInWindow FROM note_source_files WHERE NoteId = $id ORDER BY FileOrder',
+      { $id: noteId }).rows;
+    out += '## Source files (' + files.length + ')\n\n';
+    if (files.length > 0) {
+      out += mdTable(['Path', 'Role', 'Touched in window'],
+        files.map(function (f) { return [String(f.Path || ''), String(f.Role || ''), truthy(f.TouchedInWindow) ? 'yes' : 'no']; })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var commits = query(
+      'SELECT Sha, ShortSha, AuthorName, AuthorDate, Subject, WebUrl, TicketKeys ' +
+      'FROM note_commits WHERE NoteId = $id ORDER BY CommitOrder',
+      { $id: noteId }).rows;
+    out += '## Commits in window (' + commits.length + ')\n\n';
+    if (commits.length > 0) {
+      out += mdTable(['Commit', 'Author', 'Date', 'Subject', 'Tickets'],
+        commits.map(function (c) {
+          return [String(c.ShortSha || c.Sha || ''), String(c.AuthorName || ''), fmtDate(c.AuthorDate),
+            String(c.Subject || ''), String(c.TicketKeys || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var tickets = query(
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount ' +
+      'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
+      { $id: noteId }).rows;
+    out += '## Tickets attributed (' + tickets.length + ')\n\n';
+    if (tickets.length > 0) {
+      out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Commits'],
+        tickets.map(function (t) {
+          return [String(t.TicketKey || ''), String(t.Title || ''), String(t.Resolution || ''),
+            String(t.WorkGroup || ''), String(t.Specification || ''), String(t.CommitCount || 0)];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    return out;
+  }
+
+  function serializeNoteSection(title, body, emptyText) {
+    var trimmed = (body == null) ? '' : String(body).trim();
+    return '## ' + title + '\n\n' + (trimmed.length > 0 ? trimmed : '_' + emptyText + '_') + '\n\n';
+  }
+
+  // ---- htmlToMarkdown (notes-site only) -----------------------------------
+  // Converts the two authored ballot-note HTML fields to markdown. DOM-based,
+  // not regex: sanitize via the already-vendored DOMPurify, parse the cleaned
+  // string in an inert detached document (no scripts run, no subresources load),
+  // then walk the node tree. Unrecognized elements recurse into their children;
+  // malformed markup degrades to its text content rather than throwing. Nothing
+  // is ever assigned to the live document's innerHTML.
+
+  function htmlToMarkdown(html) {
+    if (html == null || String(html).trim() === '') return '';
+    var src = String(html);
+    var clean = (typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(src) : src;
+    var doc;
+    try {
+      doc = new DOMParser().parseFromString(clean, 'text/html');
+    } catch (e) {
+      return src.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    var md = mdNodesToMarkdown(doc.body, 0);
+    return md.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function mdNodesToMarkdown(parent, depth) {
+    var out = '';
+    var kids = parent.childNodes;
+    for (var i = 0; i < kids.length; i++) out += mdNodeToMarkdown(kids[i], depth);
+    return out;
+  }
+
+  function mdNodeToMarkdown(node, depth) {
+    if (node.nodeType === 3) return String(node.nodeValue).replace(/\s+/g, ' ');
+    if (node.nodeType !== 1) return '';
+    var tag = node.tagName.toLowerCase();
+    switch (tag) {
+      case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+        return '\n\n' + mdRepeat('#', Number(tag.charAt(1))) + ' ' + mdNodesToMarkdown(node, depth).trim() + '\n\n';
+      case 'p':
+        return '\n\n' + mdNodesToMarkdown(node, depth).trim() + '\n\n';
+      case 'br':
+        return '  \n';
+      case 'hr':
+        return '\n\n---\n\n';
+      case 'strong': case 'b':
+        return '**' + mdNodesToMarkdown(node, depth) + '**';
+      case 'em': case 'i':
+        return '*' + mdNodesToMarkdown(node, depth) + '*';
+      case 'code':
+        return '`' + String(node.textContent || '').replace(/`/g, '') + '`';
+      case 'pre':
+        return '\n\n```\n' + String(node.textContent || '').replace(/\n$/, '') + '\n```\n\n';
+      case 'a':
+        var href = node.getAttribute('href');
+        var text = mdNodesToMarkdown(node, depth).replace(/\s+/g, ' ').trim();
+        return href ? '[' + (text || href) + '](' + href + ')' : text;
+      case 'ul': case 'ol':
+        return '\n' + mdListToMarkdown(node, tag === 'ol', depth) + '\n';
+      case 'blockquote':
+        var inner = mdNodesToMarkdown(node, depth).trim();
+        return '\n\n' + inner.split('\n').map(function (line) { return '> ' + line; }).join('\n') + '\n\n';
+      default:
+        return mdNodesToMarkdown(node, depth);
+    }
+  }
+
+  function mdListToMarkdown(listNode, ordered, depth) {
+    var out = '';
+    var idx = 0;
+    var kids = listNode.childNodes;
+    for (var i = 0; i < kids.length; i++) {
+      var li = kids[i];
+      if (li.nodeType !== 1 || li.tagName.toLowerCase() !== 'li') continue;
+      idx++;
+      var marker = ordered ? (idx + '. ') : '- ';
+      var inlineText = '';
+      var nested = '';
+      for (var c = 0; c < li.childNodes.length; c++) {
+        var child = li.childNodes[c];
+        var childTag = (child.nodeType === 1) ? child.tagName.toLowerCase() : '';
+        if (childTag === 'ul' || childTag === 'ol') {
+          nested += mdListToMarkdown(child, childTag === 'ol', depth + 1);
+        } else {
+          inlineText += mdNodeToMarkdown(child, depth);
+        }
+      }
+      out += mdRepeat('  ', depth) + marker + inlineText.replace(/\s+/g, ' ').trim() + '\n' + nested;
+    }
+    return out;
+  }
+
+  function mdRepeat(s, n) {
+    var o = '';
+    for (var i = 0; i < n; i++) o += s;
+    return o;
   }
 
   App.init();

@@ -192,3 +192,26 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
 .error { color: #c00; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
 .back-link { margin: 0.5rem 0 1rem; display: inline-block; }
+
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 1rem;
+  right: 1.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.5rem;
+  font-size: 0.8rem;
+  color: var(--yes-fg);
+}
