@@ -475,6 +475,50 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 
 ---
 
+## BallotNotes Processor Service
+
+**Prefix:** `FHIR_AUGURY_BALLOTNOTES_`
+**Port:** 5174
+
+Commit-triggered processor that hydrates ballot-note evidence for a GitHub repo
++ since-commit window (commit-window walk, ticket attribution, source-file
+resolution, current-note capture) and serves read/query + prose write-back
+endpoints under `/api/v1/ballot-notes`. The `notes-site` tool reads its database
+directly to emit the static review SPA. Registered in the AppHost as
+`processor-github-fhir-ballotnotes` with `WithExplicitStart()`.
+
+### appsettings.json
+
+```json
+{
+  "BallotNotes": {
+    "DatabasePath": "./cache/ballot-notes.db",
+    "Ports": {
+      "Http": 5174
+    },
+    "Hydration": {
+      "CloneRoot": "./cache/github/repos",
+      "OrchestratorAddress": "http://localhost:5150",
+      "JiraSourceAddress": "http://localhost:5160",
+      "MaxParallelism": 4
+    }
+  }
+}
+```
+
+### Configuration Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `DatabasePath` | string | `./cache/ballot-notes.db` | SQLite notes DB path (read directly by the `notes-site` renderer) |
+| `Ports.Http` | int | `5174` | HTTP listen port |
+| `Hydration.CloneRoot` | string | `./cache/github/repos` | Root holding per-repo clones (`<owner>_<name>/clone`) |
+| `Hydration.OrchestratorAddress` | string | `http://localhost:5150` | Primary attribution upstream (cross-references + ticket details) |
+| `Hydration.JiraSourceAddress` | string | `http://localhost:5160` | Fallback attribution upstream when the orchestrator is unreachable |
+| `Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+---
+
 ## MCP Server (Stdio) — `FhirAugury.McpStdio`
 
 The stdio MCP server connects to services via HTTP and is configured through

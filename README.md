@@ -79,6 +79,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Jira | [5160](http://localhost:5160/health) | HL7 Jira issues and comments |
 | Zulip | [5170](http://localhost:5170/health) | FHIR Zulip chat messages |
 | Jira FHIR Preparer | [5171](http://localhost:5171/health) | Processing service for Triaged FHIR Jira ticket prep outputs (`/api/v1/prepared-tickets`) |
+| BallotNotes Processor | [5174](http://localhost:5174/health) | Commit-triggered ballot-note hydration + authoring API backing the `notes-site` renderer (`/api/v1/ballot-notes`) |
 | Confluence | [5180](http://localhost:5180/health) | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | HL7 GitHub issues, PRs, and commits |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | MCP server (HTTP/SSE transport) |
@@ -187,6 +188,7 @@ docker compose --profile jira-only up -d   # Single source
 | Orchestrator | `src/FhirAugury.Orchestrator` | Aggregator, cross-references, unified search |
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
 | Jira FHIR Preparer | `src/FhirAugury.Processor.Jira.Fhir.Preparer` | Processing service that defaults to Triaged FHIR Jira tickets, overwrites structured prep output without history, and exposes read/query APIs; Docker processing requires a host-provided agent runtime |
+| BallotNotes Processor | `src/FhirAugury.Processor.GitHub.Fhir.BallotNotes` | Commit-triggered processor that hydrates ballot-note evidence (commit window, ticket attribution, source-file resolution) and serves read/author APIs under `/api/v1/ballot-notes`; consumed by the `notes-site` renderer |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |

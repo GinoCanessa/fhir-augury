@@ -48,6 +48,18 @@ Each source service (`source-jira`, `source-zulip`, `source-github`,
 - `GET /api/v1/openapi.json` — JSON, OpenAPI 3.1.
 - `GET /api/v1/openapi.yaml` — YAML, OpenAPI 3.1.
 
+### Processor documents
+
+The BallotNotes processor (`processor-github-fhir-ballotnotes`, port 5174)
+serves its own document the same way a source does:
+
+- `GET /api/v1/openapi.json` — JSON, OpenAPI 3.1.
+- `GET /api/v1/openapi.yaml` — YAML, OpenAPI 3.1.
+
+It is **not** merged into the orchestrator document (it is an explicit-start
+processor, not a registered source). Its surface is `/api/v1/ballot-notes`:
+hydrate + status poll, unit list/detail, and prose write-back.
+
 ### Orchestrator merged document
 
 The orchestrator publishes the union of its own document and every enabled
