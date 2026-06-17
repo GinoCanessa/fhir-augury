@@ -1,496 +1,281 @@
 ---
 name: notes-datatype
-description: "Drafts updated ballot notes for the FHIR *datatypes* surface based on changes since a specified commit. USE FOR: ballot notes covering changes under `source/datatypes/` in `HL7/fhir`. Most datatypes render into the consolidated `source/datatypes.html` page; a subset (Dosage, MarketingStatus, Narrative, ProductShelfLife, ElementDefinition, Reference, MetaDataTypes cluster, …) ship their own `source/<page>.html`. This skill routes each datatype's note to the correct page and emits one HTML draft per target page in a single report. Requires a GitHub repo (HL7/fhir) and since-commit SHA; optionally a focus list of datatype names (defaults to all touched). Walks changed files under `source/datatypes/` and any resolved per-datatype pages between the commit and HEAD, attributes commits to FHIR Jira tickets, summarizes after-applied changes grouped by datatype and target page. For per-resource/profile notes use `notes-artifact`; for other narrative pages use `notes-page`."
+description: "Drafts the updated ballot note for the FHIR *datatypes* surface from evidence hydrated by the BallotNotes processor. USE FOR: ballot notes covering changes under `source/datatypes/` in `HL7/fhir`. Most datatypes render into the consolidated `source/datatypes.html` page; a subset (Dosage, MarketingStatus, Narrative, ProductShelfLife, ElementDefinition, Reference, MetaDataTypes cluster, …) ship their own `source/<page>.html`. The processor applies the datatype-page map server-side and folds the whole datatypes surface — every changed datatype SD, `source/datatypes.html`, and any touched own-pages — into a single `datatypes` DataType unit (one slug); this skill drafts that one consolidated note. Requires a BallotNotes processor unit slug (the noteId) and the processor base URL (default http://localhost:5174). Reads the unit's hydrated evidence — the datatype SDs, attributed commits, the Jira tickets they applied, counters, and the current ballot-note HTML — then authors the after-applied roll-up and a draft HTML ballot note for the datatypes surface, and writes that prose back to the processor. For per-resource/profile notes use `notes-artifact`; for other narrative pages use `notes-page`."
 ---
 
 # Notes — Datatype Skill
 
-Drafts updated **ballot notes** for the FHIR **datatypes surface** in
-`HL7/fhir` by analyzing the changes that have landed in
-`source/datatypes/**` (and any per-datatype narrative page in
-`source/<page>.html`) since a caller-supplied commit.
-
-Most datatypes render into the consolidated **`source/datatypes.html`**
-page, but a subset of datatypes ship with their own narrative page in
-the source root (e.g., `source/dosage.html`,
+Drafts the updated **ballot note** for the FHIR **datatypes surface**
+in `HL7/fhir` from the evidence the **BallotNotes processor** has
+already hydrated. The datatypes surface lives under
+`source/datatypes/**` and renders mainly into the consolidated
+**`source/datatypes.html`** page, while a subset of datatypes ship
+their own narrative page in the source root (e.g., `source/dosage.html`,
 `source/marketingstatus.html`, `source/narrative.html`,
 `source/productshelflife.html`, `source/elementdefinition.html`,
 `source/references.html` for `Reference`, and
-`source/metadatatypes.html` for the MetaDataTypes cluster). For those
-datatypes the ballot note belongs in the per-datatype page, **not** in
-`datatypes.html`. This skill resolves the correct target page for each
-touched datatype and emits **one HTML ballot-note draft per target
-page** inside a single markdown report.
+`source/metadatatypes.html` for the MetaDataTypes cluster).
 
-The output is a markdown review report containing the proposed HTML
-ballot note(s) plus the supporting evidence (per-commit / per-ticket
-breakdown, per-datatype change roll-up, current ballot note(s) for
-context).
+The processor applies the datatype-page map **server-side** and folds
+the **entire** datatypes surface — every changed datatype
+StructureDefinition, the consolidated `source/datatypes.html`, and any
+touched per-datatype own-pages — into a **single `datatypes` DataType
+unit** (one slug, with `name` = `datatypes`). This skill therefore
+drafts **one** consolidated datatypes ballot note per invocation; its
+hydrated evidence spans every datatype touched in the window plus the
+page files those changes render into. The processor owns the
+deterministic gathering — the commit-window walk, datatype grouping,
+source-file resolution, ticket attribution, and current-note capture;
+this skill reads that evidence, authors the after-applied roll-up and
+the proposed ballot note, and writes the prose back to the processor.
 
-The roll-up summary of changes **must be derived from the
-after-applied diff** (since-commit → HEAD), not by stitching together
-per-ticket descriptions. Individual tickets frequently overlap, expand,
-or revert each other — only the after-applied state reflects reality.
+The roll-up summary of changes **must reflect the after-applied
+state** the processor hydrated (the net effect of the commit window),
+not a stitch of per-ticket descriptions. Individual tickets frequently
+overlap, expand, or revert each other — only the after-applied state
+reflects reality.
 
 This skill is the **datatypes** counterpart to `notes-artifact` and
-`notes-page`. The three skills share the same workflow shape,
-ticket-attribution rules, report layout, and ballot-note authoring
-conventions; only the file scope and artifact-resolution rules
-differ. When in doubt about a generic step, consult `notes-artifact`.
+`notes-page`. The processor's unit `type` decides which skill runs:
+`DataType` → this skill; `Artifact` (a resource / profile) →
+`notes-artifact`; `Page` (a non-datatype narrative page) →
+`notes-page`. If the unit you fetched is not a `DataType`, stop and
+route to the matching skill. The three skills share the same report
+layout and ballot-note authoring conventions; only the file scope
+differs.
 
 ## Why a dedicated skill
 
-In `HL7/fhir`, every primitive and many complex datatypes are authored 
-as one or more files under `source/datatypes/` (one StructureDefinition per
-datatype, plus shared narrative, examples, diagrams, and terminology).
-Most of those source files render into a *single* ballot page —
-`source/datatypes.html` — with anchor sub-sections per datatype. The
-ballot note for "datatypes" is therefore a **page-level note that
-spans many StructureDefinitions**. Treating each datatype as an
-independent artifact via `notes-artifact` would fragment the note;
-treating the page via `notes-page` would miss the per-datatype
-StructureDefinition changes. This skill bridges the two: per-datatype
-roll-ups feeding a single page-level ballot note.
+In `HL7/fhir`, every primitive and many complex datatypes are authored
+as one or more files under `source/datatypes/` (one StructureDefinition
+per datatype, plus shared narrative, examples, diagrams, and
+terminology). Most of those source files render into a *single* ballot
+page — `source/datatypes.html` — with anchor sub-sections per datatype.
+The ballot note for the consolidated page is therefore a **page-level
+note that spans many StructureDefinitions**. Treating each datatype as
+an independent `notes-artifact` unit would fragment the note; treating
+the page via `notes-page` would miss the per-datatype StructureDefinition
+changes. This skill bridges the two: per-datatype roll-ups feeding a
+single page-level ballot note.
 
-A subset of datatypes break that single-page assumption: they ship
-with their own narrative page in the source root (e.g., `Dosage`,
-`MarketingStatus`, `Narrative`, `ProductShelfLife`,
+A subset of datatypes ship their own narrative page in the source root
+(e.g., `Dosage`, `MarketingStatus`, `Narrative`, `ProductShelfLife`,
 `ElementDefinition`, `Reference` → `references.html`, and the
 MetaDataTypes cluster — `ContactDetail`, `DataRequirement`,
 `Expression`, `ParameterDefinition`, `RelatedArtifact`,
-`TriggerDefinition`, `UsageContext`, `Contributor` —
-→ `metadatatypes.html`). For those datatypes the ballot note belongs
-**in their own page**, not in `datatypes.html`. This skill, not
-`notes-page`, owns those pages because the change story is dominated
-by the SD diff under `source/datatypes/<dt>.xml`; routing them through
-`notes-page` would lose the SD-side evidence and risk drafting two
-conflicting notes for the same datatype.
+`TriggerDefinition`, `UsageContext`, `Contributor` →
+`metadatatypes.html`). The processor's datatype-page map exists so those
+own-pages are **folded into the single `datatypes` unit** rather than
+mis-dispatched as standalone `notes-page` units (which would lose the
+SD-side evidence under `source/datatypes/<dt>.xml`). The one datatypes
+unit you receive therefore already carries the evidence for the
+consolidated page **and** any touched own-pages; the note you draft
+covers the whole datatypes surface.
 
 ## Datatype-page map
 
-The mapping from a datatype bucket to its target ballot-note page is
-driven by a **single shared map** (kept in sync with the
-`orchestrate-notes` skill, which uses the same map to avoid
-double-dispatch):
+The processor routes each datatype bucket to its target ballot-note
+page using this map (applied **server-side** — this skill does not run
+it, but understanding it explains which own-pages fold into the
+`datatypes` unit and how the consolidated note's evidence is grouped):
 
 - **Default rule** — `<datatype>` (lowercase) → candidate stem
-  `<datatype-lowercase>`. If `source/<stem>.html` exists at HEAD, the
-  datatype is **own-page**; otherwise it falls back to
-  `source/datatypes.html`.
+  `<datatype-lowercase>`. If `source/<stem>.html` exists, the datatype
+  is **own-page**; otherwise it falls back to `source/datatypes.html`.
 - **Explicit overrides** for known stem mismatches:
   - `Reference` → `references` (note the trailing `s`).
-  - The **MetaDataTypes cluster** — `ContactDetail`,
-    `DataRequirement`, `Expression`, `ParameterDefinition`,
-    `RelatedArtifact`, `TriggerDefinition`, `UsageContext`,
-    `Contributor` — all → `metadatatypes` (one shared own-page
-    bucket; their notes are merged into the single
-    `metadatatypes.html` ballot note).
+  - The **MetaDataTypes cluster** — `ContactDetail`, `DataRequirement`,
+    `Expression`, `ParameterDefinition`, `RelatedArtifact`,
+    `TriggerDefinition`, `UsageContext`, `Contributor` — all →
+    `metadatatypes` (one shared own-page; folded into the `datatypes`
+    unit, its changes summarized in the consolidated note).
 - **Page-level / cross-cutting buckets** (changelog, shared diagrams,
-  cross-cutting terminology, "Other / unassigned") **always** target
+  cross-cutting terminology, "Other / unassigned") **always** belong to
   `source/datatypes.html`.
 
 If the FHIR repo grows a new own-page datatype whose stem does not
-match its lowercase name, add the mapping to this list **and** to the
-identical list in `orchestrate-notes/SKILL.md`. The override map is
-the single place to update.
+match its lowercase name, the override belongs in the processor's
+datatype-page map (it owns the routing); this section documents that
+behaviour.
 
 ## Data Access
 
-All FhirAugury data access (Jira, GitHub cross-references, repo
-listing, item fetches) goes through the **`fhir-augury-cli`** skill.
-That skill documents the CLI envelope, recipes, and the fallback chain
-(CLI → MCP → direct HTTP → `appsettings.json`). Do not duplicate CLI
-knowledge here.
+This skill reads its evidence from — and writes its authored prose
+back to — the **BallotNotes processor** over HTTP (default base URL
+`http://localhost:5174`). The processor **owns all deterministic
+gathering**: it has already walked the commit window, routed each
+datatype to its target page, resolved the page's source files,
+attributed commits to Jira tickets, and captured the current
+ballot-note HTML. This skill never runs `git`, never queries Jira
+directly, and never resolves source files or target pages itself — it
+consumes the hydrated unit and authors prose.
 
-In addition to the CLI, this skill is allowed to invoke **`git`**
-directly against the cached clone (`cache/github/repos/<owner>_<name>/clone/`)
-and may use **`gh`** (the GitHub CLI) when commit metadata or commit
-URLs need to be resolved against `github.com`. `git` against the cache
-clone is preferred — it is offline, fast, and authoritative for the
-state FhirAugury has already ingested.
+Two endpoints are used, in this order:
 
-When a CLI command is shown below, it is in the form documented by
-`fhir-augury-cli`:
+1. **Read the hydrated unit** (GET-only):
 
-```bash
-fhir-augury-cli --json '<json>' [--pretty]
-```
+   ```
+   GET {processorBaseUrl}/api/v1/ballot-notes/{slug}
+   ```
+
+   Returns the unit's full hydrated evidence (the datatype SDs routed
+   to this page, attributed commits, tickets, counters, the current
+   ballot-note HTML) plus any prose already authored. `404` means the
+   slug was never hydrated — stop and report it; the repo window must
+   be hydrated first (via the `orchestrate-notes` skill or the
+   processor's `hydrate` endpoint).
+
+2. **Write the authored prose back** (the only state change):
+
+   ```
+   PUT {processorBaseUrl}/api/v1/ballot-notes/{slug}/note
+   ```
+
+   Body `{needsNote, proposedBallotNoteHtml, rollupSummaryMarkdown,
+   notesForReviewerMarkdown, sourceFilesNote}`. Returns `200` with
+   `{noteId, status:"authored"}`; `404` if the slug was never
+   hydrated.
+
+This read-evidence / write-back shape mirrors the
+[`topic-groupings`](../topic-groupings/SKILL.md) skill, which GETs
+clustering signals + hydration and PUTs groupings back.
 
 ## Inputs
 
-- **Repo** *(required)* — `owner/name`. Must be `HL7/fhir` (the FHIR
-  Core repo); other repos do not have the `source/datatypes/` layout
-  this skill targets. If a different repo is supplied, stop and ask
-  the user whether they meant `notes-artifact`.
-- **Since-commit** *(required)* — full or short SHA. The roll-up window
-  is `since-commit..HEAD` of the cached clone (fast-forward range; if
-  HEAD is not a descendant of since-commit, fall back to the symmetric
-  difference and note the deviation in the report).
-- **Datatype focus** *(optional)* — a comma- or space-separated list
-  of datatype names to highlight (e.g., `Quantity, Period, Range`).
-  The skill always considers *all* changes under `source/datatypes/`
-  in the window, but when a focus list is supplied:
-  - the per-datatype roll-up table orders focus datatypes first;
-  - the proposed ballot note's bullets prioritize focus datatypes;
-  - non-focus datatypes still appear in the per-datatype roll-up but
-    may be summarized more briefly.
-
-  If omitted (the default), every datatype with at least one touched
-  file in the window is treated equally.
-- **Output file** *(required)* — full path where the markdown report
-  should be written. The orchestrator passes a deterministic path; for
-  ad-hoc invocations the agent may default to
-  `<working-dir>/HL7_fhir_datatypes.md` and report the path back.
-- **Notes DB** *(optional)* — full path to a `notes-site` SQLite
-  database (e.g., `./cache/notes.db`). When supplied, the skill also
-  persists the drafted note(s) into that DB via `notes-site write`
-  (see [Persisting to notes-site](#persisting-to-notes-site)) so the
-  `notes-site report` SPA can render them. Because this skill targets
-  one or more pages, it writes **one `notes-site` note per target
-  page**. When omitted, only the markdown report is produced.
-- **Working directory** *(optional)* — directory for transient files
-  (intermediate diffs, commit lists, ticket dumps). When supplied,
-  **all transient files must be written under this directory**. Create
-  it with `New-Item -ItemType Directory -Force` (PowerShell),
-  `mkdir -p` (bash), or your file-system tool if it does not exist.
+- **Slug** *(required)* — the processor `noteId` for the datatypes
+  unit (a single consolidated unit with `name` = `datatypes`, e.g.,
+  `hl7-fhir-datatype-datatypes`). The orchestrator
+  (`orchestrate-notes`) passes it from the enumerated unit list; for
+  ad-hoc runs, discover it via
+  `GET {processorBaseUrl}/api/v1/ballot-notes?repo=HL7/fhir&type=DataType`.
+- **Processor base URL** *(optional, default `http://localhost:5174`)*
+  — the BallotNotes processor's base URL.
+- **Output file** *(optional)* — full path where the human-readable
+  markdown report should be written. The orchestrator passes a
+  deterministic path; for ad-hoc invocations the agent may default to
+  `<working-dir>/HL7_fhir_datatype_<page>.md` and report the path
+  back. The **authoritative** persistence is the PUT in Step 4 — the
+  markdown report is an additional convenience.
+- **Working directory** *(optional)* — directory for transient files.
+  When supplied, **all transient files must be written under this
+  directory**. Create it with `New-Item -ItemType Directory -Force`
+  (PowerShell), `mkdir -p` (bash), or your file-system tool if it does
+  not exist.
 
 ## Prerequisites
 
-- The GitHub source clone cache for `HL7/fhir` must be populated and
-  current enough that the since-commit is reachable from the cached
-  clone HEAD. If the since-commit is missing, ask the user to refresh
-  the clone (or fall back to fetching the commit via `gh api` and
-  noting the deviation in the report).
-- A current per-repo briefing under
-  `cache/github/repos/HL7_fhir/repo-analysis/briefing.md` must exist.
-  The datatype-to-files grouping in Step 2 leans on the briefing's
-  **Artifact Map** for any datatype with non-conventional file names;
-  for the common case (one SD per datatype, named after the datatype)
-  the convention below is sufficient. If the briefing is missing or
-  stale (per the staleness rules in the `repo-analysis` skill), warn
-  the user but proceed; record the staleness in the report's "Notes
-  for reviewer" section.
-- `git` must be available on `PATH`. `gh` is required only if the
-  cache clone cannot resolve the since-commit or a commit URL needs to
-  be confirmed against `github.com`.
+- The **BallotNotes processor** (default `http://localhost:5174`) must
+  be reachable, and the unit identified by **Slug** must already have
+  been hydrated (its repo window walked by the processor). If
+  `GET /api/v1/ballot-notes/{slug}` returns `404`, stop and ask the
+  caller to hydrate the window first (via `orchestrate-notes` or the
+  processor's `hydrate` endpoint).
+- No clone, briefing, `git`, or Jira access is required by this skill
+  — the processor performed that gathering server-side, including the
+  datatype-to-page routing and source-file resolution.
 
 ## Workflow
 
-Run independent calls in parallel where possible.
-
-### Step 1: Verify services and resolve scope
-
-1. Health-check via `fhir-augury-cli`:
-
-   ```bash
-   fhir-augury-cli --json '{"command":"services","action":"health"}'
-   ```
-
-2. Read the briefing and metadata (best-effort — do not block on
-   staleness, but record it):
-   - `cache/github/repos/HL7_fhir/repo-analysis/briefing.md`
-   - `cache/github/repos/HL7_fhir/repo-analysis/meta.json`
-
-3. Confirm the cache clone and resolve HEAD:
-
-   ```powershell
-   $clone = "cache/github/repos/HL7_fhir/clone"
-   git -C $clone rev-parse HEAD
-   git -C $clone cat-file -e <since-commit>^{commit}
-   ```
-
-   If `cat-file -e` fails, the since-commit isn't in the cache clone —
-   stop and ask the user to refresh the clone, or fall back to
-   `gh api /repos/HL7/fhir/commits/<since-commit>` and note the
-   limitation in the report.
-
-4. Confirm the consolidated page file exists at HEAD:
-
-   ```powershell
-   git -C $clone cat-file -e HEAD:source/datatypes.html
-   ```
-
-   If absent, stop with an error — the consolidated datatypes page is
-   the default ballot-note target, and a missing page invalidates the
-   run. (Per-datatype own-pages are resolved in **Step 2.5**.)
-
-### Step 2: Resolve scope → source files (per datatype)
-
-The full file scope is everything under `source/datatypes/` in the
-clone. Build the working list dynamically from the diff window
-(Step 3) — there is no fixed file list. Conventions for grouping
-files by datatype:
-
-- **Primary StructureDefinition** — `source/datatypes/<name>.xml`
-  (filename stem matches the datatype name, lowercase per repo
-  convention). This is the canonical SD for the datatype.
-- **Extension SDs** — `source/datatypes/structuredefinition-*.xml`
-  for shared / cross-cutting datatype extensions. Group by the
-  filename stem after `structuredefinition-`.
-- **Spreadsheets** — `source/datatypes/<name>-spreadsheet.xml` (legacy
-  authoring; SD is authoritative — note in the report but do not
-  enumerate spreadsheet edits separately if the SD reflects them).
-- **Examples** — `source/datatypes/<name>-example*.xml` and any
-  `source/datatypes/<name>-examples.xml`.
-- **Terminology siblings** — `source/datatypes/valueset-*.xml` and
-  `source/datatypes/codesystem-*.xml`. Attribute to the datatype that
-  binds them (per the briefing or the SD's `binding/valueSet`); if
-  cross-cutting (used by multiple datatypes), group under a shared
-  "Cross-cutting terminology" datatype bucket.
-- **Diagrams** — `source/datatypes/*.diagram` and any
-  `source/datatypes/*.png` / `*.svg` referenced from the page.
-- **Shared narrative / glossary** — files such as
-  `source/datatypes/_changelog.txt`,
-  `source/datatypes/abstracts.diagram`,
-  `source/datatypes/allprimitivetypes.diagram`,
-  `source/datatypes/alltypes.diagram`. Group under a "Page-level"
-  bucket; do not assign to an individual datatype.
-
-The consolidated page itself, `source/datatypes.html`, is **always
-included** in the working file list (its ballot note lives there)
-regardless of whether it was touched in the window. Each per-datatype
-own-page resolved in Step 2.5 is similarly always included in its own
-target page's working file list (its ballot note lives there too).
-
-For any file the convention above cannot place, fall back to the
-briefing's Artifact Map. If still ambiguous, group under a "Other /
-unassigned" datatype bucket and flag it in the report.
-
-Materialise the file list as both:
-
-- **`workingFileList`** — paths relative to the clone root, used by
-  `git` calls in Steps 3–5.
-- **`displayFileList`** — paths shown in the report, with the
-  datatype bucket and one-line role for each.
-
-### Step 2.5: Resolve target page per datatype
-
-Apply the **datatype-page map** (see the section near the top of this
-skill) to every datatype bucket discovered in Step 2:
-
-1. For each datatype bucket name `<dt>`, derive a candidate page stem:
-   - Default: lowercase datatype name (e.g., `Quantity` → `quantity`).
-   - Apply explicit overrides:
-     - `Reference` → `references`.
-     - Any datatype in the MetaDataTypes cluster (`ContactDetail`,
-       `DataRequirement`, `Expression`, `ParameterDefinition`,
-       `RelatedArtifact`, `TriggerDefinition`, `UsageContext`,
-       `Contributor`) → `metadatatypes`.
-2. Test the candidate stem against HEAD:
-
-   ```powershell
-   git -C $clone cat-file -e HEAD:source/<stem>.html
-   ```
-
-   - If it succeeds, the datatype is **own-page** and its target is
-     `source/<stem>.html`.
-   - If it fails, the datatype's target is `source/datatypes.html`.
-3. **Page-level / cross-cutting buckets** (changelog, shared diagrams,
-   cross-cutting terminology, "Other / unassigned") always target
-   `source/datatypes.html`.
-4. Materialise the resolution into three structures:
-   - `targetPageOf[bucket]` — `"source/<stem>.html"` for own-page
-     datatypes, `"source/datatypes.html"` otherwise.
-   - `bucketsByPage[page]` — list of datatype buckets routed to each
-     page. Multiple datatypes share `metadatatypes.html` (the entire
-     cluster) and `datatypes.html` (everything not own-page).
-   - `pageWorkingFileList[page]` — superset of all bucket files
-     routed to that page **plus the page file itself**. The page file
-     is always included regardless of whether it was touched in the
-     window (the ballot note lives there).
-5. Record any datatype where the candidate stem was not found and the
-   note was therefore routed to `datatypes.html` against the override
-   map's expectation. Surface this in the report's "Notes for
-   reviewer" section so a maintainer can decide whether to add an
-   override or fix the upstream page.
-
-### Step 3: Enumerate commits in the window
-
-Enumerate commits that touched any file under `source/datatypes/`,
-`source/datatypes.html`, **or any per-datatype own-page resolved in
-Step 2.5**, between `since-commit` and `HEAD`. The path scope is built
-dynamically from `bucketsByPage.keys()`:
-
-```bash
-git -C cache/github/repos/HL7_fhir/clone log \
-    --no-merges \
-    --pretty=format:'%H%x09%an%x09%aI%x09%s' \
-    <since-commit>..HEAD \
-    -- source/datatypes/ source/datatypes.html \
-       <each own-page from bucketsByPage.keys()>
-```
-
-For example, if `bucketsByPage` contains `source/datatypes.html`,
-`source/dosage.html`, and `source/marketingstatus.html`, the trailing
-path scope expands to:
-
-```bash
-    -- source/datatypes/ source/datatypes.html \
-       source/dosage.html source/marketingstatus.html
-```
-
-Then derive the full per-commit file list with
-`git show --name-only <sha>` (or pre-compute with `git log
---name-only`) so each commit can be bucketed by datatype in Step 5.
-
-For each commit row, capture:
-- `sha` (full)
-- `shortSha` (`git rev-parse --short=12 <sha>`)
-- `authorName`
-- `authorDate` (ISO-8601)
-- `subject` (first line of the commit message)
-- `body` (full message via `git show -s --format=%B <sha>`)
-- `webUrl` — `https://github.com/HL7/fhir/commit/<sha>`
-- `touchedFiles` — files in this commit that fall within the working
-  file list, classified by datatype bucket **and** by the
-  `targetPage` (from `targetPageOf[bucket]`) the bucket resolves to.
-  An own-page file (e.g., `source/dosage.html`) is classified to its
-  own page bucket directly.
-
-If the window is empty (no commits touched any datatype file or the
-page), write a short report noting "No changes to datatypes in
-window" and exit.
-
-### Step 4: Attribute commits to Jira tickets
-
-Identical to `notes-artifact` Step 4. For each commit, extract
-candidate Jira ticket keys (regex `(FHIR|UTG)-\d+`) from the commit
-subject + body, and union with any keys returned by
-`cross-referenced` for the commit SHA:
-
-```bash
-fhir-augury-cli --json '{"command":"cross-referenced","value":"<sha>","limit":50}'
-```
-
-Build three indexes in memory:
-
-- `commitToTickets[sha] = [key, …]`
-- `ticketToCommits[key] = [{sha, shortSha, subject, webUrl, datatypes:[…]}, …]`
-- `datatypeToTickets[name] = [key, …]` — derived from the datatype
-  bucket of each commit's `touchedFiles`.
-
-For each unique ticket key, fetch its details once, in parallel
-across keys:
-
-```bash
-fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-XXXXX","includeContent":true,"includeComments":true,"includeSnapshot":true}'
-```
-
-Extract `metadata.title`, `metadata.resolution`,
-`metadata.resolution_description`, `metadata.work_group`,
-`metadata.specification`, `content`, and the applied-vote /
-disposition comment.
-
-Commits with no discoverable ticket keys are listed in the commit
-table under an "Unattributed" group; their diffs are still rolled
-into Step 5.
-
-### Step 5: Compute diffs (per-ticket, per-datatype, and rollup)
-
-Three diff sets are required.
-
-**5a. Roll-up diff (since-commit → HEAD).**
-
-```bash
-git -C <clone> diff <since-commit>..HEAD -- <workingFileList>
-git -C <clone> diff --stat <since-commit>..HEAD -- <workingFileList>
-```
-
-This is the authoritative after-applied view. Use it to validate
-per-datatype roll-ups (5b) and to drive the page-level summary that
-opens the proposed ballot note (Step 7).
-
-**5b. Per-datatype roll-up.**
-
-For each datatype bucket with at least one touched file, compute the
-roll-up diff scoped to that bucket:
-
-```bash
-git -C <clone> diff <since-commit>..HEAD -- <bucket-files>
-```
-
-Narrate per-datatype changes by file role:
-
-- **StructureDefinition (`<name>.xml` and any
-  `structuredefinition-<name>-*`):** element additions / removals /
-  cardinality / type / binding / constraint changes in the
-  `<differential>`. Treat `<snapshot>` edits as derived — note that
-  snapshot regeneration is required, do not enumerate snapshot edits.
-- **Examples:** added / removed / changed examples and any updates
-  required by element changes.
-- **Terminology siblings:** added / removed / changed
-  `valueset-*` / `codesystem-*` entries; flag any that may belong in
-  UTG per the briefing's cross-repo touch points.
-- **Diagrams / spreadsheets:** note presence of diagram / spreadsheet
-  changes; do not narrate spreadsheet edits if the SD reflects them.
-
-**5c. Per-ticket diff.**
-
-For each ticket with at least one commit in the window, compute the
-union diff of that ticket's commits, scoped to the working file list:
-
-```bash
-git -C <clone> show --stat --pretty=fuller <sha1> <sha2> ... -- <workingFileList>
-```
-
-Use this to author the **per-ticket "Changes Applied"** paragraph,
-and to record which datatype(s) the ticket touched. Be honest about
-overlap: if two tickets touch the same element of the same datatype,
-say so and defer the authoritative summary to the per-datatype
-roll-up.
-
-**5d. Per-target-page roll-up.**
-
-For each `page` in `bucketsByPage`, compute a roll-up diff scoped to
-that page's working file list:
-
-```bash
-git -C <clone> diff <since-commit>..HEAD -- <pageWorkingFileList[page]>
-git -C <clone> diff --stat <since-commit>..HEAD -- <pageWorkingFileList[page]>
-```
-
-This is the per-page authoritative diff used to draft that page's
-ballot note in Step 7. It scopes the change story to exactly the
-datatypes (and the page narrative itself) that belong on that page.
-
-### Step 6: Read the current ballot note(s)
-
-For each `page` in `bucketsByPage.keys()`:
-
-1. Read the page file at HEAD.
-2. Locate every `<blockquote class="ballot-note" …>…</blockquote>`
-   block. Capture the full inner content verbatim, preserving any
-   `id` attributes (per page).
-3. If a page has no existing ballot note, record "No existing ballot
-   note." for that page and state where the new note should be
-   inserted — the conventional location is at the top of the body,
-   immediately after the page title / intro paragraph.
-
-Track the result as `existingNotesByPage[page] = [{id, html}, …]`.
-
-### Step 7: Draft the proposed ballot notes (one per target page)
-
-Produce **one HTML ballot-note draft per target page** in
-`bucketsByPage`. Each draft MUST:
-
-- Be authored as **HTML**, ready to paste into its target
-  `source/<page>.html` inside a
+### Step 1: Read the hydrated unit
+
+`GET {processorBaseUrl}/api/v1/ballot-notes/{slug}` and parse the
+detail object. The processor is the **owner** of this evidence; use it
+as-is — do **not** re-derive any of it:
+
+- **Identity / window** — `type` (must be `DataType`; if it is
+  `Artifact` or `Page`, stop and route to `notes-artifact` /
+  `notes-page`), `name` (the consolidated datatypes unit is named
+  `datatypes`), `repoOwner`, `repoName`,
+  `repoCategory`, `sinceSha` / `sinceShortSha`, `headSha` /
+  `headShortSha`, `workGroup` / `workGroupCode`, `hydratedAt`.
+- **Counters** — `commitsInWindow`, `ticketsAttributed`, and the
+  processor's first-pass `needsNote` (you refine it in Step 4).
+- **`sourceFiles[]`** — `{path, role, touchedInWindow}` for every file
+  the processor routed to this page: the per-datatype
+  StructureDefinitions (`source/datatypes/<dt>.xml`), their examples /
+  terminology siblings / spreadsheets / diagrams, any shared
+  page-level files, **and** the page files where the notes render
+  (`source/datatypes.html` plus any touched own-pages such as
+  `source/dosage.html` or `source/metadatatypes.html`). This spans
+  every datatype touched in the window.
+- **`commits[]`** — `{sha, shortSha, authorName, authorDate, subject,
+  webUrl, ticketKeys[]}` for every window commit that touched this
+  page's file set. Commits with an empty `ticketKeys` are the
+  "unattributed" group.
+- **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
+  specification, url, commitCount}` for every attributed ticket.
+- **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
+  on this page at HEAD (empty if none).
+- **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
+  `notesForReviewerMarkdown`, `sourceFilesNote`, and `status`
+  (`authored` / `awaiting-note`). When `status` is already `authored`,
+  treat the stored prose as a prior draft to revise rather than
+  starting fresh.
+
+Bucket the `sourceFiles[]` by datatype (using each SD's stem, e.g.,
+`source/datatypes/quantity.xml` → `Quantity`) so the per-datatype
+roll-up in Step 2 and the report's per-datatype tables have a stable
+grouping. Page-level / cross-cutting files (changelog, shared
+diagrams, cross-cutting terminology, the page file) form their own
+buckets.
+
+If `sourceFiles[]` and `commits[]` are both empty, this page had no
+changes in the window — write a short "No changes to datatypes page in
+window" report, PUT `needsNote:"no"` with empty prose (Step 4), and
+exit.
+
+### Step 2: Curate the after-applied roll-up (per datatype)
+
+This is the skill's core value-add. Working **only** from the hydrated
+evidence (never re-running `git` or re-querying Jira):
+
+- Author a **per-datatype roll-up** for each datatype bucket on this
+  page, narrated by file role:
+  - **StructureDefinition** — element additions / removals /
+    cardinality / type / binding / constraint changes in the
+    `<differential>` (treat `<snapshot>` as derived — note that
+    snapshot regeneration is required, do not enumerate snapshot
+    edits).
+  - **Examples** — added / removed / changed examples and updates
+    forced by element changes.
+  - **Terminology siblings** — added / removed / changed
+    `valueset-*` / `codesystem-*` entries; flag any that may belong in
+    UTG.
+  - **Diagrams / spreadsheets** — note presence of changes; do not
+    enumerate spreadsheet edits if the SD reflects them.
+- Author a **per-page roll-up** that reconciles the per-datatype
+  roll-ups into the page's whole-window change story. It must reflect
+  the **after-applied state** (the net effect of the whole window),
+  not a stitch of per-ticket descriptions. Call out any change that
+  crosses datatypes within the page (e.g., a shared element-type
+  rename).
+- Author the **per-ticket "Changes Applied"** narrative for each entry
+  in `tickets[]`, using its `title`, `resolution`, `specification`,
+  `workGroup`, and the subjects of the `commits[]` whose `ticketKeys`
+  include that ticket; record which datatype(s) each ticket touched.
+  Be honest about overlap: if two tickets touch the same element of
+  the same datatype, say so and defer the authoritative summary to the
+  per-datatype roll-up.
+- Reconcile against `currentBallotNoteHtml`: note which existing
+  bullets are still accurate in the after-applied state (carry
+  forward) and which were reverted or superseded (drop and explain in
+  "Notes for Reviewer").
+
+### Step 3: Draft the proposed ballot note
+
+Produce **one** HTML ballot-note draft for this unit's target page
+(`source/<name>.html`). It MUST:
+
+- Be authored as **HTML**, ready to paste into the page inside a
   `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
-  Preserve any existing `id` attribute when revising an existing
-  note on that page; pick the next free `bn<N>` id when adding a new
-  note.
-- Be **derived from the per-target-page roll-up (Step 5d)** for the
-  page, reconciled against the per-datatype roll-ups (Step 5b) for
-  the buckets routed to that page. Do **not** stitch together
-  per-ticket descriptions.
-- **Honour the existing ballot note for the same page.** Carry
+  Preserve any existing `id` when revising an existing note on this
+  page; pick the next free `bn<N>` id when adding a new note.
+- Be **derived from the per-page roll-up (Step 2)**, reconciled
+  against the per-datatype roll-ups for the buckets on this page. Do
+  **not** stitch together per-ticket descriptions.
+- **Honour the existing ballot note** (`currentBallotNoteHtml`). Carry
   forward bullets that are still accurate in the after-applied state;
   drop and explain bullets that have been reverted or superseded.
-  Cross-page carry-forward is not allowed — each page's existing note
-  feeds only its own draft.
-- **Honour the focus list** when one was supplied: focus datatypes
-  appear first within their respective page's draft and may justify
-  multiple bullets; non-focus datatypes may be condensed.
 - Cite each underlying ticket with a Jira link of the form
   `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
   next to the bullet it supports. Bullets covering multi-ticket
@@ -502,85 +287,76 @@ Produce **one HTML ballot-note draft per target page** in
   whitespace) unless substantial enough to warrant a closing
   sentence.
 
-Per-page bullet shape:
+Bullet shape depends on which page this unit covers:
 
-- **`source/datatypes.html` draft** — same shape as before: a short
-  framing paragraph followed by `<ul>` with one bullet per datatype
-  routed to this page (or per closely related cluster, e.g.,
+- **`source/datatypes.html`** (consolidated) — a short framing
+  paragraph followed by `<ul>` with one bullet per datatype routed to
+  this page (or per closely related cluster, e.g.,
   `Quantity` / `SimpleQuantity`). Page-level / cross-cutting buckets
-  get their own bullets here.
-- **Single-datatype own-page draft** (e.g., `source/dosage.html`) —
-  a short framing paragraph followed by `<ul>` whose bullets are
-  organised by **change topic** (SD differential change, page
-  narrative change, terminology change, examples) rather than by
-  datatype name, since the page covers a single datatype.
-- **`source/metadatatypes.html` draft** — page-scoped note covering
-  every MetaDataTypes-cluster datatype routed here. Group bullets by
-  datatype within the cluster (one bullet per datatype touched in the
-  window), then a final bullet for any cross-cutting / shared
-  changes.
+  get their own bullets. The reader navigates `datatypes.html` by
+  datatype anchor, so mirror that mental model.
+- **Single-datatype own-page** (e.g., `source/dosage.html`) — a short
+  framing paragraph followed by `<ul>` whose bullets are organised by
+  **change topic** (SD differential change, page narrative change,
+  terminology change, examples) rather than by datatype name, since
+  the page covers a single datatype.
+- **`source/metadatatypes.html`** — a page-scoped note covering every
+  MetaDataTypes-cluster datatype routed here. Group bullets by datatype
+  within the cluster (one bullet per datatype touched in the window),
+  then a final bullet for any cross-cutting / shared changes.
 
-### Step 8: Write the report
+### Step 4: Recommend, write the report, and persist back to the processor
 
-Compose the markdown report per the **Report Format** below and save
-it to the output file path. Use the gathered data to write
-substantive, specific content — no generic placeholders.
+1. **Decide `needsNote`** — `"yes"` if the after-applied changes on
+   this page warrant a ballot note, `"no"` if the window's net change
+   is immaterial / purely editorial, `"unknown"` if you cannot tell.
+   This refines the processor's first-pass `needsNote`.
+2. **(Optional) Write the markdown report** to the **Output file**
+   path, per the **Report Format** below — a human-readable
+   convenience. Use the hydrated evidence to write substantive,
+   specific content — no generic placeholders.
+3. **Persist the authored prose back to the processor** (the
+   authoritative step):
 
-### Step 9: Persist to notes-site (only when **Notes DB** supplied)
+   ```
+   PUT {processorBaseUrl}/api/v1/ballot-notes/{slug}/note
+   ```
 
-If the caller supplied a **Notes DB**, also persist the drafted
-note(s) into it. Because this skill drafts one ballot note per target
-page (Step 7), emit **one `notes-site` note per target page**: for
-each target page, build the JSON payload described in
-[Persisting to notes-site](#persisting-to-notes-site), write it to a
-transient file under the **Working directory**, and call:
+   with body:
 
-```bash
-notes-site write --db <NotesDb> --in <working-dir>/_datatypes_<pageStem>.notes.json
-```
+   ```json
+   {
+     "needsNote": "yes",
+     "proposedBallotNoteHtml": "<blockquote class='ballot-note' …>…</blockquote>",
+     "rollupSummaryMarkdown": "…",
+     "notesForReviewerMarkdown": "…",
+     "sourceFilesNote": "…"
+   }
+   ```
 
-(or `dotnet run --project tools/notes-site -- write …` when the tool
-is not on `PATH`). Use `Type: "DataType"` and `Name: <pageStem>`
-(the target page stem, e.g., `datatypes`, `dosage`, `metadatatypes`).
-Writing the same page again replaces its prior row, so the step is
-idempotent. If a `notes-site write` fails, report the failure but do
-**not** discard the markdown report — the report is the primary
-artifact; the DB writes are an additive convenience.
+   A `200` response (`{noteId, status:"authored"}`) confirms the note
+   is stored. A `404` means the slug was never hydrated — report it and
+   do not retry blindly. The PUT is idempotent (re-authoring replaces
+   the stored prose), so a re-run is safe. Each DataType unit (target
+   page) is its own slug, so the orchestrator dispatches and persists
+   each page independently.
 
 ---
 
-## Persisting to notes-site
+## Persisting back to the processor
 
-When a **Notes DB** is supplied, build one `NoteWritePayload` JSON
-document **per target page** and pass each to `notes-site write`
-(Step 9). Scope each payload's evidence (rollup summary, proposed
-ballot note, source files, commits, tickets) to the datatypes that
-resolve to that page. The payload fields map as:
+The PUT in Step 4 carries **only** the authored prose and the
+needs-note decision for this page; every identity / window / counter /
+source-file / commit / ticket field is read-only evidence the
+processor already holds. The PUT body maps onto the report sections as:
 
-| Payload field | Source in this skill |
-|---------------|----------------------|
-| `type` | `"DataType"`. |
-| `name` | The target page stem (e.g., `datatypes`, `dosage`, `metadatatypes`). |
-| `repoOwner` / `repoName` | `HL7` / `fhir`. |
-| `repoCategory` | `FhirCore`. |
-| `workGroup` / `workGroupCode` | The owning work group (conventionally `FHIR Infrastructure (FHIR-I)` / `FHIR-I` for the datatypes surface). |
-| `sinceSha` / `sinceShortSha` / `headSha` / `headShortSha` | The window endpoints. |
-| `commitsInWindow` | Count of commits in the window touching this page's datatypes. |
-| `ticketsAttributed` | Distinct attributed ticket count for this page's datatypes. |
-| `needsNote` | `"yes"` unless the recommendation for this page is to omit the note, then `"no"`; `"unknown"` if undetermined. |
-| `currentBallotNoteHtml` | The verbatim current ballot-note `<blockquote>` for this page (empty if none). |
-| `proposedBallotNoteHtml` | The drafted `<blockquote>` for this page. |
-| `rollupSummaryMarkdown` | The per-page roll-up summary, as Markdown. |
-| `notesForReviewerMarkdown` | The notes-for-reviewer body relevant to this page, as Markdown. |
-| `sourceFilesNote` | Any "patterns that produced no match" note (optional). |
-| `generatedAt` | The report's ISO-8601 timestamp. |
-| `sourceFiles[]` | The `source/datatypes/<dt>.xml` (and resolved page) files for this page's datatypes: `{ path, role, touchedInWindow }`. |
-| `commits[]` | Commits touching this page's datatypes: `{ sha, shortSha, authorName, authorDate, subject, webUrl, ticketKeys[] }`. |
-| `tickets[]` | Tickets attributed to this page's datatypes: `{ key, title, resolution, workGroup, specification, url, commitCount }`. |
-
-Only `type`, `name`, `repoOwner`, and `repoName` are required; all
-other fields default to empty / zero / `unknown`. See
-`tools/notes-site/README.md` for the full payload contract.
+| PUT field | Source in this skill |
+|-----------|----------------------|
+| `needsNote` | The Step 4 recommendation (`yes` / `no` / `unknown`). |
+| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note">` for this page from Step 3. |
+| `rollupSummaryMarkdown` | The per-page "Roll-up Summary" section body, as Markdown. |
+| `notesForReviewerMarkdown` | The "Notes for Reviewer" section body, as Markdown. |
+| `sourceFilesNote` | Any source-file caveat worth surfacing (optional). |
 
 ---
 
@@ -590,39 +366,39 @@ The report MUST follow this structure. Every section is required;
 sections may note "None" when no data exists.
 
 ````markdown
-# Datatypes Ballot Note Draft (HL7/fhir)
+# Datatypes Ballot Note Draft: {target page} (HL7/fhir)
 
 | | |
 |-|-|
-| Repository | [HL7/fhir](https://github.com/HL7/fhir) (FhirCore) |
-| Pages targeted | `source/datatypes.html` *(Quantity, Period, …)*, `source/dosage.html` *(Dosage)*, `source/metadatatypes.html` *(ContactDetail, Expression, …)* |
+| Repository | [HL7/fhir](https://github.com/HL7/fhir) ({repoCategory}) |
+| Target page | `source/{page}.html` |
 | Source root | `source/datatypes/` |
 | Window | [`{since-shortSha}`](https://github.com/HL7/fhir/commit/{since-sha})..[`{head-shortSha}`](https://github.com/HL7/fhir/commit/{head-sha}) |
-| Datatypes touched | {D} |
-| Focus datatypes | {comma-separated focus list, or "(all touched)"} |
+| Datatypes on page | {D} |
 | Commits in window | {N} |
 | Tickets attributed | {M} |
-| Briefing | `cache/github/repos/HL7_fhir/repo-analysis/briefing.md` @ clone `{briefing-shortSha}` |
+| Hydrated | BallotNotes processor unit `{slug}` @ `{hydratedAt}` |
 | Generated | {ISO-8601 UTC timestamp} |
 
-## Datatypes Touched
+## Datatypes In This Window
 
-| Datatype | Target page | Files touched | Tickets | Page-level? |
-|----------|-------------|---------------|---------|-------------|
-| `Quantity` | `source/datatypes.html` | 3 | [FHIR-XXXXX](…), [FHIR-YYYYY](…) | no |
-| `Period` | `source/datatypes.html` | 1 | [FHIR-ZZZZZ](…) | no |
-| `Dosage` | `source/dosage.html` | 2 | [FHIR-AAAAA](…) | no |
-| `ContactDetail` | `source/metadatatypes.html` | 1 | [FHIR-BBBBB](…) | no |
-| (Cross-cutting terminology) | `source/datatypes.html` | 2 | [FHIR-CCCCC](…) | yes |
-| (Page-level) | `source/datatypes.html` | 1 (`source/datatypes.html`) | — | yes |
-| … | … | … | … | … |
+{Every datatype touched in the window — those whose SDs changed under
+`source/datatypes/` — plus any page-level / cross-cutting buckets.}
+
+| Datatype | Files touched | Tickets |
+|----------|---------------|---------|
+| `Quantity` | 3 | [FHIR-XXXXX](…), [FHIR-YYYYY](…) |
+| `Period` | 1 | [FHIR-ZZZZZ](…) |
+| (Cross-cutting terminology) | 2 | [FHIR-CCCCC](…) |
+| (Page-level) | 1 (`source/{page}.html`) | — |
+| … | … | … |
 
 ## Source Files
 
-Files considered in this run, grouped by datatype bucket. Each group
-declares its **resolved target page**.
+Files the processor routed to this page (`sourceFiles[]`), grouped by
+datatype bucket:
 
-### `Quantity` → `source/datatypes.html`
+### `Quantity`
 
 | Path | Role | Touched in window |
 |------|------|-------------------|
@@ -630,67 +406,42 @@ declares its **resolved target page**.
 | `source/datatypes/quantity-example.xml` | Example | yes |
 | … | … | … |
 
-### `Dosage` → `source/dosage.html`
+### (Cross-cutting terminology)
 
 | Path | Role | Touched in window |
 |------|------|-------------------|
-| `source/datatypes/dosage.xml` | StructureDefinition | yes |
-| `source/dosage.html` | Datatype page (ballot note lives here) | yes/no |
-| … | … | … |
-
-### `ContactDetail` → `source/metadatatypes.html` (MetaDataTypes cluster)
-
-| `source/datatypes/contactdetail.xml` | StructureDefinition | yes |
-| `source/metadatatypes.html` | MetaDataTypes page (ballot note lives here) | yes/no |
-
-### (Cross-cutting terminology) → `source/datatypes.html`
-
 | `source/datatypes/valueset-…xml` | ValueSet | yes |
 | `source/datatypes/codesystem-…xml` | CodeSystem | yes |
 
-### (Page-level) → `source/datatypes.html`
+### (Page-level)
 
-| `source/datatypes.html` | Datatypes page (ballot note lives here) | yes/no |
+| Path | Role | Touched in window |
+|------|------|-------------------|
+| `source/{page}.html` | Datatypes page (ballot note lives here) | yes/no |
 | `source/datatypes/_changelog.txt` | Changelog | yes/no |
-| `source/datatypes/alltypes.diagram` | All-types diagram | yes/no |
 
-## Current Ballot Notes
+## Current Ballot Note
 
-{One subsection per target page in `bucketsByPage`. For each, paste
-the existing ballot-note HTML at HEAD verbatim inside a fenced ```html
-block (including the `<blockquote …>` wrapper), preserving each note's
-`id`. If multiple notes exist on a page, include each with a heading
-line giving its `id`. If a page has none, write "No existing ballot
-note." and state where the proposed note will be inserted.}
-
-### `source/datatypes.html`
+{The page's existing ballot-note HTML at HEAD (`currentBallotNoteHtml`),
+verbatim inside a fenced ```html block (including the `<blockquote …>`
+wrapper), preserving each note's `id`. If the page has multiple notes,
+include each with a heading line giving its `id`. If none, write "No
+existing ballot note." and state where the proposed note will be
+inserted (top of the body, after the page title / intro paragraph).}
 
 ```html
 <blockquote class="ballot-note" id="bn1">
   …
 </blockquote>
 ```
-
-### `source/dosage.html`
-
-```html
-<blockquote class="ballot-note" id="bn1">
-  …
-</blockquote>
-```
-
-### `source/metadatatypes.html`
-
-No existing ballot note. New note will be inserted at the top of the
-page body, immediately after the page title / intro paragraph.
 
 ## Tickets Applied in Window
 
-| Ticket | Title | Datatypes | Target pages | Commits |
-|--------|-------|-----------|--------------|---------|
-| [{KEY}](https://jira.hl7.org/browse/{KEY}) | {ticket title} | `Quantity`, `Period` | `datatypes.html` | [`{shortSha}`]({commitUrl}), [`{shortSha}`]({commitUrl}) |
-| [{KEY}](https://jira.hl7.org/browse/{KEY}) | {ticket title} | `Dosage` | `dosage.html` | [`{shortSha}`]({commitUrl}) |
-| … | … | … | … | … |
+| Ticket | Title | Datatypes | Commits |
+|--------|-------|-----------|---------|
+| [{KEY}](https://jira.hl7.org/browse/{KEY}) | {ticket title} | `Quantity`, `Period` | [`{shortSha}`]({commitUrl}), [`{shortSha}`]({commitUrl}) |
+| [{KEY}](https://jira.hl7.org/browse/{KEY}) | {ticket title} | `Period` | [`{shortSha}`]({commitUrl}) |
+| … | … | … | … |
 
 {If commits in the window have no attributable ticket, add a final
 row with `Ticket = (unattributed)` and list those commits with their
@@ -706,24 +457,20 @@ ticket key.}
 - **Work group:** {work_group}
 - **Resolution:** {resolution}
 - **Datatypes touched:** `Quantity`, `Period`
-- **Target pages:** `source/datatypes.html`
-- **Disposition (verbatim):**
-
-  > {Exact disposition text from the applied-vote comment, quoted
-  > verbatim. If unavailable, write "Disposition text not recorded in
-  > Jira."}
-
 - **Disposition summary:** {2–4 sentence neutral summary of what the
-  disposition asked for.}
+  disposition asked for, authored from the ticket's title, resolution,
+  and the subjects of the commits that applied it. The hydrated
+  evidence does not carry the verbatim applied-vote comment; do not
+  invent one.}
 - **Commits applying this ticket:**
   - [`{shortSha}`]({commitUrl}) — {commit subject} ({authorDate})
   - …
-- **Changes applied (per Step 5c, scoped to the datatypes surface):**
+- **Changes applied (scoped to this page's datatypes):**
   {2–6 sentences describing what these commits actually changed.
   Be specific: name the datatype, the element, the field, the nature
   of the change. If overlap with other tickets means the per-ticket
-  diff is misleading on its own, say so and reference the
-  per-datatype roll-up.}
+  view is misleading on its own, say so and reference the per-datatype
+  roll-up.}
 
 {Include a final "(unattributed)" subsection if there are commits
 without ticket attribution; it lists the commits, their datatype
@@ -731,11 +478,10 @@ buckets, and what they changed.}
 
 ## Per-Datatype Roll-up (after-applied state)
 
-{One subsection per datatype with at least one touched file in the
-window, in focus-first then alphabetical order. Each subsection
-declares its **target page** in the heading or first line.}
+{One subsection per datatype with at least one touched file on this
+page, in alphabetical order (page-level / cross-cutting buckets last).}
 
-### `Quantity` → `source/datatypes.html`
+### `Quantity`
 
 - **StructureDefinition (`source/datatypes/quantity.xml`):**
   {bullets describing element-level changes in the differential —
@@ -746,103 +492,42 @@ declares its **target page** in the heading or first line.}
 - **Terminology:**
   {sibling valueset/codesystem changes, or "None".}
 
-### `Dosage` → `source/dosage.html`
-
-- **StructureDefinition (`source/datatypes/dosage.xml`):** …
-- **Page narrative (`source/dosage.html`):**
-  {prose / structural changes outside the ballot-note block, if any.}
-- **Examples:** …
-
-### (Cross-cutting terminology) → `source/datatypes.html`
+### (Cross-cutting terminology)
 
 {Terminology files used by multiple datatypes; list which datatypes
 they bind and what changed.}
 
-### (Page-level) → `source/datatypes.html`
+### (Page-level)
 
-{Changes to `source/datatypes.html` itself (intro / framing changes,
+{Changes to `source/{page}.html` itself (intro / framing changes,
 section reorganisations) and to shared narrative / diagrams under
 `source/datatypes/`.}
 
-## Per-Target-Page Roll-up Summary (after-applied state)
+## Roll-up Summary (after-applied state)
 
-{One subsection per target page in `bucketsByPage`. Each subsection
-narrates the authoritative whole-page change story derived from the
-Step 5d diff for that page. Use it to verify that the per-datatype
-roll-ups together account for the visible page changes. Call out any
-change that crosses datatypes within the same page (e.g., a shared
-element type rename) here.
+{The authoritative whole-page change story, derived from the
+after-applied evidence (Step 2), reconciling the per-datatype roll-ups
+above. Call out any change that crosses datatypes within the page
+(e.g., a shared element-type rename).}
 
-When more than one target page is in scope, include a top "All-files
-roll-up" subsection driven by the Step 5a diff as a global sanity
-check. When only `source/datatypes.html` is in scope, the Step 5a
-diff and the `datatypes.html` Step 5d diff coincide.}
+## Proposed Ballot Note (HTML)
 
-### All-files roll-up (Step 5a)
-
-{Whole-window summary across every working file. Sanity check.}
-
-### `source/datatypes.html`
-
-{Roll-up scoped to `pageWorkingFileList["source/datatypes.html"]`.}
-
-### `source/dosage.html`
-
-{Roll-up scoped to `pageWorkingFileList["source/dosage.html"]`.}
-
-### `source/metadatatypes.html`
-
-{Roll-up scoped to `pageWorkingFileList["source/metadatatypes.html"]`.}
-
-## Proposed Ballot Notes (HTML, per page)
-
-{One fenced HTML block per target page in `bucketsByPage`, each
-labelled with the destination file path. Preserve the existing `id`
-on a page if revising; otherwise pick the next free `bn<N>` for that
-page. Use Jira links of the form
+{The single draft ballot note for this page, ready to drop into
+`source/{page}.html`. Preserve the existing `id` if revising; otherwise
+pick the next free `bn<N>`. Bullets are grouped by datatype for
+`datatypes.html` / `metadatatypes.html`, or by change topic for a
+single-datatype own-page. Use Jira links of the form
 `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
 inline against the bullet they support.}
-
-### `source/datatypes.html`
 
 ```html
 <blockquote class="ballot-note" id="bn{N}">
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
-  scope across the datatypes routed to this page since the previous
-  ballot, derived from the page-level roll-up.}</p>
+  scope on this page since the previous ballot, derived from the
+  roll-up summary.}</p>
   <ul>
     <li><b>Quantity:</b> {substantive change} (<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>)</li>
     <li><b>Period:</b> {substantive change} (<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>)</li>
-    <li><b>Cross-cutting:</b> {substantive change} (<a href="https://jira.hl7.org/browse/FHIR-ZZZZZ">FHIR-ZZZZZ</a>)</li>
-    <li>…</li>
-  </ul>
-</blockquote>
-```
-
-### `source/dosage.html`
-
-```html
-<blockquote class="ballot-note" id="bn{N}">
-  <p><b>Note to Balloters:</b> {one-paragraph framing of the Dosage
-  change scope since the previous ballot, derived from the
-  dosage.html roll-up.}</p>
-  <ul>
-    <li>{SD-side change to Dosage} (<a href="https://jira.hl7.org/browse/FHIR-AAAAA">FHIR-AAAAA</a>)</li>
-    <li>{page-narrative change, if any}</li>
-    <li>…</li>
-  </ul>
-</blockquote>
-```
-
-### `source/metadatatypes.html`
-
-```html
-<blockquote class="ballot-note" id="bn{N}">
-  <p><b>Note to Balloters:</b> {one-paragraph framing of the
-  MetaDataTypes-cluster change scope.}</p>
-  <ul>
-    <li><b>ContactDetail:</b> {change} (<a href="https://jira.hl7.org/browse/FHIR-BBBBB">FHIR-BBBBB</a>)</li>
-    <li><b>Expression:</b> {change} (<a href="https://jira.hl7.org/browse/FHIR-CCCCC">FHIR-CCCCC</a>)</li>
     <li>…</li>
   </ul>
 </blockquote>
@@ -852,23 +537,12 @@ inline against the bullet they support.}
 
 {Free-form notes that did not fit elsewhere. Examples:
 - Existing ballot-note bullets that were dropped because the change
-  was reverted (cite the reverting commit and / or ticket, and the
-  page the bullet was on).
-- Datatypes whose candidate own-page stem was not found at HEAD and
-  whose note was therefore routed to `datatypes.html` against the
-  override map's expectation. Maintainers may want to extend the
-  override map or add the missing page.
-- Commits in the window that touched files outside the resolved
-  page set (resource SDs, narrative pages, terminology in other
-  folders). Add a one-line pointer to `notes-artifact` /
-  `notes-page` for each.
-- Datatypes the bucketing rule could not place automatically (under
-  "Other / unassigned") and how you handled them.
-- Cases where the HEAD is not a descendant of the since-commit and
-  the symmetric difference was used instead.
-- Briefing staleness or absence.
-- Any time `gh api` was used because the cache clone could not
-  resolve a referenced commit.
+  was reverted (cite the reverting commit and / or ticket).
+- Commits in the window that touched files outside this page's scope
+  (resource SDs, other narrative pages, terminology in other folders).
+  Add a one-line pointer to `notes-artifact` / `notes-page` for each.
+- Anything the processor flagged in `sourceFilesNote`, or evidence
+  that looked incomplete (e.g., a commit with no attributed ticket).
 
 If none: "No additional notes."}
 ````
@@ -876,47 +550,44 @@ If none: "No additional notes."}
 ## Important Rules
 
 - **Per-datatype roll-up first, per-page reconciliation second,
-  ticket bullets last.** Each per-page proposed ballot note must
-  reflect the after-applied state for that page. Per-ticket
-  descriptions are supporting evidence, not the source of truth.
-- **One HTML draft per target page, in a single report.** When a
-  datatype has its own narrative page in `source/<page>.html`, the
-  ballot note for that datatype belongs in **that page**, not in
-  `datatypes.html`. The skill resolves the target page per datatype
-  via the datatype-page map (default lowercase stem; explicit
-  overrides for `Reference → references` and the MetaDataTypes
-  cluster → `metadatatypes`) and emits one ballot-note draft per
-  resolved target page.
-- **Group `datatypes.html` ballot bullets by datatype.** The reader
-  of `datatypes.html` navigates by datatype anchor; the ballot note
-  there should mirror that mental model. Single-datatype own-page
-  notes (e.g., `dosage.html`) instead group bullets by change topic.
-- **Honour each page's existing ballot note independently.** Carry
-  forward bullets that are still accurate in the after-applied state
-  on the same page; drop and explain bullets that have been reverted
-  or superseded. Cross-page carry-forward is not allowed.
-- **Cite tickets inline in every proposed note.** Every bullet should
+  ticket bullets last.** This page's proposed ballot note must reflect
+  the after-applied state. Per-ticket descriptions are supporting
+  evidence, not the source of truth.
+- **One consolidated ballot note.** The processor emits a single
+  `datatypes` DataType unit and folds every changed datatype via the
+  datatype-page map (default lowercase stem; explicit overrides for
+  `Reference → references` and the MetaDataTypes cluster →
+  `metadatatypes`). This skill drafts the single note for the
+  datatypes surface and PUTs it back.
+- **Group `datatypes.html` ballot bullets by datatype.** The reader of
+  `datatypes.html` navigates by datatype anchor; the ballot note there
+  should mirror that mental model. When the note also covers own-page
+  datatypes (e.g., `dosage.html`), group their bullets by change topic
+  within their own sub-section.
+- **Honour the page's existing ballot note.** Carry forward bullets
+  that are still accurate in the after-applied state; drop and explain
+  bullets that have been reverted or superseded.
+- **Cite tickets inline in the proposed note.** Every bullet should
   point at the ticket(s) responsible. Use the Jira issue URL form
   shown above.
-- **Stay in your lane.** This skill owns `source/datatypes/**`,
-  `source/datatypes.html`, **and** every per-datatype own-page in
-  `source/<page>.html` resolved via the datatype-page map. Resource /
-  profile changes belong to `notes-artifact`; other narrative pages
-  belong to `notes-page`. The orchestrator (`orchestrate-notes`) uses
-  the same map to ensure own-page datatypes are not double-dispatched
-  via `notes-page`.
+- **Stay in your lane.** This skill owns the datatypes surface
+  (`source/datatypes/**`, `source/datatypes.html`, and the per-datatype
+  own-pages the processor routes here). Resource / profile changes
+  belong to `notes-artifact`; other narrative pages belong to
+  `notes-page`. The processor's routing guarantees own-page datatypes
+  are not double-dispatched as `notes-page` units.
 - **Treat `<snapshot>` as derived.** Narrate `<differential>` changes
   in each SD; mention only that snapshot regeneration is required, do
   not enumerate snapshot edits.
-- **Spreadsheets are legacy.** If a `<name>-spreadsheet.xml` is
-  touched but the SD is not, flag it; otherwise rely on the SD as
-  authoritative and do not enumerate spreadsheet edits.
-- **Use only data from `fhir-augury-cli`, the cached clone (`git`),
-  and `gh` as a last resort.** Do not fabricate ticket details, file
-  paths, commit SHAs, or disposition text. If a call fails or returns
-  no data, say so in the report.
+- **Spreadsheets are legacy.** If a `<name>-spreadsheet.xml` is touched
+  but the SD is not, flag it; otherwise rely on the SD as authoritative
+  and do not enumerate spreadsheet edits.
+- **Use only the processor's hydrated evidence.** Do not re-run `git`,
+  query Jira, or resolve source files / target pages yourself — the
+  processor owns that gathering. Do not fabricate ticket details, file
+  paths, commit SHAs, or disposition text; if the evidence lacks
+  something, say so in the report.
 - **Be specific.** Name the datatype, the element, the field, the old
   vs. new value where relevant.
 - **All transient files go under the supplied working directory.**
-  Never write scratch files into the repo root or alongside the
-  cached clone.
+  Never write scratch files into the repo root.

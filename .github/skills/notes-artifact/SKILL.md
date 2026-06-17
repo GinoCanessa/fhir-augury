@@ -1,326 +1,180 @@
 ---
 name: notes-artifact
-description: "Drafts an updated ballot note for a single FHIR artifact (resource / profile / IG artifact) based on changes made since a specified commit. USE FOR: per-artifact ballot notes, ballot-comment drafting, change roll-ups for resources/profiles/IG artifacts. Requires a GitHub repo (e.g., HL7/fhir), a since-commit SHA, and an artifact name (e.g., Observation). Walks the artifact's source files between the since-commit and HEAD, attributes commits to the FHIR Jira tickets they applied, summarizes what actually changed in the after-applied state, and writes a markdown report containing a draft HTML ballot note suitable for the artifact's intro file. For specification *page* ballot notes (`source/*.html`), use `notes-page` instead. For the consolidated *datatypes* page (`source/datatypes/**`), use `notes-datatype`."
+description: "Drafts an updated ballot note for a single FHIR artifact (resource / profile / IG artifact) from evidence hydrated by the BallotNotes processor. USE FOR: per-artifact ballot notes, ballot-comment drafting, change roll-ups for resources/profiles/IG artifacts. Requires a BallotNotes processor unit slug (the noteId) and the processor base URL (default http://localhost:5174). Reads the unit's hydrated evidence — resolved source files, attributed commits, the Jira tickets they applied, counters, and the current ballot-note HTML — then authors the after-applied roll-up and a draft HTML ballot note suitable for the artifact's intro file, and writes that prose back to the processor. The processor owns the deterministic gathering (commit-window walk, ticket attribution, source-file resolution, current-note capture). For specification *page* ballot notes (`source/*.html`), use `notes-page` instead. For the consolidated *datatypes* page (`source/datatypes/**`), use `notes-datatype`."
 ---
 
 # Notes — Artifact Skill
 
 Drafts an updated **ballot note** for a single FHIR artifact (resource,
-profile, IG artifact, terminology bundle, …) by analysing the changes
-that have landed in its source files since a caller-supplied commit.
-The output is a markdown review report containing the proposed HTML
-ballot note plus the supporting evidence (per-commit / per-ticket
-breakdown, rolled-up summary, current ballot note for context).
+profile, IG artifact, terminology bundle, …) from the evidence the
+**BallotNotes processor** has already hydrated for the artifact's unit.
+The processor owns the deterministic gathering — the commit-window
+walk, source-file resolution, ticket attribution, and current-note
+capture; this skill reads that evidence, authors the after-applied
+roll-up and the proposed HTML ballot note, and writes the prose back to
+the processor. It also optionally emits a human-readable markdown
+report mirroring the same evidence.
 
-The roll-up summary of changes **must be derived from the
-after-applied diff** (since-commit → HEAD), not by stitching together
-per-ticket descriptions. Individual tickets frequently overlap, expand,
-or revert each other — only the after-applied state reflects reality.
+The roll-up summary of changes **must reflect the after-applied
+state** the processor hydrated (the net effect of the commit window),
+not a stitch of per-ticket descriptions. Individual tickets frequently
+overlap, expand, or revert each other — only the after-applied state
+reflects reality.
+
+This skill is the **artifact** counterpart to `notes-page` and
+`notes-datatype`. The processor's unit `type` decides which skill
+runs: `Artifact` → this skill; `Page` (a narrative `source/<page>.html`)
+→ `notes-page`; `DataType` (the `source/datatypes/**` surface and any
+per-datatype own-page) → `notes-datatype`. If the unit you fetched is
+not an `Artifact`, stop and route to the matching skill.
 
 ## Data Access
 
-All FhirAugury data access (Jira, GitHub cross-references, repo
-listing, item fetches) goes through the **`fhir-augury-cli`** skill.
-That skill documents the CLI envelope, recipes, and the fallback chain
-(CLI → MCP → direct HTTP → `appsettings.json`). Do not duplicate CLI
-knowledge here.
+This skill reads its evidence from — and writes its authored prose
+back to — the **BallotNotes processor** over HTTP (default base URL
+`http://localhost:5174`). The processor **owns all deterministic
+gathering**: it has already walked the commit window, resolved the
+artifact's source files, attributed commits to Jira tickets, and
+captured the current ballot-note HTML. This skill never runs `git`,
+never queries Jira directly, and never resolves source files itself —
+it consumes the hydrated unit and authors prose.
 
-In addition to the CLI, this skill is allowed to invoke **`git`**
-directly against the cached clone (`cache/github/repos/<owner>_<name>/clone/`)
-and may use **`gh`** (the GitHub CLI) when commit metadata or commit
-URLs need to be resolved against `github.com`. `git` against the cache
-clone is preferred — it is offline, fast, and authoritative for the
-state FhirAugury has already ingested.
+Two endpoints are used, in this order:
 
-When a CLI command is shown below, it is in the form documented by
-`fhir-augury-cli`:
+1. **Read the hydrated unit** (GET-only):
 
-```bash
-fhir-augury-cli --json '<json>' [--pretty]
-```
+   ```
+   GET {processorBaseUrl}/api/v1/ballot-notes/{slug}
+   ```
+
+   Returns the unit's full hydrated evidence (source files, attributed
+   commits, tickets, counters, the current ballot-note HTML) plus any
+   prose already authored. `404` means the slug was never hydrated —
+   stop and report it; the repo window must be hydrated first (via the
+   `orchestrate-notes` skill or the processor's `hydrate` endpoint).
+
+2. **Write the authored prose back** (the only state change):
+
+   ```
+   PUT {processorBaseUrl}/api/v1/ballot-notes/{slug}/note
+   ```
+
+   Body `{needsNote, proposedBallotNoteHtml, rollupSummaryMarkdown,
+   notesForReviewerMarkdown, sourceFilesNote}`. Returns `200` with
+   `{noteId, status:"authored"}`; `404` if the slug was never
+   hydrated.
+
+This read-evidence / write-back shape mirrors the
+[`topic-groupings`](../topic-groupings/SKILL.md) skill, which GETs
+clustering signals + hydration and PUTs groupings back.
 
 ## Inputs
 
-- **Repo** *(required)* — `owner/name`, e.g., `HL7/fhir`.
-- **Since-commit** *(required)* — full or short SHA. The roll-up window
-  is `since-commit..HEAD` of the cached clone (fast-forward range; if
-  HEAD is not a descendant of since-commit, fall back to the symmetric
-  difference and note the deviation in the report).
-- **Artifact** *(required)* — the artifact identifier as it appears in
-  the repo's authoring layout. Examples by category:
-  - **FhirCore** (`HL7/fhir`): a resource or datatype name matching a
-    `source/<name>/` folder (e.g., `Observation`, `Patient`,
-    `MedicationRequest`). Case-insensitive against the folder name.
-  - **Ig** / **FhirExtensionsPack** / **Incubator**: the FSH/profile
-    identifier or the publisher artifact id (e.g., `us-core-patient`,
-    `Profile-MyProfile`).
-  - **Utg**: the canonical id of the ValueSet / CodeSystem (e.g.,
-    `v3-ActCode`).
-- **Output file** *(required)* — full path where the markdown report
-  should be written. The orchestrator passes a deterministic path; for
-  ad-hoc invocations the agent may default to
+- **Slug** *(required)* — the processor `noteId` for the artifact
+  unit (the unit's slug, e.g., `hl7-fhir-artifact-observation`). The
+  orchestrator (`orchestrate-notes`) passes it from the enumerated
+  unit list; for ad-hoc runs, discover it via
+  `GET {processorBaseUrl}/api/v1/ballot-notes?repo=<owner>/<name>&type=Artifact`.
+- **Processor base URL** *(optional, default `http://localhost:5174`)*
+  — the BallotNotes processor's base URL.
+- **Output file** *(optional)* — full path where the human-readable
+  markdown report should be written. The orchestrator passes a
+  deterministic path; for ad-hoc invocations the agent may default to
   `<working-dir>/<repo-segment>_<artifact>.md` and report the path
-  back.
-- **Notes DB** *(optional)* — full path to a `notes-site` SQLite
-  database (e.g., `./cache/notes.db`). When supplied, the skill also
-  persists the drafted note into that DB via `notes-site write` (see
-  [Persisting to notes-site](#persisting-to-notes-site)) so the
-  `notes-site report` SPA can render it. When omitted, only the
-  markdown report is produced.
-- **Working directory** *(optional)* — directory for transient files
-  (intermediate diffs, commit lists, ticket dumps). When supplied,
-  **all transient files must be written under this directory**. Create
-  it with `New-Item -ItemType Directory -Force` (PowerShell),
-  `mkdir -p` (bash), or your file-system tool if it does not exist.
+  back. The **authoritative** persistence is the PUT in Step 4 — the
+  markdown report is an additional convenience.
+- **Working directory** *(optional)* — directory for transient files.
+  When supplied, **all transient files must be written under this
+  directory**. Create it with `New-Item -ItemType Directory -Force`
+  (PowerShell), `mkdir -p` (bash), or your file-system tool if it does
+  not exist.
 
 ## Prerequisites
 
-- The GitHub source clone cache must be populated and current enough
-  that the since-commit is reachable from the cached clone HEAD. If
-  the since-commit is missing, ask the user to refresh the clone (or
-  fall back to fetching the commit via `gh api` and noting the
-  deviation in the report).
-- A current per-repo briefing under
-  `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md` must
-  exist. The artifact-to-files resolution in Step 2 leans on the
-  briefing's **Artifact Map** and **Authoring root(s)**. If the
-  briefing is missing or stale (per the staleness rules in the
-  `repo-analysis` skill), stop and ask the user to run `repo-analysis`
-  before continuing.
-- `git` must be available on `PATH`. `gh` is required only if the
-  cache clone cannot resolve the since-commit or a commit URL needs to
-  be confirmed against `github.com`.
+- The **BallotNotes processor** (default `http://localhost:5174`) must
+  be reachable, and the unit identified by **Slug** must already have
+  been hydrated (its repo window walked by the processor). If
+  `GET /api/v1/ballot-notes/{slug}` returns `404`, stop and ask the
+  caller to hydrate the window first (via `orchestrate-notes` or the
+  processor's `hydrate` endpoint).
+- No clone, briefing, `git`, or Jira access is required by this skill
+  — the processor performed that gathering server-side.
 
 ## Workflow
 
-Run independent calls in parallel where possible.
+### Step 1: Read the hydrated unit
 
-### Step 1: Verify services and briefing
+`GET {processorBaseUrl}/api/v1/ballot-notes/{slug}` and parse the
+detail object. The processor is the **owner** of this evidence; use it
+as-is — do **not** re-derive any of it:
 
-1. Health-check via `fhir-augury-cli`:
+- **Identity / window** — `type` (must be `Artifact`; if it is `Page`
+  or `DataType`, stop and route to `notes-page` / `notes-datatype`),
+  `name`, `repoOwner`, `repoName`, `repoCategory`, `sinceSha` /
+  `sinceShortSha`, `headSha` / `headShortSha`, `workGroup` /
+  `workGroupCode`, `hydratedAt`.
+- **Counters** — `commitsInWindow`, `ticketsAttributed`, and the
+  processor's first-pass `needsNote` (you refine it in Step 4).
+- **`sourceFiles[]`** — `{path, role, touchedInWindow}` for every file
+  the processor attributed to this artifact (the StructureDefinition,
+  intro narrative, search-params bundle, operations list, examples,
+  artifact-scoped terminology, …). The intro file is where the ballot
+  note lives.
+- **`commits[]`** — `{sha, shortSha, authorName, authorDate, subject,
+  webUrl, ticketKeys[]}` for every window commit that touched this
+  artifact. Commits with an empty `ticketKeys` are the "unattributed"
+  group.
+- **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
+  specification, url, commitCount}` for every attributed ticket.
+- **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
+  on the artifact's intro file at HEAD (empty if none).
+- **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
+  `notesForReviewerMarkdown`, `sourceFilesNote`, and `status`
+  (`authored` / `awaiting-note`). When `status` is already `authored`,
+  treat the stored prose as a prior draft to revise rather than
+  starting fresh.
 
-   ```bash
-   fhir-augury-cli --json '{"command":"services","action":"health"}'
-   ```
+If `sourceFiles[]` and `commits[]` are both empty, the artifact had no
+changes in the window — write a short "No changes to artifact in
+window" report, PUT `needsNote:"no"` with empty prose (Step 4), and
+exit.
 
-2. Read the briefing and metadata:
-   - `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md`
-   - `cache/github/repos/<owner>_<name>/repo-analysis/meta.json`
+### Step 2: Curate the after-applied roll-up and per-ticket narrative
 
-   Apply the staleness rules from the `repo-analysis` skill. If
-   missing or stale, stop and ask the user.
+This is the skill's core value-add. Working **only** from the hydrated
+evidence (never re-running `git` or re-querying Jira):
 
-3. Confirm the cache clone and resolve HEAD:
+- Author the **roll-up summary** of what changed across the artifact
+  in the window. It must reflect the **after-applied state** (the net
+  effect of the whole window), not a stitch of per-ticket
+  descriptions. Drive it from the `sourceFiles[]` roles and the
+  attributed `commits[]` / `tickets[]`. Group observations by file
+  role:
+  - **StructureDefinition** — element additions / removals /
+    cardinality / type / binding / constraint changes in the
+    `<differential>` (treat `<snapshot>` as derived — note that
+    snapshot regeneration is required, do not enumerate snapshot
+    edits).
+  - **Intro / narrative** — material narrative shifts (scope changes,
+    boundary clarifications, deprecations, normative-status notes).
+  - **Search parameters / operations** — added / removed / changed
+    entries.
+  - **Examples** — added / removed examples and updates forced by
+    element changes.
+  - **Terminology** — sibling `valueset-*` / `codesystem-*` changes;
+    flag any that may belong in UTG.
+- Author the **per-ticket "Changes Applied"** narrative for each entry
+  in `tickets[]`, using its `title`, `resolution`, `specification`,
+  `workGroup`, and the subjects of the `commits[]` whose `ticketKeys`
+  include that ticket. Be honest about overlap: if two tickets touch
+  the same area, say so and defer the authoritative summary to the
+  roll-up.
+- Reconcile against `currentBallotNoteHtml`: note which existing
+  bullets are still accurate in the after-applied state (carry
+  forward) and which were reverted or superseded (drop and explain in
+  "Notes for Reviewer").
 
-   ```powershell
-   $clone = "cache/github/repos/<owner>_<name>/clone"
-   git -C $clone rev-parse HEAD
-   git -C $clone cat-file -e <since-commit>^{commit}
-   ```
-
-   If `cat-file -e` fails, the since-commit isn't in the cache clone —
-   stop and ask the user to refresh the clone, or fall back to `gh api
-   /repos/<owner>/<name>/commits/<since-commit>` and note the
-   limitation in the report.
-
-### Step 2: Resolve artifact → source files
-
-Use the briefing's **Artifact Map** as the authoritative mapping from
-artifact → on-disk paths. Concrete patterns by category:
-
-- **FhirCore (`HL7/fhir`)** — for an artifact `<Name>` whose folder is
-  `source/<name>/` (folder name is lowercase per repo convention),
-  collect:
-  - `source/<name>/structuredefinition-<name>.xml` — the canonical SD
-    (filename stem must match the folder name).
-  - `source/<name>/<name>-introduction.xml` — narrative intro (this is
-    where the ballot note lives).
-  - `source/<name>/<name>-notes.xml` — supplementary narrative.
-  - `source/<name>/bundle-<name>-search-params.xml` — search
-    parameters bundle.
-  - `source/<name>/list-<name>-operations.xml` — operations bundle.
-  - `source/<name>/list-<name>-examples.xml` — examples list.
-  - `source/<name>/<name>-examples.xml` and `<name>-example*.xml` —
-    examples.
-  - `source/<name>/valueset-*.xml`, `source/<name>/codesystem-*.xml` —
-    artifact-scoped terminology.
-  - `source/<name>/<name>-spreadsheet.xml` — legacy spreadsheet (note
-    in the report; SD is authoritative for resources / non-primitive
-    datatypes).
-  - Any sibling `structuredefinition-*.xml` whose name does **not**
-    match the folder (extra profile artifacts that ship alongside the
-    resource).
-
-- **Ig / FhirExtensionsPack / Incubator** — use the briefing's Artifact
-  Map to find the FSH source(s) (`input/fsh/**/*.fsh`), the rendered
-  IG resource (`input/resources/**` or `fsh-generated/resources/**`),
-  the page mark-up (`input/pagecontent/**`), and any related examples
-  (`input/examples/**`). Treat `fsh-generated/` as derived; prefer
-  `input/fsh/` for "source" diffs but include `fsh-generated/` when
-  necessary to demonstrate the after-applied SD shape.
-
-- **Utg (`HL7/UTG`)** — use the briefing's Artifact Map for the
-  canonical's path (typically `input/sourceOfTruth/**` or
-  `input/codesystems/**`, depending on the canonical).
-
-- **JiraSpecArtifacts** — the per-spec generated XML(s) under the
-  configured artifact root.
-
-If the briefing's Artifact Map does **not** have an explicit mapping
-for the requested artifact, list every file matched by the patterns
-above that exists in the clone, and list the patterns that produced no
-match in the report's "Source files" section.
-
-**Out of scope for this skill** (route to the matching sibling skill
-instead and, if the user asked for one of these explicitly, stop and
-suggest the right skill rather than producing a misleading report):
-
-- **`HL7/fhir` narrative spec pages** (`source/<page>.html` such as
-  `security`, `extensibility`, `terminologies`) — use `notes-page`.
-- **The `HL7/fhir` consolidated datatypes page** and anything under
-  `source/datatypes/` — use `notes-datatype`.
-- **IG / extension-pack / incubator narrative pages**
-  (`input/pagecontent/<page>.{md,xml}`) when the change is purely
-  page-level (no FSH / SD / example file changes) — use `notes-page`.
-
-For the common case in non-FhirCore repos the artifact and the page
-overlap (an IG profile usually has both an FSH source and a markdown
-page describing it). When that happens, stay in `notes-artifact` and
-include the page mark-up in the file list as documented above; do
-not also emit a parallel `notes-page` report for the same artifact.
-
-Materialise the file list as both:
-
-- **`workingFileList`** — paths relative to the clone root, used by
-  `git` calls in Steps 3–5.
-- **`displayFileList`** — paths shown in the report, with a one-line
-  role for each.
-
-### Step 3: Enumerate commits in the window
-
-For the resolved file list, enumerate commits that touched any of the
-files between `since-commit` and `HEAD`. Use `git log` against the
-cache clone:
-
-```bash
-git -C cache/github/repos/<owner>_<name>/clone log \
-    --no-merges \
-    --pretty=format:'%H%x09%an%x09%aI%x09%s' \
-    <since-commit>..HEAD \
-    -- <space-separated workingFileList>
-```
-
-For each commit row, capture:
-- `sha` (full)
-- `shortSha` (`git rev-parse --short=12 <sha>`)
-- `authorName`
-- `authorDate` (ISO-8601)
-- `subject` (first line of the commit message)
-- `body` (full message via `git show -s --format=%B <sha>`)
-- `webUrl` — `https://github.com/<owner>/<name>/commit/<sha>`
-
-If the window is empty (no commits touched the file set), write a
-short report noting "No changes to artifact in window" and exit.
-
-### Step 4: Attribute commits to Jira tickets
-
-For each commit, extract the candidate Jira ticket keys (regex
-`(FHIR|UTG)-\d+`) from the commit subject + body, and union with any
-keys returned by `cross-referenced` for the commit SHA:
-
-```bash
-fhir-augury-cli --json '{"command":"cross-referenced","value":"<sha>","limit":50}'
-```
-
-Build two indexes in memory:
-
-- `commitToTickets[sha] = [key, …]`
-- `ticketToCommits[key] = [{sha, shortSha, subject, webUrl}, …]`
-
-Tickets attributable to **multiple** commits in the window are
-expected — the per-ticket section must list every commit that applied
-work for that ticket.
-
-For each unique ticket key, fetch its details once, in parallel
-across keys:
-
-```bash
-fhir-augury-cli --json '{"command":"get","source":"jira","id":"FHIR-XXXXX","includeContent":true,"includeComments":true,"includeSnapshot":true}'
-```
-
-Extract:
-- `metadata.title`, `metadata.resolution`, `metadata.resolution_description`
-- `metadata.work_group`, `metadata.specification`
-- `content` (full description) — used for context but **not** for the
-  per-ticket "what changed in the repo" summary
-- The applied-vote comment (if present), where the workgroup recorded
-  the exact disposition text. Look for the disposition / applied-vote
-  marker the work group uses in `comments`.
-
-Commits with **no** discoverable ticket keys are still listed in the
-commit table (Step 5 / report) under an "Unattributed" group; their
-diffs are still rolled into Step 5.
-
-### Step 5: Compute diffs (per-ticket and rollup)
-
-Two diff sets are required.
-
-**5a. Roll-up diff (since-commit → HEAD).**
-
-```bash
-git -C <clone> diff <since-commit>..HEAD -- <workingFileList>
-```
-
-Also capture per-file stats:
-
-```bash
-git -C <clone> diff --stat <since-commit>..HEAD -- <workingFileList>
-```
-
-Use this diff to write the **roll-up summary** of what changed in the
-after-applied state (Step 6 / report). Group observations by file role
-(SD differential vs. intro narrative vs. search params vs.
-operations, etc.). Call out:
-
-- Element additions / removals / cardinality / type / binding changes
-  in the StructureDefinition's `<differential>` (treat
-  `<snapshot>` edits as derived — note them but do not narrate
-  individual snapshot edits).
-- Material narrative changes in the intro/notes file.
-- New or removed search parameters (entries in
-  `bundle-<name>-search-params.xml`).
-- New or removed operations (entries in
-  `list-<name>-operations.xml`).
-- New or removed examples.
-- Terminology changes (sibling `valueset-*` / `codesystem-*` files).
-
-**5b. Per-ticket diff.**
-
-For each ticket with at least one commit in the window, compute the
-union diff of that ticket's commits, scoped to the file list:
-
-```bash
-git -C <clone> show --stat --pretty=fuller <sha1> <sha2> ... -- <workingFileList>
-```
-
-Or, for a tighter per-ticket diff, walk each commit individually with
-`git show --first-parent` and concatenate the per-file hunks. Use this
-to author the **per-ticket "Changes Applied"** paragraph. Be honest
-about overlap: if two tickets touch the same lines, say so and defer
-the authoritative summary to the roll-up.
-
-### Step 6: Read the current ballot note
-
-Read the current intro file (e.g.,
-`source/<name>/<name>-introduction.xml`) at HEAD and locate any
-`<blockquote class="ballot-note" …>…</blockquote>` blocks. Extract
-their full inner content verbatim. If multiple ballot notes exist
-(distinct `id`s), capture them all.
-
-If no ballot note exists, record "No existing ballot note." and draft
-a fresh one in Step 7.
-
-### Step 7: Draft the proposed ballot note
+### Step 3: Draft the proposed ballot note
 
 The proposed ballot note MUST:
 
@@ -328,7 +182,7 @@ The proposed ballot note MUST:
   `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
   Preserve any existing `id` attribute when revising an existing note;
   pick the next free `bn<N>` id when adding a new note.
-- Be **derived from the roll-up summary (Step 5a)**, not a paste-up of
+- Be **derived from the roll-up summary (Step 2)**, not a paste-up of
   the per-ticket descriptions. The roll-up reflects the actual
   after-applied state.
 - **Incorporate the existing ballot note's substance.** If the
@@ -346,64 +200,56 @@ The proposed ballot note MUST:
   "renamed `Observation.referenceRange.normalValue.normalValue` to
   …"). Focus on intent, scope, and balloter-relevant impact.
 
-### Step 8: Write the report
+### Step 4: Recommend, write the report, and persist back to the processor
 
-Compose the markdown report per the **Report Format** below and save
-it to the output file path. Use the gathered data to write
-substantive, specific content — no generic placeholders.
+1. **Decide `needsNote`** — `"yes"` if the after-applied changes
+   warrant a ballot note, `"no"` if the window's net change is
+   immaterial / purely editorial, `"unknown"` if you cannot tell.
+   This refines the processor's first-pass `needsNote`.
+2. **(Optional) Write the markdown report** to the **Output file**
+   path, per the **Report Format** below — a human-readable
+   convenience. Use the hydrated evidence to write substantive,
+   specific content — no generic placeholders.
+3. **Persist the authored prose back to the processor** (the
+   authoritative step):
 
-### Step 9: Persist to notes-site (only when **Notes DB** supplied)
+   ```
+   PUT {processorBaseUrl}/api/v1/ballot-notes/{slug}/note
+   ```
 
-If the caller supplied a **Notes DB**, also persist the drafted note
-into it so the `notes-site` review SPA can render it. Build the JSON
-payload described in [Persisting to notes-site](#persisting-to-notes-site)
-from the same data used in the report (the roll-up summary, proposed
-ballot note, source files, commits, and tickets), write it to a
-transient file under the **Working directory**, and call:
+   with body:
 
-```bash
-notes-site write --db <NotesDb> --in <working-dir>/<artifact>.notes.json
-```
+   ```json
+   {
+     "needsNote": "yes",
+     "proposedBallotNoteHtml": "<blockquote class='ballot-note' …>…</blockquote>",
+     "rollupSummaryMarkdown": "…",
+     "notesForReviewerMarkdown": "…",
+     "sourceFilesNote": "…"
+   }
+   ```
 
-(or `dotnet run --project tools/notes-site -- write …` when the tool
-is not on `PATH`). Use `Type: "Artifact"` and `Name: <artifact>`.
-Writing the same artifact again replaces the prior row, so the step is
-idempotent. If `notes-site write` fails, report the failure but do
-**not** discard the markdown report — the report is the primary
-artifact; the DB write is an additive convenience.
+   A `200` response (`{noteId, status:"authored"}`) confirms the note
+   is stored. A `404` means the slug was never hydrated — report it and
+   do not retry blindly. The PUT is idempotent (re-authoring replaces
+   the stored prose), so a re-run is safe.
 
 ---
 
-## Persisting to notes-site
+## Persisting back to the processor
 
-When a **Notes DB** is supplied, build a single `NoteWritePayload`
-JSON document and pass it to `notes-site write` (Step 9). The payload
-fields map directly onto the report sections:
+The PUT in Step 4 carries **only** the authored prose and the
+needs-note decision; every identity / window / counter / source-file /
+commit / ticket field is read-only evidence the processor already
+holds. The PUT body maps onto the report sections as:
 
-| Payload field | Source in this skill |
-|---------------|----------------------|
-| `type` | `"Artifact"`. |
-| `name` | The artifact identifier (e.g., `Observation`). |
-| `repoOwner` / `repoName` | From the `owner/name` repo input. |
-| `repoCategory` | The briefing's repo category (e.g., `FhirCore`). |
-| `workGroup` / `workGroupCode` | The artifact's owning work group (modal per-ticket `work_group`; display name and code/slug). |
-| `sinceSha` / `sinceShortSha` / `headSha` / `headShortSha` | The Step 1 window endpoints. |
-| `commitsInWindow` | Count from Step 3. |
-| `ticketsAttributed` | Distinct attributed ticket count from Step 4. |
-| `needsNote` | `"yes"` unless the report's recommendation is to omit the note, then `"no"`; `"unknown"` if undetermined. |
-| `currentBallotNoteHtml` | The verbatim current ballot-note `<blockquote>` from Step 6 (empty if none). |
-| `proposedBallotNoteHtml` | The drafted `<blockquote>` from Step 7. |
+| PUT field | Source in this skill |
+|-----------|----------------------|
+| `needsNote` | The Step 4 recommendation (`yes` / `no` / `unknown`). |
+| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note">` from Step 3. |
 | `rollupSummaryMarkdown` | The "Roll-up Summary" section body, as Markdown. |
 | `notesForReviewerMarkdown` | The "Notes for Reviewer" section body, as Markdown. |
-| `sourceFilesNote` | Any "patterns that produced no match" note (optional). |
-| `generatedAt` | The report's ISO-8601 timestamp. |
-| `sourceFiles[]` | One object per "Source Files" row: `{ path, role, touchedInWindow }`. |
-| `commits[]` | One object per window commit: `{ sha, shortSha, authorName, authorDate, subject, webUrl, ticketKeys[] }`. |
-| `tickets[]` | One object per attributed ticket: `{ key, title, resolution, workGroup, specification, url, commitCount }`. |
-
-Only `type`, `name`, `repoOwner`, and `repoName` are required; all
-other fields default to empty / zero / `unknown`. See
-`tools/notes-site/README.md` for the full payload contract.
+| `sourceFilesNote` | Any source-file caveat worth surfacing (optional). |
 
 ---
 
@@ -417,18 +263,18 @@ sections may note "None" when no data exists.
 
 | | |
 |-|-|
-| Repository | [{owner}/{name}](https://github.com/{owner}/{name}) ({category from briefing}) |
+| Repository | [{owner}/{name}](https://github.com/{owner}/{name}) ({repoCategory}) |
 | Artifact | `{artifact}` |
 | Window | [`{since-shortSha}`](https://github.com/{owner}/{name}/commit/{since-sha})..[`{head-shortSha}`](https://github.com/{owner}/{name}/commit/{head-sha}) |
 | Commits in window | {N} |
 | Tickets attributed | {M} |
-| Briefing | `cache/github/repos/{owner}_{name}/repo-analysis/briefing.md` @ clone `{briefing-shortSha}` |
+| Hydrated | BallotNotes processor unit `{slug}` @ `{hydratedAt}` |
 | Generated | {ISO-8601 UTC timestamp} |
 
 ## Source Files
 
-Files considered part of `{artifact}` for this run (from the briefing's
-Artifact Map):
+Files considered part of `{artifact}` for this run (as resolved by the
+BallotNotes processor, from `sourceFiles[]`):
 
 | Path | Role | Touched in window |
 |------|------|-------------------|
@@ -442,8 +288,9 @@ Artifact Map):
 | `source/{name}/codesystem-*.xml` | Artifact-scoped CodeSystems ({count}) | yes/no |
 | … | … | … |
 
-{Patterns from the briefing that produced no match in the clone:}
-- `<pattern>` — no files matched.
+{Any source-file caveat the processor surfaced (`sourceFilesNote`),
+e.g., patterns that produced no match:}
+- `<note>`
 
 ## Current Ballot Note
 
@@ -477,18 +324,15 @@ ticket key.}
 
 - **Work group:** {work_group}
 - **Resolution:** {resolution}
-- **Disposition (verbatim):**
-
-  > {Exact disposition text from the applied-vote comment, quoted
-  > verbatim. If unavailable, write "Disposition text not recorded in
-  > Jira."}
-
 - **Disposition summary:** {2–4 sentence neutral summary of what the
-  disposition asked for.}
+  disposition asked for, authored from the ticket's title, resolution,
+  and the subjects of the commits that applied it. The hydrated
+  evidence does not carry the verbatim applied-vote comment; do not
+  invent one.}
 - **Commits applying this ticket:**
   - [`{shortSha}`]({commitUrl}) — {commit subject} ({authorDate})
   - …
-- **Changes applied (per Step 5b, scoped to this artifact):**
+- **Changes applied (scoped to this artifact):**
   {2–6 sentences describing what these commits actually changed in
   this artifact's files. Be specific: name elements, files, and the
   nature of the change (added / removed / cardinality / binding /
@@ -502,7 +346,8 @@ but lists the commits and what they changed.}
 ## Roll-up Summary (after-applied state)
 
 {Authoritative summary of what changed across the artifact in the
-window, derived from the Step 5a diff. Group by file role:}
+window, derived from the after-applied evidence (Step 2). Group by
+file role:}
 
 - **StructureDefinition (`structuredefinition-{name}.xml`):**
   {bullets describing element-level changes in the differential —
@@ -520,7 +365,7 @@ window, derived from the Step 5a diff. Group by file role:}
   changes.}
 - **Terminology (sibling `valueset-*` / `codesystem-*`):**
   {added / removed / changed entries; flag any that may belong in
-  UTG per the FhirCore briefing's cross-repo touch points.}
+  UTG.}
 
 ## Proposed Ballot Note (HTML)
 
@@ -549,10 +394,8 @@ inline against the bullet they support.}
   was reverted (cite the reverting commit and / or ticket).
 - Tickets whose commits touched files outside the artifact's scope,
   with a one-line pointer to the other artifact.
-- Cases where the HEAD is not a descendant of the since-commit and
-  the symmetric difference was used instead.
-- Any time `gh api` was used because the cache clone could not
-  resolve a referenced commit.
+- Anything the processor flagged in `sourceFilesNote`, or evidence
+  that looked incomplete (e.g., a commit with no attributed ticket).
 
 If none: "No additional notes."}
 ````
@@ -560,7 +403,7 @@ If none: "No additional notes."}
 ## Important Rules
 
 - **Roll-up first, ticket bullets second.** The proposed ballot note
-  must reflect the after-applied state from Step 5a. Per-ticket
+  must reflect the after-applied state from Step 2. Per-ticket
   descriptions are supporting evidence, not the source of truth.
 - **Honour the existing ballot note.** Carry forward bullets that are
   still accurate in the after-applied state; drop and explain bullets
@@ -568,18 +411,18 @@ If none: "No additional notes."}
 - **Cite tickets inline in the proposed note.** Every bullet should
   point at the ticket(s) responsible. Use the Jira issue URL form
   shown above.
-- **Use only data from `fhir-augury-cli`, the cached clone (`git`),
-  and `gh` as a last-resort.** Do not fabricate ticket details, file
-  paths, commit SHAs, or disposition text. If a call fails or returns
-  no data, say so in the report.
+- **Use only the processor's hydrated evidence.** Do not re-run
+  `git`, query Jira, or resolve source files yourself — the processor
+  owns that gathering. Do not fabricate ticket details, file paths,
+  commit SHAs, or disposition text; if the evidence lacks something,
+  say so in the report.
 - **Treat `<snapshot>` as derived.** Narrate `<differential>` changes
   in the SD; mention only that snapshot regeneration is required, do
   not enumerate snapshot edits.
-- **Trust the saved briefing for paths and gotchas.** Do not infer
-  repo layout from memory. If the briefing flags a gotcha (e.g.,
-  legacy spreadsheet vs. SD authority for FhirCore, or
-  `fsh-generated/` being derived for IG repos), the relevant section
-  must respect it.
+- **Trust the processor's source-file resolution.** The `sourceFiles[]`
+  list is authoritative for what belongs to this artifact; do not
+  infer repo layout from memory or add files the processor did not
+  attribute.
 - **Be specific.** "Updated several elements" is not useful. Name the
   element, the field, the old vs. new value where relevant.
 - **All transient files go under the supplied working directory.**

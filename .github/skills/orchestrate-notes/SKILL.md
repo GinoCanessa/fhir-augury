@@ -1,24 +1,39 @@
 ---
 name: orchestrate-notes
-description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes surface. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Walks the commit window, groups changed files into units (artifacts / pages / datatypes) using a shared datatype-page map so per-datatype own-pages (e.g., `dosage.html`, `metadatatypes.html`) are routed into the datatypes unit instead of being double-dispatched as pages, and dispatches up to N concurrent sub-agents (`notes-artifact`, `notes-page`, and — for `HL7/fhir` — a single `notes-datatype`) to produce per-unit markdown reports in a structured output directory. Optionally accepts a `notes-site` SQLite DB; when supplied, each sub-agent also persists its drafted note(s) into the DB and the orchestrator emits the self-contained `notes-site` review SPA when the run completes."
+description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes surface. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Hydrates the commit window once via the BallotNotes processor (which owns the commit-window walk, unit grouping, and the datatype-page map server-side), polls until hydration completes, enumerates the hydrated units (artifacts / pages / datatypes), and dispatches up to N concurrent authoring sub-agents (`notes-artifact`, `notes-page`, `notes-datatype`) — one per unit slug — that read the unit's evidence and PUT authored prose back to the processor. Optionally emits the self-contained `notes-site` review SPA from the processor-owned DB when the run completes."
 ---
 
 # Orchestrate Notes Skill
 
-Bulk-drafts ballot notes for a GitHub repository by walking the commit
-window between a caller-supplied **since-commit** and the cached
-clone's HEAD, grouping the changed files into **units**, and
-dispatching one sub-agent per unit. A unit is one of:
+Bulk-drafts ballot notes for a GitHub repository by **hydrating** the
+commit window between a caller-supplied **since-commit** and the cached
+clone's HEAD in the **BallotNotes processor**, then dispatching one
+authoring sub-agent per hydrated **unit**. The processor owns all the
+deterministic work — the commit-window walk, the grouping of changed
+files into units, ticket attribution, source-file resolution, the
+datatype-page map, and capture of each unit's current ballot note. The
+orchestrator's job is to kick off hydration, wait for it, enumerate the
+units, and fan out authoring sub-agents.
+
+A unit is one of:
 
 - an **artifact** (resource, profile, IG artifact, terminology bundle)
   → handled by the `notes-artifact` skill;
 - a **page** (narrative `.html` / `.md` page) → handled by the
   `notes-page` skill;
-- the consolidated **datatypes** unit in `HL7/fhir` → handled by a
-  single `notes-datatype` sub-agent that covers every datatype
-  touched in the window, plus any per-datatype narrative page
-  (`source/<page>.html`) the datatype-page map resolves to (e.g.,
-  `dosage.html`, `marketingstatus.html`, `metadatatypes.html`).
+- the **datatypes** surface in `HL7/fhir` (the consolidated
+  `source/datatypes.html` plus any touched per-datatype own-pages such
+  as `dosage.html` / `metadatatypes.html`) → handled by the
+  `notes-datatype` skill. The processor applies the datatype-page map
+  server-side and folds the whole datatypes surface into a single
+  `datatypes` DataType unit, so own-page datatypes are never
+  double-dispatched as pages.
+
+Each unit is identified by a **slug** (the processor's `noteId`). The
+authoring sub-agents read the unit's hydrated evidence
+(`GET /api/v1/ballot-notes/{slug}`) and write authored prose back
+(`PUT /api/v1/ballot-notes/{slug}/note`); the processor is the
+authoritative store.
 
 Unlike the Jira-driven orchestrators (`orchestrate-prep`,
 `orchestrate-plan`), the trigger here is a **commit**, not a Jira
@@ -26,28 +41,29 @@ queue; there is no `ProcessedLocally` flag to consult.
 
 ## Prerequisites
 
-- The `fhir-augury-cli` skill must be available — it is the canonical
-  entry point for talking to FhirAugury sources. Follow its fallback
-  order (CLI → MCP → direct HTTP) for every data interaction.
+- The **BallotNotes processor** (Aspire resource
+  `processor-github-fhir-ballotnotes`, default base URL
+  `http://localhost:5174`) must be reachable and running. It owns the
+  hydration, unit grouping, datatype-page map, and the notes SQLite DB.
 - The `notes-artifact`, `notes-page`, and `notes-datatype` skills must
-  be available — they define the per-unit workflow and report format
-  that each sub-agent runs. The report structure, ticket attribution,
-  diff strategy, ballot-note drafting rules, and source-file
-  resolution are all owned by those skills and must not be replicated
-  here. `notes-datatype` is only used when the repo is `HL7/fhir`.
-- The orchestrator service and GitHub source service must be
-  reachable. Verify with the CLI's `services` health check before
-  starting.
-- The GitHub source clone cache must contain `<owner>_<name>` with
-  the since-commit reachable from HEAD. The orchestrator does **not**
-  refresh clones — that is upstream of this skill.
+  be available — they define the per-unit authoring workflow each
+  sub-agent runs. The report structure, ticket narrative, ballot-note
+  drafting rules, and the read-evidence / write-back contract are
+  owned by those skills and must not be replicated here.
+  `notes-datatype` is only used when the repo is `HL7/fhir`.
+- The **GitHub source clone cache** must contain `<owner>_<name>` with
+  the since-commit reachable from HEAD — the processor reads the clone
+  to walk the window. Neither the orchestrator nor the processor
+  refreshes clones; that is upstream of this skill. If the clone is
+  missing or the since-commit is unreachable, the hydrate call returns
+  `503` / `400` and the run aborts.
 - A current per-repo briefing under
-  `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md` must
-  exist. The orchestrator reads it once for the unit-grouping rules;
-  each sub-agent reads it again per its own skill. If missing or
-  stale per the `repo-analysis` skill's staleness rules, stop and ask
-  the user to refresh.
-- `git` must be available on `PATH`.
+  `cache/github/repos/<owner>_<name>/repo-analysis/briefing.md` is
+  recommended for repo context (the `repo-analysis` skill produces it).
+  If missing or stale per that skill's rules, consider refreshing it
+  before a large run.
+- The `fhir-augury-cli` skill is optional here — the BallotNotes
+  processor's HTTP API is the integration surface for this skill.
 
 ## Inputs
 
@@ -55,202 +71,154 @@ The user must provide or you must determine:
 
 1. **Repo** *(required)* — `owner/name`, e.g., `HL7/fhir`.
 2. **Since-commit** *(required)* — full or short SHA. The window is
-   `since-commit..HEAD` of the cached clone.
-3. **Output directory** *(required)* — where unit reports are saved.
-   Reports land at
-   `<OutputDir>/<owner>_<name>/<since-shortSha>..<head-shortSha>/<unit-file>`,
-   where `<unit-file>` follows the naming rules in Step 3. Example:
+   `since-commit..HEAD` of the cached clone; the processor walks it.
+3. **Processor base URL** *(optional, default `http://localhost:5174`)*
+   — the BallotNotes processor's base URL.
+4. **Output directory** *(optional)* — where sub-agents may write their
+   human-readable markdown reports (the **authoritative** persistence
+   is each sub-agent's PUT back to the processor; the markdown reports
+   are a convenience). Reports land at
+   `<OutputDir>/<owner>_<name>/<slug>.md`. Example:
    `./cache/output/notes/`.
-4. **Concurrency** *(optional, default `3`)* — maximum number of
-   concurrent sub-agents. Each sub-agent does substantial git + Jira
-   work; default is conservative.
-5. **Filter** *(optional)* — a single glob (case-insensitive) matched
-   against unit names. Applies to **both** artifact names and page
-   names. If omitted, every unit whose files were touched in the
-   window is processed. Examples:
-   - `Observation` — only the `Observation` artifact.
-   - `us-core-*` — every artifact / page whose name starts with
-     `us-core-`.
+5. **Concurrency** *(optional, default `3`)* — maximum number of
+   concurrent sub-agents. Each reads one unit's evidence and authors
+   prose; default is conservative.
+6. **Filter** *(optional)* — a single glob (case-insensitive) matched
+   against the enumerated **unit names** (Step 3). Applies to artifact,
+   page, and datatype unit names alike. If omitted, every hydrated unit
+   is processed. Examples:
+   - `Observation` — only the `Observation` artifact unit.
+   - `us-core-*` — every unit whose name starts with `us-core-`.
    - `*` — everything (same as omitting the filter).
-
-   The filter does **not** apply to the consolidated datatypes unit;
-   that is controlled separately by **Exclude datatypes** below.
-6. **Exclude datatypes** *(optional, default `false`)* — when `true`,
-   do **not** dispatch the `notes-datatype` sub-agent even if files
-   under `source/datatypes/` were touched in the window. Only
-   meaningful when the repo is `HL7/fhir`; ignored otherwise.
-7. **Working directory** *(optional, default `temp/notes/` relative to
-   the repo root)* — directory the orchestrator and each sub-agent
-   may use for transient files. Created if it does not already exist.
-8. **Skip existing** *(optional, default `true`)* — if `true`, do not
-   re-dispatch a sub-agent when its output file already exists. Set
-   `false` to force a clean re-run.
-9. **Notes DB** *(optional)* — full path to a `notes-site` SQLite
-   database (e.g., `./cache/notes.db`). When supplied, the orchestrator
-   passes it to every sub-agent so each persists its drafted note(s)
-   into that DB via `notes-site write`, and — after all sub-agents
-   finish — emits the static review SPA with `notes-site report` (see
-   [Step 10](#step-10-emit-the-notes-site-only-when-notes-db-supplied)).
-   When omitted, only the per-unit markdown reports are produced.
-10. **Site output directory** *(optional, default
-    `<OutputDir>/site/` )* — where `notes-site report` writes the
-    emitted SPA. Only used when **Notes DB** is supplied.
+7. **Exclude datatypes** *(optional, default `false`)* — when `true`,
+   skip every `DataType` unit. Only meaningful when the repo is
+   `HL7/fhir`; ignored otherwise.
+8. **Repo category** *(optional)* — passed to the hydrate call as
+   `repoCategory` when known (e.g., `FhirCore`, `FhirIg`); the
+   processor infers it otherwise.
+9. **Work group hint** *(optional)* — passed to the hydrate call as
+   `workGroupHint` when the caller wants to bias work-group
+   attribution.
+10. **Working directory** *(optional, default `temp/notes/` relative to
+    the repo root)* — scratch space for the orchestrator and each
+    sub-agent. Created if it does not already exist.
+11. **Skip existing** *(optional, default `true`)* — when `true`, do
+    not re-dispatch a unit whose processor `status` is already
+    `authored`; only units with `status = awaiting-note` are
+    dispatched. Set `false` to re-draft every unit.
+12. **Notes DB** *(optional, default `./cache/ballot-notes.db`)* — the
+    processor-owned SQLite DB, read by `notes-site report` to emit the
+    review SPA. The orchestrator does **not** write to it; the
+    processor does.
+13. **Emit site** *(optional, default `false`)* — when `true`, run
+    `notes-site report` after all sub-agents finish to emit the static
+    review SPA (see [Step 11](#step-11-emit-the-notes-site-review-spa-optional)).
+14. **Site output directory** *(optional, default `<OutputDir>/site/`)*
+    — where `notes-site report` writes the emitted SPA. Only used when
+    **Emit site** is `true`.
 
 ## Workflow
 
-### Step 1: Verify services and inputs
+### Step 1: Verify the processor and inputs
 
-1. Health-check the orchestrator and GitHub source via the CLI's
-   `services` command. Abort if either is down.
-2. Confirm the cache clone exists and `cat-file -e <since-commit>^{commit}`
-   succeeds inside it. Resolve the clone HEAD SHA.
-3. Read and validate the briefing & meta. If missing or stale, stop
-   and ask the user to run `repo-analysis` for the repo. Note the
-   repo **category** (e.g., `FhirCore`, `FhirIg`,
-   `FhirExtensionsPack`, `Incubator`, `Utg`, `JiraSpecArtifacts`) —
-   it drives the grouping rules in Step 3.
-4. Apply defaults: concurrency → `3`, working directory →
-   `temp/notes/`, skip existing → `true`, exclude datatypes →
-   `false`.
+1. Health-check the BallotNotes processor at `{processorBaseUrl}`
+   (e.g., `GET /health`, or a cheap `GET /api/v1/ballot-notes?limit=1`).
+   Abort if it is unreachable.
+2. Apply defaults: processor base URL → `http://localhost:5174`,
+   concurrency → `3`, working directory → `temp/notes/`, skip existing
+   → `true`, exclude datatypes → `false`, Notes DB →
+   `./cache/ballot-notes.db`, emit site → `false`.
+3. The clone's existence and the since-commit's reachability are
+   validated by the processor **synchronously** when you call hydrate
+   (Step 2); you do not pre-check them with `git` here.
 
-### Step 2: Enumerate changed files in the window
+### Step 2: Hydrate the commit window
 
-```bash
-git -C cache/github/repos/<owner>_<name>/clone diff \
-    --name-only <since-commit>..HEAD
+Kick off hydration **once** for the `(repo, since-commit)` window:
+
+```
+POST {processorBaseUrl}/api/v1/ballot-notes/hydrate
+Content-Type: application/json
+
+{
+  "repoOwner": "<owner>",
+  "repoName": "<name>",
+  "sinceSha": "<since-commit>",
+  "repoCategory": "<category, optional>",
+  "workGroupHint": "<hint, optional>"
+}
 ```
 
-Filter to the **authoring root(s)** declared in the briefing. Drop
-any files in **generated areas (do not edit)** flagged by the
-briefing (e.g., `tools/`, `publish/`, `output/` for FhirCore;
-`fsh-generated/` for IG repos — though sub-agents may still inspect
-those for after-applied SD shape).
+- `202 Accepted` → `{runKey, status:"running", unitsTotal}`. Capture
+  the `runKey`.
+- `503` → the clone is missing or `git` is unavailable on the server.
+  Abort and ask the user to refresh the clone.
+- `400` → a required field is missing. Fix the request and retry.
 
-### Step 3: Group files into units
+This call validates the clone + since-commit synchronously, then runs
+the commit-window walk, unit grouping, the datatype-page map, ticket
+attribution, and current-note capture **fire-and-forget** on the
+server. The processor — not this skill — performs the grouping and the
+datatype-page map.
 
-Each touched file is classified into exactly one of three buckets:
+Then **poll** until hydration finishes:
 
-- **`datatypes`** *(only when repo is `HL7/fhir`)* — any file under
-  `source/datatypes/`, `source/datatypes.html`, **or any per-datatype
-  own-page** (`source/<page>.html`) whose `<page>` resolves through
-  the datatype-page map (see below). All such files collapse into a
-  **single** `datatypes` unit handled by one `notes-datatype`
-  sub-agent. Do **not** create one unit per datatype, and do **not**
-  dispatch a separate `notes-page` unit for any own-page that the
-  datatype map claims.
-- **page** — a narrative page source file. Resolved per category:
-  - **FhirCore (`HL7/fhir`)** — top-level `source/<page>.html` files
-    (and any conventional siblings such as `source/<page>-notes.html`
-    or `source/<page>-examples.html`). **Excludes** `source/datatypes.html`
-    *and* every `source/<stem>.html` in the per-window
-    `datatypeOwnedPages` set (handled by the `datatypes` unit), and
-    excludes resource-intro files inside `source/<resource>/` folders
-    (those belong to the resource artifact).
-  - **FhirIg / FhirExtensionsPack / Incubator** — files under
-    `input/pagecontent/**` (and any non-conventional page locations
-    declared in the briefing's page index or `sushi-config.yaml`
-    `pages:` block).
-  - **Utg / JiraSpecArtifacts / other** — narrative files declared as
-    pages in the briefing's page index.
+```
+GET {processorBaseUrl}/api/v1/ballot-notes/hydrate/status/{runKey}
+```
 
-  Group page files by their normalised **page name** (the filename
-  stem of the primary page source — e.g., `security`,
-  `us-core-patient`). Sibling files (`-notes.md`, `-examples.html`,
-  `-intro.md`, page images) roll into the same page unit; the
-  sub-agent's skill (`notes-page`) is responsible for the canonical
-  sibling list.
-- **artifact** — every other in-scope touched file. Grouping rules by
-  category:
-  - **FhirCore (`HL7/fhir`)** — group by the first segment under
-    `source/`. Each `source/<name>/` is one artifact whose name is
-    `<Name>` (PascalCase / canonical resource name from the SD; use
-    the folder name verbatim if uncertain). Files in `source/<name>/`
-    whose stem starts with `structuredefinition-` but does **not**
-    match `<name>` (extra profile artifacts shipped alongside the
-    resource) are still rolled into the `<Name>` artifact —
-    `notes-artifact` lists them under "Source Files".
-  - **Ig / FhirExtensionsPack / Incubator** — group FSH and resource
-    files by the artifact id declared in the FSH header / resource
-    `id`. Use the briefing's Artifact Map to resolve `input/fsh/**`,
-    `input/resources/**`, and `fsh-generated/resources/**` to a
-    stable artifact id. Files that cannot be attributed (e.g., shared
-    `_includes` outside `input/pagecontent/`) go into a synthetic
-    `_shared` artifact, off by default.
-  - **Utg (`HL7/UTG`)** — group by the canonical declared in each
-    changed source-of-truth file.
-  - **JiraSpecArtifacts** — group by the per-spec artifact id from the
-    Artifact Map.
+(or `GET …/hydrate/status` for the latest run). The response is
+`{runKey, status, unitsTotal, unitsHydrated, commitsInWindow,
+ticketsAttributed, startedAt, completedAt, error}`. Poll until `status`
+is `"completed"` (proceed to Step 3) or `"failed"` (abort and surface
+`error`). Surface progress (`unitsHydrated` / `unitsTotal`) to the user
+while polling.
 
-After bucketing, apply selection rules:
+### Step 3: Enumerate the hydrated units
 
-#### Datatype-page map (FhirCore only)
+List the units the processor produced for the repo:
 
-For `HL7/fhir`, the orchestrator computes a per-window
-`datatypeOwnedPages` set so that own-page datatypes are routed into
-the `datatypes` unit instead of being dispatched as standalone
-`notes-page` units. The map MUST be kept identical to the one
-documented in `notes-datatype/SKILL.md` ("Datatype-page map" section)
-— if the FHIR repo grows a new own-page datatype, update both files.
+```
+GET {processorBaseUrl}/api/v1/ballot-notes?repo=<owner>/<name>
+```
 
-Computation (run once per orchestrator invocation):
+The response is `{total, notes:[{noteId, type, name, repoOwner,
+repoName, workGroup, workGroupCode, needsNote, commitsInWindow,
+ticketsAttributed, status, hydratedAt, authoredAt, generatedAt}]}`.
+Each row is one unit: `noteId` is the unit **slug**, `type` is
+`Artifact` / `Page` / `DataType`, and `name` is the unit name (the
+artifact / page / datatype-page stem). Page with `limit` / `offset`
+if `total` exceeds the returned count.
 
-1. List `source/datatypes/<dt>.xml` SD files at HEAD inside the
-   cached clone.
-2. For each `<dt>`, derive a candidate page stem:
-   - **Default**: lowercase datatype name (e.g., `Quantity` →
-     `quantity`).
-   - **Explicit overrides**:
-     - `Reference` → `references`.
-     - The **MetaDataTypes cluster** — `ContactDetail`,
-       `DataRequirement`, `Expression`, `ParameterDefinition`,
-       `RelatedArtifact`, `TriggerDefinition`, `UsageContext`,
-       `Contributor` — all → `metadatatypes`.
-3. Test the candidate stem against HEAD:
+Apply the selection rules to build the dispatch queue:
 
-   ```bash
-   git -C cache/github/repos/HL7_fhir/clone \
-       cat-file -e HEAD:source/<stem>.html
-   ```
+- **Filter glob** — when supplied, keep only units whose `name`
+  matches (case-insensitive). When omitted, keep all.
+- **Exclude datatypes** — when `true`, drop every `type = DataType`
+  unit.
+- **Skip existing** — when `true`, drop units whose `status` is
+  already `authored` (equivalently, request only the work set with
+  `…/ballot-notes?repo=<owner>/<name>&status=awaiting-note`).
 
-4. When `cat-file -e` succeeds, add `source/<stem>.html` to
-   `datatypeOwnedPages`.
+The processor already performed the commit-window walk, the grouping,
+and the datatype-page map, so there is **no client-side bucketing, no
+`git diff`, and no datatype own-page computation** here — you only
+filter the enumerated list.
 
-The orchestrator then:
+Each unit's sub-agent will write its optional markdown report to a
+deterministic path:
 
-- Removes any path in `datatypeOwnedPages` from the candidate **page**
-  bucket before grouping by page name.
-- Adds any **touched** path in `datatypeOwnedPages` to the
-  `datatypes` unit's file scope (alongside `source/datatypes/**` and
-  `source/datatypes.html`). The `notes-datatype` sub-agent
-  re-discovers its own target pages from HEAD; the orchestrator's job
-  is purely to prevent double-dispatch.
+| Unit type | Report file |
+|-----------|-------------|
+| Artifact  | `<OutputDir>/<owner>_<name>/<slug>.md` |
+| Page      | `<OutputDir>/<owner>_<name>/<slug>.md` |
+| DataType  | `<OutputDir>/<owner>_<name>/<slug>.md` |
 
-Apply selection rules:
-
-- **Datatypes unit** — drop entirely when the repo is not `HL7/fhir`,
-  when `exclude datatypes = true`, or when no `source/datatypes/**`
-  / `source/datatypes.html` file was touched in the window. The
-  filter glob does **not** apply to the datatypes unit.
-- **Artifact and page units** — apply the **filter glob** (when
-  supplied) against the unit name. Matching is case-insensitive.
-- **Skip existing** — when `true`, drop any unit whose output file
-  already exists at the deterministic path computed below.
-
-Output file naming (under
-`<OutputDir>/<owner>_<name>/<since-shortSha>..<head-shortSha>/`):
-
-| Unit kind  | File name                  |
-|------------|----------------------------|
-| artifact   | `<artifact>.md`            |
-| page       | `_page_<page>.md`          |
-| datatypes  | `_datatypes.md`            |
-
-The `_page_` and `_datatypes` prefixes (with a leading underscore)
-keep page and datatypes reports visually grouped at the top of the
-directory listing and prevent collisions with same-named artifacts.
+The slug already encodes the type and name, so a single flat naming
+scheme avoids collisions.
 
 If the unit set is empty after filtering, report that and exit
-cleanly — there is nothing to do.
+cleanly — there is nothing to draft.
 
 ### Step 4: Confirm with the user
 
@@ -262,42 +230,36 @@ About to draft ballot notes:
 
   Repo              : HL7/fhir (FhirCore)
   Since-commit      : 1a2b3c4d5e6f
-  HEAD              : 9f8e7d6c5b4a (descendant: yes)
-  Window            : 1a2b3c4..9f8e7d6
-  Output directory  : ./cache/output/notes/HL7_fhir/1a2b3c4..9f8e7d6/
+  Processor         : http://localhost:5174
+  Hydration         : completed (14 units, 28 commits, 19 tickets)
+  Output directory  : ./cache/output/notes/HL7_fhir/
   Working dir       : temp/notes/   (relative to repo root)
   Filter            : (all)
   Exclude datatypes : false
-  Skip existing     : true
+  Skip existing     : true   (skips units already 'authored')
   Concurrency       : 3
-  Units found       : 14
-    Artifacts (12):
-      • Observation        (8 commits, 6 files)
-      • Patient            (3 commits, 2 files)
-      • MedicationRequest  (2 commits, 1 file)
+  Units to draft    : 12 of 14   (2 already authored, skipped)
+    Artifacts (10):
+      • Observation   [hl7-fhir-artifact-observation]  (8 commits, awaiting-note)
+      • Patient       [hl7-fhir-artifact-patient]       (3 commits, awaiting-note)
       …
     Pages (1):
-      • security           (4 commits, 1 file)
+      • security      [hl7-fhir-page-security]          (4 commits, awaiting-note)
     Datatypes (1):
-      • datatypes          (5 commits, 9 files across 4 datatypes:
-                            Dosage, MarketingStatus, Quantity, Period)
-                           Pages targeted: datatypes.html,
-                                           dosage.html,
-                                           marketingstatus.html
+      • datatypes     [hl7-fhir-datatype-datatypes]     (5 commits, awaiting-note)
 
 Proceed?
 ```
 
-Show **every** unit in the planned batch — the user often spots
-mis-grouping at this stage. Do not proceed on anything except
+Show **every** unit in the planned batch — the user often spots a
+misrouted unit at this stage. Do not proceed on anything except
 explicit confirmation.
 
 ### Step 5: Create directories (cross-platform)
 
-Both the **per-window output directory** (`<OutputDir>/<owner>_<name>/<since-shortSha>..<head-shortSha>/`)
-and the **working directory** must exist before dispatching
-sub-agents. Use a method that works on Windows (PowerShell) and Unix
-(bash):
+Both the **output directory** (`<OutputDir>/<owner>_<name>/`) and the
+**working directory** must exist before dispatching sub-agents. Use a
+method that works on Windows (PowerShell) and Unix (bash):
 
 - **Tool-based** (preferred when available): use the agent's
   file-system tool.
@@ -310,16 +272,16 @@ sub-agents. Use a method that works on Windows (PowerShell) and Unix
 Maintain in memory:
 
 - `pending` — queue of units not yet dispatched. Each entry carries
-  `{kind, name, outputFile}` where `kind` is `artifact` / `page` /
-  `datatypes`.
+  `{slug, type, name, outputFile}` where `type` is `Artifact` /
+  `Page` / `DataType`.
 - `inFlight` — set of units currently assigned to a running
   sub-agent.
 - `completed` / `failed` counters and a per-unit result map for the
   final summary.
 
-There is **no durable persistent state**. Re-running with the same
-inputs and `skip existing = true` is the natural resume mechanism —
-already-written reports are skipped in Step 3.
+The processor is the durable store. Re-running with the same inputs
+and `skip existing = true` is the natural resume mechanism — units the
+processor already marks `authored` are dropped in Step 3.
 
 ### Step 7: Dispatch loop
 
@@ -331,9 +293,10 @@ Loop until `pending` is empty AND `inFlight` is empty:
 2. Wait for the next sub-agent completion (Step 9) before continuing
    the outer loop.
 
-Order is not significant, but a sensible default is to dispatch the
-`datatypes` unit (if present) early — it tends to be the slowest
-unit and benefits from parallel headroom while artifact units run.
+Order is not significant, but a sensible default is to dispatch any
+`DataType` units early — the consolidated `datatypes` unit tends to be
+the slowest and benefits from parallel headroom while artifact units
+run.
 
 ### Step 8: Dispatch a sub-agent
 
@@ -355,14 +318,11 @@ Each sub-agent gets its own working subdirectory:
 the prompt; both PowerShell and bash accept them, and the sub-agent
 can normalise as needed.
 
-**When a Notes DB is configured** (input 9), every sub-agent prompt
-below MUST additionally include a `**Notes DB:** {NOTES_DB}` line in
-its `## Inputs` block and an instruction directing the sub-agent to
-run its skill's "Persist to notes-site" step (write the drafted
-note(s) into `{NOTES_DB}` via `notes-site write`). Omit both when no
-Notes DB is configured. The per-unit skills' `notes-site write` calls
-are idempotent (re-writing a unit replaces its row), so a re-run is
-safe.
+Every sub-agent prompt passes the unit **slug** (`noteId`) and the
+**processor base URL**; the per-unit skill GETs the unit's hydrated
+evidence from the processor and PUTs its authored prose back. The
+orchestrator never writes to the notes DB — the processor owns
+persistence, so a re-dispatch simply re-PUTs (idempotent).
 
 #### Artifact prompt
 
@@ -371,24 +331,21 @@ Run the `notes-artifact` skill for the following artifact.
 
 ## Inputs
 
-- **Repo:** {OWNER}/{NAME}
-- **Since-commit:** {SINCE_SHA}
-- **Artifact:** {ARTIFACT}
-- **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SINCE_SHORT}..{HEAD_SHORT}/{ARTIFACT}.md
-- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
-- **Working directory:** {WORKING_DIR}/artifact_{ARTIFACT}/
-- **CLI path (if needed):** {CLI_PATH}
+- **Processor:** {PROCESSOR_URL}
+- **Slug:** {SLUG}
+- **Artifact:** {NAME}
+- **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SLUG}.md
+- **Working directory:** {WORKING_DIR}/artifact_{NAME}/
 
 ## Instructions
 
-1. Follow the `notes-artifact` skill exactly, including all
-   data-gathering steps, the briefing dependency, and the report
-   format.
+1. Follow the `notes-artifact` skill exactly: GET the unit's hydrated
+   evidence from `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}`, author
+   the ballot-note prose + roll-up, and PUT it back to
+   `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}/note`.
 2. Use the supplied **Working directory** for any transient files.
-3. Save the completed report to the output file path above.
-4. If a **Notes DB** was supplied, also run the skill's "Persist to
-   notes-site" step to write the drafted note into it.
-5. When finished, confirm success and state the full path of the
+3. Save the human-readable markdown report to the output file path.
+4. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -399,24 +356,21 @@ Run the `notes-page` skill for the following page.
 
 ## Inputs
 
-- **Repo:** {OWNER}/{NAME}
-- **Since-commit:** {SINCE_SHA}
-- **Page:** {PAGE}
-- **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SINCE_SHORT}..{HEAD_SHORT}/_page_{PAGE}.md
-- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
-- **Working directory:** {WORKING_DIR}/page_{PAGE}/
-- **CLI path (if needed):** {CLI_PATH}
+- **Processor:** {PROCESSOR_URL}
+- **Slug:** {SLUG}
+- **Page:** {NAME}
+- **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SLUG}.md
+- **Working directory:** {WORKING_DIR}/page_{NAME}/
 
 ## Instructions
 
-1. Follow the `notes-page` skill exactly, including all
-   data-gathering steps, the briefing dependency, and the report
-   format.
+1. Follow the `notes-page` skill exactly: GET the unit's hydrated
+   evidence from `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}`, author
+   the ballot-note prose + roll-up, and PUT it back to
+   `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}/note`.
 2. Use the supplied **Working directory** for any transient files.
-3. Save the completed report to the output file path above.
-4. If a **Notes DB** was supplied, also run the skill's "Persist to
-   notes-site" step to write the drafted note into it.
-5. When finished, confirm success and state the full path of the
+3. Save the human-readable markdown report to the output file path.
+4. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -427,29 +381,20 @@ Run the `notes-datatype` skill for the FHIR datatypes surface.
 
 ## Inputs
 
-- **Repo:** HL7/fhir
-- **Since-commit:** {SINCE_SHA}
-- **Datatype focus:** (none — cover every datatype touched in the window)
-- **Output file:** {OUTPUT_DIR}/HL7_fhir/{SINCE_SHORT}..{HEAD_SHORT}/_datatypes.md
-- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
+- **Processor:** {PROCESSOR_URL}
+- **Slug:** {SLUG}
+- **Output file:** {OUTPUT_DIR}/HL7_fhir/{SLUG}.md
 - **Working directory:** {WORKING_DIR}/datatypes/
-- **CLI path (if needed):** {CLI_PATH}
 
 ## Instructions
 
-1. Follow the `notes-datatype` skill exactly, including all
-   data-gathering steps, the briefing dependency, and the report
-   format.
-2. This skill may produce **multiple** ballot-note drafts in a
-   single report — one per target page (`source/datatypes.html`
-   plus any per-datatype narrative pages such as `source/dosage.html`
-   or `source/metadatatypes.html` resolved via the datatype-page
-   map).
-3. Use the supplied **Working directory** for any transient files.
-4. Save the completed report to the output file path above.
-5. If a **Notes DB** was supplied, also run the skill's "Persist to
-   notes-site" step to write **one note per target page** into it.
-6. When finished, confirm success and state the full path of the
+1. Follow the `notes-datatype` skill exactly: GET the datatypes unit's
+   hydrated evidence from `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}`,
+   author the ballot-note prose for the datatypes surface, and PUT it
+   back to `{PROCESSOR_URL}/api/v1/ballot-notes/{SLUG}/note`.
+2. Use the supplied **Working directory** for any transient files.
+3. Save the human-readable markdown report to the output file path.
+4. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -467,23 +412,20 @@ When a sub-agent completes:
 ### Step 10: Error handling
 
 - **Sub-agent failure** — log the unit + error; do **not** retry
-  automatically in the same run. The unit remains absent from the
-  output directory, so a subsequent re-run with `skip existing =
-  true` will pick it up naturally.
-- **CLI unavailable** — fall back per the `fhir-augury-cli` skill's
-  fallback order (MCP, then direct HTTP). Record which path was used
-  in the final summary.
-- **Service unhealthy mid-run** — pause new dispatches, wait for
+  automatically in the same run. The unit's processor `status` stays
+  `awaiting-note`, so a subsequent re-run with `skip existing = true`
+  picks it up naturally.
+- **Processor unreachable mid-run** — pause new dispatches, wait for
   in-flight agents to complete, surface the issue to the user before
   resuming.
-- **Empty window** — if Step 2 returns no files in scope, report
-  that and exit; do not present a confirmation prompt.
+- **Empty unit set** — if Step 3 returns no units after filtering,
+  report that and exit; do not present a confirmation prompt.
 
-### Step 10: Emit the notes-site (only when **Notes DB** supplied)
+### Step 11: Emit the notes-site review SPA (optional)
 
 After the dispatch loop drains (every sub-agent has completed or
-failed) **and** a **Notes DB** was supplied, emit the static review
-SPA from the DB the sub-agents just populated:
+failed) **and** **Emit site** is `true`, emit the static review SPA
+from the processor-owned DB the sub-agents just populated:
 
 ```bash
 notes-site report --db {NOTES_DB} --out {SITE_OUTPUT_DIR} --title "{TITLE}" --force
@@ -500,9 +442,9 @@ exist in the DB at that moment. Surface the emitted `index.html` path
 in the final summary. If `notes-site report` fails (e.g., the DB has
 no rows because every sub-agent failed), report the failure but treat
 the per-unit markdown reports as the primary deliverable. Skip this
-step entirely when no Notes DB was supplied.
+step entirely when **Emit site** is `false`.
 
-### Step 11: Progress and final summary
+### Step 12: Progress and final summary
 
 Report to the user:
 
@@ -512,7 +454,7 @@ Report to the user:
   report (parsed from the report header table's `Pages targeted`
   row, or stated as "see report" if parsing fails).
 - When a **Notes DB** was supplied: the emitted `notes-site` SPA path
-  (from Step 10).
+  (from Step 11).
 - Final summary: a table of `kind | unit | status | report path |
   error (if any)`. State the output directory path so the user can
   review reports as a batch.
@@ -538,21 +480,22 @@ agents."*
 
 The orchestrator should:
 
-1. Health-check services; confirm the cache clone has `1a2b3c4`
-   reachable from HEAD; load the FhirCore briefing.
-2. `git diff --name-only 1a2b3c4..HEAD` and bucket the result into
-   artifacts (per `source/<name>/` folder), pages (per top-level
-   `source/<page>.html`, **excluding** `source/datatypes.html` and
-   any per-datatype own-page in the computed `datatypeOwnedPages`
-   set), and datatypes (any file under `source/datatypes/`,
-   `source/datatypes.html`, or any touched own-page in
-   `datatypeOwnedPages`, collapsed into one unit).
-3. Apply defaults (concurrency `3`, working directory `temp/notes/`,
-   skip existing `true`, exclude datatypes `false`) and present a
+1. Health-check the BallotNotes processor at `http://localhost:5174`.
+   (The clone + since-commit are validated by the processor when
+   hydrate is called.)
+2. `POST …/api/v1/ballot-notes/hydrate` for `HL7/fhir` since
+   `1a2b3c4`, then poll `…/hydrate/status/{runKey}` until `completed`.
+   The processor walks the window and groups the changes into units
+   (artifacts per `source/<name>/`, pages per top-level
+   `source/<page>.html`, and the consolidated `datatypes` unit) using
+   its server-side datatype-page map.
+3. `GET …/api/v1/ballot-notes?repo=HL7/fhir` to enumerate the units,
+   apply defaults (concurrency `3`, working directory `temp/notes/`,
+   skip existing `true`, exclude datatypes `false`), and present a
    confirmation summary listing every unit in the batch via
    `ask_user`.
-4. After confirmation, ensure the per-window output directory and
-   the working directory exist (cross-platform).
+4. After confirmation, ensure the output directory and the working
+   directory exist (cross-platform).
 5. Loop: dispatch up to 3 background sub-agents at a time —
    `notes-artifact` for each artifact, `notes-page` for each page,
    and a single `notes-datatype` for the consolidated datatypes
