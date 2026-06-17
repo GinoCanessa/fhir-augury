@@ -141,6 +141,13 @@ fhir-augury-cli --json '<json>' [--pretty]
   should be written. The orchestrator passes a deterministic path; for
   ad-hoc invocations the agent may default to
   `<working-dir>/HL7_fhir_datatypes.md` and report the path back.
+- **Notes DB** *(optional)* — full path to a `notes-site` SQLite
+  database (e.g., `./cache/notes.db`). When supplied, the skill also
+  persists the drafted note(s) into that DB via `notes-site write`
+  (see [Persisting to notes-site](#persisting-to-notes-site)) so the
+  `notes-site report` SPA can render them. Because this skill targets
+  one or more pages, it writes **one `notes-site` note per target
+  page**. When omitted, only the markdown report is produced.
 - **Working directory** *(optional)* — directory for transient files
   (intermediate diffs, commit lists, ticket dumps). When supplied,
   **all transient files must be written under this directory**. Create
@@ -518,6 +525,62 @@ Per-page bullet shape:
 Compose the markdown report per the **Report Format** below and save
 it to the output file path. Use the gathered data to write
 substantive, specific content — no generic placeholders.
+
+### Step 9: Persist to notes-site (only when **Notes DB** supplied)
+
+If the caller supplied a **Notes DB**, also persist the drafted
+note(s) into it. Because this skill drafts one ballot note per target
+page (Step 7), emit **one `notes-site` note per target page**: for
+each target page, build the JSON payload described in
+[Persisting to notes-site](#persisting-to-notes-site), write it to a
+transient file under the **Working directory**, and call:
+
+```bash
+notes-site write --db <NotesDb> --in <working-dir>/_datatypes_<pageStem>.notes.json
+```
+
+(or `dotnet run --project tools/notes-site -- write …` when the tool
+is not on `PATH`). Use `Type: "DataType"` and `Name: <pageStem>`
+(the target page stem, e.g., `datatypes`, `dosage`, `metadatatypes`).
+Writing the same page again replaces its prior row, so the step is
+idempotent. If a `notes-site write` fails, report the failure but do
+**not** discard the markdown report — the report is the primary
+artifact; the DB writes are an additive convenience.
+
+---
+
+## Persisting to notes-site
+
+When a **Notes DB** is supplied, build one `NoteWritePayload` JSON
+document **per target page** and pass each to `notes-site write`
+(Step 9). Scope each payload's evidence (rollup summary, proposed
+ballot note, source files, commits, tickets) to the datatypes that
+resolve to that page. The payload fields map as:
+
+| Payload field | Source in this skill |
+|---------------|----------------------|
+| `type` | `"DataType"`. |
+| `name` | The target page stem (e.g., `datatypes`, `dosage`, `metadatatypes`). |
+| `repoOwner` / `repoName` | `HL7` / `fhir`. |
+| `repoCategory` | `FhirCore`. |
+| `workGroup` / `workGroupCode` | The owning work group (conventionally `FHIR Infrastructure (FHIR-I)` / `FHIR-I` for the datatypes surface). |
+| `sinceSha` / `sinceShortSha` / `headSha` / `headShortSha` | The window endpoints. |
+| `commitsInWindow` | Count of commits in the window touching this page's datatypes. |
+| `ticketsAttributed` | Distinct attributed ticket count for this page's datatypes. |
+| `needsNote` | `"yes"` unless the recommendation for this page is to omit the note, then `"no"`; `"unknown"` if undetermined. |
+| `currentBallotNoteHtml` | The verbatim current ballot-note `<blockquote>` for this page (empty if none). |
+| `proposedBallotNoteHtml` | The drafted `<blockquote>` for this page. |
+| `rollupSummaryMarkdown` | The per-page roll-up summary, as Markdown. |
+| `notesForReviewerMarkdown` | The notes-for-reviewer body relevant to this page, as Markdown. |
+| `sourceFilesNote` | Any "patterns that produced no match" note (optional). |
+| `generatedAt` | The report's ISO-8601 timestamp. |
+| `sourceFiles[]` | The `source/datatypes/<dt>.xml` (and resolved page) files for this page's datatypes: `{ path, role, touchedInWindow }`. |
+| `commits[]` | Commits touching this page's datatypes: `{ sha, shortSha, authorName, authorDate, subject, webUrl, ticketKeys[] }`. |
+| `tickets[]` | Tickets attributed to this page's datatypes: `{ key, title, resolution, workGroup, specification, url, commitCount }`. |
+
+Only `type`, `name`, `repoOwner`, and `repoName` are required; all
+other fields default to empty / zero / `unknown`. See
+`tools/notes-site/README.md` for the full payload contract.
 
 ---
 

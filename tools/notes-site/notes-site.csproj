@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\src\common.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Tools.NotesSite</RootNamespace>
+    <AssemblyName>notes-site</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Tools.NotesSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Self-contained report SPA (notes DB inlined as base64, loaded via sql.js) -->
+    <EmbeddedResource Include="web-assets\report\index.template.html" LogicalName="web-assets/report/index.template.html" />
+    <EmbeddedResource Include="web-assets\report\app.css" LogicalName="web-assets/report/app.css" />
+    <EmbeddedResource Include="web-assets\report\app.js" LogicalName="web-assets/report/app.js" />
+    <EmbeddedResource Include="web-assets\report\sql-wasm.js" LogicalName="web-assets/report/sql-wasm.js" />
+    <EmbeddedResource Include="web-assets\report\sql-wasm.wasm" LogicalName="web-assets/report/sql-wasm.wasm" />
+    <EmbeddedResource Include="web-assets\report\purify.min.js" LogicalName="web-assets/report/purify.min.js" />
+    <EmbeddedResource Include="web-assets\report\marked.min.js" LogicalName="web-assets/report/marked.min.js" />
+  </ItemGroup>
+</Project>

@@ -1,6 +1,6 @@
 ---
 name: orchestrate-notes
-description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes surface. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Walks the commit window, groups changed files into units (artifacts / pages / datatypes) using a shared datatype-page map so per-datatype own-pages (e.g., `dosage.html`, `metadatatypes.html`) are routed into the datatypes unit instead of being double-dispatched as pages, and dispatches up to N concurrent sub-agents (`notes-artifact`, `notes-page`, and — for `HL7/fhir` — a single `notes-datatype`) to produce per-unit markdown reports in a structured output directory."
+description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anchored at a since-commit. USE FOR: repo-wide ballot-note refresh after a tranche of ticket work has landed, batch generation across artifacts, narrative pages, and (for `HL7/fhir`) the consolidated datatypes surface. Requires a GitHub repo (e.g., HL7/fhir) and a since-commit SHA. Walks the commit window, groups changed files into units (artifacts / pages / datatypes) using a shared datatype-page map so per-datatype own-pages (e.g., `dosage.html`, `metadatatypes.html`) are routed into the datatypes unit instead of being double-dispatched as pages, and dispatches up to N concurrent sub-agents (`notes-artifact`, `notes-page`, and — for `HL7/fhir` — a single `notes-datatype`) to produce per-unit markdown reports in a structured output directory. Optionally accepts a `notes-site` SQLite DB; when supplied, each sub-agent also persists its drafted note(s) into the DB and the orchestrator emits the self-contained `notes-site` review SPA when the run completes."
 ---
 
 # Orchestrate Notes Skill
@@ -85,6 +85,16 @@ The user must provide or you must determine:
 8. **Skip existing** *(optional, default `true`)* — if `true`, do not
    re-dispatch a sub-agent when its output file already exists. Set
    `false` to force a clean re-run.
+9. **Notes DB** *(optional)* — full path to a `notes-site` SQLite
+   database (e.g., `./cache/notes.db`). When supplied, the orchestrator
+   passes it to every sub-agent so each persists its drafted note(s)
+   into that DB via `notes-site write`, and — after all sub-agents
+   finish — emits the static review SPA with `notes-site report` (see
+   [Step 10](#step-10-emit-the-notes-site-only-when-notes-db-supplied)).
+   When omitted, only the per-unit markdown reports are produced.
+10. **Site output directory** *(optional, default
+    `<OutputDir>/site/` )* — where `notes-site report` writes the
+    emitted SPA. Only used when **Notes DB** is supplied.
 
 ## Workflow
 
@@ -345,6 +355,15 @@ Each sub-agent gets its own working subdirectory:
 the prompt; both PowerShell and bash accept them, and the sub-agent
 can normalise as needed.
 
+**When a Notes DB is configured** (input 9), every sub-agent prompt
+below MUST additionally include a `**Notes DB:** {NOTES_DB}` line in
+its `## Inputs` block and an instruction directing the sub-agent to
+run its skill's "Persist to notes-site" step (write the drafted
+note(s) into `{NOTES_DB}` via `notes-site write`). Omit both when no
+Notes DB is configured. The per-unit skills' `notes-site write` calls
+are idempotent (re-writing a unit replaces its row), so a re-run is
+safe.
+
 #### Artifact prompt
 
 ````
@@ -356,6 +375,7 @@ Run the `notes-artifact` skill for the following artifact.
 - **Since-commit:** {SINCE_SHA}
 - **Artifact:** {ARTIFACT}
 - **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SINCE_SHORT}..{HEAD_SHORT}/{ARTIFACT}.md
+- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
 - **Working directory:** {WORKING_DIR}/artifact_{ARTIFACT}/
 - **CLI path (if needed):** {CLI_PATH}
 
@@ -366,7 +386,9 @@ Run the `notes-artifact` skill for the following artifact.
    format.
 2. Use the supplied **Working directory** for any transient files.
 3. Save the completed report to the output file path above.
-4. When finished, confirm success and state the full path of the
+4. If a **Notes DB** was supplied, also run the skill's "Persist to
+   notes-site" step to write the drafted note into it.
+5. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -381,6 +403,7 @@ Run the `notes-page` skill for the following page.
 - **Since-commit:** {SINCE_SHA}
 - **Page:** {PAGE}
 - **Output file:** {OUTPUT_DIR}/{OWNER}_{NAME}/{SINCE_SHORT}..{HEAD_SHORT}/_page_{PAGE}.md
+- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
 - **Working directory:** {WORKING_DIR}/page_{PAGE}/
 - **CLI path (if needed):** {CLI_PATH}
 
@@ -391,7 +414,9 @@ Run the `notes-page` skill for the following page.
    format.
 2. Use the supplied **Working directory** for any transient files.
 3. Save the completed report to the output file path above.
-4. When finished, confirm success and state the full path of the
+4. If a **Notes DB** was supplied, also run the skill's "Persist to
+   notes-site" step to write the drafted note into it.
+5. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -406,6 +431,7 @@ Run the `notes-datatype` skill for the FHIR datatypes surface.
 - **Since-commit:** {SINCE_SHA}
 - **Datatype focus:** (none — cover every datatype touched in the window)
 - **Output file:** {OUTPUT_DIR}/HL7_fhir/{SINCE_SHORT}..{HEAD_SHORT}/_datatypes.md
+- **Notes DB:** {NOTES_DB}   ← include only when a Notes DB is configured
 - **Working directory:** {WORKING_DIR}/datatypes/
 - **CLI path (if needed):** {CLI_PATH}
 
@@ -421,7 +447,9 @@ Run the `notes-datatype` skill for the FHIR datatypes surface.
    map).
 3. Use the supplied **Working directory** for any transient files.
 4. Save the completed report to the output file path above.
-5. When finished, confirm success and state the full path of the
+5. If a **Notes DB** was supplied, also run the skill's "Persist to
+   notes-site" step to write **one note per target page** into it.
+6. When finished, confirm success and state the full path of the
    saved file.
 ````
 
@@ -451,6 +479,29 @@ When a sub-agent completes:
 - **Empty window** — if Step 2 returns no files in scope, report
   that and exit; do not present a confirmation prompt.
 
+### Step 10: Emit the notes-site (only when **Notes DB** supplied)
+
+After the dispatch loop drains (every sub-agent has completed or
+failed) **and** a **Notes DB** was supplied, emit the static review
+SPA from the DB the sub-agents just populated:
+
+```bash
+notes-site report --db {NOTES_DB} --out {SITE_OUTPUT_DIR} --title "{TITLE}" --force
+```
+
+(or `dotnet run --project tools/notes-site -- report …` when the tool
+is not on `PATH`). Default `{SITE_OUTPUT_DIR}` to `<OutputDir>/site/`
+and `{TITLE}` to something descriptive (e.g.,
+`"Ballot Notes — <owner>/<name> <since-short>..<head-short>"`).
+
+Run this **once**, after all sub-agents finish — `notes-site report`
+overwrites its output directory wholesale and renders whatever rows
+exist in the DB at that moment. Surface the emitted `index.html` path
+in the final summary. If `notes-site report` fails (e.g., the DB has
+no rows because every sub-agent failed), report the failure but treat
+the per-unit markdown reports as the primary deliverable. Skip this
+step entirely when no Notes DB was supplied.
+
 ### Step 11: Progress and final summary
 
 Report to the user:
@@ -460,6 +511,8 @@ Report to the user:
   `datatypes` unit, surface the list of target pages drafted in the
   report (parsed from the report header table's `Pages targeted`
   row, or stated as "see report" if parsing fails).
+- When a **Notes DB** was supplied: the emitted `notes-site` SPA path
+  (from Step 10).
 - Final summary: a table of `kind | unit | status | report path |
   error (if any)`. State the output directory path so the user can
   review reports as a batch.

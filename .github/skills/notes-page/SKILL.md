@@ -79,6 +79,12 @@ fhir-augury-cli --json '<json>' [--pretty]
   ad-hoc invocations the agent may default to
   `<working-dir>/<owner>_<name>_page_<page>.md` and report the path
   back.
+- **Notes DB** *(optional)* — full path to a `notes-site` SQLite
+  database (e.g., `./cache/notes.db`). When supplied, the skill also
+  persists the drafted note into that DB via `notes-site write` (see
+  [Persisting to notes-site](#persisting-to-notes-site)) so the
+  `notes-site report` SPA can render it. When omitted, only the
+  markdown report is produced.
 - **Working directory** *(optional)* — directory for transient files
   (intermediate diffs, commit lists, ticket dumps). When supplied,
   **all transient files must be written under this directory**. Create
@@ -420,6 +426,58 @@ The proposed ballot note MUST:
 Compose the markdown report per the **Report Format** below and save
 it to the output file path. Use the gathered data to write
 substantive, specific content — no generic placeholders.
+
+### Step 9: Persist to notes-site (only when **Notes DB** supplied)
+
+If the caller supplied a **Notes DB**, also persist the drafted note
+into it so the `notes-site` review SPA can render it. Build the JSON
+payload described in [Persisting to notes-site](#persisting-to-notes-site)
+from the same data used in the report, write it to a transient file
+under the **Working directory**, and call:
+
+```bash
+notes-site write --db <NotesDb> --in <working-dir>/_page_<page>.notes.json
+```
+
+(or `dotnet run --project tools/notes-site -- write …` when the tool
+is not on `PATH`). Use `Type: "Page"` and `Name: <page>`. Writing the
+same page again replaces the prior row, so the step is idempotent. If
+`notes-site write` fails, report the failure but do **not** discard
+the markdown report — the report is the primary artifact; the DB write
+is an additive convenience.
+
+---
+
+## Persisting to notes-site
+
+When a **Notes DB** is supplied, build a single `NoteWritePayload`
+JSON document and pass it to `notes-site write` (Step 9). The payload
+fields map directly onto the report sections:
+
+| Payload field | Source in this skill |
+|---------------|----------------------|
+| `type` | `"Page"`. |
+| `name` | The page name (e.g., `security`). |
+| `repoOwner` / `repoName` | From the `owner/name` repo input. |
+| `repoCategory` | The briefing's repo category (e.g., `FhirCore`). |
+| `workGroup` / `workGroupCode` | The page's owning work group (display name and code/slug). |
+| `sinceSha` / `sinceShortSha` / `headSha` / `headShortSha` | The window endpoints. |
+| `commitsInWindow` | Count of commits in the window. |
+| `ticketsAttributed` | Distinct attributed ticket count. |
+| `needsNote` | `"yes"` unless the recommendation is to omit the note, then `"no"`; `"unknown"` if undetermined. |
+| `currentBallotNoteHtml` | The verbatim current ballot-note `<blockquote>` (empty if none). |
+| `proposedBallotNoteHtml` | The drafted `<blockquote>`. |
+| `rollupSummaryMarkdown` | The roll-up summary section body, as Markdown. |
+| `notesForReviewerMarkdown` | The notes-for-reviewer section body, as Markdown. |
+| `sourceFilesNote` | Any "patterns that produced no match" note (optional). |
+| `generatedAt` | The report's ISO-8601 timestamp. |
+| `sourceFiles[]` | One object per source file: `{ path, role, touchedInWindow }`. |
+| `commits[]` | One object per window commit: `{ sha, shortSha, authorName, authorDate, subject, webUrl, ticketKeys[] }`. |
+| `tickets[]` | One object per attributed ticket: `{ key, title, resolution, workGroup, specification, url, commitCount }`. |
+
+Only `type`, `name`, `repoOwner`, and `repoName` are required; all
+other fields default to empty / zero / `unknown`. See
+`tools/notes-site/README.md` for the full payload contract.
 
 ---
 
