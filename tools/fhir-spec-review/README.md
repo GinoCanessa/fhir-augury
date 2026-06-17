@@ -21,7 +21,10 @@ It has two verbs:
   and every row links to a per-artifact or per-page **detail view** (replacing
   the old inline per-work-group findings dump). The artifact detail additionally
   shows current-build Element Review / Operations / Search Parameters inventory
-  sourced from `fhir-r6.db`.
+  sourced from `fhir-r6.db`. Each per-artifact / per-page **detail view** has a
+  top-right **📋 Copy for AI** button that copies a clean Markdown serialization
+  of that view to the clipboard for pasting into an LLM (works offline from
+  `file://`).
 
 ## Usage
 

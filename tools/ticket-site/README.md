@@ -18,7 +18,10 @@ sub-site(s) have been built into the same output root.
 Exactly one of `--preparer-db` / `--planner-db` is required;
 supplying both (or neither) fails with exit code 2. Both pages load
 the SQLite database into [sql.js](https://sql.js.org/) in the browser
-and require no network at runtime.
+and require no network at runtime. Each per-ticket **detail view** has a
+top-right **📋 Copy for AI** button that copies a clean Markdown
+serialization of that ticket to the clipboard for pasting into an LLM
+(works offline from `file://`).
 
 ## What this is
 

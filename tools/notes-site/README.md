@@ -38,7 +38,9 @@ The landing index table columns mirror the `index-notes` skill's README index:
 The per-note **detail view** renders the full report: the proposed ballot note
 (sanitized HTML), the current ballot note at HEAD (collapsed), the after-applied
 roll-up summary and notes-for-reviewer (authored Markdown), and the supporting
-source-file / commit / ticket evidence tables.
+source-file / commit / ticket evidence tables. A top-right **📋 Copy for AI**
+button copies a clean Markdown serialization of the note to the clipboard for
+pasting into an LLM (works offline from `file://`).
 
 ## Usage
 
