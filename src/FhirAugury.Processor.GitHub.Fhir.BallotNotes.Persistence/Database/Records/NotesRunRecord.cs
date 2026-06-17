@@ -38,6 +38,12 @@ public partial record class NotesRunRecord
     /// <summary>Units whose evidence has been hydrated so far.</summary>
     public int UnitsHydrated { get; set; }
 
+    /// <summary>Total commits across all units' windows (cumulative).</summary>
+    public int CommitsInWindow { get; set; }
+
+    /// <summary>Total tickets attributed across all units (cumulative).</summary>
+    public int TicketsAttributed { get; set; }
+
     /// <summary>When the run began.</summary>
     public DateTimeOffset? StartedAt { get; set; }
 

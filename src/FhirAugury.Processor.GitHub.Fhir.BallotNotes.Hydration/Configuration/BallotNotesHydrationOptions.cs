@@ -20,23 +20,22 @@ public sealed class BallotNotesHydrationOptions
     /// <summary>Maximum number of units hydrated concurrently.</summary>
     public int MaxParallelism { get; set; } = 4;
 
-    /// <summary>Validates and normalizes the options; throws when unusable.</summary>
-    public void Validate()
+    /// <summary>Validates the options. Returns human-readable errors; empty means valid.</summary>
+    public IEnumerable<string> Validate()
     {
         if (string.IsNullOrWhiteSpace(CloneRoot))
         {
-            throw new InvalidOperationException("BallotNotes hydration CloneRoot must be configured.");
+            yield return "BallotNotes hydration CloneRoot must be configured.";
         }
 
         if (string.IsNullOrWhiteSpace(OrchestratorAddress) && string.IsNullOrWhiteSpace(JiraSourceAddress))
         {
-            throw new InvalidOperationException(
-                "At least one of OrchestratorAddress or JiraSourceAddress must be configured for attribution.");
+            yield return "At least one of OrchestratorAddress or JiraSourceAddress must be configured for attribution.";
         }
 
         if (MaxParallelism < 1)
         {
-            MaxParallelism = 1;
+            yield return "MaxParallelism must be greater than or equal to 1.";
         }
     }
 }

@@ -84,7 +84,7 @@ public sealed class BallotNotesHydrator(
 
             ParallelOptions parallelOptions = new()
             {
-                MaxDegreeOfParallelism = _options.MaxParallelism,
+                MaxDegreeOfParallelism = Math.Max(1, _options.MaxParallelism),
                 CancellationToken = ct,
             };
 
@@ -99,7 +99,7 @@ public sealed class BallotNotesHydrator(
                     totalCommits += commits;
                     totalTickets += tickets;
                     hydrated++;
-                    database.BumpRunProgress(request.RunKey, hydrated);
+                    database.BumpRunProgress(request.RunKey, hydrated, totalCommits, totalTickets);
                 }
             }).ConfigureAwait(false);
 

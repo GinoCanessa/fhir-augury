@@ -183,8 +183,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>Updates the hydrated-unit counter for a running run.</summary>
-    public void BumpRunProgress(string runKey, int unitsHydrated)
+    /// <summary>Updates the hydrated-unit counter and cumulative totals for a running run.</summary>
+    public void BumpRunProgress(string runKey, int unitsHydrated, int commitsInWindow, int ticketsAttributed)
     {
         ArgumentException.ThrowIfNullOrEmpty(runKey);
         using SqliteConnection connection = OpenConnection();
@@ -193,10 +193,14 @@ public sealed class BallotNotesDatabase : SourceDatabase
             $"""
             UPDATE "{NotesRunRecord.DefaultTableName}" SET
                 UnitsHydrated = $hydrated,
+                CommitsInWindow = $commits,
+                TicketsAttributed = $tickets,
                 RunAt = $now
             WHERE RunKey = $runKey
             """;
         cmd.Parameters.AddWithValue("$hydrated", unitsHydrated);
+        cmd.Parameters.AddWithValue("$commits", commitsInWindow);
+        cmd.Parameters.AddWithValue("$tickets", ticketsAttributed);
         cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow);
         cmd.Parameters.AddWithValue("$runKey", runKey);
         cmd.ExecuteNonQuery();
@@ -331,7 +335,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
             "SELECT RowId, RunKey, RepoOwner, RepoName, RepoCategory, SinceSha, SinceShortSha, " +
-            "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, StartedAt, CompletedAt, Error, RunAt " +
+            "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, CommitsInWindow, TicketsAttributed, " +
+            "StartedAt, CompletedAt, Error, RunAt " +
             $"FROM \"{NotesRunRecord.DefaultTableName}\" ORDER BY RunAt DESC, RowId DESC LIMIT 1";
         using SqliteDataReader reader = cmd.ExecuteReader();
         return reader.Read() ? MapRun(reader) : null;
@@ -345,7 +350,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
             "SELECT RowId, RunKey, RepoOwner, RepoName, RepoCategory, SinceSha, SinceShortSha, " +
-            "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, StartedAt, CompletedAt, Error, RunAt " +
+            "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, CommitsInWindow, TicketsAttributed, " +
+            "StartedAt, CompletedAt, Error, RunAt " +
             $"FROM \"{NotesRunRecord.DefaultTableName}\" WHERE RunKey = $runKey LIMIT 1";
         cmd.Parameters.AddWithValue("$runKey", runKey);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -487,10 +493,12 @@ public sealed class BallotNotesDatabase : SourceDatabase
         Status = reader.GetString(9),
         UnitsTotal = reader.GetInt32(10),
         UnitsHydrated = reader.GetInt32(11),
-        StartedAt = reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12)),
-        CompletedAt = reader.IsDBNull(13) ? null : new DateTimeOffset(reader.GetDateTime(13)),
-        Error = reader.GetString(14),
-        RunAt = new DateTimeOffset(reader.GetDateTime(15)),
+        CommitsInWindow = reader.GetInt32(12),
+        TicketsAttributed = reader.GetInt32(13),
+        StartedAt = reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14)),
+        CompletedAt = reader.IsDBNull(15) ? null : new DateTimeOffset(reader.GetDateTime(15)),
+        Error = reader.GetString(16),
+        RunAt = new DateTimeOffset(reader.GetDateTime(17)),
     };
 
     private static ExistingNoteProse? ReadExistingProse(SqliteConnection connection, string noteId)

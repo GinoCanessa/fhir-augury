@@ -29,6 +29,7 @@
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Applier/FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.csproj" />
+    <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes/FhirAugury.Processor.GitHub.Fhir.BallotNotes.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FhirAugury.Common.Tests/FhirAugury.Common.Tests.csproj" />
