@@ -120,22 +120,16 @@ public sealed class BallotNotesHydrationController(
     [HttpGet("status")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public IActionResult LatestStatus()
+    public IActionResult Status([FromQuery] string? runKey)
     {
-        NotesRunRecord? run = database.GetLatestRun();
-        return run is null
-            ? NotFound(new { error = "No hydration run has been recorded." })
-            : Ok(BallotNoteDtoMapper.ToStatusDto(run));
-    }
+        // runKey contains '/' (owner/name@since..head), so it is a query
+        // parameter, not a path segment. Omit it to read the latest run.
+        NotesRunRecord? run = string.IsNullOrWhiteSpace(runKey)
+            ? database.GetLatestRun()
+            : database.GetRun(runKey);
 
-    [HttpGet("status/{runKey}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public IActionResult Status([FromRoute] string runKey)
-    {
-        NotesRunRecord? run = database.GetRun(runKey);
         return run is null
-            ? NotFound(new { error = $"Run '{runKey}' not found." })
+            ? NotFound(new { error = runKey is null ? "No hydration run has been recorded." : $"Run '{runKey}' not found." })
             : Ok(BallotNoteDtoMapper.ToStatusDto(run));
     }
 

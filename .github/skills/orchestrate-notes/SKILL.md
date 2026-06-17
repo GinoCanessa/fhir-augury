@@ -164,10 +164,11 @@ datatype-page map.
 Then **poll** until hydration finishes:
 
 ```
-GET {processorBaseUrl}/api/v1/ballot-notes/hydrate/status/{runKey}
+GET {processorBaseUrl}/api/v1/ballot-notes/hydrate/status?runKey={runKey}
 ```
 
-(or `GET …/hydrate/status` for the latest run). The response is
+(or `GET …/hydrate/status` for the latest run; the `runKey` is a query
+parameter because it contains `/`). The response is
 `{runKey, status, unitsTotal, unitsHydrated, commitsInWindow,
 ticketsAttributed, startedAt, completedAt, error}`. Poll until `status`
 is `"completed"` (proceed to Step 3) or `"failed"` (abort and surface
@@ -484,7 +485,8 @@ The orchestrator should:
    (The clone + since-commit are validated by the processor when
    hydrate is called.)
 2. `POST …/api/v1/ballot-notes/hydrate` for `HL7/fhir` since
-   `1a2b3c4`, then poll `…/hydrate/status/{runKey}` until `completed`.
+   `1a2b3c4`, then poll `…/hydrate/status?runKey={runKey}` until
+   `completed`.
    The processor walks the window and groups the changes into units
    (artifacts per `source/<name>/`, pages per top-level
    `source/<page>.html`, and the consolidated `datatypes` unit) using
