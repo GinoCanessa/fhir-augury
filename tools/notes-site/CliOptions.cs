@@ -1,11 +1,5 @@
 namespace FhirAugury.Tools.NotesSite;
 
-/// <summary>Parsed options for the <c>write</c> verb.</summary>
-internal sealed record WriteOptions(
-    string DbPath,
-    string? InPath,
-    bool DropTables);
-
 /// <summary>Parsed options for the <c>report</c> verb.</summary>
 internal sealed record ReportOptions(
     string DbPath,
@@ -15,43 +9,9 @@ internal sealed record ReportOptions(
 
 internal static class CliOptions
 {
-    public const string DefaultDb = "./cache/notes.db";
+    public const string DefaultDb = "./cache/ballot-notes.db";
     public const string DefaultOut = "./cache/notes-site";
     public const string DefaultTitle = "FHIR Ballot Notes";
-
-    /// <summary>Parses <c>write</c> verb arguments (everything after the verb token).</summary>
-    public static bool TryParseWrite(string[] args, out WriteOptions options, out string? error)
-    {
-        string db = DefaultDb;
-        string? inPath = null;
-        bool dropTables = false;
-
-        for (int i = 0; i < args.Length; i++)
-        {
-            string arg = args[i];
-            switch (arg)
-            {
-                case "--db":
-                    if (!TryTakeValue(args, ref i, arg, out db, out error)) { options = DefaultWrite(); return false; }
-                    break;
-                case "--in":
-                    if (!TryTakeValue(args, ref i, arg, out string inValue, out error)) { options = DefaultWrite(); return false; }
-                    inPath = inValue;
-                    break;
-                case "--drop-tables":
-                    dropTables = true;
-                    break;
-                default:
-                    options = DefaultWrite();
-                    error = $"Unknown option for 'write': {arg}";
-                    return false;
-            }
-        }
-
-        options = new WriteOptions(db, inPath, dropTables);
-        error = null;
-        return true;
-    }
 
     /// <summary>Parses <c>report</c> verb arguments (everything after the verb token).</summary>
     public static bool TryParseReport(string[] args, out ReportOptions options, out string? error)
@@ -102,8 +62,6 @@ internal static class CliOptions
         error = null;
         return true;
     }
-
-    private static WriteOptions DefaultWrite() => new(DefaultDb, null, false);
 
     private static ReportOptions DefaultReport() => new(DefaultDb, DefaultOut, DefaultTitle, false);
 }

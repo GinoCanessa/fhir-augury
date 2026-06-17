@@ -12,11 +12,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
-    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.416.1848" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>

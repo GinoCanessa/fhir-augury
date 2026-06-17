@@ -1,4 +1,4 @@
-using FhirAugury.Tools.NotesSite.Database;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Tools.NotesSite.Report;
 
 namespace FhirAugury.Tools.NotesSite;
@@ -12,20 +12,20 @@ internal static class ReportRunner
         if (!File.Exists(notesDb))
         {
             await Console.Error.WriteLineAsync(
-                $"Notes DB not found: {notesDb}. Run 'notes-site write' first.").ConfigureAwait(false);
+                $"Notes DB not found: {notesDb}. Run the BallotNotes processor 'hydrate' first.").ConfigureAwait(false);
             return 1;
         }
 
         int noteCount;
         try
         {
-            using NotesDatabase db = new(notesDb, ConsoleLogger.Instance, readOnly: true);
+            using BallotNotesDatabase db = new(notesDb, ConsoleLogger.Instance, readOnly: true);
             noteCount = db.CountNotes();
         }
         catch (Microsoft.Data.Sqlite.SqliteException ex)
         {
             await Console.Error.WriteLineAsync(
-                $"Notes DB schema error reading {notesDb}: {ex.Message}. Re-create it with 'notes-site write'.").ConfigureAwait(false);
+                $"Notes DB schema error reading {notesDb}: {ex.Message}. Re-hydrate it with the BallotNotes processor.").ConfigureAwait(false);
             return 1;
         }
 
