@@ -84,18 +84,25 @@ public class GhCliRunnerConcurrencyTests
 
         GhCliRunner runner = new GhCliRunner(options, NullLogger<GhCliRunner>.Instance);
 
-        Stopwatch sw = Stopwatch.StartNew();
+        // Baseline: a single call, measured under the same machine load.
+        Stopwatch swSingle = Stopwatch.StartNew();
+        using (JsonDocument _ = await runner.RunAsync(args, CancellationToken.None)) { }
+        swSingle.Stop();
+        long singleMs = swSingle.ElapsedMilliseconds;
 
+        // Two concurrent calls (Max=2) should overlap -> ~singleMs, not ~2x.
+        Stopwatch swParallel = Stopwatch.StartNew();
         Task<JsonDocument> t1 = runner.RunAsync(args, CancellationToken.None);
         Task<JsonDocument> t2 = runner.RunAsync(args, CancellationToken.None);
-
         using JsonDocument d1 = await t1;
         using JsonDocument d2 = await t2;
+        swParallel.Stop();
+        long parallelMs = swParallel.ElapsedMilliseconds;
 
-        sw.Stop();
-
-        // Parallel ≈ 2s. Should complete well under 3s.
-        Assert.True(sw.ElapsedMilliseconds < 3000,
-            $"Expected parallel execution (< 3000ms) but took {sw.ElapsedMilliseconds}ms");
+        // Self-calibrating: serialized would be ~2x the single-call baseline.
+        // Require parallel < 1.75x baseline to prove overlap, robust to load.
+        Assert.True(parallelMs < singleMs * 1.75,
+            $"Expected overlap: single={singleMs}ms, parallel={parallelMs}ms, " +
+            $"ceiling={singleMs * 1.75:F0}ms");
     }
 }
