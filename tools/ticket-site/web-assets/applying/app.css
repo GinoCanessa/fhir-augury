@@ -164,3 +164,31 @@ pre {
 .md code { background: var(--pre-bg); padding: 0.05rem 0.3rem; border-radius: 3px; }
 .md pre { margin: 0.4rem 0; }
 .md a { color: var(--accent); }
+
+header { position: relative; }
+
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 2.3rem;
+  right: 0;
+  font-size: 0.8rem;
+  color: #1e7e34;
+}
+@media (prefers-color-scheme: dark) {
+  .copy-ai-status { color: #7ee2a8; }
+}

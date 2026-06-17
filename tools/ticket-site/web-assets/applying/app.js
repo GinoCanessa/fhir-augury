@@ -457,6 +457,9 @@
       html += '</div></details>';
     });
 
+    setCopyExport(function () {
+      return serializeTicketMarkdown(summary, repos, changes, impacts, validations, tests, questions);
+    });
     app.innerHTML = html;
   }
 
@@ -514,6 +517,7 @@
   }
 
   function route() {
+    clearCopyExport();
     const hash = window.location.hash.replace(/^#/, '') || '/';
     if (hash === '/' || hash === '') { setBreadcrumb([]); renderLanding(); return; }
     if (hash === '/list') { setBreadcrumb([{ label: 'List', href: null }]); renderList(); return; }
@@ -534,6 +538,182 @@
     app.innerHTML = '<p>Unknown route.</p>';
   }
 
+  // ---- Copy for AI (shared convention; identical across tools) -------------
+  // A top-right "Copy for AI" button on detail/leaf views. It serializes the
+  // current view from the in-memory rows to markdown (CurrentExport) and writes
+  // it to the clipboard, with an execCommand fallback for file:// where the
+  // async Clipboard API is unavailable. Detail views opt in via setCopyExport();
+  // the router hides the button again via clearCopyExport() on every route.
+
+  var CurrentExport = null;
+
+  function installCopyButton() {
+    if (document.querySelector('.copy-ai')) return;
+    var header = document.querySelector('header');
+    if (!header) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-ai';
+    btn.hidden = true;
+    btn.textContent = '📋 Copy for AI';
+    var status = document.createElement('span');
+    status.className = 'copy-ai-status';
+    status.setAttribute('role', 'status');
+    btn.addEventListener('click', function () {
+      try {
+        var md = CurrentExport && CurrentExport();
+        if (md) copyForAi(md);
+        else setCopyStatus('Nothing to copy');
+      } catch (e) {
+        setCopyStatus('Copy failed');
+      }
+    });
+    header.appendChild(btn);
+    header.appendChild(status);
+  }
+
+  function setCopyStatus(msg) {
+    var status = document.querySelector('.copy-ai-status');
+    if (status) status.textContent = msg;
+  }
+
+  function setCopyExport(fn) {
+    CurrentExport = fn;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = false;
+    setCopyStatus('');
+  }
+
+  function clearCopyExport() {
+    CurrentExport = null;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = true;
+    setCopyStatus('');
+  }
+
+  function copyForAi(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setCopyStatus('Copied!'); },
+        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
+      );
+    } else {
+      setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+    }
+  }
+
+  function copyViaTextarea(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  function mdEscapeCell(s) {
+    if (s == null) return '';
+    return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  }
+
+  function mdTable(headers, rows) {
+    var out = '| ' + headers.map(mdEscapeCell).join(' | ') + ' |\n';
+    out += '| ' + headers.map(function () { return '---'; }).join(' | ') + ' |\n';
+    for (var i = 0; i < rows.length; i++) {
+      out += '| ' + rows[i].map(mdEscapeCell).join(' | ') + ' |\n';
+    }
+    return out;
+  }
+  // ---- end Copy for AI shared convention ----------------------------------
+
+  // ---- Copy for AI serializer (applying / planner specific) ---------------
+
+  function serializeTicketMarkdown(row, repos, changes, impacts, validations, tests, questions) {
+    var out = '# ' + String(row.Key || '') + ' — ' + String(row.Title || row.Key || '') + '\n\n';
+
+    out += mdTable(['Field', 'Value'], [
+      ['Key', String(row.Key || '')],
+      ['Title', row.Title == null ? '' : String(row.Title)],
+      ['Workgroup', row.WorkGroup == null ? '' : String(row.WorkGroup)],
+      ['Status', row.Status == null ? '' : String(row.Status)],
+      ['Type', row.Type == null ? '' : String(row.Type)],
+      ['Specification', row.Specification == null ? '' : String(row.Specification)],
+      ['Priority', row.Priority == null ? '' : String(row.Priority)],
+      ['Resolution', row.Resolution == null ? '' : String(row.Resolution)],
+      ['Url', row.Url == null ? '' : String(row.Url)]
+    ]) + '\n';
+
+    // Description blocks — prefer the *Plain text (escaped HTML is the view's
+    // fallback; the export uses the plain variant directly).
+    out += mdProseSection('Original request', row.DescriptionPlain);
+    out += mdProseSection('Proposed / accepted resolution', row.ResolutionDescriptionPlain);
+
+    // Authored markdown fields pass through verbatim (D2).
+    out += mdProseSection('Resolution summary', row.ResolutionSummary);
+    out += mdProseSection('Feature proposal', row.FeatureProposal);
+    out += mdProseSection('Design rationale', row.DesignRationale);
+
+    for (var ri = 0; ri < repos.length; ri++) {
+      var repo = repos[ri];
+      var rk = repo.RepoKey;
+      out += '## Repo: ' + String(rk || '') + '\n\n';
+      if (repo.RepoRevision) out += '_Revision: ' + String(repo.RepoRevision) + '_\n\n';
+      if (repo.Justification != null && String(repo.Justification).trim() !== '') {
+        out += String(repo.Justification).trim() + '\n\n';
+      }
+
+      var repoChanges = changes.filter(function (c) { return c.RepoKey === rk; });
+      if (repoChanges.length > 0) {
+        out += '### Changes (' + repoChanges.length + ')\n\n';
+        out += mdTable(['File', 'Title', 'Description'],
+          repoChanges.map(function (c) {
+            return [String(c.FilePath || ''), String(c.ChangeTitle || ''), String(c.ChangeDescription || '')];
+          })) + '\n';
+      }
+
+      var repoImpacts = impacts.filter(function (i) { return i.RepoKey === rk; });
+      if (repoImpacts.length > 0) {
+        out += '### Impacts (' + repoImpacts.length + ')\n\n';
+        out += mdTable(['Affected file', 'How affected'],
+          repoImpacts.map(function (i) { return [String(i.AffectedFilePath || ''), String(i.HowAffected || '')]; })) + '\n';
+      }
+
+      var repoValidations = validations.filter(function (v) { return v.RepoKey === rk; });
+      if (repoValidations.length > 0) {
+        out += '### Change validations (' + repoValidations.length + ')\n\n';
+        out += mdTable(['Action'], repoValidations.map(function (v) { return [String(v.Action || '')]; })) + '\n';
+      }
+
+      var repoTests = tests.filter(function (t) { return t.RepoKey === rk; });
+      if (repoTests.length > 0) {
+        out += '### Testing considerations (' + repoTests.length + ')\n\n';
+        out += mdTable(['Consideration'], repoTests.map(function (t) { return [String(t.Consideration || '')]; })) + '\n';
+      }
+
+      var repoQuestions = questions.filter(function (q) { return q.RepoKey === rk; });
+      if (repoQuestions.length > 0) {
+        out += '### Open questions (' + repoQuestions.length + ')\n\n';
+        out += mdTable(['Question'], repoQuestions.map(function (q) { return [String(q.Question || '')]; })) + '\n';
+      }
+    }
+
+    return out;
+  }
+
+  function mdProseSection(title, value) {
+    if (value == null || String(value).trim() === '') return '';
+    return '## ' + title + '\n\n' + String(value).trim() + '\n\n';
+  }
+
+  installCopyButton();
   window.addEventListener('hashchange', route);
   route();
 })();

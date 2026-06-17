@@ -127,6 +127,28 @@ public sealed class PlannerSubSiteTests
     }
 
     [Fact]
+    public async Task Emit_App_Js_Ships_CopyForAi_Affordance()
+    {
+        using TempScope scope = new();
+        await SeedAsync(scope.DbPath, planCount: 2);
+
+        int exit = await Program.Main(["--planner-db", scope.DbPath, "--out", scope.OutDir]);
+        Assert.Equal(0, exit);
+
+        string assetsDir = Path.Combine(scope.OutDir, "applying", "assets");
+        string appJs = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.js"));
+        Assert.Contains("Copy for AI", appJs, StringComparison.Ordinal);
+        Assert.Contains("copyForAi", appJs, StringComparison.Ordinal);
+        Assert.Contains("installCopyButton", appJs, StringComparison.Ordinal);
+        Assert.Contains("setCopyExport", appJs, StringComparison.Ordinal);
+        Assert.Contains("clearCopyExport", appJs, StringComparison.Ordinal);
+        Assert.Contains("execCommand", appJs, StringComparison.Ordinal);
+
+        string appCss = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.css"));
+        Assert.Contains(".copy-ai", appCss, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PlannerDbTrimmer_NoFilters_PreservesAllRows()
     {
         using TempScope scope = new();
