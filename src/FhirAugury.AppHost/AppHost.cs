@@ -96,6 +96,19 @@ IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugu
     .WaitFor(planner)
     .WithExplicitStart();
 
+// ── Ballot-notes processor (commit-triggered; GitHub source clone + Jira/orchestrator attribution) ──
+IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.FhirAugury_Processor_GitHub_Fhir_BallotNotes>("processor-github-fhir-ballotnotes")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5174;
+        e.TargetPort = 5174;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(github)
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
+
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>
