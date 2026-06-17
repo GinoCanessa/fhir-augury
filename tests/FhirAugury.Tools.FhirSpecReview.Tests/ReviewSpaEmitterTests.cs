@@ -169,6 +169,26 @@ public sealed class ReviewSpaEmitterTests : IDisposable
         Assert.Equal(0, await RunRedirectedAsync(forced));
     }
 
+    [Fact]
+    public void Emit_App_Js_Ships_CopyForAi_Affordance()
+    {
+        string dbPath = SeedReviewDb();
+        string outDir = Path.Combine(_tempDir, "copy-ai");
+
+        new ReviewSpaEmitter(dbPath).Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        Assert.Contains("Copy for AI", appJs);
+        Assert.Contains("copyForAi", appJs);
+        Assert.Contains("installCopyButton", appJs);
+        Assert.Contains("setCopyExport", appJs);
+        Assert.Contains("clearCopyExport", appJs);
+        Assert.Contains("execCommand", appJs);
+
+        string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
+        Assert.Contains(".copy-ai", appCss);
+    }
+
     private static string ExtractDbBlob(string index)
     {
         Match m = Regex.Match(index, @"window\.__DB__='([^']*)'");

@@ -19,6 +19,7 @@
     init: async function () {
       var main = document.getElementById('app');
       renderProvenance();
+      installCopyButton();
       try {
         // initSqlJs is global, set by sql-wasm.js.
         // eslint-disable-next-line no-undef
@@ -43,6 +44,7 @@
     route: function () {
       var main = document.getElementById('app');
       clearChildren(main);
+      clearCopyExport();
       var hash = window.location.hash || '#/';
       var stripped = hash.replace(/^#\/?/, '');
       var parts = stripped.split('/').filter(function (p) { return p.length > 0; });
@@ -190,6 +192,7 @@
       ]);
       main.appendChild(el('h2', null, String(page.PageFileName)));
       renderPageDetailBlock(main, page);
+      setCopyExport(function () { return serializePageMarkdown(page); });
     },
 
     artifact: function (main, code, id) {
@@ -270,6 +273,8 @@
       } else {
         main.appendChild(el('p', { class: 'muted' }, 'No search parameters found.'));
       }
+
+      setCopyExport(function () { return serializeArtifactMarkdown(artifact, id); });
     }
   };
 
@@ -701,6 +706,251 @@
       if (part.href) bc.appendChild(el('a', { href: part.href }, part.label));
       else bc.appendChild(document.createTextNode(part.label));
     }
+  }
+
+  // ---- Copy for AI (shared convention; identical across tools) -------------
+  // A top-right "Copy for AI" button on detail/leaf views. It serializes the
+  // current view from the in-memory rows to markdown (CurrentExport) and writes
+  // it to the clipboard, with an execCommand fallback for file:// where the
+  // async Clipboard API is unavailable. Detail views opt in via setCopyExport();
+  // the router hides the button again via clearCopyExport() on every route.
+
+  var CurrentExport = null;
+
+  function installCopyButton() {
+    if (document.querySelector('.copy-ai')) return;
+    var header = document.querySelector('header');
+    if (!header) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-ai';
+    btn.hidden = true;
+    btn.textContent = '📋 Copy for AI';
+    var status = document.createElement('span');
+    status.className = 'copy-ai-status';
+    status.setAttribute('role', 'status');
+    btn.addEventListener('click', function () {
+      try {
+        var md = CurrentExport && CurrentExport();
+        if (md) copyForAi(md);
+        else setCopyStatus('Nothing to copy');
+      } catch (e) {
+        setCopyStatus('Copy failed');
+      }
+    });
+    header.appendChild(btn);
+    header.appendChild(status);
+  }
+
+  function setCopyStatus(msg) {
+    var status = document.querySelector('.copy-ai-status');
+    if (status) status.textContent = msg;
+  }
+
+  function setCopyExport(fn) {
+    CurrentExport = fn;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = false;
+    setCopyStatus('');
+  }
+
+  function clearCopyExport() {
+    CurrentExport = null;
+    var btn = document.querySelector('.copy-ai');
+    if (btn) btn.hidden = true;
+    setCopyStatus('');
+  }
+
+  function copyForAi(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setCopyStatus('Copied!'); },
+        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
+      );
+    } else {
+      setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+    }
+  }
+
+  function copyViaTextarea(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  function mdEscapeCell(s) {
+    if (s == null) return '';
+    return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  }
+
+  function mdTable(headers, rows) {
+    var out = '| ' + headers.map(mdEscapeCell).join(' | ') + ' |\n';
+    out += '| ' + headers.map(function () { return '---'; }).join(' | ') + ' |\n';
+    for (var i = 0; i < rows.length; i++) {
+      out += '| ' + rows[i].map(mdEscapeCell).join(' | ') + ' |\n';
+    }
+    return out;
+  }
+  // ---- end Copy for AI shared convention ----------------------------------
+
+  // ---- Copy for AI serializers (fhir-spec-review specific) ----------------
+
+  // Emits the page-detail sections (mirrors renderPageDetailBlock) at the given
+  // heading level so the page view can nest them under an H1 and the artifact
+  // view can nest them under an H2.
+  function serializePageSections(page, lvl) {
+    var out = '';
+
+    out += lvl + ' General Information\n\n';
+    out += mdTable(['Field', 'Value'], [
+      ['Page File Name', page.PageFileName == null ? '' : String(page.PageFileName)],
+      ['Responsible Workgroup', page.ResponsibleWorkGroupName == null ? '' : String(page.ResponsibleWorkGroupName)],
+      ['Maturity Label', page.MaturityLabel == null ? '' : String(page.MaturityLabel)],
+      ['Maturity Level', page.MaturityLevel == null ? '' : String(page.MaturityLevel)],
+      ['Standards Status', page.StandardsStatus == null ? '' : String(page.StandardsStatus)],
+      ['Exists In publish.ini', boolText(page.ExistsInPublishIni)],
+      ['Exists In Source', boolText(page.ExistsInSource)],
+      ['Exists In Baseline Site', boolText(page.ExistsInBaselineSite)],
+      ['deprecated literal count', num(page.DeprecatedLiteralCount)],
+      ['Zulip Link Count', num(page.ZulipLinkCount)],
+      ['Confluence Link Count', num(page.ConfluenceLinkCount)],
+      ['Prior FHIR version reference count', num(page.PriorFhirVersionReferenceCount)]
+    ]) + '\n';
+
+    out += lvl + ' Conformance Language Summary\n\n';
+    out += mdTable(['Keyword', 'Conformant', 'Non-conformant'], [
+      ['SHALL', num(page.ConformantShallCount), num(page.NonConformantShallCount)],
+      ['SHALL NOT', num(page.ConformantShallNotCount), num(page.NonConformantShallNotCount)],
+      ['SHOULD', num(page.ConformantShouldCount), num(page.NonConformantShouldCount)],
+      ['SHOULD NOT', num(page.ConformantShouldNotCount), num(page.NonConformantShouldNotCount)],
+      ['MAY', num(page.ConformantMayCount), num(page.NonConformantMayCount)],
+      ['MAY NOT', num(page.ConformantMayNotCount), num(page.NonConformantMayNotCount)]
+    ]) + '\n';
+
+    var removed = loadRemovedRefsForPage(page.Id);
+    out += lvl + ' Possibly Removed FHIR Artifact Literals (' + removed.length + ')\n\n';
+    if (removed.length > 0) {
+      out += mdTable(['Word', 'Class', 'Snippet'],
+        removed.map(function (r) { return [r.Word, r.ArtifactClass || '', r.ContextSnippet || '']; })) + '\n';
+    } else {
+      out += '_No possibly-removed literals found._\n\n';
+    }
+
+    var unknown = loadUnknownWordsForPage(page.Id);
+    out += lvl + ' Unknown Words (' + unknown.length + ')\n\n';
+    if (unknown.length > 0) {
+      out += mdTable(['Word', 'Typo?', 'Correction', 'Snippet'],
+        unknown.map(function (u) { return [u.Word, u.IsTypo ? 'yes' : 'no', u.Correction || '', u.ContextSnippet || '']; })) + '\n';
+    } else {
+      out += '_No unknown words found._\n\n';
+    }
+
+    var images = loadImageIssuesForPage(page.Id);
+    out += lvl + ' Images with Issues (' + images.length + ')\n\n';
+    if (images.length > 0) {
+      out += mdTable(['Source', 'Missing alt', 'Not in figure', 'Snippet'],
+        images.map(function (im) { return [im.Source, im.MissingAlt ? 'yes' : 'no', im.NotInFigure ? 'yes' : 'no', im.ContextSnippet || '']; })) + '\n';
+    } else {
+      out += '_No images with issues found._\n\n';
+    }
+
+    out += serializeJsonList(lvl, 'Possible Incomplete Markers', page.PossibleIncompleteMarkers);
+    out += serializeJsonList(lvl, 'Reader Review Notes', page.ReaderReviewNotes);
+
+    return out;
+  }
+
+  // Parses a JSON-array TEXT column and emits a markdown bullet list. Parsing is
+  // guarded so malformed JSON degrades to an empty section rather than throwing.
+  function serializeJsonList(lvl, title, jsonText) {
+    var items = [];
+    if (jsonText != null && jsonText !== '') {
+      try {
+        var parsed = JSON.parse(String(jsonText));
+        if (Array.isArray(parsed)) items = parsed;
+      } catch (err) {
+        items = [];
+      }
+    }
+    var out = lvl + ' ' + title + ' (' + items.length + ')\n\n';
+    if (items.length === 0) {
+      return out + '_None._\n\n';
+    }
+    for (var i = 0; i < items.length; i++) {
+      out += '- ' + (items[i] == null ? '' : String(items[i]).replace(/\r?\n/g, ' ')) + '\n';
+    }
+    return out + '\n';
+  }
+
+  function serializePageMarkdown(page) {
+    return '# ' + String(page.PageFileName) + '\n\n' + serializePageSections(page, '##');
+  }
+
+  function serializeArtifactMarkdown(artifact, id) {
+    var out = '# Artifact ' + String(artifact.Name) + ' (' + String(artifact.FhirId) + ')\n\n';
+
+    var pages = loadArtifactPages(id);
+    var ordered = orderArtifactPages(pages, artifact);
+    for (var i = 0; i < ordered.length; i++) {
+      out += '## ' + ordered[i].label + ': ' + String(ordered[i].page.PageFileName) + '\n\n';
+      out += serializePageSections(ordered[i].page, '###');
+    }
+
+    var elements = loadArtifactElements(id);
+    out += '## Element Review (' + elements.length + ')\n\n';
+    if (elements.length > 0) {
+      out += mdTable(
+        ['Path', 'Is Required', 'Max Cardinality', 'Trial Use', 'Has fixed[x]', 'Has pattern[x]',
+          'Required Binding', 'External Required Binding', 'meaningWhenMissing', 'Is Modifier'],
+        elements.map(function (e) {
+          return [e.Path, boolText(e.IsRequired), e.MaxCardinality || '', boolText(e.IsTrialUse),
+            boolText(e.HasFixed), boolText(e.HasPattern), boolText(e.RequiredBinding),
+            boolText(e.ExternalRequiredBinding), e.MeaningWhenMissing || '', boolText(e.IsModifier)];
+        })) + '\n';
+    } else {
+      out += '_No elements found._\n\n';
+    }
+
+    var operations = loadArtifactOperations(id);
+    out += '## Operations (' + operations.length + ')\n\n';
+    if (operations.length > 0) {
+      out += mdTable(
+        ['Id', 'Code', 'Name', 'Kind', 'Status', 'Standards', 'FMM', 'Description'],
+        operations.map(function (o) {
+          return [o.OperationId, o.Code || '', o.Name || '', o.OperationKind || '', o.Status || '',
+            o.StandardsStatus || '', o.FhirMaturity == null ? '' : String(o.FhirMaturity), o.Description || ''];
+        })) + '\n';
+    } else {
+      out += '_No operations found._\n\n';
+    }
+
+    var searchParams = loadArtifactSearchParameters(id);
+    out += '## Search Parameters (' + searchParams.length + ')\n\n';
+    if (searchParams.length > 0) {
+      out += mdTable(
+        ['Id', 'Name', 'Publication Status', 'FMM', 'Standards Status', 'IsExperimental',
+          'WorkGroup', 'Search Type', 'Description'],
+        searchParams.map(function (s) {
+          return [s.SearchParamId, s.Name || '', s.Status || '',
+            s.FhirMaturity == null ? '' : String(s.FhirMaturity), s.StandardsStatus || '',
+            boolText(s.IsExperimental), s.WorkGroup || '', s.SearchType || '', s.Description || ''];
+        })) + '\n';
+    } else {
+      out += '_No search parameters found._\n\n';
+    }
+
+    return out;
   }
 
   App.init();

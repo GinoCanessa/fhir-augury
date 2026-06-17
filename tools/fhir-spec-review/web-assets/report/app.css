@@ -6,7 +6,7 @@ body {
   line-height: 1.4;
 }
 
-header { margin-bottom: 1rem; }
+header { margin-bottom: 1rem; position: relative; }
 
 h1 { font-size: 1.5rem; margin: 0 0 0.3rem; }
 h2 { font-size: 1.2rem; margin-top: 1.5rem; }
@@ -62,7 +62,31 @@ a { color: #3b82f6; cursor: pointer; }
 
 .muted { color: gray; }
 
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #8886;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 2.3rem;
+  right: 0;
+  font-size: 0.8rem;
+  color: #16a34a;
+}
+
 @media (prefers-color-scheme: dark) {
   a, #breadcrumb a { color: #60a5fa; }
   .snippet { color: #aaa; }
+  .copy-ai-status { color: #4ade80; }
 }
