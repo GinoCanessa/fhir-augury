@@ -82,6 +82,7 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `zulip-items`, `zulip-messages`, `zulip-streams`, `zulip-threads` | Zulip source-scoped families. |
 | `confluence-items`, `confluence-pages` | Confluence source-scoped families. |
 | `github-items`, `github-repos` | GitHub source-scoped families (action-first item layout — `items/{action}/{**key}` — preserved by design). |
+| `fhir-releases`, `fhir-resources`, `fhir-structure`, `fhir-datatypes`, `fhir-profiles`, `fhir-codesystems`, `fhir-codesystem-lookup`, `fhir-valuesets`, `fhir-valueset-expand`, `fhir-operations`, `fhir-searchparameters`, `fhir-resolve`, `fhir-search` | FHIR specification source family (read-only query surface over `cache/fhir-spec.db`). All commands take an optional `release` token (`R5`, `5.0`, `DSTU2`, `hl7.fhir.r6.core`, …); when omitted it resolves to the latest stable release. Canonical URLs are passed as values (`system`, `url`), never path segments. See the FHIR recipes below. |
 
 ## Common recipes
 
@@ -170,6 +171,42 @@ fhir-augury-cli --json '{"command":"save-schemas","outputDirectory":"./tmp/schem
 Use the dumped JSON files when you need exact field names or you are
 building automation against the CLI; do not rely on undocumented envelope
 internals.
+
+### Query the FHIR specification
+
+The `fhir-*` family is a read-only query surface over the parsed FHIR spec
+(`cache/fhir-spec.db`, releases DSTU2 → R6). Every response echoes the resolved
+`release`. The `release` field is optional and defaults to the latest stable
+release.
+
+```bash
+# List available releases
+fhir-augury-cli --json '{"command":"fhir-releases"}'
+
+# List R5 resources (optionally filter by workGroup / maturity / status)
+fhir-augury-cli --json '{"command":"fhir-resources","release":"R5","workGroup":"oo"}'
+
+# A resource's metadata + full element tree
+fhir-augury-cli --json '{"command":"fhir-structure","release":"R5","name":"Observation"}'
+
+# Data types, profiles (release defaults to latest stable when omitted)
+fhir-augury-cli --json '{"command":"fhir-datatypes"}'
+fhir-augury-cli --json '{"command":"fhir-profiles","release":"R6"}'
+
+# Code system concept lookup (canonical URL passed as a value, not a path)
+fhir-augury-cli --json '{"command":"fhir-codesystem-lookup","release":"R5","system":"http://hl7.org/fhir/observation-status","code":"final"}'
+
+# Value set expansion and reverse bindings
+fhir-augury-cli --json '{"command":"fhir-valueset-expand","release":"R5","url":"http://hl7.org/fhir/ValueSet/observation-status"}'
+
+# Operations and search parameters
+fhir-augury-cli --json '{"command":"fhir-operations","release":"R5","idOrCode":"expand"}'
+fhir-augury-cli --json '{"command":"fhir-searchparameters","release":"R5","base":"Observation"}'
+
+# Resolve a canonical URL to an artifact, or full-text search
+fhir-augury-cli --json '{"command":"fhir-resolve","release":"R5","url":"http://hl7.org/fhir/StructureDefinition/Observation"}'
+fhir-augury-cli --json '{"command":"fhir-search","release":"R5","query":"observation","types":"structure,valueset"}'
+```
 
 ## Fallback order
 

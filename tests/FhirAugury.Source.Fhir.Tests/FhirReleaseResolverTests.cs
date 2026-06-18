@@ -86,6 +86,19 @@ public class FhirReleaseResolverTests : IClassFixture<FhirSpecFixture>
         Assert.Equal("hl7.fhir.r5.core", info.PackageId);
     }
 
+    [Theory]
+    [InlineData("default")]
+    [InlineData("DEFAULT")]
+    [InlineData("  ")]
+    public void TryResolve_DefaultToken_ResolvesLatestStable(string token)
+    {
+        bool ok = Resolver().TryResolve(token, out int key, out ReleaseInfo? info, out _);
+
+        Assert.True(ok);
+        Assert.Equal(5, key);
+        Assert.Equal("R5", info!.ShortName);
+    }
+
     [Fact]
     public void TryResolve_UnknownToken_Fails()
     {

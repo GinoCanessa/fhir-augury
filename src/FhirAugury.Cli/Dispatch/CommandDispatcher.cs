@@ -59,6 +59,19 @@ public static class CommandDispatcher
         ["github-items"] = j => j.Deserialize<GitHubItemsRequest>(DeserializeOptions)!,
         ["github-repos"] = j => j.Deserialize<GitHubReposRequest>(DeserializeOptions)!,
         ["jira-specs"] = j => j.Deserialize<JiraSpecsRequest>(DeserializeOptions)!,
+        ["fhir-releases"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-resources"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-structure"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-datatypes"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-profiles"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystems"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystem-lookup"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valuesets"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valueset-expand"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-operations"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-searchparameters"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-resolve"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-search"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -189,6 +202,7 @@ public static class CommandDispatcher
             GitHubItemsRequest r => GitHubItemsHandler.HandleAsync(r, orchestratorAddr, ct),
             GitHubReposRequest r => GitHubReposHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraSpecsRequest r => JiraSpecsHandler.HandleAsync(r, orchestratorAddr, ct),
+            FhirRequest r => FhirHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
 

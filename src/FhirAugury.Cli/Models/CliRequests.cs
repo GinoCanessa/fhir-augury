@@ -429,6 +429,29 @@ public sealed class GitHubItemsRequest : CliRequest
     [JsonPropertyName("format")] public string? Format { get; set; }
 }
 
+/// <summary>
+/// Single request envelope for the whole <c>fhir-*</c> command family. The
+/// specific command (e.g. <c>fhir-structure</c>) is carried by
+/// <see cref="CliRequest.Command"/>; the handler selects fields per command.
+/// </summary>
+public sealed class FhirRequest : CliRequest
+{
+    [JsonPropertyName("release")] public string? Release { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+    [JsonPropertyName("idOrCode")] public string? IdOrCode { get; set; }
+    [JsonPropertyName("system")] public string? System { get; set; }
+    [JsonPropertyName("url")] public string? Url { get; set; }
+    [JsonPropertyName("code")] public string? Code { get; set; }
+    [JsonPropertyName("base")] public string? Base { get; set; }
+    [JsonPropertyName("query")] public string? Query { get; set; }
+    [JsonPropertyName("types")] public string? Types { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("maturity")] public int? Maturity { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("hierarchical")] public bool? Hierarchical { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+}
+
 public sealed class GitHubReposRequest : CliRequest
 {
     [JsonPropertyName("action")] public string Action { get; set; } = "";

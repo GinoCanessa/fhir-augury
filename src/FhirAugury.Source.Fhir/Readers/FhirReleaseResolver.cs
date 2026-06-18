@@ -114,13 +114,17 @@ public sealed class FhirReleaseResolver
 
     /// <summary>
     /// Resolves a (possibly null) release token to a package key and the resolved
-    /// release info. A null/blank token resolves to the default release.
+    /// release info. A null/blank token — or the literal <c>"default"</c> — resolves
+    /// to the default release.
     /// </summary>
     public bool TryResolve(string? release, out int packageKey, out ReleaseInfo? info, out string? error)
     {
-        int? key = string.IsNullOrWhiteSpace(release)
+        bool useDefault = string.IsNullOrWhiteSpace(release)
+            || string.Equals(release, "default", StringComparison.OrdinalIgnoreCase);
+
+        int? key = useDefault
             ? ResolveDefaultPackageKey(out error)
-            : ResolvePackageKey(release, out error);
+            : ResolvePackageKey(release!, out error);
 
         if (key is null)
         {
