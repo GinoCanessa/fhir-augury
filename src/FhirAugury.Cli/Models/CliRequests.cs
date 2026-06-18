@@ -350,6 +350,38 @@ public sealed class JiraProjectRequest : CliRequest
     [JsonPropertyName("body")] public JsonElement? Body { get; set; }
 }
 
+public sealed class JiraBalDefRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("cycle")] public string? Cycle { get; set; }
+    [JsonPropertyName("level")] public string? Level { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class JiraBallotRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("cycle")] public string? Cycle { get; set; }
+    [JsonPropertyName("specification")] public string? Specification { get; set; }
+    [JsonPropertyName("disposition")] public string? Disposition { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class JiraPssRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
 public sealed class JiraLocalProcessingRequest : CliRequest
 {
     [JsonPropertyName("action")] public string Action { get; set; } = "";
