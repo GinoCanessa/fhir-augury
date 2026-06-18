@@ -58,4 +58,17 @@ public sealed partial class FhirSpecReader
 
     private static bool? GetNullableBool(SqliteDataReader reader, int ordinal)
         => reader.IsDBNull(ordinal) ? null : reader.GetInt64(ordinal) != 0;
+
+    // Several spec columns store multi-valued data as comma-separated text
+    // (e.g. BaseResources "Observation,Condition", ReferenceTargets, ResourceTypes).
+    private static List<string> SplitCsv(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+    }
 }

@@ -178,3 +178,84 @@ public record ValueSetConceptInfo(string System, string Code, string? Display, b
 
 /// <summary>An element that binds to a value set (reverse binding).</summary>
 public record ElementBindingRef(string Resource, string Path, string? Strength);
+
+// ── Operations ───────────────────────────────────────────────────────
+
+/// <summary>Summary metadata for an operation.</summary>
+public record OperationSummary(
+    string Id,
+    string Name,
+    string? Title,
+    string? Code,
+    string Kind,
+    bool? AffectsState,
+    IReadOnlyList<string> ResourceTypes,
+    bool System,
+    bool Type,
+    bool Instance,
+    string? Status,
+    string? StandardStatus,
+    string? WorkGroup,
+    int? FhirMaturity,
+    string UnversionedUrl,
+    string VersionedUrl,
+    string? Description);
+
+/// <summary>An operation's summary plus its parameters.</summary>
+public record OperationDetail(
+    OperationSummary Summary,
+    IReadOnlyList<OperationParameterInfo> Parameters);
+
+/// <summary>An operation parameter (optionally with nested part parameters).</summary>
+public record OperationParameterInfo(
+    string Name,
+    string Use,
+    int Min,
+    string Max,
+    string? Type,
+    string? Documentation,
+    IReadOnlyList<string> AllowedTypes,
+    IReadOnlyList<string> TargetProfiles,
+    string? SearchType,
+    string? BindingStrength,
+    string? BindingValueSet,
+    IReadOnlyList<OperationParameterInfo> Parts);
+
+// ── Search parameters ────────────────────────────────────────────────
+
+/// <summary>A search parameter with its expression, targets, modifiers, and components.</summary>
+public record SearchParameterInfo(
+    string Id,
+    string Code,
+    string Name,
+    string? Title,
+    IReadOnlyList<string> Base,
+    string? Type,
+    string? Expression,
+    IReadOnlyList<string> Targets,
+    IReadOnlyList<string> Modifiers,
+    IReadOnlyList<string> Comparators,
+    IReadOnlyList<SearchParameterComponentInfo> Components,
+    string? Status,
+    string? StandardStatus,
+    string? WorkGroup,
+    int? FhirMaturity,
+    string UnversionedUrl,
+    string VersionedUrl,
+    string? Description);
+
+/// <summary>One component of a composite search parameter.</summary>
+public record SearchParameterComponentInfo(string Definition, string Expression);
+
+// ── Resolve ──────────────────────────────────────────────────────────
+
+/// <summary>The artifact matched by a canonical-URL resolve.</summary>
+public record ResolveResult(
+    string Kind,
+    string Id,
+    string Name,
+    string? Title,
+    string UnversionedUrl,
+    string VersionedUrl,
+    string? Status,
+    string? WorkGroup);
