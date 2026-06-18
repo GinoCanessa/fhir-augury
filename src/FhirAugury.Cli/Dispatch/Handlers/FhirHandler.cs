@@ -13,40 +13,64 @@ public static class FhirHandler
     public static async Task<object> HandleAsync(FhirRequest request, string orchestratorAddr, CancellationToken ct)
     {
         using HttpServiceClient client = new(orchestratorAddr);
+        string path = BuildPath(request);
+        return new { data = await client.GetFromOrchestratorAsync(path, ct) };
+    }
+
+    /// <summary>
+    /// Builds the orchestrator URL for a <c>fhir-*</c> command. Extracted for
+    /// unit-testing the route/query construction without an HTTP call.
+    /// </summary>
+    internal static string BuildPath(FhirRequest request)
+    {
         string release = Uri.EscapeDataString(
             string.IsNullOrWhiteSpace(request.Release) ? "default" : request.Release);
         string command = request.Command.ToLowerInvariant();
 
-        string path = command switch
+        return command switch
         {
             "fhir-releases" => "/api/v1/fhir/releases",
 
             "fhir-resources" => $"/api/v1/fhir/{release}/resources" + StructureFilters(request),
             "fhir-datatypes" => $"/api/v1/fhir/{release}/datatypes",
             "fhir-profiles" => $"/api/v1/fhir/{release}/profiles",
+            "fhir-interfaces" => $"/api/v1/fhir/{release}/interfaces" + StructureFilters(request),
             "fhir-structure" => $"/api/v1/fhir/{release}/structures/{Esc(Require(request.Name, "name"))}",
+            "fhir-elements" => $"/api/v1/fhir/{release}/structures/{Esc(Require(request.Name, "name"))}/elements"
+                + (request.Nested == true ? "?nested=true" : string.Empty),
+            // Element-by-path passes `path` raw to match the source catch-all
+            // route ({*path}) and the MCP GetFhirElement tool (neither escapes it).
+            "fhir-element" => $"/api/v1/fhir/{release}/structures/{Esc(Require(request.Name, "name"))}/elements/{Require(request.Path, "path")}",
 
             "fhir-codesystems" => $"/api/v1/fhir/{release}/codesystems",
+            "fhir-codesystem" => $"/api/v1/fhir/{release}/codesystems/lookup?system={Esc(Require(request.System, "system"))}",
             "fhir-codesystem-lookup" =>
                 $"/api/v1/fhir/{release}/codesystems/concept" +
                 $"?system={Esc(Require(request.System, "system"))}&code={Esc(Require(request.Code, "code"))}",
+            "fhir-codesystem-concepts" =>
+                $"/api/v1/fhir/{release}/codesystems/concepts?system={Esc(Require(request.System, "system"))}"
+                + (request.Hierarchical == true ? "&hierarchical=true" : string.Empty),
 
             "fhir-valuesets" => $"/api/v1/fhir/{release}/valuesets",
             "fhir-valueset-expand" =>
                 $"/api/v1/fhir/{release}/valuesets/concepts?url={Esc(Require(request.Url, "url"))}",
+            "fhir-valueset-lookup" =>
+                $"/api/v1/fhir/{release}/valuesets/lookup?url={Esc(Require(request.Url, "url"))}",
+            "fhir-valueset-bindings" =>
+                $"/api/v1/fhir/{release}/valuesets/bindings?url={Esc(Require(request.Url, "url"))}",
 
             "fhir-operations" => string.IsNullOrWhiteSpace(request.IdOrCode)
                 ? $"/api/v1/fhir/{release}/operations"
                 : $"/api/v1/fhir/{release}/operations/{Esc(request.IdOrCode)}",
+            "fhir-operation" => $"/api/v1/fhir/{release}/operations/{Esc(Require(request.IdOrCode, "idOrCode"))}",
             "fhir-searchparameters" => $"/api/v1/fhir/{release}/searchparameters" + SearchParamFilters(request),
+            "fhir-searchparameter" => $"/api/v1/fhir/{release}/searchparameters/{Esc(Require(request.IdOrCode, "idOrCode"))}",
 
             "fhir-resolve" => $"/api/v1/fhir/{release}/resolve?url={Esc(Require(request.Url, "url"))}",
             "fhir-search" => $"/api/v1/fhir/{release}/search" + SearchFilters(request),
 
             _ => throw new ArgumentException($"Unknown FHIR command: {request.Command}"),
         };
-
-        return new { data = await client.GetFromOrchestratorAsync(path, ct) };
     }
 
     private static string Esc(string value) => Uri.EscapeDataString(value);

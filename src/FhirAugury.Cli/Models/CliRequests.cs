@@ -481,6 +481,8 @@ public sealed class FhirRequest : CliRequest
     [JsonPropertyName("maturity")] public int? Maturity { get; set; }
     [JsonPropertyName("status")] public string? Status { get; set; }
     [JsonPropertyName("hierarchical")] public bool? Hierarchical { get; set; }
+    [JsonPropertyName("nested")] public bool? Nested { get; set; }
+    [JsonPropertyName("path")] public string? Path { get; set; }
     [JsonPropertyName("limit")] public int? Limit { get; set; }
 }
 

@@ -49,6 +49,22 @@ public static class FhirTools
         CancellationToken cancellationToken = default)
         => CallAsync(httpClientFactory, $"/api/v1/fhir/{Esc(release)}/profiles", cancellationToken);
 
+    [McpServerTool, Description("List the interfaces for a FHIR release (filters: workGroup, maturity, status).")]
+    public static Task<string> ListFhirInterfaces(
+        IHttpClientFactory httpClientFactory,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        [Description("Optional work group filter")] string? workGroup = null,
+        [Description("Optional FHIR maturity (FMM) filter")] int? maturity = null,
+        [Description("Optional status filter")] string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        List<string> q = [];
+        if (workGroup != null) q.Add($"workGroup={Esc(workGroup)}");
+        if (maturity != null) q.Add($"maturity={maturity.Value}");
+        if (status != null) q.Add($"status={Esc(status)}");
+        return CallAsync(httpClientFactory, $"/api/v1/fhir/{Esc(release)}/interfaces{Query(q)}", cancellationToken);
+    }
+
     [McpServerTool, Description("Get a structure's metadata and full element tree.")]
     public static Task<string> GetFhirStructure(
         IHttpClientFactory httpClientFactory,
@@ -67,12 +83,32 @@ public static class FhirTools
         => CallAsync(httpClientFactory,
             $"/api/v1/fhir/{Esc(release)}/structures/{Esc(name)}/elements/{path}", cancellationToken);
 
+    [McpServerTool, Description("List a structure's elements (flat, or the nested tree when nested=true).")]
+    public static Task<string> ListFhirElements(
+        IHttpClientFactory httpClientFactory,
+        [Description("Structure name, e.g. Observation")] string name,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        [Description("Return the nested element tree instead of the flat list")] bool? nested = null,
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/structures/{Esc(name)}/elements" + (nested == true ? "?nested=true" : string.Empty),
+            cancellationToken);
+
     [McpServerTool, Description("List the code systems for a FHIR release.")]
     public static Task<string> ListFhirCodeSystems(
         IHttpClientFactory httpClientFactory,
         [Description("Release token (default = latest stable)")] string release = "default",
         CancellationToken cancellationToken = default)
         => CallAsync(httpClientFactory, $"/api/v1/fhir/{Esc(release)}/codesystems", cancellationToken);
+
+    [McpServerTool, Description("Look up a code system resource by canonical URL or id.")]
+    public static Task<string> GetFhirCodeSystem(
+        IHttpClientFactory httpClientFactory,
+        [Description("Code system canonical URL or id")] string system,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/codesystems/lookup?system={Esc(system)}", cancellationToken);
 
     [McpServerTool, Description("Look up a single concept by code system URL/id and code.")]
     public static Task<string> LookupFhirCode(
@@ -85,12 +121,33 @@ public static class FhirTools
             $"/api/v1/fhir/{Esc(release)}/codesystems/concept?system={Esc(system)}&code={Esc(code)}",
             cancellationToken);
 
+    [McpServerTool, Description("List a code system's concepts by URL/id (optionally as a hierarchy).")]
+    public static Task<string> ListFhirCodeSystemConcepts(
+        IHttpClientFactory httpClientFactory,
+        [Description("Code system canonical URL or id")] string system,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        [Description("Return the concepts as a hierarchy")] bool? hierarchical = null,
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/codesystems/concepts?system={Esc(system)}"
+            + (hierarchical == true ? "&hierarchical=true" : string.Empty),
+            cancellationToken);
+
     [McpServerTool, Description("List the value sets for a FHIR release.")]
     public static Task<string> ListFhirValueSets(
         IHttpClientFactory httpClientFactory,
         [Description("Release token (default = latest stable)")] string release = "default",
         CancellationToken cancellationToken = default)
         => CallAsync(httpClientFactory, $"/api/v1/fhir/{Esc(release)}/valuesets", cancellationToken);
+
+    [McpServerTool, Description("Look up a value set resource by canonical URL or id.")]
+    public static Task<string> GetFhirValueSet(
+        IHttpClientFactory httpClientFactory,
+        [Description("Value set canonical URL or id")] string url,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/valuesets/lookup?url={Esc(url)}", cancellationToken);
 
     [McpServerTool, Description("Get a value set's expanded concept list by URL/id.")]
     public static Task<string> ExpandFhirValueSet(
@@ -117,6 +174,15 @@ public static class FhirTools
         CancellationToken cancellationToken = default)
         => CallAsync(httpClientFactory, $"/api/v1/fhir/{Esc(release)}/operations", cancellationToken);
 
+    [McpServerTool, Description("Get a single operation by id or code (e.g. expand).")]
+    public static Task<string> GetFhirOperation(
+        IHttpClientFactory httpClientFactory,
+        [Description("Operation id or code, e.g. expand")] string idOrCode,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/operations/{Esc(idOrCode)}", cancellationToken);
+
     [McpServerTool, Description("List search parameters for a FHIR release (filters: base resource, code).")]
     public static Task<string> ListFhirSearchParameters(
         IHttpClientFactory httpClientFactory,
@@ -131,6 +197,15 @@ public static class FhirTools
         return CallAsync(httpClientFactory,
             $"/api/v1/fhir/{Esc(release)}/searchparameters{Query(q)}", cancellationToken);
     }
+
+    [McpServerTool, Description("Get a single search parameter by id or code (e.g. Observation-code).")]
+    public static Task<string> GetFhirSearchParameter(
+        IHttpClientFactory httpClientFactory,
+        [Description("Search parameter id or code, e.g. Observation-code")] string idOrCode,
+        [Description("Release token (default = latest stable)")] string release = "default",
+        CancellationToken cancellationToken = default)
+        => CallAsync(httpClientFactory,
+            $"/api/v1/fhir/{Esc(release)}/searchparameters/{Esc(idOrCode)}", cancellationToken);
 
     [McpServerTool, Description("Resolve a canonical URL to an artifact (structure / code system / value set / operation / search parameter).")]
     public static Task<string> ResolveFhirCanonical(

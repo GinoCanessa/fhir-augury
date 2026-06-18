@@ -100,4 +100,91 @@ public class FhirToolsTests
         Assert.StartsWith("/api/v1/fhir/R5/valuesets/concepts?url=", pq);
         Assert.Contains("ValueSet", pq);
     }
+
+    [Fact]
+    public async Task ListFhirInterfaces_BuildsReleaseScopedPath()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.ListFhirInterfaces(factory, "R5");
+
+        Assert.Equal("/api/v1/fhir/R5/interfaces", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task ListFhirInterfaces_AppendsFilters()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.ListFhirInterfaces(factory, "R5", workGroup: "fhir-i", maturity: 5);
+
+        string pq = PathAndQuery(handler);
+        Assert.StartsWith("/api/v1/fhir/R5/interfaces?", pq);
+        Assert.Contains("workGroup=fhir-i", pq);
+        Assert.Contains("maturity=5", pq);
+    }
+
+    [Fact]
+    public async Task ListFhirElements_NestedAppendsQuery()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.ListFhirElements(factory, "Observation", "R5", nested: true);
+
+        Assert.Equal("/api/v1/fhir/R5/structures/Observation/elements?nested=true", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task GetFhirCodeSystem_EncodesSystem()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.GetFhirCodeSystem(factory, "http://hl7.org/fhir/observation-status", "R5");
+
+        string pq = PathAndQuery(handler);
+        Assert.StartsWith("/api/v1/fhir/R5/codesystems/lookup?system=", pq);
+        Assert.Contains("%2F", pq);
+    }
+
+    [Fact]
+    public async Task ListFhirCodeSystemConcepts_HierarchicalAppends()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.ListFhirCodeSystemConcepts(factory, "x", "R5", hierarchical: true);
+
+        Assert.Equal("/api/v1/fhir/R5/codesystems/concepts?system=x&hierarchical=true", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task GetFhirValueSet_EncodesUrl()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.GetFhirValueSet(factory, "http://hl7.org/fhir/ValueSet/observation-status", "R5");
+
+        string pq = PathAndQuery(handler);
+        Assert.StartsWith("/api/v1/fhir/R5/valuesets/lookup?url=", pq);
+        Assert.Contains("ValueSet", pq);
+    }
+
+    [Fact]
+    public async Task GetFhirOperation_BuildsByCodeRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.GetFhirOperation(factory, "expand", "R5");
+
+        Assert.Equal("/api/v1/fhir/R5/operations/expand", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task GetFhirSearchParameter_BuildsByCodeRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) = Factory();
+
+        await FhirTools.GetFhirSearchParameter(factory, "Observation-code", "R5");
+
+        Assert.Equal("/api/v1/fhir/R5/searchparameters/Observation-code", PathAndQuery(handler));
+    }
 }
