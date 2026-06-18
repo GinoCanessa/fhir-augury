@@ -491,6 +491,16 @@ public sealed class GitHubReposRequest : CliRequest
     [JsonPropertyName("name")] public string? Name { get; set; }
 }
 
+public sealed class GitHubWorkGroupsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("repo")] public string? Repo { get; set; }
+    [JsonPropertyName("workgroup")] public string? Workgroup { get; set; }
+    [JsonPropertyName("path")] public string? Path { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
 public sealed class JiraSpecsRequest : CliRequest
 {
     [JsonPropertyName("action")] public string Action { get; set; } = "";

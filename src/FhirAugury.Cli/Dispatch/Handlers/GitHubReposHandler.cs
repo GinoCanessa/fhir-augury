@@ -20,10 +20,11 @@ public static class GitHubReposHandler
 
         return action switch
         {
+            "get" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/github/repos/{owner}/{name}", ct) },
             "tags" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/github/repos/{owner}/{name}/tags", ct) },
             "tag-files" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/github/repos/{owner}/{name}/tags/files", ct) },
             "tag-search" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/github/repos/{owner}/{name}/tags/search", ct) },
-            _ => throw new ArgumentException($"Unknown action: {request.Action}. Valid: list, tags, tag-files, tag-search"),
+            _ => throw new ArgumentException($"Unknown action: {request.Action}. Valid: list, get, tags, tag-files, tag-search"),
         };
     }
 }
