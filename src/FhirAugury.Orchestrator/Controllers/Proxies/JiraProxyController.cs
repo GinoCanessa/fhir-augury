@@ -199,6 +199,76 @@ public class JiraProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> UpdateProject(string key, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Put, $"projects/{Uri.EscapeDataString(key)}", Request, ct);
 
+    // ── Ballot / scope read models ───────────────────────────────────────
+
+    /// <summary>List Ballot Definition (BALDEF-*) tickets (paged).</summary>
+    /// <param name="cycle">Optional ballot cycle filter (matches <c>BallotCycle</c>).</param>
+    /// <param name="level">Optional ballot level/category filter (matches <c>BallotCategory</c>, e.g. STU, Normative).</param>
+    /// <param name="workGroup">Optional work-group filter (accepted for parity; ignored upstream for BALDEF).</param>
+    /// <param name="limit">Maximum number of records to return.</param>
+    /// <param name="offset">Number of records to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">Page of BALDEF tickets.</response>
+    [HttpGet("baldef")]
+    public Task<IActionResult> ListBalDef(
+        [FromQuery] string? cycle, [FromQuery] string? level, [FromQuery] string? workGroup,
+        [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "baldef", Request, ct);
+
+    /// <summary>Get a single Ballot Definition (BALDEF-*) ticket by key.</summary>
+    /// <param name="key">BALDEF ticket key (e.g. <c>BALDEF-1</c>).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">BALDEF payload.</response>
+    /// <response code="404">BALDEF not found.</response>
+    [HttpGet("baldef/{key}")]
+    public Task<IActionResult> GetBalDef(string key, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, $"baldef/{Uri.EscapeDataString(key)}", Request, ct);
+
+    /// <summary>List Ballot vote (BALLOT-*) tickets (paged).</summary>
+    /// <param name="cycle">Optional ballot cycle filter (matches <c>BallotCycle</c>).</param>
+    /// <param name="specification">Optional specification filter.</param>
+    /// <param name="disposition">Optional disposition filter (maps to <c>Status</c>).</param>
+    /// <param name="limit">Maximum number of records to return.</param>
+    /// <param name="offset">Number of records to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">Page of BALLOT tickets.</response>
+    [HttpGet("ballot")]
+    public Task<IActionResult> ListBallot(
+        [FromQuery] string? cycle, [FromQuery] string? specification, [FromQuery] string? disposition,
+        [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "ballot", Request, ct);
+
+    /// <summary>Get a single Ballot vote (BALLOT-*) ticket by key.</summary>
+    /// <param name="key">BALLOT ticket key (e.g. <c>BALLOT-1</c>).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">BALLOT payload.</response>
+    /// <response code="404">BALLOT not found.</response>
+    [HttpGet("ballot/{key}")]
+    public Task<IActionResult> GetBallot(string key, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, $"ballot/{Uri.EscapeDataString(key)}", Request, ct);
+
+    /// <summary>List Project Scope Statement (PSS-*) tickets (paged).</summary>
+    /// <param name="workGroup">Optional sponsoring work-group filter.</param>
+    /// <param name="status">Optional status filter.</param>
+    /// <param name="limit">Maximum number of records to return.</param>
+    /// <param name="offset">Number of records to skip.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">Page of PSS tickets.</response>
+    [HttpGet("pss")]
+    public Task<IActionResult> ListPss(
+        [FromQuery] string? workGroup, [FromQuery] string? status,
+        [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "pss", Request, ct);
+
+    /// <summary>Get a single Project Scope Statement (PSS-*) ticket by key.</summary>
+    /// <param name="key">PSS ticket key (e.g. <c>PSS-1</c>).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">PSS payload.</response>
+    /// <response code="404">PSS not found.</response>
+    [HttpGet("pss/{key}")]
+    public Task<IActionResult> GetPss(string key, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, $"pss/{Uri.EscapeDataString(key)}", Request, ct);
+
     // ── Local processing ─────────────────────────────────────────────────
 
     /// <summary>Page through tickets in the local-processing queue.</summary>
