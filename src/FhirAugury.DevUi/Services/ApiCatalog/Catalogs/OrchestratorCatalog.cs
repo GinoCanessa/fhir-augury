@@ -15,6 +15,7 @@ public static class OrchestratorCatalog
             .. ProjectSourceCatalog("zulip", "Zulip", ZulipCatalog.Build()),
             .. ProjectSourceCatalog("confluence", "Confluence", ConfluenceCatalog.Build()),
             .. ProjectSourceCatalog("github", "GitHub", GitHubCatalog.Build()),
+            .. ProjectSourceCatalog("fhir", "FHIR", FhirCatalog.Build(), skipOrchestratorNative: false),
         ];
         return list;
     }
@@ -197,7 +198,144 @@ public static class OrchestratorCatalog
             PathTemplate: "api/v1/status",
             Parameters: [],
             Description: "Orchestrator-local readiness. 200 when source registry hydrated, 503 otherwise. Does not call sources."),
+
+        // ── Processing services (start/stop/inspect processors) ───────────────
+        new ApiEndpointDescriptor(
+            Id: "processing.list",
+            DisplayName: "List Processing Services",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services",
+            Parameters: [],
+            Description: "Lists configured processing services with cached health."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.status",
+            DisplayName: "Processor Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/status",
+            Parameters: [ProcessingServiceName()]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.queue",
+            DisplayName: "Processor Queue",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/queue",
+            Parameters: [ProcessingServiceName()]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.start",
+            DisplayName: "Start Processor",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/start",
+            Parameters: [ProcessingServiceName()]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.stop",
+            DisplayName: "Stop Processor",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/stop",
+            Parameters: [ProcessingServiceName()]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.health",
+            DisplayName: "Processor Health",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/health",
+            Parameters: [ProcessingServiceName()]),
+
+        // ── Services ──────────────────────────────────────────────────────────
+        new ApiEndpointDescriptor(
+            Id: "services.endpoints",
+            DisplayName: "Service Endpoints",
+            Group: "Services",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/endpoints",
+            Parameters: [],
+            Description: "Configured HTTP addresses for every enabled source."),
+
+        // ── Ingestion ─────────────────────────────────────────────────────────
+        new ApiEndpointDescriptor(
+            Id: "ingestion.notify",
+            DisplayName: "Notify Ingestion",
+            Group: "Ingestion",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/notify-ingestion",
+            Parameters:
+            [
+                new ApiParameter("body", ApiParameterKind.Body, Required: false,
+                    DefaultValue: "{ \"source\": \"jira\", \"completedAt\": null }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Peer ingestion-completion notification; fans out to every other source."),
+
+        // ── Meta / OpenAPI ────────────────────────────────────────────────────
+        new ApiEndpointDescriptor(
+            Id: "meta.openapi-json",
+            DisplayName: "Merged OpenAPI (JSON)",
+            Group: "Meta",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/openapi.json",
+            Parameters:
+            [
+                new ApiParameter("include", ApiParameterKind.Query, Required: false,
+                    Placeholder: "internal"),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "meta.openapi-yaml",
+            DisplayName: "Merged OpenAPI (YAML)",
+            Group: "Meta",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/openapi.yaml",
+            Parameters:
+            [
+                new ApiParameter("include", ApiParameterKind.Query, Required: false,
+                    Placeholder: "internal"),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "meta.source-orchestrator-openapi",
+            DisplayName: "Orchestrator OpenAPI",
+            Group: "Meta",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/source/orchestrator/openapi.json",
+            Parameters: []),
+
+        new ApiEndpointDescriptor(
+            Id: "meta.source-openapi",
+            DisplayName: "Source OpenAPI",
+            Group: "Meta",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/source/{name}/openapi.json",
+            Parameters:
+            [
+                new ApiParameter("name", ApiParameterKind.Path, Required: true,
+                    Placeholder: "jira"),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "meta.list-sources",
+            DisplayName: "List Sources",
+            Group: "Meta",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/source/orchestrator/list-sources",
+            Parameters: []),
     ];
+
+    /// <summary>
+    /// The required <c>{name}</c> path parameter shared by the
+    /// processing-services control endpoints.
+    /// </summary>
+    private static ApiParameter ProcessingServiceName() =>
+        new("name", ApiParameterKind.Path, Required: true,
+            Placeholder: "processor-jira-fhir-preparer");
 
     /// <summary>
     /// Projects every endpoint from a per-source catalog into its
@@ -208,25 +346,40 @@ public static class OrchestratorCatalog
     /// aggregate stats, services list) are filtered out so the orchestrator
     /// catalog does not double-list them.
     /// </summary>
+    /// <param name="skipOrchestratorNative">
+    /// When <c>true</c> (the default), the proxied <c>health</c>/<c>status</c>/
+    /// <c>stats</c> lifecycle routes are dropped because the orchestrator
+    /// surfaces its own copies. The FHIR proxy uniquely re-exposes
+    /// <c>api/v1/fhir/health|status|stats</c>, so it passes <c>false</c> to keep
+    /// those projected entries. The <c>content/*</c> fan-out subtree is always
+    /// dropped regardless of this flag.
+    /// </param>
     private static IEnumerable<ApiEndpointDescriptor> ProjectSourceCatalog(
-        string sourceName, string displayPrefix, IReadOnlyList<ApiEndpointDescriptor> sourceEntries)
+        string sourceName, string displayPrefix, IReadOnlyList<ApiEndpointDescriptor> sourceEntries,
+        bool skipOrchestratorNative = true)
     {
         const string ApiV1 = "api/v1";
         string typedPrefix = $"api/v1/{sourceName}";
 
         foreach (ApiEndpointDescriptor entry in sourceEntries)
         {
-            // Skip endpoints surfaced by the orchestrator directly rather than
-            // through a typed source proxy — the content fan-out subtree, the
-            // orchestrator's own lifecycle probes, and the aggregate stats /
-            // services endpoints. Each source still re-exports its own
-            // copies under its DevUI tab; we just don't repeat them under
-            // the orchestrator tab.
-            if (entry.PathTemplate.StartsWith("api/v1/content/", System.StringComparison.Ordinal)
-                || string.Equals(entry.PathTemplate, "api/v1/content/search", System.StringComparison.Ordinal)
-                || string.Equals(entry.PathTemplate, "api/v1/health", System.StringComparison.Ordinal)
-                || string.Equals(entry.PathTemplate, "api/v1/status", System.StringComparison.Ordinal)
-                || string.Equals(entry.PathTemplate, "api/v1/stats", System.StringComparison.Ordinal))
+            // The content fan-out subtree is always orchestrator-native and is
+            // never projected under a source tab.
+            if (entry.PathTemplate.StartsWith("api/v1/content/", System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // The orchestrator's own lifecycle probes and aggregate stats are
+            // normally surfaced once (under the orchestrator's own groups), so
+            // the proxied copies are skipped — unless the proxy genuinely
+            // re-exposes them (FHIR), in which case skipOrchestratorNative is
+            // false. Each source still re-exports its own copies under its
+            // DevUI tab.
+            if (skipOrchestratorNative
+                && (string.Equals(entry.PathTemplate, "api/v1/health", System.StringComparison.Ordinal)
+                    || string.Equals(entry.PathTemplate, "api/v1/status", System.StringComparison.Ordinal)
+                    || string.Equals(entry.PathTemplate, "api/v1/stats", System.StringComparison.Ordinal)))
             {
                 continue;
             }
