@@ -157,4 +157,32 @@ public class ApiUrlBuilderTests
         Assert.Contains("key", ex.MissingParameters);
         Assert.Contains("q", ex.MissingParameters);
     }
+
+    [Fact]
+    public void Every_catalog_descriptor_builds_without_throwing()
+    {
+        List<string> failures = [];
+        foreach (string source in SourceApiCatalog.KnownSources)
+        {
+            foreach (ApiEndpointDescriptor descriptor in SourceApiCatalog.GetCatalog(source))
+            {
+                Dictionary<string, string?> values = new();
+                foreach (ApiParameter p in descriptor.Parameters)
+                    values[p.Name] = "1";
+
+                try
+                {
+                    ApiUrlBuilder.Build("http://x", descriptor, values);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{source}/{descriptor.Id} ({descriptor.PathTemplate}): {ex.Message}");
+                }
+            }
+        }
+
+        Assert.True(failures.Count == 0,
+            "The following catalog descriptors failed to build:\n  - " +
+            string.Join("\n  - ", failures));
+    }
 }

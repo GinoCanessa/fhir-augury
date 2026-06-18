@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Source.GitHub\FhirAugury.Source.GitHub.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Source.Confluence\FhirAugury.Source.Confluence.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Source.Fhir\FhirAugury.Source.Fhir.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Orchestrator\FhirAugury.Orchestrator.csproj" />
   </ItemGroup>
 
