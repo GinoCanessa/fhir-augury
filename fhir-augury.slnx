@@ -6,6 +6,7 @@
     <Project Path="src/FhirAugury.Source.Zulip/FhirAugury.Source.Zulip.csproj" />
     <Project Path="src/FhirAugury.Source.Confluence/FhirAugury.Source.Confluence.csproj" />
     <Project Path="src/FhirAugury.Source.GitHub/FhirAugury.Source.GitHub.csproj" />
+    <Project Path="src/FhirAugury.Source.Fhir/FhirAugury.Source.Fhir.csproj" />
     <Project Path="src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj" />
     <Project Path="src/FhirAugury.Cli/FhirAugury.Cli.csproj" />
     <Project Path="src/FhirAugury.McpShared/FhirAugury.McpShared.csproj" />
@@ -40,6 +41,7 @@
     <Project Path="tests/FhirAugury.Source.Zulip.Tests/FhirAugury.Source.Zulip.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.Confluence.Tests/FhirAugury.Source.Confluence.Tests.csproj" />
     <Project Path="tests/FhirAugury.Source.GitHub.Tests/FhirAugury.Source.GitHub.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Source.Fhir.Tests/FhirAugury.Source.Fhir.Tests.csproj" />
     <Project Path="tests/FhirAugury.Orchestrator.Tests/FhirAugury.Orchestrator.Tests.csproj" />
     <Project Path="tests/FhirAugury.Parsing.Fhir.Tests/FhirAugury.Parsing.Fhir.Tests.csproj" />
     <Project Path="tests/FhirAugury.Parsing.Fsh.Tests/FhirAugury.Parsing.Fsh.Tests.csproj" />
