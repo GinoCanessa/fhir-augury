@@ -259,3 +259,20 @@ public record ResolveResult(
     string VersionedUrl,
     string? Status,
     string? WorkGroup);
+
+// ── Search ───────────────────────────────────────────────────────────
+
+/// <summary>A single FTS search hit.</summary>
+public record ArtifactSearchHit(
+    string Kind,
+    string Release,
+    string Name,
+    string? Title,
+    string? Url,
+    double Score);
+
+/// <summary>The result of an artifact search.</summary>
+public record FhirSearchResponse(
+    string Query,
+    int Count,
+    IReadOnlyList<ArtifactSearchHit> Hits);

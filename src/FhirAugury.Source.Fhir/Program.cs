@@ -2,6 +2,8 @@ using FhirAugury.Common.Indexing;
 using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.Fhir.Configuration;
 using FhirAugury.Source.Fhir.Database;
+using FhirAugury.Source.Fhir.Hosting;
+using FhirAugury.Source.Fhir.Indexing;
 using FhirAugury.Source.Fhir.Readers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -59,12 +61,38 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton<FhirSpecReader>();
 
-// Index tracker (Phase 5 registers the FTS index with it).
+// Writable FTS sidecar database (schema created eagerly so searches during the
+// startup warm-up return empty rather than failing).
+builder.Services.AddSingleton(sp =>
+{
+    FhirServiceOptions options = sp.GetRequiredService<IOptions<FhirServiceOptions>>().Value;
+    string dbPath = Path.GetFullPath(options.SidecarDatabasePath);
+    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+    FhirSearchDatabase db = new(dbPath, sp.GetRequiredService<ILogger<FhirSearchDatabase>>(),
+        ftsTokenizer: options.Bm25.FtsTokenizer);
+    db.Initialize();
+    return db;
+});
+
+builder.Services.AddSingleton<FhirSearchIndexBuilder>();
+builder.Services.AddSingleton<FhirSearchReader>();
+
+// Index tracker (the FTS index is registered with it below, after build).
 IndexTracker indexTracker = new();
 builder.Services.AddSingleton<IIndexTracker>(indexTracker);
 builder.Services.AddSingleton(indexTracker);
 
+// Startup FTS build — runs after Kestrel binds, so /health reports "initializing".
+builder.Services.AddSingleton<FhirStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<FhirStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<FhirStartupRebuildService>());
+
 WebApplication app = builder.Build();
+
+// Register the FTS index with the tracker (record count read live from the sidecar).
+FhirSearchDatabase searchDatabase = app.Services.GetRequiredService<FhirSearchDatabase>();
+indexTracker.RegisterIndex("fts", "FHIR artifact FTS5 search index", searchDatabase.ArtifactCount);
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();

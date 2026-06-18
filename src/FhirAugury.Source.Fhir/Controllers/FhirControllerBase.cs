@@ -12,10 +12,13 @@ namespace FhirAugury.Source.Fhir.Controllers;
 /// </summary>
 public abstract class FhirControllerBase(FhirReleaseResolver resolver) : ControllerBase
 {
+    /// <summary>The release resolver, shared with derived controllers.</summary>
+    protected FhirReleaseResolver Resolver { get; } = resolver;
+
     /// <summary>Resolves the release and wraps a never-null result (e.g. a list).</summary>
     protected IActionResult ResolvedList<T>(string release, Func<int, T> produce)
     {
-        if (!resolver.TryResolve(release, out int packageKey, out ReleaseInfo? info, out string? error))
+        if (!Resolver.TryResolve(release, out int packageKey, out ReleaseInfo? info, out string? error))
         {
             return NotFound(new { error });
         }
@@ -26,7 +29,7 @@ public abstract class FhirControllerBase(FhirReleaseResolver resolver) : Control
     protected IActionResult ResolvedItem<T>(string release, Func<int, T?> produce, string notFound)
         where T : class
     {
-        if (!resolver.TryResolve(release, out int packageKey, out ReleaseInfo? info, out string? error))
+        if (!Resolver.TryResolve(release, out int packageKey, out ReleaseInfo? info, out string? error))
         {
             return NotFound(new { error });
         }
