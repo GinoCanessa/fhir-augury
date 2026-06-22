@@ -10,6 +10,18 @@
   /** @type {Set<string>} */
   const inRunKeys = new Set();
 
+  const SITE_NAME = 'Tickets';
+  let STATIC_TITLE = '';
+
+  function truncate(str, max) {
+    if (!str) return str;
+    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+  }
+
+  function setDocTitle(subject) {
+    document.title = subject ? subject + ' — ' + SITE_NAME : STATIC_TITLE;
+  }
+
   // Chip dimensions that can appear as filter chips. `spec`, `project`,
   // and `wg` are the three the generation pipeline can pre-pin (baked
   // into the trimmed DB); `artifact` and `page` are in-page-only and
@@ -57,6 +69,7 @@
       }
 
       installCopyButton();
+      STATIC_TITLE = document.title;
       window.addEventListener('hashchange', App.route);
       App.route();
     },
@@ -65,6 +78,7 @@
       const main = document.getElementById('app');
       clearChildren(main);
       clearCopyExport();
+      setDocTitle(null);
       const fullHash = window.location.hash || '#/';
 
       // Split path and chip-query suffix. Encoded as a `?` after the
@@ -111,6 +125,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By workgroup', href: null }]);
+          setDocTitle('By workgroup');
           Views.crosscutIndex(main, 'by-workgroup');
         } else if (parts[0] === 'by-type') {
           if (parts.length >= 2) {
@@ -119,6 +134,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By type', href: null }]);
+          setDocTitle('By type');
           Views.crosscutIndex(main, 'by-type');
         } else if (parts[0] === 'by-artifact') {
           if (parts.length >= 2) {
@@ -127,6 +143,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By artifact', href: null }]);
+          setDocTitle('By artifact');
           Views.crosscutIndex(main, 'by-artifact');
         } else if (parts[0] === 'by-page') {
           if (parts.length >= 2) {
@@ -135,6 +152,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By page', href: null }]);
+          setDocTitle('By page');
           Views.crosscutIndex(main, 'by-page');
         } else if (parts[0] === 'by-impact') {
           if (parts.length >= 2) {
@@ -143,6 +161,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By impact', href: null }]);
+          setDocTitle('By impact');
           Views.crosscutIndex(main, 'by-impact');
         } else if (parts[0] === 'by-specification') {
           if (parts.length >= 2) {
@@ -151,6 +170,7 @@
             return;
           }
           setBreadcrumb([{ label: 'By specification', href: null }]);
+          setDocTitle('By specification');
           Views.crosscutIndex(main, 'by-specification');
         } else {
           setBreadcrumb([]);
@@ -294,6 +314,20 @@
       if (ActiveChips[dim] && ActiveChips[dim].length > 0) return true;
     }
     return false;
+  }
+
+  // Returns the active-filter subject for the tab title: the selected chip
+  // values across every filter dimension (stable order), joined with ' · ',
+  // or null when no chips are active (so the title falls back to static).
+  function chipsSubject() {
+    if (!hasAnyActiveChips()) return null;
+    const values = [];
+    for (let i = 0; i < FilterableDimensions.length; i++) {
+      const dim = FilterableDimensions[i];
+      const vals = ActiveChips[dim] || [];
+      for (let j = 0; j < vals.length; j++) values.push(String(vals[j]));
+    }
+    return values.length > 0 ? values.join(' · ') : null;
   }
 
   function renderChipBanner(main) {
@@ -781,6 +815,7 @@
 
     list: function (main, filter) {
       renderChipBanner(main);
+      setDocTitle(chipsSubject());
       const baseSql =
         'SELECT pt.Key, jst.Title, jst.WorkGroup, jst.Status, jst.Type, ' +
         'pt.ProposalAImpact, pt.ProposalBImpact, ' +
@@ -964,6 +999,7 @@
         return;
       }
       const t = head.rows[0];
+      setDocTitle(t.Title ? String(t.Key) + ': ' + truncate(String(t.Title), 60) : String(t.Key));
 
       const repos = query('SELECT Repo, RepoCategory, Justification FROM prepared_ticket_repos WHERE TicketKey = $k ORDER BY Repo', { $k: key }).rows;
       const relatedJira = query('SELECT AssociatedTicketKey, LinkType, Justification FROM prepared_ticket_related_jira WHERE TicketKey = $k ORDER BY AssociatedTicketKey', { $k: key }).rows;
@@ -1473,6 +1509,7 @@
 
       // Overwrite the route-time breadcrumb placeholder with the
       // resolved short description.
+      setDocTitle(String(t.ShortDescription || topicId));
       setBreadcrumb([
         { label: 'Topics', href: '#/topics' + currentHashSuffix() },
         { label: String(t.ShortDescription || topicId), href: null },
