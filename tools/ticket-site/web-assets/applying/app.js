@@ -11,6 +11,17 @@
   if (!app) return;
 
   let db;
+  const SITE_NAME = 'Applying';
+  let STATIC_TITLE = '';
+
+  function truncate(str, max) {
+    if (!str) return str;
+    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+  }
+
+  function setDocTitle(subject) {
+    document.title = subject ? subject + ' — ' + SITE_NAME : STATIC_TITLE;
+  }
   try {
     const SQL = await initSqlJs({ locateFile: f => 'assets/' + f });
     const b64 = window.__DB__ || '';
@@ -176,6 +187,7 @@
       'ORDER BY pt.Key');
 
     clearChildren(app);
+    setDocTitle('Planned tickets');
     app.appendChild(el('h2', null, 'Planned tickets (' + rows.length + ')'));
 
     const filterRow = el('div', { class: 'filter-row' });
@@ -363,6 +375,7 @@
     }
 
     const title = summary.Title || ticketTitle(summary.Key);
+    setDocTitle(title ? String(summary.Key) + ': ' + truncate(String(title), 60) : String(summary.Key));
     let html = '<h2>' + escape(summary.Key) + ' — ' + escape(title) + '</h2>';
 
     // Ticket summary key/value table (first section). Key links to Jira.
@@ -464,6 +477,7 @@
   }
 
   function renderTopicList() {
+    setDocTitle('Topics');
     const rows = query(
       'SELECT tt.Id, tt.ShortDescription, tt.WorkGroupDisplay, tt.Specification, tt.Type, ' +
       '       (SELECT GROUP_CONCAT(RepoKey) FROM planned_ticket_topic_repos r WHERE r.TopicRowId = tt.RowId) AS Repos, ' +
@@ -495,6 +509,7 @@
       { '$id': id });
     if (!topicRows.length) { app.innerHTML = '<p>Topic not found.</p>'; return; }
     const topic = topicRows[0];
+    setDocTitle(String(topic.ShortDescription || id));
     const repos = query(
       'SELECT RepoKey FROM planned_ticket_topic_repos WHERE TopicRowId = $r ORDER BY OrderInTopic',
       { '$r': topic.RowId });
@@ -518,6 +533,7 @@
 
   function route() {
     clearCopyExport();
+    setDocTitle(null);
     const hash = window.location.hash.replace(/^#/, '') || '/';
     if (hash === '/' || hash === '') { setBreadcrumb([]); renderLanding(); return; }
     if (hash === '/list') { setBreadcrumb([{ label: 'List', href: null }]); renderList(); return; }
@@ -714,6 +730,7 @@
   }
 
   installCopyButton();
+  STATIC_TITLE = document.title;
   window.addEventListener('hashchange', route);
   route();
 })();
