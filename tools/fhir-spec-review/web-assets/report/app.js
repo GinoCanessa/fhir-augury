@@ -15,6 +15,17 @@
   /** @type {any} */
   var db = null;
 
+  var STATIC_TITLE = '';
+
+  function truncate(str, max) {
+    if (!str) return str;
+    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+  }
+
+  function setDocTitle(subject) {
+    document.title = subject ? subject + ' — ' + STATIC_TITLE : STATIC_TITLE;
+  }
+
   var App = {
     init: async function () {
       var main = document.getElementById('app');
@@ -37,6 +48,7 @@
         return;
       }
 
+      STATIC_TITLE = document.title;
       window.addEventListener('hashchange', App.route);
       App.route();
     },
@@ -45,6 +57,7 @@
       var main = document.getElementById('app');
       clearChildren(main);
       clearCopyExport();
+      setDocTitle(null);
       var hash = window.location.hash || '#/';
       var stripped = hash.replace(/^#\/?/, '');
       var parts = stripped.split('/').filter(function (p) { return p.length > 0; });
@@ -117,6 +130,7 @@
 
     workGroup: function (main, key) {
       var name = workGroupName(key);
+      setDocTitle(name);
       setBreadcrumb([{ label: name, href: null }]);
       main.appendChild(el('h2', null, name));
 
@@ -186,6 +200,7 @@
         renderError(main, 'Page not found: ' + id);
         return;
       }
+      setDocTitle(String(page.PageFileName));
       setBreadcrumb([
         { label: wgBreadcrumbLabel(code), href: '#/wg/' + encodeURIComponent(code) },
         { label: String(page.PageFileName), href: null }
@@ -202,6 +217,7 @@
         renderError(main, 'Artifact not found: ' + id);
         return;
       }
+      setDocTitle(String(artifact.Name) + ' (' + String(artifact.FhirId) + ')');
       setBreadcrumb([
         { label: wgBreadcrumbLabel(code), href: '#/wg/' + encodeURIComponent(code) },
         { label: String(artifact.FhirId), href: null }
