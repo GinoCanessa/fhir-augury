@@ -19,6 +19,18 @@ public class GitHubDatabase : SourceDatabase
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
+        // Legacy-schema column migrations MUST run before the generated
+        // CreateTable calls below: several generated CreateTable bodies issue
+        // CREATE INDEX over these columns, which errors on a pre-feature table
+        // under DQS-off SQLite (SourceGear) when the column is not yet present.
+        // AddColumnIfMissing no-ops on a fresh DB (table absent); CreateTable
+        // then builds the full schema including these columns and their indexes.
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "jira_workgroups", "WorkGroupCode", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroup", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
+
         GitHubRepoRecord.CreateTable(connection);
         GitHubIssueRecord.CreateTable(connection);
         GitHubCommentRecord.CreateTable(connection);
@@ -48,23 +60,16 @@ public class GitHubDatabase : SourceDatabase
         Hl7WorkGroupRecord.CreateTable(connection);
         GitHubRepoWorkGroupRecord.CreateTable(connection);
 
-        // Phase 3 migration: add WorkGroupCode (nullable canonical HL7 code) +
-        // index to the existing jira_workgroups table for in-place upgrades.
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "jira_workgroups", "WorkGroupCode", "TEXT");
+        // Phase 3 migration: index on WorkGroupCode (column added above, before
+        // the generated CreateTable) to the existing jira_workgroups table.
         using (SqliteCommand idx = connection.CreateCommand())
         {
             idx.CommandText = "CREATE INDEX IF NOT EXISTS ix_jira_workgroups_WorkGroupCode ON jira_workgroups(WorkGroupCode)";
             idx.ExecuteNonQuery();
         }
 
-        // Phase 4 migrations: add WorkGroup + WorkGroupRaw to github_spec_file_map
-        // (legacy schema had neither) and add WorkGroupRaw to canonical_artifacts /
-        // structure_definitions (legacy schema already had WorkGroup).
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroup", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
-
+        // Phase 4 migrations: indexes on WorkGroup / WorkGroupRaw (columns added
+        // above, before the generated CreateTable) for in-place upgrades.
         using (SqliteCommand idx = connection.CreateCommand())
         {
             idx.CommandText = """

@@ -50,6 +50,18 @@ public static class SqliteSchemaHelpers
             return false;
         }
 
+        // A non-existent table yields zero PRAGMA rows. Treat that as a no-op so
+        // this helper is safe to call *before* the table's CreateTable — the
+        // required order when the generated CreateTable builds an index over the
+        // migrated column. SourceGear's SQLite compiles with DQS off, so indexing
+        // a not-yet-present column errors instead of silently creating a junk
+        // string-literal index. On a fresh DB the table is absent here and gets
+        // created (with the column) by the subsequent CreateTable call.
+        if (existing.Count == 0)
+        {
+            return false;
+        }
+
         using SqliteCommand alter = connection.CreateCommand();
         alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {typeAndDefault}";
         alter.ExecuteNonQuery();

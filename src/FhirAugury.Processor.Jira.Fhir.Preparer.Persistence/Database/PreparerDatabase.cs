@@ -38,6 +38,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     {
         ArgumentNullException.ThrowIfNull(connection);
         JiraProcessingSourceTicketStore.EnsureSchema(connection);
+
+        // Legacy migration before CreateTable: the generated
+        // PreparedJiraHydrationRecord.CreateTable builds an index over
+        // WorkGroupClean, which errors on a pre-feature schema under DQS-off
+        // SQLite when the column is absent. No-ops on a fresh DB (table absent).
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "prepared_jira_hydration", "WorkGroupClean", "TEXT NULL");
+
         PreparedTicketRecord.CreateTable(connection);
         PreparedTicketRepoRecord.CreateTable(connection);
         PreparedTicketRelatedJiraRecord.CreateTable(connection);
