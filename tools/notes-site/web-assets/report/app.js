@@ -12,6 +12,17 @@
   /** @type {any} */
   var db = null;
 
+  var STATIC_TITLE = '';
+
+  function truncate(str, max) {
+    if (!str) return str;
+    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+  }
+
+  function setDocTitle(subject) {
+    document.title = subject ? subject + ' — ' + STATIC_TITLE : STATIC_TITLE;
+  }
+
   var App = {
     init: async function () {
       var main = document.getElementById('app');
@@ -34,6 +45,7 @@
         return;
       }
 
+      STATIC_TITLE = document.title;
       window.addEventListener('hashchange', App.route);
       App.route();
     },
@@ -42,6 +54,7 @@
       var main = document.getElementById('app');
       clearChildren(main);
       clearCopyExport();
+      setDocTitle(null);
       var hash = window.location.hash || '#/';
       var stripped = hash.replace(/^#\/?/, '');
       var parts = stripped.split('/').filter(function (p) { return p.length > 0; });
@@ -235,6 +248,7 @@
         return;
       }
       var n = res.rows[0];
+      setDocTitle(String(n.Name || noteId));
       setBreadcrumb([{ label: String(n.Name || noteId), href: null }]);
 
       main.appendChild(el('h2', null, String(n.Name) + ' — ' + String(n.Type)));
