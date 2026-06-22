@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 namespace FhirAugury.Sqlite;
 
-internal static class SqliteProviderInit
+internal static class SqliteProviderModuleInitializer
 {
     [ModuleInitializer]
     internal static void Init()
