@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="..\common.props" />
+  <Import Project="..\sqlite.props" />
 
   <PropertyGroup>
     <RootNamespace>FhirAugury.Processor.Jira.Fhir.Planner.Persistence</RootNamespace>
@@ -7,7 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.622.1509" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
   </ItemGroup>
 
   <ItemGroup>
