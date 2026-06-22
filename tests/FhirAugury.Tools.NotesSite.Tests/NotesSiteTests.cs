@@ -185,6 +185,9 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains("execCommand", appJs);
         Assert.Contains("htmlToMarkdown", appJs);
 
+        Assert.Contains("document.title", appJs);
+        Assert.Contains("setDocTitle", appJs);
+
         string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
         Assert.Contains(".copy-ai", appCss);
     }

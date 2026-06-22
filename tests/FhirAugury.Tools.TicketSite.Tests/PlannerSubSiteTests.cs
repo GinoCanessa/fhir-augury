@@ -144,6 +144,9 @@ public sealed class PlannerSubSiteTests
         Assert.Contains("clearCopyExport", appJs, StringComparison.Ordinal);
         Assert.Contains("execCommand", appJs, StringComparison.Ordinal);
 
+        Assert.Contains("document.title", appJs, StringComparison.Ordinal);
+        Assert.Contains("setDocTitle", appJs, StringComparison.Ordinal);
+
         string appCss = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.css"));
         Assert.Contains(".copy-ai", appCss, StringComparison.Ordinal);
     }

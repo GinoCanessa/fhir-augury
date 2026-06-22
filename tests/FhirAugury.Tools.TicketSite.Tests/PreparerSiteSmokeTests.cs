@@ -206,6 +206,9 @@ public sealed class PreparerSiteSmokeTests
         Assert.Contains("clearCopyExport", appJs);
         Assert.Contains("execCommand", appJs);
 
+        Assert.Contains("document.title", appJs);
+        Assert.Contains("setDocTitle", appJs);
+
         string appCss = await File.ReadAllTextAsync(Path.Combine(assetsDir, "app.css"));
         Assert.Contains(".copy-ai", appCss);
     }
