@@ -11,6 +11,7 @@
         <PackageReference Include="SQLitePCLRaw.provider.e_sqlite3" Version="2.1.11" />
         <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
         <Compile Include="$(MSBuildThisFileDirectory)..\src\SqliteProviderInit.cs"
-                 Link="Sqlite\SqliteProviderInit.cs" />
+                 Link="Sqlite\SqliteProviderInit.cs"
+                 Condition="'$(IsTestProject)' == 'true'" />
     </ItemGroup>
 </Project>
