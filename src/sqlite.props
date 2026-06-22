@@ -1,0 +1,9 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.9" />
+    <PackageReference Include="SQLitePCLRaw.provider.e_sqlite3" Version="2.1.11" />
+    <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
+    <Compile Include="$(MSBuildThisFileDirectory)SqliteProviderInit.cs"
+             Link="Sqlite\SqliteProviderInit.cs" />
+  </ItemGroup>
+</Project>
