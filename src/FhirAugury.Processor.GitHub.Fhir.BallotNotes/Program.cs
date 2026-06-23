@@ -53,7 +53,18 @@ builder.Services.AddSingleton(sp =>
 
 // The attributor resolves orchestrator-first / Jira-source fallback per call
 // from BallotNotesHydrationOptions, so the typed client needs no base address.
-builder.Services.AddHttpClient<TicketAttributor>();
+// Bound the connect phase so best-effort attribution fails fast against an
+// unreachable/black-holed upstream instead of stalling on the OS connect timeout.
+builder.Services.AddHttpClient<TicketAttributor>()
+    .ConfigurePrimaryHttpMessageHandler(static sp =>
+    {
+        BallotNotesHydrationOptions hydration = sp
+            .GetRequiredService<IOptions<BallotNotesHydrationOptions>>().Value;
+        return new SocketsHttpHandler
+        {
+            ConnectTimeout = hydration.AttributionConnectTimeout,
+        };
+    });
 builder.Services.AddSingleton<BallotNotesHydrator>();
 
 WebApplication app = builder.Build();

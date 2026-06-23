@@ -20,6 +20,14 @@ public sealed class BallotNotesHydrationOptions
     /// <summary>Maximum number of units hydrated concurrently.</summary>
     public int MaxParallelism { get; set; } = 4;
 
+    /// <summary>
+    /// Bounds the TCP connect phase of best-effort attribution lookups so they fail
+    /// fast against an unreachable or black-holed upstream (orchestrator / Jira)
+    /// instead of stalling on the OS connect timeout. Applied to the
+    /// <c>TicketAttributor</c> typed client's primary handler.
+    /// </summary>
+    public TimeSpan AttributionConnectTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
     /// <summary>Validates the options. Returns human-readable errors; empty means valid.</summary>
     public IEnumerable<string> Validate()
     {
@@ -36,6 +44,11 @@ public sealed class BallotNotesHydrationOptions
         if (MaxParallelism < 1)
         {
             yield return "MaxParallelism must be greater than or equal to 1.";
+        }
+
+        if (AttributionConnectTimeout <= TimeSpan.Zero)
+        {
+            yield return "BallotNotes hydration AttributionConnectTimeout must be greater than zero.";
         }
     }
 }
