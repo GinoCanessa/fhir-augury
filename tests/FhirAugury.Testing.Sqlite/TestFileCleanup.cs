@@ -34,7 +34,9 @@ public static class TestFileCleanup
     /// moment to release the underlying file lock. Test-only raw
     /// <see cref="SqliteConnection"/>s use <c>;Pooling=False</c> in their
     /// connection strings so they never need this fallback. No-ops when the
-    /// path is null/empty or the directory does not exist.
+    /// path is null/empty or the directory does not exist. This is best-effort:
+    /// an <see cref="IOException"/> / <see cref="UnauthorizedAccessException"/>
+    /// on the final attempt is swallowed so temp-dir cleanup never fails a test.
     /// </summary>
     public static void SafeDeleteDirectory(string path, int maxAttempts = 12)
     {
@@ -58,6 +60,16 @@ public static class TestFileCleanup
                 ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
             }
+            catch (IOException)
+            {
+                // Final attempt: best-effort. A temp-dir cleanup failure must
+                // never surface as a test failure.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Final attempt: best-effort. A temp-dir cleanup failure must
+                // never surface as a test failure.
+            }
         }
     }
 
@@ -66,7 +78,9 @@ public static class TestFileCleanup
     /// file handles still being released. Same lazy-pool-clear-on-retry semantics
     /// as <see cref="SafeDeleteDirectory"/>. Also best-effort deletes the matching
     /// <c>-wal</c> and <c>-shm</c> sidecar files written by SQLite's WAL journal
-    /// mode. No-ops when the path is null/empty or the file does not exist.
+    /// mode. No-ops when the path is null/empty or the file does not exist. This is
+    /// best-effort: an <see cref="IOException"/> / <see cref="UnauthorizedAccessException"/>
+    /// on the final attempt is swallowed so temp-file cleanup never fails a test.
     /// </summary>
     public static void SafeDeleteFile(string path, int maxAttempts = 12)
     {
@@ -89,6 +103,18 @@ public static class TestFileCleanup
             {
                 ClearSqlitePools();
                 Thread.Sleep(50 * attempt);
+            }
+            catch (IOException)
+            {
+                // Final attempt: best-effort. A temp-file cleanup failure must
+                // never surface as a test failure.
+                break;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Final attempt: best-effort. A temp-file cleanup failure must
+                // never surface as a test failure.
+                break;
             }
         }
 
