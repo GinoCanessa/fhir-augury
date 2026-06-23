@@ -228,7 +228,6 @@
       main.appendChild(el('h3', null, 'Urgent Item Checklist'));
       var checklist = el('ul');
       [
-        'Confirm workgroup disposition vote has been recorded and sent to FMG.',
         'Confirm the resource boundaries and relationships are documented.',
         'Confirm every element has a clear definition and short description.',
         'Confirm required bindings and search parameters are correct.',
