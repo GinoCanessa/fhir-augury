@@ -279,16 +279,17 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing tool implementations across 16 tool classes
-(2 cross-source — `UnifiedTools`, `ContentTools` — plus 14 source-scoped
-families added in the 2026-04 sync that mirror the typed orchestrator
-proxies one-for-one: `JiraItemsTools`, `JiraDimensionTools`,
-`JiraWorkGroupTools`, `JiraProjectTools`, `JiraLocalProcessingTools`,
-`JiraSpecsTools`, `ZulipItemsTools`, `ZulipMessagesTools`,
-`ZulipStreamsTools`, `ZulipThreadsTools`, `ConfluenceItemsTools`,
-`ConfluencePagesTools`, `GitHubItemsTools`, `GitHubReposTools`; the
-legacy umbrella `JiraTools` and `ZulipTools` classes remain for
-backwards-compatible cross-source helpers).
+Shared MCP library containing tool implementations across 23 tool classes
+(2 cross-source — `UnifiedTools`, `ContentTools` — plus source-scoped
+families that mirror the typed orchestrator proxies one-for-one:
+`JiraItemsTools`, `JiraDimensionTools`, `JiraWorkGroupTools`,
+`JiraProjectTools`, `JiraLocalProcessingTools`, `JiraSpecsTools`,
+`JiraBalDefTools`, `JiraBallotTools`, `JiraPssTools`, `ZulipItemsTools`,
+`ZulipMessagesTools`, `ZulipStreamsTools`, `ZulipThreadsTools`,
+`ConfluenceItemsTools`, `ConfluencePagesTools`, `GitHubItemsTools`,
+`GitHubReposTools`, `FhirTools`, `WorkGroupTools`; the legacy umbrella
+`JiraTools` and `ZulipTools` classes remain for backwards-compatible
+cross-source helpers).
 
 ```
 FhirAugury.McpShared/

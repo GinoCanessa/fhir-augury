@@ -94,11 +94,12 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. Eight projects are
-registered: four sources, the orchestrator, the MCP HTTP server, the Dev UI,
-and the CLI tool. Confluence, Dev UI, the MCP HTTP server, and the CLI use
+The Aspire dashboard URL is shown in the console output. 13 projects are
+registered: five sources, the orchestrator, four processors, the MCP HTTP
+server, the Dev UI, and the CLI tool. Confluence, all four processors, Dev UI,
+the MCP HTTP server, and the CLI use
 `WithExplicitStart()` and must be started manually from the Aspire dashboard.
-The orchestrator waits for Jira, Zulip, and GitHub to be healthy before starting.
+The orchestrator waits for Jira, Zulip, GitHub, and FHIR to be healthy before starting.
 Zulip and GitHub also wait for Jira.
 
 ### 3. Configure credentials
