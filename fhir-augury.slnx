@@ -62,6 +62,7 @@
     <Project Path="tools/notes-site/notes-site.csproj" />
     <Project Path="tools/ticket-site/ticket-site.csproj" />
     <Project Path="tools/fhir-spec-review/fhir-spec-review.csproj" />
+    <Project Path="tools/dictionary-build/dictionary-build.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
