@@ -10,6 +10,9 @@ public sealed record HydrateRequest
     public required string SinceSha { get; init; }
     public string? RepoCategory { get; init; }
     public string? WorkGroupHint { get; init; }
+
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>) shown in the note + SPA.</summary>
+    public string? WindowLabel { get; init; }
 }
 
 /// <summary>Returned with <c>202 Accepted</c> when a hydration run is queued.</summary>
@@ -91,6 +94,9 @@ public sealed record BallotNoteDetailDto
     public string SinceShortSha { get; init; } = string.Empty;
     public string HeadSha { get; init; } = string.Empty;
     public string HeadShortSha { get; init; } = string.Empty;
+
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
+    public string WindowLabel { get; init; } = string.Empty;
 
     public int CommitsInWindow { get; init; }
     public int TicketsAttributed { get; init; }

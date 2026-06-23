@@ -24,6 +24,7 @@ internal static class BallotNoteDtoMapper
             SinceShortSha = note.SinceShortSha,
             HeadSha = note.HeadSha,
             HeadShortSha = note.HeadShortSha,
+            WindowLabel = note.WindowLabel,
             CommitsInWindow = note.CommitsInWindow,
             TicketsAttributed = note.TicketsAttributed,
             NeedsNote = note.NeedsNote,

@@ -139,6 +139,16 @@ public sealed class BallotNotesControllerTests : IDisposable
         Assert.True(hasObservation);
     }
 
+    [Fact]
+    public async Task Detail_surfaces_window_label()
+    {
+        SeedNote("hl7-fhir-artifact-observation", "Observation", windowLabel: "R6 Ballot 4");
+        HttpClient client = _factory.CreateClient();
+
+        using JsonDocument detail = await GetJson(client, "/api/v1/ballot-notes/hl7-fhir-artifact-observation");
+        Assert.Equal("R6 Ballot 4", detail.RootElement.GetProperty("windowLabel").GetString());
+    }
+
     private async Task<string> PollUntilTerminalAsync(HttpClient client, string runKey)
     {
         for (int i = 0; i < 200; i++)
@@ -158,7 +168,7 @@ public sealed class BallotNotesControllerTests : IDisposable
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
 
-    private void SeedNote(string noteId, string name)
+    private void SeedNote(string noteId, string name, string windowLabel = "")
     {
         BallotNotesDatabase db = _factory.Services.GetRequiredService<BallotNotesDatabase>();
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -171,6 +181,7 @@ public sealed class BallotNotesControllerTests : IDisposable
             RepoName = "fhir",
             RepoCategory = "FhirCore",
             WorkGroupCode = "OO",
+            WindowLabel = windowLabel,
             CommitsInWindow = 1,
             TicketsAttributed = 0,
             GeneratedAt = now,

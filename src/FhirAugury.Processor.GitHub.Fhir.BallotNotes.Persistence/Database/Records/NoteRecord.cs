@@ -50,6 +50,9 @@ public partial record class NoteRecord
     public string HeadSha { get; set; } = string.Empty;
     public string HeadShortSha { get; set; } = string.Empty;
 
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
+    public string WindowLabel { get; set; } = string.Empty;
+
     public int CommitsInWindow { get; set; }
     public int TicketsAttributed { get; set; }
 

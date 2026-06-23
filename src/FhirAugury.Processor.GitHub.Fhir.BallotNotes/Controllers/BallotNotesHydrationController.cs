@@ -90,6 +90,7 @@ public sealed class BallotNotesHydrationController(
             SinceShortSha = ShortSha(sinceFull),
             HeadSha = headSha,
             HeadShortSha = ShortSha(headSha),
+            WindowLabel = request.WindowLabel?.Trim() ?? string.Empty,
             Status = "running",
             UnitsTotal = 0,
             StartedAt = now,
@@ -103,6 +104,7 @@ public sealed class BallotNotesHydrationController(
             SinceSha = sinceFull,
             RunKey = runKey,
             RepoCategory = request.RepoCategory?.Trim() ?? string.Empty,
+            WindowLabel = request.WindowLabel?.Trim() ?? string.Empty,
             WorkGroupHint = request.WorkGroupHint,
         };
 

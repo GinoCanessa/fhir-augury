@@ -29,6 +29,9 @@ public partial record class NotesRunRecord
     public string HeadSha { get; set; } = string.Empty;
     public string HeadShortSha { get; set; } = string.Empty;
 
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>) for the run; empty when not supplied.</summary>
+    public string WindowLabel { get; set; } = string.Empty;
+
     /// <summary>Run state: <c>running</c>, <c>completed</c>, or <c>failed</c>.</summary>
     public string Status { get; set; } = "running";
 

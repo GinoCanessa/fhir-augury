@@ -213,4 +213,71 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.NotNull(done.CompletedAt);
         Assert.Equal(string.Empty, done.Error);
     }
+
+    [Fact]
+    public void WindowLabel_round_trips_through_note_and_run()
+    {
+        using BallotNotesDatabase db = NewDb();
+
+        NoteRecord evidence = Evidence();
+        evidence.WindowLabel = "R6 Ballot 4";
+        Seed(db, evidence);
+
+        NoteDetail detail = db.GetNote("hl7-fhir-artifact-observation")!;
+        Assert.Equal("R6 Ballot 4", detail.Note.WindowLabel);
+
+        const string runKey = "HL7/fhir@1a2b3c..9f8e7d";
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        db.BeginRun(new NotesRunRecord
+        {
+            RunKey = runKey,
+            RepoOwner = "HL7",
+            RepoName = "fhir",
+            WindowLabel = "R6 Ballot 4",
+            Status = "running",
+            StartedAt = now,
+            RunAt = now,
+        });
+
+        Assert.Equal("R6 Ballot 4", db.GetRun(runKey)!.WindowLabel);
+        Assert.Equal("R6 Ballot 4", db.GetLatestRun()!.WindowLabel);
+    }
+
+    [Fact]
+    public void EnsureSchema_backfills_WindowLabel_on_legacy_db()
+    {
+        // Build the current schema, then drop the WindowLabel columns to mimic a
+        // pre-Phase-1 DB that has every other column but not WindowLabel.
+        using (BallotNotesDatabase seed = NewDb()) { }
+        using (SqliteConnection legacy = new($"Data Source={_dbPath};Pooling=False"))
+        {
+            legacy.Open();
+            using SqliteCommand cmd = legacy.CreateCommand();
+            cmd.CommandText =
+                "ALTER TABLE notes DROP COLUMN WindowLabel;" +
+                "ALTER TABLE notes_runs DROP COLUMN WindowLabel;";
+            cmd.ExecuteNonQuery();
+        }
+        Assert.False(HasColumn("notes", "WindowLabel"));
+        Assert.False(HasColumn("notes_runs", "WindowLabel"));
+
+        using BallotNotesDatabase db = NewDb(); // Initialize() → EnsureSchema()
+
+        Assert.True(HasColumn("notes", "WindowLabel"));
+        Assert.True(HasColumn("notes_runs", "WindowLabel"));
+    }
+
+    private bool HasColumn(string table, string column)
+    {
+        using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");
+        conn.Open();
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
 }

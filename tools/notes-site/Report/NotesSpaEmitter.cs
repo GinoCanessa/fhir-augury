@@ -136,7 +136,7 @@ internal sealed class NotesSpaEmitter
         }.ConnectionString;
 
         string? repoOwner = null, repoName = null, repoCategory = null;
-        string? sinceShortSha = null, headShortSha = null, runAt = null;
+        string? sinceShortSha = null, headShortSha = null, runAt = null, windowLabel = null;
         int noteCount = 0;
 
         using (SqliteConnection conn = new(connStr))
@@ -146,7 +146,7 @@ internal sealed class NotesSpaEmitter
             using (SqliteCommand cmd = conn.CreateCommand())
             {
                 cmd.CommandText =
-                    "SELECT RepoOwner, RepoName, RepoCategory, SinceShortSha, HeadShortSha, RunAt " +
+                    "SELECT RepoOwner, RepoName, RepoCategory, SinceShortSha, HeadShortSha, RunAt, WindowLabel " +
                     "FROM notes_runs ORDER BY RunAt DESC, RowId DESC LIMIT 1";
                 using SqliteDataReader reader = cmd.ExecuteReader();
                 if (reader.Read())
@@ -157,6 +157,7 @@ internal sealed class NotesSpaEmitter
                     sinceShortSha = reader.IsDBNull(3) ? null : reader.GetString(3);
                     headShortSha = reader.IsDBNull(4) ? null : reader.GetString(4);
                     runAt = reader.IsDBNull(5) ? null : reader.GetString(5);
+                    windowLabel = reader.IsDBNull(6) ? null : reader.GetString(6);
                 }
             }
 
@@ -177,6 +178,7 @@ internal sealed class NotesSpaEmitter
             WriteNullableString(writer, "sinceShortSha", sinceShortSha);
             WriteNullableString(writer, "headShortSha", headShortSha);
             WriteNullableString(writer, "runAt", runAt);
+            WriteNullableString(writer, "windowLabel", windowLabel);
             writer.WriteNumber("noteCount", noteCount);
             writer.WriteEndObject();
         }

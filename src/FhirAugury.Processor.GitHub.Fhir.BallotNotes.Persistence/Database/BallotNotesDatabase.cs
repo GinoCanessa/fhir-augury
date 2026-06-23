@@ -38,6 +38,12 @@ public sealed class BallotNotesDatabase : SourceDatabase
         NoteCommitRecord.CreateTable(connection);
         NoteTicketRecord.CreateTable(connection);
         NotesRunRecord.CreateTable(connection);
+
+        // Additive migrations for legacy DBs (cslightdbgen emits no ALTER):
+        // back-fill columns added after the tables were first created. Must run
+        // after the CreateTable calls so the tables exist to be altered.
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NotesRunRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
     }
 
     /// <summary>Returns the number of notes currently stored.</summary>
@@ -336,7 +342,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         cmd.CommandText =
             "SELECT RowId, RunKey, RepoOwner, RepoName, RepoCategory, SinceSha, SinceShortSha, " +
             "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, CommitsInWindow, TicketsAttributed, " +
-            "StartedAt, CompletedAt, Error, RunAt " +
+            "StartedAt, CompletedAt, Error, RunAt, WindowLabel " +
             $"FROM \"{NotesRunRecord.DefaultTableName}\" ORDER BY RunAt DESC, RowId DESC LIMIT 1";
         using SqliteDataReader reader = cmd.ExecuteReader();
         return reader.Read() ? MapRun(reader) : null;
@@ -351,7 +357,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         cmd.CommandText =
             "SELECT RowId, RunKey, RepoOwner, RepoName, RepoCategory, SinceSha, SinceShortSha, " +
             "HeadSha, HeadShortSha, Status, UnitsTotal, UnitsHydrated, CommitsInWindow, TicketsAttributed, " +
-            "StartedAt, CompletedAt, Error, RunAt " +
+            "StartedAt, CompletedAt, Error, RunAt, WindowLabel " +
             $"FROM \"{NotesRunRecord.DefaultTableName}\" WHERE RunKey = $runKey LIMIT 1";
         cmd.Parameters.AddWithValue("$runKey", runKey);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -365,7 +371,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
             "SELECT NoteId, Type, Name, RepoOwner, RepoName, RepoCategory, WorkGroup, WorkGroupCode, " +
             "SinceSha, SinceShortSha, HeadSha, HeadShortSha, CommitsInWindow, TicketsAttributed, NeedsNote, " +
             "CurrentBallotNoteHtml, ProposedBallotNoteHtml, RollupSummaryMarkdown, NotesForReviewerMarkdown, " +
-            "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt " +
+            "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt, WindowLabel " +
             $"FROM \"{NoteRecord.DefaultTableName}\" WHERE NoteId = $id LIMIT 1";
         cmd.Parameters.AddWithValue("$id", noteId);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -397,6 +403,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
             AuthoredAt = reader.IsDBNull(21) ? null : new DateTimeOffset(reader.GetDateTime(21)),
             GeneratedAt = new DateTimeOffset(reader.GetDateTime(22)),
             SavedAt = new DateTimeOffset(reader.GetDateTime(23)),
+            WindowLabel = reader.GetString(24),
         };
     }
 
@@ -499,6 +506,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         CompletedAt = reader.IsDBNull(15) ? null : new DateTimeOffset(reader.GetDateTime(15)),
         Error = reader.GetString(16),
         RunAt = new DateTimeOffset(reader.GetDateTime(17)),
+        WindowLabel = reader.GetString(18),
     };
 
     private static ExistingNoteProse? ReadExistingProse(SqliteConnection connection, string noteId)

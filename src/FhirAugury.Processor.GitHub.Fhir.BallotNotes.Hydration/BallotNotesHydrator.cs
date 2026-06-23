@@ -19,6 +19,9 @@ public sealed record BallotNotesHydrationRequest
     public required string RunKey { get; init; }
     public string RepoCategory { get; init; } = string.Empty;
 
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
+    public string WindowLabel { get; init; } = string.Empty;
+
     /// <summary>Owning work-group fallback when a unit has no attributed tickets.</summary>
     public string? WorkGroupHint { get; init; }
 }
@@ -176,6 +179,7 @@ public sealed class BallotNotesHydrator(
             SinceShortSha = sinceShort,
             HeadSha = headSha,
             HeadShortSha = headShort,
+            WindowLabel = request.WindowLabel,
             CommitsInWindow = commits.Count,
             TicketsAttributed = attribution.Tickets.Count,
             NeedsNote = "unknown",

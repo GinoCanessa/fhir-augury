@@ -426,8 +426,23 @@
   function windowNode(n) {
     var since = String(n.SinceShortSha || n.SinceSha || '');
     var head = String(n.HeadShortSha || n.HeadSha || '');
-    if (!since && !head) return document.createTextNode('—');
-    var span = el('span', { class: 'mono' });
+    var label = String(n.WindowLabel || '').trim();
+    if (!since && !head && !label) return document.createTextNode('—');
+    var span = el('span');
+    if (label) {
+      span.appendChild(document.createTextNode('Changes since ' + label));
+      if (since || head) {
+        var detail = el('span', { class: 'mono muted' }, ' (');
+        detail.appendChild(commitLink(n, n.SinceSha, since || '?'));
+        detail.appendChild(document.createTextNode(' .. '));
+        detail.appendChild(commitLink(n, n.HeadSha, head || '?'));
+        detail.appendChild(document.createTextNode(')'));
+        span.appendChild(document.createTextNode(' '));
+        span.appendChild(detail);
+      }
+      return span;
+    }
+    span.className = 'mono';
     span.appendChild(commitLink(n, n.SinceSha, since));
     span.appendChild(document.createTextNode(' .. '));
     span.appendChild(commitLink(n, n.HeadSha, head));
@@ -590,7 +605,12 @@
       bits.push(run.repoCategory ? (repo + ' (' + run.repoCategory + ')') : repo);
     }
     if (run.sinceShortSha || run.headShortSha) {
-      bits.push('window ' + (run.sinceShortSha || '?') + '..' + (run.headShortSha || '?'));
+      var label = run.windowLabel ? String(run.windowLabel).trim() : '';
+      if (label) {
+        bits.push('changes since ' + label + ' (' + (run.sinceShortSha || '?') + '..' + (run.headShortSha || '?') + ')');
+      } else {
+        bits.push('window ' + (run.sinceShortSha || '?') + '..' + (run.headShortSha || '?'));
+      }
     }
     if (typeof run.noteCount === 'number') bits.push(run.noteCount + ' notes');
     if (run.runAt) bits.push('generated ' + fmtDate(run.runAt));
@@ -715,12 +735,16 @@
 
     var since = String(note.SinceShortSha || note.SinceSha || '');
     var head = String(note.HeadShortSha || note.HeadSha || '');
+    var winLabel = String(note.WindowLabel || '').trim();
+    var winValue = winLabel
+      ? ('changes since ' + winLabel + ((since || head) ? (' (' + since + ' .. ' + head + ')') : ''))
+      : ((since || head) ? (since + ' .. ' + head) : '');
     out += mdTable(['Field', 'Value'], [
       ['NoteId', String(note.NoteId || noteId)],
       ['Repository', String(note.RepoOwner || '') + '/' + String(note.RepoName || '')],
       ['Category', note.RepoCategory == null ? '' : String(note.RepoCategory)],
       ['Workgroup', note.WorkGroup == null ? '' : String(note.WorkGroup)],
-      ['Window', (since || head) ? (since + ' .. ' + head) : ''],
+      ['Window', winValue],
       ['Commits in window', String(note.CommitsInWindow == null ? 0 : note.CommitsInWindow)],
       ['Tickets attributed', String(note.TicketsAttributed == null ? 0 : note.TicketsAttributed)],
       ['Needs note', String(note.NeedsNote || 'unknown')],

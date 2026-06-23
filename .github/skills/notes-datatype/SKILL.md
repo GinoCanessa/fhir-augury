@@ -187,7 +187,9 @@ as-is — do **not** re-derive any of it:
   `notes-page`), `name` (the consolidated datatypes unit is named
   `datatypes`), `repoOwner`, `repoName`,
   `repoCategory`, `sinceSha` / `sinceShortSha`, `headSha` /
-  `headShortSha`, `workGroup` / `workGroupCode`, `hydratedAt`.
+  `headShortSha`, `windowLabel` (a human-readable window name such as
+  `R6 Ballot 4`, when supplied), `workGroup` / `workGroupCode`,
+  `hydratedAt`.
 - **Counters** — `commitsInWindow`, `ticketsAttributed`, and the
   processor's first-pass `needsNote` (you refine it in Step 4).
 - **`sourceFiles[]`** — `{path, role, touchedInWindow}` for every file
@@ -266,6 +268,10 @@ evidence (never re-running `git` or re-querying Jira):
 Produce **one** HTML ballot-note draft for this unit's target page
 (`source/<name>.html`). It MUST:
 
+- **Open with the change-window sentence.** When `windowLabel` is
+  present in the GET payload, begin the note with
+  "Changes since {windowLabel}" (e.g. "Changes since R6 Ballot 4");
+  otherwise fall back to the `sinceShortSha..headShortSha` window.
 - Be authored as **HTML**, ready to paste into the page inside a
   `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
   Preserve any existing `id` when revising an existing note on this
