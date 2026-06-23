@@ -26,8 +26,12 @@ public sealed class BallotNotesControllerTests : IDisposable
         SetEnv("DatabasePath", Path.Combine(_tempDir, "notes.db"));
         SetEnv("Hydration__CloneRoot", _cloneRoot);
         // Closed ports: attribution is best-effort and must fail fast (no upstream).
-        SetEnv("Hydration__OrchestratorAddress", "http://localhost:1");
-        SetEnv("Hydration__JiraSourceAddress", "http://localhost:1");
+        // Use literal IPv4 127.0.0.1 to get an instant RST and avoid the dual-stack
+        // ::1 connect detour, and a short connect timeout so the up-to-~8 sequential
+        // closed-upstream lookups fail near-instantly and stay under the poll budget.
+        SetEnv("Hydration__OrchestratorAddress", "http://127.0.0.1:1");
+        SetEnv("Hydration__JiraSourceAddress", "http://127.0.0.1:1");
+        SetEnv("Hydration__AttributionConnectTimeout", "00:00:00.250");
 
         _factory = new WebApplicationFactory<Program>();
     }
@@ -35,7 +39,7 @@ public sealed class BallotNotesControllerTests : IDisposable
     public void Dispose()
     {
         _factory.Dispose();
-        foreach (string key in new[] { "DatabasePath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress" })
+        foreach (string key in new[] { "DatabasePath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress", "Hydration__AttributionConnectTimeout" })
         {
             Environment.SetEnvironmentVariable(EnvPrefix + key, null);
         }
@@ -137,7 +141,7 @@ public sealed class BallotNotesControllerTests : IDisposable
 
     private async Task<string> PollUntilTerminalAsync(HttpClient client, string runKey)
     {
-        for (int i = 0; i < 100; i++)
+        for (int i = 0; i < 200; i++)
         {
             using JsonDocument doc = await GetJson(client, $"/api/v1/ballot-notes/hydrate/status?runKey={Uri.EscapeDataString(runKey)}");
             string status = doc.RootElement.GetProperty("status").GetString()!;
