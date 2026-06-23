@@ -208,6 +208,7 @@ docker compose --profile jira-only up -d   # Single source
 | Utility | Project | Description |
 |---------|---------|-------------|
 | Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` (Tickets for Discussion) or a `cache/jira-planner.db` (Tickets for Applying) into a self-contained static HTML review sub-site (sql.js in the browser; opens from `file://`). A chooser landing page at `<out>/index.html` links into whichever sub-site(s) have been built. |
+| Dictionary build | [`tools/dictionary-build`](tools/dictionary-build/README.md) | One-shot `dotnet`-run utility that rebuilds `cache/dictionary.db` from the spell-check source files under `dictionary/`. Run after editing anything under `dictionary/`. |
 
 ## Discovery
 
