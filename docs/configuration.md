@@ -487,6 +487,9 @@ endpoints under `/api/v1/ballot-notes`. The `notes-site` tool reads its database
 directly to emit the static review SPA. Registered in the AppHost as
 `processor-github-fhir-ballotnotes` with `WithExplicitStart()`.
 
+> To run a hydration (and for the Preparer/Planner/Applier operational flow),
+> see the [processors runbook](technical/processors.md).
+
 ### appsettings.json
 
 ```json

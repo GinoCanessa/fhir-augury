@@ -58,7 +58,9 @@ serves its own document the same way a source does:
 
 It is **not** merged into the orchestrator document (it is an explicit-start
 processor, not a registered source). Its surface is `/api/v1/ballot-notes`:
-hydrate + status poll, unit list/detail, and prose write-back.
+hydrate + status poll, unit list/detail, and prose write-back. For the
+operational trigger → poll flow (and the other three processors), see the
+[processors runbook](technical/processors.md).
 
 ### Orchestrator merged document
 

@@ -191,6 +191,9 @@ issues, invokes `ticket-prep`, and persists structured prepared-ticket output.
 It composes `FhirAugury.Processing.Common`, `FhirAugury.Processing.Jira.Common`,
 and its persistence project without owning common queue mechanics.
 
+To run a preparer pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
+
 ### `FhirAugury.Processor.Jira.Fhir.Planner`
 
 Concrete Jira/FHIR Processing service (HTTP :5172) that queues resolved
@@ -209,6 +212,9 @@ FhirAugury.Processor.Jira.Fhir.Planner/
 The planner uses the shared Processing/Jira layers for lifecycle endpoints,
 source-ticket queueing, filters, command rendering, and agent execution. It is a
 sibling of the preparer and does not depend on preparer code or records.
+
+To run a planner pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
 
 ### `FhirAugury.Processor.Jira.Fhir.Applier`
 
@@ -241,6 +247,9 @@ repo) outcomes (`Success` / `AgentFailed` / `BuildFailed` / `DiffFailed` /
 `WorktreeFailed` / `RepoNotConfigured`) live in the `applied_*` tables; the
 queue's `ProcessingStatus` reflects only transport / runtime outcome so a
 genuinely-failed agent run still completes the queue item normally.
+
+To start the applier and push applied tickets, see the
+[processors runbook](processors.md).
 
 ### `FhirAugury.Orchestrator`
 

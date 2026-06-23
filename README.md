@@ -296,6 +296,7 @@ If a repo is miscategorized for `repo-analysis`, fix it in
 | [Source Endpoint Reference](docs/technical/source-endpoint-reference.md) | Per-source HTTP route catalog (post 2026-04 sync) |
 | [Development Guide](docs/technical/development-guide.md) | Contributing and code conventions |
 | [Project Structure](docs/technical/project-structure.md) | Code organization |
+| [Processors Runbook](docs/technical/processors.md) | How to kick off a run on each of the four processors |
 
 ### Changelog
 
