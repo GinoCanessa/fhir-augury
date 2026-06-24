@@ -219,6 +219,21 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
 .tag-category { white-space: nowrap; }
 .related { font-size: 0.85rem; }
 .related a { white-space: nowrap; }
+
+/* Structural-change badge (accessible; icon is ornamentation only). */
+.structural-badge {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--unknown-bg);
+  color: var(--unknown-fg);
+  border: 1px solid var(--unknown-fg);
+}
+.structural-badge::before { content: '⚙ '; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
 .back-link { margin: 0.5rem 0 1rem; display: inline-block; }
 

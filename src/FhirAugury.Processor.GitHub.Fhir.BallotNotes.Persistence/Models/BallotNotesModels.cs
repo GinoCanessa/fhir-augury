@@ -71,6 +71,9 @@ public sealed record NoteDetail
     public required IReadOnlyList<NoteCommitRecord> Commits { get; init; }
     public required IReadOnlyList<NoteTicketRecord> Tickets { get; init; }
 
+    /// <summary>Structural SD element deltas detected over the window; empty when none.</summary>
+    public IReadOnlyList<NoteStructuralChangeRecord> StructuralChanges { get; init; } = [];
+
     /// <summary><c>authored</c> when <see cref="NoteRecord.AuthoredAt"/> is set, else <c>awaiting-note</c>.</summary>
     public string Status => Note.AuthoredAt is not null ? "authored" : "awaiting-note";
 }

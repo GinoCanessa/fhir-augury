@@ -330,6 +330,7 @@ public static class FhirContentParser
                 SliceName: element.SliceName,
                 IsModifier: element.IsModifier,
                 IsSummary: element.IsSummary,
+                MustSupport: element.MustSupport,
                 FixedValue: element.Fixed?.ToString(),
                 PatternValue: element.Pattern?.ToString(),
                 FieldOrder: fieldOrder++));

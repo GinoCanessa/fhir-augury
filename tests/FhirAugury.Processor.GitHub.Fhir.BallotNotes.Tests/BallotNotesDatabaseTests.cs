@@ -305,6 +305,29 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal("<blockquote class=\"stu-note\">hand</blockquote>", detail.Note.PreservedHandAuthoredHtml);
     }
 
+    [Fact]
+    public void Structural_changes_round_trip_through_upsert_and_read()
+    {
+        using BallotNotesDatabase db = NewDb();
+        string noteId = "hl7-fhir-artifact-observation";
+        (List<NoteSourceFileRecord> f, List<NoteCommitRecord> c, List<NoteTicketRecord> t) = Children(noteId);
+
+        List<NoteStructuralChangeRecord> structural =
+        [
+            new() { NoteId = noteId, SourcePath = "source/observation/structuredefinition-observation.xml", ElementPath = "Observation.status", ChangeKind = "Cardinality", Detail = "cardinality 1..1→0..1", TicketKeys = "FHIR-1;FHIR-2", ChangeOrder = 0 },
+            new() { NoteId = noteId, SourcePath = "source/observation/structuredefinition-observation.xml", ElementPath = "Observation.value[x]", ChangeKind = "MustSupport", Detail = "mustSupport false→true", TicketKeys = "", ChangeOrder = 1 },
+        ];
+        db.UpsertUnitEvidence(Evidence(noteId), f, c, t, structural);
+
+        NoteDetail detail = db.GetNote(noteId)!;
+        Assert.Equal(2, detail.StructuralChanges.Count);
+        NoteStructuralChangeRecord card = detail.StructuralChanges.Single(s => s.ChangeKind == "Cardinality");
+        Assert.Equal("Observation.status", card.ElementPath);
+        Assert.Equal("cardinality 1..1→0..1", card.Detail);
+        Assert.Equal("FHIR-1;FHIR-2", card.TicketKeys);
+        Assert.Equal("MustSupport", detail.StructuralChanges.Single(s => s.ElementPath == "Observation.value[x]").ChangeKind);
+    }
+
     private bool HasColumn(string table, string column)
     {
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");

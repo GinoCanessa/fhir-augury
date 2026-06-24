@@ -85,6 +85,16 @@ public sealed record NoteTicketDto
     public IReadOnlyList<string> RelatedTicketKeys { get; init; } = [];
 }
 
+/// <summary>A structural StructureDefinition element delta detected over the window.</summary>
+public sealed record NoteStructuralChangeDto
+{
+    public required string SourcePath { get; init; }
+    public required string ElementPath { get; init; }
+    public required string ChangeKind { get; init; }
+    public string Detail { get; init; } = string.Empty;
+    public IReadOnlyList<string> TicketKeys { get; init; } = [];
+}
+
 /// <summary>One note with its full hydrated evidence and any authored prose.</summary>
 public sealed record BallotNoteDetailDto
 {
@@ -131,6 +141,9 @@ public sealed record BallotNoteDetailDto
     public required IReadOnlyList<NoteSourceFileDto> SourceFiles { get; init; }
     public required IReadOnlyList<NoteCommitDto> Commits { get; init; }
     public required IReadOnlyList<NoteTicketDto> Tickets { get; init; }
+
+    /// <summary>Structural SD element deltas detected over the window; empty when none.</summary>
+    public IReadOnlyList<NoteStructuralChangeDto> StructuralChanges { get; init; } = [];
 }
 
 /// <summary>The authored prose written back for a unit.</summary>

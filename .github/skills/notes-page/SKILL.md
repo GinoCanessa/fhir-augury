@@ -138,6 +138,10 @@ as-is — do **not** re-derive any of it:
   `Compatible, substantive`, `Non-substantive`, or empty/unset);
   `changeCategory` is its change-category label; `relatedTicketKeys[]`
   are the related/linked Jira tickets needed to interpret the change.
+- **`structuralChanges[]`** — `{sourcePath, elementPath, changeKind,
+  detail, ticketKeys[]}` for each structural StructureDefinition delta
+  detected over the window (`changeKind` ∈ `Added`/`Removed`/
+  `Cardinality`/`Type`/`Modifier`/`Summary`/`MustSupport`).
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the page at HEAD (empty if none). The processor captures these
   regardless of marker convention (`ballot-note` / `stu-note` /
@@ -250,6 +254,11 @@ The proposed ballot note MUST:
 - **Make cross-ticket relationships explicit.** When a ticket's
   `relatedTicketKeys[]` are needed to interpret a change, add an inline
   "(see also <a …>FHIR-…</a>)" after that line.
+- **Flag structural changes inline.** For a line matching a
+  `structuralChanges[]` entry, attach
+  `<span class="structural-badge" title="{changeKind}: {detail}" aria-label="structural change: {changeKind}">structural</span>`
+  after the change text. Only badge the deltas the processor detected;
+  the SPA also renders a separate "Structural changes" evidence panel.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.

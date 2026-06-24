@@ -19,6 +19,7 @@ public record ElementInfo(
     string? SliceName,
     bool? IsModifier,
     bool? IsSummary,
+    bool? MustSupport,
     string? FixedValue,
     string? PatternValue,
     int FieldOrder);

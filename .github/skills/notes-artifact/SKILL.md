@@ -133,6 +133,11 @@ as-is — do **not** re-derive any of it:
   empty/unset); `changeCategory` is its change-category label;
   `relatedTicketKeys[]` are the related/linked Jira tickets needed to
   interpret the change.
+- **`structuralChanges[]`** — `{sourcePath, elementPath, changeKind,
+  detail, ticketKeys[]}` for each structural StructureDefinition delta
+  the processor detected over the window (`changeKind` is one of
+  `Added`, `Removed`, `Cardinality`, `Type`, `Modifier`, `Summary`,
+  `MustSupport`). Use these to flag the few structural changes per line.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the artifact's intro file at HEAD (empty if none).
 - **Note classification** — `currentNoteIsAuguryGenerated` (whether the
@@ -242,6 +247,15 @@ The proposed ballot note MUST:
   `relatedTicketKeys[]` are needed to interpret a change, add an inline
   "(see also <a …>FHIR-…</a>)" after that line so balloters can follow
   the linked tickets.
+- **Flag structural changes inline.** For a line whose change matches a
+  `structuralChanges[]` entry (same element), attach an inline badge
+  immediately after the change text:
+  `<span class="structural-badge" title="{changeKind}: {detail}" aria-label="structural change: {changeKind}">structural</span>`.
+  Only the genuinely structural deltas the processor detected
+  (cardinality, type, is-modifier, is-summary, must-support,
+  added/removed element) get a badge — do not invent them. The SPA also
+  renders a separate "Structural changes" evidence panel from the same
+  data.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.

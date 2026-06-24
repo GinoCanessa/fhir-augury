@@ -3,6 +3,7 @@ using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Grouping;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Structural;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using Microsoft.Extensions.Logging;
@@ -85,6 +86,11 @@ public sealed class BallotNotesHydrator(
 
             database.UpdateRunPlan(request.RunKey, units.Count, headSha, headShort);
 
+            // Detect structural SD deltas across the whole window once; each unit
+            // filters this to its own source files.
+            IReadOnlyList<StructuralChange> structuralChanges = await StructuralDiffService
+                .DiffAsync(clonePath, sinceFull, headSha, logger, ct).ConfigureAwait(false);
+
             ParallelOptions parallelOptions = new()
             {
                 MaxDegreeOfParallelism = Math.Max(1, _options.MaxParallelism),
@@ -94,7 +100,7 @@ public sealed class BallotNotesHydrator(
             await Parallel.ForEachAsync(units, parallelOptions, async (unit, token) =>
             {
                 (int commits, int tickets) = await HydrateUnitAsync(
-                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit, token)
+                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit, structuralChanges, token)
                     .ConfigureAwait(false);
 
                 lock (gate)
@@ -143,6 +149,7 @@ public sealed class BallotNotesHydrator(
         string headSha,
         string headShort,
         HydrationUnit unit,
+        IReadOnlyList<StructuralChange> allStructuralChanges,
         CancellationToken ct)
     {
         IReadOnlyList<WindowCommit> commits = await CommitWindowWalker
@@ -244,7 +251,40 @@ public sealed class BallotNotesHydrator(
             });
         }
 
-        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords);
+        // Structural deltas for this unit: filter the repo-wide diff to files this
+        // unit touched, and attribute each (file-level) to the tickets of the
+        // commit(s) that touched that SD file in the window.
+        List<NoteStructuralChangeRecord> structuralRecords = [];
+        int structuralOrder = 0;
+        foreach (StructuralChange change in allStructuralChanges)
+        {
+            if (!touched.Contains(change.SourcePath)) continue;
+
+            List<string> fileKeys = [];
+            HashSet<string> seenKeys = new(StringComparer.OrdinalIgnoreCase);
+            foreach (WindowCommit commit in commits)
+            {
+                if (!commit.ChangedPaths.Contains(change.SourcePath, StringComparer.OrdinalIgnoreCase)) continue;
+                if (!attribution.CommitTicketKeys.TryGetValue(commit.Sha, out IReadOnlyList<string>? keys)) continue;
+                foreach (string key in keys)
+                {
+                    if (seenKeys.Add(key)) fileKeys.Add(key);
+                }
+            }
+
+            structuralRecords.Add(new NoteStructuralChangeRecord
+            {
+                NoteId = noteId,
+                SourcePath = change.SourcePath,
+                ElementPath = change.ElementPath,
+                ChangeKind = change.ChangeKind,
+                Detail = change.Detail,
+                TicketKeys = string.Join(";", fileKeys),
+                ChangeOrder = structuralOrder++,
+            });
+        }
+
+        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords, structuralRecords);
         return (commits.Count, attribution.Tickets.Count);
     }
 

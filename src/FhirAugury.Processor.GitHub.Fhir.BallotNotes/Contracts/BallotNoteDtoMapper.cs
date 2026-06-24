@@ -69,6 +69,16 @@ internal static class BallotNoteDtoMapper
                     ? []
                     : [.. t.RelatedTicketKeys.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
             })],
+            StructuralChanges = [.. detail.StructuralChanges.Select(sc => new NoteStructuralChangeDto
+            {
+                SourcePath = sc.SourcePath,
+                ElementPath = sc.ElementPath,
+                ChangeKind = sc.ChangeKind,
+                Detail = sc.Detail,
+                TicketKeys = string.IsNullOrEmpty(sc.TicketKeys)
+                    ? []
+                    : [.. sc.TicketKeys.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+            })],
         };
     }
 

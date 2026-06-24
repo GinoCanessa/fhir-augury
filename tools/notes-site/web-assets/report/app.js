@@ -330,6 +330,7 @@
       renderSourceFiles(main, noteId, n);
       renderCommits(main, noteId);
       renderTickets(main, noteId);
+      renderStructuralChanges(main, noteId);
 
       setCopyExport(function () { return serializeNoteMarkdown(noteId, n); });
 
@@ -476,6 +477,44 @@
       }, keys[i]));
     }
     return cell;
+  }
+
+  // Renders the structural-change evidence panel from note_structural_changes.
+  // The SPA cannot line-match opaque authored HTML to an element path, so this
+  // is a separate accessible badge/list; the authoring skills embed inline
+  // badges into the note itself.
+  function renderStructuralChanges(main, noteId) {
+    var changes = query(
+      'SELECT SourcePath, ElementPath, ChangeKind, Detail, TicketKeys ' +
+      'FROM note_structural_changes WHERE NoteId = $id ORDER BY ChangeOrder',
+      { $id: noteId }).rows;
+    if (changes.length === 0) return;
+    main.appendChild(el('h3', null, 'Structural changes (' + changes.length + ')'));
+    var table = el('table');
+    var thead = el('thead');
+    thead.appendChild(rowOf('th', ['', 'Element', 'Change', 'Detail', 'Tickets', 'Source']));
+    table.appendChild(thead);
+    var tbody = el('tbody');
+    for (var i = 0; i < changes.length; i++) {
+      var c = changes[i];
+      var tr = el('tr');
+      var badgeCell = el('td');
+      var kind = String(c.ChangeKind || '');
+      badgeCell.appendChild(el('span', {
+        class: 'structural-badge',
+        title: kind + ': ' + String(c.Detail || ''),
+        'aria-label': 'structural change: ' + kind
+      }, 'structural'));
+      tr.appendChild(badgeCell);
+      tr.appendChild(el('td', { class: 'mono' }, String(c.ElementPath || '')));
+      tr.appendChild(el('td', null, kind));
+      tr.appendChild(el('td', null, String(c.Detail || '')));
+      tr.appendChild(relatedCell(c.TicketKeys));
+      tr.appendChild(el('td', { class: 'mono muted' }, String(c.SourcePath || '')));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    main.appendChild(table);
   }
 
   // ---- cell builders ------------------------------------------------------
@@ -868,6 +907,22 @@
             changeImpactBucket(t.ChangeImpact).label, String(t.ChangeCategory || ''),
             String(t.RelatedTicketKeys || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).join(', '),
             String(t.CommitCount || 0)];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var structural = query(
+      'SELECT SourcePath, ElementPath, ChangeKind, Detail, TicketKeys ' +
+      'FROM note_structural_changes WHERE NoteId = $id ORDER BY ChangeOrder',
+      { $id: noteId }).rows;
+    out += '## Structural changes (' + structural.length + ')\n\n';
+    if (structural.length > 0) {
+      out += mdTable(['Element', 'Change', 'Detail', 'Tickets', 'Source'],
+        structural.map(function (c) {
+          return [String(c.ElementPath || ''), String(c.ChangeKind || ''), String(c.Detail || ''),
+            String(c.TicketKeys || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).join(', '),
+            String(c.SourcePath || '')];
         })) + '\n';
     } else {
       out += '_None._\n\n';
