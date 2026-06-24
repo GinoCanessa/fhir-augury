@@ -13,10 +13,27 @@ public sealed class BallotNotesHydrationOptions
 
     /// <summary>
     /// Path to the read-only GitHub source SQLite DB used to cross-reference
-    /// extensions (the <c>HL7/fhir-extensions</c> pack). Empty/missing disables
-    /// the cross-reference (best-effort).
+    /// extensions (the <c>HL7/fhir-extensions</c> pack) and resolve owning work
+    /// groups from the JIRA-Spec-Artifacts registry. Empty/missing disables those
+    /// lookups (best-effort).
     /// </summary>
     public string GitHubDbPath { get; set; } = "./cache/github.db";
+
+    /// <summary>
+    /// Path to the read-only current-build FHIR R6 reference DB
+    /// (<c>Structures.WorkGroup</c>) used as an owning-WG fallback for artifacts.
+    /// Preferred over <see cref="FhirSpecDbPath"/>. Empty/missing is allowed
+    /// (best-effort).
+    /// </summary>
+    public string FhirR6DbPath { get; set; } = "./cache/fhir-r6.db";
+
+    /// <summary>
+    /// Path to the read-only published multi-release FHIR spec reference DB
+    /// (<c>Structures.WorkGroup</c>), used as the owning-WG fallback for artifacts
+    /// when <see cref="FhirR6DbPath"/> is absent. Empty/missing is allowed
+    /// (best-effort).
+    /// </summary>
+    public string FhirSpecDbPath { get; set; } = "./cache/fhir-spec.db";
 
     /// <summary>Primary attribution upstream (orchestrator cross-source aggregation).</summary>
     public string OrchestratorAddress { get; set; } = "http://localhost:5150";

@@ -1,4 +1,7 @@
 using System.Text.RegularExpressions;
+using FhirAugury.Parsing.Fhir;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Grouping;
+using Microsoft.Extensions.Logging;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
 
@@ -6,7 +9,7 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
 /// Reads an artifact's or page's own declared owning work group directly from the
 /// local repository clone. Pages carry a <c>[%wg &lt;code&gt;%]</c> "Responsible
 /// Owner" marker in their HTML; artifacts carry a <c>structuredefinition-wg</c>
-/// extension (added in a later phase). Best-effort: a missing file or absent
+/// extension on their StructureDefinition. Best-effort: a missing file or absent
 /// marker yields <c>null</c>.
 /// </summary>
 public static partial class RepoWorkGroupReader
@@ -43,5 +46,71 @@ public static partial class RepoWorkGroupReader
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Returns the canonical work group code declared by the unit's
+    /// StructureDefinition (its <c>structuredefinition-wg</c> extension), reading
+    /// the first SD among <paramref name="resolvedFiles"/> that carries one, or
+    /// <c>null</c> when none do.
+    /// </summary>
+    public static string? ReadArtifactWg(
+        string clonePath,
+        IReadOnlyList<ResolvedSourceFile> resolvedFiles,
+        ILogger? logger = null)
+    {
+        if (string.IsNullOrWhiteSpace(clonePath) || resolvedFiles is null) return null;
+
+        foreach (StructureDefinitionInfo sd in ParseStructureDefinitions(clonePath, resolvedFiles, logger))
+        {
+            if (!string.IsNullOrWhiteSpace(sd.WorkGroup)) return sd.WorkGroup;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the base resource name of the unit's StructureDefinition, derived
+    /// from the last path segment of its <c>baseDefinition</c> canonical (e.g.
+    /// <c>.../StructureDefinition/Patient</c> → <c>Patient</c>), or <c>null</c>
+    /// when there is no base or it cannot be read.
+    /// </summary>
+    public static string? ReadBaseResourceName(
+        string clonePath,
+        IReadOnlyList<ResolvedSourceFile> resolvedFiles,
+        ILogger? logger = null)
+    {
+        if (string.IsNullOrWhiteSpace(clonePath) || resolvedFiles is null) return null;
+
+        foreach (StructureDefinitionInfo sd in ParseStructureDefinitions(clonePath, resolvedFiles, logger))
+        {
+            if (string.IsNullOrWhiteSpace(sd.BaseDefinition)) continue;
+            string baseName = sd.BaseDefinition.TrimEnd('/');
+            int slash = baseName.LastIndexOf('/');
+            if (slash >= 0 && slash < baseName.Length - 1) baseName = baseName[(slash + 1)..];
+            if (!string.IsNullOrWhiteSpace(baseName)) return baseName;
+        }
+        return null;
+    }
+
+    private static IEnumerable<StructureDefinitionInfo> ParseStructureDefinitions(
+        string clonePath, IReadOnlyList<ResolvedSourceFile> resolvedFiles, ILogger? logger)
+    {
+        foreach (ResolvedSourceFile file in resolvedFiles)
+        {
+            if (!IsStructureDefinitionFile(file.Path)) continue;
+
+            string absolute = Path.Combine(clonePath, file.Path);
+            if (!File.Exists(absolute)) continue;
+
+            StructureDefinitionInfo? sd = FhirContentParser.TryParseStructureDefinition(absolute, logger);
+            if (sd is not null) yield return sd;
+        }
+    }
+
+    private static bool IsStructureDefinitionFile(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext != ".xml" && ext != ".json") return false;
+        return Path.GetFileName(path).ToLowerInvariant().Contains("structuredefinition");
     }
 }

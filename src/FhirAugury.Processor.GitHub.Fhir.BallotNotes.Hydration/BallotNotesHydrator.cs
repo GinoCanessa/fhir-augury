@@ -165,12 +165,12 @@ public sealed class BallotNotesHydrator(
         UnitAttribution attribution = await attributor
             .AttributeAsync(commits, request.WorkGroupHint, ct).ConfigureAwait(false);
 
-        IReadOnlyList<WorkGroupRef> owningWorkGroups = OwningWorkGroupResolver.Resolve(
-            unit, clonePath, owner, name, attribution, request.WorkGroupHint, _options, logger);
-        WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
-
         SourceFileResolution resolution = await SourceFileResolver
             .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);
+
+        IReadOnlyList<WorkGroupRef> owningWorkGroups = OwningWorkGroupResolver.Resolve(
+            unit, clonePath, owner, name, attribution, resolution.Files, request.WorkGroupHint, _options, logger);
+        WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
 
         CurrentNoteResolution currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
         string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");

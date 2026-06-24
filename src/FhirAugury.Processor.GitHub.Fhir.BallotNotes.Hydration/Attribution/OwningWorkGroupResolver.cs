@@ -35,6 +35,7 @@ public static class OwningWorkGroupResolver
         string owner,
         string name,
         UnitAttribution attribution,
+        IReadOnlyList<ResolvedSourceFile> resolvedFiles,
         string? workGroupHint,
         BallotNotesHydrationOptions options,
         ILogger? logger = null)
@@ -43,6 +44,7 @@ public static class OwningWorkGroupResolver
         ArgumentNullException.ThrowIfNull(attribution);
         ArgumentNullException.ThrowIfNull(options);
 
+        IReadOnlyList<ResolvedSourceFile> sourceFiles = resolvedFiles ?? [];
         Dictionary<string, string> nameCache = new(StringComparer.OrdinalIgnoreCase);
         using SqliteConnection? db = TryOpenGitHubDb(options.GitHubDbPath, logger);
 
@@ -57,30 +59,41 @@ public static class OwningWorkGroupResolver
             return TicketOnly(attribution, workGroupHint);
         }
 
-        return ResolveArtifact(unit, owner, name, attribution, workGroupHint, db, nameCache, logger);
+        return ResolveArtifact(unit, clonePath, owner, name, attribution, sourceFiles, workGroupHint, db, nameCache, options, logger);
     }
 
     private static IReadOnlyList<WorkGroupRef> ResolveArtifact(
         HydrationUnit unit,
+        string clonePath,
         string owner,
         string name,
         UnitAttribution attribution,
+        IReadOnlyList<ResolvedSourceFile> resolvedFiles,
         string? workGroupHint,
         SqliteConnection? db,
         IDictionary<string, string> nameCache,
+        BallotNotesHydrationOptions options,
         ILogger? logger)
     {
-        // 1. Registry (JIRA-Spec-Artifacts) — primary.
-        if (db is not null)
+        // Own-WG steps for the unit itself: registry → repo-read → spec-DB.
+        string? code = ResolveArtifactOwnCode(owner, name, unit.Name, clonePath, resolvedFiles, db, options, logger);
+        if (!string.IsNullOrWhiteSpace(code))
         {
-            string? code = SpecArtifactWorkGroupResolver.Resolve(db, owner, name, "Artifact", unit.Name, logger);
-            if (!string.IsNullOrWhiteSpace(code))
-            {
-                return [MakeRef(db, code, nameCache)];
-            }
+            return [MakeRef(db, code, nameCache)];
         }
 
-        // (Phase 3 inserts repo-read → spec-DB → base-resource here.)
+        // Base-resource (profiles / extensions): inherit the base's owning WG via
+        // the same own-WG steps (by base name; the base has no local SD files here).
+        string? baseName = RepoWorkGroupReader.ReadBaseResourceName(clonePath, resolvedFiles, logger);
+        if (!string.IsNullOrWhiteSpace(baseName)
+            && !string.Equals(baseName, unit.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            string? baseCode = ResolveArtifactOwnCode(owner, name, baseName, clonePath, [], db, options, logger);
+            if (!string.IsNullOrWhiteSpace(baseCode))
+            {
+                return [MakeRef(db, baseCode, nameCache)];
+            }
+        }
 
         // Late fallback: most-recently-attributed ticket's work group.
         (string wg, string wgCode) = TicketAttributor.SelectOwningWorkGroup(attribution.Tickets, workGroupHint);
@@ -90,6 +103,32 @@ public static class OwningWorkGroupResolver
         }
 
         return [WorkGroupRef.Unknown];
+    }
+
+    /// <summary>
+    /// The artifact own-WG chain (registry → repo-read → spec-DB) for a single
+    /// artifact name, returning a canonical code or <c>null</c>.
+    /// </summary>
+    private static string? ResolveArtifactOwnCode(
+        string owner,
+        string name,
+        string artifactName,
+        string clonePath,
+        IReadOnlyList<ResolvedSourceFile> resolvedFiles,
+        SqliteConnection? db,
+        BallotNotesHydrationOptions options,
+        ILogger? logger)
+    {
+        if (db is not null)
+        {
+            string? registryCode = SpecArtifactWorkGroupResolver.Resolve(db, owner, name, "Artifact", artifactName, logger);
+            if (!string.IsNullOrWhiteSpace(registryCode)) return registryCode;
+        }
+
+        string? repoCode = RepoWorkGroupReader.ReadArtifactWg(clonePath, resolvedFiles, logger);
+        if (!string.IsNullOrWhiteSpace(repoCode)) return repoCode;
+
+        return SpecDbWorkGroupReader.Resolve(options.FhirR6DbPath, options.FhirSpecDbPath, artifactName, logger);
     }
 
     private static IReadOnlyList<WorkGroupRef> ResolvePage(
