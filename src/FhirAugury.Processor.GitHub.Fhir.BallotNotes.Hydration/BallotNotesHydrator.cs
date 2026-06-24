@@ -165,6 +165,10 @@ public sealed class BallotNotesHydrator(
         UnitAttribution attribution = await attributor
             .AttributeAsync(commits, request.WorkGroupHint, ct).ConfigureAwait(false);
 
+        IReadOnlyList<WorkGroupRef> owningWorkGroups = OwningWorkGroupResolver.Resolve(
+            unit, clonePath, owner, name, attribution, request.WorkGroupHint, _options, logger);
+        WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
+
         SourceFileResolution resolution = await SourceFileResolver
             .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);
 
@@ -180,8 +184,10 @@ public sealed class BallotNotesHydrator(
             RepoOwner = owner,
             RepoName = name,
             RepoCategory = request.RepoCategory.Trim(),
-            WorkGroup = attribution.WorkGroup,
-            WorkGroupCode = attribution.WorkGroupCode,
+            WorkGroup = primaryWorkGroup.DisplayName,
+            WorkGroupCode = primaryWorkGroup.Code,
+            WorkGroupNames = WorkGroupRef.JoinNames(owningWorkGroups),
+            WorkGroupCodes = WorkGroupRef.JoinCodes(owningWorkGroups),
             SinceSha = sinceFull,
             SinceShortSha = sinceShort,
             HeadSha = headSha,

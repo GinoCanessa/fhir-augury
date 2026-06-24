@@ -52,6 +52,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "IssueType", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "CurrentNoteIsAuguryGenerated", "INTEGER NOT NULL DEFAULT 0");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "PreservedHandAuthoredHtml", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WorkGroupNames", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WorkGroupCodes", "TEXT NOT NULL DEFAULT ''");
     }
 
     /// <summary>Returns the number of notes currently stored.</summary>

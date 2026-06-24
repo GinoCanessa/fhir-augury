@@ -45,6 +45,23 @@ public partial record class NoteRecord
     /// <summary>Owning work group code / slug used for grouping (e.g. <c>FHIR-I</c>).</summary>
     public string WorkGroupCode { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Distinct, semicolon-delimited set of owning work group display names. A
+    /// single value for single-owner units (artifacts / pages); many for the
+    /// consolidated datatypes surface, which may belong to several work groups.
+    /// <see cref="WorkGroup"/> is the deterministic primary owner and the first
+    /// entry of this set.
+    /// </summary>
+    public string WorkGroupNames { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Distinct, semicolon-delimited set of owning work group canonical codes,
+    /// index-aligned with <see cref="WorkGroupNames"/>. Preserves WG-code
+    /// filtering for secondary memberships; <see cref="WorkGroupCode"/> is the
+    /// primary and the first entry of this set.
+    /// </summary>
+    public string WorkGroupCodes { get; set; } = string.Empty;
+
     public string SinceSha { get; set; } = string.Empty;
     public string SinceShortSha { get; set; } = string.Empty;
     public string HeadSha { get; set; } = string.Empty;
