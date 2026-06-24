@@ -392,7 +392,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
             "SinceSha, SinceShortSha, HeadSha, HeadShortSha, CommitsInWindow, TicketsAttributed, NeedsNote, " +
             "CurrentBallotNoteHtml, ProposedBallotNoteHtml, RollupSummaryMarkdown, NotesForReviewerMarkdown, " +
             "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt, WindowLabel, " +
-            "CurrentNoteIsAuguryGenerated, PreservedHandAuthoredHtml " +
+            "CurrentNoteIsAuguryGenerated, PreservedHandAuthoredHtml, WorkGroupNames, WorkGroupCodes " +
             $"FROM \"{NoteRecord.DefaultTableName}\" WHERE NoteId = $id LIMIT 1";
         cmd.Parameters.AddWithValue("$id", noteId);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -427,6 +427,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
             WindowLabel = reader.GetString(24),
             CurrentNoteIsAuguryGenerated = reader.GetBoolean(25),
             PreservedHandAuthoredHtml = reader.GetString(26),
+            WorkGroupNames = reader.GetString(27),
+            WorkGroupCodes = reader.GetString(28),
         };
     }
 

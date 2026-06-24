@@ -9,6 +9,20 @@
 
   var UNKNOWN_WG = '(unknown)';
 
+  // Owning work group display names for a row: the multi-WG WorkGroupNames set
+  // (semicolon-delimited) when present, else the single WorkGroup. A datatypes
+  // note may belong to several work groups and appears under each.
+  function wgNames(r) {
+    var raw = String((r && (r.WorkGroupNames || r.WorkGroup)) || '');
+    var out = [];
+    var parts = raw.split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var name = parts[i].trim();
+      if (name.length > 0 && out.indexOf(name) < 0) out.push(name);
+    }
+    return out.length > 0 ? out : [UNKNOWN_WG];
+  }
+
   /** @type {any} */
   var db = null;
 
@@ -81,7 +95,7 @@
   var Views = {
     landing: function (main) {
       var rows = query(
-        'SELECT NoteId, Name, Type, WorkGroup, WorkGroupCode, RepoOwner, RepoName, ' +
+        'SELECT NoteId, Name, Type, WorkGroup, WorkGroupCode, WorkGroupNames, RepoOwner, RepoName, ' +
         'CommitsInWindow, TicketsAttributed, NeedsNote ' +
         'FROM notes', null).rows;
 
@@ -115,7 +129,7 @@
       var columns = [
         { label: 'Name', get: function (r) { return String(r.Name || ''); }, cmp: 'name', cell: nameCell },
         { label: 'Type', get: function (r) { return String(r.Type || ''); }, cmp: 'ci' },
-        { label: 'Workgroup', get: function (r) { return String(r.WorkGroup || ''); }, cmp: 'ci' },
+        { label: 'Workgroup', get: function (r) { return wgNames(r).join(', '); }, cmp: 'ci' },
         { label: 'Repo', get: function (r) { return String(r.RepoOwner || '') + '/' + String(r.RepoName || ''); }, cmp: 'ci' },
         { label: 'Commits', get: function (r) { return Number(r.CommitsInWindow || 0); }, cmp: 'num', num: true },
         { label: 'Tickets', get: function (r) { return Number(r.TicketsAttributed || 0); }, cmp: 'num', num: true },
@@ -141,7 +155,7 @@
         var n = needle.toLowerCase();
         if (n.length === 0) return rows;
         return rows.filter(function (r) {
-          var hay = [r.Name, r.Type, r.WorkGroup, r.RepoOwner + '/' + r.RepoName, r.NeedsNote]
+          var hay = [r.Name, r.Type, wgNames(r).join(' '), r.RepoOwner + '/' + r.RepoName, r.NeedsNote]
             .join('\n').toLowerCase();
           return hay.indexOf(n) >= 0;
         });
@@ -270,7 +284,7 @@
       }, repo));
       if (n.RepoCategory) kv('Category', n.RepoCategory);
       kv('Type', n.Type);
-      kv('Workgroup', n.WorkGroup);
+      kv('Workgroup', wgNames(n).join(', '));
       kv('Window', windowNode(n));
       kv('Commits in window', n.CommitsInWindow);
       kv('Tickets attributed', n.TicketsAttributed);
@@ -621,9 +635,15 @@
   function groupByWorkGroup(rows) {
     var byKey = Object.create(null);
     for (var i = 0; i < rows.length; i++) {
-      var wg = String(rows[i].WorkGroup || '').trim() || UNKNOWN_WG;
-      if (!byKey[wg]) byKey[wg] = [];
-      byKey[wg].push(rows[i]);
+      // A note (notably a datatypes note) may own several work groups; it appears
+      // under each. Per-group counts therefore reflect membership, while the
+      // top-level "N notes" count still counts distinct rows.
+      var names = wgNames(rows[i]);
+      for (var j = 0; j < names.length; j++) {
+        var wg = names[j];
+        if (!byKey[wg]) byKey[wg] = [];
+        byKey[wg].push(rows[i]);
+      }
     }
     var names = Object.keys(byKey);
     names.sort(function (a, b) {
@@ -916,7 +936,7 @@
       ['NoteId', String(note.NoteId || noteId)],
       ['Repository', String(note.RepoOwner || '') + '/' + String(note.RepoName || '')],
       ['Category', note.RepoCategory == null ? '' : String(note.RepoCategory)],
-      ['Workgroup', note.WorkGroup == null ? '' : String(note.WorkGroup)],
+      ['Workgroup', wgNames(note).join(', ')],
       ['Window', winValue],
       ['Commits in window', String(note.CommitsInWindow == null ? 0 : note.CommitsInWindow)],
       ['Tickets attributed', String(note.TicketsAttributed == null ? 0 : note.TicketsAttributed)],

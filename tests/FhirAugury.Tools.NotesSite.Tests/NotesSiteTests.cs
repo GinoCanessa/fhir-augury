@@ -253,6 +253,55 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains(".tag", appCss);
     }
 
+    [Fact]
+    public void Emit_Snapshot_Carries_Multi_WG_For_Datatype_Note()
+    {
+        string dbPath = Path.Combine(_tempDir, "multiwg.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            NoteRecord dt = new()
+            {
+                NoteId = "hl7-fhir-datatype-datatypes",
+                Type = "DataType",
+                Name = "datatypes",
+                RepoOwner = "HL7",
+                RepoName = "fhir",
+                RepoCategory = "FhirCore",
+                WorkGroup = "Foo",
+                WorkGroupCode = "foo",
+                WorkGroupNames = "Foo;Bar",
+                WorkGroupCodes = "foo;bar",
+                GeneratedAt = now,
+                SavedAt = now,
+            };
+            db.UpsertUnitEvidence(dt, [], [], []);
+        }
+
+        string outDir = Path.Combine(_tempDir, "multiwg-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html"))));
+
+        string snapPath = Path.Combine(_tempDir, "multiwg-decoded.db");
+        File.WriteAllBytes(snapPath, dbBytes);
+        using SqliteConnection conn = new($"Data Source={snapPath};Pooling=False");
+        conn.Open();
+
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT WorkGroupNames, WorkGroupCodes FROM notes WHERE Name='datatypes'";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("Foo;Bar", reader.GetString(0));
+        Assert.Equal("foo;bar", reader.GetString(1));
+
+        // The SPA groups/filters/displays by the multi-WG set.
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        Assert.Contains("WorkGroupNames", appJs);
+        Assert.Contains("wgNames", appJs);
+    }
+
     private static long Count(SqliteConnection conn, string sql)
     {
         using SqliteCommand cmd = conn.CreateCommand();

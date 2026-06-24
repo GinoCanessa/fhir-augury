@@ -121,6 +121,12 @@ public sealed record BallotNoteDetailDto
     public string WorkGroup { get; init; } = string.Empty;
     public string WorkGroupCode { get; init; } = string.Empty;
 
+    /// <summary>Distinct semicolon-delimited set of owning work group display names (datatypes may have several); the first is <see cref="WorkGroup"/>.</summary>
+    public string WorkGroupNames { get; init; } = string.Empty;
+
+    /// <summary>Distinct semicolon-delimited set of owning work group codes, index-aligned with <see cref="WorkGroupNames"/>; the first is <see cref="WorkGroupCode"/>.</summary>
+    public string WorkGroupCodes { get; init; } = string.Empty;
+
     public string SinceSha { get; init; } = string.Empty;
     public string SinceShortSha { get; init; } = string.Empty;
     public string HeadSha { get; init; } = string.Empty;

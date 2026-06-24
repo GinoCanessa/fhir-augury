@@ -20,6 +20,8 @@ internal static class BallotNoteDtoMapper
             RepoCategory = note.RepoCategory,
             WorkGroup = note.WorkGroup,
             WorkGroupCode = note.WorkGroupCode,
+            WorkGroupNames = note.WorkGroupNames,
+            WorkGroupCodes = note.WorkGroupCodes,
             SinceSha = note.SinceSha,
             SinceShortSha = note.SinceShortSha,
             HeadSha = note.HeadSha,
