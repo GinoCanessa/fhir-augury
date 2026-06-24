@@ -417,21 +417,29 @@
     return { order: 3, label: 'Unclassified' };
   }
 
+  // Technical-Correction issue Type wins over ChangeImpact: such tickets form
+  // their own lowest-ranked group, never folded into the impact buckets.
+  function ticketGroup(t) {
+    var type = String((t && t.IssueType) || '').toLowerCase().replace(/[\s_]+/g, ' ').trim();
+    if (type === 'technical correction') return { order: 4, label: 'Technical Correction' };
+    return changeImpactBucket(t.ChangeImpact);
+  }
+
   function renderTickets(main, noteId) {
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, RelatedTicketKeys ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, IssueType, RelatedTicketKeys ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     if (tickets.length === 0) return;
     main.appendChild(el('h3', null, 'Tickets attributed (' + tickets.length + ')'));
 
-    // Group strictly by the ticket's ChangeImpact bucket, ordered
-    // Non-compatible → Compatible substantive → Non-substantive → Unclassified.
-    var buckets = [[], [], [], []];
+    // Group by the ticket's group bucket, ordered Non-compatible → Compatible
+    // substantive → Non-substantive → Unclassified → Technical Correction.
+    var buckets = [[], [], [], [], []];
     for (var i = 0; i < tickets.length; i++) {
-      buckets[changeImpactBucket(tickets[i].ChangeImpact).order].push(tickets[i]);
+      buckets[ticketGroup(tickets[i]).order].push(tickets[i]);
     }
-    var labels = ['Non-compatible', 'Compatible substantive', 'Non-substantive', 'Unclassified'];
+    var labels = ['Non-compatible', 'Compatible substantive', 'Non-substantive', 'Unclassified', 'Technical Correction'];
 
     for (var b = 0; b < buckets.length; b++) {
       if (buckets[b].length === 0) continue;
@@ -928,16 +936,23 @@
     }
 
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, RelatedTicketKeys ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, IssueType, RelatedTicketKeys, TicketOrder ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     out += '## Tickets attributed (' + tickets.length + ')\n\n';
     if (tickets.length > 0) {
+      // Order corrections last (group order) while preserving in-group order
+      // deterministically via TicketOrder, then render the flat table.
+      var ordered = tickets.slice().sort(function (a, b) {
+        var ga = ticketGroup(a).order, gb = ticketGroup(b).order;
+        if (ga !== gb) return ga - gb;
+        return (Number(a.TicketOrder) || 0) - (Number(b.TicketOrder) || 0);
+      });
       out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Change impact', 'Category', 'See also', 'Commits'],
-        tickets.map(function (t) {
+        ordered.map(function (t) {
           return [String(t.TicketKey || ''), String(t.Title || ''), String(t.Resolution || ''),
             String(t.WorkGroup || ''), String(t.Specification || ''),
-            changeImpactBucket(t.ChangeImpact).label, String(t.ChangeCategory || ''),
+            ticketGroup(t).label, String(t.ChangeCategory || ''),
             String(t.RelatedTicketKeys || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).join(', '),
             String(t.CommitCount || 0)];
         })) + '\n';

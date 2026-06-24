@@ -207,6 +207,7 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
 .impact-1::before { background: var(--unknown-fg); }
 .impact-2::before { background: var(--yes-fg); }
 .impact-3::before { background: var(--muted); }
+.impact-4::before { background: var(--muted); }
 .tag {
   display: inline-block;
   padding: 0.05rem 0.4rem;

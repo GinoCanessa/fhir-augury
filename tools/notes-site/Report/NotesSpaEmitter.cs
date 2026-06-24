@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.NotesSite.Report;
@@ -107,6 +108,11 @@ internal sealed class NotesSpaEmitter
                 source.Open();
                 dest.Open();
                 source.BackupDatabase(dest);
+
+                // Migrate the throwaway snapshot so the embedded DB always has
+                // the current schema (e.g. note_tickets.IssueType) even when the
+                // source DB predates a column the SPA's SELECTs reference.
+                BallotNotesDatabase.EnsureSchema(dest);
 
                 using SqliteCommand vacuum = dest.CreateCommand();
                 vacuum.CommandText = "VACUUM;";
