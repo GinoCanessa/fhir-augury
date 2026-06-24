@@ -194,6 +194,28 @@ public sealed class NotesSiteTests : IDisposable
     }
 
     [Fact]
+    public void Emit_App_Js_Ships_CopyHtml_Affordance()
+    {
+        string dbPath = Path.Combine(_tempDir, "copy-html.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+        }
+
+        string outDir = Path.Combine(_tempDir, "copy-html-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        Assert.Contains("copyHtmlButton", appJs);
+        Assert.Contains("clipboardWrite", appJs);
+        Assert.Contains("Copy HTML", appJs);
+
+        string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
+        Assert.Contains(".copy-html", appCss);
+    }
+
+    [Fact]
     public void Emit_App_Js_Ships_Grouping_Window_And_Consolidation_Rendering()
     {
         string dbPath = Path.Combine(_tempDir, "grouping.db");
