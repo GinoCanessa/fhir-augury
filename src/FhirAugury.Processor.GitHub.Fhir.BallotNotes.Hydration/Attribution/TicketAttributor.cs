@@ -25,6 +25,12 @@ public sealed record AttributedTicket
     /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
     public string ChangeCategory { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Related/linked Jira ticket keys (semicolon-joined, self excluded) gathered
+    /// from the issue's related-issues and duplicate-of links; empty when none.
+    /// </summary>
+    public string RelatedTicketKeys { get; init; } = string.Empty;
+
     /// <summary>Number of window commits attributed to this ticket.</summary>
     public int CommitCount { get; init; }
 
@@ -178,6 +184,7 @@ public sealed partial class TicketAttributor
                 Url = details.Url,
                 ChangeImpact = details.ChangeImpact,
                 ChangeCategory = details.ChangeCategory,
+                RelatedTicketKeys = details.RelatedTicketKeys,
                 CommitCount = commitCount[key],
                 AttributionDate = latest.TryGetValue(key, out DateTimeOffset d) ? d : DateTimeOffset.MinValue,
             });
@@ -246,6 +253,7 @@ public sealed partial class TicketAttributor
         string url = GetStringCI(root, "url");
         string workGroup = string.Empty, specification = string.Empty, resolution = string.Empty;
         string changeImpact = string.Empty, changeCategory = string.Empty;
+        string relatedTicketKeys = string.Empty;
 
         if (TryGetObjectCI(root, "metadata", out JsonElement metadata))
         {
@@ -254,9 +262,22 @@ public sealed partial class TicketAttributor
             resolution = GetStringCI(metadata, "resolution");
             changeImpact = GetStringCI(metadata, "change_impact");
             changeCategory = GetStringCI(metadata, "change_category");
+
+            // Related/linked tickets come from the related-issues + duplicate-of
+            // fields; extract distinct FHIR-keys, excluding the ticket itself.
+            List<string> related = [];
+            HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase) { key.ToUpperInvariant() };
+            foreach (string field in new[] { GetStringCI(metadata, "related_issues"), GetStringCI(metadata, "duplicate_of") })
+            {
+                foreach (string relatedKey in ExtractTicketKeys(field))
+                {
+                    if (seen.Add(relatedKey)) related.Add(relatedKey);
+                }
+            }
+            relatedTicketKeys = string.Join(";", related);
         }
 
-        return new TicketDetails(title, resolution, workGroup, specification, url, changeImpact, changeCategory);
+        return new TicketDetails(title, resolution, workGroup, specification, url, changeImpact, changeCategory, relatedTicketKeys);
     }
 
     private async Task<JsonDocument?> TryGetWithFallbackAsync(string relativeUrl, CancellationToken ct)
@@ -335,8 +356,9 @@ public sealed partial class TicketAttributor
         string Specification,
         string Url,
         string ChangeImpact,
-        string ChangeCategory)
+        string ChangeCategory,
+        string RelatedTicketKeys)
     {
-        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
     }
 }

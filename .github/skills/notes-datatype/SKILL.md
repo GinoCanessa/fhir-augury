@@ -205,11 +205,12 @@ as-is — do **not** re-derive any of it:
   page's file set. Commits with an empty `ticketKeys` are the
   "unattributed" group.
 - **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
-  specification, url, commitCount, changeImpact, changeCategory}` for
-  every attributed ticket. `changeImpact` is the ticket's own Jira
-  change-impact classification (`Non-compatible`,
+  specification, url, commitCount, changeImpact, changeCategory,
+  relatedTicketKeys}` for every attributed ticket. `changeImpact` is
+  the ticket's own Jira change-impact classification (`Non-compatible`,
   `Compatible, substantive`, `Non-substantive`, or empty/unset);
-  `changeCategory` is its change-category label.
+  `changeCategory` is its change-category label; `relatedTicketKeys[]`
+  are the related/linked Jira tickets needed to interpret the change.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on this page at HEAD (empty if none).
 - **Note classification** — `currentNoteIsAuguryGenerated` (whether the
@@ -309,6 +310,13 @@ Produce **one** HTML ballot-note draft for this unit's target page
   `proposedBallotNoteHtml` (it is pasted verbatim into the page). Use
   HTML elements (`<ul>`, `<li>`, `<p>`, `<b>`, `<a href>`, `<code>`),
   not markdown syntax.
+- **Every called-out change must carry at least one Jira key.** If a
+  change has no attributable ticket, surface it under a final
+  **Unattributed (needs Jira)** heading rather than dropping it; the SPA
+  flags entries lacking attribution.
+- **Make cross-ticket relationships explicit.** When a ticket's
+  `relatedTicketKeys[]` are needed to interpret a change, add an inline
+  "(see also <a …>FHIR-…</a>)" after that line.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.

@@ -219,6 +219,8 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         if (issue.Labels is not null) metadata["labels"] = issue.Labels;
         if (issue.ChangeImpact is not null) metadata["change_impact"] = issue.ChangeImpact;
         if (issue.ChangeCategory is not null) metadata["change_category"] = issue.ChangeCategory;
+        if (issue.RelatedIssues is not null) metadata["related_issues"] = issue.RelatedIssues;
+        if (issue.DuplicateOf is not null) metadata["duplicate_of"] = issue.DuplicateOf;
 
         List<CommentInfo>? comments = null;
         if (includeComments == true)

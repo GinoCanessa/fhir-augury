@@ -46,6 +46,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NotesRunRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeImpact", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeCategory", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "RelatedTicketKeys", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "CurrentNoteIsAuguryGenerated", "INTEGER NOT NULL DEFAULT 0");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "PreservedHandAuthoredHtml", "TEXT NOT NULL DEFAULT ''");
     }
@@ -471,7 +472,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
             "SELECT Id, NoteId, TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, TicketOrder, " +
-            "ChangeImpact, ChangeCategory " +
+            "ChangeImpact, ChangeCategory, RelatedTicketKeys " +
             $"FROM \"{NoteTicketRecord.DefaultTableName}\" WHERE NoteId = $id ORDER BY TicketOrder, RowId";
         cmd.Parameters.AddWithValue("$id", noteId);
         List<NoteTicketRecord> rows = [];
@@ -492,6 +493,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
                 TicketOrder = reader.GetInt32(9),
                 ChangeImpact = reader.GetString(10),
                 ChangeCategory = reader.GetString(11),
+                RelatedTicketKeys = reader.GetString(12),
             });
         }
         return rows;

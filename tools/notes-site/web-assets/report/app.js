@@ -417,7 +417,7 @@
 
   function renderTickets(main, noteId) {
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, RelatedTicketKeys ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     if (tickets.length === 0) return;
@@ -436,7 +436,7 @@
       main.appendChild(el('h4', { class: 'impact-header impact-' + b }, labels[b] + ' (' + buckets[b].length + ')'));
       var table = el('table');
       var thead = el('thead');
-      thead.appendChild(rowOf('th', ['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Category', 'Commits']));
+      thead.appendChild(rowOf('th', ['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Category', 'See also', 'Commits']));
       table.appendChild(thead);
       var tbody = el('tbody');
       for (var j = 0; j < buckets[b].length; j++) {
@@ -454,12 +454,28 @@
         var cat = String(t.ChangeCategory || '').trim();
         if (cat) catCell.appendChild(el('span', { class: 'tag tag-category' }, cat));
         tr.appendChild(catCell);
+        tr.appendChild(relatedCell(t.RelatedTicketKeys));
         tr.appendChild(el('td', { class: 'num' }, String(t.CommitCount || 0)));
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
       main.appendChild(table);
     }
+  }
+
+  // Renders the related/linked ticket keys as a "see also" list of Jira links.
+  function relatedCell(value) {
+    var cell = el('td', { class: 'related' });
+    var keys = String(value || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+    if (keys.length === 0) return cell;
+    for (var i = 0; i < keys.length; i++) {
+      if (i > 0) cell.appendChild(document.createTextNode(', '));
+      cell.appendChild(el('a', {
+        href: 'https://jira.hl7.org/browse/' + encodeURIComponent(keys[i]),
+        target: '_blank', rel: 'noopener noreferrer'
+      }, keys[i]));
+    }
+    return cell;
   }
 
   // ---- cell builders ------------------------------------------------------
@@ -840,16 +856,18 @@
     }
 
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory, RelatedTicketKeys ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     out += '## Tickets attributed (' + tickets.length + ')\n\n';
     if (tickets.length > 0) {
-      out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Change impact', 'Category', 'Commits'],
+      out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Change impact', 'Category', 'See also', 'Commits'],
         tickets.map(function (t) {
           return [String(t.TicketKey || ''), String(t.Title || ''), String(t.Resolution || ''),
             String(t.WorkGroup || ''), String(t.Specification || ''),
-            changeImpactBucket(t.ChangeImpact).label, String(t.ChangeCategory || ''), String(t.CommitCount || 0)];
+            changeImpactBucket(t.ChangeImpact).label, String(t.ChangeCategory || ''),
+            String(t.RelatedTicketKeys || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).join(', '),
+            String(t.CommitCount || 0)];
         })) + '\n';
     } else {
       out += '_None._\n\n';

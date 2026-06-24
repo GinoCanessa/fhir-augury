@@ -126,11 +126,13 @@ as-is — do **not** re-derive any of it:
   artifact. Commits with an empty `ticketKeys` are the "unattributed"
   group.
 - **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
-  specification, url, commitCount, changeImpact, changeCategory}` for
-  every attributed ticket. `changeImpact` is the ticket's own Jira
-  change-impact classification (e.g. `Non-compatible`,
-  `Compatible, substantive`, `Non-substantive`, or empty/unset);
-  `changeCategory` is its change-category label.
+  specification, url, commitCount, changeImpact, changeCategory,
+  relatedTicketKeys}` for every attributed ticket. `changeImpact` is
+  the ticket's own Jira change-impact classification (e.g.
+  `Non-compatible`, `Compatible, substantive`, `Non-substantive`, or
+  empty/unset); `changeCategory` is its change-category label;
+  `relatedTicketKeys[]` are the related/linked Jira tickets needed to
+  interpret the change.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the artifact's intro file at HEAD (empty if none).
 - **Note classification** — `currentNoteIsAuguryGenerated` (whether the
@@ -232,6 +234,15 @@ The proposed ballot note MUST:
   (`<ul>`, `<li>`, `<p>`, `<b>`, `<a href>`, `<code>`). Example of a
   correct entry:
   `<li>Cardinality of <code>Observation.value[x]</code> relaxed to 0..1 [<a href="https://jira.hl7.org/browse/FHIR-12345">FHIR-12345</a>]</li>`
+- **Every called-out change must carry at least one Jira key.** If a
+  change has no attributable ticket, do not drop it — surface it under a
+  final **Unattributed (needs Jira)** heading so a reviewer can follow
+  up. The SPA flags entries lacking attribution.
+- **Make cross-ticket relationships explicit.** When a ticket's
+  `relatedTicketKeys[]` are needed to interpret a change, add an inline
+  "(see also <a …>FHIR-…</a>)" after that line so balloters can follow
+  the linked tickets.
+- **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.
   Defer entirely to the ticket's own classification — do **not**

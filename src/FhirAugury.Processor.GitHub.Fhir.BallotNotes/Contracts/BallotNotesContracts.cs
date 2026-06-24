@@ -80,6 +80,9 @@ public sealed record NoteTicketDto
 
     /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
     public string ChangeCategory { get; init; } = string.Empty;
+
+    /// <summary>Related/linked Jira ticket keys gathered from the issue's links; empty when none.</summary>
+    public IReadOnlyList<string> RelatedTicketKeys { get; init; } = [];
 }
 
 /// <summary>One note with its full hydrated evidence and any authored prose.</summary>

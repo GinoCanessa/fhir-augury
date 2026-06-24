@@ -217,6 +217,8 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
   color: var(--muted);
 }
 .tag-category { white-space: nowrap; }
+.related { font-size: 0.85rem; }
+.related a { white-space: nowrap; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
 .back-link { margin: 0.5rem 0 1rem; display: inline-block; }
 

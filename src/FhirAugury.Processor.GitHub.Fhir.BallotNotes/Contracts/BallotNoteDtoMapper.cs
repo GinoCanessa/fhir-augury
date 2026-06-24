@@ -65,6 +65,9 @@ internal static class BallotNoteDtoMapper
                 CommitCount = t.CommitCount,
                 ChangeImpact = t.ChangeImpact,
                 ChangeCategory = t.ChangeCategory,
+                RelatedTicketKeys = string.IsNullOrEmpty(t.RelatedTicketKeys)
+                    ? []
+                    : [.. t.RelatedTicketKeys.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
             })],
         };
     }

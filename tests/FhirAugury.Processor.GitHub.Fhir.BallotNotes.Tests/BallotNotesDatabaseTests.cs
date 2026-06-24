@@ -278,7 +278,7 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         // must carry its classification verbatim through the read path.
         List<NoteTicketRecord> tickets =
         [
-            new() { NoteId = noteId, TicketKey = "FHIR-56060", Title = "clarify", ChangeImpact = "Non-substantive", ChangeCategory = "Clarification", CommitCount = 1, TicketOrder = 0 },
+            new() { NoteId = noteId, TicketKey = "FHIR-56060", Title = "clarify", ChangeImpact = "Non-substantive", ChangeCategory = "Clarification", RelatedTicketKeys = "FHIR-200;FHIR-300", CommitCount = 1, TicketOrder = 0 },
             new() { NoteId = noteId, TicketKey = "FHIR-1", Title = "break", ChangeImpact = "Non-compatible", ChangeCategory = "", CommitCount = 1, TicketOrder = 1 },
         ];
         db.UpsertUnitEvidence(Evidence(noteId), f, c, tickets);
@@ -287,6 +287,7 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         NoteTicketRecord nonSub = detail.Tickets.Single(t => t.TicketKey == "FHIR-56060");
         Assert.Equal("Non-substantive", nonSub.ChangeImpact);
         Assert.Equal("Clarification", nonSub.ChangeCategory);
+        Assert.Equal("FHIR-200;FHIR-300", nonSub.RelatedTicketKeys);
         Assert.Equal("Non-compatible", detail.Tickets.Single(t => t.TicketKey == "FHIR-1").ChangeImpact);
     }
 

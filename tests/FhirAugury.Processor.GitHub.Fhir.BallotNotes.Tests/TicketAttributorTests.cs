@@ -148,6 +148,49 @@ public sealed class TicketAttributorTests
         Assert.Equal("Clarification", ticket.ChangeCategory);
     }
 
+    [Fact]
+    public async Task AttributeAsync_parses_related_ticket_keys_from_metadata_links()
+    {
+        TicketAttributor attributor = BuildAttributor(req =>
+        {
+            string path = req.RequestUri!.AbsolutePath;
+            string json = path.Contains("cross-referenced", StringComparison.Ordinal)
+                ? """{"value":"x","total":0,"hits":[]}"""
+                : """{"source":"jira","id":"FHIR-100","title":"A title","url":"http://jira/x","metadata":{"related_issues":"FHIR-200, FHIR-300","duplicate_of":"FHIR-400","change_impact":"Compatible, substantive"}}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        UnitAttribution result = await attributor.AttributeAsync(
+            [Commit("FHIR-100 change", "")],
+            workGroupHint: null);
+
+        AttributedTicket ticket = Assert.Single(result.Tickets);
+        Assert.Equal("FHIR-200;FHIR-300;FHIR-400", ticket.RelatedTicketKeys);
+    }
+
+    [Fact]
+    public async Task AttributeAsync_excludes_self_from_related_ticket_keys()
+    {
+        TicketAttributor attributor = BuildAttributor(req =>
+        {
+            string path = req.RequestUri!.AbsolutePath;
+            string json = path.Contains("cross-referenced", StringComparison.Ordinal)
+                ? """{"value":"x","total":0,"hits":[]}"""
+                : """{"source":"jira","id":"FHIR-100","title":"t","url":"http://jira/x","metadata":{"related_issues":"FHIR-100, FHIR-200"}}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        UnitAttribution result = await attributor.AttributeAsync([Commit("FHIR-100 change", "")], workGroupHint: null);
+
+        Assert.Equal("FHIR-200", Assert.Single(result.Tickets).RelatedTicketKeys);
+    }
+
     private static WindowCommit Commit(string subject, string body) => new()
     {
         Sha = "abc1234def5678abc1234def5678abc1234def56",
