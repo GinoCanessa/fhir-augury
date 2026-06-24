@@ -837,14 +837,32 @@
   }
 
   function copyForAi(text) {
+    clipboardWrite(text, setCopyStatus);
+  }
+
+  function clipboardWrite(text, setStatus) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
-        function () { setCopyStatus('Copied!'); },
-        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
+        function () { setStatus('Copied!'); },
+        function () { setStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
       );
     } else {
-      setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+      setStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
     }
+  }
+
+  // Inline "Copy HTML" affordance: a small button + its own status span that
+  // copies a block's raw stored HTML string (verbatim, pre-sanitization) to
+  // the clipboard as plain text. Distinct per instance so multiple buttons on
+  // one page report status independently (does not touch the global
+  // .copy-ai-status used by Copy for AI).
+  function copyHtmlButton(rawHtml) {
+    var status = el('span', { class: 'copy-html-status', role: 'status' });
+    var btn = el('button', { type: 'button', class: 'copy-html' }, 'Copy HTML');
+    btn.addEventListener('click', function () {
+      clipboardWrite(String(rawHtml == null ? '' : rawHtml), function (m) { status.textContent = m; });
+    });
+    return el('div', { class: 'copy-html-wrap' }, [btn, status]);
   }
 
   function copyViaTextarea(text) {
