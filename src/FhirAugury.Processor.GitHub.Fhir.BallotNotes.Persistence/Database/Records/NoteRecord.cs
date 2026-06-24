@@ -62,6 +62,19 @@ public partial record class NoteRecord
     /// <summary>Existing ballot note HTML at HEAD (the <c>&lt;blockquote&gt;</c> block), if any. Evidence.</summary>
     public string CurrentBallotNoteHtml { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Whether <see cref="CurrentBallotNoteHtml"/> was tool-generated (carries the
+    /// <c>data-augury-generated</c> marker). When true a regenerated note replaces
+    /// it; when false the current note is hand-authored. Evidence.
+    /// </summary>
+    public bool CurrentNoteIsAuguryGenerated { get; set; }
+
+    /// <summary>
+    /// Concatenation of the hand-authored (non-augury-generated) note blocks found
+    /// at HEAD, to be carried forward verbatim alongside a regenerated note. Evidence.
+    /// </summary>
+    public string PreservedHandAuthoredHtml { get; set; } = string.Empty;
+
     /// <summary>Proposed (drafted) ballot note HTML. Prose.</summary>
     public string ProposedBallotNoteHtml { get; set; } = string.Empty;
 

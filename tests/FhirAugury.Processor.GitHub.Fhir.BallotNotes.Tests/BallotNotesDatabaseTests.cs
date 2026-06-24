@@ -290,6 +290,20 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal("Non-compatible", detail.Tickets.Single(t => t.TicketKey == "FHIR-1").ChangeImpact);
     }
 
+    [Fact]
+    public void Current_note_classification_round_trips()
+    {
+        using BallotNotesDatabase db = NewDb();
+        NoteRecord evidence = Evidence();
+        evidence.CurrentNoteIsAuguryGenerated = true;
+        evidence.PreservedHandAuthoredHtml = "<blockquote class=\"stu-note\">hand</blockquote>";
+        Seed(db, evidence);
+
+        NoteDetail detail = db.GetNote("hl7-fhir-artifact-observation")!;
+        Assert.True(detail.Note.CurrentNoteIsAuguryGenerated);
+        Assert.Equal("<blockquote class=\"stu-note\">hand</blockquote>", detail.Note.PreservedHandAuthoredHtml);
+    }
+
     private bool HasColumn(string table, string column)
     {
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");

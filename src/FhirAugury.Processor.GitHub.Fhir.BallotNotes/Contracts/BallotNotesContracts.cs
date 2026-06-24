@@ -109,6 +109,13 @@ public sealed record BallotNoteDetailDto
 
     public string NeedsNote { get; init; } = "unknown";
     public string CurrentBallotNoteHtml { get; init; } = string.Empty;
+
+    /// <summary>Whether the current note at HEAD is tool-generated (carries the augury marker).</summary>
+    public bool CurrentNoteIsAuguryGenerated { get; init; }
+
+    /// <summary>Hand-authored note blocks at HEAD to carry forward verbatim alongside a regenerated note.</summary>
+    public string PreservedHandAuthoredHtml { get; init; } = string.Empty;
+
     public string ProposedBallotNoteHtml { get; init; } = string.Empty;
     public string RollupSummaryMarkdown { get; init; } = string.Empty;
     public string NotesForReviewerMarkdown { get; init; } = string.Empty;

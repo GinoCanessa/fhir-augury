@@ -47,4 +47,60 @@ public sealed class BallotNoteHtmlExtractorTests
         Assert.Equal(string.Empty, BallotNoteHtmlExtractor.Extract(string.Empty));
         Assert.Equal(string.Empty, BallotNoteHtmlExtractor.Extract(null!));
     }
+
+    [Fact]
+    public void ExtractClassified_flags_augury_generated_block()
+    {
+        const string html =
+            "<blockquote class=\"ballot-note\" data-augury-generated=\"true\" id=\"bn1\">gen</blockquote>";
+
+        ClassifiedNoteBlock block = Assert.Single(BallotNoteHtmlExtractor.ExtractClassified(html));
+        Assert.True(block.IsAuguryGenerated);
+        Assert.Contains("gen", block.Html);
+    }
+
+    [Fact]
+    public void ExtractClassified_treats_plain_ballot_note_as_hand_authored()
+    {
+        const string html = "<blockquote class=\"ballot-note\" id=\"bn1\">hand</blockquote>";
+
+        ClassifiedNoteBlock block = Assert.Single(BallotNoteHtmlExtractor.ExtractClassified(html));
+        Assert.False(block.IsAuguryGenerated);
+    }
+
+    [Fact]
+    public void ExtractClassified_matches_stu_note_as_hand_authored()
+    {
+        const string html = "<blockquote class=\"stu-note\">draft STU note</blockquote>";
+
+        ClassifiedNoteBlock block = Assert.Single(BallotNoteHtmlExtractor.ExtractClassified(html));
+        Assert.False(block.IsAuguryGenerated);
+        Assert.Contains("draft STU note", block.Html);
+    }
+
+    [Fact]
+    public void ExtractClassified_mixed_page_returns_one_generated_and_one_preserved()
+    {
+        const string html = """
+            <div>
+              <blockquote class="ballot-note" data-augury-generated="true" id="bn1">
+                <p>tool note</p>
+              </blockquote>
+              <blockquote class="stu-note">
+                <p>hand-authored note</p>
+              </blockquote>
+            </div>
+            """;
+
+        IReadOnlyList<ClassifiedNoteBlock> blocks = BallotNoteHtmlExtractor.ExtractClassified(html);
+
+        Assert.Equal(2, blocks.Count);
+        Assert.Single(blocks, b => b.IsAuguryGenerated);
+        ClassifiedNoteBlock preserved = Assert.Single(blocks, b => !b.IsAuguryGenerated);
+        Assert.Contains("hand-authored note", preserved.Html);
+    }
+
+    [Fact]
+    public void ExtractClassified_returns_empty_for_no_notes()
+        => Assert.Empty(BallotNoteHtmlExtractor.ExtractClassified("<div><blockquote>plain</blockquote></div>"));
 }

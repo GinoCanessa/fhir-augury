@@ -46,6 +46,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NotesRunRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeImpact", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeCategory", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "CurrentNoteIsAuguryGenerated", "INTEGER NOT NULL DEFAULT 0");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "PreservedHandAuthoredHtml", "TEXT NOT NULL DEFAULT ''");
     }
 
     /// <summary>Returns the number of notes currently stored.</summary>
@@ -373,7 +375,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
             "SELECT NoteId, Type, Name, RepoOwner, RepoName, RepoCategory, WorkGroup, WorkGroupCode, " +
             "SinceSha, SinceShortSha, HeadSha, HeadShortSha, CommitsInWindow, TicketsAttributed, NeedsNote, " +
             "CurrentBallotNoteHtml, ProposedBallotNoteHtml, RollupSummaryMarkdown, NotesForReviewerMarkdown, " +
-            "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt, WindowLabel " +
+            "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt, WindowLabel, " +
+            "CurrentNoteIsAuguryGenerated, PreservedHandAuthoredHtml " +
             $"FROM \"{NoteRecord.DefaultTableName}\" WHERE NoteId = $id LIMIT 1";
         cmd.Parameters.AddWithValue("$id", noteId);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -406,6 +409,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
             GeneratedAt = new DateTimeOffset(reader.GetDateTime(22)),
             SavedAt = new DateTimeOffset(reader.GetDateTime(23)),
             WindowLabel = reader.GetString(24),
+            CurrentNoteIsAuguryGenerated = reader.GetBoolean(25),
+            PreservedHandAuthoredHtml = reader.GetString(26),
         };
     }
 

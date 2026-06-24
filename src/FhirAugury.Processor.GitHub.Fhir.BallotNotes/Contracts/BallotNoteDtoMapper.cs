@@ -29,6 +29,8 @@ internal static class BallotNoteDtoMapper
             TicketsAttributed = note.TicketsAttributed,
             NeedsNote = note.NeedsNote,
             CurrentBallotNoteHtml = note.CurrentBallotNoteHtml,
+            CurrentNoteIsAuguryGenerated = note.CurrentNoteIsAuguryGenerated,
+            PreservedHandAuthoredHtml = note.PreservedHandAuthoredHtml,
             ProposedBallotNoteHtml = note.ProposedBallotNoteHtml,
             RollupSummaryMarkdown = note.RollupSummaryMarkdown,
             NotesForReviewerMarkdown = note.NotesForReviewerMarkdown,

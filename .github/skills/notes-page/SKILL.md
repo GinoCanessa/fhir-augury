@@ -141,6 +141,11 @@ as-is — do **not** re-derive any of it:
   on the page at HEAD (empty if none). The processor captures these
   regardless of marker convention (`ballot-note` / `stu-note` /
   IG-Publisher include).
+- **Note classification** — `currentNoteIsAuguryGenerated` (whether the
+  current note was tool-generated and may be replaced) and
+  `preservedHandAuthoredHtml` (hand-authored note blocks at HEAD to
+  carry forward verbatim alongside your single regenerated note — never
+  delete or rewrite them).
 - **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
   `notesForReviewerMarkdown`, `sourceFilesNote`, and `status`
   (`authored` / `awaiting-note`). When `status` is already `authored`,
@@ -197,17 +202,26 @@ The proposed ballot note MUST:
   otherwise fall back to the `sinceShortSha..headShortSha` window.
 - Be authored in the **format the page expects**:
   - HL7/fhir (HTML pages): an HTML
-    `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
+    `<blockquote class="ballot-note" data-augury-generated="true" id="…">…</blockquote>`
+    wrapper. The `data-augury-generated="true"` marker is **required**
+    so the processor replaces only this tool-generated block next run.
   - IG / extension-pack / incubator (markdown pages): the IG's
     ballot-note convention (typically an HTML `<blockquote
-    class="stu-note">` block embedded in the markdown, or the
-    IG-Publisher include used elsewhere in the same IG — match the
-    style already in use in the repo).
+    class="stu-note" data-augury-generated="true">` block embedded in
+    the markdown, or the IG-Publisher include used elsewhere in the same
+    IG — match the style already in use in the repo, but keep the
+    `data-augury-generated="true"` marker on the block you generate).
   - Other categories: match the style of the existing ballot note
     in `currentBallotNoteHtml`, or ask the reviewer to choose.
 
   Preserve any existing `id` attribute when revising an existing
   note; pick the next free `bn<N>` id when adding a new note.
+- **Produce exactly one consolidated note**, never two. A regenerated
+  note replaces only the prior **tool-generated** block. When
+  `preservedHandAuthoredHtml` is non-empty, carry those hand-authored
+  notes forward **verbatim** — never delete or rewrite them.
+  `currentNoteIsAuguryGenerated` tells you whether the current note is
+  tool-generated (replace) or hand-authored (preserve).
 - Be **derived from the roll-up summary (Step 2)**, not a paste-up
   of the per-ticket descriptions. The roll-up reflects the actual
   after-applied state.
@@ -406,7 +420,7 @@ Jira links of the form
 they support.}
 
 ```html
-<blockquote class="ballot-note" id="bn{N}">
+<blockquote class="ballot-note" data-augury-generated="true" id="bn{N}">
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
   scope since the previous ballot, derived from the roll-up
   summary.}</p>

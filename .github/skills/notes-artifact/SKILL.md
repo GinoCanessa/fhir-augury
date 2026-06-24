@@ -133,6 +133,11 @@ as-is — do **not** re-derive any of it:
   `changeCategory` is its change-category label.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the artifact's intro file at HEAD (empty if none).
+- **Note classification** — `currentNoteIsAuguryGenerated` (whether the
+  current note at HEAD was tool-generated and may be replaced) and
+  `preservedHandAuthoredHtml` (hand-authored note blocks at HEAD that
+  must be carried forward verbatim alongside your single regenerated
+  note — never delete or rewrite them).
 - **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
   `notesForReviewerMarkdown`, `sourceFilesNote`, and `status`
   (`authored` / `awaiting-note`). When `status` is already `authored`,
@@ -190,9 +195,20 @@ The proposed ballot note MUST:
   states the window in human terms so balloters know what span the note
   covers.
 - Be authored as **HTML**, ready to paste into the intro file inside a
-  `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
-  Preserve any existing `id` attribute when revising an existing note;
-  pick the next free `bn<N>` id when adding a new note.
+  **single** tool-generated wrapper:
+  `<blockquote class="ballot-note" data-augury-generated="true" id="…">…</blockquote>`.
+  The `data-augury-generated="true"` marker is **required** — it is how
+  the processor recognizes the block as tool-generated and replaces only
+  that block on the next run. Preserve any existing `id` attribute when
+  revising an existing note; pick the next free `bn<N>` id when adding a
+  new note.
+- **Produce exactly one consolidated note**, never two. A regenerated
+  note replaces only the prior **tool-generated** block. If the GET
+  payload's `preservedHandAuthoredHtml` is non-empty, those are
+  hand-authored notes — carry them forward **verbatim** and never delete
+  or rewrite them; your single marked note sits alongside them.
+  `currentNoteIsAuguryGenerated` tells you whether the current note at
+  HEAD was tool-generated (safe to replace) or hand-authored (preserve).
 - Be **derived from the roll-up summary (Step 2)**, not a paste-up of
   the per-ticket descriptions. The roll-up reflects the actual
   after-applied state.
@@ -243,7 +259,7 @@ The proposed ballot note MUST:
    ```json
    {
      "needsNote": "yes",
-     "proposedBallotNoteHtml": "<blockquote class='ballot-note' …>…</blockquote>",
+     "proposedBallotNoteHtml": "<blockquote class='ballot-note' data-augury-generated='true' …>…</blockquote>",
      "rollupSummaryMarkdown": "…",
      "notesForReviewerMarkdown": "…",
      "sourceFilesNote": "…"
@@ -267,7 +283,7 @@ holds. The PUT body maps onto the report sections as:
 | PUT field | Source in this skill |
 |-----------|----------------------|
 | `needsNote` | The Step 4 recommendation (`yes` / `no` / `unknown`). |
-| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note">` from Step 3. |
+| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note" data-augury-generated="true">` from Step 3 (single consolidated note). |
 | `rollupSummaryMarkdown` | The "Roll-up Summary" section body, as Markdown. |
 | `notesForReviewerMarkdown` | The "Notes for Reviewer" section body, as Markdown. |
 | `sourceFilesNote` | Any source-file caveat worth surfacing (optional). |
@@ -397,7 +413,7 @@ Use Jira links of the form
 inline against the bullet they support.}
 
 ```html
-<blockquote class="ballot-note" id="bn{N}">
+<blockquote class="ballot-note" data-augury-generated="true" id="bn{N}">
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
   scope since the previous ballot, derived from the roll-up
   summary.}</p>

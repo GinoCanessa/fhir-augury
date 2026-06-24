@@ -212,6 +212,11 @@ as-is — do **not** re-derive any of it:
   `changeCategory` is its change-category label.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on this page at HEAD (empty if none).
+- **Note classification** — `currentNoteIsAuguryGenerated` (whether the
+  current note was tool-generated and may be replaced) and
+  `preservedHandAuthoredHtml` (hand-authored note blocks at HEAD to
+  carry forward verbatim alongside your single regenerated note — never
+  delete or rewrite them).
 - **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
   `notesForReviewerMarkdown`, `sourceFilesNote`, and `status`
   (`authored` / `awaiting-note`). When `status` is already `authored`,
@@ -277,9 +282,18 @@ Produce **one** HTML ballot-note draft for this unit's target page
   "Changes since {windowLabel}" (e.g. "Changes since R6 Ballot 4");
   otherwise fall back to the `sinceShortSha..headShortSha` window.
 - Be authored as **HTML**, ready to paste into the page inside a
-  `<blockquote class="ballot-note" id="…">…</blockquote>` wrapper.
-  Preserve any existing `id` when revising an existing note on this
-  page; pick the next free `bn<N>` id when adding a new note.
+  **single** tool-generated wrapper:
+  `<blockquote class="ballot-note" data-augury-generated="true" id="…">…</blockquote>`.
+  The `data-augury-generated="true"` marker is **required** so the
+  processor replaces only this tool-generated block next run. Preserve
+  any existing `id` when revising an existing note on this page; pick the
+  next free `bn<N>` id when adding a new note.
+- **Produce exactly one consolidated note**, never two. A regenerated
+  note replaces only the prior **tool-generated** block. When
+  `preservedHandAuthoredHtml` is non-empty, carry those hand-authored
+  notes forward **verbatim** — never delete or rewrite them.
+  `currentNoteIsAuguryGenerated` tells you whether the current note is
+  tool-generated (replace) or hand-authored (preserve).
 - Be **derived from the per-page roll-up (Step 2)**, reconciled
   against the per-datatype roll-ups for the buckets on this page. Do
   **not** stitch together per-ticket descriptions.
@@ -372,7 +386,7 @@ processor already holds. The PUT body maps onto the report sections as:
 | PUT field | Source in this skill |
 |-----------|----------------------|
 | `needsNote` | The Step 4 recommendation (`yes` / `no` / `unknown`). |
-| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note">` for this page from Step 3. |
+| `proposedBallotNoteHtml` | The drafted `<blockquote class="ballot-note" data-augury-generated="true">` for this page from Step 3 (single consolidated note). |
 | `rollupSummaryMarkdown` | The per-page "Roll-up Summary" section body, as Markdown. |
 | `notesForReviewerMarkdown` | The "Notes for Reviewer" section body, as Markdown. |
 | `sourceFilesNote` | Any source-file caveat worth surfacing (optional). |
@@ -540,7 +554,7 @@ single-datatype own-page. Use Jira links of the form
 inline against the bullet they support.}
 
 ```html
-<blockquote class="ballot-note" id="bn{N}">
+<blockquote class="ballot-note" data-augury-generated="true" id="bn{N}">
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
   scope on this page since the previous ballot, derived from the
   roll-up summary.}</p>

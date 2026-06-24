@@ -160,8 +160,7 @@ public sealed class BallotNotesHydrator(
         SourceFileResolution resolution = await SourceFileResolver
             .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);
 
-        string currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
-
+        CurrentNoteResolution currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
         string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -183,7 +182,9 @@ public sealed class BallotNotesHydrator(
             CommitsInWindow = commits.Count,
             TicketsAttributed = attribution.Tickets.Count,
             NeedsNote = "unknown",
-            CurrentBallotNoteHtml = currentNote,
+            CurrentBallotNoteHtml = currentNote.CurrentHtml,
+            CurrentNoteIsAuguryGenerated = currentNote.IsAuguryGenerated,
+            PreservedHandAuthoredHtml = currentNote.PreservedHandAuthoredHtml,
             SourceFilesNote = resolution.Note,
             GeneratedAt = now,
             SavedAt = now,
@@ -246,15 +247,30 @@ public sealed class BallotNotesHydrator(
         return (commits.Count, attribution.Tickets.Count);
     }
 
-    private static async Task<string> ResolveCurrentNoteAsync(string clonePath, HydrationUnit unit, CancellationToken ct)
+    private static async Task<CurrentNoteResolution> ResolveCurrentNoteAsync(string clonePath, HydrationUnit unit, CancellationToken ct)
     {
         foreach (string candidate in CurrentNoteCandidates(unit))
         {
-            string html = await BallotNoteHtmlExtractor
-                .ExtractAtHeadAsync(clonePath, candidate, ct).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(html)) return html;
+            IReadOnlyList<ClassifiedNoteBlock> blocks = await BallotNoteHtmlExtractor
+                .ExtractClassifiedAtHeadAsync(clonePath, candidate, ct).ConfigureAwait(false);
+            if (blocks.Count == 0) continue;
+
+            ClassifiedNoteBlock? generated = blocks.FirstOrDefault(b => b.IsAuguryGenerated);
+            // The replace-target is the augury-generated block specifically; fall
+            // back to the first block as revision context when none is marked.
+            string current = generated?.Html ?? blocks[0].Html;
+            string preserved = string.Join(
+                "\n",
+                blocks.Where(b => !b.IsAuguryGenerated).Select(b => b.Html));
+            return new CurrentNoteResolution(current, generated is not null, preserved);
         }
-        return string.Empty;
+        return CurrentNoteResolution.Empty;
+    }
+
+    /// <summary>The classified current-note evidence for a unit at HEAD.</summary>
+    private readonly record struct CurrentNoteResolution(string CurrentHtml, bool IsAuguryGenerated, string PreservedHandAuthoredHtml)
+    {
+        public static CurrentNoteResolution Empty { get; } = new(string.Empty, false, string.Empty);
     }
 
     private static IEnumerable<string> CurrentNoteCandidates(HydrationUnit unit) => unit.Type switch

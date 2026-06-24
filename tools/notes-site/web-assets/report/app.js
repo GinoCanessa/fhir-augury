@@ -289,11 +289,32 @@
         main.appendChild(el('p', { class: 'muted' }, 'No proposed ballot note drafted.'));
       }
 
+      // Consolidation status: the regenerated note replaces only the prior
+      // tool-generated block; hand-authored notes are preserved verbatim.
+      var preserved = String(n.PreservedHandAuthoredHtml || '').trim();
+      var preservedCount = preserved ? preserved.split('</blockquote>').filter(function (s) { return s.trim().length > 0; }).length : 0;
+      var statusBits = [];
+      statusBits.push(truthy(n.CurrentNoteIsAuguryGenerated)
+        ? 'Replaces the prior tool-generated note.'
+        : 'No prior tool-generated note to replace.');
+      if (preservedCount > 0) {
+        statusBits.push(preservedCount + ' hand-authored note' + (preservedCount === 1 ? '' : 's') + ' preserved.');
+      }
+      main.appendChild(el('p', { class: 'muted consolidation-status' }, statusBits.join(' ')));
+
+      // Hand-authored notes carried forward verbatim, collapsed.
+      if (preserved.length > 0) {
+        var pres = htmlBlock(preserved);
+        pres.className = 'ballot-note preserved md';
+        main.appendChild(accordion('Hand-authored notes (preserved)', pres, false));
+      }
+
       // Current ballot note (authored HTML), collapsed.
       if (n.CurrentBallotNoteHtml && String(n.CurrentBallotNoteHtml).trim().length > 0) {
         var cur = htmlBlock(String(n.CurrentBallotNoteHtml));
         cur.className = 'ballot-note current md';
-        main.appendChild(accordion('Current ballot note (at HEAD)', cur, false));
+        var curLabel = 'Current ballot note (at HEAD)' + (truthy(n.CurrentNoteIsAuguryGenerated) ? ' — tool-generated' : ' — hand-authored');
+        main.appendChild(accordion(curLabel, cur, false));
       }
 
       // Roll-up summary (authored Markdown), open.
