@@ -25,6 +25,9 @@ public sealed record AttributedTicket
     /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
     public string ChangeCategory { get; init; } = string.Empty;
 
+    /// <summary>The ticket's Jira issue Type, e.g. <c>Technical Correction</c>; empty when unset.</summary>
+    public string IssueType { get; init; } = string.Empty;
+
     /// <summary>
     /// Related/linked Jira ticket keys (semicolon-joined, self excluded) gathered
     /// from the issue's related-issues and duplicate-of links; empty when none.
@@ -184,6 +187,7 @@ public sealed partial class TicketAttributor
                 Url = details.Url,
                 ChangeImpact = details.ChangeImpact,
                 ChangeCategory = details.ChangeCategory,
+                IssueType = details.IssueType,
                 RelatedTicketKeys = details.RelatedTicketKeys,
                 CommitCount = commitCount[key],
                 AttributionDate = latest.TryGetValue(key, out DateTimeOffset d) ? d : DateTimeOffset.MinValue,
@@ -253,6 +257,7 @@ public sealed partial class TicketAttributor
         string url = GetStringCI(root, "url");
         string workGroup = string.Empty, specification = string.Empty, resolution = string.Empty;
         string changeImpact = string.Empty, changeCategory = string.Empty;
+        string issueType = string.Empty;
         string relatedTicketKeys = string.Empty;
 
         if (TryGetObjectCI(root, "metadata", out JsonElement metadata))
@@ -262,6 +267,7 @@ public sealed partial class TicketAttributor
             resolution = GetStringCI(metadata, "resolution");
             changeImpact = GetStringCI(metadata, "change_impact");
             changeCategory = GetStringCI(metadata, "change_category");
+            issueType = GetStringCI(metadata, "type");
 
             // Related/linked tickets come from the related-issues + duplicate-of
             // fields; extract distinct FHIR-keys, excluding the ticket itself.
@@ -277,7 +283,7 @@ public sealed partial class TicketAttributor
             relatedTicketKeys = string.Join(";", related);
         }
 
-        return new TicketDetails(title, resolution, workGroup, specification, url, changeImpact, changeCategory, relatedTicketKeys);
+        return new TicketDetails(title, resolution, workGroup, specification, url, changeImpact, changeCategory, issueType, relatedTicketKeys);
     }
 
     private async Task<JsonDocument?> TryGetWithFallbackAsync(string relativeUrl, CancellationToken ct)
@@ -357,8 +363,9 @@ public sealed partial class TicketAttributor
         string Url,
         string ChangeImpact,
         string ChangeCategory,
+        string IssueType,
         string RelatedTicketKeys)
     {
-        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
     }
 }

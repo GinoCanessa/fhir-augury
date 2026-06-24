@@ -246,6 +246,7 @@ public sealed class BallotNotesHydrator(
                 Url = ticket.Url,
                 ChangeImpact = ticket.ChangeImpact,
                 ChangeCategory = ticket.ChangeCategory,
+                IssueType = ticket.IssueType,
                 RelatedTicketKeys = ticket.RelatedTicketKeys,
                 CommitCount = ticket.CommitCount,
                 TicketOrder = ticketOrder++,

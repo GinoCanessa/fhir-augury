@@ -31,6 +31,9 @@ public partial record class NoteTicketRecord
     /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
     public string ChangeCategory { get; set; } = string.Empty;
 
+    /// <summary>The ticket's Jira issue Type, e.g. <c>Technical Correction</c>; empty when unset.</summary>
+    public string IssueType { get; set; } = string.Empty;
+
     /// <summary>Related/linked Jira ticket keys (semicolon-joined, self excluded); empty when none.</summary>
     public string RelatedTicketKeys { get; set; } = string.Empty;
 
