@@ -142,6 +142,10 @@ as-is — do **not** re-derive any of it:
   detail, ticketKeys[]}` for each structural StructureDefinition delta
   detected over the window (`changeKind` ∈ `Added`/`Removed`/
   `Cardinality`/`Type`/`Modifier`/`Summary`/`MustSupport`).
+- **`extensionRefs[]`** — `{extensionUrl, extensionName,
+  replacementCoreElement, rationale}` for referenced extensions the CI
+  build maps to a replacing core element (already filtered to those with
+  a core counterpart).
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the page at HEAD (empty if none). The processor captures these
   regardless of marker convention (`ballot-note` / `stu-note` /
@@ -259,6 +263,10 @@ The proposed ballot note MUST:
   `<span class="structural-badge" title="{changeKind}: {detail}" aria-label="structural change: {changeKind}">structural</span>`
   after the change text. Only badge the deltas the processor detected;
   the SPA also renders a separate "Structural changes" evidence panel.
+- **Cross-reference replaced extensions.** For each `extensionRefs[]`
+  entry, add "extension {extensionName} → replaced by core element
+  <code>{replacementCoreElement}</code> ({rationale})". Do not surface
+  extension-to-extension churn with no core counterpart.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.

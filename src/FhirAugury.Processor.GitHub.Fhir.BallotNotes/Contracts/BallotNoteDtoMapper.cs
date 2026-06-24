@@ -79,6 +79,13 @@ internal static class BallotNoteDtoMapper
                     ? []
                     : [.. sc.TicketKeys.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
             })],
+            ExtensionRefs = [.. detail.ExtensionRefs.Select(er => new NoteExtensionRefDto
+            {
+                ExtensionUrl = er.ExtensionUrl,
+                ExtensionName = er.ExtensionName,
+                ReplacementCoreElement = er.ReplacementCoreElement,
+                Rationale = er.Rationale,
+            })],
         };
     }
 

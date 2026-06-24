@@ -138,6 +138,10 @@ as-is — do **not** re-derive any of it:
   the processor detected over the window (`changeKind` is one of
   `Added`, `Removed`, `Cardinality`, `Type`, `Modifier`, `Summary`,
   `MustSupport`). Use these to flag the few structural changes per line.
+- **`extensionRefs[]`** — `{extensionUrl, extensionName,
+  replacementCoreElement, rationale}` for referenced extensions the CI
+  build maps to a replacing core element. Already filtered to those with
+  a core counterpart (extension-only churn is suppressed upstream).
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the artifact's intro file at HEAD (empty if none).
 - **Note classification** — `currentNoteIsAuguryGenerated` (whether the
@@ -256,6 +260,11 @@ The proposed ballot note MUST:
   added/removed element) get a badge — do not invent them. The SPA also
   renders a separate "Structural changes" evidence panel from the same
   data.
+- **Cross-reference replaced extensions.** For each `extensionRefs[]`
+  entry, add a line of the form "extension {extensionName} → replaced by
+  core element <code>{replacementCoreElement}</code> ({rationale})". Do
+  **not** surface extension-to-extension churn that has no core
+  counterpart — the evidence is already filtered to replacements only.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.

@@ -39,6 +39,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         NoteTicketRecord.CreateTable(connection);
         NotesRunRecord.CreateTable(connection);
         NoteStructuralChangeRecord.CreateTable(connection);
+        NoteExtensionRefRecord.CreateTable(connection);
 
         // Additive migrations for legacy DBs (cslightdbgen emits no ALTER):
         // back-fill columns added after the tables were first created. Must run
@@ -75,13 +76,15 @@ public sealed class BallotNotesDatabase : SourceDatabase
         IReadOnlyList<NoteSourceFileRecord> files,
         IReadOnlyList<NoteCommitRecord> commits,
         IReadOnlyList<NoteTicketRecord> tickets,
-        IReadOnlyList<NoteStructuralChangeRecord>? structuralChanges = null)
+        IReadOnlyList<NoteStructuralChangeRecord>? structuralChanges = null,
+        IReadOnlyList<NoteExtensionRefRecord>? extensionRefs = null)
     {
         ArgumentNullException.ThrowIfNull(evidence);
         ArgumentNullException.ThrowIfNull(files);
         ArgumentNullException.ThrowIfNull(commits);
         ArgumentNullException.ThrowIfNull(tickets);
         IReadOnlyList<NoteStructuralChangeRecord> structural = structuralChanges ?? [];
+        IReadOnlyList<NoteExtensionRefRecord> extensions = extensionRefs ?? [];
 
         using SqliteConnection connection = OpenConnection();
 
@@ -113,6 +116,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         DeleteByNoteId(connection, NoteCommitRecord.DefaultTableName, evidence.NoteId);
         DeleteByNoteId(connection, NoteTicketRecord.DefaultTableName, evidence.NoteId);
         DeleteByNoteId(connection, NoteStructuralChangeRecord.DefaultTableName, evidence.NoteId);
+        DeleteByNoteId(connection, NoteExtensionRefRecord.DefaultTableName, evidence.NoteId);
         DeleteByNoteId(connection, NoteRecord.DefaultTableName, evidence.NoteId);
 
         connection.Insert(evidence);
@@ -120,6 +124,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         foreach (NoteCommitRecord commit in commits) connection.Insert(commit);
         foreach (NoteTicketRecord ticket in tickets) connection.Insert(ticket);
         foreach (NoteStructuralChangeRecord change in structural) connection.Insert(change);
+        foreach (NoteExtensionRefRecord extension in extensions) connection.Insert(extension);
     }
 
     /// <summary>
@@ -342,6 +347,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
             Commits = ReadCommits(connection, noteId),
             Tickets = ReadTickets(connection, noteId),
             StructuralChanges = ReadStructuralChanges(connection, noteId),
+            ExtensionRefs = ReadExtensionRefs(connection, noteId),
         };
     }
 
@@ -526,6 +532,31 @@ public sealed class BallotNotesDatabase : SourceDatabase
                 Detail = reader.GetString(5),
                 TicketKeys = reader.GetString(6),
                 ChangeOrder = reader.GetInt32(7),
+            });
+        }
+        return rows;
+    }
+
+    private static List<NoteExtensionRefRecord> ReadExtensionRefs(SqliteConnection connection, string noteId)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText =
+            "SELECT Id, NoteId, ExtensionUrl, ExtensionName, ReplacementCoreElement, Rationale, RefOrder " +
+            $"FROM \"{NoteExtensionRefRecord.DefaultTableName}\" WHERE NoteId = $id ORDER BY RefOrder, RowId";
+        cmd.Parameters.AddWithValue("$id", noteId);
+        List<NoteExtensionRefRecord> rows = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new NoteExtensionRefRecord
+            {
+                Id = reader.GetString(0),
+                NoteId = reader.GetString(1),
+                ExtensionUrl = reader.GetString(2),
+                ExtensionName = reader.GetString(3),
+                ReplacementCoreElement = reader.GetString(4),
+                Rationale = reader.GetString(5),
+                RefOrder = reader.GetInt32(6),
             });
         }
         return rows;

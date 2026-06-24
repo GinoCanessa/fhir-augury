@@ -11,6 +11,13 @@ public sealed class BallotNotesHydrationOptions
     /// <summary>Root holding per-repo clones at <c>&lt;CloneRoot&gt;/&lt;owner&gt;_&lt;name&gt;/clone</c>.</summary>
     public string CloneRoot { get; set; } = "./cache/github/repos";
 
+    /// <summary>
+    /// Path to the read-only GitHub source SQLite DB used to cross-reference
+    /// extensions (the <c>HL7/fhir-extensions</c> pack). Empty/missing disables
+    /// the cross-reference (best-effort).
+    /// </summary>
+    public string GitHubDbPath { get; set; } = "./cache/github.db";
+
     /// <summary>Primary attribution upstream (orchestrator cross-source aggregation).</summary>
     public string OrchestratorAddress { get; set; } = "http://localhost:5150";
 

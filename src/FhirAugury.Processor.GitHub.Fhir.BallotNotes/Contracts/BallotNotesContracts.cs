@@ -95,6 +95,15 @@ public sealed record NoteStructuralChangeDto
     public IReadOnlyList<string> TicketKeys { get; init; } = [];
 }
 
+/// <summary>A referenced extension the CI build maps to a replacing core element.</summary>
+public sealed record NoteExtensionRefDto
+{
+    public required string ExtensionUrl { get; init; }
+    public string ExtensionName { get; init; } = string.Empty;
+    public string ReplacementCoreElement { get; init; } = string.Empty;
+    public string Rationale { get; init; } = string.Empty;
+}
+
 /// <summary>One note with its full hydrated evidence and any authored prose.</summary>
 public sealed record BallotNoteDetailDto
 {
@@ -144,6 +153,9 @@ public sealed record BallotNoteDetailDto
 
     /// <summary>Structural SD element deltas detected over the window; empty when none.</summary>
     public IReadOnlyList<NoteStructuralChangeDto> StructuralChanges { get; init; } = [];
+
+    /// <summary>Referenced extensions the CI build maps to a replacing core element; empty when none.</summary>
+    public IReadOnlyList<NoteExtensionRefDto> ExtensionRefs { get; init; } = [];
 }
 
 /// <summary>The authored prose written back for a unit.</summary>

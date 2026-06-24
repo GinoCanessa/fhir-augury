@@ -74,6 +74,9 @@ public sealed record NoteDetail
     /// <summary>Structural SD element deltas detected over the window; empty when none.</summary>
     public IReadOnlyList<NoteStructuralChangeRecord> StructuralChanges { get; init; } = [];
 
+    /// <summary>Referenced extensions the CI build maps to a replacing core element; empty when none.</summary>
+    public IReadOnlyList<NoteExtensionRefRecord> ExtensionRefs { get; init; } = [];
+
     /// <summary><c>authored</c> when <see cref="NoteRecord.AuthoredAt"/> is set, else <c>awaiting-note</c>.</summary>
     public string Status => Note.AuthoredAt is not null ? "authored" : "awaiting-note";
 }

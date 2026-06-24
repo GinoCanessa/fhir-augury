@@ -331,6 +331,7 @@
       renderCommits(main, noteId);
       renderTickets(main, noteId);
       renderStructuralChanges(main, noteId);
+      renderExtensionRefs(main, noteId);
 
       setCopyExport(function () { return serializeNoteMarkdown(noteId, n); });
 
@@ -518,6 +519,38 @@
   }
 
   // ---- cell builders ------------------------------------------------------
+
+  function renderExtensionRefs(main, noteId) {
+    var refs = query(
+      'SELECT ExtensionUrl, ExtensionName, ReplacementCoreElement, Rationale ' +
+      'FROM note_extension_refs WHERE NoteId = $id ORDER BY RefOrder',
+      { $id: noteId }).rows;
+    if (refs.length === 0) return;
+    main.appendChild(el('h3', null, 'Extensions cross-reference (' + refs.length + ')'));
+    var table = el('table');
+    var thead = el('thead');
+    thead.appendChild(rowOf('th', ['Extension', 'Replaced by core element', 'Rationale']));
+    table.appendChild(thead);
+    var tbody = el('tbody');
+    for (var i = 0; i < refs.length; i++) {
+      var r = refs[i];
+      var tr = el('tr');
+      var extCell = el('td');
+      var name = String(r.ExtensionName || '') || String(r.ExtensionUrl || '');
+      var url = String(r.ExtensionUrl || '');
+      if (url) {
+        extCell.appendChild(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, name));
+      } else {
+        extCell.appendChild(document.createTextNode(name));
+      }
+      tr.appendChild(extCell);
+      tr.appendChild(el('td', { class: 'mono' }, String(r.ReplacementCoreElement || '')));
+      tr.appendChild(el('td', null, String(r.Rationale || '')));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    main.appendChild(table);
+  }
 
   function nameCell(r) {
     return el('a', { href: '#/note/' + encodeURIComponent(String(r.NoteId)) }, String(r.Name || ''));
@@ -923,6 +956,20 @@
           return [String(c.ElementPath || ''), String(c.ChangeKind || ''), String(c.Detail || ''),
             String(c.TicketKeys || '').split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).join(', '),
             String(c.SourcePath || '')];
+        })) + '\n';
+    } else {
+      out += '_None._\n\n';
+    }
+
+    var extRefs = query(
+      'SELECT ExtensionUrl, ExtensionName, ReplacementCoreElement, Rationale ' +
+      'FROM note_extension_refs WHERE NoteId = $id ORDER BY RefOrder',
+      { $id: noteId }).rows;
+    out += '## Extensions cross-reference (' + extRefs.length + ')\n\n';
+    if (extRefs.length > 0) {
+      out += mdTable(['Extension', 'Replaced by core element', 'Rationale'],
+        extRefs.map(function (r) {
+          return [String(r.ExtensionName || r.ExtensionUrl || ''), String(r.ReplacementCoreElement || ''), String(r.Rationale || '')];
         })) + '\n';
     } else {
       out += '_None._\n\n';

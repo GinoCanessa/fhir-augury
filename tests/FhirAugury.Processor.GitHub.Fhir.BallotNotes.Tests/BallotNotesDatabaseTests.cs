@@ -328,6 +328,25 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal("MustSupport", detail.StructuralChanges.Single(s => s.ElementPath == "Observation.value[x]").ChangeKind);
     }
 
+    [Fact]
+    public void Extension_refs_round_trip_through_upsert_and_read()
+    {
+        using BallotNotesDatabase db = NewDb();
+        string noteId = "hl7-fhir-artifact-observation";
+        (List<NoteSourceFileRecord> f, List<NoteCommitRecord> c, List<NoteTicketRecord> t) = Children(noteId);
+
+        List<NoteExtensionRefRecord> refs =
+        [
+            new() { NoteId = noteId, ExtensionUrl = "http://example.org/ext/replaced", ExtensionName = "PatientGenderExt", ReplacementCoreElement = "Patient.gender", Rationale = "replaced by Patient.gender", RefOrder = 0 },
+        ];
+        db.UpsertUnitEvidence(Evidence(noteId), f, c, t, [], refs);
+
+        NoteDetail detail = db.GetNote(noteId)!;
+        NoteExtensionRefRecord one = Assert.Single(detail.ExtensionRefs);
+        Assert.Equal("PatientGenderExt", one.ExtensionName);
+        Assert.Equal("Patient.gender", one.ReplacementCoreElement);
+    }
+
     private bool HasColumn(string table, string column)
     {
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");

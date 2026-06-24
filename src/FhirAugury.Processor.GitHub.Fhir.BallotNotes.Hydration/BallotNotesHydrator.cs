@@ -1,3 +1,4 @@
+using FhirAugury.Parsing.Fhir;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Attribution;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
@@ -284,8 +285,72 @@ public sealed class BallotNotesHydrator(
             });
         }
 
-        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords, structuralRecords);
+        // Extensions cross-reference (#17): resolve extensions referenced by this
+        // unit's SD files against the CI build's HL7/fhir-extensions pack, keeping
+        // only those with a replacing core element.
+        List<NoteExtensionRefRecord> extensionRecords = BuildExtensionRefs(clonePath, noteId, resolution.Files);
+
+        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords, structuralRecords, extensionRecords);
         return (commits.Count, attribution.Tickets.Count);
+    }
+
+    private List<NoteExtensionRefRecord> BuildExtensionRefs(
+        string clonePath,
+        string noteId,
+        IReadOnlyList<ResolvedSourceFile> sourceFiles)
+    {
+        if (string.IsNullOrWhiteSpace(_options.GitHubDbPath)) return [];
+
+        // Collect extension canonical URLs referenced by this unit's SD files at HEAD.
+        HashSet<string> urls = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ResolvedSourceFile file in sourceFiles)
+        {
+            if (!IsStructureDefinitionFile(file.Path)) continue;
+            string absolute = Path.Combine(clonePath, file.Path);
+            if (!File.Exists(absolute)) continue;
+
+            StructureDefinitionInfo? sd = FhirContentParser.TryParseStructureDefinition(absolute, logger);
+            if (sd is null) continue;
+
+            foreach (ElementInfo element in sd.DifferentialElements)
+            {
+                foreach (ElementTypeInfo type in element.Types)
+                {
+                    if (!string.Equals(type.Code, "Extension", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (type.Profiles is null) continue;
+                    foreach (string profile in type.Profiles)
+                    {
+                        if (!string.IsNullOrWhiteSpace(profile)) urls.Add(profile);
+                    }
+                }
+            }
+        }
+
+        if (urls.Count == 0) return [];
+
+        IReadOnlyList<ExtensionCrossRef> refs = ExtensionsCrossReferenceService.Resolve(_options.GitHubDbPath, urls, logger);
+        List<NoteExtensionRefRecord> records = [];
+        int order = 0;
+        foreach (ExtensionCrossRef crossRef in refs)
+        {
+            records.Add(new NoteExtensionRefRecord
+            {
+                NoteId = noteId,
+                ExtensionUrl = crossRef.ExtensionUrl,
+                ExtensionName = crossRef.ExtensionName,
+                ReplacementCoreElement = crossRef.ReplacementCoreElement,
+                Rationale = crossRef.Rationale,
+                RefOrder = order++,
+            });
+        }
+        return records;
+    }
+
+    private static bool IsStructureDefinitionFile(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext != ".xml" && ext != ".json") return false;
+        return Path.GetFileName(path).ToLowerInvariant().Contains("structuredefinition");
     }
 
     private static async Task<CurrentNoteResolution> ResolveCurrentNoteAsync(string clonePath, HydrationUnit unit, CancellationToken ct)
