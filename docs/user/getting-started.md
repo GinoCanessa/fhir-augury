@@ -432,9 +432,18 @@ for setup instructions and available tools.
 
 ## Next Steps
 
+- [User Guides Index](README.md) — all task-oriented guides in one place
 - [CLI Reference](cli-reference.md) — all commands and options
 - [API Reference](api-reference.md) — HTTP API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
 - [Configuration](configuration.md) — full configuration reference
 - [Docker Deployment](docker.md) — advanced Docker Compose options
 - [Deployment Guide](../deployment.md) — Docker Compose and .NET Aspire deployment
+
+### Generating outputs
+
+End-to-end guides for the three output pipelines:
+
+- [Generating Ballot Notes](generating-ballot-notes.md) — BallotNotes → `notes-site`
+- [Generating Discussion Tickets](generating-discussion-tickets.md) — Preparer → `ticket-site` (Tickets for Discussion)
+- [Generating Application Tickets](generating-application-tickets.md) — Planner + Applier → `ticket-site` (Tickets for Applying)
