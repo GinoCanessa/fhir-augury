@@ -285,13 +285,15 @@
         var proposed = htmlBlock(String(n.ProposedBallotNoteHtml));
         proposed.className = 'ballot-note md';
         main.appendChild(proposed);
+        main.appendChild(copyHtmlButton(String(n.ProposedBallotNoteHtml)));
       } else {
         main.appendChild(el('p', { class: 'muted' }, 'No proposed ballot note drafted.'));
       }
 
       // Consolidation status: the regenerated note replaces only the prior
       // tool-generated block; hand-authored notes are preserved verbatim.
-      var preserved = String(n.PreservedHandAuthoredHtml || '').trim();
+      var preservedRaw = String(n.PreservedHandAuthoredHtml || '');
+      var preserved = preservedRaw.trim();
       var preservedCount = preserved ? preserved.split('</blockquote>').filter(function (s) { return s.trim().length > 0; }).length : 0;
       var statusBits = [];
       statusBits.push(truthy(n.CurrentNoteIsAuguryGenerated)
@@ -306,7 +308,8 @@
       if (preserved.length > 0) {
         var pres = htmlBlock(preserved);
         pres.className = 'ballot-note preserved md';
-        main.appendChild(accordion('Hand-authored notes (preserved)', pres, false));
+        var presWrap = el('div', null, [pres, copyHtmlButton(preservedRaw)]);
+        main.appendChild(accordion('Hand-authored notes (preserved)', presWrap, false));
       }
 
       // Current ballot note (authored HTML), collapsed.
@@ -314,7 +317,8 @@
         var cur = htmlBlock(String(n.CurrentBallotNoteHtml));
         cur.className = 'ballot-note current md';
         var curLabel = 'Current ballot note (at HEAD)' + (truthy(n.CurrentNoteIsAuguryGenerated) ? ' — tool-generated' : ' — hand-authored');
-        main.appendChild(accordion(curLabel, cur, false));
+        var curWrap = el('div', null, [cur, copyHtmlButton(String(n.CurrentBallotNoteHtml))]);
+        main.appendChild(accordion(curLabel, curWrap, false));
       }
 
       // Roll-up summary (authored Markdown), open.
