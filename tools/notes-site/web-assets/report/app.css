@@ -260,3 +260,22 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
   font-size: 0.8rem;
   color: var(--yes-fg);
 }
+
+/* Inline "Copy HTML" affordance, in normal flow beneath each note block. */
+.copy-html-wrap {
+  margin: 0.25rem 0 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.copy-html {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-html-status { font-size: 0.8rem; color: var(--yes-fg); }
