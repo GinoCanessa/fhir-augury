@@ -45,7 +45,7 @@ public sealed class NotesSiteTests : IDisposable
             HeadSha = "9f8e7d",
             HeadShortSha = "9f8e7d",
             CommitsInWindow = 2,
-            TicketsAttributed = 1,
+            TicketsAttributed = 2,
             NeedsNote = "yes",
             ProposedBallotNoteHtml = "<blockquote class=\"ballot-note\">draft</blockquote>",
             RollupSummaryMarkdown = "## Summary\n- a change",
@@ -63,6 +63,7 @@ public sealed class NotesSiteTests : IDisposable
         List<NoteTicketRecord> tickets =
         [
             new() { NoteId = noteId, TicketKey = "FHIR-1", Title = "A change", Resolution = "Persuasive", WorkGroup = "OO", CommitCount = 1, TicketOrder = 0 },
+            new() { NoteId = noteId, TicketKey = "FHIR-2", Title = "A correction", Resolution = "Persuasive", WorkGroup = "OO", ChangeImpact = "Non-substantive", IssueType = "Technical Correction", CommitCount = 1, TicketOrder = 1 },
         ];
         NotesRunRecord run = new()
         {
@@ -211,6 +212,10 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains("Compatible substantive", appJs);
         Assert.Contains("Unclassified", appJs);
         Assert.Contains("ChangeImpact, ChangeCategory", appJs);
+        // Technical Correction issue-Type group (lowest-ranked, after Unclassified).
+        Assert.Contains("ticketGroup", appJs);
+        Assert.Contains("Technical Correction", appJs);
+        Assert.Contains("IssueType", appJs);
         // Phase 1: human-readable window label.
         Assert.Contains("Changes since ", appJs);
         Assert.Contains("WindowLabel", appJs);

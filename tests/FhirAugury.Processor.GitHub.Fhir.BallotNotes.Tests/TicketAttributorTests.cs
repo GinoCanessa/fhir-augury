@@ -131,7 +131,7 @@ public sealed class TicketAttributorTests
             string path = req.RequestUri!.AbsolutePath;
             string json = path.Contains("cross-referenced", StringComparison.Ordinal)
                 ? """{"value":"x","total":0,"hits":[]}"""
-                : """{"source":"jira","id":"FHIR-56060","title":"A title","url":"http://jira/x","metadata":{"work_group":"Orders and Observations (OO)","change_impact":"Non-substantive","change_category":"Clarification"}}""";
+                : """{"source":"jira","id":"FHIR-56060","title":"A title","url":"http://jira/x","metadata":{"work_group":"Orders and Observations (OO)","type":"Technical Correction","change_impact":"Non-substantive","change_category":"Clarification"}}""";
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json"),
@@ -146,6 +146,7 @@ public sealed class TicketAttributorTests
         Assert.Equal("FHIR-56060", ticket.Key);
         Assert.Equal("Non-substantive", ticket.ChangeImpact);
         Assert.Equal("Clarification", ticket.ChangeCategory);
+        Assert.Equal("Technical Correction", ticket.IssueType);
     }
 
     [Fact]
