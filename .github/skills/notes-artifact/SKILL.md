@@ -126,7 +126,11 @@ as-is — do **not** re-derive any of it:
   artifact. Commits with an empty `ticketKeys` are the "unattributed"
   group.
 - **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
-  specification, url, commitCount}` for every attributed ticket.
+  specification, url, commitCount, changeImpact, changeCategory}` for
+  every attributed ticket. `changeImpact` is the ticket's own Jira
+  change-impact classification (e.g. `Non-compatible`,
+  `Compatible, substantive`, `Non-substantive`, or empty/unset);
+  `changeCategory` is its change-category label.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on the artifact's intro file at HEAD (empty if none).
 - **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
@@ -203,6 +207,16 @@ The proposed ballot note MUST:
   `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
   next to the bullet it supports. Multiple tickets per bullet are
   fine.
+- **Group entries strictly by the ticket's `changeImpact`**, under
+  these four headers in this order: **Non-compatible** →
+  **Compatible substantive** → **Non-substantive** → **Unclassified**.
+  Defer entirely to the ticket's own classification — do **not**
+  re-derive substantive vs non-substantive yourself. A ticket with an
+  empty/unset `changeImpact` goes under **Unclassified** (rendered
+  last); **never** fold an unset ticket into Non-substantive. Omit a
+  header when its bucket is empty.
+- When a ticket carries a `changeCategory`, render it as a small
+  inline tag next to that entry (e.g. `<span class="tag">…</span>`).
 - Avoid restating mechanics already obvious from the SD (e.g.,
   "renamed `Observation.referenceRange.normalValue.normalValue` to
   …"). Focus on intent, scope, and balloter-relevant impact.
@@ -387,12 +401,27 @@ inline against the bullet they support.}
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
   scope since the previous ballot, derived from the roll-up
   summary.}</p>
+  <p><b>Non-compatible</b></p>
   <ul>
-    <li>{Substantive change} (<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>{, <a href="…">FHIR-YYYYY</a> if multiple})</li>
-    <li>…</li>
+    <li>{Change from a Non-compatible ticket} (<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>) <span class="tag">{changeCategory}</span></li>
+  </ul>
+  <p><b>Compatible substantive</b></p>
+  <ul>
+    <li>{Change} (<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>)</li>
+  </ul>
+  <p><b>Non-substantive</b></p>
+  <ul>
+    <li>{Change} (<a href="https://jira.hl7.org/browse/FHIR-ZZZZZ">FHIR-ZZZZZ</a>)</li>
+  </ul>
+  <p><b>Unclassified</b></p>
+  <ul>
+    <li>{Change from a ticket with no changeImpact set} (<a href="https://jira.hl7.org/browse/FHIR-WWWWW">FHIR-WWWWW</a>)</li>
   </ul>
 </blockquote>
 ```
+
+Omit any header whose bucket has no entries; keep the four in the order
+shown, with **Unclassified** always last.
 
 ## Notes for Reviewer
 

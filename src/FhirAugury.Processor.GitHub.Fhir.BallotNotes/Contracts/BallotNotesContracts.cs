@@ -74,6 +74,12 @@ public sealed record NoteTicketDto
     public string Specification { get; init; } = string.Empty;
     public string Url { get; init; } = string.Empty;
     public int CommitCount { get; init; }
+
+    /// <summary>The ticket's Jira change-impact classification; empty when unset.</summary>
+    public string ChangeImpact { get; init; } = string.Empty;
+
+    /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
+    public string ChangeCategory { get; init; } = string.Empty;
 }
 
 /// <summary>One note with its full hydrated evidence and any authored prose.</summary>

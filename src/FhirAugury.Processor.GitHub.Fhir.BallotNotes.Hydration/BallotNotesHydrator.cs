@@ -235,6 +235,8 @@ public sealed class BallotNotesHydrator(
                 WorkGroup = ticket.WorkGroup,
                 Specification = ticket.Specification,
                 Url = ticket.Url,
+                ChangeImpact = ticket.ChangeImpact,
+                ChangeCategory = ticket.ChangeCategory,
                 CommitCount = ticket.CommitCount,
                 TicketOrder = ticketOrder++,
             });

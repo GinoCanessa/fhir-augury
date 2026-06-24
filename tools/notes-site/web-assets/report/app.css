@@ -190,6 +190,33 @@ blockquote.ballot-note { margin-left: 0; margin-right: 0; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; }
 .muted { color: var(--muted); }
 .error { color: #c00; }
+
+/* Change-impact group headers and per-ticket category tags. */
+.impact-header { margin: 1rem 0 0.4rem; font-size: 0.95rem; }
+.impact-header::before {
+  content: '';
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.45rem;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: var(--muted);
+}
+.impact-0::before { background: var(--no-fg); background: #c0392b; }
+.impact-1::before { background: var(--unknown-fg); }
+.impact-2::before { background: var(--yes-fg); }
+.impact-3::before { background: var(--muted); }
+.tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.75rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+}
+.tag-category { white-space: nowrap; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
 .back-link { margin: 0.5rem 0 1rem; display: inline-block; }
 

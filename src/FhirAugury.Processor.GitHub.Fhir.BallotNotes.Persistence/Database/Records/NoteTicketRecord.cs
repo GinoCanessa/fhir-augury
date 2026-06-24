@@ -25,6 +25,12 @@ public partial record class NoteTicketRecord
     public string Specification { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
 
+    /// <summary>The ticket's Jira change-impact classification (e.g. <c>Non-substantive</c>); empty when unset.</summary>
+    public string ChangeImpact { get; set; } = string.Empty;
+
+    /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
+    public string ChangeCategory { get; set; } = string.Empty;
+
     /// <summary>Number of commits in the window attributed to this ticket.</summary>
     public int CommitCount { get; set; }
 

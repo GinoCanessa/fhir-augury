@@ -61,6 +61,8 @@ internal static class BallotNoteDtoMapper
                 Specification = t.Specification,
                 Url = t.Url,
                 CommitCount = t.CommitCount,
+                ChangeImpact = t.ChangeImpact,
+                ChangeCategory = t.ChangeCategory,
             })],
         };
     }

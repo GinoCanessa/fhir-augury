@@ -19,6 +19,12 @@ public sealed record AttributedTicket
     public string Specification { get; init; } = string.Empty;
     public string Url { get; init; } = string.Empty;
 
+    /// <summary>The ticket's Jira change-impact classification (e.g. <c>Non-substantive</c>); empty when unset.</summary>
+    public string ChangeImpact { get; init; } = string.Empty;
+
+    /// <summary>The ticket's Jira change-category classification; empty when unset.</summary>
+    public string ChangeCategory { get; init; } = string.Empty;
+
     /// <summary>Number of window commits attributed to this ticket.</summary>
     public int CommitCount { get; init; }
 
@@ -170,6 +176,8 @@ public sealed partial class TicketAttributor
                 WorkGroup = details.WorkGroup,
                 Specification = details.Specification,
                 Url = details.Url,
+                ChangeImpact = details.ChangeImpact,
+                ChangeCategory = details.ChangeCategory,
                 CommitCount = commitCount[key],
                 AttributionDate = latest.TryGetValue(key, out DateTimeOffset d) ? d : DateTimeOffset.MinValue,
             });
@@ -237,15 +245,18 @@ public sealed partial class TicketAttributor
         string title = GetStringCI(root, "title");
         string url = GetStringCI(root, "url");
         string workGroup = string.Empty, specification = string.Empty, resolution = string.Empty;
+        string changeImpact = string.Empty, changeCategory = string.Empty;
 
         if (TryGetObjectCI(root, "metadata", out JsonElement metadata))
         {
             workGroup = GetStringCI(metadata, "work_group");
             specification = GetStringCI(metadata, "specification");
             resolution = GetStringCI(metadata, "resolution");
+            changeImpact = GetStringCI(metadata, "change_impact");
+            changeCategory = GetStringCI(metadata, "change_category");
         }
 
-        return new TicketDetails(title, resolution, workGroup, specification, url);
+        return new TicketDetails(title, resolution, workGroup, specification, url, changeImpact, changeCategory);
     }
 
     private async Task<JsonDocument?> TryGetWithFallbackAsync(string relativeUrl, CancellationToken ct)
@@ -322,8 +333,10 @@ public sealed partial class TicketAttributor
         string Resolution,
         string WorkGroup,
         string Specification,
-        string Url)
+        string Url,
+        string ChangeImpact,
+        string ChangeCategory)
     {
-        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+        public static TicketDetails Empty { get; } = new(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
     }
 }

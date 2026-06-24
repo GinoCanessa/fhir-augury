@@ -205,7 +205,11 @@ as-is — do **not** re-derive any of it:
   page's file set. Commits with an empty `ticketKeys` are the
   "unattributed" group.
 - **`tickets[]`** — `{ticketKey, title, resolution, workGroup,
-  specification, url, commitCount}` for every attributed ticket.
+  specification, url, commitCount, changeImpact, changeCategory}` for
+  every attributed ticket. `changeImpact` is the ticket's own Jira
+  change-impact classification (`Non-compatible`,
+  `Compatible, substantive`, `Non-substantive`, or empty/unset);
+  `changeCategory` is its change-category label.
 - **`currentBallotNoteHtml`** — the verbatim ballot note(s) currently
   on this page at HEAD (empty if none).
 - **Existing prose** — `proposedBallotNoteHtml`, `rollupSummaryMarkdown`,
@@ -286,6 +290,15 @@ Produce **one** HTML ballot-note draft for this unit's target page
   `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
   next to the bullet it supports. Bullets covering multi-ticket
   changes should cite every contributing ticket.
+- **Group entries strictly by the ticket's `changeImpact`**, under
+  these four headers in this order: **Non-compatible** →
+  **Compatible substantive** → **Non-substantive** → **Unclassified**.
+  Defer entirely to the ticket's own classification — do **not**
+  re-derive substantive vs non-substantive. A ticket with an
+  empty/unset `changeImpact` goes under **Unclassified** (last);
+  **never** fold an unset ticket into Non-substantive. Omit empty
+  headers. Render any `changeCategory` as a small inline
+  `<span class="tag">…</span>` next to the entry.
 - Avoid restating mechanics already obvious from the SD ("renamed
   `Quantity.foo` to `Quantity.bar`"). Focus on intent, scope, and
   balloter-relevant impact.

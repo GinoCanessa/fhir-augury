@@ -267,6 +267,29 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.True(HasColumn("notes_runs", "WindowLabel"));
     }
 
+    [Fact]
+    public void ChangeImpact_and_category_round_trip_through_ticket_read()
+    {
+        using BallotNotesDatabase db = NewDb();
+        string noteId = "hl7-fhir-artifact-observation";
+        (List<NoteSourceFileRecord> f, List<NoteCommitRecord> c, _) = Children(noteId);
+
+        // Regression fixture for #8: a Non-substantive ticket (FHIR-56060)
+        // must carry its classification verbatim through the read path.
+        List<NoteTicketRecord> tickets =
+        [
+            new() { NoteId = noteId, TicketKey = "FHIR-56060", Title = "clarify", ChangeImpact = "Non-substantive", ChangeCategory = "Clarification", CommitCount = 1, TicketOrder = 0 },
+            new() { NoteId = noteId, TicketKey = "FHIR-1", Title = "break", ChangeImpact = "Non-compatible", ChangeCategory = "", CommitCount = 1, TicketOrder = 1 },
+        ];
+        db.UpsertUnitEvidence(Evidence(noteId), f, c, tickets);
+
+        NoteDetail detail = db.GetNote(noteId)!;
+        NoteTicketRecord nonSub = detail.Tickets.Single(t => t.TicketKey == "FHIR-56060");
+        Assert.Equal("Non-substantive", nonSub.ChangeImpact);
+        Assert.Equal("Clarification", nonSub.ChangeCategory);
+        Assert.Equal("Non-compatible", detail.Tickets.Single(t => t.TicketKey == "FHIR-1").ChangeImpact);
+    }
+
     private bool HasColumn(string table, string column)
     {
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");

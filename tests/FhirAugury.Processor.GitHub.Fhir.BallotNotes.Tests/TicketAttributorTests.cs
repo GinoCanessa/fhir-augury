@@ -123,6 +123,31 @@ public sealed class TicketAttributorTests
         Assert.Equal("Fallback WG", result.WorkGroup);
     }
 
+    [Fact]
+    public async Task AttributeAsync_reads_change_impact_and_category_from_metadata()
+    {
+        TicketAttributor attributor = BuildAttributor(req =>
+        {
+            string path = req.RequestUri!.AbsolutePath;
+            string json = path.Contains("cross-referenced", StringComparison.Ordinal)
+                ? """{"value":"x","total":0,"hits":[]}"""
+                : """{"source":"jira","id":"FHIR-56060","title":"A title","url":"http://jira/x","metadata":{"work_group":"Orders and Observations (OO)","change_impact":"Non-substantive","change_category":"Clarification"}}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        UnitAttribution result = await attributor.AttributeAsync(
+            [Commit("FHIR-56060 clarify wording", "")],
+            workGroupHint: null);
+
+        AttributedTicket ticket = Assert.Single(result.Tickets);
+        Assert.Equal("FHIR-56060", ticket.Key);
+        Assert.Equal("Non-substantive", ticket.ChangeImpact);
+        Assert.Equal("Clarification", ticket.ChangeCategory);
+    }
+
     private static WindowCommit Commit(string subject, string body) => new()
     {
         Sha = "abc1234def5678abc1234def5678abc1234def56",

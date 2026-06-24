@@ -44,6 +44,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
         // after the CreateTable calls so the tables exist to be altered.
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NotesRunRecord.DefaultTableName, "WindowLabel", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeImpact", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteTicketRecord.DefaultTableName, "ChangeCategory", "TEXT NOT NULL DEFAULT ''");
     }
 
     /// <summary>Returns the number of notes currently stored.</summary>
@@ -463,7 +465,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
     {
         using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText =
-            "SELECT Id, NoteId, TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, TicketOrder " +
+            "SELECT Id, NoteId, TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, TicketOrder, " +
+            "ChangeImpact, ChangeCategory " +
             $"FROM \"{NoteTicketRecord.DefaultTableName}\" WHERE NoteId = $id ORDER BY TicketOrder, RowId";
         cmd.Parameters.AddWithValue("$id", noteId);
         List<NoteTicketRecord> rows = [];
@@ -482,6 +485,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
                 Url = reader.GetString(7),
                 CommitCount = reader.GetInt32(8),
                 TicketOrder = reader.GetInt32(9),
+                ChangeImpact = reader.GetString(10),
+                ChangeCategory = reader.GetString(11),
             });
         }
         return rows;

@@ -377,34 +377,68 @@
     main.appendChild(table);
   }
 
+  // Normalizes a ticket's ChangeImpact string to one of four ordered buckets.
+  // Defer strictly to the ticket's classification: unset/unknown is always
+  // "Unclassified" (rendered last), never folded into Non-substantive.
+  function changeImpactBucket(value) {
+    var v = String(value || '').toLowerCase().replace(/[\s_]+/g, ' ').trim();
+    if (v.indexOf('non-compatible') >= 0 || v.indexOf('noncompatible') >= 0 || v.indexOf('non compatible') >= 0) {
+      return { order: 0, label: 'Non-compatible' };
+    }
+    if (v.indexOf('non-substantive') >= 0 || v.indexOf('nonsubstantive') >= 0 || v.indexOf('non substantive') >= 0) {
+      return { order: 2, label: 'Non-substantive' };
+    }
+    if (v.indexOf('substantive') >= 0) {
+      return { order: 1, label: 'Compatible substantive' };
+    }
+    return { order: 3, label: 'Unclassified' };
+  }
+
   function renderTickets(main, noteId) {
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     if (tickets.length === 0) return;
     main.appendChild(el('h3', null, 'Tickets attributed (' + tickets.length + ')'));
-    var table = el('table');
-    var thead = el('thead');
-    thead.appendChild(rowOf('th', ['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Commits']));
-    table.appendChild(thead);
-    var tbody = el('tbody');
+
+    // Group strictly by the ticket's ChangeImpact bucket, ordered
+    // Non-compatible → Compatible substantive → Non-substantive → Unclassified.
+    var buckets = [[], [], [], []];
     for (var i = 0; i < tickets.length; i++) {
-      var t = tickets[i];
-      var tr = el('tr');
-      var keyCell = el('td');
-      var url = String(t.Url || '') || ('https://jira.hl7.org/browse/' + encodeURIComponent(String(t.TicketKey)));
-      keyCell.appendChild(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, String(t.TicketKey)));
-      tr.appendChild(keyCell);
-      tr.appendChild(el('td', { class: 'subject' }, String(t.Title || '')));
-      tr.appendChild(el('td', null, String(t.Resolution || '')));
-      tr.appendChild(el('td', null, String(t.WorkGroup || '')));
-      tr.appendChild(el('td', null, String(t.Specification || '')));
-      tr.appendChild(el('td', { class: 'num' }, String(t.CommitCount || 0)));
-      tbody.appendChild(tr);
+      buckets[changeImpactBucket(tickets[i].ChangeImpact).order].push(tickets[i]);
     }
-    table.appendChild(tbody);
-    main.appendChild(table);
+    var labels = ['Non-compatible', 'Compatible substantive', 'Non-substantive', 'Unclassified'];
+
+    for (var b = 0; b < buckets.length; b++) {
+      if (buckets[b].length === 0) continue;
+      main.appendChild(el('h4', { class: 'impact-header impact-' + b }, labels[b] + ' (' + buckets[b].length + ')'));
+      var table = el('table');
+      var thead = el('thead');
+      thead.appendChild(rowOf('th', ['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Category', 'Commits']));
+      table.appendChild(thead);
+      var tbody = el('tbody');
+      for (var j = 0; j < buckets[b].length; j++) {
+        var t = buckets[b][j];
+        var tr = el('tr');
+        var keyCell = el('td');
+        var url = String(t.Url || '') || ('https://jira.hl7.org/browse/' + encodeURIComponent(String(t.TicketKey)));
+        keyCell.appendChild(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, String(t.TicketKey)));
+        tr.appendChild(keyCell);
+        tr.appendChild(el('td', { class: 'subject' }, String(t.Title || '')));
+        tr.appendChild(el('td', null, String(t.Resolution || '')));
+        tr.appendChild(el('td', null, String(t.WorkGroup || '')));
+        tr.appendChild(el('td', null, String(t.Specification || '')));
+        var catCell = el('td');
+        var cat = String(t.ChangeCategory || '').trim();
+        if (cat) catCell.appendChild(el('span', { class: 'tag tag-category' }, cat));
+        tr.appendChild(catCell);
+        tr.appendChild(el('td', { class: 'num' }, String(t.CommitCount || 0)));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      main.appendChild(table);
+    }
   }
 
   // ---- cell builders ------------------------------------------------------
@@ -785,15 +819,16 @@
     }
 
     var tickets = query(
-      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount ' +
+      'SELECT TicketKey, Title, Resolution, WorkGroup, Specification, Url, CommitCount, ChangeImpact, ChangeCategory ' +
       'FROM note_tickets WHERE NoteId = $id ORDER BY TicketOrder',
       { $id: noteId }).rows;
     out += '## Tickets attributed (' + tickets.length + ')\n\n';
     if (tickets.length > 0) {
-      out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Commits'],
+      out += mdTable(['Key', 'Title', 'Resolution', 'Workgroup', 'Specification', 'Change impact', 'Category', 'Commits'],
         tickets.map(function (t) {
           return [String(t.TicketKey || ''), String(t.Title || ''), String(t.Resolution || ''),
-            String(t.WorkGroup || ''), String(t.Specification || ''), String(t.CommitCount || 0)];
+            String(t.WorkGroup || ''), String(t.Specification || ''),
+            changeImpactBucket(t.ChangeImpact).label, String(t.ChangeCategory || ''), String(t.CommitCount || 0)];
         })) + '\n';
     } else {
       out += '_None._\n\n';
