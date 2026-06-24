@@ -300,10 +300,15 @@ Produce **one** HTML ballot-note draft for this unit's target page
 - **Honour the existing ballot note** (`currentBallotNoteHtml`). Carry
   forward bullets that are still accurate in the after-applied state;
   drop and explain bullets that have been reverted or superseded.
-- Cite each underlying ticket with a Jira link of the form
-  `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
-  next to the bullet it supports. Bullets covering multi-ticket
-  changes should cite every contributing ticket.
+- Cite each underlying ticket with a Jira link, placed at the **end of
+  the line** it supports as a bracketed list:
+  `[<a href="https://jira.hl7.org/browse/FHIR-12345">FHIR-12345</a>, <a href="https://jira.hl7.org/browse/FHIR-23456">FHIR-23456</a>]`.
+  Put the **change text first**, then the bracketed `[FHIR-…]` list at
+  end-of-line; multi-ticket changes list every contributing ticket.
+- **Emit well-formed HTML only — never raw markdown** in
+  `proposedBallotNoteHtml` (it is pasted verbatim into the page). Use
+  HTML elements (`<ul>`, `<li>`, `<p>`, `<b>`, `<a href>`, `<code>`),
+  not markdown syntax.
 - **Group entries strictly by the ticket's `changeImpact`**, under
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.
@@ -558,13 +563,27 @@ inline against the bullet they support.}
   <p><b>Note to Balloters:</b> {one-paragraph framing of the change
   scope on this page since the previous ballot, derived from the
   roll-up summary.}</p>
+  <p><b>Non-compatible</b></p>
   <ul>
-    <li><b>Quantity:</b> {substantive change} (<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>)</li>
-    <li><b>Period:</b> {substantive change} (<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>)</li>
-    <li>…</li>
+    <li><b>Quantity:</b> {change} <span class="tag">{changeCategory}</span> [<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>]</li>
+  </ul>
+  <p><b>Compatible substantive</b></p>
+  <ul>
+    <li><b>Period:</b> {change} [<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>]</li>
+  </ul>
+  <p><b>Non-substantive</b></p>
+  <ul>
+    <li><b>Range:</b> {change} [<a href="https://jira.hl7.org/browse/FHIR-ZZZZZ">FHIR-ZZZZZ</a>]</li>
+  </ul>
+  <p><b>Unclassified</b></p>
+  <ul>
+    <li><b>Ratio:</b> {change from a ticket with no changeImpact set} [<a href="https://jira.hl7.org/browse/FHIR-WWWWW">FHIR-WWWWW</a>]</li>
   </ul>
 </blockquote>
 ```
+
+Omit any header whose bucket has no entries; keep the four in the order
+shown, with **Unclassified** always last.
 
 ## Notes for Reviewer
 

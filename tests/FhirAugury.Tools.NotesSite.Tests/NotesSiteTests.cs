@@ -192,6 +192,40 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains(".copy-ai", appCss);
     }
 
+    [Fact]
+    public void Emit_App_Js_Ships_Grouping_Window_And_Consolidation_Rendering()
+    {
+        string dbPath = Path.Combine(_tempDir, "grouping.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+        }
+
+        string outDir = Path.Combine(_tempDir, "grouping-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        // Phase 2: change-impact grouping helper + the four bucket labels.
+        Assert.Contains("changeImpactBucket", appJs);
+        Assert.Contains("Compatible substantive", appJs);
+        Assert.Contains("Unclassified", appJs);
+        Assert.Contains("ChangeImpact, ChangeCategory", appJs);
+        // Phase 1: human-readable window label.
+        Assert.Contains("Changes since ", appJs);
+        Assert.Contains("WindowLabel", appJs);
+        // Phase 3: single-note consolidation surfacing.
+        Assert.Contains("PreservedHandAuthoredHtml", appJs);
+        Assert.Contains("consolidation-status", appJs);
+        // Phase 4: authored note HTML rendered through the sanitizer.
+        Assert.Contains("ProposedBallotNoteHtml", appJs);
+        Assert.Contains("htmlBlock", appJs);
+
+        string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
+        Assert.Contains(".impact-header", appCss);
+        Assert.Contains(".tag", appCss);
+    }
+
     private static long Count(SqliteConnection conn, string sql)
     {
         using SqliteCommand cmd = conn.CreateCommand();

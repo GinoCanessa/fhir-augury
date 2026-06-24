@@ -219,11 +219,19 @@ The proposed ballot note MUST:
   something that has since been reverted or superseded, remove it and
   briefly note the change in the report's "Notes for reviewer"
   section.
-- Cite each underlying ticket with a Jira link of the form
-  `<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>`
-  next to the bullet it supports. Multiple tickets per bullet are
-  fine.
-- **Group entries strictly by the ticket's `changeImpact`**, under
+- Cite each underlying ticket with a Jira link, placed at the **end of
+  the line** it supports as a bracketed list:
+  `[<a href="https://jira.hl7.org/browse/FHIR-12345">FHIR-12345</a>, <a href="https://jira.hl7.org/browse/FHIR-23456">FHIR-23456</a>]`.
+  Put the **change text first**, then the bracketed `[FHIR-…]` list at
+  end-of-line. Every called-out change ends with its bracketed ticket
+  list.
+- **Emit well-formed HTML only — never raw markdown.** This field is the
+  authoritative in-page artifact (it is pasted verbatim into the intro
+  file). Do not use markdown syntax (`-`, `*`, `#`, `[text](url)`,
+  backticks) anywhere in `proposedBallotNoteHtml`; use HTML elements
+  (`<ul>`, `<li>`, `<p>`, `<b>`, `<a href>`, `<code>`). Example of a
+  correct entry:
+  `<li>Cardinality of <code>Observation.value[x]</code> relaxed to 0..1 [<a href="https://jira.hl7.org/browse/FHIR-12345">FHIR-12345</a>]</li>`
   these four headers in this order: **Non-compatible** →
   **Compatible substantive** → **Non-substantive** → **Unclassified**.
   Defer entirely to the ticket's own classification — do **not**
@@ -419,19 +427,19 @@ inline against the bullet they support.}
   summary.}</p>
   <p><b>Non-compatible</b></p>
   <ul>
-    <li>{Change from a Non-compatible ticket} (<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>) <span class="tag">{changeCategory}</span></li>
+    <li>{Change from a Non-compatible ticket} <span class="tag">{changeCategory}</span> [<a href="https://jira.hl7.org/browse/FHIR-XXXXX">FHIR-XXXXX</a>]</li>
   </ul>
   <p><b>Compatible substantive</b></p>
   <ul>
-    <li>{Change} (<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>)</li>
+    <li>{Change} [<a href="https://jira.hl7.org/browse/FHIR-YYYYY">FHIR-YYYYY</a>]</li>
   </ul>
   <p><b>Non-substantive</b></p>
   <ul>
-    <li>{Change} (<a href="https://jira.hl7.org/browse/FHIR-ZZZZZ">FHIR-ZZZZZ</a>)</li>
+    <li>{Change} [<a href="https://jira.hl7.org/browse/FHIR-ZZZZZ">FHIR-ZZZZZ</a>]</li>
   </ul>
   <p><b>Unclassified</b></p>
   <ul>
-    <li>{Change from a ticket with no changeImpact set} (<a href="https://jira.hl7.org/browse/FHIR-WWWWW">FHIR-WWWWW</a>)</li>
+    <li>{Change from a ticket with no changeImpact set} [<a href="https://jira.hl7.org/browse/FHIR-WWWWW">FHIR-WWWWW</a>]</li>
   </ul>
 </blockquote>
 ```

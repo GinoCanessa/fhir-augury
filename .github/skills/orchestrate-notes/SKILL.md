@@ -51,6 +51,16 @@ queue; there is no `ProcessedLocally` flag to consult.
   drafting rules, and the read-evidence / write-back contract are
   owned by those skills and must not be replicated here.
   `notes-datatype` is only used when the repo is `HL7/fhir`.
+  Those skills share one **note contract** every sub-agent must honour:
+  open with the change-window sentence ("Changes since {windowLabel}");
+  emit a **single** consolidated note wrapped in
+  `<blockquote class="ballot-note" data-augury-generated="true" id="bn{N}">`
+  (the marker lets a later run replace only the tool block while
+  preserving hand-authored notes); group entries strictly by the
+  ticket's `changeImpact` (Non-compatible → Compatible substantive →
+  Non-substantive → Unclassified-last); author **well-formed HTML only
+  (no raw markdown)** in `proposedBallotNoteHtml`; and end each line with
+  its bracketed `[FHIR-…]` ticket list.
 - The **GitHub source clone cache** must contain `<owner>_<name>` with
   the since-commit reachable from HEAD — the processor reads the clone
   to walk the window. Neither the orchestrator nor the processor
