@@ -143,6 +143,80 @@ public sealed class OwningWorkGroupResolverTests : IDisposable
         Assert.Equal("oo", refs[0].Code);
     }
 
+    [Fact]
+    public void Datatype_unit_surfaces_distinct_set_of_owners()
+    {
+        string specDb = SeedSpecDb("fhir-r6.db", ("Quantity", "oo"), ("Money", "fm"));
+        HydrationUnit unit = new()
+        {
+            Type = "DataType",
+            Name = "datatypes",
+            ChangedPaths = ["source/datatypes/Quantity.xml", "source/datatypes/Money.xml"],
+        };
+
+        IReadOnlyList<WorkGroupRef> refs = ResolveDataType(unit, specDb, headDatatypeNames: []);
+
+        Assert.Equal(2, refs.Count);
+        Assert.Contains(refs, r => r.Code == "oo");
+        Assert.Contains(refs, r => r.Code == "fm");
+        // Deterministic primary: neither is fhir → alphabetical by display name (fm < oo).
+        Assert.Equal("fm", refs[0].Code);
+        Assert.Equal("fm;oo", WorkGroupRef.JoinCodes(refs));
+    }
+
+    [Fact]
+    public void Datatype_primary_prefers_fhir_infrastructure()
+    {
+        string specDb = SeedSpecDb("fhir-r6.db", ("Quantity", "oo"), ("Element", "fhir"));
+        HydrationUnit unit = new()
+        {
+            Type = "DataType",
+            Name = "datatypes",
+            ChangedPaths = ["source/datatypes/Quantity.xml", "source/datatypes/Element.xml"],
+        };
+
+        IReadOnlyList<WorkGroupRef> refs = ResolveDataType(unit, specDb, headDatatypeNames: []);
+
+        Assert.Equal("fhir", refs[0].Code);
+    }
+
+    [Fact]
+    public void Datatype_aggregate_only_change_enumerates_from_head()
+    {
+        string specDb = SeedSpecDb("fhir-r6.db", ("Quantity", "oo"));
+        HydrationUnit unit = new()
+        {
+            Type = "DataType",
+            Name = "datatypes",
+            ChangedPaths = ["source/datatypes.html"],
+        };
+
+        IReadOnlyList<WorkGroupRef> refs = ResolveDataType(unit, specDb, headDatatypeNames: ["Quantity"]);
+
+        Assert.Single(refs);
+        Assert.Equal("oo", refs[0].Code);
+    }
+
+    [Fact]
+    public void Datatype_excludes_ticket_fallback()
+    {
+        // Spec-DB has no owner for these names and there is a hint WG, yet the
+        // datatype unit must resolve to (unknown), never the ticket/hint WG.
+        string specDb = SeedSpecDb("fhir-r6.db", ("Something", "oo"));
+        HydrationUnit unit = new()
+        {
+            Type = "DataType",
+            Name = "datatypes",
+            ChangedPaths = ["source/datatypes/Unmapped.xml"],
+        };
+
+        IReadOnlyList<WorkGroupRef> refs = ResolveDataType(unit, specDb, headDatatypeNames: []);
+
+        Assert.Single(refs);
+        Assert.Equal("(unknown)", refs[0].DisplayName);
+        Assert.Equal(string.Empty, refs[0].Code);
+    }
+
     private string WriteSd(string folder, string fileName, string? workGroup, string? baseDefinition)
     {
         string dir = Path.Combine(_tempDir, "source", folder);
@@ -203,7 +277,22 @@ public sealed class OwningWorkGroupResolverTests : IDisposable
             name: "fhir",
             EmptyAttribution(),
             resolvedFiles: files,
+            headDatatypeNames: [],
             workGroupHint: null,
+            options: new BallotNotesHydrationOptions { GitHubDbPath = _missingDbPath, FhirR6DbPath = fhirR6DbPath, FhirSpecDbPath = string.Empty },
+            logger: null);
+
+    private IReadOnlyList<WorkGroupRef> ResolveDataType(
+        HydrationUnit unit, string fhirR6DbPath, IReadOnlyList<string> headDatatypeNames)
+        => OwningWorkGroupResolver.Resolve(
+            unit,
+            clonePath: _tempDir,
+            owner: "HL7",
+            name: "fhir",
+            EmptyAttribution(),
+            resolvedFiles: [],
+            headDatatypeNames: headDatatypeNames,
+            workGroupHint: "Hint WG",
             options: new BallotNotesHydrationOptions { GitHubDbPath = _missingDbPath, FhirR6DbPath = fhirR6DbPath, FhirSpecDbPath = string.Empty },
             logger: null);
 
@@ -223,6 +312,7 @@ public sealed class OwningWorkGroupResolverTests : IDisposable
             name: "fhir",
             attribution,
             resolvedFiles: [],
+            headDatatypeNames: [],
             workGroupHint: hint,
             options: new BallotNotesHydrationOptions { GitHubDbPath = _missingDbPath },
             logger: null);

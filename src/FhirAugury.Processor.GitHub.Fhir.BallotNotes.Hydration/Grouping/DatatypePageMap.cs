@@ -48,6 +48,30 @@ public static class DatatypePageMap
     }
 
     /// <summary>
+    /// Reverses <see cref="ResolveStem"/>: maps an own-page stem back to the
+    /// datatype name(s) it renders. <c>references</c> → <c>Reference</c>;
+    /// <c>metadatatypes</c> → the whole MetaDataTypes cluster; any other stem
+    /// maps to itself (case-insensitive datatype lookups handle the casing).
+    /// </summary>
+    public static IReadOnlyList<string> ReverseStem(string stem)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stem);
+        string name = stem.Trim();
+
+        if (string.Equals(name, "references", StringComparison.OrdinalIgnoreCase))
+        {
+            return ["Reference"];
+        }
+
+        if (string.Equals(name, "metadatatypes", StringComparison.OrdinalIgnoreCase))
+        {
+            return [.. s_metaDataTypesCluster];
+        }
+
+        return [name];
+    }
+
+    /// <summary>
     /// Computes the set of <c>source/&lt;stem&gt;.html</c> own-pages for the given
     /// datatype names, keeping only those that exist at HEAD per the supplied
     /// <paramref name="headFileExists"/> predicate (clone-root-relative path).

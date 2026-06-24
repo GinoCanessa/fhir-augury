@@ -36,6 +36,7 @@ public static class OwningWorkGroupResolver
         string name,
         UnitAttribution attribution,
         IReadOnlyList<ResolvedSourceFile> resolvedFiles,
+        IReadOnlyList<string> headDatatypeNames,
         string? workGroupHint,
         BallotNotesHydrationOptions options,
         ILogger? logger = null)
@@ -45,6 +46,7 @@ public static class OwningWorkGroupResolver
         ArgumentNullException.ThrowIfNull(options);
 
         IReadOnlyList<ResolvedSourceFile> sourceFiles = resolvedFiles ?? [];
+        IReadOnlyList<string> headDatatypes = headDatatypeNames ?? [];
         Dictionary<string, string> nameCache = new(StringComparer.OrdinalIgnoreCase);
         using SqliteConnection? db = TryOpenGitHubDb(options.GitHubDbPath, logger);
 
@@ -55,8 +57,7 @@ public static class OwningWorkGroupResolver
 
         if (string.Equals(unit.Type, "DataType", StringComparison.OrdinalIgnoreCase))
         {
-            // Phase 4 finishes the datatype set; for now it shares the ticket path.
-            return TicketOnly(attribution, workGroupHint);
+            return ResolveDataType(unit, clonePath, owner, name, headDatatypes, db, nameCache, options, logger);
         }
 
         return ResolveArtifact(unit, clonePath, owner, name, attribution, sourceFiles, workGroupHint, db, nameCache, options, logger);
@@ -161,10 +162,54 @@ public static class OwningWorkGroupResolver
         return [WorkGroupRef.Unknown];
     }
 
-    private static IReadOnlyList<WorkGroupRef> TicketOnly(UnitAttribution attribution, string? workGroupHint)
+    private static IReadOnlyList<WorkGroupRef> ResolveDataType(
+        HydrationUnit unit,
+        string clonePath,
+        string owner,
+        string name,
+        IReadOnlyList<string> headDatatypeNames,
+        SqliteConnection? db,
+        IDictionary<string, string> nameCache,
+        BallotNotesHydrationOptions options,
+        ILogger? logger)
     {
-        (string wg, string wgCode) = TicketAttributor.SelectOwningWorkGroup(attribution.Tickets, workGroupHint);
-        return [new WorkGroupRef(wgCode, wg)];
+        IReadOnlyList<string> datatypeNames = DatatypeNameExtractor.Extract(
+            unit.ChangedPaths, () => headDatatypeNames);
+
+        List<WorkGroupRef> refs = [];
+        HashSet<string> seenCodes = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string datatype in datatypeNames)
+        {
+            // Per-datatype own-WG chain. No repo-read files are passed: each
+            // datatype's bare SD file (source/datatypes/<name>.xml) is not matched
+            // by the structuredefinition-name filter, and passing the whole unit's
+            // files would let one datatype's WG bleed onto another. Registry +
+            // spec-DB carry datatype ownership. Datatypes never consult tickets.
+            string? code = ResolveArtifactOwnCode(owner, name, datatype, clonePath, [], db, options, logger);
+            if (string.IsNullOrWhiteSpace(code)) continue;
+            if (seenCodes.Add(code)) refs.Add(MakeRef(db, code, nameCache));
+        }
+
+        return refs.Count == 0 ? [WorkGroupRef.Unknown] : OrderWithPrimary(refs);
+    }
+
+    /// <summary>
+    /// Orders the owner set deterministically: FHIR Infrastructure (<c>fhir</c>)
+    /// first when present, otherwise alphabetical by display name. The first entry
+    /// becomes the note's primary <c>WorkGroup</c> / <c>WorkGroupCode</c>.
+    /// </summary>
+    private static IReadOnlyList<WorkGroupRef> OrderWithPrimary(List<WorkGroupRef> refs)
+    {
+        List<WorkGroupRef> ordered = [.. refs.OrderBy(r => r.DisplayName, StringComparer.OrdinalIgnoreCase)];
+        int fhirIndex = ordered.FindIndex(r => string.Equals(r.Code, "fhir", StringComparison.OrdinalIgnoreCase));
+        if (fhirIndex > 0)
+        {
+            WorkGroupRef fhir = ordered[fhirIndex];
+            ordered.RemoveAt(fhirIndex);
+            ordered.Insert(0, fhir);
+        }
+        return ordered;
     }
 
     /// <summary>Builds a ref, resolving the code's display name when a DB is open.</summary>

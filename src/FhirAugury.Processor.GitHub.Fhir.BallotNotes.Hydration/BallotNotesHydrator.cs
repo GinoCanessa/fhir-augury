@@ -168,8 +168,12 @@ public sealed class BallotNotesHydrator(
         SourceFileResolution resolution = await SourceFileResolver
             .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);
 
+        IReadOnlyList<string> headDatatypeNames = string.Equals(unit.Type, "DataType", StringComparison.OrdinalIgnoreCase)
+            ? await ListHeadDatatypeNamesAsync(clonePath, ct).ConfigureAwait(false)
+            : [];
+
         IReadOnlyList<WorkGroupRef> owningWorkGroups = OwningWorkGroupResolver.Resolve(
-            unit, clonePath, owner, name, attribution, resolution.Files, request.WorkGroupHint, _options, logger);
+            unit, clonePath, owner, name, attribution, resolution.Files, headDatatypeNames, request.WorkGroupHint, _options, logger);
         WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
 
         CurrentNoteResolution currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
@@ -426,6 +430,27 @@ public sealed class BallotNotesHydrator(
         }
 
         return DatatypePageMap.ComputeOwnedPages(datatypeNames, htmlPages.Contains);
+    }
+
+    /// <summary>
+    /// Lists the datatype names defined at HEAD (top-level
+    /// <c>source/datatypes/&lt;name&gt;.xml</c>, variant files excluded), used to
+    /// resolve owners for an aggregate-only datatypes change.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> ListHeadDatatypeNamesAsync(string clonePath, CancellationToken ct)
+    {
+        IReadOnlyList<string> datatypeTree = await ListTreeAsync(clonePath, "source/datatypes/", ct).ConfigureAwait(false);
+        List<string> names = [];
+        foreach (string path in datatypeTree)
+        {
+            if (!path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
+            string remainder = path["source/datatypes/".Length..];
+            if (remainder.Contains('/')) continue;
+            string stem = remainder[..^".xml".Length];
+            if (stem.Length == 0 || stem.Contains('-')) continue;
+            names.Add(stem);
+        }
+        return names;
     }
 
     private static async Task<IReadOnlyList<string>> ListTreeAsync(string clonePath, string pathspec, CancellationToken ct)
