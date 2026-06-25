@@ -1,4 +1,5 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Common.Text;
 using FhirAugury.Common.WorkGroups;
 
 namespace FhirAugury.Source.GitHub.Configuration;
@@ -154,6 +155,84 @@ public class GitHubServiceOptions
         repos.AddRange(GetEffectiveJiraSpecArtifactsRepositories());
         return repos;
     }
+
+    /// <summary>
+    /// Master switch for repo-scoped bare-integer Jira attribution. When false,
+    /// <see cref="ResolveJiraScope"/> always returns <c>null</c> and no bare
+    /// numbers are resolved (prefixed/URL extraction is unaffected).
+    /// </summary>
+    public bool BareNumberAttributionEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Default Jira project key per repository category, used by the bare-number
+    /// pass when no per-repo override is present. Utg defaults to <c>UP</c>;
+    /// individual Utg repos can select <c>UPSM</c> via
+    /// <see cref="RepoOverrideOptions.TerminologyProjectKey"/>.
+    /// </summary>
+    public Dictionary<RepoCategory, string> JiraProjectKeyByCategory { get; set; } = new()
+    {
+        [RepoCategory.FhirCore] = "FHIR",
+        [RepoCategory.FhirExtensionsPack] = "FHIR",
+        [RepoCategory.Incubator] = "FHIR",
+        [RepoCategory.Ig] = "FHIR",
+        [RepoCategory.JiraSpecArtifacts] = "FHIR",
+        [RepoCategory.Utg] = "UP",
+    };
+
+    /// <summary>
+    /// Inclusive bare-number ranges per project key. A standalone integer only
+    /// resolves to <c>KEY-N</c> when it falls within the key's range. Uppers for
+    /// the terminology projects are held below calendar years so values like
+    /// <c>2026</c> cannot resolve.
+    /// </summary>
+    public Dictionary<string, JiraNumberRange> JiraNumberRanges { get; set; }
+        = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["FHIR"] = new JiraNumberRange(2839, 70000),
+            ["UP"] = new JiraNumberRange(40, 2000),
+            ["UPSM"] = new JiraNumberRange(10, 2000),
+        };
+
+    /// <summary>
+    /// Resolves the repo-scoped <see cref="RepoJiraScope"/> for the given
+    /// repository, or <c>null</c> when bare-number attribution is disabled, the
+    /// repo is unknown, or the chosen project key has no configured range. The
+    /// scope always contains exactly one project (UP/UPSM ranges overlap, so a
+    /// multi-key first-match-wins scope would be ambiguous).
+    /// </summary>
+    public RepoJiraScope? ResolveJiraScope(string repoFullName)
+    {
+        if (!BareNumberAttributionEnabled) return null;
+        if (string.IsNullOrWhiteSpace(repoFullName)) return null;
+
+        RepoCategory? category = null;
+        foreach ((string Name, RepoCategory Category) repo in GetAllRepositories())
+        {
+            if (string.Equals(repo.Name, repoFullName, StringComparison.OrdinalIgnoreCase))
+            {
+                category = repo.Category;
+                break;
+            }
+        }
+        if (category is null) return null;
+
+        string? projectKey = null;
+        if (RepoOverrides.TryGetValue(repoFullName, out RepoOverrideOptions? overrideOptions))
+        {
+            if (!string.IsNullOrWhiteSpace(overrideOptions.JiraProjectKey))
+                projectKey = overrideOptions.JiraProjectKey.Trim();
+            else if (category == RepoCategory.Utg && !string.IsNullOrWhiteSpace(overrideOptions.TerminologyProjectKey))
+                projectKey = overrideOptions.TerminologyProjectKey.Trim();
+        }
+
+        if (projectKey is null && JiraProjectKeyByCategory.TryGetValue(category.Value, out string? categoryKey))
+            projectKey = categoryKey;
+
+        if (string.IsNullOrWhiteSpace(projectKey)) return null;
+        if (!JiraNumberRanges.TryGetValue(projectKey, out JiraNumberRange? range)) return null;
+
+        return new RepoJiraScope([new RepoJiraProjectScope(projectKey.ToUpperInvariant(), range.Lower, range.Upper)]);
+    }
 }
 
 /// <summary>Configuration for repository file content indexing.</summary>
@@ -245,4 +324,20 @@ public class RepoOverrideOptions
     /// derived per-repo defaults.
     /// </summary>
     public string? WorkGroup { get; set; }
+
+    /// <summary>
+    /// Explicit Jira project key for repo-scoped bare-number resolution. Wins
+    /// over the category default and <see cref="TerminologyProjectKey"/>.
+    /// </summary>
+    public string? JiraProjectKey { get; set; }
+
+    /// <summary>
+    /// For Utg repositories, selects which terminology project (<c>UP</c> or
+    /// <c>UPSM</c>) a bare number resolves against. Ignored when
+    /// <see cref="JiraProjectKey"/> is set.
+    /// </summary>
+    public string? TerminologyProjectKey { get; set; }
 }
+
+/// <summary>Inclusive numeric range a bare ticket integer may fall in.</summary>
+public record JiraNumberRange(int Lower, int Upper);
