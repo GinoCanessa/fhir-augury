@@ -451,6 +451,25 @@ public class GitHubCliProvider(
             }
 
             await SyncPrCommitLinksAsync(connection, repoFullName, issueNumber, ct, errors);
+
+            // Fetch inline (line-anchored) review-thread comments via REST so the
+            // full PR conversation is captured. These flow through the existing
+            // xref/BM25 passes (typed as ContentTypes.Comment) unchanged.
+            try
+            {
+                await foreach (JsonElement commentJson in runner.StreamPaginatedApiAsync(
+                    $"/repos/{repoFullName}/pulls/{issueNumber}/comments?per_page=100", ct))
+                {
+                    GitHubCommentRecord comment = GhCliIssueMapper.MapReviewThreadComment(
+                        commentJson, issueDbId, repoFullName, issueNumber);
+                    GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to fetch PR review-thread comments for {Repo}#{Number}", repoFullName, issueNumber);
+                errors.Add($"review_comments:{repoFullName}#{issueNumber} - {ex.Message}");
+            }
         }
     }
 

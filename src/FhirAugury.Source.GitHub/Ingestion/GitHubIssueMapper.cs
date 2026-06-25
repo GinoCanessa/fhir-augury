@@ -50,6 +50,8 @@ public static class GitHubIssueMapper
             CreatedAt = ParseDate(GetString(commentJson, "created_at")),
             Body = commentJson.GetProperty("body").GetString() ?? string.Empty,
             IsReviewComment = isReviewComment,
+            ExternalId = GetString(commentJson, "id"),
+            CommentKind = isReviewComment ? "review_comment" : "issue",
         };
     }
 

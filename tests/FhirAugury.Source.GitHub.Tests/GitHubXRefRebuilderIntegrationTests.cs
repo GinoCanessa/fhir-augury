@@ -201,4 +201,29 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
 
         Assert.Empty(JiraXRefRecord.SelectList(connection));
     }
+
+    [Fact]
+    public void RebuildAllRepos_ReviewThreadComment_CrossReferencedAsComment()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubIssueRecord.Insert(connection, MakeIssue("HL7/fhir", 1, "A pull request"));
+        GitHubCommentRecord.Insert(connection, new GitHubCommentRecord
+        {
+            Id = GitHubCommentRecord.GetIndex(),
+            IssueId = 1,
+            RepoFullName = "HL7/fhir",
+            IssueNumber = 1,
+            Author = "reviewer",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Body = "This line should reference FHIR-12345 per spec",
+            IsReviewComment = true,
+            ExternalId = "987654",
+            CommentKind = "review_comment",
+        }, ignoreDuplicates: true);
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection, JiraKey: "FHIR-12345"));
+        Assert.Equal("comment", row.ContentType);
+    }
 }

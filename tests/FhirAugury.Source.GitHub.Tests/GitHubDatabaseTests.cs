@@ -196,6 +196,22 @@ public class GitHubDatabaseTests : IDisposable
         Assert.Contains("DefaultBranch", GetColumnNames(conn, "github_repos"));
     }
 
+    [Fact]
+    public void Initialize_CreatesCommentsExternalUniqueIndex()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("ix_github_comments_external", GetIndexNames(conn));
+    }
+
+    [Fact]
+    public void Initialize_AddsCommentIdentityColumns()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> columns = GetColumnNames(conn, "github_comments");
+        Assert.Contains("ExternalId", columns);
+        Assert.Contains("CommentKind", columns);
+    }
+
     private static List<string> GetIndexNames(SqliteConnection conn)
     {
         List<string> names = [];

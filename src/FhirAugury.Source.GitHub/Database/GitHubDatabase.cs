@@ -31,6 +31,8 @@ public class GitHubDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_repos", "DefaultBranch", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "ExternalId", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "CommentKind", "TEXT");
 
         GitHubRepoRecord.CreateTable(connection);
         GitHubIssueRecord.CreateTable(connection);
@@ -95,6 +97,21 @@ public class GitHubDatabase : SourceDatabase
             idx.CommandText = """
                 CREATE UNIQUE INDEX IF NOT EXISTS ix_github_commit_pr_links_natural
                     ON github_commit_pr_links(CommitSha, PrNumber, RepoFullName);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency for comments: github_comments PK is a GetIndex() value, so
+        // dedup across (re-)ingestion needs a real UNIQUE constraint over the
+        // GitHub-native comment identity. CommentKind discriminates the three
+        // comment resources (issue / review / review_comment) whose numeric id
+        // spaces overlap. Built after CreateTable, with ExternalId/CommentKind
+        // already added via AddColumnIfMissing above.
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_comments_external
+                    ON github_comments(RepoFullName, CommentKind, ExternalId);
                 """;
             idx.ExecuteNonQuery();
         }
