@@ -1,9 +1,12 @@
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Indexing;
+using FhirAugury.Common.Text;
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -11,8 +14,12 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Scans GitHub content (issues, PRs, comments, commit messages) for
 /// cross-references to Jira, Zulip, Confluence, and FHIR elements.
 /// </summary>
-public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebuilder> logger)
+public class GitHubXRefRebuilder(
+    GitHubDatabase database,
+    IOptions<GitHubServiceOptions> options,
+    ILogger<GitHubXRefRebuilder> logger)
 {
+    private readonly GitHubServiceOptions _options = options.Value;
 
     /// <summary>
     /// Rebuilds cross-references for all repos: clears all xref tables once, then
@@ -62,41 +69,48 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
         List<ConfluenceXRefRecord> allConfluence = [];
         List<FhirElementXRefRecord> allFhir = [];
 
-        void Collect(string text, string sourceType, string sourceId)
+        // Repo-scoped bare-number resolution applies to prose (commit/issue/comment)
+        // content only — never to file contents (incidental integers).
+        RepoJiraScope? scope = _options.ResolveJiraScope(repoFullName);
+
+        void Collect(string text, string sourceType, string sourceId, RepoJiraScope? jiraScope)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
-            allJira.AddRange(ExtractJiraReferences(text, sourceType, sourceId, validJiraNumbers));
+            allJira.AddRange(ExtractJiraReferences(text, sourceType, sourceId, validJiraNumbers, jiraScope));
             allZulip.AddRange(ZulipReferenceExtractor.GetReferences(sourceType, sourceId, text));
             allConfluence.AddRange(ConfluenceReferenceExtractor.GetReferences(sourceType, sourceId, text));
             allFhir.AddRange(FhirElementReferenceExtractor.GetReferences(sourceType, sourceId, text));
         }
 
-        // Scan issues
+        // Scan issues (prose — scoped)
         List<GitHubIssueRecord> allIssues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubIssueRecord issue in allIssues)
         {
             ct.ThrowIfCancellationRequested();
-            Collect($"{issue.Title} {issue.Body}", ContentTypes.Issue, issue.UniqueKey);
+            Collect($"{issue.Title} {issue.Body}", ContentTypes.Issue, issue.UniqueKey, scope);
         }
 
-        // Scan comments
+        // Scan comments (prose — scoped)
         List<GitHubCommentRecord> allComments = GitHubCommentRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubCommentRecord comment in allComments)
         {
             ct.ThrowIfCancellationRequested();
             string sourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
-            Collect(comment.Body, ContentTypes.Comment, sourceId);
+            Collect(comment.Body, ContentTypes.Comment, sourceId, scope);
         }
 
-        // Scan commits
+        // Scan commits (prose — scoped). Scan the full message text (subject + body).
         List<GitHubCommitRecord> allCommits = GitHubCommitRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubCommitRecord commit in allCommits)
         {
             ct.ThrowIfCancellationRequested();
-            Collect(commit.Message, ContentTypes.Commit, commit.Sha);
+            string commitText = string.IsNullOrEmpty(commit.Body)
+                ? commit.Message
+                : $"{commit.Message}\n{commit.Body}";
+            Collect(commitText, ContentTypes.Commit, commit.Sha, scope);
         }
 
-        // Scan file contents
+        // Scan file contents (NOT scoped — incidental integers are not tickets)
         List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubFileContentRecord file in fileContents)
         {
@@ -104,7 +118,7 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
             if (!string.IsNullOrEmpty(file.ContentText))
             {
                 string sourceId = $"{file.RepoFullName}:{file.FilePath}";
-                Collect(file.ContentText, ContentTypes.File, sourceId);
+                Collect(file.ContentText, ContentTypes.File, sourceId, jiraScope: null);
             }
         }
 
@@ -143,18 +157,20 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
 
     /// <summary>
     /// Extracts Jira references using the shared extractor (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs).
+    /// When <paramref name="repoScope"/> is supplied, also resolves repo-scoped bare integers.
     /// </summary>
     internal static List<JiraXRefRecord> ExtractJiraReferences(
         string text,
         string sourceType,
         string sourceId,
-        HashSet<int>? validJiraNumbers)
+        HashSet<int>? validJiraNumbers,
+        RepoJiraScope? repoScope = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
 
         // Shared extractor for standard patterns (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
-        CrossRefExtractionContext? context = validJiraNumbers is not null
-            ? new CrossRefExtractionContext(ValidJiraNumbers: validJiraNumbers)
+        CrossRefExtractionContext? context = validJiraNumbers is not null || repoScope is not null
+            ? new CrossRefExtractionContext(ValidJiraNumbers: validJiraNumbers, RepoScope: repoScope)
             : null;
         return JiraReferenceExtractor.GetReferences(sourceType, sourceId, context, text);
     }

@@ -1,9 +1,11 @@
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Tests;
 
@@ -18,7 +20,10 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
         _dbPath = Path.Combine(Path.GetTempPath(), $"xref_integ_{Guid.NewGuid()}.db");
         _db = new GitHubDatabase(_dbPath, NullLogger<GitHubDatabase>.Instance);
         _db.Initialize();
-        _rebuilder = new GitHubXRefRebuilder(_db, NullLogger<GitHubXRefRebuilder>.Instance);
+        _rebuilder = new GitHubXRefRebuilder(
+            _db,
+            Options.Create(new GitHubServiceOptions()),
+            NullLogger<GitHubXRefRebuilder>.Instance);
     }
 
     public void Dispose()
