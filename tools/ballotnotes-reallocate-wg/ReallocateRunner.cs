@@ -67,6 +67,16 @@ internal static class ReallocateRunner
 
         using BallotNotesDatabase db = new(notesDb, ConsoleLogger.Instance, readOnly: options.DryRun);
 
+        // Migrate legacy notes DBs (additive columns added since the DB was first
+        // created) before reading: ReadNote selects every current column, so a
+        // pre-migration DB would otherwise fail with "no such column". EnsureSchema
+        // requires write access, so it is skipped for the read-only --dry-run path
+        // (a stale DB there must first be migrated by a real hydrate/reallocate run).
+        if (!options.DryRun)
+        {
+            db.Initialize();
+        }
+
         IReadOnlyList<string> noteIds = db.ListNoteIds(options.Repo);
         if (noteIds.Count == 0)
         {
