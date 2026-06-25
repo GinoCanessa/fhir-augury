@@ -30,6 +30,7 @@ public class GitHubDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_repos", "DefaultBranch", "TEXT");
 
         GitHubRepoRecord.CreateTable(connection);
         GitHubIssueRecord.CreateTable(connection);
@@ -81,6 +82,19 @@ public class GitHubDatabase : SourceDatabase
                     ON github_canonical_artifacts(RepoFullName, WorkGroupRaw);
                 CREATE INDEX IF NOT EXISTS ix_github_structure_definitions_RepoFullName_WorkGroupRaw
                     ON github_structure_definitions(RepoFullName, WorkGroupRaw);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency: github_commit_pr_links PK is a GetIndex() value, so
+        // INSERT OR IGNORE only dedupes against a real UNIQUE constraint. This
+        // manual unique index over the natural key makes ignoreDuplicates inserts
+        // idempotent (created after CreateTable; no migrated columns involved).
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_commit_pr_links_natural
+                    ON github_commit_pr_links(CommitSha, PrNumber, RepoFullName);
                 """;
             idx.ExecuteNonQuery();
         }

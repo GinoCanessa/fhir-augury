@@ -89,6 +89,22 @@ public static class GhCliIssueMapper
             HasIssues = json.TryGetProperty("hasIssuesEnabled", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
             Category = category,
+            DefaultBranch = GetNestedString(json, "defaultBranchRef", "name"),
+        };
+    }
+
+    /// <summary>
+    /// Maps a commit SHA / PR number / repo triple to a
+    /// <see cref="GitHubCommitPrLinkRecord"/> with a fresh PK.
+    /// </summary>
+    public static GitHubCommitPrLinkRecord MapCommitPrLink(string sha, int prNumber, string repoFullName)
+    {
+        return new GitHubCommitPrLinkRecord
+        {
+            Id = GitHubCommitPrLinkRecord.GetIndex(),
+            CommitSha = sha,
+            PrNumber = prNumber,
+            RepoFullName = repoFullName,
         };
     }
 

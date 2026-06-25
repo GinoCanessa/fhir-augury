@@ -182,6 +182,40 @@ public class GitHubDatabaseTests : IDisposable
         Assert.Equal("ok", result);
     }
 
+    [Fact]
+    public void Initialize_CreatesCommitPrLinkNaturalUniqueIndex()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("ix_github_commit_pr_links_natural", GetIndexNames(conn));
+    }
+
+    [Fact]
+    public void Initialize_AddsRepoDefaultBranchColumn()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("DefaultBranch", GetColumnNames(conn, "github_repos"));
+    }
+
+    private static List<string> GetIndexNames(SqliteConnection conn)
+    {
+        List<string> names = [];
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index'";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(0));
+        return names;
+    }
+
+    private static List<string> GetColumnNames(SqliteConnection conn, string table)
+    {
+        List<string> names = [];
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(1));
+        return names;
+    }
+
     private static GitHubIssueRecord CreateSampleIssue(
         string uniqueKey, string repoFullName, int number, string title) => new()
     {

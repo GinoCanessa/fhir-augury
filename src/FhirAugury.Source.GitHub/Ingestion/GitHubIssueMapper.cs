@@ -66,6 +66,7 @@ public static class GitHubIssueMapper
             HasIssues = repoJson.TryGetProperty("has_issues", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
             Category = category,
+            DefaultBranch = GetString(repoJson, "default_branch"),
         };
     }
 

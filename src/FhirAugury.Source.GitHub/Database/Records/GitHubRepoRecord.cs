@@ -21,4 +21,7 @@ public partial record class GitHubRepoRecord
 
     /// <summary>Repository category (e.g., "FhirCore", "Utg"). Stored as the enum string name.</summary>
     public required string Category { get; set; }
+
+    /// <summary>Repository default branch (e.g., "master"/"main"); used for deterministic primary-PR selection. May be null after a full sync that does not capture it.</summary>
+    public string? DefaultBranch { get; set; }
 }

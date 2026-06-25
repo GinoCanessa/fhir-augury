@@ -364,7 +364,7 @@ public class GitHubCliProvider(
         try
         {
             string repoArgs = runner.BuildRepoArgs(repoFullName);
-            string args = $"repo view {repoFullName} --json name,nameWithOwner,description,hasIssuesEnabled,owner";
+            string args = $"repo view {repoFullName} --json name,nameWithOwner,description,hasIssuesEnabled,owner,defaultBranchRef";
             using JsonDocument doc = await runner.RunAsync(args, ct);
             GitHubRepoRecord record = GhCliIssueMapper.MapRepo(doc.RootElement);
 
@@ -449,6 +449,85 @@ public class GitHubCliProvider(
                 logger.LogWarning(ex, "Failed to fetch PR reviews for {Repo}#{Number}", repoFullName, issueNumber);
                 errors.Add($"reviews:{repoFullName}#{issueNumber} - {ex.Message}");
             }
+
+            await SyncPrCommitLinksAsync(connection, repoFullName, issueNumber, ct, errors);
+        }
+    }
+
+    /// <summary>
+    /// Synchronises <c>github_commit_pr_links</c> for a single PR using
+    /// <c>gh pr view {n} --json commits,baseRefName,mergedAt</c>. Uses
+    /// delete-then-insert (replace) semantics so a force-push that rewrites the
+    /// PR's commit set does not leave stale links, and also backfills the PR
+    /// row's <c>BaseBranch</c>/<c>MergeState</c> (null after a full REST sync,
+    /// which omits <c>base.ref</c>/<c>merged_at</c>) so the primary-PR rule is
+    /// deterministic regardless of sync path.
+    /// </summary>
+    /// <remarks>
+    /// PR fetch runs before <c>PostIngestionAsync</c> extracts commits from the
+    /// clone, so some linked SHAs may not yet have a <c>github_commits</c> row.
+    /// The link table does not FK to <c>github_commits</c>, so writing links
+    /// ahead of the commit rows is correct; resolution only joins to commits
+    /// that exist.
+    /// </remarks>
+    private async Task SyncPrCommitLinksAsync(
+        SqliteConnection connection, string repoFullName, int issueNumber,
+        CancellationToken ct, List<string> errors)
+    {
+        try
+        {
+            string repoArgs = runner.BuildRepoArgs(repoFullName);
+            string args = $"pr view {issueNumber} {repoArgs} --json commits,baseRefName,mergedAt";
+            using JsonDocument doc = await runner.RunAsync(args, ct);
+            JsonElement root = doc.RootElement;
+
+            using (SqliteCommand del = connection.CreateCommand())
+            {
+                del.CommandText = "DELETE FROM github_commit_pr_links WHERE RepoFullName = @repo AND PrNumber = @n";
+                del.Parameters.AddWithValue("@repo", repoFullName);
+                del.Parameters.AddWithValue("@n", issueNumber);
+                del.ExecuteNonQuery();
+            }
+
+            if (root.TryGetProperty("commits", out JsonElement commits) &&
+                commits.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement commitJson in commits.EnumerateArray())
+                {
+                    if (!commitJson.TryGetProperty("oid", out JsonElement oidEl)) continue;
+                    string? oid = oidEl.GetString();
+                    if (string.IsNullOrEmpty(oid)) continue;
+
+                    GitHubCommitPrLinkRecord link = GhCliIssueMapper.MapCommitPrLink(oid, issueNumber, repoFullName);
+                    GitHubCommitPrLinkRecord.Insert(connection, link, ignoreDuplicates: true);
+                }
+            }
+
+            // Backfill BaseBranch/MergeState on the PR row when a full sync left them null.
+            GitHubIssueRecord? pr = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
+            if (pr is not null)
+            {
+                string? baseRefName = root.TryGetProperty("baseRefName", out JsonElement brEl) ? brEl.GetString() : null;
+                string? mergedAt = root.TryGetProperty("mergedAt", out JsonElement maEl) ? maEl.GetString() : null;
+
+                bool changed = false;
+                if (pr.BaseBranch is null && !string.IsNullOrEmpty(baseRefName))
+                {
+                    pr.BaseBranch = baseRefName;
+                    changed = true;
+                }
+                if (pr.MergeState is null && !string.IsNullOrEmpty(mergedAt))
+                {
+                    pr.MergeState = "merged";
+                    changed = true;
+                }
+                if (changed) GitHubIssueRecord.Update(connection, pr);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to sync commit-PR links for {Repo}#{Number}", repoFullName, issueNumber);
+            errors.Add($"commit_pr_links:{repoFullName}#{issueNumber} - {ex.Message}");
         }
     }
 
