@@ -381,6 +381,30 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Equal("oo", reader.GetString(2));
     }
 
+    [Fact]
+    public void Emit_App_Js_Ships_Detail_And_Markdown_WorkGroup_Lineage_Rows()
+    {
+        string dbPath = Path.Combine(_tempDir, "detail-wg.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+        }
+
+        string outDir = Path.Combine(_tempDir, "detail-wg-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        // Phase 4: three detail-summary rows + the markdown export field rows.
+        Assert.Contains("Listed workgroup", appJs);
+        Assert.Contains("JIRA index workgroup", appJs);
+        Assert.Contains("Applied-by workgroups", appJs);
+        Assert.Contains("indexWgDetailNode", appJs);
+        Assert.Contains("appliedOf", appJs);
+        // The single legacy "Workgroup" detail row is gone (grouping still uses wgNames).
+        Assert.DoesNotContain("kv('Workgroup'", appJs);
+    }
+
     private static long Count(SqliteConnection conn, string sql)
     {
         using SqliteCommand cmd = conn.CreateCommand();

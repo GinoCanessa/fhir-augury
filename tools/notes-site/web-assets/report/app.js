@@ -370,7 +370,9 @@
       }, repo));
       if (n.RepoCategory) kv('Category', n.RepoCategory);
       kv('Type', n.Type);
-      kv('Workgroup', wgNames(n).join(', '));
+      kv('Listed workgroup', listedOf(n).map(function (x) { return x.label; }).join(', '));
+      kv('JIRA index workgroup', indexWgDetailNode(n));
+      kv('Applied-by workgroups', appliedOf(n).map(function (x) { return x.label; }).join('; '));
       kv('Window', windowNode(n));
       kv('Commits in window', n.CommitsInWindow);
       kv('Tickets attributed', n.TicketsAttributed);
@@ -680,6 +682,18 @@
     if (wgDisagree(r)) {
       span.appendChild(document.createTextNode(' '));
       span.appendChild(el('span', { class: 'wg-warn', title: WG_DISAGREE_TITLE, 'aria-label': 'lineages disagree' }, '\u26a0'));
+    }
+    return span;
+  }
+
+  // Detail-view variant of the JIRA index cell: same data plus an explicit
+  // "⚠ differs" marker when the lineages disagree.
+  function indexWgDetailNode(n) {
+    var span = el('span');
+    span.appendChild(document.createTextNode(indexOf(n).map(function (x) { return x.label; }).join(', ')));
+    if (wgDisagree(n)) {
+      span.appendChild(document.createTextNode(' '));
+      span.appendChild(el('span', { class: 'wg-warn', title: WG_DISAGREE_TITLE }, '\u26a0 differs'));
     }
     return span;
   }
@@ -1034,7 +1048,9 @@
       ['NoteId', String(note.NoteId || noteId)],
       ['Repository', String(note.RepoOwner || '') + '/' + String(note.RepoName || '')],
       ['Category', note.RepoCategory == null ? '' : String(note.RepoCategory)],
-      ['Workgroup', wgNames(note).join(', ')],
+      ['Listed workgroup', listedOf(note).map(function (x) { return x.label; }).join(', ')],
+      ['JIRA index workgroup', indexOf(note).map(function (x) { return x.label; }).join(', ') + (wgDisagree(note) ? ' (differs)' : '')],
+      ['Applied-by workgroups', appliedOf(note).map(function (x) { return x.label; }).join('; ')],
       ['Window', winValue],
       ['Commits in window', String(note.CommitsInWindow == null ? 0 : note.CommitsInWindow)],
       ['Tickets attributed', String(note.TicketsAttributed == null ? 0 : note.TicketsAttributed)],
