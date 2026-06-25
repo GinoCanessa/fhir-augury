@@ -168,7 +168,70 @@ public sealed class BallotNotesDatabase : SourceDatabase
     }
 
     /// <summary>
-    /// Creates (or resets) the <c>running</c> run row for a window, keyed on
+    /// Re-stamps only the four owning-work-group columns
+    /// (<see cref="NoteRecord.WorkGroup"/>, <see cref="NoteRecord.WorkGroupCode"/>,
+    /// <see cref="NoteRecord.WorkGroupNames"/>, <see cref="NoteRecord.WorkGroupCodes"/>)
+    /// on an existing note, leaving every other field — including prose,
+    /// <c>NeedsNote</c>, and all timestamps — untouched. Used by the one-off
+    /// owning-WG re-stamp maintenance command; deliberately does <em>not</em> set
+    /// <c>SavedAt</c>/<c>GeneratedAt</c>/<c>AuthoredAt</c>/<c>HydratedAt</c>.
+    /// Returns <c>true</c> when a row was updated.
+    /// </summary>
+    public bool UpdateNoteWorkGroups(
+        string noteId,
+        string workGroup,
+        string workGroupCode,
+        string workGroupNames,
+        string workGroupCodes)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(noteId);
+
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText =
+            $"""
+            UPDATE "{NoteRecord.DefaultTableName}" SET
+                WorkGroup = $wg,
+                WorkGroupCode = $code,
+                WorkGroupNames = $names,
+                WorkGroupCodes = $codes
+            WHERE NoteId = $id
+            """;
+        cmd.Parameters.AddWithValue("$wg", workGroup ?? string.Empty);
+        cmd.Parameters.AddWithValue("$code", workGroupCode ?? string.Empty);
+        cmd.Parameters.AddWithValue("$names", workGroupNames ?? string.Empty);
+        cmd.Parameters.AddWithValue("$codes", workGroupCodes ?? string.Empty);
+        cmd.Parameters.AddWithValue("$id", noteId);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>
+    /// Enumerates every note id in <see cref="NoteRecord.RowId"/> order, optionally
+    /// filtered to a single <paramref name="repo"/> (<c>owner/name</c>). Unlike
+    /// <see cref="ListNotes"/> this is unpaged and returns ids only — used by the
+    /// owning-WG re-stamp command to iterate the whole DB.
+    /// </summary>
+    public IReadOnlyList<string> ListNoteIds(string? repo)
+    {
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand cmd = connection.CreateCommand();
+
+        string where = string.Empty;
+        if (!string.IsNullOrWhiteSpace(repo))
+        {
+            where = " WHERE (RepoOwner || '/' || RepoName) = $repo";
+            cmd.Parameters.AddWithValue("$repo", repo);
+        }
+        cmd.CommandText = $"SELECT NoteId FROM \"{NoteRecord.DefaultTableName}\"{where} ORDER BY RowId";
+
+        List<string> ids = [];
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            ids.Add(reader.GetString(0));
+        }
+        return ids;
+    }
     /// <see cref="NotesRunRecord.RunKey"/>. Called synchronously by the hydrate
     /// endpoint so a pollable status row exists before <c>202</c> is returned.
     /// </summary>

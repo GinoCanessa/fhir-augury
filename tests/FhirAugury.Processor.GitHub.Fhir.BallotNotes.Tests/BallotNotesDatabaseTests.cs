@@ -180,6 +180,75 @@ public sealed class BallotNotesDatabaseTests : IDisposable
     }
 
     [Fact]
+    public void ListNoteIds_returns_all_in_rowid_order_and_honours_repo_filter()
+    {
+        using BallotNotesDatabase db = NewDb();
+        Seed(db, Evidence("hl7-fhir-artifact-observation", "Artifact", "Observation", "HL7", "fhir", "OO"));
+        Seed(db, Evidence("hl7-fhir-page-security", "Page", "security", "HL7", "fhir", "FHIR-I"));
+        Seed(db, Evidence("hl7-uscore-artifact-patient", "Artifact", "patient", "HL7", "US-Core", "OO"));
+
+        Assert.Equal(
+            ["hl7-fhir-artifact-observation", "hl7-fhir-page-security", "hl7-uscore-artifact-patient"],
+            db.ListNoteIds(null));
+        Assert.Equal(
+            ["hl7-fhir-artifact-observation", "hl7-fhir-page-security"],
+            db.ListNoteIds("HL7/fhir"));
+        Assert.Single(db.ListNoteIds("HL7/US-Core"));
+        Assert.Empty(db.ListNoteIds("HL7/missing"));
+    }
+
+    [Fact]
+    public void UpdateNoteWorkGroups_UpdatesOnlyWgColumns_PreservesProseAndTimestamps()
+    {
+        using BallotNotesDatabase db = NewDb();
+        Seed(db, Evidence());
+
+        DateTimeOffset authoredAt = DateTimeOffset.UtcNow.AddHours(-3);
+        BallotNoteProse prose = new()
+        {
+            NeedsNote = "yes",
+            ProposedBallotNoteHtml = "<blockquote class=\"ballot-note\">drafted</blockquote>",
+            RollupSummaryMarkdown = "## Roll-up",
+            NotesForReviewerMarkdown = "reviewer note",
+        };
+        Assert.True(db.UpdateNoteProse("hl7-fhir-artifact-observation", prose, authoredAt));
+
+        NoteDetail before = db.GetNote("hl7-fhir-artifact-observation")!;
+
+        Assert.True(db.UpdateNoteWorkGroups(
+            "hl7-fhir-artifact-observation",
+            workGroup: "FHIR Infrastructure (FHIR-I)",
+            workGroupCode: "fhir",
+            workGroupNames: "FHIR Infrastructure (FHIR-I);Orders and Observations (OO)",
+            workGroupCodes: "fhir;oo"));
+
+        NoteDetail after = db.GetNote("hl7-fhir-artifact-observation")!;
+
+        // WG columns re-stamped.
+        Assert.Equal("FHIR Infrastructure (FHIR-I)", after.Note.WorkGroup);
+        Assert.Equal("fhir", after.Note.WorkGroupCode);
+        Assert.Equal("FHIR Infrastructure (FHIR-I);Orders and Observations (OO)", after.Note.WorkGroupNames);
+        Assert.Equal("fhir;oo", after.Note.WorkGroupCodes);
+
+        // Everything else preserved.
+        Assert.Equal(before.Note.ProposedBallotNoteHtml, after.Note.ProposedBallotNoteHtml);
+        Assert.Equal("yes", after.Note.NeedsNote);
+        Assert.Equal(before.Note.RollupSummaryMarkdown, after.Note.RollupSummaryMarkdown);
+        Assert.Equal(before.Note.AuthoredAt, after.Note.AuthoredAt);
+        Assert.Equal(before.Note.SavedAt, after.Note.SavedAt);
+        Assert.Equal(before.Note.GeneratedAt, after.Note.GeneratedAt);
+        Assert.Equal(before.Note.HydratedAt, after.Note.HydratedAt);
+        Assert.Equal("authored", after.Status);
+    }
+
+    [Fact]
+    public void UpdateNoteWorkGroups_returns_false_for_unknown_slug()
+    {
+        using BallotNotesDatabase db = NewDb();
+        Assert.False(db.UpdateNoteWorkGroups("does-not-exist", "wg", "code", "wg", "code"));
+    }
+
+    [Fact]
     public void Run_lifecycle_tracks_status_and_progress()
     {
         using BallotNotesDatabase db = NewDb();
