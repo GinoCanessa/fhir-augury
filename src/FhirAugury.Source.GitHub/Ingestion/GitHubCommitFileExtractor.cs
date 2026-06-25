@@ -295,6 +295,31 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         return ("HEAD", $" -n {maxInitialCommits}");
     }
 
+    /// <summary>
+    /// Partitions git stderr into benign "warning:" diagnostics vs. other output.
+    /// Returns (Benign, Other), either of which is null when its bucket is empty.
+    /// </summary>
+    internal static (string? Benign, string? Other) ClassifyStderr(string stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr)) return (null, null);
+
+        List<string> benign = [];
+        List<string> other = [];
+        foreach (string raw in stderr.Split('\n'))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (line.StartsWith("warning:", StringComparison.OrdinalIgnoreCase))
+                benign.Add(line);
+            else
+                other.Add(line);
+        }
+
+        return (
+            benign.Count > 0 ? string.Join('\n', benign) : null,
+            other.Count > 0 ? string.Join('\n', other) : null);
+    }
+
     private async Task<string> RunGitAsync(string workingDir, string arguments, CancellationToken ct)
     {
         ProcessStartInfo psi = new ProcessStartInfo
@@ -327,7 +352,11 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
         if (!string.IsNullOrWhiteSpace(stderr))
         {
-            logger.LogWarning("git stderr: {StdErr}", stderr);
+            (string? benign, string? other) = ClassifyStderr(stderr);
+            if (benign is not null)
+                logger.LogDebug("git stderr (benign): {StdErr}", benign);
+            if (other is not null)
+                logger.LogWarning("git stderr: {StdErr}", other);
         }
 
         return stdout;
