@@ -16,6 +16,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
     private const char RecordSeparator = '\x00';
     private const char FieldSeparator = '\x01';
     private const string EndHeaderMarker = "---END-HEADER---";
+    internal const int RenameDetectionLimit = 5000;
 
     /// <summary>
     /// Extracts commits and their changed files from the local clone,
@@ -42,7 +43,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         (string sinceArg, string limitArg) = BuildLogRange(lastSha);
 
         // Pass 1: metadata + name-status (change types)
-        string pass1Args = $"log {sinceArg}{limitArg} --name-status --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
+        string pass1Args = BuildPass1Args(sinceArg, limitArg);
         string pass1Output = await RunGitAsync(clonePath, pass1Args, ct);
 
         if (string.IsNullOrWhiteSpace(pass1Output)) return;
@@ -270,6 +271,16 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
             }
         }
     }
+
+    /// <summary>
+    /// Builds the Pass-1 git argument string (metadata + --name-status).
+    /// The `-c diff.renameLimit` config flag must precede the `log` subcommand
+    /// so git applies it; this raises the rename-detection cap to preserve
+    /// accurate R/C rows on large commits instead of emitting a benign warning.
+    /// </summary>
+    internal static string BuildPass1Args(string sinceArg, string limitArg) =>
+        $"-c diff.renameLimit={RenameDetectionLimit} log {sinceArg}{limitArg} " +
+        $"--name-status --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
 
     /// <summary>
     /// Builds the git log range and optional limit arguments.
