@@ -21,7 +21,7 @@ public static class JiraReferenceExtractor
         {
             if (string.IsNullOrWhiteSpace(text)) continue;
             List<JiraTicketMatch> matches = JiraTicketExtractor.ExtractTickets(
-                text, context?.ValidJiraNumbers);
+                text, context?.ValidJiraNumbers, context?.RepoScope);
             foreach (JiraTicketMatch m in matches)
             {
                 if (!seen.Add(m.JiraKey)) continue;
