@@ -337,6 +337,67 @@ public sealed class BallotNotesDatabaseTests : IDisposable
     }
 
     [Fact]
+    public void Lineage_workgroup_sets_round_trip_through_note()
+    {
+        using BallotNotesDatabase db = NewDb();
+        NoteRecord evidence = Evidence();
+        evidence.ListedWorkGroupNames = "FHIR Infrastructure (FHIR-I)";
+        evidence.ListedWorkGroupCodes = "fhir";
+        evidence.IndexWorkGroupNames = "Patient Administration (PA)";
+        evidence.IndexWorkGroupCodes = "pa";
+        evidence.AppliedWorkGroupNames = "FHIR Infrastructure (FHIR-I);Orders and Observations (OO)";
+        evidence.AppliedWorkGroupCodes = "fhir;oo";
+        Seed(db, evidence);
+
+        NoteDetail detail = db.GetNote("hl7-fhir-artifact-observation")!;
+        Assert.Equal("FHIR Infrastructure (FHIR-I)", detail.Note.ListedWorkGroupNames);
+        Assert.Equal("fhir", detail.Note.ListedWorkGroupCodes);
+        Assert.Equal("Patient Administration (PA)", detail.Note.IndexWorkGroupNames);
+        Assert.Equal("pa", detail.Note.IndexWorkGroupCodes);
+        Assert.Equal("FHIR Infrastructure (FHIR-I);Orders and Observations (OO)", detail.Note.AppliedWorkGroupNames);
+        Assert.Equal("fhir;oo", detail.Note.AppliedWorkGroupCodes);
+    }
+
+    [Fact]
+    public void EnsureSchema_backfills_lineage_columns_on_legacy_db()
+    {
+        // Build the current schema, then drop the six lineage columns to mimic a
+        // pre-feature DB that has every other column but not the lineage sets.
+        using (BallotNotesDatabase seed = NewDb()) { }
+        using (SqliteConnection legacy = new($"Data Source={_dbPath};Pooling=False"))
+        {
+            legacy.Open();
+            using SqliteCommand cmd = legacy.CreateCommand();
+            cmd.CommandText =
+                "ALTER TABLE notes DROP COLUMN ListedWorkGroupNames;" +
+                "ALTER TABLE notes DROP COLUMN ListedWorkGroupCodes;" +
+                "ALTER TABLE notes DROP COLUMN IndexWorkGroupNames;" +
+                "ALTER TABLE notes DROP COLUMN IndexWorkGroupCodes;" +
+                "ALTER TABLE notes DROP COLUMN AppliedWorkGroupNames;" +
+                "ALTER TABLE notes DROP COLUMN AppliedWorkGroupCodes;";
+            cmd.ExecuteNonQuery();
+        }
+        foreach (string col in new[] { "ListedWorkGroupNames", "ListedWorkGroupCodes", "IndexWorkGroupNames", "IndexWorkGroupCodes", "AppliedWorkGroupNames", "AppliedWorkGroupCodes" })
+        {
+            Assert.False(HasColumn("notes", col));
+        }
+
+        using BallotNotesDatabase db = NewDb(); // Initialize() → EnsureSchema()
+
+        foreach (string col in new[] { "ListedWorkGroupNames", "ListedWorkGroupCodes", "IndexWorkGroupNames", "IndexWorkGroupCodes", "AppliedWorkGroupNames", "AppliedWorkGroupCodes" })
+        {
+            Assert.True(HasColumn("notes", col));
+        }
+
+        // And a fresh insert+read works on the migrated DB.
+        NoteRecord evidence = Evidence();
+        evidence.AppliedWorkGroupNames = "Orders and Observations (OO)";
+        evidence.AppliedWorkGroupCodes = "oo";
+        Seed(db, evidence);
+        Assert.Equal("oo", db.GetNote("hl7-fhir-artifact-observation")!.Note.AppliedWorkGroupCodes);
+    }
+
+    [Fact]
     public void ChangeImpact_and_category_round_trip_through_ticket_read()
     {
         using BallotNotesDatabase db = NewDb();

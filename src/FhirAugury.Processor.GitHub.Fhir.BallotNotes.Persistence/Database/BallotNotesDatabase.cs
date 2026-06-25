@@ -54,6 +54,12 @@ public sealed class BallotNotesDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "PreservedHandAuthoredHtml", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WorkGroupNames", "TEXT NOT NULL DEFAULT ''");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "WorkGroupCodes", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "ListedWorkGroupNames", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "ListedWorkGroupCodes", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "IndexWorkGroupNames", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "IndexWorkGroupCodes", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "AppliedWorkGroupNames", "TEXT NOT NULL DEFAULT ''");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, NoteRecord.DefaultTableName, "AppliedWorkGroupCodes", "TEXT NOT NULL DEFAULT ''");
     }
 
     /// <summary>Returns the number of notes currently stored.</summary>
@@ -455,7 +461,9 @@ public sealed class BallotNotesDatabase : SourceDatabase
             "SinceSha, SinceShortSha, HeadSha, HeadShortSha, CommitsInWindow, TicketsAttributed, NeedsNote, " +
             "CurrentBallotNoteHtml, ProposedBallotNoteHtml, RollupSummaryMarkdown, NotesForReviewerMarkdown, " +
             "SourceFilesNote, HydratedAt, AuthoredAt, GeneratedAt, SavedAt, WindowLabel, " +
-            "CurrentNoteIsAuguryGenerated, PreservedHandAuthoredHtml, WorkGroupNames, WorkGroupCodes " +
+            "CurrentNoteIsAuguryGenerated, PreservedHandAuthoredHtml, WorkGroupNames, WorkGroupCodes, " +
+            "ListedWorkGroupNames, ListedWorkGroupCodes, IndexWorkGroupNames, IndexWorkGroupCodes, " +
+            "AppliedWorkGroupNames, AppliedWorkGroupCodes " +
             $"FROM \"{NoteRecord.DefaultTableName}\" WHERE NoteId = $id LIMIT 1";
         cmd.Parameters.AddWithValue("$id", noteId);
         using SqliteDataReader reader = cmd.ExecuteReader();
@@ -492,6 +500,12 @@ public sealed class BallotNotesDatabase : SourceDatabase
             PreservedHandAuthoredHtml = reader.GetString(26),
             WorkGroupNames = reader.GetString(27),
             WorkGroupCodes = reader.GetString(28),
+            ListedWorkGroupNames = reader.GetString(29),
+            ListedWorkGroupCodes = reader.GetString(30),
+            IndexWorkGroupNames = reader.GetString(31),
+            IndexWorkGroupCodes = reader.GetString(32),
+            AppliedWorkGroupNames = reader.GetString(33),
+            AppliedWorkGroupCodes = reader.GetString(34),
         };
     }
 

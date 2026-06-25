@@ -62,6 +62,63 @@ public partial record class NoteRecord
     /// </summary>
     public string WorkGroupCodes { get; set; } = string.Empty;
 
+    /// <summary>
+    /// <em>Listed</em> work group display names — the WG declared on the
+    /// artifact/page definition itself, read from the repo clone
+    /// (StructureDefinition <c>structuredefinition-wg</c> for artifacts; the page
+    /// <c>[%wg%]</c> "Responsible Owner" marker for pages). A single value for
+    /// artifacts/pages; a per-covered-datatype set for the consolidated datatypes
+    /// surface. Authoritative source is the repo-read, never the JIRA index: when
+    /// an artifact/page declares no WG the value is <c>(unknown)</c> / empty rather
+    /// than borrowing the index — <em>except</em> the datatypes surface, whose
+    /// Listed falls back to FHIR Infrastructure per covered datatype when repo-read
+    /// is empty. Index-aligned with <see cref="ListedWorkGroupCodes"/>.
+    /// </summary>
+    public string ListedWorkGroupNames { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Distinct, semicolon-delimited set of <em>Listed</em> work group canonical
+    /// codes, index-aligned with <see cref="ListedWorkGroupNames"/>. See that
+    /// property for the repo-read sourcing rules.
+    /// </summary>
+    public string ListedWorkGroupCodes { get; set; } = string.Empty;
+
+    /// <summary>
+    /// <em>JIRA index</em> work group display names — the WG from the JIRA
+    /// spec-artifact/page registry (<c>jira_spec_artifacts</c> /
+    /// <c>jira_spec_pages</c>, resolved through <c>jira_workgroups</c> →
+    /// <c>hl7_workgroups</c>). A single value for artifacts/pages; a
+    /// per-covered-datatype set for the datatypes surface. Empty when the registry
+    /// has no (unambiguous) owner. Index-aligned with
+    /// <see cref="IndexWorkGroupCodes"/>.
+    /// </summary>
+    public string IndexWorkGroupNames { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Distinct, semicolon-delimited set of <em>JIRA index</em> work group
+    /// canonical codes, index-aligned with <see cref="IndexWorkGroupNames"/>.
+    /// </summary>
+    public string IndexWorkGroupCodes { get; set; } = string.Empty;
+
+    /// <summary>
+    /// <em>Applied-by</em> work group display names — the distinct set of work
+    /// groups whose attributed tickets produced an in-window commit touching the
+    /// unit's source files. Surfaces who actually moved the artifact during the
+    /// window, independent of who owns it. Falls back to all attributed tickets'
+    /// work groups (see <see cref="SourceFilesNote"/> for the imprecision warning)
+    /// when commit-to-file granularity is unavailable. Index-aligned with
+    /// <see cref="AppliedWorkGroupCodes"/>.
+    /// </summary>
+    public string AppliedWorkGroupNames { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Distinct, semicolon-delimited set of <em>Applied-by</em> work group
+    /// canonical codes, index-aligned with <see cref="AppliedWorkGroupNames"/>.
+    /// Codes derive from <c>Hl7WorkGroupNameCleaner.Clean</c> of each ticket's
+    /// work-group name — the same canonical basis as Listed/Index codes.
+    /// </summary>
+    public string AppliedWorkGroupCodes { get; set; } = string.Empty;
+
     public string SinceSha { get; set; } = string.Empty;
     public string SinceShortSha { get; set; } = string.Empty;
     public string HeadSha { get; set; } = string.Empty;
