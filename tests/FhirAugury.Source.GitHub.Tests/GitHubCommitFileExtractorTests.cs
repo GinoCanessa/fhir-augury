@@ -393,4 +393,72 @@ public class GitHubCommitFileExtractorTests
         Assert.Equal("HEAD", sinceArg);
         Assert.Equal(" -n 100", limitArg);
     }
+
+    // ── BuildPass1Args tests ─────────────────────────────────────────
+
+    [Fact]
+    public void BuildPass1Args_PrependsRenameLimitBeforeLog()
+    {
+        string args = GitHubCommitFileExtractor.BuildPass1Args("HEAD", " -n 500");
+
+        Assert.StartsWith("-c diff.renameLimit=5000 log ", args);
+        Assert.Contains("--name-status", args);
+        Assert.Contains("---END-HEADER---", args);
+    }
+
+    [Fact]
+    public void BuildPass1Args_PassesThroughRange()
+    {
+        string incremental = GitHubCommitFileExtractor.BuildPass1Args("abc..HEAD", "");
+        Assert.Contains("log abc..HEAD --name-status", incremental);
+
+        string initial = GitHubCommitFileExtractor.BuildPass1Args("HEAD", " -n 500");
+        Assert.Contains("log HEAD -n 500 --name-status", initial);
+    }
+
+    // ── ClassifyStderr tests ─────────────────────────────────────────
+
+    [Fact]
+    public void ClassifyStderr_PureWarning_IsBenign()
+    {
+        string stderr =
+            "warning: exhaustive rename detection was skipped due to too many files.\n" +
+            "warning: you may want to set your diff.renameLimit variable to at least 2736 and retry the command.";
+
+        (string? benign, string? other) = GitHubCommitFileExtractor.ClassifyStderr(stderr);
+
+        Assert.NotNull(benign);
+        Assert.Contains("exhaustive rename detection was skipped", benign);
+        Assert.Contains("diff.renameLimit", benign);
+        Assert.Null(other);
+    }
+
+    [Fact]
+    public void ClassifyStderr_MixedOutput_SplitsBuckets()
+    {
+        (string? benign, string? other) = GitHubCommitFileExtractor.ClassifyStderr("warning: x\nfatal-ish noise");
+
+        Assert.Equal("warning: x", benign);
+        Assert.Equal("fatal-ish noise", other);
+    }
+
+    [Fact]
+    public void ClassifyStderr_NonWarning_GoesToOther()
+    {
+        (string? benign, string? other) = GitHubCommitFileExtractor.ClassifyStderr("some unexpected line");
+
+        Assert.Null(benign);
+        Assert.Equal("some unexpected line", other);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  \n \n")]
+    public void ClassifyStderr_EmptyOrWhitespace_ReturnsNulls(string input)
+    {
+        (string? benign, string? other) = GitHubCommitFileExtractor.ClassifyStderr(input);
+
+        Assert.Null(benign);
+        Assert.Null(other);
+    }
 }
