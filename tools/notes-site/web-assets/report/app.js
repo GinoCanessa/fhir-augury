@@ -23,6 +23,87 @@
     return out.length > 0 ? out : [UNKNOWN_WG];
   }
 
+  // ---- work-group lineages (Listed / JIRA index / Applied-by) --------------
+  // Each lineage is persisted as two ';'-delimited, index-aligned sets
+  // (Names + Codes). Helpers below pair them positionally into
+  // {code, name, label} entries, tolerating mismatched lengths and dropping
+  // blanks; (unknown) appears only when the whole set is empty.
+
+  function splitSemis(value) {
+    var parts = String(value || '').split(';');
+    var out = [];
+    for (var i = 0; i < parts.length; i++) out.push(parts[i].trim());
+    return out;
+  }
+
+  function wgList(names, codes) {
+    var ns = splitSemis(names);
+    var cs = splitSemis(codes);
+    var max = Math.max(ns.length, cs.length);
+    var out = [];
+    for (var i = 0; i < max; i++) {
+      var name = (i < ns.length ? ns[i] : '') || '';
+      var code = (i < cs.length ? cs[i] : '') || '';
+      if (name.length === 0 && code.length === 0) continue;
+      var label = code ? (code + ' \u00b7 ' + (name || code)) : name;
+      out.push({ code: code, name: name || code, label: label });
+    }
+    if (out.length === 0) out.push({ code: '', name: UNKNOWN_WG, label: UNKNOWN_WG });
+    return out;
+  }
+
+  function listedOf(r) { return wgList(r && r.ListedWorkGroupNames, r && r.ListedWorkGroupCodes); }
+  function indexOf(r) { return wgList(r && r.IndexWorkGroupNames, r && r.IndexWorkGroupCodes); }
+  function appliedOf(r) { return wgList(r && r.AppliedWorkGroupNames, r && r.AppliedWorkGroupCodes); }
+
+  function appliedCodesOf(r) {
+    var cs = splitSemis(r && r.AppliedWorkGroupCodes);
+    var out = [];
+    for (var i = 0; i < cs.length; i++) { if (cs[i].length > 0) out.push(cs[i]); }
+    return out;
+  }
+
+  function codeSetOf(list) {
+    var set = Object.create(null);
+    for (var i = 0; i < list.length; i++) {
+      var c = String(list[i].code || '').toLowerCase();
+      if (c.length > 0) set[c] = true;
+    }
+    return set;
+  }
+
+  function sameCodeSet(a, b) {
+    var ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (var i = 0; i < ka.length; i++) { if (!b[ka[i]]) return false; }
+    return true;
+  }
+
+  // True when the lineages disagree: listed code-set ≠ index code-set (only when
+  // both carry a real code), OR an applied-by code falls outside listed ∪ index.
+  // Empty / (unknown) codes are ignored.
+  function wgDisagree(r) {
+    var listed = codeSetOf(listedOf(r));
+    var index = codeSetOf(indexOf(r));
+    if (Object.keys(listed).length > 0 && Object.keys(index).length > 0 && !sameCodeSet(listed, index)) {
+      return true;
+    }
+    var union = Object.create(null);
+    var k;
+    for (k in listed) union[k] = true;
+    for (k in index) union[k] = true;
+    var applied = appliedCodesOf(r);
+    for (var i = 0; i < applied.length; i++) {
+      var c = String(applied[i]).toLowerCase();
+      if (c.length > 0 && !union[c]) return true;
+    }
+    return false;
+  }
+
+  var WG_DISAGREE_TITLE =
+    'Work-group lineages disagree: the listed (definition) WG, the JIRA index WG, '
+    + 'and/or the work groups that applied changes do not all match.';
+
   /** @type {any} */
   var db = null;
 
@@ -95,7 +176,9 @@
   var Views = {
     landing: function (main) {
       var rows = query(
-        'SELECT NoteId, Name, Type, WorkGroup, WorkGroupCode, WorkGroupNames, RepoOwner, RepoName, ' +
+        'SELECT NoteId, Name, Type, WorkGroup, WorkGroupCode, WorkGroupNames, ' +
+        'ListedWorkGroupNames, ListedWorkGroupCodes, IndexWorkGroupNames, IndexWorkGroupCodes, ' +
+        'AppliedWorkGroupCodes, RepoOwner, RepoName, ' +
         'CommitsInWindow, TicketsAttributed, NeedsNote ' +
         'FROM notes', null).rows;
 
@@ -129,7 +212,8 @@
       var columns = [
         { label: 'Name', get: function (r) { return String(r.Name || ''); }, cmp: 'name', cell: nameCell },
         { label: 'Type', get: function (r) { return String(r.Type || ''); }, cmp: 'ci' },
-        { label: 'Workgroup', get: function (r) { return wgNames(r).join(', '); }, cmp: 'ci' },
+        { label: 'Listed WG', get: function (r) { return listedOf(r).map(function (x) { return x.label; }).join(', '); }, cmp: 'ci' },
+        { label: 'JIRA Artifact WG', get: function (r) { return indexOf(r).map(function (x) { return x.label; }).join(', '); }, cmp: 'ci', cell: indexWgCell },
         { label: 'Repo', get: function (r) { return String(r.RepoOwner || '') + '/' + String(r.RepoName || ''); }, cmp: 'ci' },
         { label: 'Commits', get: function (r) { return Number(r.CommitsInWindow || 0); }, cmp: 'num', num: true },
         { label: 'Tickets', get: function (r) { return Number(r.TicketsAttributed || 0); }, cmp: 'num', num: true },
@@ -155,7 +239,9 @@
         var n = needle.toLowerCase();
         if (n.length === 0) return rows;
         return rows.filter(function (r) {
-          var hay = [r.Name, r.Type, wgNames(r).join(' '), r.RepoOwner + '/' + r.RepoName, r.NeedsNote]
+          var listedHay = listedOf(r).map(function (x) { return x.label; }).join(' ');
+          var indexHay = indexOf(r).map(function (x) { return x.label; }).join(' ');
+          var hay = [r.Name, r.Type, listedHay, indexHay, r.RepoOwner + '/' + r.RepoName, r.NeedsNote]
             .join('\n').toLowerCase();
           return hay.indexOf(n) >= 0;
         });
@@ -584,6 +670,18 @@
 
   function needsNoteCell(r) {
     return needsNoteBadge(String(r.NeedsNote || 'unknown'));
+  }
+
+  // JIRA Artifact WG cell: the joined index labels plus a subtle warning glyph
+  // when the unit's three WG lineages disagree (see wgDisagree).
+  function indexWgCell(r) {
+    var span = el('span');
+    span.appendChild(document.createTextNode(indexOf(r).map(function (x) { return x.label; }).join(', ')));
+    if (wgDisagree(r)) {
+      span.appendChild(document.createTextNode(' '));
+      span.appendChild(el('span', { class: 'wg-warn', title: WG_DISAGREE_TITLE, 'aria-label': 'lineages disagree' }, '\u26a0'));
+    }
+    return span;
   }
 
   function needsNoteBadge(value) {

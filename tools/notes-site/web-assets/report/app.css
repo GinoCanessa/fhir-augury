@@ -127,6 +127,15 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .badge-no { background: var(--no-bg); color: var(--no-fg); }
 .badge-unknown { background: var(--unknown-bg); color: var(--unknown-fg); }
 
+/* Subtle discrepancy marker shown when a unit's work-group lineages disagree
+   (listed vs JIRA index vs applied-by). Amber, with accessible contrast in both
+   light and dark themes; cursor:help surfaces the title tooltip. */
+.wg-warn {
+  color: var(--unknown-fg);
+  font-weight: 600;
+  cursor: help;
+}
+
 /* Detail view chrome. */
 .detail-header dl {
   display: grid;

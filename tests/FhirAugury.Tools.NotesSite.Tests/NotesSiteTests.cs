@@ -302,6 +302,85 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains("wgNames", appJs);
     }
 
+    [Fact]
+    public void Emit_App_Js_Ships_Landing_WorkGroup_Lineage_Columns()
+    {
+        string dbPath = Path.Combine(_tempDir, "landing-wg.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            Seed(db);
+        }
+
+        string outDir = Path.Combine(_tempDir, "landing-wg-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+
+        string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
+        // Phase 3: two landing columns (code + name), discrepancy badge, and the
+        // helpers/columns selected for both-column filtering.
+        Assert.Contains("Listed WG", appJs);
+        Assert.Contains("JIRA Artifact WG", appJs);
+        Assert.Contains("wgDisagree", appJs);
+        Assert.Contains("ListedWorkGroupNames", appJs);
+        Assert.Contains("IndexWorkGroupNames", appJs);
+        Assert.Contains("AppliedWorkGroupCodes", appJs);
+        Assert.Contains("listedOf", appJs);
+        Assert.Contains("indexOf", appJs);
+
+        string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
+        Assert.Contains(".wg-warn", appCss);
+    }
+
+    [Fact]
+    public void Emit_Snapshot_Carries_Lineage_Columns_When_Listed_Differs_From_Index()
+    {
+        string dbPath = Path.Combine(_tempDir, "lineage.db");
+        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
+        {
+            db.Initialize();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            NoteRecord note = new()
+            {
+                NoteId = "hl7-fhir-artifact-account",
+                Type = "Artifact",
+                Name = "Account",
+                RepoOwner = "HL7",
+                RepoName = "fhir",
+                RepoCategory = "FhirCore",
+                WorkGroup = "FHIR Infrastructure (FHIR-I)",
+                WorkGroupCode = "fhir",
+                ListedWorkGroupNames = "FHIR Infrastructure (FHIR-I)",
+                ListedWorkGroupCodes = "fhir",
+                IndexWorkGroupNames = "Patient Administration (PA)",
+                IndexWorkGroupCodes = "pa",
+                AppliedWorkGroupNames = "Orders and Observations (OO)",
+                AppliedWorkGroupCodes = "oo",
+                GeneratedAt = now,
+                SavedAt = now,
+            };
+            db.UpsertUnitEvidence(note, [], [], []);
+        }
+
+        string outDir = Path.Combine(_tempDir, "lineage-site");
+        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html"))));
+
+        string snapPath = Path.Combine(_tempDir, "lineage-decoded.db");
+        File.WriteAllBytes(snapPath, dbBytes);
+        using SqliteConnection conn = new($"Data Source={snapPath};Pooling=False");
+        conn.Open();
+
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "SELECT ListedWorkGroupCodes, IndexWorkGroupCodes, AppliedWorkGroupCodes " +
+            "FROM notes WHERE Name='Account'";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("fhir", reader.GetString(0));
+        Assert.Equal("pa", reader.GetString(1));   // listed ≠ index → badge
+        Assert.Equal("oo", reader.GetString(2));
+    }
+
     private static long Count(SqliteConnection conn, string sql)
     {
         using SqliteCommand cmd = conn.CreateCommand();
