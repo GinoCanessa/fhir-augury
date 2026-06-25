@@ -33,6 +33,8 @@ public static class GitHubCatalog
                         ValueType: ApiParameterValueType.Int),
                     new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
                         ValueType: ApiParameterValueType.Int),
+                    new ApiParameter("pullRequest", ApiParameterKind.Query, Required: false,
+                        ValueType: ApiParameterValueType.Bool),
                 ]),
             new ApiEndpointDescriptor("items.get", "Get item", "Items",
                 HttpMethod.Get, "api/v1/items/{*key}",

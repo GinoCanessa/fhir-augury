@@ -3,6 +3,7 @@ namespace FhirAugury.Source.GitHub;
 public static class ContentTypes
 {
     public const string Issue = "issue";
+    public const string Pr = "pr";
     public const string Comment = "comment";
     public const string Commit = "commit";
     public const string File = "file";

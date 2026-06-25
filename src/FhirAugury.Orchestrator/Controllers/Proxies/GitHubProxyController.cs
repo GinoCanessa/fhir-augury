@@ -33,9 +33,10 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
     /// <summary>List GitHub items (paged).</summary>
     /// <param name="limit">Maximum number of items.</param>
     /// <param name="offset">Number of items to skip.</param>
+    /// <param name="pullRequest">Filter to pull requests (true) or non-PR issues (false); omit for all.</param>
     /// <param name="ct">Cancellation token.</param>
     [HttpGet("items")]
-    public Task<IActionResult> ListItems([FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
+    public Task<IActionResult> ListItems([FromQuery] int? limit, [FromQuery] int? offset, [FromQuery] bool? pullRequest, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "items", Request, ct);
 
     /// <summary>Get items related to a GitHub item.</summary>

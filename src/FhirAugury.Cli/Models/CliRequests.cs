@@ -454,6 +454,7 @@ public sealed class GitHubItemsRequest : CliRequest
     [JsonPropertyName("key")] public string? Key { get; set; }
     [JsonPropertyName("limit")] public int? Limit { get; set; }
     [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("pullRequest")] public bool? PullRequest { get; set; }
     [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
     [JsonPropertyName("includeComments")] public bool? IncludeComments { get; set; }
     [JsonPropertyName("includeRefs")] public bool? IncludeRefs { get; set; }

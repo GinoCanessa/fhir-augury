@@ -13,6 +13,7 @@ public static class GitHubItemsTools
         IHttpClientFactory httpClientFactory,
         [Description("Maximum results")] int? limit = null,
         [Description("Pagination offset")] int? offset = null,
+        [Description("Filter to pull requests (true) or non-PR issues (false); omit for all")] bool? pullRequest = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -22,6 +23,7 @@ public static class GitHubItemsTools
             List<string> query = [];
             if (limit != null) query.Add($"limit={limit.Value}");
             if (offset != null) query.Add($"offset={offset.Value}");
+            if (pullRequest != null) query.Add($"pullRequest={(pullRequest.Value ? "true" : "false")}");
             if (query.Count > 0) url.Append($"?{string.Join('&', query)}");
 
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);

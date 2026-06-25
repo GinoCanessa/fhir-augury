@@ -10,7 +10,15 @@ public static class GitHubItemsHandler
         string action = request.Action.ToLowerInvariant();
 
         if (action == "list")
-            return new { data = await client.GetFromOrchestratorAsync("/api/v1/github/items", ct) };
+        {
+            List<string> query = [];
+            if (request.PullRequest.HasValue)
+                query.Add($"pullRequest={(request.PullRequest.Value ? "true" : "false")}");
+            if (request.Limit.HasValue) query.Add($"limit={request.Limit.Value}");
+            if (request.Offset.HasValue) query.Add($"offset={request.Offset.Value}");
+            string listPath = "/api/v1/github/items" + (query.Count > 0 ? "?" + string.Join("&", query) : "");
+            return new { data = await client.GetFromOrchestratorAsync(listPath, ct) };
+        }
 
         if (string.IsNullOrEmpty(request.Key))
             throw new ArgumentException($"GitHub items action '{action}' requires a key.");
