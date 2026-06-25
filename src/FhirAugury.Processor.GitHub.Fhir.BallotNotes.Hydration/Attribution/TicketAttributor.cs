@@ -5,6 +5,7 @@ using FhirAugury.Common.Text;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -140,10 +141,12 @@ public sealed class TicketAttributor
     {
         ArgumentNullException.ThrowIfNull(commits);
 
-        Dictionary<string, IReadOnlyList<string>> commitKeys = new(StringComparer.Ordinal);
+        Dictionary<string, List<string>> commitKeys = new(StringComparer.Ordinal);
+        Dictionary<string, DateTimeOffset> commitDates = new(StringComparer.Ordinal);
         Dictionary<string, int> commitCount = new(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, DateTimeOffset> latest = new(StringComparer.OrdinalIgnoreCase);
         List<string> order = [];
+        List<WindowCommit> gapCommits = [];
 
         foreach (WindowCommit commit in commits)
         {
@@ -160,6 +163,12 @@ public sealed class TicketAttributor
             commitKeys[commit.Sha] = keys;
 
             DateTimeOffset commitDate = ParseDate(commit.AuthorDate);
+            commitDates[commit.Sha] = commitDate;
+            if (keys.Count == 0)
+            {
+                gapCommits.Add(commit);
+            }
+
             foreach (string key in keys)
             {
                 string norm = key.ToUpperInvariant();
@@ -172,6 +181,50 @@ public sealed class TicketAttributor
                 if (!latest.TryGetValue(norm, out DateTimeOffset existing) || commitDate > existing)
                 {
                     latest[norm] = commitDate;
+                }
+            }
+        }
+
+        // Pass 2 (gap-fill): for window commits that named no ticket, attribute the
+        // ticket(s) on the PR that introduced them — once per PR, dated by the
+        // latest contributing commit — merged into the existing bookkeeping so they
+        // flow indistinguishably through enrichment and owning-WG selection.
+        if (gapCommits.Count > 0)
+        {
+            foreach (PrTicketHarvest harvest in PrTicketResolver.Resolve(_options.GitHubDbPath, gapCommits, _logger))
+            {
+                DateTimeOffset prDate = DateTimeOffset.MinValue;
+                foreach (string sha in harvest.ContributingShas)
+                {
+                    if (commitDates.TryGetValue(sha, out DateTimeOffset d) && d > prDate)
+                    {
+                        prDate = d;
+                    }
+                }
+
+                foreach (string key in harvest.TicketKeys)
+                {
+                    string norm = key.ToUpperInvariant();
+
+                    foreach (string sha in harvest.ContributingShas)
+                    {
+                        if (commitKeys.TryGetValue(sha, out List<string>? shaKeys)
+                            && !shaKeys.Contains(norm, StringComparer.OrdinalIgnoreCase))
+                        {
+                            shaKeys.Add(norm);
+                        }
+                    }
+
+                    if (!commitCount.ContainsKey(norm))
+                    {
+                        commitCount[norm] = 0;
+                        order.Add(norm);
+                    }
+                    commitCount[norm]++; // once per PR per decision 2
+                    if (!latest.TryGetValue(norm, out DateTimeOffset existing) || prDate > existing)
+                    {
+                        latest[norm] = prDate;
+                    }
                 }
             }
         }
@@ -204,7 +257,10 @@ public sealed class TicketAttributor
         return new UnitAttribution
         {
             Tickets = tickets,
-            CommitTicketKeys = commitKeys,
+            CommitTicketKeys = commitKeys.ToDictionary(
+                kv => kv.Key,
+                kv => (IReadOnlyList<string>)kv.Value,
+                StringComparer.Ordinal),
             WorkGroup = workGroup,
             WorkGroupCode = workGroupCode,
         };
