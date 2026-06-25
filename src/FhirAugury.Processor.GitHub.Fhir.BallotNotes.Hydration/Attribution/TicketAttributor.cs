@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.RegularExpressions;
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Text;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
@@ -57,13 +58,14 @@ public sealed record UnitAttribution
 }
 
 /// <summary>
-/// Attributes window commits to Jira tickets: <c>FHIR-\d+</c> extracted from
-/// commit messages, enriched best-effort via the orchestrator's
-/// cross-referenced endpoint (Jira-source fallback), with per-ticket details
-/// fetched the same way. The owning work group is the one on the most recently
-/// attributed ticket (recency-primary), falling back to the request hint.
+/// Attributes window commits to Jira tickets: canonical Jira keys (FHIR-N,
+/// UP-N, UPSM-N, …) extracted from commit messages, enriched best-effort via
+/// the orchestrator's cross-referenced endpoint (Jira-source fallback), with
+/// per-ticket details fetched the same way. The owning work group is the one on
+/// the most recently attributed ticket (recency-primary), falling back to the
+/// request hint.
 /// </summary>
-public sealed partial class TicketAttributor
+public sealed class TicketAttributor
 {
     private readonly HttpClient _httpClient;
     private readonly BallotNotesHydrationOptions _options;
@@ -79,19 +81,21 @@ public sealed partial class TicketAttributor
         _logger = logger;
     }
 
-    [GeneratedRegex(@"FHIR-\d+", RegexOptions.IgnoreCase)]
-    private static partial Regex TicketKeyPattern();
-
-    /// <summary>Extracts distinct, order-preserving <c>FHIR-\d+</c> keys (uppercased).</summary>
+    /// <summary>
+    /// Extracts distinct, order-preserving canonical Jira keys (e.g. <c>FHIR-N</c>,
+    /// <c>UP-N</c>, <c>UPSM-N</c>) using the shared <see cref="JiraTicketExtractor"/>,
+    /// which only matches known HL7 project prefixes (so incidental tokens like
+    /// <c>ABC-1</c> or <c>UTF-8</c> are not treated as ticket keys).
+    /// </summary>
     public static IReadOnlyList<string> ExtractTicketKeys(string text)
     {
         if (string.IsNullOrEmpty(text)) return [];
 
         List<string> keys = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        foreach (Match match in TicketKeyPattern().Matches(text))
+        foreach (JiraTicketMatch match in JiraTicketExtractor.ExtractTickets(text))
         {
-            string key = match.Value.ToUpperInvariant();
+            string key = match.JiraKey.ToUpperInvariant();
             if (seen.Add(key)) keys.Add(key);
         }
         return keys;
@@ -237,7 +241,7 @@ public sealed partial class TicketAttributor
         string id = GetStringCI(hit, idProp);
         if (string.IsNullOrWhiteSpace(id)) return;
         if (string.Equals(id, excludeValue, StringComparison.OrdinalIgnoreCase)) return;
-        if (!TicketKeyPattern().IsMatch(id)) return;
+        if (!ValueFormatDetector.IsJiraKey(id)) return;
 
         string key = id.ToUpperInvariant();
         if (!keys.Contains(key, StringComparer.OrdinalIgnoreCase))
