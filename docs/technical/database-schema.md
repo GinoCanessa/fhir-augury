@@ -454,6 +454,8 @@ Indexes: `(ConfluenceId)`, `(JiraKey)`
 | `Name` | TEXT | Repository name |
 | `Description` | TEXT? | Repository description |
 | `LastFetchedAt` | TEXT | Last fetch timestamp |
+| `Category` | TEXT | Repository category (enum string) |
+| `DefaultBranch` | TEXT? | Default branch (e.g., master/main); migrated column used for deterministic primary-PR selection |
 
 #### `github_issues`
 
@@ -492,8 +494,14 @@ Indexes: `(RepoFullName, Number)`, `(State)`, `(Milestone)`, `(UpdatedAt)`
 | `CreatedAt` | TEXT | Comment timestamp |
 | `Body` | TEXT | Comment body |
 | `IsReviewComment` | INTEGER | Boolean: is this a review comment |
+| `ExternalId` | TEXT? | Stable GitHub-native comment identity (GraphQL node id for gh-CLI issue comments/reviews; numeric REST id stringified for review-thread comments). Migrated column |
+| `CommentKind` | TEXT? | Comment kind discriminator: `issue`, `review`, or `review_comment`. Migrated column |
 
-Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`
+Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`; unique
+`(RepoFullName, CommentKind, ExternalId)` (`ix_github_comments_external`) so
+`INSERT OR IGNORE` dedupes all three comment kinds across re-ingestion (the
+GetIndex() PK cannot). Inline (line-anchored) PR review-thread comments are
+ingested here as `CommentKind = review_comment`.
 
 #### `github_commits`
 
@@ -534,6 +542,12 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `CommitSha` | TEXT | Commit SHA |
 | `PrNumber` | INTEGER | Pull request number |
 | `RepoFullName` | TEXT | Repository full name |
+
+Indexes: `(CommitSha)`, `(PrNumber, RepoFullName)`; unique
+`(CommitSha, PrNumber, RepoFullName)` (`ix_github_commit_pr_links_natural`).
+Populated during PR ingestion from `gh pr view --json commits` with
+delete-then-insert (replace) semantics per PR, so a force-push that rewrites a
+PR's commit set does not leave stale links and re-ingestion stays idempotent.
 
 #### `github_spec_file_map` — Specification-to-file mappings
 
