@@ -435,23 +435,12 @@ public sealed class BallotNotesHydrator(
     /// <summary>
     /// Lists the datatype names defined at HEAD (top-level
     /// <c>source/datatypes/&lt;name&gt;.xml</c>, variant files excluded), used to
-    /// resolve owners for an aggregate-only datatypes change.
+    /// resolve owners for an aggregate-only datatypes change. Delegates to the
+    /// shared <see cref="HeadDatatypeLister"/> so the re-stamp tool lists
+    /// identically.
     /// </summary>
-    private async Task<IReadOnlyList<string>> ListHeadDatatypeNamesAsync(string clonePath, CancellationToken ct)
-    {
-        IReadOnlyList<string> datatypeTree = await ListTreeAsync(clonePath, "source/datatypes/", ct).ConfigureAwait(false);
-        List<string> names = [];
-        foreach (string path in datatypeTree)
-        {
-            if (!path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
-            string remainder = path["source/datatypes/".Length..];
-            if (remainder.Contains('/')) continue;
-            string stem = remainder[..^".xml".Length];
-            if (stem.Length == 0 || stem.Contains('-')) continue;
-            names.Add(stem);
-        }
-        return names;
-    }
+    private static Task<IReadOnlyList<string>> ListHeadDatatypeNamesAsync(string clonePath, CancellationToken ct)
+        => HeadDatatypeLister.ListAsync(clonePath, ct);
 
     private static async Task<IReadOnlyList<string>> ListTreeAsync(string clonePath, string pathspec, CancellationToken ct)
     {
