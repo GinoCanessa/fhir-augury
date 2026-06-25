@@ -400,6 +400,11 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `FileContentIndexing.AdditionalSkipDirectories` | string[] | `[]` | Additional directory names to skip |
 | `FileContentIndexing.IncludeOnlyPaths` | string[] | `[]` | When non-empty, only index files under these paths |
 | `FileContentIndexing.IgnorePatterns` | string[] | (defaults) | Gitignore-style glob patterns for files/directories to exclude |
+| `BareNumberAttributionEnabled` | bool | `true` | Master switch for repo-scoped bare-integer Jira attribution. When `false`, bare numbers in commit/issue/comment prose are never resolved (prefixed `FHIR-N`/URL extraction is unaffected) |
+| `JiraProjectKeyByCategory` | map | (see below) | Default Jira project key per repo category for the bare-number pass. Defaults: `FhirCore`/`FhirExtensionsPack`/`Incubator`/`Ig`/`JiraSpecArtifacts` → `FHIR`, `Utg` → `UP` |
+| `JiraNumberRanges` | map | `FHIR [2839,70000]`, `UP [40,2000]`, `UPSM [10,2000]` | Inclusive numeric range per project key; a standalone integer only resolves to `KEY-N` when it falls within the key's range (UP/UPSM uppers held below calendar years) |
+| `RepoOverrides.<owner/repo>.JiraProjectKey` | string? | `null` | Explicit Jira project key for a repo's bare-number resolution (wins over category default and `TerminologyProjectKey`) |
+| `RepoOverrides.<owner/repo>.TerminologyProjectKey` | string? | `null` | For Utg repos, selects `UP` vs `UPSM` for bare-number resolution |
 
 ---
 

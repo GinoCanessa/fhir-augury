@@ -126,4 +126,79 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
         Assert.Equal(firstCount, secondCount);
         Assert.Equal(1, firstCount);
     }
+
+    // ── Repo-scoped bare-number resolution ───────────────────────────
+
+    private static GitHubCommitRecord MakeCommit(string repo, string sha, string message, string? body = null) => new()
+    {
+        Id = GitHubCommitRecord.GetIndex(),
+        Sha = sha,
+        RepoFullName = repo,
+        Message = message,
+        Body = body,
+        Author = "Dev",
+        Date = DateTimeOffset.UtcNow,
+        Url = $"https://github.com/{repo}/commit/{sha}",
+    };
+
+    private static GitHubFileContentRecord MakeFile(string repo, string path, string content) => new()
+    {
+        Id = GitHubFileContentRecord.GetIndex(),
+        RepoFullName = repo,
+        FilePath = path,
+        FileExtension = ".md",
+        ParserType = "text",
+        ContentText = content,
+        ContentLength = content.Length,
+        ExtractedLength = content.Length,
+    };
+
+    [Fact]
+    public void RebuildAllRepos_ScopedCommit_ResolvesBareNumber()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/fhir", "sha-bare-1", "Fixed 54873 in core"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection));
+        Assert.Equal("FHIR-54873", row.JiraKey);
+        Assert.Equal("54873", row.OriginalLiteral);
+        Assert.Equal("commit", row.ContentType);
+    }
+
+    [Fact]
+    public void RebuildAllRepos_ScopedCommitBody_ResolvesBareNumber()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/fhir", "sha-bare-2", "Subject only", body: "Closes 54873"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection));
+        Assert.Equal("FHIR-54873", row.JiraKey);
+    }
+
+    [Fact]
+    public void RebuildAllRepos_UnscopedRepoCommit_YieldsNoBareNumber()
+    {
+        // HL7/us-core is not in the default config, so it has no Jira scope.
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/us-core", "sha-bare-3", "Fixed 54873 in core"));
+
+        _rebuilder.RebuildAllRepos(["HL7/us-core"]);
+
+        Assert.Empty(JiraXRefRecord.SelectList(connection));
+    }
+
+    [Fact]
+    public void RebuildAllRepos_FileContent_NotBareMatched()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubFileContentRecord.Insert(connection, MakeFile("HL7/fhir", "notes.md", "incidental integer 54873 in prose"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        Assert.Empty(JiraXRefRecord.SelectList(connection));
+    }
 }

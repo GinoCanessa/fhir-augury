@@ -28,6 +28,38 @@ public sealed class TicketAttributorTests
         => Assert.Empty(TicketAttributor.ExtractTicketKeys("no tickets here"));
 
     [Fact]
+    public void ExtractTicketKeys_extracts_up_and_upsm_distinctly()
+    {
+        IReadOnlyList<string> keys = TicketAttributor.ExtractTicketKeys(
+            "Terminology UP-796 and UPSM-411 referenced; ignore UTF-8 and ABC-1.");
+
+        Assert.Equal(["UP-796", "UPSM-411"], keys);
+    }
+
+    [Fact]
+    public async Task AttributeAsync_attributes_up_and_upsm_cross_ref_hits()
+    {
+        TicketAttributor attributor = BuildAttributor(req =>
+        {
+            string path = req.RequestUri!.AbsolutePath;
+            string json = path.Contains("cross-referenced", StringComparison.Ordinal)
+                ? """{"value":"x","direction":"cross-referenced","total":2,"hits":[{"sourceType":"github","sourceId":"abc1234def5678abc1234def5678abc1234def56","targetType":"jira","targetId":"UP-796"},{"sourceType":"github","sourceId":"abc1234def5678abc1234def5678abc1234def56","targetType":"jira","targetId":"UPSM-411"}]}"""
+                : """{"source":"jira","id":"x","title":"A title","url":"http://jira/x","metadata":{}}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        UnitAttribution result = await attributor.AttributeAsync(
+            [Commit("Terminology cleanup", "")],
+            workGroupHint: null);
+
+        Assert.Contains(result.Tickets, t => t.Key == "UP-796");
+        Assert.Contains(result.Tickets, t => t.Key == "UPSM-411");
+    }
+
+    [Fact]
     public void SelectOwningWorkGroup_picks_most_recently_attributed()
     {
         List<AttributedTicket> tickets =

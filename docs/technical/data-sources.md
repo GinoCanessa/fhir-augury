@@ -405,6 +405,17 @@ references found in its content pointing to other sources (e.g., `xref_jira`,
 shared record types defined in `FhirAugury.Common.Database.Records` and populated
 by shared extractors in `FhirAugury.Common.Indexing`.
 
+For the GitHub source, `xref_jira` rows come from `JiraTicketExtractor`, which
+matches prefixed/hashed keys (`FHIR-N`, `J#N`, `UP-N`, `UPSM-N`, …) and Jira
+URLs in all content, plus — for commit/issue/comment **prose only** — a
+repo-scoped *bare-integer* pass: a standalone number (e.g. `54873`) resolves to
+`PROJECT-N` when the repository's category (or a per-repo override) pins a
+project key and the number falls within that key's configured numeric range.
+File contents are never bare-matched (incidental integers), and a number already
+named by a prefixed key is never re-guessed. See the GitHub `BareNumber*` /
+`JiraNumberRanges` / `RepoOverrides` settings in
+[`docs/configuration.md`](../configuration.md#configuration-options).
+
 ---
 
 ## Adding a New Data Source
