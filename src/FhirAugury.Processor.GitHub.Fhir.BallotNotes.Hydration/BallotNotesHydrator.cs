@@ -176,6 +176,25 @@ public sealed class BallotNotesHydrator(
             unit, clonePath, owner, name, attribution, resolution.Files, headDatatypeNames, request.WorkGroupHint, _options, logger);
         WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
 
+        // The three distinct WG lineages (Listed / JIRA-index / Applied-by) are
+        // additive to the priority-collapsed primary owner above. Open the registry
+        // DB + a shared name cache once and pass them to both sibling resolvers.
+        WorkGroupLineages lineages;
+        AppliedWorkGroupResolution applied;
+        using (Microsoft.Data.Sqlite.SqliteConnection? wgDb = WorkGroupResolutionHelpers.TryOpenGitHubDb(_options.GitHubDbPath, logger))
+        {
+            Dictionary<string, string> nameCache = new(StringComparer.OrdinalIgnoreCase);
+            lineages = WorkGroupLineageResolver.Resolve(
+                unit, clonePath, owner, name, resolution.Files, headDatatypeNames, wgDb, nameCache, _options, logger);
+
+            HashSet<string> unitSourcePaths = new(unit.ChangedPaths, StringComparer.OrdinalIgnoreCase);
+            foreach (ResolvedSourceFile file in resolution.Files) unitSourcePaths.Add(file.Path);
+
+            applied = AppliedWorkGroupResolver.Resolve(commits, attribution, unitSourcePaths, wgDb, nameCache);
+        }
+
+        string sourceFilesNote = CombineNotes(resolution.Note, applied.WarningNote);
+
         CurrentNoteResolution currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
         string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -192,6 +211,12 @@ public sealed class BallotNotesHydrator(
             WorkGroupCode = primaryWorkGroup.Code,
             WorkGroupNames = WorkGroupRef.JoinNames(owningWorkGroups),
             WorkGroupCodes = WorkGroupRef.JoinCodes(owningWorkGroups),
+            ListedWorkGroupNames = WorkGroupRef.JoinNames(lineages.Listed),
+            ListedWorkGroupCodes = WorkGroupRef.JoinCodes(lineages.Listed),
+            IndexWorkGroupNames = WorkGroupRef.JoinNames(lineages.Index),
+            IndexWorkGroupCodes = WorkGroupRef.JoinCodes(lineages.Index),
+            AppliedWorkGroupNames = WorkGroupRef.JoinNames(applied.Refs),
+            AppliedWorkGroupCodes = WorkGroupRef.JoinCodes(applied.Refs),
             SinceSha = sinceFull,
             SinceShortSha = sinceShort,
             HeadSha = headSha,
@@ -203,7 +228,7 @@ public sealed class BallotNotesHydrator(
             CurrentBallotNoteHtml = currentNote.CurrentHtml,
             CurrentNoteIsAuguryGenerated = currentNote.IsAuguryGenerated,
             PreservedHandAuthoredHtml = currentNote.PreservedHandAuthoredHtml,
-            SourceFilesNote = resolution.Note,
+            SourceFilesNote = sourceFilesNote,
             GeneratedAt = now,
             SavedAt = now,
         };
@@ -465,6 +490,21 @@ public sealed class BallotNotesHydrator(
     {
         string full = fullSha.Trim();
         return full.Length > 12 ? full[..12] : full;
+    }
+
+    /// <summary>
+    /// Joins the source-file resolver note and the applied-by imprecision warning
+    /// into a single <c>SourceFilesNote</c>, dropping empties and de-duplicating.
+    /// </summary>
+    private static string CombineNotes(string resolverNote, string appliedWarning)
+    {
+        List<string> parts = [];
+        foreach (string note in new[] { resolverNote, appliedWarning })
+        {
+            string trimmed = (note ?? string.Empty).Trim();
+            if (trimmed.Length > 0 && !parts.Contains(trimmed)) parts.Add(trimmed);
+        }
+        return string.Join(" ", parts);
     }
 
     /// <summary>Lowercase slug; non-alphanumeric runs collapse to a single hyphen.</summary>

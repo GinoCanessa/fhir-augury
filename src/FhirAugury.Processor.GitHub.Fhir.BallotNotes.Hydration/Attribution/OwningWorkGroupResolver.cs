@@ -214,32 +214,8 @@ public static class OwningWorkGroupResolver
 
     /// <summary>Builds a ref, resolving the code's display name when a DB is open.</summary>
     private static WorkGroupRef MakeRef(SqliteConnection? db, string code, IDictionary<string, string> nameCache)
-    {
-        string display = db is null ? code : WorkGroupNameResolver.Resolve(db, code, nameCache);
-        return new WorkGroupRef(code, display);
-    }
+        => WorkGroupResolutionHelpers.MakeRef(db, code, nameCache);
 
     private static SqliteConnection? TryOpenGitHubDb(string? path, ILogger? logger)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
-
-        try
-        {
-            string connectionString = new SqliteConnectionStringBuilder
-            {
-                DataSource = path,
-                Mode = SqliteOpenMode.ReadOnly,
-                Pooling = false,
-            }.ConnectionString;
-
-            SqliteConnection connection = new(connectionString);
-            connection.Open();
-            return connection;
-        }
-        catch (SqliteException ex)
-        {
-            logger?.LogDebug(ex, "Owning-WG resolver could not open github.db at {Path}", path);
-            return null;
-        }
-    }
+        => WorkGroupResolutionHelpers.TryOpenGitHubDb(path, logger);
 }
