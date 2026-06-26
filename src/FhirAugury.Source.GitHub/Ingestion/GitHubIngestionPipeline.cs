@@ -233,6 +233,10 @@ public class GitHubIngestionPipeline(
                         }
                     }
                 }
+                catch (IngestionDataIntegrityException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Failed to clone/extract commits/index files for {Repo}", repo);
@@ -501,6 +505,10 @@ public class GitHubIngestionPipeline(
             string? xmlPath = await workGroupAcquirer.EnsureAsync(ct).ConfigureAwait(false);
             int total = workGroupIndexer.Rebuild(xmlPath, ct);
             workGroupResolver.Reload();
+
+            WorkGroupRefreshIntegrity.ThrowIfConfiguredButEmpty(
+                _options.Hl7WorkGroupSourceXml, total, xmlPath);
+
             logger.LogInformation(
                 "hl7 workgroups refreshed: {Total} rows resolvable (xml={Xml})",
                 total, xmlPath ?? "<none>");
@@ -509,6 +517,11 @@ public class GitHubIngestionPipeline(
         catch (OperationCanceledException)
         {
             tracker.MarkFailed("workgroups", "cancelled");
+            throw;
+        }
+        catch (IngestionDataIntegrityException ex)
+        {
+            tracker.MarkFailed("workgroups", ex.Message);
             throw;
         }
         catch (Exception ex)
