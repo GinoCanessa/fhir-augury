@@ -239,6 +239,7 @@ public class ContentFilteringTests : IDisposable
             categoryStrategies: [],
             weightResolver: null!,
             xrefRebuilder: null!,
+            prTicketLinkRebuilder: null!,
             httpClientFactory: null!,
             tracker: null!,
             optionsAccessor: Options.Create(options),

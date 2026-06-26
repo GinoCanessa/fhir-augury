@@ -23,6 +23,7 @@ public class IngestionController(
     GitHubDatabase database,
     GitHubIndexer indexer,
     GitHubXRefRebuilder xrefRebuilder,
+    GitHubPrTicketLinkRebuilder prTicketLinkRebuilder,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
@@ -102,12 +103,20 @@ public class IngestionController(
                     break;
                 case "cross-refs":
                     indexTracker.MarkStarted("cross-refs");
+                    indexTracker.MarkStarted("pr-ticket-links");
                     try
                     {
                         xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
+                        prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
+                        indexTracker.MarkCompleted("pr-ticket-links");
                     }
-                    catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        indexTracker.MarkFailed("pr-ticket-links", ex.Message);
+                        throw;
+                    }
                     break;
                 case "bm25":
                     indexTracker.MarkStarted("bm25");
@@ -157,6 +166,7 @@ public class IngestionController(
                     indexTracker.MarkStarted("commits");
                     indexTracker.MarkStarted("file-contents");
                     indexTracker.MarkStarted("cross-refs");
+                    indexTracker.MarkStarted("pr-ticket-links");
                     indexTracker.MarkStarted("artifact-map");
                     indexTracker.MarkStarted("bm25");
                     indexTracker.MarkStarted("fts");
@@ -174,6 +184,8 @@ public class IngestionController(
                         indexTracker.MarkCompleted("artifact-map");
                         xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
+                        prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
+                        indexTracker.MarkCompleted("pr-ticket-links");
                         indexer.RebuildFullIndex(ct);
                         indexTracker.MarkCompleted("bm25");
                         database.RebuildFtsIndexes();
@@ -184,6 +196,7 @@ public class IngestionController(
                         indexTracker.MarkFailed("commits", ex.Message);
                         indexTracker.MarkFailed("file-contents", ex.Message);
                         indexTracker.MarkFailed("cross-refs", ex.Message);
+                        indexTracker.MarkFailed("pr-ticket-links", ex.Message);
                         indexTracker.MarkFailed("artifact-map", ex.Message);
                         indexTracker.MarkFailed("bm25", ex.Message);
                         indexTracker.MarkFailed("fts", ex.Message);
@@ -226,6 +239,7 @@ public class IngestionController(
         {
             List<string> repos = options.GetAllRepositoryNames();
             xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
+            prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
             return Task.CompletedTask;
         }, "rebuild-xrefs");
 

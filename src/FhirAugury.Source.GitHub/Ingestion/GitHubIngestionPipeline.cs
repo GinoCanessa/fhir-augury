@@ -28,6 +28,7 @@ public class GitHubIngestionPipeline(
     IEnumerable<IRepoCategoryStrategy> categoryStrategies,
     TagWeightResolver weightResolver,
     GitHubXRefRebuilder xrefRebuilder,
+    GitHubPrTicketLinkRebuilder prTicketLinkRebuilder,
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
@@ -265,11 +266,16 @@ public class GitHubIngestionPipeline(
                 List<string> allRepoNames = repos.Select(r => r.Name).ToList();
                 xrefRebuilder.RebuildAllRepos(allRepoNames, validJiraNumbers: null, ct);
                 tracker.MarkCompleted("cross-refs");
+
+                tracker.MarkStarted("pr-ticket-links");
+                prTicketLinkRebuilder.RebuildAllRepos(allRepoNames, ct);
+                tracker.MarkCompleted("pr-ticket-links");
             }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to extract cross-references");
                 tracker.MarkFailed("cross-refs", ex.Message);
+                tracker.MarkFailed("pr-ticket-links", ex.Message);
             }
         }
         catch (Exception ex)
@@ -277,6 +283,7 @@ public class GitHubIngestionPipeline(
             tracker.MarkFailed("commits", ex.Message);
             tracker.MarkFailed("file-contents", ex.Message);
             tracker.MarkFailed("cross-refs", ex.Message);
+            tracker.MarkFailed("pr-ticket-links", ex.Message);
             throw;
         }
 

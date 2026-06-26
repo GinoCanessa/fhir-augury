@@ -98,6 +98,7 @@ builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
 builder.Services.AddSingleton<GitHubFileContentIndexer>();
 builder.Services.AddSingleton<GitHubXRefRebuilder>();
+builder.Services.AddSingleton<GitHubPrTicketLinkRebuilder>();
 builder.Services.AddSingleton(sp =>
 {
     GitHubServiceOptions opts = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
