@@ -45,7 +45,7 @@
       var name = (i < ns.length ? ns[i] : '') || '';
       var code = (i < cs.length ? cs[i] : '') || '';
       if (name.length === 0 && code.length === 0) continue;
-      var label = code ? (code + ' \u00b7 ' + (name || code)) : name;
+      var label = code ? ((name && name !== code) ? (code + ' \u00b7 ' + name) : code) : name;
       out.push({ code: code, name: name || code, label: label });
     }
     if (out.length === 0) out.push({ code: '', name: UNKNOWN_WG, label: UNKNOWN_WG });
