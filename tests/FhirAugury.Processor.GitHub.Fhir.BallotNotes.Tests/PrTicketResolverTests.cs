@@ -35,11 +35,15 @@ public sealed class PrTicketResolverTests : IDisposable
                 "Id INTEGER PRIMARY KEY, CommitSha TEXT, PrNumber INTEGER, RepoFullName TEXT);" +
                 "CREATE TABLE github_issues (" +
                 "Id INTEGER PRIMARY KEY, UniqueKey TEXT, RepoFullName TEXT, Number INTEGER, " +
-                "IsPullRequest INTEGER, Title TEXT, Body TEXT);";
+                "IsPullRequest INTEGER, Title TEXT, Body TEXT);" +
+                "CREATE TABLE github_pr_ticket_links (" +
+                "Id INTEGER PRIMARY KEY, RepoFullName TEXT, PrNumber INTEGER, PrUniqueKey TEXT, " +
+                "JiraKey TEXT, Provenance TEXT);";
             create.ExecuteNonQuery();
         }
 
         // PR 4163 (HL7/fhir): two commits, ticket only in PR title/body.
+        // Left edge-free so it exercises the title+body path with the edge table present.
         Link(conn, 1, "sha-aaa", 4163, "HL7/fhir");
         Link(conn, 2, "sha-bbb", 4163, "HL7/fhir");
         Issue(conn, 1, "HL7/fhir#4163", "HL7/fhir", 4163, isPr: true,
@@ -54,6 +58,35 @@ public sealed class PrTicketResolverTests : IDisposable
         Link(conn, 4, "sha-ddd", 77, "HL7/fhir");
         Issue(conn, 3, "HL7/fhir#77", "HL7/fhir", 77, isPr: true,
             "Encoding update UTF-8", "Bumped to version ABC-1 internally.");
+
+        // PR 88 (HL7/fhir): body names NO ticket, but a comment-provenance edge
+        // links FHIR-5678 — only harvestable via the edge table (new capability).
+        Link(conn, 5, "sha-eee", 88, "HL7/fhir");
+        Issue(conn, 4, "HL7/fhir#88", "HL7/fhir", 88, isPr: true,
+            "Refactor serializer", "No ticket mentioned in this prose.");
+        Edge(conn, 1, "HL7/fhir", 88, "FHIR-5678", "comment");
+
+        // PR 99 (HL7/fhir): body names NO ticket; the only edge is commit-provenance,
+        // which must be EXCLUDED from the gap-fill pass-2 (double-count guard).
+        Link(conn, 6, "sha-fff", 99, "HL7/fhir");
+        Issue(conn, 5, "HL7/fhir#99", "HL7/fhir", 99, isPr: true,
+            "Tidy up imports", "Nothing ticket-like here.");
+        Edge(conn, 2, "HL7/fhir", 99, "FHIR-7777", "commit");
+    }
+
+    private static void Edge(SqliteConnection conn, int id, string repo, int pr, string jiraKey, string provenance)
+    {
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText =
+            "INSERT INTO github_pr_ticket_links (Id, RepoFullName, PrNumber, PrUniqueKey, JiraKey, Provenance) " +
+            "VALUES ($id, $repo, $pr, $key, $jira, $prov)";
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$repo", repo);
+        cmd.Parameters.AddWithValue("$pr", pr);
+        cmd.Parameters.AddWithValue("$key", $"{repo}#{pr}");
+        cmd.Parameters.AddWithValue("$jira", jiraKey);
+        cmd.Parameters.AddWithValue("$prov", provenance);
+        cmd.ExecuteNonQuery();
     }
 
     private static void Link(SqliteConnection conn, int id, string sha, int prNumber, string repo)
@@ -131,4 +164,55 @@ public sealed class PrTicketResolverTests : IDisposable
     [Fact]
     public void Resolve_uses_known_prefix_rules()
         => Assert.Empty(PrTicketResolver.Resolve(_dbPath, [Commit("sha-ddd")]));
+
+    [Fact]
+    public void Resolve_harvests_comment_provenance_edge_not_in_body()
+    {
+        // PR 88's body names no ticket; only a comment-provenance edge links FHIR-5678.
+        IReadOnlyList<PrTicketHarvest> harvests = PrTicketResolver.Resolve(_dbPath, [Commit("sha-eee")]);
+
+        PrTicketHarvest harvest = Assert.Single(harvests);
+        Assert.Equal("HL7/fhir#88", harvest.PrKey);
+        Assert.Equal(["FHIR-5678"], harvest.TicketKeys);
+    }
+
+    [Fact]
+    public void Resolve_excludes_commit_only_provenance_edge()
+        // PR 99's only edge is commit-provenance; pass-1 already counts those, so the
+        // gap-fill pass-2 must not harvest it (and the body names nothing).
+        => Assert.Empty(PrTicketResolver.Resolve(_dbPath, [Commit("sha-fff")]));
+
+    [Fact]
+    public void Resolve_falls_back_to_title_body_when_edge_table_absent()
+    {
+        // Build a github.db WITHOUT github_pr_ticket_links (an un-rebuilt legacy DB):
+        // the resolver must degrade to exactly the title+body harvest.
+        string legacyDir = Path.Combine(_tempDir, "legacy");
+        Directory.CreateDirectory(legacyDir);
+        string legacyDb = Path.Combine(legacyDir, "github.db");
+
+        using (SqliteConnection conn = new($"Data Source={legacyDb};Pooling=False"))
+        {
+            conn.Open();
+            using (SqliteCommand create = conn.CreateCommand())
+            {
+                create.CommandText =
+                    "CREATE TABLE github_commit_pr_links (" +
+                    "Id INTEGER PRIMARY KEY, CommitSha TEXT, PrNumber INTEGER, RepoFullName TEXT);" +
+                    "CREATE TABLE github_issues (" +
+                    "Id INTEGER PRIMARY KEY, UniqueKey TEXT, RepoFullName TEXT, Number INTEGER, " +
+                    "IsPullRequest INTEGER, Title TEXT, Body TEXT);";
+                create.ExecuteNonQuery();
+            }
+            Link(conn, 1, "sha-aaa", 4163, "HL7/fhir");
+            Issue(conn, 1, "HL7/fhir#4163", "HL7/fhir", 4163, isPr: true,
+                "Fix FHIR-1234 in Patient", "Body also mentions fhir-1234 once more.");
+        }
+
+        IReadOnlyList<PrTicketHarvest> harvests = PrTicketResolver.Resolve(legacyDb, [Commit("sha-aaa")]);
+
+        PrTicketHarvest harvest = Assert.Single(harvests);
+        Assert.Equal("HL7/fhir#4163", harvest.PrKey);
+        Assert.Equal(["FHIR-1234"], harvest.TicketKeys);
+    }
 }

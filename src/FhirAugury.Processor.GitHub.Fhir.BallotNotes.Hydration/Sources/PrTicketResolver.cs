@@ -97,8 +97,30 @@ public static class PrTicketResolver
 
                 string title = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
                 string body = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                reader.Close();
 
-                IReadOnlyList<string> keys = TicketAttributor.ExtractTicketKeys($"{title}\n{body}");
+                // Title+body harvest (today's behavior) unioned with prose-provenance
+                // edges (description/comment) from github_pr_ticket_links. The union
+                // can never return fewer keys than the title+body harvest alone, so it
+                // is a strict superset; and when the edge table is absent/empty (an
+                // un-rebuilt github.db) it degrades to exactly the title+body behavior.
+                // Commit-provenance edges are deliberately EXCLUDED: TicketAttributor
+                // pass-1 already counts every window commit's own keys, so feeding
+                // commit-only edges into the gap-fill pass-2 would double-count.
+                IReadOnlyList<string> bodyKeys = TicketAttributor.ExtractTicketKeys($"{title}\n{body}");
+                List<string> proseEdgeKeys = ReadProseProvenanceEdgeKeys(connection, prKey, logger);
+
+                List<string> keys = [];
+                HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+                foreach (string k in bodyKeys)
+                {
+                    if (seen.Add(k)) keys.Add(k);
+                }
+                foreach (string k in proseEdgeKeys)
+                {
+                    if (seen.Add(k)) keys.Add(k);
+                }
+
                 if (keys.Count == 0) continue; // PR names no known ticket → skip
 
                 results.Add(new PrTicketHarvest(prKey, keys, prToShas[prKey]));
@@ -111,5 +133,57 @@ public static class PrTicketResolver
             logger?.LogDebug(ex, "PR ticket resolution failed against {Db}", githubDbPath);
             return [];
         }
+    }
+
+    /// <summary>
+    /// Reads the prose-provenance (<c>description</c> / <c>comment</c>) Jira keys
+    /// linked to <paramref name="prKey"/> from <c>github_pr_ticket_links</c>.
+    /// Commit-only edges are excluded to avoid double-counting against
+    /// <c>TicketAttributor</c> pass-1. A missing/un-rebuilt edge table is a clean
+    /// no-op (degrades to title+body harvesting).
+    /// </summary>
+    private static List<string> ReadProseProvenanceEdgeKeys(SqliteConnection connection, string prKey, ILogger? logger)
+    {
+        List<string> keys = [];
+        try
+        {
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                "SELECT JiraKey, Provenance FROM github_pr_ticket_links WHERE PrUniqueKey = $key";
+            cmd.Parameters.AddWithValue("$key", prKey);
+
+            using SqliteDataReader reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+                string jiraKey = reader.GetString(0);
+                string provenance = reader.GetString(1);
+                if (HasProseProvenance(provenance))
+                {
+                    keys.Add(jiraKey);
+                }
+            }
+        }
+        catch (SqliteException ex)
+        {
+            // Missing/un-rebuilt github_pr_ticket_links table → no edges; the caller
+            // falls back to title+body extraction only.
+            logger?.LogDebug(ex, "PR ticket edge table unavailable; using title+body only");
+        }
+        return keys;
+    }
+
+    /// <summary>True when the comma-joined provenance set contains a prose source.</summary>
+    private static bool HasProseProvenance(string provenance)
+    {
+        foreach (string part in provenance.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Equals("description", StringComparison.OrdinalIgnoreCase) ||
+                part.Equals("comment", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
