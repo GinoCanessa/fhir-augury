@@ -29,10 +29,22 @@ public class GitHubCliProvider(
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
 
     // Fields requested from gh issue list
-    private const string IssueListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,url";
+    internal const string IssueListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,url";
 
     // Fields requested from gh pr list
-    private const string PrListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,mergedAt,headRefName,baseRefName,isDraft,url";
+    internal const string PrListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,mergedAt,headRefName,baseRefName,isDraft,url";
+
+    /// <summary>
+    /// Builds a <c>gh issue list</c> / <c>gh pr list</c> argument string. When
+    /// <paramref name="searchFilter"/> is null (history backfill) the
+    /// <c>-S "&lt;filter&gt;"</c> clause is omitted entirely, so the full history
+    /// is fetched; the incremental path passes <c>updated:&gt;=&lt;ts&gt;</c>.
+    /// </summary>
+    internal static string BuildListArgs(string command, string repoArgs, int limit, string? searchFilter, string fields)
+    {
+        string searchClause = searchFilter is not null ? $" -S \"{searchFilter}\"" : "";
+        return $"{command} {repoArgs} --state all --limit {limit}{searchClause} --json {fields}";
+    }
 
     /// <inheritdoc />
     public async Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default)
@@ -46,6 +58,13 @@ public class GitHubCliProvider(
     {
         List<string> repos = GetEffectiveRepositories();
         return await DownloadReposIncrementalAsync(repos, since, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    {
+        List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
+        return await DownloadReposBackfillAsync(repos, ct);
     }
 
     /// <inheritdoc />
@@ -179,22 +198,41 @@ public class GitHubCliProvider(
 
     // ── Incremental sync via gh issue list / gh pr list ───────────────────
 
-    private async Task<IngestionResult> DownloadReposIncrementalAsync(
+    private Task<IngestionResult> DownloadReposIncrementalAsync(
         List<string> repos, DateTimeOffset since, CancellationToken ct)
+    {
+        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        return DownloadReposListAsync(repos, _options.GhCli.Limit, $"updated:>={sinceStr}", ct);
+    }
+
+    private Task<IngestionResult> DownloadReposBackfillAsync(List<string> repos, CancellationToken ct)
+    {
+        // No search filter ⇒ full PR/issue history (drops the updated:>= bound).
+        return DownloadReposListAsync(repos, _options.GhCli.BackfillLimit, searchFilter: null, ct);
+    }
+
+    /// <summary>
+    /// Shared <c>gh issue list</c> / <c>gh pr list</c> fetch body. The only
+    /// difference between the incremental and backfill paths is
+    /// <paramref name="searchFilter"/> (a <c>updated:&gt;=</c> bound vs. none) and
+    /// the <paramref name="limit"/>.
+    /// </summary>
+    private async Task<IngestionResult> DownloadReposListAsync(
+        List<string> repos, int limit, string? searchFilter, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         List<string> errors = [];
 
         using SqliteConnection connection = database.OpenConnection();
-        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        int limit = _options.GhCli.Limit;
 
         foreach (string repoFullName in repos)
         {
             if (ct.IsCancellationRequested) break;
 
-            logger.LogInformation("Incremental sync via gh CLI for {Repo} since {Since}", repoFullName, sinceStr);
+            logger.LogInformation(
+                "List sync via gh CLI for {Repo} (filter: {Filter})",
+                repoFullName, searchFilter ?? "<full history>");
             string repoArgs = runner.BuildRepoArgs(repoFullName);
 
             // Fetch repo metadata so we know whether issues are enabled
@@ -202,14 +240,14 @@ public class GitHubCliProvider(
             GitHubRepoRecord? repoRecord = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
             bool hasIssues = repoRecord?.HasIssues ?? true; // assume enabled if unknown
 
-            // Fetch updated issues (skip when the repo has issues disabled)
+            // Fetch issues (skip when the repo has issues disabled)
             if (!hasIssues)
             {
                 logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
             }
             else
             {
-                string issueArgs = $"issue list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {IssueListFields}";
+                string issueArgs = BuildListArgs("issue list", repoArgs, limit, searchFilter, IssueListFields);
                 try
                 {
                     await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
@@ -245,8 +283,8 @@ public class GitHubCliProvider(
                 }
             }
 
-            // Fetch updated PRs
-            string prArgs = $"pr list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {PrListFields}";
+            // Fetch PRs
+            string prArgs = BuildListArgs("pr list", repoArgs, limit, searchFilter, PrListFields);
             try
             {
                 await foreach (JsonElement json in runner.StreamArrayAsync(prArgs, ct))
@@ -279,7 +317,7 @@ public class GitHubCliProvider(
         }
 
         logger.LogInformation(
-            "Incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            "List download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);

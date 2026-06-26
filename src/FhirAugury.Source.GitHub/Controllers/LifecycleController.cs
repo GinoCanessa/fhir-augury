@@ -30,7 +30,7 @@ public class LifecycleController(
     public IActionResult GetStatus()
     {
         using SqliteConnection connection = db.OpenConnection();
-        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
+        GitHubSyncStateRecord? syncState = GitHubSyncStateReader.GetMostRecentOperational(connection);
         GitHubServiceOptions options = optionsAccessor.Value;
 
         return Ok(new IngestionStatusResponse(
@@ -57,7 +57,7 @@ public class LifecycleController(
         long dbSize = db.GetDatabaseSizeBytes();
         CacheStats cacheStats = cache.GetStats(GitHubCacheLayout.SourceName);
 
-        GitHubSyncStateRecord? syncState = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
+        GitHubSyncStateRecord? syncState = GitHubSyncStateReader.GetMostRecentOperational(connection);
 
         return Ok(new StatsResponse
         {

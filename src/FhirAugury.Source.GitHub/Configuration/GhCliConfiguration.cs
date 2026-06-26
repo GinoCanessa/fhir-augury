@@ -29,6 +29,15 @@ public class GhCliConfiguration
     /// </summary>
     public int MaxConcurrentProcesses { get; set; } = 1;
 
+    /// <summary>
+    /// Maximum results per gh list command during a per-repo history backfill
+    /// (the one-time full-history fetch that drops the <c>updated:&gt;=</c> bound).
+    /// Set high to favor full-lifetime completeness; the backfill is one-time per
+    /// repo (gated by a <c>backfill:&lt;repo&gt;</c> sync-state marker) and is
+    /// rate-limited via <see cref="MaxConcurrentProcesses"/>.
+    /// </summary>
+    public int BackfillLimit { get; set; } = 5000;
+
     /// <summary>Parses <see cref="ProcessTimeout"/> as a <see cref="TimeSpan"/>.</summary>
     public TimeSpan GetProcessTimeout() => TimeSpan.TryParse(ProcessTimeout, out TimeSpan ts) ? ts : TimeSpan.FromMinutes(5);
 }

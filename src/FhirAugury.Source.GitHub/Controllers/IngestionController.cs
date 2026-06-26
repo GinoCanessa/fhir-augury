@@ -38,9 +38,12 @@ public class IngestionController(
         string ingestType = type ?? "incremental";
         try
         {
-            IngestionResult result = ingestType == "full"
-                ? await pipeline.RunFullIngestionAsync(ct: cancellationToken)
-                : await pipeline.RunIncrementalIngestionAsync(cancellationToken);
+            IngestionResult result = ingestType switch
+            {
+                "full" => await pipeline.RunFullIngestionAsync(ct: cancellationToken),
+                "backfill" => await pipeline.RunBackfillIngestionAsync(ct: cancellationToken),
+                _ => await pipeline.RunIncrementalIngestionAsync(cancellationToken),
+            };
 
             return Ok(new
             {
@@ -62,6 +65,7 @@ public class IngestionController(
         workQueue.Enqueue(ct => ingestionType switch
         {
             "full" => pipeline.RunFullIngestionAsync(ct: ct),
+            "backfill" => pipeline.RunBackfillIngestionAsync(ct: ct),
             _ => pipeline.RunIncrementalIngestionAsync(ct),
         }, $"github-{ingestionType}");
 
