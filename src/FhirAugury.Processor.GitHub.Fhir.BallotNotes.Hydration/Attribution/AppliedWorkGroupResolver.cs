@@ -18,10 +18,13 @@ public readonly record struct AppliedWorkGroupResolution(
 /// <summary>
 /// Derives the set of work groups that <em>applied changes</em> to a unit in the
 /// window: the distinct work groups of attributed tickets whose window commit
-/// touched one of the unit's source files. Work-group codes are derived on the
-/// same canonical basis as the owning/Listed/Index lineages
-/// (<see cref="Hl7WorkGroupNameCleaner.Clean"/> of the ticket's work-group name),
-/// so cross-lineage code comparison in the SPA is valid.
+/// touched one of the unit's source files. Work-group codes are normalized to
+/// the canonical short-code basis used by the owning/Listed/Index lineages —
+/// resolved from the ticket's raw work-group name via
+/// <see cref="WorkGroupCodeResolver"/> against <c>hl7_workgroups</c>, falling
+/// back to <see cref="Hl7WorkGroupNameCleaner.Clean"/> only when no DB is open
+/// or the registry cannot place the value — so cross-lineage code comparison in
+/// the SPA is valid.
 /// </summary>
 public static class AppliedWorkGroupResolver
 {
@@ -45,11 +48,13 @@ public static class AppliedWorkGroupResolver
         ArgumentNullException.ThrowIfNull(unitSourcePaths);
         ArgumentNullException.ThrowIfNull(nameCache);
 
+        Dictionary<string, string?> codeCache = new(StringComparer.OrdinalIgnoreCase);
+
         bool hasPathSignal = unitSourcePaths.Count > 0 && commits.Any(static c => c.ChangedPaths.Count > 0);
         if (!hasPathSignal)
         {
             return new AppliedWorkGroupResolution(
-                BuildRefs(attribution.Tickets, db, nameCache),
+                BuildRefs(attribution.Tickets, db, nameCache, codeCache),
                 attribution.Tickets.Count == 0
                     ? string.Empty
                     : "Applied-by work groups are approximate: no commit-to-file detail was available, "
@@ -77,13 +82,14 @@ public static class AppliedWorkGroupResolver
             if (appliedKeys.Contains(ticket.Key)) applied.Add(ticket);
         }
 
-        return new AppliedWorkGroupResolution(BuildRefs(applied, db, nameCache), string.Empty);
+        return new AppliedWorkGroupResolution(BuildRefs(applied, db, nameCache, codeCache), string.Empty);
     }
 
     private static IReadOnlyList<WorkGroupRef> BuildRefs(
         IReadOnlyList<AttributedTicket> tickets,
         SqliteConnection? db,
-        IDictionary<string, string> nameCache)
+        IDictionary<string, string> nameCache,
+        IDictionary<string, string?> codeCache)
     {
         List<WorkGroupRef> refs = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
@@ -92,7 +98,13 @@ public static class AppliedWorkGroupResolver
         {
             if (string.IsNullOrWhiteSpace(ticket.WorkGroup)) continue;
 
-            string code = Hl7WorkGroupNameCleaner.Clean(ticket.WorkGroup);
+            // Prefer the canonical short code from the registry so applied codes
+            // share the Listed/Index basis; fall back to the cleaned name only
+            // when no DB is open or the registry cannot place the value.
+            string code = (db is not null
+                ? WorkGroupCodeResolver.Resolve(db, ticket.WorkGroup, codeCache)
+                : null)
+                ?? Hl7WorkGroupNameCleaner.Clean(ticket.WorkGroup);
             if (string.IsNullOrWhiteSpace(code)) continue;
             if (!seen.Add(code)) continue;
 

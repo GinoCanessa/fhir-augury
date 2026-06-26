@@ -1,6 +1,7 @@
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Attribution;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
+using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests;
 
@@ -116,6 +117,60 @@ public sealed class AppliedWorkGroupResolverTests
         Assert.Equal(Hl7WorkGroupNameCleaner.Clean("Orders and Observations"), Assert.Single(result.Refs).Code);
     }
 
+    [Fact]
+    public void Applied_code_uses_registry_short_code_when_db_present()
+    {
+        using SqliteConnection db = SeedHl7(("oo", "Orders and Observations", "OrdersandObservations"));
+        List<WindowCommit> commits = [Commit("shaA", changed: ["source/observation/observation.xml"])];
+        UnitAttribution attribution = Attribution(
+            commitKeys: new() { ["shaA"] = ["FHIR-1"] },
+            tickets: [Ticket("FHIR-1", "Orders and Observations")]);
+
+        AppliedWorkGroupResolution result = AppliedWorkGroupResolver.Resolve(
+            commits, attribution, ["source/observation/observation.xml"], db, NameCache());
+
+        WorkGroupRef one = Assert.Single(result.Refs);
+        Assert.Equal("oo", one.Code);
+        Assert.Equal("Orders and Observations", one.DisplayName);
+    }
+
+    [Fact]
+    public void Applied_code_resolves_short_code_for_parenthetical_suffix_value()
+    {
+        // Raw Jira work_group values can carry a trailing short-code suffix
+        // (e.g. "Orders and Observations (OO)"); it must still resolve to "oo",
+        // not the CamelCase cleaner fallback "OrdersandObservationsOO".
+        using SqliteConnection db = SeedHl7(("oo", "Orders and Observations", "OrdersandObservations"));
+        List<WindowCommit> commits = [Commit("shaA", changed: ["source/observation/observation.xml"])];
+        UnitAttribution attribution = Attribution(
+            commitKeys: new() { ["shaA"] = ["FHIR-1"] },
+            tickets: [Ticket("FHIR-1", "Orders and Observations (OO)")]);
+
+        AppliedWorkGroupResolution result = AppliedWorkGroupResolver.Resolve(
+            commits, attribution, ["source/observation/observation.xml"], db, NameCache());
+
+        WorkGroupRef one = Assert.Single(result.Refs);
+        Assert.Equal("oo", one.Code);
+        Assert.Equal("Orders and Observations", one.DisplayName);
+    }
+
+    [Fact]
+    public void Applied_code_falls_back_to_cleaner_when_db_unresolved()
+    {
+        // The registry has no row for this work group, so the cleaner basis is used.
+        using SqliteConnection db = SeedHl7(("pa", "Patient Administration", "PatientAdministration"));
+        const string wg = "Some Brand New Work Group";
+        List<WindowCommit> commits = [Commit("shaA", changed: ["source/x/x.xml"])];
+        UnitAttribution attribution = Attribution(
+            commitKeys: new() { ["shaA"] = ["FHIR-1"] },
+            tickets: [Ticket("FHIR-1", wg)]);
+
+        AppliedWorkGroupResolution result = AppliedWorkGroupResolver.Resolve(
+            commits, attribution, ["source/x/x.xml"], db, NameCache());
+
+        Assert.Equal(Hl7WorkGroupNameCleaner.Clean(wg), Assert.Single(result.Refs).Code);
+    }
+
     private static WindowCommit Commit(string sha, IReadOnlyList<string> changed)
         => new() { Sha = sha, ShortSha = sha, ChangedPaths = changed };
 
@@ -129,4 +184,29 @@ public sealed class AppliedWorkGroupResolverTests
 
     private static Dictionary<string, string> NameCache()
         => new(StringComparer.OrdinalIgnoreCase);
+
+    private static SqliteConnection SeedHl7(params (string Code, string Name, string NameClean)[] rows)
+    {
+        SqliteConnection conn = new("Data Source=:memory:");
+        conn.Open();
+        using (SqliteCommand create = conn.CreateCommand())
+        {
+            create.CommandText =
+                "CREATE TABLE hl7_workgroups (Id INTEGER PRIMARY KEY, Code TEXT, Name TEXT, NameClean TEXT)";
+            create.ExecuteNonQuery();
+        }
+
+        foreach ((string code, string name, string nameClean) in rows)
+        {
+            using SqliteCommand insert = conn.CreateCommand();
+            insert.CommandText =
+                "INSERT INTO hl7_workgroups (Code, Name, NameClean) VALUES ($code, $name, $clean)";
+            insert.Parameters.AddWithValue("$code", code);
+            insert.Parameters.AddWithValue("$name", name);
+            insert.Parameters.AddWithValue("$clean", nameClean);
+            insert.ExecuteNonQuery();
+        }
+
+        return conn;
+    }
 }
