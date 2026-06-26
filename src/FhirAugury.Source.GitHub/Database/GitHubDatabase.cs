@@ -40,6 +40,7 @@ public class GitHubDatabase : SourceDatabase
         GitHubCommitRecord.CreateTable(connection);
         GitHubCommitFileRecord.CreateTable(connection);
         GitHubCommitPrLinkRecord.CreateTable(connection);
+        GitHubPrTicketLinkRecord.CreateTable(connection);
         JiraXRefRecord.CreateTable(connection);
         ZulipXRefRecord.CreateTable(connection);
         ConfluenceXRefRecord.CreateTable(connection);
@@ -112,6 +113,20 @@ public class GitHubDatabase : SourceDatabase
             idx.CommandText = """
                 CREATE UNIQUE INDEX IF NOT EXISTS ix_github_comments_external
                     ON github_comments(RepoFullName, CommentKind, ExternalId);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency for PR↔ticket edges: github_pr_ticket_links PK is a
+        // GetIndex() value, so INSERT OR IGNORE only dedupes against a real
+        // UNIQUE constraint. This manual unique index over the natural key makes
+        // ignoreDuplicates inserts idempotent (created after CreateTable; no
+        // migrated columns involved).
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_pr_ticket_links_natural
+                    ON github_pr_ticket_links(RepoFullName, PrNumber, JiraKey);
                 """;
             idx.ExecuteNonQuery();
         }
@@ -237,6 +252,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_commits;
             DROP TABLE IF EXISTS github_commit_files;
             DROP TABLE IF EXISTS github_commit_pr_links;
+            DROP TABLE IF EXISTS github_pr_ticket_links;
             DROP TABLE IF EXISTS xref_jira;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_confluence;
