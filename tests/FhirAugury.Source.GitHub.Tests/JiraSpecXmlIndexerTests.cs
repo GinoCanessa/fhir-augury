@@ -580,4 +580,67 @@ public class JiraSpecXmlIndexerTests : IDisposable
         Assert.Single(pages);
         Assert.Equal("Intro", pages[0].Name);
     }
+
+    [Fact]
+    public void SpecFileWithoutRootKey_IsIndexedByFilename()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+
+        // Mirrors the real FAMILY-<key>.xml files, whose root <specification>
+        // carries NO 'key' attribute. The key must be derived from the filename.
+        WriteFile(cloneDir, "xml/FHIR-core.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <specification url="http://hl7.org/fhir" defaultWorkgroup="fhir-i"
+                           defaultVersion="STU4">
+            </specification>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        List<JiraSpecRecord> specs = JiraSpecRecord.SelectList(connection, SpecKey: "core");
+        Assert.Single(specs);
+        Assert.Equal("FHIR", specs[0].Family);
+        Assert.Equal("core", specs[0].SpecKey);
+        Assert.Equal("FHIR Core", specs[0].SpecName);
+    }
+
+    [Fact]
+    public void SpecKeyNotInSpecsList_IndexesWithNullName()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+
+        // Key 'good' is not present in SPECS-FHIR.xml; it must still be indexed
+        // (non-blocking), with a null resolved name.
+        WriteFile(cloneDir, "xml/FHIR-good.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <specification defaultVersion="STU1">
+            </specification>
+            """);
+
+        using SqliteConnection connection = _database.OpenConnection();
+        _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None);
+
+        List<JiraSpecRecord> specs = JiraSpecRecord.SelectList(connection, SpecKey: "good");
+        Assert.Single(specs);
+        Assert.Null(specs[0].SpecName);
+    }
+
+    [Fact]
+    public void AllSpecFilesUnparseable_Throws_IntegrityException()
+    {
+        string cloneDir = CreateCloneDir();
+        SetupMinimalRepo(cloneDir);
+
+        // A spec file is present (filesFound > 0) but every one fails to parse,
+        // so nothing is indexed — that silent zero must now hard-fail.
+        WriteFile(cloneDir, "xml/FHIR-core.xml", "<<<not valid xml>>>");
+
+        using SqliteConnection connection = _database.OpenConnection();
+
+        Assert.Throws<IngestionDataIntegrityException>(
+            () => _indexer.IndexRepository(RepoName, cloneDir, connection, CancellationToken.None));
+    }
 }
