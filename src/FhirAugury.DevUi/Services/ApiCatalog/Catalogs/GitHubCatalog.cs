@@ -77,6 +77,12 @@ public static class GitHubCatalog
             new ApiEndpointDescriptor("items.pr", "Pull request", "Items",
                 HttpMethod.Get, "api/v1/items/pr/{*key}",
                 [keyParam]),
+            new ApiEndpointDescriptor("items.pr-tickets", "Tickets for PR", "Items",
+                HttpMethod.Get, "api/v1/items/pr-tickets/{*key}",
+                [keyParam]),
+            new ApiEndpointDescriptor("items.ticket-prs", "PRs for ticket", "Items",
+                HttpMethod.Get, "api/v1/items/ticket-prs/{jiraKey}",
+                [new ApiParameter("jiraKey", ApiParameterKind.Path, Required: true, Placeholder: "FHIR-12345")]),
 
             // Repos
             new ApiEndpointDescriptor("repos.list", "List repositories", "Repos",

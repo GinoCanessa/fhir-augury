@@ -1,3 +1,4 @@
+using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
@@ -173,5 +174,49 @@ public class GitHubPrTicketLinkRebuilderIntegrationTests : IDisposable
         // No (repo, pr, ticket) duplicates.
         int distinct = rows.Select(r => (r.RepoFullName, r.PrNumber, r.JiraKey)).Distinct().Count();
         Assert.Equal(rows.Count, distinct);
+    }
+
+    [Fact]
+    public void CommitNamingThreeTickets_YieldsThreeCommitRowsAndThreeEdges()
+    {
+        // Commit-multiplicity regression guard: one commit naming three tickets
+        // must produce three xref_jira commit rows and, when linked to a PR,
+        // three commit-provenance edges.
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            GitHubIssueRecord.Insert(connection, MakeIssue(20, isPr: true, "PR twenty", body: "no tickets in this body"));
+            GitHubCommitRecord.Insert(connection, new GitHubCommitRecord
+            {
+                Id = GitHubCommitRecord.GetIndex(),
+                Sha = "sha-multi",
+                RepoFullName = Repo,
+                Message = "FHIR-10 FHIR-20 FHIR-30 across the board",
+                Body = null,
+                Author = "dev",
+                Date = DateTimeOffset.UtcNow,
+                Url = $"https://github.com/{Repo}/commit/sha-multi",
+            });
+            GitHubCommitPrLinkRecord.Insert(connection, new GitHubCommitPrLinkRecord
+            {
+                Id = GitHubCommitPrLinkRecord.GetIndex(),
+                CommitSha = "sha-multi",
+                PrNumber = 20,
+                RepoFullName = Repo,
+            }, ignoreDuplicates: true);
+
+            _xrefRebuilder.RebuildAll(Repo);
+
+            List<JiraXRefRecord> commitRefs = JiraXRefRecord.SelectList(connection, ContentType: "commit", SourceId: "sha-multi");
+            Assert.Equal(3, commitRefs.Count);
+        }
+
+        _rebuilder.RebuildAllRepos([Repo]);
+
+        using SqliteConnection conn = _db.OpenConnection();
+        Dictionary<string, string> edges = EdgesFor(conn, 20);
+        Assert.Equal("commit", edges["FHIR-10"]);
+        Assert.Equal("commit", edges["FHIR-20"]);
+        Assert.Equal("commit", edges["FHIR-30"]);
+        Assert.Equal(3, edges.Count);
     }
 }
