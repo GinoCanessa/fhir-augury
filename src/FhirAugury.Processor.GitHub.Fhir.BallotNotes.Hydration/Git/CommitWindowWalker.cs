@@ -1,5 +1,15 @@
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
 
+/// <summary>A commit's full 40-hex SHA paired with git's own abbreviation (<c>%h</c>).</summary>
+public readonly record struct WindowShaEntry(string Sha, string ShortSha);
+
+/// <summary>
+/// One changed file of a window commit as recorded in the GitHub index: the
+/// (new) path, git status token (e.g. <c>A</c>, <c>M</c>, <c>R083</c>), and the
+/// post-image blob SHA (<c>null</c> for deletions or an un-migrated index).
+/// </summary>
+public readonly record struct WindowChangedFile(string Path, string ChangeType, string? BlobSha);
+
 /// <summary>
 /// One commit in the <c>since..HEAD</c> window with the paths it changed,
 /// scoped to a unit's file set.
@@ -16,6 +26,14 @@ public sealed record WindowCommit
     public string Subject { get; init; } = string.Empty;
     public string Body { get; init; } = string.Empty;
     public IReadOnlyList<string> ChangedPaths { get; init; } = [];
+
+    /// <summary>
+    /// Per-file change detail (path, status token, post-image blob SHA) when this
+    /// commit was loaded from the GitHub index. Empty for commits produced by the
+    /// git-log walk. <see cref="ChangedPaths"/> is the path projection of this and
+    /// remains the field consumers use for the touched set.
+    /// </summary>
+    public IReadOnlyList<WindowChangedFile> ChangedFiles { get; init; } = [];
 }
 
 /// <summary>
@@ -30,6 +48,40 @@ public static class CommitWindowWalker
 
     private const string LogFormat =
         "--format=%x00%H%x01%h%x01%an%x01%aI%x01%s%x01%b%x01" + EndHeaderMarker;
+
+    /// <summary>
+    /// Lists the <c>since..HEAD</c> window commits (newest-first, no merges) with
+    /// their full and git-abbreviated (<c>%h</c>) SHAs in one <c>git log</c> spawn.
+    /// This order is the canonical <c>CommitOrder</c> the hydrator preserves;
+    /// capturing git's own <c>%h</c> keeps <c>ShortSha</c> byte-identical to the
+    /// legacy per-unit walk (the abbreviation length is repo-scaled by git, not a
+    /// fixed truncation).
+    /// </summary>
+    public static async Task<IReadOnlyList<WindowShaEntry>> ListWindowShasAsync(
+        string clonePath,
+        string sinceSha,
+        CancellationToken ct = default)
+    {
+        string output = await GitRunner.RunAsync(
+            clonePath,
+            ["log", $"{sinceSha}..HEAD", "--no-merges", "--format=%H%x09%h"],
+            ct).ConfigureAwait(false);
+
+        List<WindowShaEntry> entries = [];
+        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length == 0) continue;
+
+            string[] parts = trimmed.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+            string full = parts[0].Trim();
+            if (full.Length < 7) continue;
+
+            string shortSha = parts.Length > 1 ? parts[1].Trim() : full;
+            entries.Add(new WindowShaEntry(full, shortSha));
+        }
+        return entries;
+    }
 
     /// <summary>
     /// Lists every path changed in <c>since..HEAD</c> repo-wide (the grouper's
