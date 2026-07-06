@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Attribution;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
@@ -328,6 +329,40 @@ public sealed class TicketAttributorTests : IDisposable
         // FHIR-100 appears once (named commit + PR gap-fill); count is +1 for the PR.
         Assert.Equal(["FHIR-100"], result.Tickets.Select(t => t.Key));
         Assert.Equal(2, Assert.Single(result.Tickets).CommitCount);
+    }
+
+    [Fact]
+    public async Task AttributeAsync_shared_context_dedupes_cross_ref_and_details_across_units()
+    {
+        ConcurrentDictionary<string, int> pathHits = new(StringComparer.Ordinal);
+        TicketAttributor attributor = BuildAttributor(req =>
+        {
+            pathHits.AddOrUpdate(req.RequestUri!.AbsolutePath, 1, (_, n) => n + 1);
+            return RespondOk(req);
+        });
+
+        // A single per-run context shared by two units whose windows contain the same
+        // commit (same SHA → same cross-ref value, same FHIR-100 ticket).
+        HydrationRunContext context = new()
+        {
+            CurrentNoteBlobs = new Dictionary<string, BlobResult>(StringComparer.Ordinal),
+        };
+
+        UnitAttribution[] results = await Task.WhenAll(
+            attributor.AttributeAsync([Commit("FHIR-100 work", "")], workGroupHint: null, context: context),
+            attributor.AttributeAsync([Commit("FHIR-100 work", "")], workGroupHint: null, context: context));
+
+        // Dedupe must be output-invariant: both units attribute the identical tickets
+        // with identical enrichment.
+        Assert.Equal(["FHIR-100", "FHIR-300"], results[0].Tickets.Select(t => t.Key));
+        Assert.Equal(
+            results[0].Tickets.Select(t => (t.Key, t.Title, t.Resolution, t.WorkGroup)),
+            results[1].Tickets.Select(t => (t.Key, t.Title, t.Resolution, t.WorkGroup)));
+
+        // Each distinct SHA / ticket is fetched exactly once across BOTH units.
+        Assert.Equal(1, pathHits["/api/v1/content/cross-referenced"]);
+        Assert.Equal(1, pathHits["/api/v1/content/item/jira/FHIR-100"]);
+        Assert.Equal(1, pathHits["/api/v1/content/item/jira/FHIR-300"]);
     }
 
     private string SeedGithubDb(

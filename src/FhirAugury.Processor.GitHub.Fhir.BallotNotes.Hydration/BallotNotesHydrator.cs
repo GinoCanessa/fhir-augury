@@ -172,7 +172,7 @@ public sealed class BallotNotesHydrator(
         }
 
         UnitAttribution attribution = await attributor
-            .AttributeAsync(commits, request.WorkGroupHint, ct).ConfigureAwait(false);
+            .AttributeAsync(commits, request.WorkGroupHint, context, ct).ConfigureAwait(false);
 
         SourceFileResolution resolution = await SourceFileResolver
             .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);

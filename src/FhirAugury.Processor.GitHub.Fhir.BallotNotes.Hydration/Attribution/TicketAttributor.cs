@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using FhirAugury.Common.Api;
@@ -137,9 +138,19 @@ public sealed class TicketAttributor
     public async Task<UnitAttribution> AttributeAsync(
         IReadOnlyList<WindowCommit> commits,
         string? workGroupHint,
+        HydrationRunContext? context = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(commits);
+
+        // Run-scoped memos so each distinct commit's cross-reference and each distinct
+        // ticket's detail enrichment hits the orchestrator/Jira once per run rather than
+        // once per unit-occurrence. Without a context (standalone/test call), fresh
+        // per-call memos give the identical un-deduped result.
+        ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<string>>>> crossRefMemo =
+            context?.CrossReferenceMemo ?? new(StringComparer.Ordinal);
+        ConcurrentDictionary<string, Lazy<Task<TicketDetails>>> detailsMemo =
+            context?.TicketDetailsMemo ?? new(StringComparer.Ordinal);
 
         Dictionary<string, List<string>> commitKeys = new(StringComparer.Ordinal);
         Dictionary<string, DateTimeOffset> commitDates = new(StringComparer.Ordinal);
@@ -152,7 +163,7 @@ public sealed class TicketAttributor
         {
             List<string> keys = [.. ExtractTicketKeys($"{commit.Subject}\n{commit.Body}")];
 
-            foreach (string crossRef in await TryCrossReferenceAsync(commit.Sha, ct).ConfigureAwait(false))
+            foreach (string crossRef in await CrossReferenceCachedAsync(crossRefMemo, commit.Sha, ct).ConfigureAwait(false))
             {
                 if (!keys.Contains(crossRef, StringComparer.OrdinalIgnoreCase))
                 {
@@ -233,7 +244,7 @@ public sealed class TicketAttributor
         int ticketOrder = 0;
         foreach (string key in order)
         {
-            TicketDetails details = await TryGetTicketDetailsAsync(key, ct).ConfigureAwait(false);
+            TicketDetails details = await TicketDetailsCachedAsync(detailsMemo, key, ct).ConfigureAwait(false);
             tickets.Add(new AttributedTicket
             {
                 Key = key,
@@ -270,6 +281,39 @@ public sealed class TicketAttributor
         => DateTimeOffset.TryParse(isoDate, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset d)
             ? d
             : DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Cross-references a commit SHA at most once per run. The <see cref="Lazy{T}"/>
+    /// (execution-and-publication) coalesces concurrent duplicate lookups; a shared
+    /// result list is only ever enumerated by callers, never mutated.
+    /// </summary>
+    private Task<IReadOnlyList<string>> CrossReferenceCachedAsync(
+        ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<string>>>> memo,
+        string sha,
+        CancellationToken ct)
+        => memo.GetOrAdd(
+            sha,
+            static (s, state) => new Lazy<Task<IReadOnlyList<string>>>(
+                () => state.self.TryCrossReferenceAsync(s, state.ct),
+                LazyThreadSafetyMode.ExecutionAndPublication),
+            (self: this, ct)).Value;
+
+    /// <summary>
+    /// Fetches a ticket's detail enrichment at most once per run, keyed by the
+    /// upper-cased ticket key. The cached value is the best-effort result
+    /// (failures resolve to <see cref="TicketDetails.Empty"/> inside the fetch), so a
+    /// transient miss is not a faulted task that would poison every duplicate.
+    /// </summary>
+    private Task<TicketDetails> TicketDetailsCachedAsync(
+        ConcurrentDictionary<string, Lazy<Task<TicketDetails>>> memo,
+        string key,
+        CancellationToken ct)
+        => memo.GetOrAdd(
+            key.ToUpperInvariant(),
+            static (k, state) => new Lazy<Task<TicketDetails>>(
+                () => state.self.TryGetTicketDetailsAsync(k, state.ct),
+                LazyThreadSafetyMode.ExecutionAndPublication),
+            (self: this, ct)).Value;
 
     private async Task<IReadOnlyList<string>> TryCrossReferenceAsync(string value, CancellationToken ct)
     {
@@ -415,7 +459,7 @@ public sealed class TicketAttributor
         return false;
     }
 
-    private readonly record struct TicketDetails(
+    internal readonly record struct TicketDetails(
         string Title,
         string Resolution,
         string WorkGroup,
