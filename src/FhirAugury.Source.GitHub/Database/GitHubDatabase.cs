@@ -33,6 +33,7 @@ public class GitHubDatabase : SourceDatabase
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_repos", "DefaultBranch", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "ExternalId", "TEXT");
         SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "CommentKind", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_commit_files", "BlobSha", "TEXT");
 
         GitHubRepoRecord.CreateTable(connection);
         GitHubIssueRecord.CreateTable(connection);

@@ -22,7 +22,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
     /// Extracts commits and their changed files from the local clone,
     /// storing them in the database. Processes commits newer than the last known SHA.
     /// </summary>
-    public async Task ExtractAsync(string clonePath, string repoFullName, CancellationToken ct = default)
+    public async Task ExtractAsync(string clonePath, string repoFullName, int maxInitialCommits = 500, CancellationToken ct = default)
     {
         if (!Directory.Exists(Path.Combine(clonePath, ".git")))
         {
@@ -40,9 +40,9 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
             lastSha = cmd.ExecuteScalar()?.ToString();
         }
 
-        (string sinceArg, string limitArg) = BuildLogRange(lastSha);
+        (string sinceArg, string limitArg) = BuildLogRange(lastSha, maxInitialCommits);
 
-        // Pass 1: metadata + name-status (change types)
+        // Pass 1: metadata + --raw (change types + post-image blob SHAs)
         string pass1Args = BuildPass1Args(sinceArg, limitArg);
         string pass1Output = await RunGitAsync(clonePath, pass1Args, ct);
 
@@ -111,7 +111,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
     /// <summary>
     /// Parses Pass 1 output: NUL-delimited records with SOH-delimited header fields,
-    /// followed by --name-status lines after the ---END-HEADER--- sentinel.
+    /// followed by --raw --no-abbrev lines after the ---END-HEADER--- sentinel.
     /// </summary>
     internal static List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> ParsePass1(
         string output, string repoFullName)
@@ -165,7 +165,7 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
                 Refs = string.IsNullOrEmpty(refs) ? null : refs,
             };
 
-            List<GitHubCommitFileRecord> files = ParseNameStatusLines(fileSection, sha);
+            List<GitHubCommitFileRecord> files = ParseRawLines(fileSection, sha);
             results.Add((commit, files));
         }
 
@@ -173,9 +173,20 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
     }
 
     /// <summary>
-    /// Parses --name-status lines (A/M/D/R/C + file paths) from a text block.
+    /// All-zero 40-hex blob sentinel git emits for the missing side of an
+    /// add (old blob) or delete (new blob).
     /// </summary>
-    internal static List<GitHubCommitFileRecord> ParseNameStatusLines(string section, string sha)
+    private const string ZeroBlob = "0000000000000000000000000000000000000000";
+
+    /// <summary>
+    /// Parses <c>git ... --raw --no-abbrev</c> lines of the form
+    /// <c>:&lt;oldmode&gt; &lt;newmode&gt; &lt;oldblob&gt; &lt;newblob&gt; &lt;status&gt;\t&lt;path&gt;</c>
+    /// (rename/copy rows carry a second <c>\t&lt;newpath&gt;</c>). Records only
+    /// A/M/D/R/C rows (type-changes <c>T</c> and others are ignored, matching the
+    /// prior name-status behavior), using the new path for R/C and capturing the
+    /// post-image blob SHA (<c>null</c> for deletions' all-zero sentinel).
+    /// </summary>
+    internal static List<GitHubCommitFileRecord> ParseRawLines(string section, string sha)
     {
         List<GitHubCommitFileRecord> files = [];
         string[] lines = section.Split('\n', StringSplitOptions.None);
@@ -183,24 +194,40 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         foreach (string rawLine in lines)
         {
             string line = rawLine.Trim();
-            if (line.Length < 2) continue;
-            if (line[0] is not ('A' or 'M' or 'D' or 'R' or 'C')) continue;
+            if (line.Length == 0 || line[0] != ':') continue;
 
+            // Split metadata (before first tab) from the path(s).
             string[] parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2) continue;
 
-            // R/C rows have 3 fields: changeType, oldPath, newPath — use newPath
-            bool isRenameOrCopy = parts[0].Trim().StartsWith('R') || parts[0].Trim().StartsWith('C');
+            // Metadata: ":<oldmode> <newmode> <oldblob> <newblob> <status>"
+            string[] meta = parts[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (meta.Length < 5) continue;
+
+            string changeType = meta[^1];
+            string newBlob = meta[^2];
+            if (changeType.Length == 0) continue;
+
+            char statusChar = changeType[0];
+            if (statusChar is not ('A' or 'M' or 'D' or 'R' or 'C')) continue;
+
+            // R/C rows carry old + new paths; use the new path.
+            bool isRenameOrCopy = statusChar is 'R' or 'C';
             string filePath = isRenameOrCopy && parts.Length >= 3
                 ? parts[2].Trim()
                 : parts[1].Trim();
+
+            string? blobSha = string.Equals(newBlob, ZeroBlob, StringComparison.Ordinal)
+                ? null
+                : newBlob;
 
             files.Add(new GitHubCommitFileRecord
             {
                 Id = GitHubCommitFileRecord.GetIndex(),
                 CommitSha = sha,
                 FilePath = filePath,
-                ChangeType = parts[0].Trim(),
+                ChangeType = changeType,
+                BlobSha = blobSha,
             });
         }
 
@@ -273,26 +300,32 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
     }
 
     /// <summary>
-    /// Builds the Pass-1 git argument string (metadata + --name-status).
+    /// Builds the Pass-1 git argument string (metadata + --raw --no-abbrev).
     /// The `-c diff.renameLimit` config flag must precede the `log` subcommand
     /// so git applies it; this raises the rename-detection cap to preserve
     /// accurate R/C rows on large commits instead of emitting a benign warning.
+    /// `--raw --no-abbrev` is a superset of `--name-status`: it carries the same
+    /// A/M/D/R/C status plus the full (un-abbreviated) post-image blob SHA per
+    /// file, at no extra spawn cost. Rename detection stays on git's
+    /// `diff.renames` default (no `-M`), matching prior behavior.
     /// </summary>
     internal static string BuildPass1Args(string sinceArg, string limitArg) =>
         $"-c diff.renameLimit={RenameDetectionLimit} log {sinceArg}{limitArg} " +
-        $"--name-status --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
+        $"--raw --no-abbrev --format=%x00%H%x01%an%x01%ae%x01%aI%x01%cn%x01%ce%x01%cI%x01%s%x01%b%x01%D%x01{EndHeaderMarker}";
 
     /// <summary>
     /// Builds the git log range and optional limit arguments.
     /// When a previous SHA exists, uses "{sha}..HEAD" for incremental extraction.
     /// Otherwise uses "HEAD" with a -n limit to cap initial extraction,
     /// avoiding the HEAD~N crash when a repo has fewer than N commits.
+    /// A non-positive <paramref name="maxInitialCommits"/> removes the cap
+    /// (full-history initial extraction).
     /// </summary>
     internal static (string SinceArg, string LimitArg) BuildLogRange(string? lastSha, int maxInitialCommits = 500)
     {
         if (lastSha is not null)
             return ($"{lastSha}..HEAD", "");
-        return ("HEAD", $" -n {maxInitialCommits}");
+        return maxInitialCommits > 0 ? ("HEAD", $" -n {maxInitialCommits}") : ("HEAD", "");
     }
 
     /// <summary>

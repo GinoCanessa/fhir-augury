@@ -95,6 +95,16 @@ public class GitHubServiceOptions
     /// </summary>
     public bool ReloadFromCacheOnStartup { get; set; } = false;
 
+    /// <summary>
+    /// Caps how many commits the very first (no prior SHA) commit-file
+    /// extraction walks back from HEAD. Incremental runs (a prior SHA exists)
+    /// ignore this and always walk <c>{lastSha}..HEAD</c>. A value of <c>0</c>
+    /// or negative removes the cap and extracts full history — required so the
+    /// BallotNotes hydration index can cover windows whose <c>since</c> commit
+    /// predates the first <see cref="MaxInitialCommits"/> commits.
+    /// </summary>
+    public int MaxInitialCommits { get; set; } = 500;
+
     public PortConfiguration Ports { get; set; } = new() { Http = 5190 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();

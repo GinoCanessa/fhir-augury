@@ -8,6 +8,21 @@ public class GitHubCommitFileExtractorTests
     private const string Repo = "owner/repo";
     private const char NUL = '\x00';
     private const char SOH = '\x01';
+    private const string ZeroSha = "0000000000000000000000000000000000000000";
+
+    /// <summary>
+    /// Builds a single <c>--raw --no-abbrev</c> diff line of the form
+    /// <c>:&lt;om&gt; &lt;nm&gt; &lt;oldblob&gt; &lt;newblob&gt; &lt;status&gt;\t&lt;path&gt;</c>,
+    /// appending <c>\t&lt;newPath&gt;</c> for rename/copy rows.
+    /// </summary>
+    private static string RawLine(
+        string status, string path, string? newPath = null,
+        string oldBlob = "1111111111111111111111111111111111111111",
+        string newBlob = "2222222222222222222222222222222222222222")
+    {
+        string tail = newPath is not null ? $"{path}\t{newPath}" : path;
+        return $":100644 100644 {oldBlob} {newBlob} {status}\t{tail}";
+    }
 
     /// <summary>
     /// Builds a Pass 1 commit block using the NUL/SOH format:
@@ -36,7 +51,10 @@ public class GitHubCommitFileExtractorTests
             "Alice",
             "2024-06-15T10:00:00+00:00",
             "Add and modify files",
-            "A\tsrc/NewFile.cs\nM\tsrc/Existing.cs\nD\tsrc/OldFile.cs\n");
+            string.Join("\n",
+                RawLine("A", "src/NewFile.cs", newBlob: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                RawLine("M", "src/Existing.cs", newBlob: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                RawLine("D", "src/OldFile.cs", newBlob: ZeroSha)) + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -50,12 +68,15 @@ public class GitHubCommitFileExtractorTests
 
         Assert.Equal("A", files[0].ChangeType);
         Assert.Equal("src/NewFile.cs", files[0].FilePath);
+        Assert.Equal("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", files[0].BlobSha);
 
         Assert.Equal("M", files[1].ChangeType);
         Assert.Equal("src/Existing.cs", files[1].FilePath);
+        Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", files[1].BlobSha);
 
         Assert.Equal("D", files[2].ChangeType);
         Assert.Equal("src/OldFile.cs", files[2].FilePath);
+        Assert.Null(files[2].BlobSha);
     }
 
     [Fact]
@@ -66,7 +87,8 @@ public class GitHubCommitFileExtractorTests
             "Bob",
             "2024-06-16T12:00:00+00:00",
             "Rename file",
-            "R100\tsrc/OldName.cs\tsrc/NewName.cs\n");
+            RawLine("R100", "src/OldName.cs", newPath: "src/NewName.cs",
+                newBlob: "cccccccccccccccccccccccccccccccccccccccc") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -75,6 +97,7 @@ public class GitHubCommitFileExtractorTests
         Assert.Single(files);
         Assert.Equal("R100", files[0].ChangeType);
         Assert.Equal("src/NewName.cs", files[0].FilePath);
+        Assert.Equal("cccccccccccccccccccccccccccccccccccccccc", files[0].BlobSha);
     }
 
     [Fact]
@@ -85,7 +108,7 @@ public class GitHubCommitFileExtractorTests
             "Carol",
             "2024-06-17T14:00:00+00:00",
             "Copy file",
-            "C100\tsrc/Original.cs\tsrc/Copied.cs\n");
+            RawLine("C100", "src/Original.cs", newPath: "src/Copied.cs") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -104,7 +127,9 @@ public class GitHubCommitFileExtractorTests
             "Dave",
             "2024-06-18T08:00:00+00:00",
             "Some commit",
-            "GARBAGE LINE\nX\nA\tsrc/Good.cs\n\t\n");
+            "GARBAGE LINE\nX\n" +
+            RawLine("T", "src/TypeChanged.cs") + "\n" +
+            RawLine("A", "src/Good.cs") + "\n\t\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -136,14 +161,16 @@ public class GitHubCommitFileExtractorTests
             "Eve",
             "2024-06-19T09:00:00+00:00",
             "First commit",
-            "A\tfile1.txt\nR095\told/path.cs\tnew/path.cs\n");
+            RawLine("A", "file1.txt") + "\n" +
+            RawLine("R095", "old/path.cs", newPath: "new/path.cs") + "\n");
 
         string commit2 = BuildCommitBlock(
             "2222222222222222222222222222222222222222",
             "Frank",
             "2024-06-20T10:00:00+00:00",
             "Second commit",
-            "M\tfile2.txt\nD\tremoved.txt\n");
+            RawLine("M", "file2.txt") + "\n" +
+            RawLine("D", "removed.txt", newBlob: ZeroSha) + "\n");
 
         string output = commit1 + commit2;
 
@@ -170,7 +197,7 @@ public class GitHubCommitFileExtractorTests
             "abc1234567890abcdef1234567890abcdef123456",
             "Alice Author", "alice@dev.com", "2024-06-15T10:00:00+00:00",
             "Charlie Committer", "charlie@dev.com", "2024-06-15T11:00:00+00:00",
-            "Fix bug", "", "", "M\tsrc/Bug.cs\n");
+            "Fix bug", "", "", RawLine("M", "src/Bug.cs") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -191,7 +218,7 @@ public class GitHubCommitFileExtractorTests
             "Alice", "alice@dev.com", "2024-06-15T10:00:00+00:00",
             "Alice", "alice@dev.com", "2024-06-15T10:00:00+00:00",
             "feat: add patient resource", body, "HEAD -> main, tag: v1.0",
-            "A\tsrc/Patient.cs\n");
+            RawLine("A", "src/Patient.cs") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -209,7 +236,7 @@ public class GitHubCommitFileExtractorTests
             "ddd1234567890abcdef1234567890abcdef123456",
             "Dave", "dave@dev.com", "2024-06-18T08:00:00+00:00",
             "Dave", "dave@dev.com", "2024-06-18T08:00:00+00:00",
-            "One-liner commit", "", "", "M\tfile.txt\n");
+            "One-liner commit", "", "", RawLine("M", "file.txt") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> results = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -325,7 +352,7 @@ public class GitHubCommitFileExtractorTests
             "Alice",
             "2024-06-15T10:00:00+00:00",
             "Add files",
-            "A\tsrc/File.cs\n");
+            RawLine("A", "src/File.cs") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> commits = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -349,7 +376,7 @@ public class GitHubCommitFileExtractorTests
             "Alice",
             "2024-06-15T10:00:00+00:00",
             "Add files",
-            "A\tsrc/File.cs\n");
+            RawLine("A", "src/File.cs") + "\n");
 
         List<(GitHubCommitRecord Commit, List<GitHubCommitFileRecord> Files)> commits = GitHubCommitFileExtractor.ParsePass1(output, Repo);
 
@@ -394,6 +421,17 @@ public class GitHubCommitFileExtractorTests
         Assert.Equal(" -n 100", limitArg);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void BuildLogRange_NonPositiveMax_Unbounded(int max)
+    {
+        (string sinceArg, string limitArg) = GitHubCommitFileExtractor.BuildLogRange(null, maxInitialCommits: max);
+
+        Assert.Equal("HEAD", sinceArg);
+        Assert.Equal("", limitArg);
+    }
+
     // ── BuildPass1Args tests ─────────────────────────────────────────
 
     [Fact]
@@ -402,7 +440,8 @@ public class GitHubCommitFileExtractorTests
         string args = GitHubCommitFileExtractor.BuildPass1Args("HEAD", " -n 500");
 
         Assert.StartsWith("-c diff.renameLimit=5000 log ", args);
-        Assert.Contains("--name-status", args);
+        Assert.Contains("--raw --no-abbrev", args);
+        Assert.DoesNotContain("--name-status", args);
         Assert.Contains("---END-HEADER---", args);
     }
 
@@ -410,10 +449,10 @@ public class GitHubCommitFileExtractorTests
     public void BuildPass1Args_PassesThroughRange()
     {
         string incremental = GitHubCommitFileExtractor.BuildPass1Args("abc..HEAD", "");
-        Assert.Contains("log abc..HEAD --name-status", incremental);
+        Assert.Contains("log abc..HEAD --raw --no-abbrev", incremental);
 
         string initial = GitHubCommitFileExtractor.BuildPass1Args("HEAD", " -n 500");
-        Assert.Contains("log HEAD -n 500 --name-status", initial);
+        Assert.Contains("log HEAD -n 500 --raw --no-abbrev", initial);
     }
 
     // ── ClassifyStderr tests ─────────────────────────────────────────
