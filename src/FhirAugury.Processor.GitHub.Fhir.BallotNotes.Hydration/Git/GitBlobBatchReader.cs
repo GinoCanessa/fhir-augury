@@ -11,8 +11,26 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
 /// </summary>
 public readonly record struct BlobResult(string? BlobSha, byte[] Content, bool Found)
 {
-    /// <summary>Content decoded as UTF-8 (empty string when not found).</summary>
-    public string Text => Found ? Encoding.UTF8.GetString(Content) : string.Empty;
+    /// <summary>
+    /// Content decoded as UTF-8 (empty string when not found). A single leading
+    /// UTF-8 byte-order mark is stripped so this mirrors <c>GitRunner</c>'s
+    /// <see cref="StreamReader"/>-based <c>git show</c> decode byte-for-byte (the
+    /// reader strips a detected BOM preamble; <see cref="Encoding.UTF8"/>'s
+    /// <c>GetString</c> would otherwise keep it as <c>U+FEFF</c>).
+    /// </summary>
+    public string Text
+    {
+        get
+        {
+            if (!Found) return string.Empty;
+            ReadOnlySpan<byte> bytes = Content;
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            {
+                bytes = bytes[3..];
+            }
+            return Encoding.UTF8.GetString(bytes);
+        }
+    }
 }
 
 /// <summary>

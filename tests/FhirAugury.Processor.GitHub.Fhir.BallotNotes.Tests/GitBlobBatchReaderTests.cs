@@ -94,6 +94,33 @@ public sealed class GitBlobBatchReaderTests : IDisposable
         Assert.Equal("next", records[1].Text);
     }
 
+    [Fact]
+    public void ParseBatchStream_strips_leading_utf8_bom_from_text_but_keeps_content_bytes()
+    {
+        // A UTF-8 BOM (EF BB BF) prefixes the blob. GitRunner's StreamReader-based
+        // `git show` decode strips a detected BOM preamble, so BlobResult.Text must
+        // match it byte-for-byte while the raw Content still holds every byte.
+        byte[] content = [0xEF, 0xBB, 0xBF, .. Utf8("<div>note</div>")];
+        byte[] stream = Found("7777777777777777777777777777777777777777", "blob", content);
+
+        BlobResult only = Assert.Single(GitBlobBatchReader.ParseBatchStream(stream));
+        Assert.Equal("<div>note</div>", only.Text);
+        Assert.Equal(content, only.Content);
+        Assert.Equal(0xEF, only.Content[0]);
+    }
+
+    [Fact]
+    public void ParseBatchStream_keeps_non_leading_bom_char_in_text()
+    {
+        // Only a leading BOM preamble is stripped (mirroring StreamReader); an
+        // interior U+FEFF is genuine content and must survive the decode.
+        string body = "a\uFEFFb";
+        byte[] stream = Found("8888888888888888888888888888888888888888", "blob", Utf8(body));
+
+        BlobResult only = Assert.Single(GitBlobBatchReader.ParseBatchStream(stream));
+        Assert.Equal(body, only.Text);
+    }
+
     // ── integration read against a real throwaway repo ───────────────
 
     [Fact]

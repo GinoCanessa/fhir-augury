@@ -87,6 +87,13 @@ public sealed class BallotNotesHydrator(
 
             database.UpdateRunPlan(request.RunKey, units.Count, headSha, headShort);
 
+            // Per-run shared state for the parallel unit workers: read every unit's
+            // candidate current-note intro at HEAD in one cat-file batch up front.
+            HydrationRunContext context = new()
+            {
+                CurrentNoteBlobs = await ReadCurrentNoteBlobsAsync(clonePath, units, ct).ConfigureAwait(false),
+            };
+
             // Detect structural SD deltas across the whole window once; each unit
             // filters this to its own source files.
             IReadOnlyList<StructuralChange> structuralChanges = await StructuralDiffService
@@ -101,7 +108,8 @@ public sealed class BallotNotesHydrator(
             await Parallel.ForEachAsync(units, parallelOptions, async (unit, token) =>
             {
                 (int commits, int tickets) = await HydrateUnitAsync(
-                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit, structuralChanges, token)
+                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit,
+                    structuralChanges, context, token)
                     .ConfigureAwait(false);
 
                 lock (gate)
@@ -151,6 +159,7 @@ public sealed class BallotNotesHydrator(
         string headShort,
         HydrationUnit unit,
         IReadOnlyList<StructuralChange> allStructuralChanges,
+        HydrationRunContext context,
         CancellationToken ct)
     {
         IReadOnlyList<WindowCommit> commits = await CommitWindowWalker
@@ -195,7 +204,7 @@ public sealed class BallotNotesHydrator(
 
         string sourceFilesNote = CombineNotes(resolution.Note, applied.WarningNote);
 
-        CurrentNoteResolution currentNote = await ResolveCurrentNoteAsync(clonePath, unit, ct).ConfigureAwait(false);
+        CurrentNoteResolution currentNote = ResolveCurrentNote(unit, context.CurrentNoteBlobs);
         string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -389,12 +398,39 @@ public sealed class BallotNotesHydrator(
         return Path.GetFileName(path).ToLowerInvariant().Contains("structuredefinition");
     }
 
-    private static async Task<CurrentNoteResolution> ResolveCurrentNoteAsync(string clonePath, HydrationUnit unit, CancellationToken ct)
+    /// <summary>
+    /// Reads every unit's candidate current-note intro file at HEAD in one
+    /// <c>cat-file --batch</c> pass, keyed by the <c>HEAD:&lt;path&gt;</c> spec.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, BlobResult>> ReadCurrentNoteBlobsAsync(
+        string clonePath, IReadOnlyList<HydrationUnit> units, CancellationToken ct)
+    {
+        List<string> specs = [];
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (HydrationUnit unit in units)
+        {
+            foreach (string candidate in CurrentNoteCandidates(unit))
+            {
+                string spec = $"HEAD:{candidate}";
+                if (seen.Add(spec)) specs.Add(spec);
+            }
+        }
+        return await GitBlobBatchReader.ReadAsync(clonePath, specs, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves a unit's current ballot-note evidence from the pre-read HEAD intro
+    /// blobs (pure): the first candidate whose file exists and contains a note block
+    /// wins, matching the former per-unit <c>git show HEAD:&lt;path&gt;</c> scan.
+    /// </summary>
+    private static CurrentNoteResolution ResolveCurrentNote(
+        HydrationUnit unit, IReadOnlyDictionary<string, BlobResult> currentNoteBlobs)
     {
         foreach (string candidate in CurrentNoteCandidates(unit))
         {
-            IReadOnlyList<ClassifiedNoteBlock> blocks = await BallotNoteHtmlExtractor
-                .ExtractClassifiedAtHeadAsync(clonePath, candidate, ct).ConfigureAwait(false);
+            if (!currentNoteBlobs.TryGetValue($"HEAD:{candidate}", out BlobResult blob) || !blob.Found) continue;
+
+            IReadOnlyList<ClassifiedNoteBlock> blocks = BallotNoteHtmlExtractor.ExtractClassified(blob.Text);
             if (blocks.Count == 0) continue;
 
             ClassifiedNoteBlock? generated = blocks.FirstOrDefault(b => b.IsAuguryGenerated);
