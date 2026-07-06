@@ -533,6 +533,11 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `CommitSha` | TEXT | Parent commit SHA |
 | `FilePath` | TEXT | File path |
 | `ChangeType` | TEXT | Change type (added, modified, deleted) |
+| `BlobSha` | TEXT? | Post-image (new) blob SHA for this `(commit, file)`, captured from `git log --raw --no-abbrev` during ingestion. Null for deletions (all-zero sentinel) and for rows written by an older extractor before this column existed — consumers must tolerate its absence. |
+
+Indexes: covering `(CommitSha, FilePath, BlobSha, ChangeType)` and `(FilePath)`. The
+covering index lets a window reader load a commit's changed files (path, change type,
+and resolved blob) index-only, without touching the row heap.
 
 #### `github_commit_pr_links` — Commit-to-PR associations
 

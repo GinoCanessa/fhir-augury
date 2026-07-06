@@ -261,6 +261,39 @@ section of `configuration.md` for the full appsettings/env reference. Key
 defaults: DB path `./cache/ballot-notes.db`, `Hydration.CloneRoot`
 `./cache/github/repos`, `Hydration.MaxParallelism` `4`.
 
+**Hydration internals (performance):** The hydrator is tuned to minimize
+per-unit git-process and network churn while producing byte-for-byte identical
+ballot-note output:
+
+- **Per-unit commit walk stays on `git log` (by design).** Each unit's window
+  commit list comes from a per-unit pathspec walk
+  (`git log <since>..HEAD --no-merges --name-status … -- <paths>`), **not** from
+  the `github_commit_files` index. Git applies *history simplification*
+  (TREESAME pruning) to a pathspec `git log`: it omits a non-merge commit that
+  genuinely changed a path when that change is also reachable via a simpler route
+  through the DAG. The raw commit-file index records every commit's changes with
+  no such simplification, so an index-driven walk would over-include pruned
+  commits, feed a different commit set into ticket attribution, and change the
+  emitted note. Because the pruning depends on the commit graph at query time, it
+  cannot be reconstructed from the index — so the walk deliberately remains a live
+  `git log`.
+- **Batched blob reads.** Every unit's candidate current-note intro at `HEAD`,
+  and both the since- and head-side of every changed StructureDefinition, are read
+  with a single `git cat-file --batch` pass each, replacing a `git show` spawn per
+  blob. A leading UTF-8 BOM is stripped from decoded blob text so the batched read
+  matches git's own `StreamReader` decoding byte-for-byte (git strips a detected
+  BOM preamble; a raw UTF-8 decode would not).
+- **In-run memoization.** The structural-diff pass parses each distinct
+  `(format, blob)` at most once per run. Attribution cross-references each distinct
+  commit SHA once, and fetches each distinct ticket's enrichment once, per run —
+  shared across the parallel unit fan-out via best-effort concurrent memos, so a
+  commit or ticket touched by many units still costs a single upstream call.
+- **Validation-only index infrastructure.** A `WindowIndexReader` and the
+  `github_commit_files.BlobSha` covering index (see
+  [database schema](database-schema.md#github_commit_files--files-changed-in-commits))
+  exist as a coverage oracle for the ingested window; they are **not** on the
+  output-critical hydration path and do not gate a run.
+
 ---
 
 ## Output destinations at a glance

@@ -20,6 +20,12 @@ meant to be handed to reviewers / co-chairs for ballot review.
   `./cache/github/repos/<owner>_<name>/clone` (for example
   `./cache/github/repos/HL7_fhir/clone`). A missing clone **or** an unresolvable
   `sinceSha` makes hydration fail with `503`.
+- **Optional but recommended:** the GitHub source has ingested the target repo
+  into `github.db`. Hydration reads the on-disk clone directly and does **not**
+  require the index or gate on its coverage, but the commit→PR→ticket *gap-fill*
+  attribution (for window commits whose message names no ticket) and work-group
+  lookups draw on `github.db`; if it is stale or absent, hydration still succeeds
+  and simply attributes fewer tickets to those message-less commits.
 - The `processor-github-fhir-ballotnotes` resource is started (see Step 1).
 
 Confirm the processor is listening:
