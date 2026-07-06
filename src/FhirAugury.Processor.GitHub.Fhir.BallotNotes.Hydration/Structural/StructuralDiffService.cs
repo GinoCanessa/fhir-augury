@@ -37,17 +37,35 @@ public static class StructuralDiffService
             ct).ConfigureAwait(false);
         if (diff.ExitCode != 0) return [];
 
-        List<StructuralChange> changes = [];
+        // Materialize the StructureDefinition entries in diff order and gather every
+        // blob spec they need, so both sides of every SD file are read in a single
+        // `git cat-file --batch` instead of a `git show` spawn per side.
+        List<(string? OldPath, string? NewPath)> entries = [];
+        List<string> specs = [];
         foreach ((string? oldPath, string? newPath) in ParseNameStatus(diff.StdOut))
         {
             string probe = newPath ?? oldPath ?? string.Empty;
             if (!IsStructureDefinitionCandidate(probe)) continue;
 
-            string sinceContent = oldPath is null ? string.Empty : await ShowAsync(clonePath, sinceSha, oldPath, ct).ConfigureAwait(false);
-            string headContent = newPath is null ? string.Empty : await ShowAsync(clonePath, headSha, newPath, ct).ConfigureAwait(false);
+            entries.Add((oldPath, newPath));
+            if (oldPath is not null) specs.Add($"{sinceSha}:{oldPath}");
+            if (newPath is not null) specs.Add($"{headSha}:{newPath}");
+        }
+        if (entries.Count == 0) return [];
 
-            IReadOnlyList<ElementInfo> sinceElements = ParseElements(sinceContent, oldPath, logger);
-            IReadOnlyList<ElementInfo> headElements = ParseElements(headContent, newPath, logger);
+        IReadOnlyDictionary<string, BlobResult> blobs = await GitBlobBatchReader
+            .ReadAsync(clonePath, specs, ct).ConfigureAwait(false);
+
+        // Parse each distinct (format, blob) at most once per run; DiffAsync is
+        // called a single time per run and iterates sequentially, so a plain map
+        // (no concurrency) is sufficient.
+        Dictionary<string, IReadOnlyList<ElementInfo>> parseMemo = new(StringComparer.Ordinal);
+
+        List<StructuralChange> changes = [];
+        foreach ((string? oldPath, string? newPath) in entries)
+        {
+            IReadOnlyList<ElementInfo> sinceElements = ResolveElements(blobs, sinceSha, oldPath, parseMemo, logger);
+            IReadOnlyList<ElementInfo> headElements = ResolveElements(blobs, headSha, newPath, parseMemo, logger);
 
             DiffElements(newPath ?? oldPath ?? string.Empty, sinceElements, headElements, changes);
         }
@@ -152,6 +170,36 @@ public static class StructuralDiffService
         return sd?.DifferentialElements ?? [];
     }
 
+    /// <summary>
+    /// Resolves one diff side to its differential elements from the pre-read blob
+    /// batch, parsing each distinct (format, blob) at most once via <paramref name="parseMemo"/>.
+    /// A null path or an absent/empty blob yields no elements, mirroring the prior
+    /// <c>git show</c> path where a failed read produced an empty string.
+    /// </summary>
+    private static IReadOnlyList<ElementInfo> ResolveElements(
+        IReadOnlyDictionary<string, BlobResult> blobs,
+        string sha,
+        string? path,
+        Dictionary<string, IReadOnlyList<ElementInfo>> parseMemo,
+        ILogger? logger)
+    {
+        if (path is null) return [];
+        if (!blobs.TryGetValue($"{sha}:{path}", out BlobResult blob) || !blob.Found) return [];
+
+        string content = blob.Text;
+        if (string.IsNullOrWhiteSpace(content)) return [];
+
+        // A found object always reports its SHA; parse without memoizing if it does not.
+        if (blob.BlobSha is null) return ParseElements(content, path, logger);
+
+        string key = $"{DetectFormat(path, content)}\u0000{blob.BlobSha}";
+        if (parseMemo.TryGetValue(key, out IReadOnlyList<ElementInfo>? cached)) return cached;
+
+        IReadOnlyList<ElementInfo> elements = ParseElements(content, path, logger);
+        parseMemo[key] = elements;
+        return elements;
+    }
+
     private static string DetectFormat(string? path, string content)
     {
         string ext = path is null ? string.Empty : Path.GetExtension(path).ToLowerInvariant();
@@ -169,13 +217,6 @@ public static class StructuralDiffService
         if (ext != ".xml" && ext != ".json") return false;
         string file = Path.GetFileName(path).ToLowerInvariant();
         return file.Contains("structuredefinition");
-    }
-
-    private static async Task<string> ShowAsync(string clonePath, string sha, string path, CancellationToken ct)
-    {
-        GitRunner.GitResult result = await GitRunner.TryRunAsync(
-            clonePath, ["show", $"{sha}:{path}"], ct).ConfigureAwait(false);
-        return result.ExitCode == 0 ? result.StdOut : string.Empty;
     }
 
     /// <summary>

@@ -91,6 +91,29 @@ public sealed class StructuralDiffServiceTests : IDisposable
         Assert.Empty(await StructuralDiffService.DiffAsync(_clone, since, head));
     }
 
+    [Fact]
+    public async Task DiffAsync_memoizes_shared_blob_across_files_and_reports_each_source()
+    {
+        await GitInitAsync();
+
+        // Two distinct SD files with byte-identical content collapse to one git blob
+        // per side, so the second file must resolve its elements from the parse memo.
+        WriteSd("structuredefinition-a.xml", "Observation", Elem("Observation"), Elem("Observation.status", min: 1, max: "1"));
+        WriteSd("structuredefinition-b.xml", "Observation", Elem("Observation"), Elem("Observation.status", min: 1, max: "1"));
+        string since = await CommitAsync("since");
+
+        WriteSd("structuredefinition-a.xml", "Observation", Elem("Observation"), Elem("Observation.status", min: 0, max: "1"));
+        WriteSd("structuredefinition-b.xml", "Observation", Elem("Observation"), Elem("Observation.status", min: 0, max: "1"));
+        string head = await CommitAsync("head");
+
+        IReadOnlyList<StructuralChange> changes = await StructuralDiffService.DiffAsync(_clone, since, head);
+
+        Assert.Contains(changes, c => c.SourcePath == "structuredefinition-a.xml"
+            && c.ElementPath == "Observation.status" && c.ChangeKind == "Cardinality");
+        Assert.Contains(changes, c => c.SourcePath == "structuredefinition-b.xml"
+            && c.ElementPath == "Observation.status" && c.ChangeKind == "Cardinality");
+    }
+
     private static void AssertChange(IReadOnlyList<StructuralChange> changes, string elementPath, string kind)
         => Assert.Contains(changes, c => c.ElementPath == elementPath && c.ChangeKind == kind);
 
