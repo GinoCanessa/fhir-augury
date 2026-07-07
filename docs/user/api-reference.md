@@ -169,7 +169,7 @@ Trigger an ingestion sync on source services.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `type` | string | No | `full`, `incremental`, or `rebuild` (default: `incremental`). The CLI verb for `rebuild` was renamed to `reingest` in the 2026-04 sync; the wire value remains `rebuild`. |
+| `type` | string | No | `full`, `incremental`, or `rebuild` (default: `incremental`). The CLI verb for `rebuild` is `reingest`; the wire value remains `rebuild`. |
 | `sources` | string | No | Comma-separated sources to sync (omit for all) |
 | `jira-project` | string | No | Restrict ingestion to a single Jira project key. Forwarded only to the Jira leg of the fan-out; ignored by other sources. |
 
@@ -229,10 +229,10 @@ The full set of typed proxy routes is enumerated in
 [Source Endpoint Reference](../technical/source-endpoint-reference.md)
 and surfaced in the merged orchestrator OpenAPI document.
 
-> **Note.** The previous generic reverse proxy at
-> `/api/v1/source/{name}/...` was removed in the 2026-04 sync. The
-> orchestrator self-metadata routes (`/api/v1/source/orchestrator/...`)
-> are preserved by design.
+> **Note.** There is no generic reverse proxy at
+> `/api/v1/source/{name}/...`; per-source operations are exposed through
+> the typed proxies. The orchestrator self-metadata routes
+> (`/api/v1/source/orchestrator/...`) are preserved by design.
 
 ---
 

@@ -52,8 +52,8 @@ a client generator or a different UI), the orchestrator exposes:
 - `GET /api/v1/openapi.json?include=internal` — include `internal` operations
   (default hides them)
 - `GET /api/v1/source/orchestrator/openapi.json` — orchestrator-only document
-  (not merged). This is the only surviving `/api/v1/source/...` route; the
-  generic source proxy was removed in the 2026-04 sync.
+  (not merged). This is the only `/api/v1/source/...` route; there is no
+  generic source proxy.
 
 Each source service (`source-jira`, `source-zulip`, `source-github`,
 `source-confluence`) also exposes its own unmerged document at

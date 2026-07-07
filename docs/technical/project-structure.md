@@ -332,9 +332,9 @@ the source-scoped families (`JiraItemsHandler`, `JiraDimensionHandler`,
 `JiraSpecsHandler`, `ZulipItemsHandler`, `ZulipMessagesHandler`,
 `ZulipStreamsHandler`, `ZulipThreadsHandler`, `ConfluenceItemsHandler`,
 `ConfluencePagesHandler`, `GitHubItemsHandler`, `GitHubReposHandler`)
-were added in the 2026-04 sync alongside the typed orchestrator proxies.
-The `ingest` handler's actions were renamed at the same time
-(`rebuild`→`reingest`, `index`→`reindex`; no aliases).
+mirror the typed orchestrator proxies. The `ingest` handler exposes the
+`reingest` and `reindex` actions (renamed from `rebuild` and `index`
+respectively; no aliases).
 
 ```
 FhirAugury.Cli/

@@ -9,7 +9,7 @@ services, providing tools across the following families:
 **Cross-source families** — `Unified` (status, ingestion control), `Content`
 (unified search, cross-references, item lookup).
 
-**Source-scoped families** (added in the 2026-04 sync, one per typed
+**Source-scoped families** (one per typed
 orchestrator proxy) — `JiraItems`, `JiraDimension`, `JiraWorkGroup`,
 `JiraProject`, `JiraLocalProcessing`, `JiraSpecs`, `ZulipItems`,
 `ZulipMessages`, `ZulipStreams`, `ZulipThreads`, `ConfluenceItems`,
