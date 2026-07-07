@@ -247,23 +247,28 @@ quality gate.
 
 ## Documentation
 
+The docs are organized in three tiers:
+
+- **Reference** (`docs/`) — canonical, cross-cutting references for a topic.
+- **User guides** (`docs/user/`) — task-oriented "how do I…" guides that link
+  down to the reference for full detail.
+- **Technical docs** (`docs/technical/`) — deep implementation and reference
+  material for contributors.
+
+**Reference**
+
 | Document | Description |
 |----------|-------------|
-| [Deployment](docs/deployment.md) | Docker Compose, profiles, volumes |
-| [Development](docs/development.md) | Dev setup, building, running, testing |
-| [Configuration](docs/configuration.md) | All config options per service |
+| [Configuration](docs/configuration.md) | Canonical reference for every config option, per service |
+| [Deployment](docs/deployment.md) | Docker Compose, profiles, volumes, and .NET Aspire |
+| [Development](docs/development.md) | Build / run / test quickstart |
 | [OpenAPI Discovery](docs/openapi.md) | Per-service & merged OpenAPI docs, vendor extensions, generic CLI `call` |
 
 ### User Guides
 
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/user/getting-started.md) | Setup, configure, download, search |
-| [CLI Reference](docs/user/cli-reference.md) | Command-line interface documentation |
-| [Configuration](docs/user/configuration.md) | User configuration guide |
-| [API Reference](docs/user/api-reference.md) | HTTP API endpoints |
-| [MCP Tools](docs/user/mcp-tools.md) | MCP tool reference for LLM agents |
-| [Docker](docs/user/docker.md) | Docker Compose deployment |
+Task-oriented guides for getting started, the CLI, the HTTP API, MCP tools,
+Docker, and the output-generation pipelines. See the
+**[User Guides index](docs/user/README.md)**.
 
 ### Agent Skills
 
@@ -287,16 +292,10 @@ If a repo is miscategorized for `repo-analysis`, fix it in
 
 ### Technical Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](docs/technical/architecture.md) | System design and components |
-| [Database Schema](docs/technical/database-schema.md) | SQLite, FTS5, source-generated CRUD |
-| [Indexing & Search](docs/technical/indexing-and-search.md) | FTS5, BM25, cross-references |
-| [Data Sources](docs/technical/data-sources.md) | Source connector architecture |
-| [Source Endpoint Reference](docs/technical/source-endpoint-reference.md) | Per-source HTTP route catalog |
-| [Development Guide](docs/technical/development-guide.md) | Contributing and code conventions |
-| [Project Structure](docs/technical/project-structure.md) | Code organization |
-| [Processors Runbook](docs/technical/processors.md) | How to kick off a run on each of the four processors |
+Deep implementation and reference docs — architecture, project structure, the
+development guide, data sources, the source-endpoint reference, database schema,
+indexing/search, and the processors runbook. See the
+**[Technical Documentation index](docs/technical/README.md)**.
 
 ## Tech Stack
 

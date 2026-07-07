@@ -4,6 +4,9 @@ FHIR Augury v2 uses a microservices architecture with five independent services
 communicating via HTTP. This guide covers Docker Compose and .NET Aspire
 deployment options.
 
+> Just want a Compose quick-start? See the [Docker guide](user/docker.md). This
+> page is the canonical deployment reference.
+
 ## Architecture Overview
 
 ```

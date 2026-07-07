@@ -2,6 +2,10 @@
 
 Complete configuration reference for all FHIR Augury v2 services.
 
+> For task-oriented setup (credentials, common environment variables, sync
+> schedules), see the [Configuration guide](user/configuration.md). This page is
+> the canonical, exhaustive key reference.
+
 ## Configuration Sources
 
 Each service reads configuration from (in priority order):

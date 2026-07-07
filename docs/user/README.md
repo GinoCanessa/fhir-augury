@@ -1,8 +1,15 @@
 # User Guides
 
 Task-oriented guides for using FHIR Augury. Start with **Getting Started**, then
-use the topic guides below as you need them. These guides sit *above* the
-[technical runbooks](../technical/) and link down to them for full detail.
+use the topic guides below as you need them.
+
+The documentation is organized in three tiers:
+
+- **Reference** ([`docs/`](../)) — canonical, cross-cutting references for a topic.
+- **User guides** (this folder) — task-oriented "how do I…" guides that link
+  *down* to the reference and technical docs for full detail.
+- **Technical docs** ([`docs/technical/`](../technical/README.md)) — deep
+  implementation and reference material for contributors.
 
 ## Getting started
 

@@ -13,6 +13,10 @@ exposed through typed per-source proxy controllers under
 > self-metadata routes (`/api/v1/source/orchestrator/openapi.json` and
 > `/api/v1/source/orchestrator/list-sources`) are preserved by design.
 
+> Looking for the point-and-click Scalar UI walkthrough instead? See the
+> [OpenAPI & Scalar UI guide](user/openapi.md). This page is the technical
+> reference (vendor extensions, the merged document, and the CI gate).
+
 The CLI uses these documents to enumerate available commands, fetch
 parameter and response schemas, and invoke any operation generically — no
 new code is required to call a newly added endpoint as long as it appears
