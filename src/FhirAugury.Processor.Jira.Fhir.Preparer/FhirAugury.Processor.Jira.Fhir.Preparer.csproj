@@ -20,4 +20,9 @@
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
 </Project>

@@ -33,4 +33,9 @@
     <EmbeddedResource Include="web-assets\report\purify.min.js" LogicalName="web-assets/report/purify.min.js" />
     <EmbeddedResource Include="web-assets\report\marked.min.js" LogicalName="web-assets/report/marked.min.js" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
 </Project>

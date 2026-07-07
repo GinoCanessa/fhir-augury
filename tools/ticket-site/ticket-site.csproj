@@ -43,4 +43,9 @@
     <EmbeddedResource Include="web-assets\chooser\index.template.html" LogicalName="web-assets/chooser/index.template.html" />
     <EmbeddedResource Include="web-assets\chooser\chooser.css" LogicalName="web-assets/chooser/chooser.css" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
 </Project>

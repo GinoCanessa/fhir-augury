@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AngleSharp" Version="1.5.1" />
+    <PackageReference Include="AngleSharp" Version="1.5.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
     <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.622.1509" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
@@ -32,5 +32,10 @@
     <EmbeddedResource Include="web-assets\report\app.js" LogicalName="web-assets/report/app.js" />
     <EmbeddedResource Include="web-assets\report\sql-wasm.js" LogicalName="web-assets/report/sql-wasm.js" />
     <EmbeddedResource Include="web-assets\report\sql-wasm.wasm" LogicalName="web-assets/report/sql-wasm.wasm" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 </Project>
