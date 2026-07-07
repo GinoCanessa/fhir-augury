@@ -225,37 +225,15 @@ Processing services share the `Processing` configuration shape and expose
 
 ### Jira FHIR Planner (`:5172`)
 
-```json
-{
-  "Processing": {
-    "DatabasePath": "./data/processor.jira.fhir.planner.db",
-    "SyncSchedule": "00:05:00",
-    "MaxConcurrentProcessingThreads": 4,
-    "StartProcessingOnStartup": true,
-    "OrchestratorAddress": "http://localhost:5150",
-    "Ports": { "Http": 5172 },
-    "Jira": {
-      "TicketStatusesToProcess": ["Resolved - change required"],
-      "ProjectsToInclude": null,
-      "WorkGroupsToInclude": null,
-      "TicketTypesToProcess": null,
-      "AgentCliCommand": "copilot run ticket-plan --ticket {ticketKey} --db {dbPath} --repos {repoFilters}",
-      "JiraSourceAddress": "http://localhost:5160",
-      "OrchestratorAddress": "http://localhost:5150",
-      "DiscoverySource": "DirectJiraSource",
-      "SourceTicketShape": "fhir"
-    },
-    "Planner": {
-      "RepoFilters": null
-    }
-  }
-}
-```
+The Planner queues resolved change-required tickets and runs `ticket-plan`. Its
+only Planner-specific knob is `Processing:Planner:RepoFilters` — an optional
+exact `owner/repo` allow-list (`null` or `[]` = no restriction). Non-empty lists
+are matched case-insensitively, do not support globs/wildcards/block-lists, and
+are passed to `ticket-plan` through the canonical `--repos` JSON-array argument.
 
-`Processing:Planner:RepoFilters` is an optional exact `owner/repo` allow-list.
-`null` or `[]` means no repository restriction. Non-empty lists are matched
-case-insensitively, do not support globs/wildcards/block-lists, and are passed
-to `ticket-plan` through the canonical `--repos` JSON-array argument.
+For the full `Processing` shape (Preparer, Planner, and Applier), every key, and
+the agent-command tokens, see
+[Configuration Reference → Processing Services](../configuration.md#processing-services).
 
 ---
 

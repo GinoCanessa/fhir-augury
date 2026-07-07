@@ -4,20 +4,26 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via HTTP to the orchestrator and source
-services, providing tools across the following families:
+services, providing roughly **130 tools** organized into **23 families** (each
+family is one `[McpServerToolType]` class under
+`src/FhirAugury.McpShared/Tools/`):
 
-**Cross-source families** — `Unified` (status, ingestion control), `Content`
-(unified search, cross-references, item lookup).
+- **Cross-source** — `Unified` (status, ingestion control), `Content` (unified
+  search, cross-references, item lookup).
+- **FHIR spec** — `Fhir` (StructureDefinitions, canonical resources, and other
+  specification reference data).
+- **Jira** — `Jira`, `JiraItems`, `JiraDimension`, `JiraProject`,
+  `JiraWorkGroup`, `JiraSpecs`, `JiraLocalProcessing`, `JiraBalDef`,
+  `JiraBallot`, `JiraPss`.
+- **Zulip** — `Zulip`, `ZulipItems`, `ZulipMessages`, `ZulipStreams`,
+  `ZulipThreads`.
+- **Confluence** — `ConfluenceItems`, `ConfluencePages`.
+- **GitHub** — `GitHubItems`, `GitHubRepos`, `WorkGroup`.
 
-**Source-scoped families** (one per typed
-orchestrator proxy) — `JiraItems`, `JiraDimension`, `JiraWorkGroup`,
-`JiraProject`, `JiraLocalProcessing`, `JiraSpecs`, `ZulipItems`,
-`ZulipMessages`, `ZulipStreams`, `ZulipThreads`, `ConfluenceItems`,
-`ConfluencePages`, `GitHubItems`, `GitHubRepos`.
-
-Each MCP tool family corresponds 1:1 to a CLI command family (see
-[CLI Reference](cli-reference.md)) and to a typed orchestrator proxy
-controller under `src/FhirAugury.Orchestrator/Controllers/Proxies/`.
+Each family maps to a CLI command family (see [CLI Reference](cli-reference.md));
+source-scoped families route through the orchestrator's typed proxy controllers
+under `src/FhirAugury.Orchestrator/Controllers/Proxies/`. Exact tool names and
+counts are discoverable at runtime, so treat the numbers above as approximate.
 
 ## Setup
 

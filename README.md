@@ -33,6 +33,18 @@ aggregates results and manages cross-references across sources.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+Two component groups are omitted from the diagram to keep it readable:
+
+- **FHIR spec source** (`source-fhir`, :5195) — a read-only source that serves
+  FHIR specification reference data (StructureDefinitions, canonical resources)
+  to the orchestrator alongside the four ingesting sources.
+- **Processors** (:5171–:5174) — the Preparer, Planner, Applier, and BallotNotes
+  services consume source data to produce derived artifacts (ticket prep, plans,
+  applied changes, ballot notes).
+
+See [Architecture](docs/technical/architecture.md) for the full component and
+data-flow diagrams.
+
 ## Quick Start
 
 ### Docker Compose (recommended for production)
@@ -73,17 +85,20 @@ dotnet run --project src/FhirAugury.Orchestrator
 
 ## Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Orchestrator | [5150](http://localhost:5150/health) | Unified search, cross-references, aggregation |
-| Jira | [5160](http://localhost:5160/health) | HL7 Jira issues and comments |
-| Zulip | [5170](http://localhost:5170/health) | FHIR Zulip chat messages |
-| Jira FHIR Preparer | [5171](http://localhost:5171/health) | Processing service for Triaged FHIR Jira ticket prep outputs (`/api/v1/prepared-tickets`) |
-| BallotNotes Processor | [5174](http://localhost:5174/health) | Commit-triggered ballot-note hydration + authoring API backing the `notes-site` renderer (`/api/v1/ballot-notes`) |
-| Confluence | [5180](http://localhost:5180/health) | HL7 Confluence wiki pages |
-| GitHub | [5190](http://localhost:5190/health) | HL7 GitHub issues, PRs, and commits |
-| MCP (HTTP) | [5200](http://localhost:5200/mcp) | MCP server (HTTP/SSE transport) |
-| Dev UI | [5210](http://localhost:5210) | Blazor Server operational dashboard |
+| Service | Port | Availability | Description |
+|---------|------|--------------|-------------|
+| Orchestrator | [5150](http://localhost:5150/health) | Compose + Aspire | Unified search, cross-references, aggregation |
+| Jira | [5160](http://localhost:5160/health) | Compose + Aspire | HL7 Jira issues and comments |
+| Zulip | [5170](http://localhost:5170/health) | Compose + Aspire | FHIR Zulip chat messages |
+| Jira FHIR Preparer | [5171](http://localhost:5171/health) | Compose + Aspire | Processing service for Triaged FHIR Jira ticket prep outputs (`/api/v1/prepared-tickets`) |
+| Jira FHIR Planner | [5172](http://localhost:5172/health) | Aspire only | Processing service that queues resolved change-required tickets and runs `ticket-plan` (Tickets for Applying) |
+| Jira FHIR Applier | [5173](http://localhost:5173/health) | Aspire only | Processing service that applies planned changes in per-(ticket, repo) git worktrees (`/api/v1/applied-tickets`) |
+| BallotNotes Processor | [5174](http://localhost:5174/health) | Aspire only | Commit-triggered ballot-note hydration + authoring API backing the `notes-site` renderer (`/api/v1/ballot-notes`) |
+| Confluence | [5180](http://localhost:5180/health) | Compose + Aspire | HL7 Confluence wiki pages |
+| GitHub | [5190](http://localhost:5190/health) | Compose + Aspire | HL7 GitHub issues, PRs, and commits |
+| FHIR Spec | [5195](http://localhost:5195/health) | Aspire only | Read-only FHIR specification reference data (StructureDefinitions, canonical resources) |
+| MCP (HTTP) | [5200](http://localhost:5200/mcp) | Aspire only | MCP server (HTTP/SSE transport) |
+| Dev UI | [5210](http://localhost:5210) | Aspire only | Blazor Server operational dashboard |
 
 ## Features
 
@@ -188,13 +203,21 @@ docker compose --profile jira-only up -d   # Single source
 | Orchestrator | `src/FhirAugury.Orchestrator` | Aggregator, cross-references, unified search |
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
 | Jira FHIR Preparer | `src/FhirAugury.Processor.Jira.Fhir.Preparer` | Processing service that defaults to Triaged FHIR Jira tickets, overwrites structured prep output without history, and exposes read/query APIs; Docker processing requires a host-provided agent runtime |
+| Jira FHIR Planner | `src/FhirAugury.Processor.Jira.Fhir.Planner` | Processing service that queues resolved change-required tickets and runs `ticket-plan` to produce implementation plans (Tickets for Applying) |
+| Jira FHIR Applier | `src/FhirAugury.Processor.Jira.Fhir.Applier` | Processing service that applies planned changes in per-(ticket, repo) git worktrees and can push on demand |
 | BallotNotes Processor | `src/FhirAugury.Processor.GitHub.Fhir.BallotNotes` | Commit-triggered processor that hydrates ballot-note evidence (commit window, ticket attribution, source-file resolution) and serves read/author APIs under `/api/v1/ballot-notes`; consumed by the `notes-site` renderer |
+| Processor satellites | `src/FhirAugury.Processor.*.{Persistence,Hydration}`, `*.Hydration.Common` | Per-family persistence + hydration support libraries for the Preparer / Planner / BallotNotes processors |
+| Processing Common | `src/FhirAugury.Processing.Common` | Shared processing substrate (queue lifecycle, agent invocation, HTTP surface) for all processors |
+| Processing (Jira Common) | `src/FhirAugury.Processing.Jira.Common` | Jira-specific processing base (source-ticket persistence, filter conventions, discovery) |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
+| FHIR Source | `src/FhirAugury.Source.Fhir` | Read-only FHIR specification reference data (StructureDefinitions, canonical resources) served on `:5195` |
 | Common | `src/FhirAugury.Common` | Shared types, API contracts, utilities |
+| Common (OpenAPI) | `src/FhirAugury.Common.OpenApi` | Shared OpenAPI 3.1 document generation and Scalar UI wiring |
 | Parsing (FHIR) | `src/FhirAugury.Parsing.Fhir` | FHIR XML/JSON StructureDefinition and canonical artifact parsing |
 | Parsing (FSH) | `src/FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) and sushi-config.yaml parsing |
+| Parsing (XML) | `src/FhirAugury.Parsing.Xml` | Low-level streaming XML reader shared by the parsers |
 | MCP Server (stdio) | `src/FhirAugury.McpStdio` | MCP server for LLM agents (stdio transport, e.g., Claude Desktop) |
 | MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
 | MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and HTTP client registration |
