@@ -9,6 +9,12 @@ This is a simple list of English medical terms formatted as a UTF8-encoded text 
  
 The two sources have been merged, deduplicated, corrected and formatted as a text file that should be compatible with Android dictionary managers, LibreOffice, and Word.
 
+> **Provenance note:** This file documents the **upstream** word lists that are
+> vendored into `dictionary/`. The authorship, version, and currency dates below
+> (e.g. "FDA-approvals as of 2014-04-02", "© 2014-2017") describe those upstream
+> sources, not the FHIR Augury repository or its build. They are historical facts
+> about the imported data and are intentionally left unchanged.
+
 ### Details
 
     Terms:              98119

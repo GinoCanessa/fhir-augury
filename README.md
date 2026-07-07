@@ -232,6 +232,9 @@ docker compose --profile jira-only up -d   # Single source
 |---------|---------|-------------|
 | Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` (Tickets for Discussion) or a `cache/jira-planner.db` (Tickets for Applying) into a self-contained static HTML review sub-site (sql.js in the browser; opens from `file://`). A chooser landing page at `<out>/index.html` links into whichever sub-site(s) have been built. |
 | Dictionary build | [`tools/dictionary-build`](tools/dictionary-build/README.md) | One-shot `dotnet`-run utility that rebuilds `cache/dictionary.db` from the spell-check source files under `dictionary/`. Run after editing anything under `dictionary/`. |
+| Notes site | [`tools/notes-site`](tools/notes-site/README.md) | Read-only `dotnet`-run utility that renders the BallotNotes processor's notes database into a self-contained, searchable static HTML review SPA (opens from `file://`, no server). |
+| BallotNotes reallocate-WG | [`tools/ballotnotes-reallocate-wg`](tools/ballotnotes-reallocate-wg/README.md) | One-off, idempotent maintenance command that re-stamps the owning Work Group on existing ballot-note rows by re-running only the deterministic resolver — no re-hydration, re-attribution, or authoring. |
+| FHIR spec review | [`tools/fhir-spec-review`](tools/fhir-spec-review/README.md) | Read-only `dotnet`-run utility that runs FMG-style content-quality checks over the current HL7/fhir build and emits a self-contained, searchable report SPA. |
 
 ## Discovery
 
@@ -308,6 +311,10 @@ are documented fallbacks (see the `fhir-augury-cli` skill).
 | [`ticket-plan`](.github/skills/ticket-plan/SKILL.md) | Plans the implementation of a resolved Jira ticket; consumes saved per-repo briefings. |
 | [`orchestrate-prep`](.github/skills/orchestrate-prep/SKILL.md) | Bulk ticket-prep over a worklist. |
 | [`orchestrate-plan`](.github/skills/orchestrate-plan/SKILL.md) | Bulk ticket-plan over a worklist. |
+
+The table above is a curated subset; the repository ships two dozen-plus skills
+under `.github/skills/` — browse that directory for the full set (orchestration,
+indexing, ballot-notes, and `dev-*` workflow skills).
 
 If a repo is miscategorized for `repo-analysis`, fix it in
 `src/FhirAugury.Source.GitHub/appsettings.json` (under the appropriate

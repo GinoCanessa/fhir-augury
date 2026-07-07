@@ -15,8 +15,16 @@ Orchestrator (:5150 HTTP)
 ├── Source.Jira       (:5160 HTTP)
 ├── Source.Zulip      (:5170 HTTP)
 ├── Source.Confluence  (:5180 HTTP)
-└── Source.GitHub     (:5190 HTTP)
+├── Source.GitHub     (:5190 HTTP)
+└── Source.Fhir       (:5195 HTTP, read-only spec reference)
 ```
+
+The first four sources ingest and index an external upstream (Jira, Zulip,
+Confluence, GitHub). `Source.Fhir` is a fifth, **read-only** source: it serves
+FHIR specification reference data (StructureDefinitions and other canonical
+resources) into unified search but has no external ingestion pipeline or sync
+worker. The processors (`:5171`–`:5174`) are covered in the
+[Processors Runbook](processors.md), not here.
 
 ## Common HTTP API Contract
 

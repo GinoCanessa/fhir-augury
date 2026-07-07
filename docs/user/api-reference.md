@@ -13,6 +13,7 @@ service exposes an HTTP API for health checks, search, and management operations
 | Zulip | 5170 | Indexes chat.fhir.org |
 | Confluence | 5180 | Indexes confluence.hl7.org |
 | GitHub | 5190 | Indexes HL7 GitHub repos |
+| FHIR | 5195 | Serves FHIR spec reference data (read-only) |
 | MCP HTTP | 5200 | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 
 > **Note:** The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on

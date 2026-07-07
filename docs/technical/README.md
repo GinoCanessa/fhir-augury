@@ -13,4 +13,5 @@ the user guides link down here for full detail.
 | [Source Endpoint Reference](source-endpoint-reference.md) | Per-source HTTP route catalog |
 | [Database Schema](database-schema.md) | SQLite, FTS5, source-generated CRUD |
 | [Indexing & Search](indexing-and-search.md) | FTS5, BM25, cross-references |
+| [Source Filter Conventions](../source-filter-conventions.md) | Null/default/empty/restrict semantics for source list-filters |
 | [Processors Runbook](processors.md) | How to kick off a run on each of the four processors |

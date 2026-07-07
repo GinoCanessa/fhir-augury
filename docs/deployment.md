@@ -64,14 +64,26 @@ docker compose --profile jira-only up -d
 
 ## Service Ports
 
-| Service | Port | Health Check |
-|---------|------|-------------|
-| Orchestrator | 5150 | `GET /health` |
-| Jira | 5160 | `GET /health` |
-| Zulip | 5170 | `GET /health` |
-| Confluence | 5180 | `GET /health` |
-| GitHub | 5190 | `GET /health` |
-| MCP (HTTP) | 5200 | `/mcp` |
+| Service | Port | Availability | Health Check |
+|---------|------|--------------|-------------|
+| Orchestrator | 5150 | Compose + Aspire | `GET /health` |
+| Jira | 5160 | Compose + Aspire | `GET /health` |
+| Zulip | 5170 | Compose + Aspire | `GET /health` |
+| Jira FHIR Preparer | 5171 | Compose + Aspire | `GET /health` |
+| Jira FHIR Planner | 5172 | Aspire only | `GET /health` |
+| Jira FHIR Applier | 5173 | Aspire only | `GET /health` |
+| BallotNotes Processor | 5174 | Aspire only | `GET /health` |
+| Confluence | 5180 | Compose + Aspire | `GET /health` |
+| GitHub | 5190 | Compose + Aspire | `GET /health` |
+| FHIR Spec | 5195 | Aspire only | `GET /health` |
+| MCP (HTTP) | 5200 | Aspire only | `/mcp` |
+| Dev UI | 5210 | Aspire only | — |
+
+> Docker Compose ships a **six-service subset** (Jira, Zulip, Confluence, GitHub,
+> the Jira FHIR Preparer, and the orchestrator — see the profiles above). The
+> remaining services (source-fhir, planner, applier, ballotnotes, the MCP HTTP
+> server, and the Dev UI) run under the full **.NET Aspire** topology — see
+> [.NET Aspire](#net-aspire) below.
 
 ## Volume Management
 
