@@ -10,7 +10,7 @@ fhir-augury/
 ├── README.md                      # Project overview
 ├── LICENSE                        # MIT license
 ├── Dockerfile                     # Multi-stage Docker build
-├── docker-compose.yml             # Docker Compose (5 services, 3 profiles, 9 volumes)
+├── docker-compose.yml             # Docker Compose (6 services, 4 profiles, 10 volumes)
 ├── cache/                         # Response cache directory (gitignored)
 ├── docs/                          # Documentation
 │   ├── user/                      # User-facing documentation

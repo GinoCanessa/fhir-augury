@@ -47,13 +47,17 @@ The `docker-compose.yml` supports subset deployments via profiles:
 
 | Profile | Services Started | Use Case |
 |---------|-----------------|----------|
-| `full` | All 5 services | Production deployment |
+| `full` | All 6 services (including the optional preparer) | Production deployment |
+| `processing` | Jira + Jira FHIR Preparer | Local processing API/queue |
 | `jira-zulip` | Jira + Zulip + Orchestrator | Common subset |
 | `jira-only` | Jira only | Single source, no orchestrator |
 
 ```bash
 # Full stack
 docker compose --profile full up -d
+
+# Local processing pipeline (Jira + preparer)
+docker compose --profile processing up -d
 
 # Jira + Zulip only (with orchestrator)
 docker compose --profile jira-zulip up -d

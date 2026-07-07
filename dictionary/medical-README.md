@@ -1,6 +1,6 @@
-## List of English Medical Terms
+# List of English Medical Terms
 
-### Overview
+## Overview
 
 This is a simple list of English medical terms formatted as a UTF8-encoded text file. It is based on two prominent medical dictionary projects:
 
@@ -15,7 +15,7 @@ The two sources have been merged, deduplicated, corrected and formatted as a tex
 > sources, not the FHIR Augury repository or its build. They are historical facts
 > about the imported data and are intentionally left unchanged.
 
-### Details
+## Details
 
     Terms:              98119
     Contents:           drug names (up-to-date with FDA-approvals as of 2014-04-02, trade and generic names),
@@ -30,7 +30,7 @@ The two sources have been merged, deduplicated, corrected and formatted as a tex
                           <http://mtherald.com/free-medical-spell-checker-for-microsoft-word-custom-dictionary/>
     License:            GNU GPL v3 (see LICENSEs for more information)
 
-### Usage
+## Usage
 
 **Android**
 
@@ -53,6 +53,6 @@ Follow the instructions provided in [this Q&A](http://ask.libreoffice.org/en/que
 Rename `wordlist.txt` to `medicalterms-en.dic` and follow the instructions provided [here](http://support.microsoft.com/kb/322198).
 
 
-### Warranty
+## Warranty
 
 This software comes with no warranty of any kind. Some misspelled words might be included. Please make sure to submit a bug report if you find any mistakes.
