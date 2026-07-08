@@ -116,6 +116,50 @@ public class ThreadsControllerTests : IDisposable
         Assert.Null(GetValue<string?>(payload, "firstMessageExcerpt"));
     }
 
+    [Fact]
+    public void GetThread_SlashStreamName_ReturnsRows()
+    {
+        ZulipStreamRecord stream = new ZulipStreamRecord
+        {
+            Id = ZulipStreamRecord.GetIndex(),
+            ZulipStreamId = 4242,
+            Name = "fhir/infrastructure-wg",
+            Description = "infra",
+            IsWebPublic = true,
+            MessageCount = 0,
+            IncludeStream = true,
+            BaselineValue = 5,
+            LastFetchedAt = DateTimeOffset.UtcNow,
+        };
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            ZulipStreamRecord.Insert(conn, stream);
+            ZulipMessageRecord.Insert(conn, CreateMessage(stream.Id, 2001, "fhir/infrastructure-wg", "ballot", "Alice",
+                "content body", new DateTimeOffset(2026, 6, 1, 10, 0, 0, TimeSpan.Zero)));
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("fhir/infrastructure-wg", "ballot", limit: null));
+        Assert.Equal("fhir/infrastructure-wg", GetValue<string?>(ok.Value!, "stream"));
+        Assert.Equal(4242, GetValue<int?>(ok.Value!, "streamId"));
+        Assert.Equal(1, GetValue<int?>(ok.Value!, "total"));
+    }
+
+    [Fact]
+    public void GetThread_MissingStreamNameOrTopic_ReturnsBadRequest()
+    {
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThread(null, "ballot", limit: null));
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThread("   ", "ballot", limit: null));
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThread("implementers", null, limit: null));
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThread("implementers", "   ", limit: null));
+    }
+
+    [Fact]
+    public void GetThreadSnapshot_MissingStreamNameOrTopic_ReturnsBadRequest()
+    {
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThreadSnapshot(null, "ballot"));
+        Assert.IsType<BadRequestObjectResult>(_controller.GetThreadSnapshot("implementers", null));
+    }
+
     private static ZulipMessageRecord CreateMessage(int streamId, int zulipMessageId, string streamName, string topic, string sender, string content, DateTimeOffset timestamp) => new()
     {
         Id = ZulipMessageRecord.GetIndex(),
