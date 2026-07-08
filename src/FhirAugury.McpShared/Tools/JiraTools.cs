@@ -18,8 +18,8 @@ public static class JiraTools
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient("jira");
-            string url = $"/api/v1/items/{Uri.EscapeDataString(key)}/comments?limit={limit}";
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            string url = $"/api/v1/jira/items/{Uri.EscapeDataString(key)}/comments?limit={limit}";
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
             JsonElement comments = root.TryGetProperty("comments", out JsonElement cEl)
@@ -77,7 +77,7 @@ public static class JiraTools
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient("jira");
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
             object body = new
             {
                 statuses = ParseCsv(statuses),
@@ -99,7 +99,7 @@ public static class JiraTools
                 offset,
             };
 
-            JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/query", body, cancellationToken);
+            JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/jira/query", body, cancellationToken);
 
             JsonElement results = root.TryGetProperty("results", out JsonElement rEl) ? rEl : root;
             if (results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
@@ -137,55 +137,6 @@ public static class JiraTools
         }
     }
 
-    [McpServerTool, Description("List Jira issues with optional filters and sorting.")]
-    public static async Task<string> ListJiraIssues(
-        IHttpClientFactory httpClientFactory,
-        [Description("Sort by field (default updated_at)")] string sortBy = "updated_at",
-        [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
-        [Description("Maximum results (default 20)")] int limit = 20,
-        [Description("Filter by status")] string? status = null,
-        [Description("Filter by work group")] string? workGroup = null,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            HttpClient client = httpClientFactory.CreateClient("jira");
-            StringBuilder url = new($"/api/v1/items?limit={limit}");
-            if (!string.IsNullOrEmpty(status))
-                url.Append($"&status={Uri.EscapeDataString(status)}");
-            if (!string.IsNullOrEmpty(workGroup))
-                url.Append($"&work_group={Uri.EscapeDataString(workGroup)}");
-
-            JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
-
-            JsonElement items = root.TryGetProperty("items", out JsonElement iEl) ? iEl : root;
-            if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
-                return "No Jira issues found.";
-
-            StringBuilder sb = new();
-            sb.AppendLine("## Jira Issues");
-            sb.AppendLine();
-
-            foreach (JsonElement item in items.EnumerateArray())
-            {
-                string id = UnifiedTools.GetNullableString(item, "key") ?? UnifiedTools.GetString(item, "id");
-                sb.AppendLine($"- **{id}** {UnifiedTools.GetString(item, "title")}");
-                string? updated = UnifiedTools.GetNullableString(item, "updatedAt");
-                if (!string.IsNullOrEmpty(updated))
-                    sb.AppendLine($"  Updated: {updated}");
-                string? itemUrl = UnifiedTools.GetNullableString(item, "url");
-                if (!string.IsNullOrEmpty(itemUrl))
-                    sb.AppendLine($"  URL: {itemUrl}");
-            }
-
-            return sb.ToString();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
     [McpServerTool, Description("List all available Jira labels with issue counts.")]
     public static async Task<string> ListJiraLabels(
         IHttpClientFactory httpClientFactory,
@@ -193,9 +144,9 @@ public static class JiraTools
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient("jira");
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
             JsonElement root = await UnifiedTools.GetJsonAsync(
-                client, "/api/v1/labels", cancellationToken);
+                client, "/api/v1/jira/labels", cancellationToken);
 
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
             {
@@ -228,9 +179,9 @@ public static class JiraTools
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient("jira");
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
             JsonElement root = await UnifiedTools.GetJsonAsync(
-                client, "/api/v1/specifications", cancellationToken);
+                client, "/api/v1/jira/specifications", cancellationToken);
 
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
                 return "No specifications found.";
@@ -259,9 +210,9 @@ public static class JiraTools
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient("jira");
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
             JsonElement root = await UnifiedTools.GetJsonAsync(
-                client, "/api/v1/statuses", cancellationToken);
+                client, "/api/v1/jira/statuses", cancellationToken);
 
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
                 return "No statuses found.";
