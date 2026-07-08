@@ -92,28 +92,54 @@ public class ZulipProxyControllerTests
     }
 
     [Fact]
-    public async Task ThreadSnapshot_TwoSegmentRoute_ForwardsBoth()
+    public async Task ThreadSnapshot_ForwardsQueryStringVerbatim()
     {
         ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
-        ProxyTestSupport.SetRequest(c);
+        ProxyTestSupport.SetRequest(c, queryString: "?streamName=FHIR%20Infrastructure&topic=general%20topic");
 
         IActionResult r = await c.GetThreadSnapshot("FHIR Infrastructure", "general topic", default);
         await ProxyTestSupport.ExecuteAsync(c, r);
 
-        Assert.Equal("/api/v1/threads/FHIR%20Infrastructure/general%20topic/snapshot",
-            h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("/api/v1/threads/snapshot", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?streamName=FHIR%20Infrastructure&topic=general%20topic", h.Requests[0].RequestUri!.Query);
     }
 
     [Fact]
     public async Task GetStreamTopics_PreservesQueryString()
     {
         ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
-        ProxyTestSupport.SetRequest(c, queryString: "?limit=10&offset=20");
+        ProxyTestSupport.SetRequest(c, queryString: "?streamName=implementers&limit=10&offset=20");
 
         IActionResult r = await c.GetStreamTopics("implementers", 10, 20, default);
         await ProxyTestSupport.ExecuteAsync(c, r);
 
-        Assert.Equal("/api/v1/streams/implementers/topics", h.Requests[0].RequestUri!.AbsolutePath);
-        Assert.Equal("?limit=10&offset=20", h.Requests[0].RequestUri!.Query);
+        Assert.Equal("/api/v1/streams/topics", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?streamName=implementers&limit=10&offset=20", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task GetStreamTopics_ForwardsEncodedSlashVerbatim()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?streamName=fhir%2Finfrastructure-wg&limit=5");
+
+        IActionResult r = await c.GetStreamTopics("fhir/infrastructure-wg", 5, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Equal("/api/v1/streams/topics", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?streamName=fhir%2Finfrastructure-wg&limit=5", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task GetThread_ForwardsEncodedSlashVerbatim()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?streamName=fhir%2Finfrastructure-wg&topic=Message%20forbids");
+
+        IActionResult r = await c.GetThread("fhir/infrastructure-wg", "Message forbids", null, default);
+        await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Equal("/api/v1/threads", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?streamName=fhir%2Finfrastructure-wg&topic=Message%20forbids", h.Requests[0].RequestUri!.Query);
     }
 }

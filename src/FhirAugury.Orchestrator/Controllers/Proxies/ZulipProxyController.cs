@@ -141,36 +141,34 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
         => httpClient.ProxyAsync(Source, HttpMethod.Put, $"streams/{zulipStreamId}", Request, ct);
 
     /// <summary>List the topics in a stream.</summary>
-    /// <param name="streamName">Stream name.</param>
+    /// <param name="streamName">Stream name (query parameter; safely carries reserved characters such as <c>/</c>).</param>
     /// <param name="limit">Maximum number of topics.</param>
     /// <param name="offset">Number of topics to skip.</param>
     /// <param name="ct">Cancellation token.</param>
-    [HttpGet("streams/{streamName}/topics")]
-    public Task<IActionResult> GetStreamTopics(string streamName,
+    [HttpGet("streams/topics")]
+    public Task<IActionResult> GetStreamTopics([FromQuery] string? streamName,
         [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
-        => httpClient.ProxyAsync(Source, HttpMethod.Get, $"streams/{Uri.EscapeDataString(streamName)}/topics", Request, ct);
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "streams/topics", Request, ct);
 
     // ── Threads ──────────────────────────────────────────────────────────
 
     /// <summary>Get the messages in a (stream, topic) thread.</summary>
-    /// <param name="streamName">Stream name.</param>
-    /// <param name="topic">Topic name.</param>
+    /// <param name="streamName">Stream name (query parameter; safely carries reserved characters such as <c>/</c>).</param>
+    /// <param name="topic">Topic name (query parameter; safely carries reserved characters).</param>
     /// <param name="limit">Maximum number of messages.</param>
     /// <param name="ct">Cancellation token.</param>
-    [HttpGet("threads/{streamName}/{topic}")]
-    public Task<IActionResult> GetThread(string streamName, string topic,
+    [HttpGet("threads")]
+    public Task<IActionResult> GetThread([FromQuery] string? streamName, [FromQuery] string? topic,
         [FromQuery] int? limit, CancellationToken ct)
-        => httpClient.ProxyAsync(Source, HttpMethod.Get,
-            $"threads/{Uri.EscapeDataString(streamName)}/{Uri.EscapeDataString(topic)}", Request, ct);
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "threads", Request, ct);
 
     /// <summary>Get a markdown snapshot of a (stream, topic) thread.</summary>
-    /// <param name="streamName">Stream name.</param>
-    /// <param name="topic">Topic name.</param>
+    /// <param name="streamName">Stream name (query parameter; safely carries reserved characters such as <c>/</c>).</param>
+    /// <param name="topic">Topic name (query parameter; safely carries reserved characters).</param>
     /// <param name="ct">Cancellation token.</param>
-    [HttpGet("threads/{streamName}/{topic}/snapshot")]
-    public Task<IActionResult> GetThreadSnapshot(string streamName, string topic, CancellationToken ct)
-        => httpClient.ProxyAsync(Source, HttpMethod.Get,
-            $"threads/{Uri.EscapeDataString(streamName)}/{Uri.EscapeDataString(topic)}/snapshot", Request, ct);
+    [HttpGet("threads/snapshot")]
+    public Task<IActionResult> GetThreadSnapshot([FromQuery] string? streamName, [FromQuery] string? topic, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "threads/snapshot", Request, ct);
 
     // ── Query ────────────────────────────────────────────────────────────
 
