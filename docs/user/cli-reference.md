@@ -255,8 +255,8 @@ object on stdin and emits a single JSON envelope on stdout. Use
 | `jira-specs` | `/api/v1/github/jira-specs/...` | Jira-spec ↔ GitHub-artifact resolution |
 | `zulip-items` | `/api/v1/zulip/items[/{id}/...]` | Zulip item shape (with `comments` / `links` returning `[]` shape stubs) |
 | `zulip-messages` | `/api/v1/zulip/messages[...]` | Single message, by-user lists, paged listings |
-| `zulip-streams` | `/api/v1/zulip/streams[/{id}\|/{name}/topics]` | Stream catalog and per-stream topic enumeration |
-| `zulip-threads` | `/api/v1/zulip/threads/{stream}/{topic}[/snapshot]` | Topic-thread retrieval |
+| `zulip-streams` | `/api/v1/zulip/streams[/{id}]`, `.../streams/topics?streamName=` | Stream catalog and per-stream topic enumeration (topics keyed by `streamName` query param) |
+| `zulip-threads` | `/api/v1/zulip/threads?streamName=&topic=[&limit=]`, `.../threads/snapshot?streamName=&topic=` | Topic-thread retrieval (stream/topic carried as query params, so `/` is safe) |
 | `confluence-pages` | `/api/v1/confluence/pages[/{id}/...]` | Pages, related, snapshot, content, comments, children, ancestors, linked, by-label |
 | `confluence-items` | `/api/v1/confluence/items[/{id}/...]` | Confluence-side item shape |
 | `github-items` | `/api/v1/github/items/{action}/{**key}` | Action-first item layout (catch-all key carries `owner/name#123`) |

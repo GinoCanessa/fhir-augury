@@ -115,10 +115,16 @@ family are identical to Jira (same shapes, same routes).
 | GET  | `api/v1/streams` |
 | GET  | `api/v1/streams/{zulipStreamId:int}` |
 | PUT  | `api/v1/streams/{zulipStreamId:int}` |
-| GET  | `api/v1/streams/{streamName}/topics` |
-| GET  | `api/v1/threads/{streamName}/{topic}` |
-| GET  | `api/v1/threads/{streamName}/{topic}/snapshot` |
+| GET  | `api/v1/streams/topics?streamName=&limit=&offset=` |
+| GET  | `api/v1/threads?streamName=&topic=&limit=` |
+| GET  | `api/v1/threads/snapshot?streamName=&topic=` |
 | POST | `api/v1/query` |
+
+> `streamName` and `topic` are passed as **query-string** parameters (not path
+> segments) so they safely carry reserved characters such as `/` (e.g.
+> `streamName=fhir/infrastructure-wg`). `limit`/`offset` remain optional paging
+> parameters. `streamName` is required for `streams/topics`; both `streamName`
+> and `topic` are required for the `threads` routes.
 
 ## Confluence (`src/FhirAugury.Source.Confluence/Controllers/`, port :5180)
 
