@@ -15,8 +15,7 @@ family is one `[McpServerToolType]` class under
 - **Jira** — `Jira`, `JiraItems`, `JiraDimension`, `JiraProject`,
   `JiraWorkGroup`, `JiraSpecs`, `JiraLocalProcessing`, `JiraBalDef`,
   `JiraBallot`, `JiraPss`.
-- **Zulip** — `Zulip`, `ZulipItems`, `ZulipMessages`, `ZulipStreams`,
-  `ZulipThreads`.
+- **Zulip** — `ZulipItems`, `ZulipMessages`, `ZulipStreams`, `ZulipThreads`.
 - **Confluence** — `ConfluenceItems`, `ConfluencePages`.
 - **GitHub** — `GitHubItems`, `GitHubRepos`, `WorkGroup`.
 
@@ -320,7 +319,8 @@ No parameters.
 
 ---
 
-Source-specific tools that talk to the Zulip service directly.
+Source-specific Zulip tools (routed through the orchestrator; each returns a raw
+JSON payload).
 
 ### `GetZulipThread`
 
@@ -328,9 +328,9 @@ Get a full Zulip topic thread with all messages.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `stream` | string | Yes | | Stream name |
+| `streamName` | string | Yes | | Stream name |
 | `topic` | string | Yes | | Topic name |
-| `limit` | int | No | `100` | Maximum messages |
+| `limit` | int | No | | Maximum messages |
 
 ### `QueryZulipMessages`
 
@@ -351,14 +351,15 @@ Query Zulip messages with structured filters.
 
 List available Zulip streams. No parameters.
 
-### `ListZulipTopics`
+### `GetZulipStreamTopics`
 
-List topics in a Zulip stream.
+Get topics in a Zulip stream.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `stream` | string | Yes | | Stream name |
-| `limit` | int | No | `50` | Maximum topics |
+| `streamName` | string | Yes | | Stream name |
+| `limit` | int | No | | Maximum results |
+| `offset` | int | No | | Pagination offset |
 
 Returns topic names with message counts and last activity.
 
@@ -406,7 +407,7 @@ The tools are designed for a progressive discovery pattern:
    to discover connected items across sources
 3. **Deep dive** — Use `GetItem` for full item details from any source, or
    `GetJiraComments` and `GetZulipThread` for source-specific detail
-4. **Browse** — Use `ListZulipStreams`, `ListZulipTopics`, and `ListJiraIssues`
+4. **Browse** — Use `ListZulipStreams`, `GetZulipStreamTopics`, and `ListJiraIssues`
    for structured browsing
 5. **Admin** — Use `GetStats` to check service health, `TriggerSync` to refresh
    data, and `RebuildIndex` to rebuild search indexes

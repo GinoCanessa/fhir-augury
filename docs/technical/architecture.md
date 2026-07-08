@@ -86,7 +86,7 @@ Ports (HTTP only):
 | **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — queues resolved change-required tickets, runs `ticket-plan`, persists implementation plans |
 | **Processor.Jira.Fhir.Applier** | `FhirAugury.Processor.Jira.Fhir.Applier` | Applier processor (port 5173) — auto-discovers completed plans, applies each in a git worktree, push API on demand |
 | **Processor.GitHub.Fhir.BallotNotes** | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | BallotNotes processor (port 5174) — hydrates ballot-note evidence for a repo + since-commit window; read by `notes-site` |
-| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 23 tool-type classes (130 tool methods — UnifiedTools, ContentTools, JiraTools, ZulipTools, FhirTools, …) and McpHttpRegistration |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 22 tool-type classes (126 tool methods — UnifiedTools, ContentTools, JiraTools, FhirTools, …) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
 | **CLI** | `FhirAugury.Cli` | Command-line interface (64 commands, HTTP to orchestrator) |

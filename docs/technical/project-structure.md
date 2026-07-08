@@ -288,12 +288,11 @@ families that mirror the typed orchestrator proxies one-for-one:
 `ZulipMessagesTools`, `ZulipStreamsTools`, `ZulipThreadsTools`,
 `ConfluenceItemsTools`, `ConfluencePagesTools`, `GitHubItemsTools`,
 `GitHubReposTools`, `FhirTools`, `WorkGroupTools`; the legacy umbrella
-`JiraTools` and `ZulipTools` classes remain for backwards-compatible
-cross-source helpers).
+`JiraTools` class remains for backwards-compatible cross-source helpers).
 
 ```
 FhirAugury.McpShared/
-├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs, ZulipTools.cs
+├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs
 ├── McpHttpRegistration.cs    # Shared DI registration for MCP HTTP clients
 └── FhirAugury.McpShared.csproj
 ```
