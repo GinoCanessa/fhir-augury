@@ -96,9 +96,9 @@ public static class ZulipCatalog
                         ValueType: ApiParameterValueType.Json),
                 ]),
             new ApiEndpointDescriptor("streams.topics", "Topics for stream", "Streams",
-                HttpMethod.Get, "api/v1/streams/{streamName}/topics",
+                HttpMethod.Get, "api/v1/streams/topics",
                 [
-                    new ApiParameter("streamName", ApiParameterKind.Path, Required: true),
+                    new ApiParameter("streamName", ApiParameterKind.Query, Required: true),
                     new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "50",
                         ValueType: ApiParameterValueType.Int),
                     new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
@@ -107,18 +107,18 @@ public static class ZulipCatalog
 
             // Threads
             new ApiEndpointDescriptor("threads.get", "Get thread", "Threads",
-                HttpMethod.Get, "api/v1/threads/{streamName}/{topic}",
+                HttpMethod.Get, "api/v1/threads",
                 [
-                    new ApiParameter("streamName", ApiParameterKind.Path, Required: true),
-                    new ApiParameter("topic", ApiParameterKind.Path, Required: true),
+                    new ApiParameter("streamName", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("topic", ApiParameterKind.Query, Required: true),
                     new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "100",
                         ValueType: ApiParameterValueType.Int),
                 ]),
             new ApiEndpointDescriptor("threads.snapshot", "Thread snapshot", "Threads",
-                HttpMethod.Get, "api/v1/threads/{streamName}/{topic}/snapshot",
+                HttpMethod.Get, "api/v1/threads/snapshot",
                 [
-                    new ApiParameter("streamName", ApiParameterKind.Path, Required: true),
-                    new ApiParameter("topic", ApiParameterKind.Path, Required: true),
+                    new ApiParameter("streamName", ApiParameterKind.Query, Required: true),
+                    new ApiParameter("topic", ApiParameterKind.Query, Required: true),
                 ]),
 
             // Query
