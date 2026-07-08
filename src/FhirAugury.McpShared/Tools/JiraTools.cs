@@ -221,37 +221,6 @@ public static class JiraTools
         }
     }
 
-    [McpServerTool, Description("List all Jira work groups with issue counts.")]
-    public static async Task<string> ListJiraWorkGroups(
-        IHttpClientFactory httpClientFactory,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            HttpClient client = httpClientFactory.CreateClient("jira");
-            JsonElement root = await UnifiedTools.GetJsonAsync(
-                client, "/api/v1/work-groups", cancellationToken);
-
-            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
-                return "No work groups found.";
-
-            StringBuilder sb = new();
-            sb.AppendLine("| Work Group | Issues |");
-            sb.AppendLine("|------------|--------|");
-            foreach (JsonElement item in root.EnumerateArray())
-            {
-                string name = UnifiedTools.GetString(item, "name");
-                string count = item.TryGetProperty("issueCount", out JsonElement c) ? c.ToString() : "";
-                sb.AppendLine($"| {name} | {count} |");
-            }
-            return sb.ToString();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
     [McpServerTool, Description("List all Jira specifications with issue counts.")]
     public static async Task<string> ListJiraSpecifications(
         IHttpClientFactory httpClientFactory,

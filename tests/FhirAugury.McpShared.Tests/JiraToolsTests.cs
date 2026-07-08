@@ -108,31 +108,6 @@ public class JiraToolsTests
         Assert.Equal("No labels found.", result);
     }
 
-    // ── Work Groups ────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task ListJiraWorkGroups_ReturnsMarkdownTable()
-    {
-        string json = """[{"name":"FHIR Infrastructure","issueCount":4231},{"name":"Orders","issueCount":1894}]""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
-
-        string result = await JiraTools.ListJiraWorkGroups(factory);
-
-        Assert.Contains("| FHIR Infrastructure | 4231 |", result);
-        Assert.Contains("| Orders | 1894 |", result);
-        Assert.Contains("Work Group", result);
-    }
-
-    [Fact]
-    public async Task ListJiraWorkGroups_Empty_ReturnsMessage()
-    {
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
-
-        string result = await JiraTools.ListJiraWorkGroups(factory);
-
-        Assert.Equal("No work groups found.", result);
-    }
-
     // ── Specifications ─────────────────────────────────────────────────
 
     [Fact]
