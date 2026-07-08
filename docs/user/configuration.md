@@ -247,24 +247,14 @@ environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### McpStdio
 
 The stdio-based server (`FhirAugury.McpStdio`) is configured entirely through
-environment variables (listed above). It supports `--mode` and `--source`
-command-line arguments for direct mode (connecting to a single source service,
-bypassing the orchestrator):
+environment variables (listed above):
 
 ```bash
-# Default mode (orchestrator)
 dotnet run --project src/FhirAugury.McpStdio
-
-# Direct mode — single source
-dotnet run --project src/FhirAugury.McpStdio -- --mode direct --source jira
 ```
 
 ### McpHttp

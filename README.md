@@ -130,28 +130,7 @@ Configure your MCP client to connect to the running services:
       "command": "dotnet",
       "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
-        "FHIR_AUGURY_JIRA": "http://localhost:5160",
-        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
-        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
-        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
-      }
-    }
-  }
-}
-```
-
-### Stdio Mode (Direct — Single Source)
-
-```json
-{
-  "mcpServers": {
-    "fhir-augury-jira": {
-      "command": "dotnet",
-      "args": ["run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
-               "--", "--mode", "direct", "--source", "jira"],
-      "env": {
-        "FHIR_AUGURY_JIRA": "http://localhost:5160"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150"
       }
     }
   }

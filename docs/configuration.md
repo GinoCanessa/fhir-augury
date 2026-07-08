@@ -671,19 +671,6 @@ environment variables. It is packaged as the `fhir-augury-mcp` dotnet tool.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
-
-### CLI Arguments
-
-| Argument | Values | Description |
-|----------|--------|-------------|
-| `--mode` | `orchestrator` (default), `direct` | Operation mode |
-| `--source` | `jira`, `zulip`, `confluence`, `github` | Source for direct mode |
-
-Direct mode bypasses the orchestrator and connects to a single source service.
 
 ---
 
@@ -698,10 +685,6 @@ on port 5200.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### appsettings.json
 

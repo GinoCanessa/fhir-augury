@@ -52,10 +52,6 @@ environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### Stdio Transport (Claude Desktop, etc.)
 
@@ -81,32 +77,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
         "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
-        "FHIR_AUGURY_JIRA": "http://localhost:5160",
-        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
-        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
-        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
-      }
-    }
-  }
-}
-```
-
-#### Direct Mode (Single Source)
-
-To connect directly to a single source service, bypassing the orchestrator:
-
-```json
-{
-  "mcpServers": {
-    "fhir-augury-jira": {
-      "command": "dotnet",
-      "args": [
-        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
-        "--", "--mode", "direct", "--source", "jira"
-      ],
-      "env": {
-        "FHIR_AUGURY_JIRA": "http://localhost:5160"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150"
       }
     }
   }
@@ -272,7 +243,10 @@ GetItem(source: "jira", id: "FHIR-43499", includeComments: true, includeSnapshot
 
 ## Jira Tools
 
-Source-specific tools that talk to the Jira service directly.
+Source-specific Jira tools (routed through the orchestrator).
+
+> For listing issues, use `ListJiraItems` for a plain listing or
+> `QueryJiraIssues(statuses:, workGroups:)` for filtered listing.
 
 ### `GetJiraComments`
 
@@ -298,18 +272,6 @@ Query Jira issues with structured filters.
 | `sortBy` | string | No | `updated_at` | Sort by field |
 | `sortOrder` | string | No | `desc` | Sort order: asc or desc |
 | `limit` | int | No | `20` | Maximum results |
-
-### `ListJiraIssues`
-
-List Jira issues with optional filters and sorting.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `sortBy` | string | No | `updated_at` | Sort by field |
-| `sortOrder` | string | No | `desc` | Sort order: asc or desc |
-| `limit` | int | No | `20` | Maximum results |
-| `status` | string | No | | Filter by status |
-| `workGroup` | string | No | | Filter by work group |
 
 ### `ListJiraLabels`
 
@@ -407,7 +369,7 @@ The tools are designed for a progressive discovery pattern:
    to discover connected items across sources
 3. **Deep dive** — Use `GetItem` for full item details from any source, or
    `GetJiraComments` and `GetZulipThread` for source-specific detail
-4. **Browse** — Use `ListZulipStreams`, `GetZulipStreamTopics`, and `ListJiraIssues`
+4. **Browse** — Use `ListZulipStreams`, `GetZulipStreamTopics`, and `ListJiraItems`
    for structured browsing
 5. **Admin** — Use `GetStats` to check service health, `TriggerSync` to refresh
    data, and `RebuildIndex` to rebuild search indexes
