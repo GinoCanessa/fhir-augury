@@ -19,8 +19,8 @@ public static class ZulipThreadsTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("orchestrator");
-            StringBuilder url = new($"/api/v1/zulip/threads/{Uri.EscapeDataString(streamName)}/{Uri.EscapeDataString(topic)}");
-            if (limit != null) url.Append($"?limit={limit.Value}");
+            StringBuilder url = new($"/api/v1/zulip/threads?streamName={Uri.EscapeDataString(streamName)}&topic={Uri.EscapeDataString(topic)}");
+            if (limit != null) url.Append($"&limit={limit.Value}");
 
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
             return FormatJson(root);
@@ -41,7 +41,7 @@ public static class ZulipThreadsTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("orchestrator");
-            string url = $"/api/v1/zulip/threads/{Uri.EscapeDataString(streamName)}/{Uri.EscapeDataString(topic)}/snapshot";
+            string url = $"/api/v1/zulip/threads/snapshot?streamName={Uri.EscapeDataString(streamName)}&topic={Uri.EscapeDataString(topic)}";
 
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
             return FormatJson(root);

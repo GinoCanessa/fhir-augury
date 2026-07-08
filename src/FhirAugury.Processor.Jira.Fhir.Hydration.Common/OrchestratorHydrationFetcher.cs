@@ -174,7 +174,7 @@ public class OrchestratorHydrationFetcher(
 
         string streamName = parts[0];
         string topic = parts[1];
-        string path = $"api/v1/zulip/threads/{Uri.EscapeDataString(streamName)}/{Uri.EscapeDataString(topic)}";
+        string path = $"api/v1/zulip/threads?streamName={Uri.EscapeDataString(streamName)}&topic={Uri.EscapeDataString(topic)}";
         FetchResult<OrchestratorZulipThreadResponse> result = await GetJsonAsync<OrchestratorZulipThreadResponse>(path, ct);
         if (result.Reason is not null || result.Value is null)
         {

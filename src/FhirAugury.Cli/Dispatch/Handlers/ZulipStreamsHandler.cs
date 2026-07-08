@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using FhirAugury.Cli.Models;
 
@@ -23,8 +24,16 @@ public static class ZulipStreamsHandler
             },
             "topics" => string.IsNullOrEmpty(request.StreamName)
                 ? throw new ArgumentException("streamName is required for topics action")
-                : new { data = await client.GetFromOrchestratorAsync($"/api/v1/zulip/streams/{Uri.EscapeDataString(request.StreamName)}/topics", ct) },
+                : new { data = await client.GetFromOrchestratorAsync(BuildTopicsUrl(request), ct) },
             _ => throw new ArgumentException($"Unknown action: {request.Action}. Valid: list, get, update, topics"),
         };
+    }
+
+    private static string BuildTopicsUrl(ZulipStreamsRequest request)
+    {
+        StringBuilder url = new($"/api/v1/zulip/streams/topics?streamName={Uri.EscapeDataString(request.StreamName!)}");
+        if (request.Limit != null) url.Append($"&limit={request.Limit.Value}");
+        if (request.Offset != null) url.Append($"&offset={request.Offset.Value}");
+        return url.ToString();
     }
 }

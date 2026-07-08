@@ -19,7 +19,7 @@ public static class ZulipTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("zulip");
-            string url = $"/api/v1/threads/{Uri.EscapeDataString(stream)}/{Uri.EscapeDataString(topic)}?limit={limit}";
+            string url = $"/api/v1/threads?streamName={Uri.EscapeDataString(stream)}&topic={Uri.EscapeDataString(topic)}&limit={limit}";
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
             JsonElement messages = root.GetProperty("messages");
@@ -188,7 +188,7 @@ public static class ZulipTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("zulip");
-            string url = $"/api/v1/streams/{Uri.EscapeDataString(stream)}/topics?limit={limit}";
+            string url = $"/api/v1/streams/topics?streamName={Uri.EscapeDataString(stream)}&limit={limit}";
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url, cancellationToken);
 
             JsonElement topics = root.TryGetProperty("topics", out JsonElement tEl) ? tEl : root;

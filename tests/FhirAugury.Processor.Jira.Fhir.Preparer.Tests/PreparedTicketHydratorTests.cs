@@ -17,7 +17,7 @@ public sealed class PreparedTicketHydratorTests
     public async Task Hydrate_HappyPath_WritesResolvedRowsForEverySource()
     {
         using TestDatabase database = CreateDatabase();
-        await SeedAgentRowsAsync(database, "FHIR-100", jiraKey: "FHIR-200", zulipThread: "implementers:ballot", githubItem: "HL7/fhir#42", repo: "HL7/fhir");
+        await SeedAgentRowsAsync(database, "FHIR-100", jiraKey: "FHIR-200", zulipThread: "fhir/infrastructure-wg:ballot", githubItem: "HL7/fhir#42", repo: "HL7/fhir");
 
         FakeHandler handler = new();
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-100",
@@ -37,8 +37,8 @@ public sealed class PreparedTicketHydratorTests
                 ["priority"] = "Major",
                 ["work_group"] = "FHIR-I",
             }, title: "related jira", url: "https://jira/browse/FHIR-200"));
-        handler.AddJsonResponse("/api/v1/zulip/threads/implementers/ballot",
-            """{"streamId":42,"stream":"implementers","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
+        handler.AddJsonResponse("/api/v1/zulip/threads",
+            """{"streamId":42,"stream":"fhir/infrastructure-wg","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
         handler.AddJsonResponse("/api/v1/github/items/HL7/fhir%2342",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -68,6 +68,10 @@ public sealed class PreparedTicketHydratorTests
         Assert.Single(read.ZulipRows);
         Assert.Equal(42, read.ZulipRows[0].StreamId);
         Assert.Equal(3, read.ZulipRows[0].MessageCount);
+        Assert.Contains(handler.RequestedPathsAndQueries,
+            p => p.StartsWith("/api/v1/zulip/threads?", StringComparison.Ordinal)
+                && p.Contains("streamName=fhir%2Finfrastructure-wg", StringComparison.Ordinal)
+                && p.Contains("topic=ballot", StringComparison.Ordinal));
         Assert.Single(read.GitHubRows);
         Assert.Equal("HL7", read.GitHubRows[0].Owner);
         Assert.Equal("fhir", read.GitHubRows[0].Repo);
@@ -390,6 +394,7 @@ public sealed class PreparedTicketHydratorTests
         private readonly Dictionary<string, ScriptedResponse> _byPath = new(StringComparer.Ordinal);
 
         public List<string> RequestedPaths { get; } = [];
+        public List<string> RequestedPathsAndQueries { get; } = [];
 
         public void AddJsonResponse(string path, string json)
             => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, json, null);
@@ -403,13 +408,8 @@ public sealed class PreparedTicketHydratorTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             string path = request.RequestUri?.AbsolutePath ?? string.Empty;
-            string? query = request.RequestUri?.Query;
-            if (!string.IsNullOrEmpty(query))
-            {
-                // strip query when matching by path
-            }
-
             RequestedPaths.Add(path);
+            RequestedPathsAndQueries.Add(request.RequestUri?.PathAndQuery ?? path);
 
             if (!_byPath.TryGetValue(path, out ScriptedResponse? scripted))
             {
