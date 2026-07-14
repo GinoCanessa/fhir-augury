@@ -181,7 +181,7 @@ public class GitHubIngestionPipeline(
                     string clonePath = await cloner.EnsureCloneAsync(repo, ct);
 
                     _currentStatus = $"extracting_commits:{repo}";
-                    await commitExtractor.ExtractAsync(clonePath, repo, _options.MaxInitialCommits, ct);
+                    await commitExtractor.ExtractAsync(clonePath, repo, _options.ResolveMaxInitialCommits(repo), ct);
 
                     // Resolve strategy for this repo's category
                     IRepoCategoryStrategy? strategy = _strategyMap.GetValueOrDefault(category);

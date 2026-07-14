@@ -105,6 +105,20 @@ public class GitHubServiceOptions
     /// </summary>
     public int MaxInitialCommits { get; set; } = 500;
 
+    /// <summary>
+    /// Resolves the effective initial commit-extraction cap for a repository:
+    /// the per-repo <see cref="RepoOverrideOptions.MaxInitialCommits"/> when set,
+    /// otherwise the global <see cref="MaxInitialCommits"/>. A resolved value of
+    /// <c>0</c> or negative means full history (and enables automatic backward
+    /// deepening in the extractor). An explicit per-repo <c>0</c> is honored as-is
+    /// and is not coalesced to the global default.
+    /// </summary>
+    public int ResolveMaxInitialCommits(string repoFullName) =>
+        RepoOverrides.TryGetValue(repoFullName, out RepoOverrideOptions? o)
+            && o.MaxInitialCommits.HasValue
+            ? o.MaxInitialCommits.Value
+            : MaxInitialCommits;
+
     public PortConfiguration Ports { get; set; } = new() { Http = 5190 };
     public GitHubRateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
@@ -347,6 +361,17 @@ public class RepoOverrideOptions
     /// <see cref="JiraProjectKey"/> is set.
     /// </summary>
     public string? TerminologyProjectKey { get; set; }
+
+    /// <summary>
+    /// Per-repo cap for the initial commit-file extraction, overriding the
+    /// global <see cref="GitHubServiceOptions.MaxInitialCommits"/>. A value of
+    /// <c>0</c> or negative means full history and additionally opts the repo
+    /// into automatic backward deepening (an already-ingested slice is walked
+    /// backward and deduped on the next extraction). Unset (<c>null</c>) falls
+    /// back to the global cap. Resolved via
+    /// <see cref="GitHubServiceOptions.ResolveMaxInitialCommits(string)"/>.
+    /// </summary>
+    public int? MaxInitialCommits { get; set; }
 }
 
 /// <summary>Inclusive numeric range a bare ticket integer may fall in.</summary>

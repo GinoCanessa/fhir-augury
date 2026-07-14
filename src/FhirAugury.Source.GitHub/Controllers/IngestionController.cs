@@ -99,7 +99,7 @@ public class IngestionController(
                         foreach (string repo in repos)
                         {
                             string path = await cloner.EnsureCloneAsync(repo, ct);
-                            await commitExtractor.ExtractAsync(path, repo, options.MaxInitialCommits, ct);
+                            await commitExtractor.ExtractAsync(path, repo, options.ResolveMaxInitialCommits(repo), ct);
                         }
                         indexTracker.MarkCompleted("commits");
                     }
@@ -179,7 +179,7 @@ public class IngestionController(
                         foreach (string repo in repos)
                         {
                             string path = await cloner.EnsureCloneAsync(repo, ct);
-                            await commitExtractor.ExtractAsync(path, repo, options.MaxInitialCommits, ct);
+                            await commitExtractor.ExtractAsync(path, repo, options.ResolveMaxInitialCommits(repo), ct);
                             fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
                             artifactFileMapper.BuildMappings(repo, path, ct);
                         }

@@ -381,6 +381,7 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `DatabasePath` | string | `./data/github.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `02:00:00` | Auto-sync interval |
 | `MinSyncAge` | TimeSpan | `04:00:00` | Minimum time between syncs (prevents over-syncing) |
+| `MaxInitialCommits` | int | `500` | Global cap on how many commits the *first* (no prior SHA) commit-file extraction walks back from HEAD. Incremental runs (a prior SHA exists) ignore it and walk `{lastSha}..HEAD`. `0`/negative = full history. Overridable per repo below. |
 | `ReloadFromCacheOnStartup` | bool | `false` | Rebuild database from cached data on startup |
 | `OrchestratorAddress` | string? | `null` | Orchestrator HTTP address for ingestion notifications |
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
@@ -411,6 +412,7 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `JiraNumberRanges` | map | `FHIR [2839,70000]`, `UP [40,2000]`, `UPSM [10,2000]` | Inclusive numeric range per project key; a standalone integer only resolves to `KEY-N` when it falls within the key's range (UP/UPSM uppers held below calendar years) |
 | `RepoOverrides.<owner/repo>.JiraProjectKey` | string? | `null` | Explicit Jira project key for a repo's bare-number resolution (wins over category default and `TerminologyProjectKey`) |
 | `RepoOverrides.<owner/repo>.TerminologyProjectKey` | string? | `null` | For Utg repos, selects `UP` vs `UPSM` for bare-number resolution |
+| `RepoOverrides.<owner/repo>.MaxInitialCommits` | int? | `null` | Per-repo initial commit-extraction cap; `0`/negative = full history plus automatic backward deepening of an already-ingested slice (dedup, no teardown). Falls back to the global `MaxInitialCommits` when unset. `HL7/fhir` ships set to `0`. |
 
 ---
 

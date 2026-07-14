@@ -93,4 +93,61 @@ public class GitHubServiceOptionsTests
 
         Assert.Single(Assert.IsType<RepoJiraScope>(scope).Projects);
     }
+
+    // ── ResolveMaxInitialCommits ─────────────────────────────────────
+
+    [Fact]
+    public void ResolveMaxInitialCommits_PerRepoOverride_Wins()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+        options.RepoOverrides["HL7/fhir"] = new RepoOverrideOptions { MaxInitialCommits = 0 };
+
+        Assert.Equal(0, options.ResolveMaxInitialCommits("HL7/fhir"));
+    }
+
+    [Fact]
+    public void ResolveMaxInitialCommits_OverrideWithoutCap_FallsBackToGlobal()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+        // Override present for another axis, but MaxInitialCommits unset.
+        options.RepoOverrides["HL7/fhir"] = new RepoOverrideOptions { WorkGroup = "fhir" };
+
+        Assert.Equal(500, options.ResolveMaxInitialCommits("HL7/fhir"));
+    }
+
+    [Fact]
+    public void ResolveMaxInitialCommits_UnknownRepo_ReturnsGlobalDefault()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+
+        Assert.Equal(500, options.ResolveMaxInitialCommits("HL7/not-configured"));
+    }
+
+    [Fact]
+    public void ResolveMaxInitialCommits_CaseInsensitiveKey_Resolves()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+        options.RepoOverrides["HL7/fhir"] = new RepoOverrideOptions { MaxInitialCommits = 42 };
+
+        Assert.Equal(42, options.ResolveMaxInitialCommits("hl7/FHIR"));
+    }
+
+    [Fact]
+    public void ResolveMaxInitialCommits_ExplicitZero_HonoredNotCoalesced()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+        options.RepoOverrides["HL7/fhir"] = new RepoOverrideOptions { MaxInitialCommits = 0 };
+
+        // 0 must survive as-is (full history), not be treated as "unset" → 500.
+        Assert.Equal(0, options.ResolveMaxInitialCommits("HL7/fhir"));
+    }
+
+    [Fact]
+    public void ResolveMaxInitialCommits_NegativeOverride_ReturnedAsIs()
+    {
+        GitHubServiceOptions options = new() { MaxInitialCommits = 500 };
+        options.RepoOverrides["HL7/fhir"] = new RepoOverrideOptions { MaxInitialCommits = -1 };
+
+        Assert.Equal(-1, options.ResolveMaxInitialCommits("HL7/fhir"));
+    }
 }
