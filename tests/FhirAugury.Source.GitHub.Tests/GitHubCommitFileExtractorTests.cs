@@ -432,6 +432,94 @@ public class GitHubCommitFileExtractorTests
         Assert.Equal("", limitArg);
     }
 
+    [Fact]
+    public void BuildLogRange_Deepen_WithLastShaAndUncapped_WalksFullHistory()
+    {
+        (string sinceArg, string limitArg) =
+            GitHubCommitFileExtractor.BuildLogRange("abc123def456", maxInitialCommits: 0, deepen: true);
+
+        Assert.Equal("HEAD", sinceArg);
+        Assert.Equal("", limitArg);
+    }
+
+    [Fact]
+    public void BuildLogRange_Deepen_WithLastShaAndFiniteCap_HeadWithLimit()
+    {
+        (string sinceArg, string limitArg) =
+            GitHubCommitFileExtractor.BuildLogRange("abc123def456", maxInitialCommits: 250, deepen: true);
+
+        Assert.Equal("HEAD", sinceArg);
+        Assert.Equal(" -n 250", limitArg);
+    }
+
+    [Fact]
+    public void BuildLogRange_DeepenFalse_WithLastSha_StaysForwardOnly()
+    {
+        (string sinceArg, string limitArg) =
+            GitHubCommitFileExtractor.BuildLogRange("abc123def456", maxInitialCommits: 0, deepen: false);
+
+        Assert.Equal("abc123def456..HEAD", sinceArg);
+        Assert.Equal("", limitArg);
+    }
+
+    // ── ParseRootShas tests ──────────────────────────────────────────
+
+    [Fact]
+    public void ParseRootShas_SingleRoot_Parsed()
+    {
+        List<string> roots = GitHubCommitFileExtractor.ParseRootShas(
+            "1111111111111111111111111111111111111111\n");
+
+        Assert.Equal(["1111111111111111111111111111111111111111"], roots);
+    }
+
+    [Fact]
+    public void ParseRootShas_MultipleRoots_Parsed()
+    {
+        List<string> roots = GitHubCommitFileExtractor.ParseRootShas(
+            "1111111111111111111111111111111111111111\n2222222222222222222222222222222222222222\n");
+
+        Assert.Equal(2, roots.Count);
+        Assert.Contains("1111111111111111111111111111111111111111", roots);
+        Assert.Contains("2222222222222222222222222222222222222222", roots);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   \n  \n")]
+    public void ParseRootShas_BlankOrWhitespace_Empty(string input)
+    {
+        Assert.Empty(GitHubCommitFileExtractor.ParseRootShas(input));
+    }
+
+    [Fact]
+    public void ParseRootShas_ShortTokens_Filtered()
+    {
+        List<string> roots = GitHubCommitFileExtractor.ParseRootShas(
+            "abc\n1111111111111111111111111111111111111111\n123456\n");
+
+        Assert.Equal(["1111111111111111111111111111111111111111"], roots);
+    }
+
+    // ── ShouldDeepen decision matrix ─────────────────────────────────
+
+    [Theory]
+    // cap<=0 && prior && !rootsIngested  → deepen
+    [InlineData(0, true, false, true)]
+    [InlineData(-1, true, false, true)]
+    // roots already ingested → no deepen (gate closed)
+    [InlineData(0, true, true, false)]
+    // no prior history (first-ever run) → no deepen
+    [InlineData(0, false, false, false)]
+    // finite cap → never deepen
+    [InlineData(500, true, false, false)]
+    [InlineData(500, true, true, false)]
+    [InlineData(500, false, false, false)]
+    public void ShouldDeepen_Matrix(int cap, bool hasPrior, bool allRootsIngested, bool expected)
+    {
+        Assert.Equal(expected, GitHubCommitFileExtractor.ShouldDeepen(cap, hasPrior, allRootsIngested));
+    }
+
     // ── BuildPass1Args tests ─────────────────────────────────────────
 
     [Fact]

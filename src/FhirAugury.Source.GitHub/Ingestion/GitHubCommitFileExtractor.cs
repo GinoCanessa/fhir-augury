@@ -7,9 +7,16 @@ using Microsoft.Extensions.Logging;
 namespace FhirAugury.Source.GitHub.Ingestion;
 
 /// <summary>
-/// Extracts commit metadata and changed files from a local git clone
-/// using a two-pass git log strategy: --name-status for change types,
-/// --numstat for per-file line counts, merged by SHA.
+/// Extracts commit metadata and changed files from a local git clone using a
+/// two-pass git log strategy: <c>--raw --no-abbrev</c> for change types and
+/// post-image blob SHAs, <c>--numstat</c> for per-file line counts, merged by
+/// SHA. Normal runs walk forward (<c>{lastSha}..HEAD</c>); an initial run walks
+/// back from HEAD capped by <c>maxInitialCommits</c> (non-positive = full
+/// history). When a repo is configured uncapped, an already-ingested slice is
+/// deepened backward automatically until its parentless root commit(s) are
+/// stored (see <see cref="ShouldDeepen"/>). That root gate assumes a <b>full</b>
+/// clone — a shallow/grafted clone would report its graft boundary as a root and
+/// could close the gate on an incomplete history.
 /// </summary>
 public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCommitFileExtractor> logger)
 {
@@ -41,6 +48,29 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
         }
 
         (string sinceArg, string limitArg) = BuildLogRange(lastSha, maxInitialCommits);
+
+        // Backward deepening: when a repo is configured uncapped (full history)
+        // and already has commits but its parentless root commit(s) are not yet
+        // ingested, re-issue the full-history range instead of the forward-only
+        // {lastSha}..HEAD. The pre-loaded-SHA dedup below then inserts only the
+        // missing (older) commits — deepening the window in one pass while still
+        // catching any new tip commits (HEAD is a superset of {lastSha}..HEAD).
+        // Once the root(s) land this gate closes and subsequent runs revert to
+        // cheap forward increments. The guard keeps finite-cap and first-ever
+        // runs on the exact prior code path (no rev-list spawn, no behavior
+        // change).
+        bool deepen = false;
+        if (maxInitialCommits <= 0 && lastSha is not null)
+        {
+            bool allRootsIngested = await AreAllRootsIngestedAsync(clonePath, repoFullName, ct);
+            deepen = ShouldDeepen(maxInitialCommits, hasPriorHistory: true, allRootsIngested);
+            if (deepen)
+            {
+                logger.LogInformation(
+                    "Deepening full commit history for {Repo} (backfilling older commits)", repoFullName);
+                (sinceArg, limitArg) = BuildLogRange(lastSha, maxInitialCommits, deepen: true);
+            }
+        }
 
         // Pass 1: metadata + --raw (change types + post-image blob SHAs)
         string pass1Args = BuildPass1Args(sinceArg, limitArg);
@@ -87,17 +117,33 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
         const int batchSize = 1000;
 
-        for (int i = 0; i < newCommits.Count; i += batchSize)
-        {
-            List<GitHubCommitRecord> batch =
-                newCommits.GetRange(i, Math.Min(batchSize, newCommits.Count - i));
-            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-        }
+        // Crash-safe / idempotent write (files first, commits last).
+        //
+        // Each generated batch Insert wraps its work in its OWN transaction, so
+        // commits and files cannot share one enclosing transaction. Instead we
+        // (1) delete any github_commit_files rows for exactly the SHAs we are
+        // about to insert — cleaning up file rows left by a prior interrupted
+        // pass without duplicating them, since that index is non-unique — then
+        // (2) insert the file rows, then (3) insert the commit rows LAST. Because
+        // the oldest (root) commit is the final row written in the newest-first
+        // walk, "root present" soundly implies every commit AND its files are
+        // present, which is exactly what the deepen root-gate reads. For
+        // brand-new commits the delete is a no-op, so the normal incremental path
+        // writes identical data as before.
+        List<string> newShas = [.. newCommits.Select(c => c.Sha)];
+        DeleteCommitFilesForShas(connection, newShas);
 
         for (int i = 0; i < newFiles.Count; i += batchSize)
         {
             List<GitHubCommitFileRecord> batch =
                 newFiles.GetRange(i, Math.Min(batchSize, newFiles.Count - i));
+            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
+
+        for (int i = 0; i < newCommits.Count; i += batchSize)
+        {
+            List<GitHubCommitRecord> batch =
+                newCommits.GetRange(i, Math.Min(batchSize, newCommits.Count - i));
             batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
         }
 
@@ -315,17 +361,113 @@ public class GitHubCommitFileExtractor(GitHubDatabase database, ILogger<GitHubCo
 
     /// <summary>
     /// Builds the git log range and optional limit arguments.
-    /// When a previous SHA exists, uses "{sha}..HEAD" for incremental extraction.
+    /// When a previous SHA exists and <paramref name="deepen"/> is false, uses
+    /// "{sha}..HEAD" for forward-only incremental extraction.
     /// Otherwise uses "HEAD" with a -n limit to cap initial extraction,
     /// avoiding the HEAD~N crash when a repo has fewer than N commits.
     /// A non-positive <paramref name="maxInitialCommits"/> removes the cap
-    /// (full-history initial extraction).
+    /// (full-history extraction). When <paramref name="deepen"/> is true the
+    /// forward-only shortcut is bypassed and the full-history range is used even
+    /// though a prior SHA exists, so the pre-loaded-SHA dedup backfills only the
+    /// missing (older) commits.
     /// </summary>
-    internal static (string SinceArg, string LimitArg) BuildLogRange(string? lastSha, int maxInitialCommits = 500)
+    internal static (string SinceArg, string LimitArg) BuildLogRange(
+        string? lastSha, int maxInitialCommits = 500, bool deepen = false)
     {
-        if (lastSha is not null)
+        if (lastSha is not null && !deepen)
             return ($"{lastSha}..HEAD", "");
         return maxInitialCommits > 0 ? ("HEAD", $" -n {maxInitialCommits}") : ("HEAD", "");
+    }
+
+    /// <summary>
+    /// Parses the output of <c>git rev-list --max-parents=0 HEAD</c> (the
+    /// parentless root commit(s) reachable from HEAD) into a list of SHAs,
+    /// trimming blank lines and ignoring short/garbage tokens. A full clone has
+    /// real roots; a shallow/grafted clone would falsely report its graft
+    /// boundary as a root — this extractor assumes a full clone (see class docs).
+    /// </summary>
+    internal static List<string> ParseRootShas(string revListOutput)
+    {
+        List<string> roots = [];
+        if (string.IsNullOrWhiteSpace(revListOutput)) return roots;
+
+        foreach (string raw in revListOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string sha = raw.Trim();
+            if (sha.Length >= 7) roots.Add(sha);
+        }
+
+        return roots;
+    }
+
+    /// <summary>
+    /// Decides whether an extraction should re-walk full history to deepen an
+    /// already-ingested repo backward. True only when the repo is configured
+    /// uncapped (<paramref name="effectiveMaxInitialCommits"/> &lt;= 0), it
+    /// already has commits (<paramref name="hasPriorHistory"/>), and its git
+    /// root commit(s) are not yet all present
+    /// (<paramref name="allRootsIngested"/> is false). Once the root(s) land,
+    /// this returns false and the extractor reverts to cheap forward increments.
+    /// </summary>
+    internal static bool ShouldDeepen(int effectiveMaxInitialCommits, bool hasPriorHistory, bool allRootsIngested)
+        => effectiveMaxInitialCommits <= 0 && hasPriorHistory && !allRootsIngested;
+
+    /// <summary>
+    /// Returns true when every parentless root commit reachable from HEAD is
+    /// already stored in <c>github_commits</c> for <paramref name="repoFullName"/>.
+    /// Runs <c>git rev-list --max-parents=0 HEAD</c> (sub-second) and checks each
+    /// root against the DB; returns false on the first missing root. Returns true
+    /// defensively when git reports no roots. Because the insert phase writes the
+    /// oldest (root) commit last, a present root soundly implies the full history
+    /// — and every commit's file rows — are present.
+    /// </summary>
+    private async Task<bool> AreAllRootsIngestedAsync(string clonePath, string repoFullName, CancellationToken ct)
+    {
+        string revListOutput = await RunGitAsync(clonePath, "rev-list --max-parents=0 HEAD", ct);
+        List<string> roots = ParseRootShas(revListOutput);
+        if (roots.Count == 0) return true;
+
+        using SqliteConnection connection = database.OpenConnection();
+        foreach (string root in roots)
+        {
+            ct.ThrowIfCancellationRequested();
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM github_commits WHERE RepoFullName = @repo AND Sha = @sha LIMIT 1";
+            cmd.Parameters.AddWithValue("@repo", repoFullName);
+            cmd.Parameters.AddWithValue("@sha", root);
+            if (cmd.ExecuteScalar() is null) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Deletes every <c>github_commit_files</c> row whose <c>CommitSha</c> is in
+    /// <paramref name="shas"/>, chunking the <c>IN (...)</c> list to stay under
+    /// SQLite's bound-parameter limit. Called immediately before re-inserting the
+    /// file rows for those commits so a retried/interrupted extraction cannot
+    /// leave duplicated or orphaned file rows (the file index is non-unique). A
+    /// no-op for brand-new SHAs, so the normal incremental path is unchanged.
+    /// </summary>
+    private static void DeleteCommitFilesForShas(SqliteConnection connection, List<string> shas)
+    {
+        if (shas.Count == 0) return;
+
+        const int chunkSize = 500;
+        for (int i = 0; i < shas.Count; i += chunkSize)
+        {
+            List<string> chunk = shas.GetRange(i, Math.Min(chunkSize, shas.Count - i));
+            using SqliteCommand cmd = connection.CreateCommand();
+            string[] paramNames = new string[chunk.Count];
+            for (int j = 0; j < chunk.Count; j++)
+            {
+                paramNames[j] = $"@s{j}";
+                cmd.Parameters.AddWithValue($"@s{j}", chunk[j]);
+            }
+            cmd.CommandText =
+                $"DELETE FROM github_commit_files WHERE CommitSha IN ({string.Join(",", paramNames)})";
+            cmd.ExecuteNonQuery();
+        }
     }
 
     /// <summary>
