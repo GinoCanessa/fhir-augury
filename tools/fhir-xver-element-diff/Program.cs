@@ -97,7 +97,8 @@ public static class Program
             ReportModel model = ReportBuilder.Build(increment, earlier, later, header);
             if (allowlist is not null)
             {
-                model = await Attributor.AttributeAsync(model, git, since, until, allowlist).ConfigureAwait(false);
+                model = await Attributor.AttributeAsync(
+                    model, git, since, until, allowlist, Release.IsR6(increment.Later)).ConfigureAwait(false);
             }
 
             string outPath = Path.GetFullPath(Path.Combine(options.OutDir, increment.Slug + ".md"));

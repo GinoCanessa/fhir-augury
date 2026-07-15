@@ -9,12 +9,18 @@ using FhirAugury.Tools.FhirXverElementDiff.Report;
 namespace FhirAugury.Tools.FhirXverElementDiff.Attribution;
 
 /// <summary>
-/// Structure-window attribution: for each changed structure, walk the git window over its
-/// source file(s), extract the FHIR tickets its authoring commits cite, and stamp that
-/// shared <see cref="ElementChangeRecord"/> onto every one of the structure's changed rows
-/// (the request's structure-window fallback; Phase 6 refines to per-element where a commit
-/// isolates one element). Ticket links are preferred; a bare commit-hash list is the
-/// fallback when no allowlisted ticket resolves.
+/// Two-tier attribution for each changed structure. First the <b>structure window</b>: walk the
+/// git window over the structure's source file(s), extract the FHIR tickets its authoring
+/// commits cite, and use that shared <see cref="ElementChangeRecord"/> as the default for every
+/// changed row (the request's structure-window fallback). Then the <b>per-element</b> refinement
+/// (Phase 6 hybrid): parse the same commits' diffs and, when a commit cleanly isolates one
+/// element and changes a parseable facet (cardinality, or a structural add/remove), attribute
+/// that element's row to that commit's ticket(s) instead — strictly sharpening precision, and
+/// only ever replacing the window record with a <em>ticket</em> so a good structure-window
+/// ticket is never downgraded to a bare hash. For the R5→R6 increment the winning commit's
+/// post-change cardinality is verified against the DB value so an edit that landed after the
+/// ballot4 snapshot is rejected. Ticket links are preferred throughout; a bare commit-hash list
+/// is the window fallback when no allowlisted ticket resolves.
 /// </summary>
 internal static partial class Attributor
 {
@@ -28,6 +34,12 @@ internal static partial class Attributor
     [GeneratedRegex(@"Branch[_-](\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex BranchTicketPattern();
 
+    // The later ("→"-side) cardinality in an element-summary clause, e.g. "0..1 → 0..0" → 0, 0.
+    // Restricted to the "digits..token" shape so a type/target arrow in the same summary
+    // (e.g. "Quantity → Money") never matches.
+    [GeneratedRegex(@"(\d+)\.\.([^\s;]+)\s*(?:→|->)\s*(\d+)\.\.([^\s;]+)")]
+    private static partial Regex CardinalityArrowPattern();
+
     // Bound the auxiliary merge-harvest so a large structure window does not spawn one
     // nearest-merge lookup per authoring commit; the first handful of merges is plenty to
     // recover a branch-encoded ticket.
@@ -35,14 +47,33 @@ internal static partial class Attributor
     private const int HashFallbackCount = 3;
     private const int MaxParallelism = 8;
 
+    // A commit that touches more than this many distinct element paths is a broad sweep, not
+    // an element-isolating change; its diff is not used for per-element attribution.
+    private const int IsolationLimit = 4;
+
+    /// <summary>A structure's default window record plus its per-element (path → touches) index.</summary>
+    internal sealed record StructureAttribution(
+        ElementChangeRecord? WindowRecord,
+        IReadOnlyDictionary<string, List<PathTouch>> ByPath);
+
     /// <summary>
-    /// Returns a copy of <paramref name="model"/> with every changed structure's rows
-    /// stamped with its structure-window change record. A no-op (returns the input) when the
-    /// clone is unavailable, the allowlist is empty, or neither endpoint tree loads.
+    /// One qualifying (element-isolating, ticket-bearing) touch of an element path by a single
+    /// commit. Stored newest-first; <see cref="NewMin"/>/<see cref="NewMax"/> carry the post-change
+    /// cardinality value for the R6 snapshot gate.
+    /// </summary>
+    internal sealed record PathTouch(ElementFacet Facet, IReadOnlyList<string> Tickets, string? NewMin, string? NewMax);
+
+
+    /// <summary>
+    /// Returns a copy of <paramref name="model"/> with every changed structure's rows attributed:
+    /// each row gets its structure-window record by default, refined to a per-element ticket where
+    /// a commit isolates that element. A no-op (returns the input) when the clone is unavailable,
+    /// the allowlist is empty, or neither endpoint tree loads. <paramref name="isR6Target"/> turns
+    /// on the ballot4 snapshot cardinality gate for the R5→R6 increment.
     /// </summary>
     public static async Task<ReportModel> AttributeAsync(
         ReportModel model, GitLog git, string since, string until,
-        FhirKeyAllowlist allowlist, CancellationToken ct = default)
+        FhirKeyAllowlist allowlist, bool isR6Target = false, CancellationToken ct = default)
     {
         if (!git.CloneAvailable || allowlist.IsEmpty)
         {
@@ -71,7 +102,7 @@ internal static partial class Attributor
             jobs.Add(("A:" + report.Structure.Name, report.Structure, null));
         }
 
-        ConcurrentDictionary<string, ElementChangeRecord?> byStructure = new(StringComparer.Ordinal);
+        ConcurrentDictionary<string, StructureAttribution?> byStructure = new(StringComparer.Ordinal);
         using SemaphoreSlim gate = new(MaxParallelism);
         List<Task> tasks = [];
         foreach ((string key, StructureModel structure, string? oldName) in jobs)
@@ -82,7 +113,7 @@ internal static partial class Attributor
                 {
                     try
                     {
-                        byStructure[key] = await BuildStructureRecordAsync(
+                        byStructure[key] = await BuildStructureAttributionAsync(
                             git, resolver, structure, oldName, since, until, allowlist, ct).ConfigureAwait(false);
                     }
                     finally
@@ -97,26 +128,26 @@ internal static partial class Attributor
         List<MappedStructureReport> mapped = [];
         foreach (MappedStructureReport report in model.Mapped)
         {
-            byStructure.TryGetValue("M:" + report.Pair.Later.Name, out ElementChangeRecord? record);
-            mapped.Add(new MappedStructureReport(report.Pair, ApplyRecord(report.Rows, record)));
+            byStructure.TryGetValue("M:" + report.Pair.Later.Name, out StructureAttribution? attr);
+            mapped.Add(new MappedStructureReport(report.Pair, ApplyReport(report.Rows, attr, isR6Target)));
         }
         List<StructureElementReport> removed = [];
         foreach (StructureElementReport report in model.Removed)
         {
-            byStructure.TryGetValue("R:" + report.Structure.Name, out ElementChangeRecord? record);
-            removed.Add(new StructureElementReport(report.Structure, ApplyRecord(report.Rows, record)));
+            byStructure.TryGetValue("R:" + report.Structure.Name, out StructureAttribution? attr);
+            removed.Add(new StructureElementReport(report.Structure, ApplyReport(report.Rows, attr, isR6Target)));
         }
         List<StructureElementReport> added = [];
         foreach (StructureElementReport report in model.Added)
         {
-            byStructure.TryGetValue("A:" + report.Structure.Name, out ElementChangeRecord? record);
-            added.Add(new StructureElementReport(report.Structure, ApplyRecord(report.Rows, record)));
+            byStructure.TryGetValue("A:" + report.Structure.Name, out StructureAttribution? attr);
+            added.Add(new StructureElementReport(report.Structure, ApplyReport(report.Rows, attr, isR6Target)));
         }
 
         return model with { Mapped = mapped, Removed = removed, Added = added };
     }
 
-    private static async Task<ElementChangeRecord?> BuildStructureRecordAsync(
+    private static async Task<StructureAttribution?> BuildStructureAttributionAsync(
         GitLog git, SourceFileResolver resolver, StructureModel structure, string? oldName,
         string since, string until, FhirKeyAllowlist allowlist, CancellationToken ct)
     {
@@ -126,30 +157,86 @@ internal static partial class Attributor
             return null;
         }
 
-        IReadOnlyList<CommitInfo> commits = await git.LogAsync(since, until, files, ct).ConfigureAwait(false);
-        if (commits.Count == 0)
+        IReadOnlyList<CommitPatch> commitPatches =
+            await git.LogWithPatchesAsync(since, until, files, ct: ct).ConfigureAwait(false);
+        if (commitPatches.Count == 0)
         {
             return null;
         }
 
-        // Tier 1: tickets cited directly in authoring commits.
-        List<int> tickets = ExtractAuthoringTickets(commits, allowlist);
+        List<CommitInfo> commits = [.. commitPatches.Select(cp => cp.Commit)];
+        ElementChangeRecord? windowRecord =
+            await BuildWindowRecordAsync(git, commits, until, allowlist, ct).ConfigureAwait(false);
+        IReadOnlyDictionary<string, List<PathTouch>> byPath = BuildElementIndex(commitPatches, allowlist);
 
-        // Tier 2: the enclosing PR-merge subject/branch (only when tier 1 is empty).
+        return new StructureAttribution(windowRecord, byPath);
+    }
+
+    /// <summary>
+    /// The shared structure-window record: tickets cited by the authoring commits (tier 1), else
+    /// the enclosing PR-merge (tier 2), else the newest few commit short-hashes (tier 3).
+    /// </summary>
+    private static async Task<ElementChangeRecord?> BuildWindowRecordAsync(
+        GitLog git, IReadOnlyList<CommitInfo> commits, string until, FhirKeyAllowlist allowlist, CancellationToken ct)
+    {
+        List<int> tickets = ExtractAuthoringTickets(commits, allowlist);
         if (tickets.Count == 0)
         {
             tickets = await HarvestMergeTicketsAsync(git, commits, until, allowlist, ct).ConfigureAwait(false);
         }
-
         if (tickets.Count > 0)
         {
-            List<string> keys = [.. tickets.Select(n => "FHIR-" + n)];
-            return new ElementChangeRecord(keys, []);
+            return new ElementChangeRecord([.. tickets.Select(n => "FHIR-" + n)], []);
         }
-
-        // Tier 3: bare commit-hash fallback (newest few).
         List<string> shas = [.. commits.Take(HashFallbackCount).Select(c => c.ShortSha)];
         return new ElementChangeRecord([], shas);
+    }
+
+    /// <summary>
+    /// Builds the per-element index: for each element-isolating, ticket-bearing commit (newest
+    /// first), the set of <c>(path, facet)</c> touches it made. Broad sweeps (more than
+    /// <see cref="IsolationLimit"/> distinct paths) and ticket-less commits are excluded, since a
+    /// per-element override only ever <em>strengthens</em> a row and must resolve to a ticket.
+    /// </summary>
+    internal static Dictionary<string, List<PathTouch>> BuildElementIndex(
+        IReadOnlyList<CommitPatch> commitPatches, FhirKeyAllowlist allowlist)
+    {
+        Dictionary<string, List<PathTouch>> byPath = new(StringComparer.Ordinal);
+
+        foreach (CommitPatch cp in commitPatches)
+        {
+            IReadOnlyList<ElementTouch> touches = PatchParser.Parse(cp.Patch);
+            if (touches.Count == 0)
+            {
+                continue;
+            }
+            if (touches.Select(t => t.Path).Distinct(StringComparer.Ordinal).Count() > IsolationLimit)
+            {
+                continue;
+            }
+
+            List<int> ticketNumbers = ExtractAuthoringTickets([cp.Commit], allowlist);
+            if (ticketNumbers.Count == 0)
+            {
+                continue;
+            }
+            IReadOnlyList<string> tickets = [.. ticketNumbers.Select(n => "FHIR-" + n)];
+
+            foreach (IGrouping<(string Path, ElementFacet Facet), ElementTouch> group in
+                touches.GroupBy(t => (t.Path, t.Facet)))
+            {
+                string? newMin = group.Select(t => t.NewMin).FirstOrDefault(v => v is not null);
+                string? newMax = group.Select(t => t.NewMax).FirstOrDefault(v => v is not null);
+                if (!byPath.TryGetValue(group.Key.Path, out List<PathTouch>? list))
+                {
+                    list = [];
+                    byPath[group.Key.Path] = list;
+                }
+                list.Add(new PathTouch(group.Key.Facet, tickets, newMin, newMax));
+            }
+        }
+
+        return byPath;
     }
 
     /// <summary>
@@ -233,18 +320,100 @@ internal static partial class Attributor
         return [.. found];
     }
 
-    private static IReadOnlyList<ElementRow> ApplyRecord(IReadOnlyList<ElementRow> rows, ElementChangeRecord? record)
+    private static IReadOnlyList<ElementRow> ApplyReport(
+        IReadOnlyList<ElementRow> rows, StructureAttribution? attr, bool isR6Target)
     {
-        if (record is null)
+        if (attr is null)
         {
             return rows;
         }
         List<ElementRow> updated = new(rows.Count);
         foreach (ElementRow row in rows)
         {
-            updated.Add(row with { ChangeRecord = record });
+            ElementChangeRecord? record = ResolvePerElement(row, attr, isR6Target) ?? attr.WindowRecord;
+            updated.Add(record is null ? row : row with { ChangeRecord = record });
         }
         return updated;
+    }
+
+    /// <summary>
+    /// The per-element ticket record for a row when an isolating commit changed the matching
+    /// facet, or null to fall back to the structure-window record. Only cardinality and
+    /// structural add/remove facets are refined (the reliably-parseable ones); type/target-only
+    /// rows always keep the window record. For R6 the winning commit's post-change cardinality
+    /// must equal the row's DB target value (the newest commit at/under the ballot4 snapshot).
+    /// </summary>
+    internal static ElementChangeRecord? ResolvePerElement(ElementRow row, StructureAttribution attr, bool isR6Target)
+    {
+        bool wantCardinality = row.Flags.Cardinality;
+        bool wantStructural = row.Flags.Added || row.Flags.Removed;
+        if (!wantCardinality && !wantStructural)
+        {
+            return null;
+        }
+
+        string? targetMin = null;
+        string? targetMax = null;
+        if (isR6Target && wantCardinality)
+        {
+            (targetMin, targetMax) = ParseTargetCardinality(row.Summary);
+        }
+
+        foreach (string? path in new[] { row.TargetPath, row.SourcePath })
+        {
+            if (path is null || !attr.ByPath.TryGetValue(path, out List<PathTouch>? list))
+            {
+                continue;
+            }
+            foreach (PathTouch touch in list) // newest first
+            {
+                bool facetMatches =
+                    (touch.Facet == ElementFacet.Cardinality && wantCardinality)
+                    || (touch.Facet == ElementFacet.Structural && wantStructural);
+                if (!facetMatches)
+                {
+                    continue;
+                }
+
+                if (isR6Target && touch.Facet == ElementFacet.Cardinality
+                    && !CardinalityMatchesTarget(touch, targetMin, targetMax))
+                {
+                    continue;
+                }
+
+                return new ElementChangeRecord(touch.Tickets, []);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The R6 ballot4 snapshot gate: the commit's post-change cardinality must equal the row's
+    /// DB target value, so a post-snapshot over-write is rejected. Conservative when the target
+    /// cannot be parsed (returns false → keep the window record).
+    /// </summary>
+    private static bool CardinalityMatchesTarget(PathTouch touch, string? targetMin, string? targetMax)
+    {
+        if (targetMin is null && targetMax is null)
+        {
+            return false;
+        }
+        if (touch.NewMax is not null && !string.Equals(touch.NewMax, targetMax, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        if (touch.NewMin is not null && !string.Equals(touch.NewMin, targetMin, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    private static (string? Min, string? Max) ParseTargetCardinality(string summary)
+    {
+        Match match = CardinalityArrowPattern().Match(summary);
+        return match.Success ? (match.Groups[3].Value, match.Groups[4].Value) : (null, null);
     }
 
     private static bool TryFhirNumber(string jiraKey, out int number)

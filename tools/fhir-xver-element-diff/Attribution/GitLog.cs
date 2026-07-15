@@ -9,6 +9,9 @@ internal sealed record CommitInfo(string Sha, string ShortSha, string Subject, s
     public string Message => string.IsNullOrEmpty(Body) ? Subject : Subject + "\n" + Body;
 }
 
+/// <summary>One commit plus its unified diff, restricted to the queried source paths.</summary>
+internal sealed record CommitPatch(CommitInfo Commit, string Patch);
+
 /// <summary>
 /// Thin async wrapper around invoking <c>git</c> against the <c>HL7/fhir</c> clone,
 /// modelled on <c>...BallotNotes.Hydration/Git/GitRunner.cs</c> (argument list — no shell
@@ -24,6 +27,9 @@ internal sealed class GitLog
     // field/record separators lets multi-line commit bodies parse unambiguously (a tab or
     // newline separator would collide with body content).
     private const string LogFormat = "--format=%H%x1f%h%x1f%s%x1f%b%x1e";
+    // For -p walks each commit is prefixed with the record separator so the metadata block
+    // (H, h, subject, body) can be split off cleanly from the patch that git appends after it.
+    private const string PatchLogFormat = "--format=%x1e%H%x1f%h%x1f%s%x1f%b%x1f";
     private const char FieldSep = '\u001f';
     private const char RecordSep = '\u001e';
 
@@ -67,22 +73,30 @@ internal sealed class GitLog
     }
 
     /// <summary>
-    /// <c>git log &lt;since&gt;..&lt;until&gt; --no-merges</c> over the given paths, newest
-    /// first. <c>--no-merges</c> keeps the walk on real authoring commits (decision Q3);
-    /// PR-merge subjects/branches are harvested separately via <see cref="NearestMergeAsync"/>.
-    /// Empty when the range/paths yield nothing or git fails.
+    /// <c>git log &lt;since&gt;..&lt;until&gt; --no-merges -p -U&lt;context&gt;</c> over the given
+    /// paths, newest first, capturing each commit's unified diff alongside its metadata.
+    /// <c>--no-merges</c> keeps the walk on real authoring commits (decision Q3); PR-merge
+    /// subjects/branches are harvested separately via <see cref="NearestMergeAsync"/>. The extra
+    /// context lines let the per-element attributor tie a changed <c>&lt;min&gt;</c>/
+    /// <c>&lt;max&gt;</c> to its enclosing element's <c>&lt;path&gt;</c> — one <c>git</c> call per
+    /// structure, no per-element invocation. Empty when the range/paths yield nothing or git fails.
     /// </summary>
-    public async Task<IReadOnlyList<CommitInfo>> LogAsync(
-        string since, string until, IReadOnlyList<string> paths, CancellationToken ct = default)
+    public async Task<IReadOnlyList<CommitPatch>> LogWithPatchesAsync(
+        string since, string until, IReadOnlyList<string> paths, int contextLines = 15,
+        CancellationToken ct = default)
     {
         if (paths.Count == 0)
         {
             return [];
         }
-        List<string> args = ["log", $"{since}..{until}", "--no-merges", LogFormat, "--"];
+        List<string> args =
+        [
+            "log", $"{since}..{until}", "--no-merges", "--no-color", "-p", $"-U{contextLines}",
+            PatchLogFormat, "--",
+        ];
         args.AddRange(paths);
         (int exit, string stdout, _) = await RunAsync(args, ct).ConfigureAwait(false);
-        return exit != 0 ? [] : ParseCommits(stdout);
+        return exit != 0 ? [] : ParseCommitPatches(stdout);
     }
 
     /// <summary>
@@ -128,8 +142,7 @@ internal sealed class GitLog
     }
 
     private static IReadOnlyList<CommitInfo> ParseCommits(string stdout)
-    {
-        List<CommitInfo> commits = [];
+    {        List<CommitInfo> commits = [];
         foreach (string raw in stdout.Split(RecordSep))
         {
             string record = raw.TrimStart('\n', '\r');
@@ -153,6 +166,37 @@ internal sealed class GitLog
             commits.Add(new CommitInfo(sha, shortSha, subject, body));
         }
         return commits;
+    }
+
+    private static IReadOnlyList<CommitPatch> ParseCommitPatches(string stdout)
+    {
+        List<CommitPatch> result = [];
+        // Each commit begins at the record separator, then five field-separated parts:
+        // full SHA, short SHA, subject, body, and (after the trailing separator) the patch
+        // git appends. Cap the split at 5 so any separator-looking byte in the patch is kept.
+        foreach (string chunk in stdout.Split(RecordSep))
+        {
+            if (chunk.Length == 0)
+            {
+                continue;
+            }
+            string[] parts = chunk.Split(FieldSep, 5);
+            if (parts.Length < 5)
+            {
+                continue;
+            }
+            string sha = parts[0].Trim();
+            if (sha.Length == 0)
+            {
+                continue;
+            }
+            string shortSha = parts[1].Trim();
+            string subject = parts[2];
+            string body = parts[3].TrimEnd('\n', '\r');
+            string patch = parts[4];
+            result.Add(new CommitPatch(new CommitInfo(sha, shortSha, subject, body), patch));
+        }
+        return result;
     }
 
     private async Task<(int Exit, string StdOut, string StdErr)> RunAsync(
