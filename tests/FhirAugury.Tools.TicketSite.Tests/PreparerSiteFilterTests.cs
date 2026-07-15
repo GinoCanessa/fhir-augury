@@ -558,6 +558,7 @@ public sealed class PreparerSiteFilterTests
         Assert.Contains("renderChipBanner", appJs, StringComparison.Ordinal);
         Assert.Contains("FilterableDimensions", appJs, StringComparison.Ordinal);
         Assert.Contains("GenerationChips", appJs, StringComparison.Ordinal);
+        Assert.Contains("DecompressionStream", appJs, StringComparison.Ordinal);
         Assert.DoesNotContain("renderFilterFooter", appJs, StringComparison.Ordinal);
 
         // The bundled index.html template should no longer ship the

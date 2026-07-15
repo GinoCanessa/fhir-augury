@@ -26,7 +26,16 @@
     const SQL = await initSqlJs({ locateFile: f => 'assets/' + f });
     const b64 = window.__DB__ || '';
     if (!b64) { app.textContent = 'No database inlined.'; return; }
-    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    let bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    if (window.__DBGZ__) {
+      // The emitter gzips the snapshot before base64-inlining it. Inflate
+      // with the native DecompressionStream (no bundled inflate library).
+      if (typeof DecompressionStream !== 'function') {
+        throw new Error('This browser lacks DecompressionStream, needed to inflate the gzipped database. Open in a current Chrome, Edge, Firefox, or Safari.');
+      }
+      const gzStream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+      bytes = new Uint8Array(await new Response(gzStream).arrayBuffer());
+    }
     db = new SQL.Database(bytes);
   } catch (e) {
     app.textContent = 'Failed to load planner DB: ' + (e.message || e);

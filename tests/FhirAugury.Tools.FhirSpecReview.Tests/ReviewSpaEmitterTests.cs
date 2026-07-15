@@ -187,6 +187,7 @@ public sealed class ReviewSpaEmitterTests : IDisposable
 
         Assert.Contains("document.title", appJs);
         Assert.Contains("setDocTitle", appJs);
+        Assert.Contains("DecompressionStream", appJs, StringComparison.Ordinal);
 
         string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
         Assert.Contains(".copy-ai", appCss);

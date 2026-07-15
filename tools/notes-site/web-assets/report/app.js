@@ -134,6 +134,15 @@
         var bin = atob(blob);
         var bytes = new Uint8Array(bin.length);
         for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        if (window.__DBGZ__) {
+          // The emitter gzips the snapshot before base64-inlining it. Inflate
+          // with the native DecompressionStream (no bundled inflate library).
+          if (typeof DecompressionStream !== 'function') {
+            throw new Error('This browser lacks DecompressionStream, needed to inflate the gzipped database. Open in a current Chrome, Edge, Firefox, or Safari.');
+          }
+          var gzStream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+          bytes = new Uint8Array(await new Response(gzStream).arrayBuffer());
+        }
         db = new SQL.Database(bytes);
       } catch (err) {
         renderError(main, 'Failed to load database: ' + err.message);
