@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
@@ -42,8 +43,8 @@ internal sealed class ReviewSpaEmitter
         Directory.CreateDirectory(assetsDir);
 
         byte[] dbBytes = SnapshotDbBytes(_reviewDbPath);
-        string base64 = Convert.ToBase64String(dbBytes);
-        string blobScript = $"<script>window.__DB__='{base64}';</script>";
+        string base64 = Convert.ToBase64String(GzipBytes(dbBytes));
+        string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
         string provenanceScript = BuildProvenanceScript(_reviewDbPath);
         string encodedTitle = WebUtility.HtmlEncode(BaseTitle);
 
@@ -82,6 +83,16 @@ internal sealed class ReviewSpaEmitter
     /// the bare <c>.db</c> file could miss uncheckpointed <c>-wal</c> data; the
     /// backup copies the source connection's full logical view.
     /// </summary>
+    private static byte[] GzipBytes(byte[] raw)
+    {
+        using MemoryStream output = new();
+        using (GZipStream gzip = new(output, CompressionLevel.Optimal, leaveOpen: true))
+        {
+            gzip.Write(raw, 0, raw.Length);
+        }
+        return output.ToArray();
+    }
+
     private static byte[] SnapshotDbBytes(string reviewDbPath)
     {
         string tempPath = Path.Combine(

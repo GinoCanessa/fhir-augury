@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text.RegularExpressions;
 using FhirAugury.Tools.FhirSpecReview.Database;
 using FhirAugury.Tools.FhirSpecReview.Database.Records;
@@ -97,6 +98,7 @@ public sealed class ReviewSpaEmitterTests : IDisposable
         // Non-empty inlined base64 DB.
         string blob = ExtractDbBlob(index);
         Assert.False(string.IsNullOrEmpty(blob));
+        Assert.Contains("window.__DBGZ__=1", index, StringComparison.Ordinal);
 
         // Provenance JSON inlined.
         Assert.Contains("window.__RUN__", index);
@@ -125,7 +127,8 @@ public sealed class ReviewSpaEmitterTests : IDisposable
         new ReviewSpaEmitter(dbPath).Emit(outDir);
 
         string index = File.ReadAllText(Path.Combine(outDir, "index.html"));
-        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(index));
+        byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(index)));
+        Assert.Equal("SQLite format 3\0", System.Text.Encoding.ASCII.GetString(dbBytes, 0, 16));
 
         string snapPath = Path.Combine(_tempDir, "decoded.db");
         File.WriteAllBytes(snapPath, dbBytes);
@@ -191,6 +194,15 @@ public sealed class ReviewSpaEmitterTests : IDisposable
 
         string appCss = File.ReadAllText(Path.Combine(outDir, "assets", "app.css"));
         Assert.Contains(".copy-ai", appCss);
+    }
+
+    private static byte[] Decompress(byte[] gz)
+    {
+        using MemoryStream input = new(gz);
+        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     private static string ExtractDbBlob(string index)

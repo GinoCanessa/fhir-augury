@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
@@ -38,8 +39,8 @@ internal static class PlannerSubSiteEmitter
 
         string fullTitle = baseTitle + filters.ToTitleSuffix();
         string encodedTitle = WebUtility.HtmlEncode(fullTitle);
-        string base64 = Convert.ToBase64String(dbBytes);
-        string blobScript = $"<script>window.__DB__='{base64}';</script>";
+        string base64 = Convert.ToBase64String(GzipBytes(dbBytes));
+        string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
         string filtersScript = BuildFiltersScript(filters);
 
         foreach (string name in resourceNames)
@@ -72,6 +73,16 @@ internal static class PlannerSubSiteEmitter
                 stream.CopyTo(fs);
             }
         }
+    }
+
+    private static byte[] GzipBytes(byte[] raw)
+    {
+        using MemoryStream output = new();
+        using (GZipStream gzip = new(output, CompressionLevel.Optimal, leaveOpen: true))
+        {
+            gzip.Write(raw, 0, raw.Length);
+        }
+        return output.ToArray();
     }
 
     private static string BuildFiltersScript(ResolvedFilters filters)

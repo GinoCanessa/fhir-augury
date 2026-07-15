@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using FhirAugury.Tools.NotesSite.Report;
@@ -100,6 +101,7 @@ public sealed class NotesSiteTests : IDisposable
         string index = File.ReadAllText(indexPath);
 
         Assert.False(string.IsNullOrEmpty(ExtractDbBlob(index)));
+        Assert.Contains("window.__DBGZ__=1", index, StringComparison.Ordinal);
         Assert.Contains("window.__RUN__", index);
         Assert.Contains("Test Notes", index);
 
@@ -125,7 +127,8 @@ public sealed class NotesSiteTests : IDisposable
 
         string outDir = Path.Combine(_tempDir, "snap-site");
         new NotesSpaEmitter(dbPath, "x").Emit(outDir);
-        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html"))));
+        byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
+        Assert.Equal("SQLite format 3\0", System.Text.Encoding.ASCII.GetString(dbBytes, 0, 16));
 
         string snapPath = Path.Combine(_tempDir, "decoded.db");
         File.WriteAllBytes(snapPath, dbBytes);
@@ -282,7 +285,7 @@ public sealed class NotesSiteTests : IDisposable
 
         string outDir = Path.Combine(_tempDir, "multiwg-site");
         new NotesSpaEmitter(dbPath, "x").Emit(outDir);
-        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html"))));
+        byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
 
         string snapPath = Path.Combine(_tempDir, "multiwg-decoded.db");
         File.WriteAllBytes(snapPath, dbBytes);
@@ -363,7 +366,7 @@ public sealed class NotesSiteTests : IDisposable
 
         string outDir = Path.Combine(_tempDir, "lineage-site");
         new NotesSpaEmitter(dbPath, "x").Emit(outDir);
-        byte[] dbBytes = Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html"))));
+        byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
 
         string snapPath = Path.Combine(_tempDir, "lineage-decoded.db");
         File.WriteAllBytes(snapPath, dbBytes);
@@ -410,6 +413,15 @@ public sealed class NotesSiteTests : IDisposable
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         return (long)cmd.ExecuteScalar()!;
+    }
+
+    private static byte[] Decompress(byte[] gz)
+    {
+        using MemoryStream input = new(gz);
+        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     private static string ExtractDbBlob(string html)

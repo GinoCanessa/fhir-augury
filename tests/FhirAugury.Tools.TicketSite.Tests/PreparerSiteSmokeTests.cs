@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Tools.TicketSite;
@@ -123,7 +124,7 @@ public sealed class PreparerSiteSmokeTests
 
         string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
-        byte[] dbBytes = Convert.FromBase64String(base64);
+        byte[] dbBytes = Decompress(Convert.FromBase64String(base64));
 
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         try
@@ -154,6 +155,7 @@ public sealed class PreparerSiteSmokeTests
         Assert.True(File.Exists(indexPath));
         string html = await File.ReadAllTextAsync(indexPath);
         Assert.Contains("window.__DB__='", html, StringComparison.Ordinal);
+        Assert.Contains("window.__DBGZ__=1", html, StringComparison.Ordinal);
 
         // The inlined DB is always a fresh build (trim + backfill + VACUUM),
         // so the byte size is independent of the source DB size and can
@@ -162,7 +164,7 @@ public sealed class PreparerSiteSmokeTests
         // a non-empty payload that's at least within a few SQLite-page
         // multiples of the source size, and that decoding succeeds.
         string base64 = ExtractInlinedDbBase64(html);
-        byte[] dbBytes = Convert.FromBase64String(base64);
+        byte[] dbBytes = Decompress(Convert.FromBase64String(base64));
 
         long sourceSize = new FileInfo(scope.DbPath).Length;
         // Allow up to 64 KiB of extra schema overhead on top of the source size
@@ -170,6 +172,7 @@ public sealed class PreparerSiteSmokeTests
         // surviving-row payload). The intent is to catch gross inlining bugs,
         // not to pin a precise byte count.
         Assert.InRange(dbBytes.Length, sourceSize - 64 * 1024, sourceSize + 64 * 1024);
+        Assert.Equal("SQLite format 3\0", System.Text.Encoding.ASCII.GetString(dbBytes, 0, 16));
     }
 
     [Fact]
@@ -255,7 +258,7 @@ public sealed class PreparerSiteSmokeTests
 
         string html = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
-        byte[] dbBytes = Convert.FromBase64String(base64);
+        byte[] dbBytes = Decompress(Convert.FromBase64String(base64));
 
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         try
@@ -808,12 +811,21 @@ public sealed class PreparerSiteSmokeTests
     {
         string html = await File.ReadAllTextAsync(Path.Combine(outDir, "discussion", "index.html"));
         string base64 = ExtractInlinedDbBase64(html);
-        byte[] bytes = Convert.FromBase64String(base64);
+        byte[] bytes = Decompress(Convert.FromBase64String(base64));
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         await File.WriteAllBytesAsync(tempDbPath, bytes);
         SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
         await conn.OpenAsync();
         return conn;
+    }
+
+    private static byte[] Decompress(byte[] gz)
+    {
+        using MemoryStream input = new(gz);
+        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     private static string ExtractInlinedDbBase64(string html)

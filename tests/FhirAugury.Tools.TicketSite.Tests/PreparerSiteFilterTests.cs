@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.TicketSite.Tests;
@@ -576,7 +577,16 @@ public sealed class PreparerSiteFilterTests
         start += marker.Length;
         int end = html.IndexOf('\'', start);
         Assert.True(end > start, "inlined DB closing quote not found");
-        return Convert.FromBase64String(html.Substring(start, end - start));
+        return Decompress(Convert.FromBase64String(html.Substring(start, end - start)));
+    }
+
+    private static byte[] Decompress(byte[] gz)
+    {
+        using MemoryStream input = new(gz);
+        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     private static async Task<long> CountAsync(SqliteConnection conn, string table)

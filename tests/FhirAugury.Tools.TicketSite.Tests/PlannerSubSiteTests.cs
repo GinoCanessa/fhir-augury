@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
@@ -95,6 +96,7 @@ public sealed class PlannerSubSiteTests
         string html = await File.ReadAllTextAsync(indexPath);
         Assert.Contains("Ticket Site", html, StringComparison.Ordinal);
         Assert.Contains("window.__DB__='", html, StringComparison.Ordinal);
+        Assert.Contains("window.__DBGZ__=1", html, StringComparison.Ordinal);
         // Sub-site script tags present
         Assert.Contains("assets/sql-wasm.js", html, StringComparison.Ordinal);
         Assert.Contains("assets/app.js", html, StringComparison.Ordinal);
@@ -244,7 +246,8 @@ public sealed class PlannerSubSiteTests
         Assert.True(start >= 0);
         start += marker.Length;
         int end = html.IndexOf('\'', start);
-        byte[] dbBytes = Convert.FromBase64String(html.Substring(start, end - start));
+        byte[] dbBytes = Decompress(Convert.FromBase64String(html.Substring(start, end - start)));
+        Assert.Equal("SQLite format 3\0", System.Text.Encoding.ASCII.GetString(dbBytes, 0, 16));
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         try
         {
@@ -410,11 +413,20 @@ public sealed class PlannerSubSiteTests
         start += marker.Length;
         int end = html.IndexOf('\'', start);
         Assert.True(end > start, "inlined DB closing quote not found");
-        byte[] bytes = Convert.FromBase64String(html.Substring(start, end - start));
+        byte[] bytes = Decompress(Convert.FromBase64String(html.Substring(start, end - start)));
         string tempDbPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
         await File.WriteAllBytesAsync(tempDbPath, bytes);
         SqliteConnection conn = new($"Data Source={tempDbPath};Mode=ReadOnly;Pooling=False");
         await conn.OpenAsync();
         return conn;
+    }
+
+    private static byte[] Decompress(byte[] gz)
+    {
+        using MemoryStream input = new(gz);
+        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 }
