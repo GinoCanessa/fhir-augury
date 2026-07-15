@@ -8,8 +8,8 @@ namespace FhirAugury.Tools.FhirXverElementDiff;
 /// <summary>
 /// Entry point for <c>fhir-xver-element-diff</c> — a read-only tool that diffs FHIR
 /// core-release element trees (R4→R4B→R5→R6) from the two spec SQLite DBs and emits
-/// per-increment markdown change reports. Phase 1 exposes only the <c>--dump</c>
-/// smoke command; the report-generation default action is wired in a later phase.
+/// per-increment markdown change reports, each row attributed to the FHIR tickets/commits
+/// that produced it. <c>--dump</c> is a per-release count smoke command.
 /// </summary>
 public static class Program
 {
@@ -234,7 +234,7 @@ public static class Program
 
             Usage:
               fhir-xver-element-diff --dump <R4|R4B|R5|R6>   Smoke command: print per-kind counts.
-              fhir-xver-element-diff [report options]        Emit markdown reports (later phase).
+              fhir-xver-element-diff [report options]        Emit the three markdown change reports.
               fhir-xver-element-diff --help
 
             Options:
