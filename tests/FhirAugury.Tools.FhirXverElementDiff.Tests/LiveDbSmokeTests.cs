@@ -40,6 +40,35 @@ public sealed class LiveDbSmokeTests
         Assert.DoesNotContain(buckets.Removed, s => s.Name == "DeviceUseStatement");
         Assert.DoesNotContain(buckets.Added, s => s.Name == "DeviceUsage");
     }
+
+    [Fact]
+    public void R5_To_R6_Xhtml_Id_Surfaces_As_Cardinality_Change()
+    {
+        if (!LiveDb.TryPaths(out string specDb, out string r6Db, out _))
+        {
+            return; // cache DBs unavailable — skip
+        }
+
+        ReleaseReader reader = new(NullLogger.Instance);
+        ReleaseModel r5 = reader.LoadRelease(reader.ResolveRelease(ReleaseId.R5, specDb));
+        ReleaseModel r6 = reader.LoadRelease(reader.ResolveRelease(ReleaseId.R6, r6Db));
+
+        StructureBuckets buckets = StructureDiffer.Diff(r5, r6);
+        new StructureRenameDetector().Apply(buckets);
+
+        StructurePair? xhtml = buckets.Mapped.FirstOrDefault(p => p.Later.Name == "xhtml");
+        Assert.NotNull(xhtml);
+
+        IReadOnlyList<ElementRow> rows = ElementDiffer.Diff(xhtml!, r5, r6);
+
+        // xhtml.id is base-identical in R5 (0..1) but locally constrained in R6 (0..0):
+        // the union-of-interestingness filter must keep it and flag a cardinality change,
+        // never dropping it as purely inherited.
+        ElementRow? idRow = rows.FirstOrDefault(r => r.TargetPath == "xhtml.id" || r.SourcePath == "xhtml.id");
+        Assert.NotNull(idRow);
+        Assert.True(idRow!.Flags.Cardinality);
+        Assert.Contains("0..1 → 0..0", idRow.Summary);
+    }
 }
 
 /// <summary>Locates the repo-root cache DBs by walking up from the test binaries.</summary>
