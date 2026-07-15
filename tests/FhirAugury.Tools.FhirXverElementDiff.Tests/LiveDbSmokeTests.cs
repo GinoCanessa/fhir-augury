@@ -92,6 +92,29 @@ internal static class LiveDb
         return File.Exists(specDb);
     }
 
+    /// <summary>
+    /// Resolves the paths the attribution walk needs (spec DB + Jira DB + clone) and returns
+    /// true only when all three are present, so attribution smoke tests skip cleanly on a
+    /// machine without the full cache.
+    /// </summary>
+    public static bool TryAttributionPaths(out string specDb, out string jiraDb, out string clone)
+    {
+        jiraDb = string.Empty;
+        if (!TryPaths(out specDb, out _, out clone))
+        {
+            return false;
+        }
+
+        string? root = FindRepoRoot(AppContext.BaseDirectory);
+        if (root is null)
+        {
+            return false;
+        }
+
+        jiraDb = System.IO.Path.Combine(root, "cache", "jira.db");
+        return File.Exists(jiraDb) && Directory.Exists(clone);
+    }
+
     private static string? FindRepoRoot(string start)
     {
         DirectoryInfo? dir = new(start);

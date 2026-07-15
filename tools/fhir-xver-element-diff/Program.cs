@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using FhirAugury.Tools.FhirXverElementDiff.Attribution;
 using FhirAugury.Tools.FhirXverElementDiff.Model;
 using FhirAugury.Tools.FhirXverElementDiff.Readers;
 using FhirAugury.Tools.FhirXverElementDiff.Report;
@@ -38,9 +38,9 @@ public static class Program
 
     /// <summary>
     /// Default action: for each selected increment, load both releases, build the report
-    /// model (structure buckets + rename detection + per-element diff), and write the
-    /// markdown file. Attribution (Phases 5–6) is not yet populated, so change-record cells
-    /// render as <c>—</c>; <c>--no-attribution</c> only affects the header flag for now.
+    /// model (structure buckets + rename detection + per-element diff), attribute each
+    /// changed structure's rows to the FHIR tickets/commits in its git window (unless
+    /// <c>--no-attribution</c>), and write the markdown file.
     /// </summary>
     private static async Task<int> RunReportsAsync(ToolOptions options)
     {
@@ -59,7 +59,12 @@ public static class Program
         }
 
         string clonePath = Path.GetFullPath(options.ClonePath);
-        string? cloneHead = TryResolveCloneHead(clonePath);
+        GitLog git = new(clonePath);
+        string? cloneHead = git.CloneAvailable
+            ? await git.RevParseShortAsync("HEAD").ConfigureAwait(false)
+            : null;
+
+        FhirKeyAllowlist? allowlist = options.NoAttribution ? null : TryLoadAllowlist(options);
 
         ReleaseReader reader = new(ConsoleLogger.Instance);
         Dictionary<ReleaseId, ReleaseModel> cache = [];
@@ -90,6 +95,11 @@ public static class Program
                 HeaderNote: increment.HeaderNote);
 
             ReportModel model = ReportBuilder.Build(increment, earlier, later, header);
+            if (allowlist is not null)
+            {
+                model = await Attributor.AttributeAsync(model, git, since, until, allowlist).ConfigureAwait(false);
+            }
+
             string outPath = Path.GetFullPath(Path.Combine(options.OutDir, increment.Slug + ".md"));
             await MarkdownReportWriter.WriteAsync(model, outPath).ConfigureAwait(false);
 
@@ -98,6 +108,35 @@ public static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Loads the FHIR-key allowlist for attribution, or null (with a note on stderr) when the
+    /// Jira DB is missing/empty — attribution is best-effort enrichment, never a hard gate.
+    /// </summary>
+    private static FhirKeyAllowlist? TryLoadAllowlist(ToolOptions options)
+    {
+        string jiraDb = Path.GetFullPath(options.JiraDbPath);
+        if (!File.Exists(jiraDb))
+        {
+            Console.Error.WriteLine($"Jira DB not found ({jiraDb}); emitting change tables without attribution.");
+            return null;
+        }
+        try
+        {
+            FhirKeyAllowlist allowlist = JiraAllowlistReader.Load(jiraDb);
+            if (allowlist.IsEmpty)
+            {
+                Console.Error.WriteLine($"No FHIR keys found in {jiraDb}; attribution will be blank.");
+                return null;
+            }
+            return allowlist;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Failed to load the Jira allowlist from {jiraDb}: {ex.Message}");
+            return null;
+        }
     }
 
     private static bool TryLoad(
@@ -120,42 +159,6 @@ public static class Program
         release = reader.LoadRelease(reader.ResolveRelease(id, dbPath));
         cache[id] = release;
         return true;
-    }
-
-    /// <summary>Best-effort short HEAD of the clone for the report header; null if unavailable.</summary>
-    private static string? TryResolveCloneHead(string clonePath)
-    {
-        if (!Directory.Exists(clonePath))
-        {
-            return null;
-        }
-        try
-        {
-            ProcessStartInfo psi = new("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            psi.ArgumentList.Add("-C");
-            psi.ArgumentList.Add(clonePath);
-            psi.ArgumentList.Add("rev-parse");
-            psi.ArgumentList.Add("--short");
-            psi.ArgumentList.Add("HEAD");
-
-            using Process? process = Process.Start(psi);
-            if (process is null)
-            {
-                return null;
-            }
-            string output = process.StandardOutput.ReadToEnd().Trim();
-            process.WaitForExit(5000);
-            return string.IsNullOrEmpty(output) ? null : output;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
     }
 
     /// <summary>

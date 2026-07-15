@@ -207,10 +207,16 @@ internal static class MarkdownReportWriter
         }
         if (record.TicketKeys.Count > 0)
         {
-            return string.Join(", ", record.TicketKeys);
+            return string.Join(", ", record.TicketKeys.Select(TicketLink));
         }
-        return string.Join(", ", record.CommitShas);
+        return string.Join(", ", record.CommitShas.Select(CommitLink));
     }
+
+    /// <summary>A <c>FHIR-N</c> ticket rendered as a link to its Jira browse page.</summary>
+    private static string TicketLink(string key) => $"[{key}](https://jira.hl7.org/browse/{key})";
+
+    /// <summary>A commit short-hash rendered as a monospaced link to its GitHub commit.</summary>
+    private static string CommitLink(string sha) => $"[`{sha}`](https://github.com/HL7/fhir/commit/{sha})";
 
     private static string Cell(string? value)
     {
