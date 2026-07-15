@@ -51,6 +51,24 @@ internal sealed class ReleaseModel
         _byName.TryGetValue(name, out structure!);
 
     /// <summary>
+    /// The locally-meaningful elements of a structure: non-slice, non-root, and not purely
+    /// inherited. Used to render the all-Removed / all-Added element tables and to keep the
+    /// element diff focused on fields this structure actually constrains.
+    /// </summary>
+    public IEnumerable<ElementModel> MeaningfulElements(StructureModel structure)
+    {
+        foreach (ElementModel element in structure.Elements)
+        {
+            if (element.SliceName is null
+                && element.NormalizedKey.Length > 0
+                && !IsPurelyInherited(element))
+            {
+                yield return element;
+            }
+        }
+    }
+
+    /// <summary>
     /// True when <paramref name="element"/> is inherited and identical to its base
     /// element on every tracked facet (min, max, type set, target-profile set). Such
     /// elements are noise — they are the base element re-projected onto this structure

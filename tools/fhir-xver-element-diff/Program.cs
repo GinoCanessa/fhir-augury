@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using FhirAugury.Tools.FhirXverElementDiff.Model;
 using FhirAugury.Tools.FhirXverElementDiff.Readers;
+using FhirAugury.Tools.FhirXverElementDiff.Report;
 
 namespace FhirAugury.Tools.FhirXverElementDiff;
 
@@ -31,10 +33,129 @@ public static class Program
             return RunDump(options, dumpRelease);
         }
 
-        await Console.Error.WriteLineAsync(
-            "Report generation is not yet wired (Phase 4). Use --dump <RELEASE> for the smoke command.")
-            .ConfigureAwait(false);
-        return 2;
+        return await RunReportsAsync(options).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Default action: for each selected increment, load both releases, build the report
+    /// model (structure buckets + rename detection + per-element diff), and write the
+    /// markdown file. Attribution (Phases 5–6) is not yet populated, so change-record cells
+    /// render as <c>—</c>; <c>--no-attribution</c> only affects the header flag for now.
+    /// </summary>
+    private static async Task<int> RunReportsAsync(ToolOptions options)
+    {
+        if (!Increments.TryResolve(options.Increment, out IReadOnlyList<IncrementDefinition> increments, out string? incError))
+        {
+            await Console.Error.WriteLineAsync(incError).ConfigureAwait(false);
+            return 2;
+        }
+
+        bool single = increments.Count == 1;
+        if (!single && (options.SinceOverride is not null || options.UntilOverride is not null))
+        {
+            await Console.Error.WriteLineAsync(
+                "Ignoring --since/--until: they apply only when a single --increment is selected.")
+                .ConfigureAwait(false);
+        }
+
+        string clonePath = Path.GetFullPath(options.ClonePath);
+        string? cloneHead = TryResolveCloneHead(clonePath);
+
+        ReleaseReader reader = new(ConsoleLogger.Instance);
+        Dictionary<ReleaseId, ReleaseModel> cache = [];
+
+        foreach (IncrementDefinition increment in increments)
+        {
+            if (!TryLoad(reader, options, increment.Earlier, cache, out ReleaseModel? earlier)
+                || !TryLoad(reader, options, increment.Later, cache, out ReleaseModel? later))
+            {
+                return 1;
+            }
+
+            string since = single && options.SinceOverride is not null ? options.SinceOverride : increment.DefaultSince;
+            string until = single && options.UntilOverride is not null ? options.UntilOverride : increment.DefaultUntil;
+
+            ReportHeader header = new(
+                GeneratedUtc: DateTimeOffset.UtcNow,
+                EarlierLabel: Release.DisplayLabel(increment.Earlier),
+                LaterLabel: Release.DisplayLabel(increment.Later),
+                EarlierVersion: earlier!.Release.DisplayVersion,
+                LaterVersion: later!.Release.DisplayVersion,
+                EarlierBuilt: earlier.Release.ProcessDate,
+                LaterBuilt: later.Release.ProcessDate,
+                SinceSha: since,
+                UntilSha: until,
+                CloneHead: cloneHead,
+                AttributionEnabled: !options.NoAttribution,
+                HeaderNote: increment.HeaderNote);
+
+            ReportModel model = ReportBuilder.Build(increment, earlier, later, header);
+            string outPath = Path.GetFullPath(Path.Combine(options.OutDir, increment.Slug + ".md"));
+            await MarkdownReportWriter.WriteAsync(model, outPath).ConfigureAwait(false);
+
+            Console.WriteLine(
+                $"Wrote {outPath}  (mapped {model.Mapped.Count}, removed {model.Removed.Count}, added {model.Added.Count})");
+        }
+
+        return 0;
+    }
+
+    private static bool TryLoad(
+        ReleaseReader reader, ToolOptions options, ReleaseId id,
+        Dictionary<ReleaseId, ReleaseModel> cache, out ReleaseModel? release)
+    {
+        if (cache.TryGetValue(id, out release))
+        {
+            return true;
+        }
+
+        string dbPath = Path.GetFullPath(options.DbPathFor(id));
+        if (!File.Exists(dbPath))
+        {
+            Console.Error.WriteLine($"Spec DB not found for {Release.DisplayLabel(id)}: {dbPath}");
+            release = null;
+            return false;
+        }
+
+        release = reader.LoadRelease(reader.ResolveRelease(id, dbPath));
+        cache[id] = release;
+        return true;
+    }
+
+    /// <summary>Best-effort short HEAD of the clone for the report header; null if unavailable.</summary>
+    private static string? TryResolveCloneHead(string clonePath)
+    {
+        if (!Directory.Exists(clonePath))
+        {
+            return null;
+        }
+        try
+        {
+            ProcessStartInfo psi = new("git")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            psi.ArgumentList.Add("-C");
+            psi.ArgumentList.Add(clonePath);
+            psi.ArgumentList.Add("rev-parse");
+            psi.ArgumentList.Add("--short");
+            psi.ArgumentList.Add("HEAD");
+
+            using Process? process = Process.Start(psi);
+            if (process is null)
+            {
+                return null;
+            }
+            string output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit(5000);
+            return string.IsNullOrEmpty(output) ? null : output;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>

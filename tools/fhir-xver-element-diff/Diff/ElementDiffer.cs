@@ -114,8 +114,7 @@ internal static class ElementSummary
 
         if (flags.Renamed != RenameKind.None && earlier is not null && later is not null)
         {
-            string marker = flags.Renamed == RenameKind.Suspected ? " (suspected)" : string.Empty;
-            parts.Add($"renamed from {earlier.RootRelativePath}{marker}");
+            parts.Add($"renamed from {earlier.RootRelativePath}");
         }
 
         if (flags.Added)
