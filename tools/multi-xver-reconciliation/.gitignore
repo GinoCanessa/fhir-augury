@@ -1,0 +1,10 @@
+# Generated ETL artifacts — reproducible from the read-only sources, never committed.
+staging/
+__pycache__/
+*.pyc
+
+# Any local database produced/copied here (the canonical output lives in <repo>/cache/).
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
