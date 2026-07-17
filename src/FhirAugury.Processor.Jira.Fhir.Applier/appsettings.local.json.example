@@ -1,0 +1,18 @@
+{
+  "Processing": {
+    "Applier": {
+      "Repos": [
+        {
+          "Owner": "HL7",
+          "Name": "fhir",
+          "PrimaryBranch": "master",
+          "BuildCommand": "_genonce.sh",
+          "OutputRoots": ["output/**"]
+        }
+      ],
+      "Auth": {
+        "Token": "ghp_..."
+      }
+    }
+  }
+}

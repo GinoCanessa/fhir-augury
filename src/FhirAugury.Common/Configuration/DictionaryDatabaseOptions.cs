@@ -9,12 +9,12 @@ public class DictionaryDatabaseOptions
     /// <summary>
     /// Path to the directory containing dictionary source files (*.words.txt, *.typo.txt).
     /// </summary>
-    public string SourcePath { get; set; } = "./cache/dictionary";
+    public string SourcePath { get; set; } = "./dictionary";
 
     /// <summary>
     /// Path to the output SQLite dictionary database file.
     /// </summary>
-    public string DatabasePath { get; set; } = "./data/dictionary.db";
+    public string DatabasePath { get; set; } = "./cache/dictionary.db";
 
     /// <summary>
     /// When true, forces a full rebuild of the dictionary database even if it already exists.

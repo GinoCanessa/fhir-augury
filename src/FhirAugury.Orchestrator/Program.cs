@@ -1,3 +1,4 @@
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Health;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Scalar.AspNetCore;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -40,6 +42,13 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Controllers ──────────────────────────────────────────────────
 builder.Services.AddControllers();
 
+// ── OpenAPI ──────────────────────────────────────────────────────
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Orchestrator";
+    o.Description = "Unified routing and merged OpenAPI for all enabled FHIR Augury source services.";
+});
+
 // ── Services ─────────────────────────────────────────────────────
 
 // Database
@@ -61,8 +70,19 @@ foreach (KeyValuePair<string, SourceServiceConfig> entry in orchestratorOptions.
     });
 }
 
+// Named HttpClients for each enabled Processing service
+foreach (KeyValuePair<string, ProcessingServiceConfig> entry in orchestratorOptions.ProcessingServices.Where(s => s.Value.Enabled))
+{
+    builder.Services.AddHttpClient($"processing-{entry.Key.ToLowerInvariant()}", client =>
+    {
+        client.BaseAddress = new Uri(entry.Value.HttpAddress);
+    });
+}
+
 // Routing
 builder.Services.AddSingleton<SourceHttpClient>();
+builder.Services.AddSingleton<ProcessingHttpClient>();
+builder.Services.AddSingleton<OpenApiMergeService>();
 
 // Health monitoring
 builder.Services.AddSingleton<ServiceHealthMonitor>();
@@ -90,6 +110,21 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+// Note: app.MapAuguryOpenApi() is intentionally omitted on the orchestrator.
+// AddAuguryOpenApi() above still registers IOpenApiDocumentProvider, but the
+// orchestrator exposes its merged OpenAPI document via OpenApiController so
+// it can override /api/v1/openapi.{json,yaml}. The orchestrator's own
+// (unmerged) document is reachable at /api/v1/source/orchestrator/openapi.json.
+
+// ── Scalar UI ────────────────────────────────────────────────────
+// Interactive documentation / try-it UI served from /scalar/v1, backed by
+// the orchestrator's merged OpenAPI document. See docs/user/openapi.md for
+// details on how to access and use the UI.
+app.MapScalarApiReference("/scalar/v1", options =>
+{
+    options.WithTitle("FHIR Augury Orchestrator");
+    options.WithOpenApiRoutePattern("/api/v1/openapi.json");
+});
 
 app.Run();
 

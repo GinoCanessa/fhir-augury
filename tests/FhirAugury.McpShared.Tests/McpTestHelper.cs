@@ -38,6 +38,22 @@ internal static class McpTestHelper
         }
         return factory;
     }
+
+    /// <summary>
+    /// Creates a mock <see cref="IHttpClientFactory"/> for a single named client and returns both
+    /// the factory and the underlying <see cref="MockHttpHandler"/>, so a test can assert the
+    /// outgoing request (method, path, body) in addition to the response.
+    /// </summary>
+    internal static (IHttpClientFactory Factory, MockHttpHandler Handler) CreateFactoryWithCapture(
+        string clientName, string responseJson, HttpStatusCode statusCode = HttpStatusCode.OK)
+    {
+        MockHttpHandler handler = new(responseJson, statusCode);
+        HttpClient client = new(handler) { BaseAddress = new Uri("http://localhost") };
+
+        IHttpClientFactory factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(clientName).Returns(client);
+        return (factory, handler);
+    }
 }
 
 /// <summary>
@@ -50,6 +66,7 @@ internal class MockHttpHandler : HttpMessageHandler
     private readonly HttpStatusCode _statusCode;
 
     public HttpRequestMessage? LastRequest { get; private set; }
+    public string? LastRequestBody { get; private set; }
     public List<HttpRequestMessage> AllRequests { get; } = [];
 
     public MockHttpHandler(string responseJson, HttpStatusCode statusCode = HttpStatusCode.OK)
@@ -58,15 +75,20 @@ internal class MockHttpHandler : HttpMessageHandler
         _statusCode = statusCode;
     }
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         LastRequest = request;
         AllRequests.Add(request);
+
+        // Capture the request body here: the caller's HttpContent is disposed once the
+        // HttpClient call returns, so it must be read while the content is still live.
+        if (request.Content is not null)
+            LastRequestBody = await request.Content.ReadAsStringAsync(cancellationToken);
 
         HttpResponseMessage response = new(_statusCode)
         {
             Content = new StringContent(_responseJson, Encoding.UTF8, "application/json"),
         };
-        return Task.FromResult(response);
+        return response;
     }
 }

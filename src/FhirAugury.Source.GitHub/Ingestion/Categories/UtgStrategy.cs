@@ -115,7 +115,7 @@ public class UtgStrategy(
             cmd.ExecuteNonQuery();
         }
 
-        int mapCount = 0;
+        List<GitHubSpecFileMapRecord> records = [];
 
         // Map canonical artifacts by URL
         List<GitHubCanonicalArtifactRecord> artifacts =
@@ -123,15 +123,14 @@ public class UtgStrategy(
         foreach (GitHubCanonicalArtifactRecord artifact in artifacts)
         {
             ct.ThrowIfCancellationRequested();
-            GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+            records.Add(new GitHubSpecFileMapRecord
             {
                 Id = GitHubSpecFileMapRecord.GetIndex(),
                 RepoFullName = repoFullName,
                 ArtifactKey = artifact.Url,
                 FilePath = artifact.FilePath,
                 MapType = "canonical",
-            }, ignoreDuplicates: true);
-            mapCount++;
+            });
         }
 
         // Map structure definitions by URL
@@ -140,18 +139,28 @@ public class UtgStrategy(
         foreach (GitHubStructureDefinitionRecord sd in sds)
         {
             ct.ThrowIfCancellationRequested();
-            GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+            records.Add(new GitHubSpecFileMapRecord
             {
                 Id = GitHubSpecFileMapRecord.GetIndex(),
                 RepoFullName = repoFullName,
                 ArtifactKey = sd.Url,
                 FilePath = sd.FilePath,
                 MapType = "canonical",
-            }, ignoreDuplicates: true);
-            mapCount++;
+            });
         }
 
-        logger.LogInformation("Built {Count} canonical artifact-file mappings for {Repo}", mapCount, repoFullName);
+        if (records.Count > 0)
+        {
+            const int batchSize = 1000;
+            for (int i = 0; i < records.Count; i += batchSize)
+            {
+                List<GitHubSpecFileMapRecord> batch =
+                    records.GetRange(i, Math.Min(batchSize, records.Count - i));
+                batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            }
+        }
+
+        logger.LogInformation("Built {Count} canonical artifact-file mappings for {Repo}", records.Count, repoFullName);
     }
 
     public IReadOnlyList<string> DiscoverCanonicalArtifactFiles(
@@ -206,7 +215,7 @@ public class UtgStrategy(
         try
         {
             using FileStream fs = File.OpenRead(filePath);
-            using XmlReader reader = XmlReader.Create(fs, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+            using XmlReader reader = FhirAugury.Parsing.Xml.XmlDowngradeReader.Create(fs, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
             while (reader.Read())
             {
                 if (reader.NodeType == XmlNodeType.Element)

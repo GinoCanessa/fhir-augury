@@ -11,6 +11,12 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Per-item read endpoints. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT rows are served by the
+/// per-shape controllers under <c>/api/v1/pss</c>, <c>/api/v1/baldef</c>,
+/// <c>/api/v1/ballot</c>.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
@@ -29,6 +35,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             ["status"] = issue.Status,
             ["type"] = issue.Type,
             ["priority"] = issue.Priority,
+            ["comment_count"] = issue.CommentCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
         if (issue.WorkGroup is not null) metadata["work_group"] = issue.WorkGroup;
         if (issue.Specification is not null) metadata["specification"] = issue.Specification;
@@ -37,6 +44,15 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         if (issue.Reporter is not null) metadata["reporter"] = issue.Reporter;
         if (issue.Labels is not null) metadata["labels"] = issue.Labels;
         if (issue.ResolutionDescription is not null) metadata["resolution_description"] = issue.ResolutionDescription;
+        if (issue.ResolutionDescriptionPlain is not null) metadata["resolution_description_plain"] = issue.ResolutionDescriptionPlain;
+        if (issue.RaisedInVersion is not null) metadata["raised_in_version"] = issue.RaisedInVersion;
+        if (issue.SelectedBallot is not null) metadata["selected_ballot"] = issue.SelectedBallot;
+        if (issue.ChangeCategory is not null) metadata["change_category"] = issue.ChangeCategory;
+        if (issue.Impact is not null) metadata["impact"] = issue.Impact;
+        if (issue.DuplicateOf is not null) metadata["duplicate_of"] = issue.DuplicateOf;
+        if (issue.RelatedIssues is not null) metadata["related_issues"] = issue.RelatedIssues;
+        if (issue.RelatedArtifacts is not null) metadata["related_artifacts"] = issue.RelatedArtifacts;
+        if (includeContent == true && issue.DescriptionPlain is not null) metadata["description_plain"] = issue.DescriptionPlain;
 
         List<CommentInfo>? comments = null;
         if (includeComments == true)

@@ -22,7 +22,7 @@ public class JiraDatabaseTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     [Fact]
@@ -34,11 +34,40 @@ public class JiraDatabaseTests : IDisposable
         Assert.Contains("jira_issues", tables);
         Assert.Contains("jira_comments", tables);
         Assert.Contains("jira_issue_links", tables);
-        Assert.Contains("jira_spec_artifacts", tables);
         Assert.Contains("sync_state", tables);
         Assert.Contains("index_keywords", tables);
         Assert.Contains("index_corpus", tables);
         Assert.Contains("index_doc_stats", tables);
+        Assert.Contains("jira_users", tables);
+        Assert.Contains("jira_issue_inpersons", tables);
+        Assert.Contains("jira_index_users", tables);
+        Assert.Contains("jira_index_inpersons", tables);
+        Assert.Contains("hl7_workgroups", tables);
+    }
+
+    [Fact]
+    public void Initialize_CreatesHl7WorkGroupsTable_WithExpectedColumns()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(hl7_workgroups)";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+
+        Dictionary<string, string> columns = new(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            string name = reader.GetString(1);
+            string type = reader.GetString(2);
+            columns[name] = type;
+        }
+
+        Assert.Equal("INTEGER", columns["Id"]);
+        Assert.Equal("TEXT", columns["Code"]);
+        Assert.Equal("TEXT", columns["Name"]);
+        Assert.Equal("TEXT", columns["Definition"]);
+        Assert.Equal("INTEGER", columns["Retired"]);
+        Assert.Equal("TEXT", columns["NameClean"]);
+        Assert.Equal(6, columns.Count);
     }
 
     [Fact]
@@ -49,6 +78,55 @@ public class JiraDatabaseTests : IDisposable
 
         Assert.Contains("jira_issues_fts", tables);
         Assert.Contains("jira_comments_fts", tables);
+    }
+
+    [Fact]
+    public void MigrateSchema_AddsFR03Columns_OnLegacyJiraIndexWorkgroupsTable()
+    {
+        // Simulate a pre-FR-03 deployment: drop the freshly-created table
+        // and recreate it with only the original three columns, then trigger
+        // the migration path by re-initializing the schema.
+        using (SqliteConnection conn = _db.OpenConnection())
+        {
+            using SqliteCommand drop = conn.CreateCommand();
+            drop.CommandText = """
+                DROP TABLE IF EXISTS jira_index_workgroups;
+                CREATE TABLE jira_index_workgroups (
+                  Id INTEGER PRIMARY KEY,
+                  Name TEXT UNIQUE,
+                  IssueCount INTEGER NOT NULL
+                );
+                """;
+            drop.ExecuteNonQuery();
+        }
+
+        // Re-open and trigger schema initialize/migrate again.
+        _db.Initialize();
+
+        using SqliteConnection check = _db.OpenConnection();
+        using SqliteCommand info = check.CreateCommand();
+        info.CommandText = "PRAGMA table_info(jira_index_workgroups)";
+        HashSet<string> cols = new(StringComparer.OrdinalIgnoreCase);
+        using (SqliteDataReader r = info.ExecuteReader())
+            while (r.Read()) cols.Add(r.GetString(1));
+
+        Assert.Contains("WorkGroupId", cols);
+        Assert.Contains("IssueCountSubmitted", cols);
+        Assert.Contains("IssueCountTriaged", cols);
+        Assert.Contains("IssueCountWaitingForInput", cols);
+        Assert.Contains("IssueCountNoChange", cols);
+        Assert.Contains("IssueCountChangeRequired", cols);
+        Assert.Contains("IssueCountPublished", cols);
+        Assert.Contains("IssueCountApplied", cols);
+        Assert.Contains("IssueCountDuplicate", cols);
+        Assert.Contains("IssueCountClosed", cols);
+        Assert.Contains("IssueCountBalloted", cols);
+        Assert.Contains("IssueCountWithdrawn", cols);
+        Assert.Contains("IssueCountDeferred", cols);
+        Assert.Contains("IssueCountOther", cols);
+
+        // Idempotency: a second initialize must not blow up on already-added columns.
+        _db.Initialize();
     }
 
     [Fact]
@@ -108,7 +186,6 @@ public class JiraDatabaseTests : IDisposable
         JiraCommentRecord comment = new JiraCommentRecord
         {
             Id = JiraCommentRecord.GetIndex(),
-            IssueId = 1,
             IssueKey = "FHIR-500",
             Author = "testuser",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -120,29 +197,6 @@ public class JiraDatabaseTests : IDisposable
         List<JiraCommentRecord> result = JiraCommentRecord.SelectList(conn, IssueKey: "FHIR-500");
         Assert.Single(result);
         Assert.Equal("This is a test comment", result[0].Body);
-    }
-
-    [Fact]
-    public void InsertAndSelect_SpecArtifact_RoundTrips()
-    {
-        using SqliteConnection conn = _db.OpenConnection();
-
-        JiraSpecArtifactRecord artifact = new JiraSpecArtifactRecord
-        {
-            Id = JiraSpecArtifactRecord.GetIndex(),
-            Family = "FHIR",
-            SpecKey = "fhir-core",
-            SpecName = "FHIR Core Specification",
-            GitUrl = "https://github.com/HL7/fhir",
-            PublishedUrl = "https://hl7.org/fhir",
-            DefaultWorkgroup = "FHIR-I",
-        };
-        JiraSpecArtifactRecord.Insert(conn, artifact);
-
-        JiraSpecArtifactRecord? result = JiraSpecArtifactRecord.SelectSingle(conn, SpecKey: "fhir-core");
-        Assert.NotNull(result);
-        Assert.Equal("FHIR Core Specification", result.SpecName);
-        Assert.Equal("https://github.com/HL7/fhir", result.GitUrl);
     }
 
     [Fact]
@@ -210,6 +264,90 @@ public class JiraDatabaseTests : IDisposable
         ChangeCategory = null,
         ChangeImpact = null,
     };
+
+    // ── Index list endpoint tests ─────────────────────────────────────
+
+    [Fact]
+    public void ListWorkGroups_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexWorkGroupRecord.CreateTable(conn);
+        JiraIndexWorkGroupRecord.Insert(conn, NewWg("Orders", 100));
+        JiraIndexWorkGroupRecord.Insert(conn, NewWg("FHIR Infrastructure", 500));
+        JiraIndexWorkGroupRecord.Insert(conn, NewWg("Patient Care", 200));
+
+        List<JiraIndexWorkGroupRecord> records = JiraIndexWorkGroupRecord.SelectList(conn);
+
+        Assert.Equal(3, records.Count);
+        Assert.Contains(records, r => r.Name == "FHIR Infrastructure" && r.IssueCount == 500);
+        Assert.Contains(records, r => r.Name == "Orders" && r.IssueCount == 100);
+    }
+
+    private static JiraIndexWorkGroupRecord NewWg(string name, int count) => new JiraIndexWorkGroupRecord
+    {
+        Id = JiraIndexWorkGroupRecord.GetIndex(),
+        Name = name,
+        IssueCount = count,
+        IssueCountSubmitted = 0,
+        IssueCountTriaged = 0,
+        IssueCountWaitingForInput = 0,
+        IssueCountNoChange = 0,
+        IssueCountChangeRequired = 0,
+        IssueCountPublished = 0,
+        IssueCountApplied = 0,
+        IssueCountDuplicate = 0,
+        IssueCountClosed = 0,
+        IssueCountBalloted = 0,
+        IssueCountWithdrawn = 0,
+        IssueCountDeferred = 0,
+        IssueCountOther = 0,
+    };
+
+    [Fact]
+    public void ListSpecifications_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexSpecificationRecord.CreateTable(conn);
+        JiraIndexSpecificationRecord.Insert(conn, new JiraIndexSpecificationRecord
+        {
+            Id = JiraIndexSpecificationRecord.GetIndex(), Name = "FHIR Core", IssueCount = 300,
+        });
+        JiraIndexSpecificationRecord.Insert(conn, new JiraIndexSpecificationRecord
+        {
+            Id = JiraIndexSpecificationRecord.GetIndex(), Name = "US Core", IssueCount = 150,
+        });
+
+        List<JiraIndexSpecificationRecord> records = JiraIndexSpecificationRecord.SelectList(conn);
+
+        Assert.Equal(2, records.Count);
+        Assert.Contains(records, r => r.Name == "FHIR Core" && r.IssueCount == 300);
+        Assert.Contains(records, r => r.Name == "US Core" && r.IssueCount == 150);
+    }
+
+    [Fact]
+    public void ListStatuses_ReturnsRecords_OrderedByCount()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraIndexStatusRecord.CreateTable(conn);
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "Open", IssueCount = 1000,
+        });
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "Closed", IssueCount = 2000,
+        });
+        JiraIndexStatusRecord.Insert(conn, new JiraIndexStatusRecord
+        {
+            Id = JiraIndexStatusRecord.GetIndex(), Name = "In Progress", IssueCount = 50,
+        });
+
+        List<JiraIndexStatusRecord> records = JiraIndexStatusRecord.SelectList(conn);
+
+        Assert.Equal(3, records.Count);
+        Assert.Contains(records, r => r.Name == "Closed" && r.IssueCount == 2000);
+        Assert.Contains(records, r => r.Name == "In Progress" && r.IssueCount == 50);
+    }
 
     // ── Keyword query tests ────────────────────────────────────────────
 

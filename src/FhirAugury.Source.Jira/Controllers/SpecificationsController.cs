@@ -1,16 +1,33 @@
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
+using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Specification rollup endpoints. Counts aggregate FHIR change requests
+/// (<c>jira_issues</c>); per-shape BALDEF/BALLOT specification columns
+/// are exposed via the specifications index but not from this controller.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class SpecificationsController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
+    [HttpGet("specifications")]
+    public IActionResult ListSpecifications()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexSpecificationRecord> records = JiraIndexSpecificationRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
+
     [HttpGet("specifications/{spec}")]
     public IActionResult GetSpecificationIssues([FromRoute] string spec, [FromQuery] int? limit, [FromQuery] int? offset)
     {
@@ -27,35 +44,6 @@ public class SpecificationsController(JiraDatabase db, IOptions<JiraServiceOptio
         cmd.Parameters.AddWithValue("@offset", skip);
 
         List<JiraIssueSummaryEntry> results = JiraUrlHelper.ReadIssueSummaries(cmd, options);
-        return Ok(results);
-    }
-
-    [HttpGet("spec-artifacts")]
-    public IActionResult GetSpecArtifacts([FromQuery] string? family)
-    {
-        using SqliteConnection connection = db.OpenConnection();
-        string sql = "SELECT Family, SpecKey, SpecName, GitUrl, PublishedUrl, DefaultWorkgroup FROM jira_spec_artifacts";
-        if (!string.IsNullOrEmpty(family))
-            sql += " WHERE Family = @family";
-        sql += " ORDER BY Family, SpecKey";
-
-        using SqliteCommand cmd = new SqliteCommand(sql, connection);
-        if (!string.IsNullOrEmpty(family))
-            cmd.Parameters.AddWithValue("@family", family);
-
-        List<SpecArtifactEntry> results = [];
-        using SqliteDataReader reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            results.Add(new SpecArtifactEntry(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
-        }
-
         return Ok(results);
     }
 

@@ -50,6 +50,8 @@ public static class GitHubIssueMapper
             CreatedAt = ParseDate(GetString(commentJson, "created_at")),
             Body = commentJson.GetProperty("body").GetString() ?? string.Empty,
             IsReviewComment = isReviewComment,
+            ExternalId = GetString(commentJson, "id"),
+            CommentKind = isReviewComment ? "review_comment" : "issue",
         };
     }
 
@@ -66,6 +68,7 @@ public static class GitHubIssueMapper
             HasIssues = repoJson.TryGetProperty("has_issues", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
             Category = category,
+            DefaultBranch = GetString(repoJson, "default_branch"),
         };
     }
 

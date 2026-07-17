@@ -26,7 +26,7 @@ public sealed class NullResponseCache : IResponseCache
     public IEnumerable<string> EnumerateKeys(string source, string subPath) => [];
     public void Clear(string source) { }
     public void ClearAll() { }
-    public CacheStats GetStats(string source) => new(source, 0, 0, []);
+    public CacheStats GetStats(string source, bool forceRefresh = false) => new(source, 0, 0, []);
 
     public Task<Stream?> TryGetAsync(string source, string key, CancellationToken ct = default)
         => Task.FromResult<Stream?>(null);

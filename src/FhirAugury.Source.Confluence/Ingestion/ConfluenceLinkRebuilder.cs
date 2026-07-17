@@ -21,7 +21,7 @@ public class ConfluenceLinkRebuilder(
             deleteCmd.ExecuteNonQuery();
 
         List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
-        int linkCount = 0;
+        List<ConfluencePageLinkRecord> toInsert = [];
 
         foreach (ConfluencePageRecord page in pages)
         {
@@ -35,18 +35,29 @@ public class ConfluenceLinkRebuilder(
 
             foreach ((string targetPageId, string linkType) in links)
             {
-                ConfluencePageLinkRecord.Insert(connection, new ConfluencePageLinkRecord
+                toInsert.Add(new ConfluencePageLinkRecord
                 {
                     Id = ConfluencePageLinkRecord.GetIndex(),
                     SourcePageId = page.ConfluenceId,
                     TargetPageId = targetPageId,
                     LinkType = linkType,
-                }, ignoreDuplicates: true);
-                linkCount++;
+                });
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        if (toInsert.Count > 0)
+        {
+            const int batchSize = 1000;
+            for (int i = 0; i < toInsert.Count; i += batchSize)
+            {
+                List<ConfluencePageLinkRecord> batch = toInsert.GetRange(i, Math.Min(batchSize, toInsert.Count - i));
+                batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
             }
         }
 
         logger.LogInformation("Rebuilt page links: {LinkCount} links from {PageCount} pages",
-            linkCount, pages.Count);
+            toInsert.Count, pages.Count);
     }
 }

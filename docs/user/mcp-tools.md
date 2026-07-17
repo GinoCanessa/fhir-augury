@@ -4,7 +4,25 @@ FHIR Augury includes a
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that
 exposes the knowledge base to LLM agents such as Claude, GitHub Copilot, and
 others. The MCP server connects via HTTP to the orchestrator and source
-services, providing 16 tools across 4 categories (Unified, Content, Jira, Zulip).
+services, providing roughly **130 tools** organized into **23 families** (each
+family is one `[McpServerToolType]` class under
+`src/FhirAugury.McpShared/Tools/`):
+
+- **Cross-source** — `Unified` (status, ingestion control), `Content` (unified
+  search, cross-references, item lookup).
+- **FHIR spec** — `Fhir` (StructureDefinitions, canonical resources, and other
+  specification reference data).
+- **Jira** — `Jira`, `JiraItems`, `JiraDimension`, `JiraProject`,
+  `JiraWorkGroup`, `JiraSpecs`, `JiraLocalProcessing`, `JiraBalDef`,
+  `JiraBallot`, `JiraPss`.
+- **Zulip** — `ZulipItems`, `ZulipMessages`, `ZulipStreams`, `ZulipThreads`.
+- **Confluence** — `ConfluenceItems`, `ConfluencePages`.
+- **GitHub** — `GitHubItems`, `GitHubRepos`, `WorkGroup`.
+
+Each family maps to a CLI command family (see [CLI Reference](cli-reference.md));
+source-scoped families route through the orchestrator's typed proxy controllers
+under `src/FhirAugury.Orchestrator/Controllers/Proxies/`. Exact tool names and
+counts are discoverable at runtime, so treat the numbers above as approximate.
 
 ## Setup
 
@@ -34,10 +52,6 @@ environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### Stdio Transport (Claude Desktop, etc.)
 
@@ -63,32 +77,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
         "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio"
       ],
       "env": {
-        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150",
-        "FHIR_AUGURY_JIRA": "http://localhost:5160",
-        "FHIR_AUGURY_ZULIP": "http://localhost:5170",
-        "FHIR_AUGURY_CONFLUENCE": "http://localhost:5180",
-        "FHIR_AUGURY_GITHUB": "http://localhost:5190"
-      }
-    }
-  }
-}
-```
-
-#### Direct Mode (Single Source)
-
-To connect directly to a single source service, bypassing the orchestrator:
-
-```json
-{
-  "mcpServers": {
-    "fhir-augury-jira": {
-      "command": "dotnet",
-      "args": [
-        "run", "--project", "/path/to/fhir-augury/src/FhirAugury.McpStdio",
-        "--", "--mode", "direct", "--source", "jira"
-      ],
-      "env": {
-        "FHIR_AUGURY_JIRA": "http://localhost:5160"
+        "FHIR_AUGURY_ORCHESTRATOR": "http://localhost:5150"
       }
     }
   }
@@ -143,7 +132,8 @@ Trigger synchronization/ingestion across source services.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `sources` | string | No | all | Comma-separated sources to sync (e.g., `jira,zulip`) |
-| `type` | string | No | `incremental` | Sync type: `incremental`, `full`, or `rebuild` |
+| `type` | string | No | `incremental` | Sync type: `incremental`, `full`, or `rebuild`. Note: the CLI verb for `rebuild` is exposed as `reingest`; the MCP/HTTP wire value remains `rebuild`. |
+| `jiraProject` | string | No | | Restrict the run to a single Jira project key. Forwarded only to the Jira leg of the fan-out; ignored by other sources. |
 
 **Example:** Trigger a full re-sync of Jira data:
 ```
@@ -253,7 +243,10 @@ GetItem(source: "jira", id: "FHIR-43499", includeComments: true, includeSnapshot
 
 ## Jira Tools
 
-Source-specific tools that talk to the Jira service directly.
+Source-specific Jira tools (routed through the orchestrator).
+
+> For listing issues, use `ListJiraItems` for a plain listing or
+> `QueryJiraIssues(statuses:, workGroups:)` for filtered listing.
 
 ### `GetJiraComments`
 
@@ -280,18 +273,6 @@ Query Jira issues with structured filters.
 | `sortOrder` | string | No | `desc` | Sort order: asc or desc |
 | `limit` | int | No | `20` | Maximum results |
 
-### `ListJiraIssues`
-
-List Jira issues with optional filters and sorting.
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `sortBy` | string | No | `updated_at` | Sort by field |
-| `sortOrder` | string | No | `desc` | Sort order: asc or desc |
-| `limit` | int | No | `20` | Maximum results |
-| `status` | string | No | | Filter by status |
-| `workGroup` | string | No | | Filter by work group |
-
 ### `ListJiraLabels`
 
 List all available Jira labels with issue counts.
@@ -300,7 +281,8 @@ No parameters.
 
 ---
 
-Source-specific tools that talk to the Zulip service directly.
+Source-specific Zulip tools (routed through the orchestrator; each returns a raw
+JSON payload).
 
 ### `GetZulipThread`
 
@@ -308,9 +290,9 @@ Get a full Zulip topic thread with all messages.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `stream` | string | Yes | | Stream name |
+| `streamName` | string | Yes | | Stream name |
 | `topic` | string | Yes | | Topic name |
-| `limit` | int | No | `100` | Maximum messages |
+| `limit` | int | No | | Maximum messages |
 
 ### `QueryZulipMessages`
 
@@ -331,16 +313,49 @@ Query Zulip messages with structured filters.
 
 List available Zulip streams. No parameters.
 
-### `ListZulipTopics`
+### `GetZulipStreamTopics`
 
-List topics in a Zulip stream.
+Get topics in a Zulip stream.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `stream` | string | Yes | | Stream name |
-| `limit` | int | No | `50` | Maximum topics |
+| `streamName` | string | Yes | | Stream name |
+| `limit` | int | No | | Maximum results |
+| `offset` | int | No | | Pagination offset |
 
 Returns topic names with message counts and last activity.
+
+---
+
+## GitHub Work-Group Tools
+
+### `github_workgroup_for_path`
+
+Resolve the canonical HL7 work-group attribution for a file path within a
+GitHub repository. Walks the same four-stage lookup chain used by
+`WorkGroupResolutionPass`: exact-file match → longest directory-prefix
+match → artifact-table match → repo-default → none.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `repo` | string | Yes | | Repository full name (e.g., `HL7/fhir`) |
+| `path` | string | Yes | | Repository-relative file path (forward slashes) |
+
+Returns a JSON object:
+
+```json
+{
+  "repoFullName": "HL7/fhir",
+  "path": "source/patient/patient-introduction.md",
+  "workGroup": "fhir-i",
+  "workGroupRaw": null,
+  "matchedStage": "exact-file"
+}
+```
+
+`matchedStage` is one of `exact-file`, `directory-prefix`, `artifact`,
+`repo-default`, or `none`. `workGroupRaw` carries the original, un-resolved
+input when it didn't match a canonical HL7 work-group code.
 
 ---
 
@@ -354,7 +369,7 @@ The tools are designed for a progressive discovery pattern:
    to discover connected items across sources
 3. **Deep dive** — Use `GetItem` for full item details from any source, or
    `GetJiraComments` and `GetZulipThread` for source-specific detail
-4. **Browse** — Use `ListZulipStreams`, `ListZulipTopics`, and `ListJiraIssues`
+4. **Browse** — Use `ListZulipStreams`, `GetZulipStreamTopics`, and `ListJiraItems`
    for structured browsing
 5. **Admin** — Use `GetStats` to check service health, `TriggerSync` to refresh
    data, and `RebuildIndex` to rebuild search indexes

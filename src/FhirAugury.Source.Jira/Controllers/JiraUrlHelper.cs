@@ -4,6 +4,7 @@ using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Source.Jira.Controllers;
 

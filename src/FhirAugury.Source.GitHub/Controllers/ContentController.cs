@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.GitHub.Database;
@@ -323,6 +324,34 @@ public class ContentController(GitHubDatabase db) : ControllerBase
             }
         }
 
+        // Outgoing: commit SHA → Jira tickets (notes-site attribution motivator)
+        if (hits.Count < maxResults)
+        {
+            GitHubCommitRecord? commit = GitHubCommitRecord.SelectSingle(connection, Sha: value);
+            if (commit is not null)
+            {
+                foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: value))
+                {
+                    string dedupeKey = $"out:{r.TargetType}:{r.JiraKey}";
+                    if (!seen.Add(dedupeKey)) continue;
+                    hits.Add(new CrossReferenceHit
+                    {
+                        SourceType = SourceSystems.GitHub,
+                        ContentType = r.ContentType,
+                        SourceId = value,
+                        SourceTitle = commit.Message,
+                        SourceUrl = commit.Url,
+                        TargetType = SourceSystems.Jira,
+                        TargetId = r.JiraKey,
+                        LinkType = r.LinkType,
+                        Context = r.Context,
+                        UpdatedAt = commit.Date,
+                    });
+                    if (hits.Count >= maxResults) break;
+                }
+            }
+        }
+
         // Incoming: referred-by
         if (hits.Count < maxResults && ValueFormatDetector.IsJiraKey(value))
         {
@@ -404,8 +433,8 @@ public class ContentController(GitHubDatabase db) : ControllerBase
         List<string>? sourceFilter = sources?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
         // If sources filter is specified and doesn't include "github", return empty
-        if (sourceFilter is not null &&
-            !sourceFilter.Any(s => string.Equals(s, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase)))
+        if (sourceFilter.HasExplicitRestriction() &&
+            !sourceFilter!.Any(s => string.Equals(s, SourceSystems.GitHub, StringComparison.OrdinalIgnoreCase)))
         {
             return Ok(new ContentSearchResponse
             {
@@ -447,7 +476,7 @@ public class ContentController(GitHubDatabase db) : ControllerBase
         });
     }
 
-    [HttpGet("item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public IActionResult GetItem(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] bool? includeContent, [FromQuery] bool? includeComments, [FromQuery] bool? includeSnapshot)

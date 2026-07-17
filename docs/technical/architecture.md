@@ -6,10 +6,15 @@ relationships between components, and the key design decisions.
 ## Overview
 
 FHIR Augury is a microservices-based knowledge platform that downloads,
-indexes, and cross-references content from four HL7 FHIR community platforms.
-Each data source runs as an independent service with its own SQLite database
-and FTS5 index. A central orchestrator aggregates search across all sources,
-manages cross-references, and provides a unified API to clients.
+indexes, and cross-references content from HL7 FHIR community platforms. Five
+source services back it: four that ingest upstream content (Jira, Zulip,
+Confluence, GitHub) plus `source-fhir`, which serves read-only FHIR
+specification reference data from a pre-built `fhir-spec.db`. Each source runs
+as an independent service with its own SQLite database and FTS5 index. A central
+orchestrator aggregates search across all sources, manages cross-references, and
+provides a unified API to clients. A separate **processor** stack (Preparer,
+Planner, Applier, BallotNotes) consumes that data to produce derived
+artifacts — see the [processors runbook](processors.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -42,12 +47,25 @@ manages cross-references, and provides a unified API to clients.
 └──────────────────────────────────────────────────────────────────────┘
 
 Ports (HTTP only):
-  Orchestrator     :5150
-  Source.Jira      :5160
-  Source.Zulip     :5170
+  Orchestrator      :5150
+  Source.Jira       :5160
+  Source.Zulip      :5170
   Source.Confluence :5180
   Source.GitHub     :5190
+  Source.Fhir       :5195   (read-only FHIR spec reference data)
+  Processors:
+    Preparer        :5171
+    Planner         :5172
+    Applier         :5173
+    BallotNotes     :5174
+  MCP               :5200
+  Dev UI            :5210
 ```
+
+> The diagram shows the four ingesting upstream sources. `source-fhir` (:5195)
+> serves read-only FHIR spec reference data, and the processor stack
+> (:5171–:5174) consumes source data to produce derived artifacts — see the
+> [processors runbook](processors.md).
 
 ## Component Overview
 
@@ -58,13 +76,20 @@ Ports (HTTP only):
 | **Source.Zulip** | `FhirAugury.Source.Zulip` | Zulip source service — downloads, indexes, and serves Zulip streams and messages |
 | **Source.Confluence** | `FhirAugury.Source.Confluence` | Confluence source service — downloads, indexes, and serves Confluence pages and comments |
 | **Source.GitHub** | `FhirAugury.Source.GitHub` | GitHub source service — downloads, indexes, and serves GitHub issues, PRs, commits, and FHIR artifacts (StructureDefinitions, canonical artifacts, FSH definitions) |
+| **Source.Fhir** | `FhirAugury.Source.Fhir` | FHIR spec source service (port 5195) — serves read-only FHIR specification reference data from a pre-built `fhir-spec.db`, building an FTS sidecar (`fhir-spec-fts.db`) on startup |
 | **Parsing.Fhir** | `FhirAugury.Parsing.Fhir` | FHIR XML/JSON parsing library — StructureDefinitions, canonical artifacts (CodeSystem, ValueSet, etc.), Bundles, artifact classification |
 | **Parsing.Fsh** | `FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) parsing library — Profile, Extension, Resource, Logical, CodeSystem, ValueSet, Instance definitions; sushi-config.yaml parsing |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 16 tool implementations (UnifiedTools, ContentTools, JiraTools, ZulipTools) and McpHttpRegistration |
+| **Processing.Common** | `FhirAugury.Processing.Common` | Generic Processing substrate — options, lifecycle endpoints, queue runner, work-item contracts |
+| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira Processing layer — source-ticket queue, filters, discovery, agent invocation, single-ticket enqueue endpoint |
+| **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — queues triaged Jira tickets, runs `ticket-prep`, persists prepared output |
+| **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — queues resolved change-required tickets, runs `ticket-plan`, persists implementation plans |
+| **Processor.Jira.Fhir.Applier** | `FhirAugury.Processor.Jira.Fhir.Applier` | Applier processor (port 5173) — auto-discovers completed plans, applies each in a git worktree, push API on demand |
+| **Processor.GitHub.Fhir.BallotNotes** | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | BallotNotes processor (port 5174) — hydrates ballot-note evidence for a repo + since-commit window; read by `notes-site` |
+| **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 22 tool-type classes (126 tool methods — UnifiedTools, ContentTools, JiraTools, FhirTools, …) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
-| **CLI** | `FhirAugury.Cli` | Command-line interface (13 commands, HTTP to orchestrator) |
+| **CLI** | `FhirAugury.Cli` | Command-line interface (64 commands, HTTP to orchestrator) |
 | **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, HTTP to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
@@ -80,11 +105,22 @@ FhirAugury.Source.Jira         ← Common + ServiceDefaults (HTTP API controller
 FhirAugury.Source.Zulip        ← Common + ServiceDefaults (HTTP API controllers)
 FhirAugury.Source.Confluence   ← Common + ServiceDefaults (HTTP API controllers)
 FhirAugury.Source.GitHub       ← Common + ServiceDefaults (HTTP API controllers)
+FhirAugury.Source.Fhir         ← Common + ServiceDefaults (serves read-only fhir-spec.db, builds FTS sidecar)
     ↑
 FhirAugury.Parsing.Fhir       ← Standalone library (Hl7.Fhir.R5 SDK)
-FhirAugury.Parsing.Fsh        ← Standalone library (fsh-processor ANTLR4 parser)
+FhirAugury.Parsing.Fsh        ← Standalone library (Hl7.FhirShorthand.Serialization NuGet package)
     ↑                            Both used by Source.GitHub for artifact indexing
 FhirAugury.Orchestrator        ← Common + ServiceDefaults (HTTP API, consumes source HTTP APIs)
+    ↑
+FhirAugury.Processing.Common   ← Common (generic Processing lifecycle/queue substrate)
+    ↑
+FhirAugury.Processing.Jira.Common ← Common + Processing.Common (Jira queue/discovery/agent layer)
+    ↑                            Concrete Processing.Jira.* services plug in processor-specific output/tokens
+    ↑
+FhirAugury.Processor.Jira.Fhir.Preparer       ← Processing.Common + Processing.Jira.Common (ticket-prep, :5171)
+FhirAugury.Processor.Jira.Fhir.Planner        ← Processing.Common + Processing.Jira.Common (ticket-plan, :5172)
+FhirAugury.Processor.Jira.Fhir.Applier        ← Processing.Common + Processing.Jira.Common (apply plans in worktrees, :5173)
+FhirAugury.Processor.GitHub.Fhir.BallotNotes  ← Common (commit-window hydration, GitHub clone + attribution, :5174)
     ↑
 FhirAugury.McpShared            ← Common (shared MCP tool implementations, HTTP clients)
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
@@ -96,8 +132,10 @@ FhirAugury.AppHost             ← Aspire AppHost (references all service projec
 
 ## Source Service Architecture
 
-Each source service (`Source.Jira`, `Source.Zulip`, `Source.Confluence`,
-`Source.GitHub`) follows the same internal structure:
+Each ingesting source service (`Source.Jira`, `Source.Zulip`,
+`Source.Confluence`, `Source.GitHub`) follows the same internal structure
+(`Source.Fhir` is a read-only reference server and omits the download/cache
+ingestion pipeline):
 
 | Directory | Purpose |
 |-----------|---------|
@@ -181,6 +219,31 @@ The `RelatedItemFinder` combines four signals to rank related items:
 | Cross-source references | 10 | Items linked via cross-references (outgoing + incoming) |
 | BM25 text similarity | 3 | Keyword overlap via BM25 scoring |
 | Shared metadata | 2 | Common labels, components, specifications, etc. |
+
+
+### Processing Stack
+
+Processing services are layered separately from source ingestion. `FhirAugury.Processing.Common` owns service-wide Processing options, lifecycle state, queue stats, `start`/`stop`/`status` endpoints, and the concurrency-limited runner over `IProcessingWorkItemStore<T>` plus `IProcessingWorkItemHandler<T>`.
+
+`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed processors. It persists source tickets in `jira_processing_source_tickets`, applies the shared null/default/empty/restrict filter conventions, discovers tickets through Source.Jira or the orchestrator using shared Jira DTOs, invokes an agent command without shell expansion, and exposes `POST /processing/tickets/{key}` for ad-hoc enqueue/reset. Concrete preparer/planner services provide processor-specific defaults, output records, extension tokens such as repository filters, service ports/appsettings defaults, and the delete/upsert logic that overwrites prior processor output for a ticket before writing fresh results.
+
+There are four concrete processors:
+
+- **Preparer** (`Processor.Jira.Fhir.Preparer`, :5171) — queues triaged Jira
+  tickets and runs `ticket-prep`. Started-on-boot lifecycle; queue auto-fed from
+  the Jira source.
+- **Planner** (`Processor.Jira.Fhir.Planner`, :5172) — queues resolved
+  change-required tickets and runs `ticket-plan`. Same lifecycle model as the
+  preparer.
+- **Applier** (`Processor.Jira.Fhir.Applier`, :5173) — auto-discovers completed
+  plans from the planner DB, applies each in a per-(ticket, repo) git worktree,
+  and exposes `POST /api/v1/applied-tickets/{key}/push` to push on demand.
+- **BallotNotes** (`Processor.GitHub.Fhir.BallotNotes`, :5174) — standalone,
+  GitHub-source driven. On-demand `POST /api/v1/ballot-notes/hydrate` walks a
+  commit window and hydrates ballot-note evidence read by the `notes-site` tool.
+
+For operator instructions (kick-off curl, monitoring, output locations), see the
+[processors runbook](processors.md).
 
 ## Key Design Decisions
 
@@ -301,7 +364,8 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-eight projects with fixed ports matching the existing convention:
+13 projects (five sources, the orchestrator, four processors, the Dev UI, the
+MCP HTTP server, and the CLI) with fixed ports matching the existing convention:
 
 | Service | HTTP |
 |---------|------|
@@ -309,13 +373,20 @@ eight projects with fixed ports matching the existing convention:
 | source-zulip | 5170 |
 | source-confluence | 5180 |
 | source-github | 5190 |
+| source-fhir | 5195 |
 | orchestrator | 5150 |
+| processor-jira-fhir-preparer | 5171 |
+| processor-jira-fhir-planner | 5172 |
+| processor-jira-fhir-applier | 5173 |
+| processor-github-fhir-ballotnotes | 5174 |
 | devui | 5210 |
 | mcp | 5200 |
 | cli | — |
 
-The orchestrator uses `WaitFor()` to depend on Jira, Zulip, and GitHub
-source services. Confluence, Dev UI, the MCP HTTP server, and the CLI use
-`WithExplicitStart()` to allow manual triggering. All endpoints use
-`isProxied: false` so services listen on their own ports directly (no
+The orchestrator uses `WaitFor()` to depend on the Jira, Zulip, GitHub, and
+FHIR source services. Confluence, all four processors, the Dev UI, the MCP HTTP
+server, and the CLI use `WithExplicitStart()` to allow manual triggering; the
+processors additionally `WaitFor()` their upstream dependencies (the Jira/GitHub
+sources, the orchestrator, and — for the Applier — the Planner). All endpoints
+use `isProxied: false` so services listen on their own ports directly (no
 Aspire reverse proxy).

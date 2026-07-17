@@ -16,6 +16,7 @@ public partial record class ZulipMessageRecord
 
     /// <summary>The Zulip API message ID.</summary>
     [LdgSQLiteUnique]
+    [LdgSQLiteMultiSelect]
     public required int ZulipMessageId { get; set; }
 
     [LdgSQLiteForeignKey(referenceColumn: nameof(ZulipStreamRecord.Id))]

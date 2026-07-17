@@ -8,11 +8,11 @@ namespace FhirAugury.Source.Jira.Ingestion;
 public static class JiraCommentParser
 {
     /// <summary>Extracts comments from a Jira REST API JSON issue response.</summary>
-    public static List<JiraCommentRecord> ParseJsonComments(JsonElement issueJson, int issueId, string issueKey) =>
-        JiraFieldMapper.MapComments(issueJson, issueId, issueKey);
+    public static List<JiraCommentRecord> ParseJsonComments(JsonElement issueJson, string issueKey) =>
+        JiraFieldMapper.MapComments(issueJson, issueKey);
 
     /// <summary>Extracts comments from a Jira XML export item.</summary>
-    public static List<JiraCommentRecord> ParseXmlComments(JiraXmlParser.JiraItem item, int issueId, string issueKey)
+    public static List<JiraCommentRecord> ParseXmlComments(JiraXmlParser.JiraItem item, string issueKey)
     {
         List<JiraCommentRecord> comments = new List<JiraCommentRecord>();
 
@@ -25,7 +25,6 @@ public static class JiraCommentParser
             comments.Add(new JiraCommentRecord
             {
                 Id = JiraCommentRecord.GetIndex(),
-                IssueId = issueId,
                 IssueKey = issueKey,
                 Author = xmlComment.Author ?? "Unknown",
                 CreatedAt = ParseDate(xmlComment.Created),

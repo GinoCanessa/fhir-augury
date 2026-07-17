@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
@@ -8,6 +9,7 @@ using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -21,12 +23,14 @@ public class IngestionController(
     GitHubDatabase database,
     GitHubIndexer indexer,
     GitHubXRefRebuilder xrefRebuilder,
+    GitHubPrTicketLinkRebuilder prTicketLinkRebuilder,
     GitHubRepoCloner cloner,
     GitHubCommitFileExtractor commitExtractor,
     GitHubFileContentIndexer fileContentIndexer,
     ArtifactFileMapper artifactFileMapper,
     IIndexTracker indexTracker,
-    IOptions<GitHubServiceOptions> optionsAccessor) : ControllerBase
+    IOptions<GitHubServiceOptions> optionsAccessor,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpPost("ingest")]
     public async Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken cancellationToken)
@@ -34,9 +38,12 @@ public class IngestionController(
         string ingestType = type ?? "incremental";
         try
         {
-            IngestionResult result = ingestType == "full"
-                ? await pipeline.RunFullIngestionAsync(ct: cancellationToken)
-                : await pipeline.RunIncrementalIngestionAsync(cancellationToken);
+            IngestionResult result = ingestType switch
+            {
+                "full" => await pipeline.RunFullIngestionAsync(ct: cancellationToken),
+                "backfill" => await pipeline.RunBackfillIngestionAsync(ct: cancellationToken),
+                _ => await pipeline.RunIncrementalIngestionAsync(cancellationToken),
+            };
 
             return Ok(new
             {
@@ -58,6 +65,7 @@ public class IngestionController(
         workQueue.Enqueue(ct => ingestionType switch
         {
             "full" => pipeline.RunFullIngestionAsync(ct: ct),
+            "backfill" => pipeline.RunBackfillIngestionAsync(ct: ct),
             _ => pipeline.RunIncrementalIngestionAsync(ct),
         }, $"github-{ingestionType}");
 
@@ -91,7 +99,7 @@ public class IngestionController(
                         foreach (string repo in repos)
                         {
                             string path = await cloner.EnsureCloneAsync(repo, ct);
-                            await commitExtractor.ExtractAsync(path, repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, options.ResolveMaxInitialCommits(repo), ct);
                         }
                         indexTracker.MarkCompleted("commits");
                     }
@@ -99,12 +107,20 @@ public class IngestionController(
                     break;
                 case "cross-refs":
                     indexTracker.MarkStarted("cross-refs");
+                    indexTracker.MarkStarted("pr-ticket-links");
                     try
                     {
                         xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
+                        prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
+                        indexTracker.MarkCompleted("pr-ticket-links");
                     }
-                    catch (Exception ex) { indexTracker.MarkFailed("cross-refs", ex.Message); throw; }
+                    catch (Exception ex)
+                    {
+                        indexTracker.MarkFailed("cross-refs", ex.Message);
+                        indexTracker.MarkFailed("pr-ticket-links", ex.Message);
+                        throw;
+                    }
                     break;
                 case "bm25":
                     indexTracker.MarkStarted("bm25");
@@ -154,6 +170,7 @@ public class IngestionController(
                     indexTracker.MarkStarted("commits");
                     indexTracker.MarkStarted("file-contents");
                     indexTracker.MarkStarted("cross-refs");
+                    indexTracker.MarkStarted("pr-ticket-links");
                     indexTracker.MarkStarted("artifact-map");
                     indexTracker.MarkStarted("bm25");
                     indexTracker.MarkStarted("fts");
@@ -162,7 +179,7 @@ public class IngestionController(
                         foreach (string repo in repos)
                         {
                             string path = await cloner.EnsureCloneAsync(repo, ct);
-                            await commitExtractor.ExtractAsync(path, repo, ct);
+                            await commitExtractor.ExtractAsync(path, repo, options.ResolveMaxInitialCommits(repo), ct);
                             fileContentIndexer.IndexRepositoryFiles(repo, path, ct);
                             artifactFileMapper.BuildMappings(repo, path, ct);
                         }
@@ -171,6 +188,8 @@ public class IngestionController(
                         indexTracker.MarkCompleted("artifact-map");
                         xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
                         indexTracker.MarkCompleted("cross-refs");
+                        prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
+                        indexTracker.MarkCompleted("pr-ticket-links");
                         indexer.RebuildFullIndex(ct);
                         indexTracker.MarkCompleted("bm25");
                         database.RebuildFtsIndexes();
@@ -181,6 +200,7 @@ public class IngestionController(
                         indexTracker.MarkFailed("commits", ex.Message);
                         indexTracker.MarkFailed("file-contents", ex.Message);
                         indexTracker.MarkFailed("cross-refs", ex.Message);
+                        indexTracker.MarkFailed("pr-ticket-links", ex.Message);
                         indexTracker.MarkFailed("artifact-map", ex.Message);
                         indexTracker.MarkFailed("bm25", ex.Message);
                         indexTracker.MarkFailed("fts", ex.Message);
@@ -193,14 +213,37 @@ public class IngestionController(
         return Ok(new RebuildIndexResponse(true, $"queued {indexType} index rebuild", null, null));
     }
 
+    /// <summary>
+    /// Acknowledges an ingestion-completion notification from a peer source so
+    /// this service can rebuild its GitHub-side cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the orchestrator-side
+    /// <c>POST api/v1/notify-ingestion</c> endpoint
+    /// (<c>FhirAugury.Orchestrator.Controllers.IngestionController.NotifyIngestion</c>).
+    /// The orchestrator fans completion notifications from one source out to
+    /// every other source via this endpoint.
+    /// </remarks>
     [HttpPost("notify-peer")]
+    [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] Common.Api.PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(Acknowledged: true));
+        }
+
         GitHubServiceOptions options = optionsAccessor.Value;
         workQueue.Enqueue(ct =>
         {
             List<string> repos = options.GetAllRepositoryNames();
             xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
+            prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
             return Task.CompletedTask;
         }, "rebuild-xrefs");
 

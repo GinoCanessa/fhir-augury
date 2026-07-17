@@ -38,6 +38,8 @@ Double underscores (`__`) separate nested keys.
 | Confluence Source | `FHIR_AUGURY_CONFLUENCE_` | `Confluence` |
 | GitHub Source | `FHIR_AUGURY_GITHUB_` | `GitHub` |
 | Orchestrator | `FHIR_AUGURY_ORCHESTRATOR_` | `Orchestrator` |
+| Jira FHIR Preparer | `FHIR_AUGURY_PREPARER_` | `Processing` |
+| Jira FHIR Planner | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_` | `Processing` |
 
 ---
 
@@ -55,31 +57,7 @@ Each source service runs independently with its own database, cache, and ports.
     "Cookie": "",
     "ApiToken": "",
     "Email": "",
-    "CachePath": "./cache",
-    "DatabasePath": "./data/jira.db",
-    "SyncSchedule": "01:00:00",
-    "MinSyncAge": "04:00:00",
-    "ReloadFromCacheOnStartup": false,
-    "DefaultProject": "FHIR",
-    "DefaultJql": null,
-    "OrchestratorAddress": null,
-    "IngestionPaused": false,
-    "Ports": { "Http": 5160 },
-    "RateLimiting": {
-      "MaxRequestsPerSecond": 10,
-      "BackoffBaseSeconds": 2,
-      "MaxRetries": 3
-    },
-    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
-    "AuxiliaryDatabase": {
-      "AuxiliaryDatabasePath": null,
-      "FhirSpecDatabasePath": null
-    },
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
-    }
+    "DefaultProject": "FHIR"
   }
 }
 ```
@@ -109,34 +87,7 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
     "BaseUrl": "https://chat.fhir.org",
     "Email": "",
     "ApiKey": "",
-    "CredentialFile": "~/.zuliprc",
-    "CachePath": "./cache",
-    "DatabasePath": "./data/zulip.db",
-    "SyncSchedule": "04:00:00",
-    "MinSyncAge": "04:00:00",
-    "ReloadFromCacheOnStartup": false,
-    "ReindexTicketsOnStartup": false,
-    "ExcludedStreamIds": [],
-    "OnlyWebPublic": true,
-    "StreamBaselineValues": {},
-    "OrchestratorAddress": null,
-    "IngestionPaused": false,
-    "Ports": { "Http": 5170 },
-    "RateLimiting": {
-      "MaxRequestsPerSecond": 5,
-      "BackoffBaseSeconds": 2,
-      "MaxRetries": 3
-    },
-    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
-    "AuxiliaryDatabase": {
-      "AuxiliaryDatabasePath": null,
-      "FhirSpecDatabasePath": null
-    },
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
-    }
+    "CredentialFile": "~/.zuliprc"
   }
 }
 ```
@@ -159,30 +110,7 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "Cookie": "",
     "Username": "",
     "ApiToken": "",
-    "Spaces": ["FHIR", "FHIRI", "SOA"],
-    "CachePath": "./cache",
-    "DatabasePath": "./data/confluence.db",
-    "SyncSchedule": "1.00:00:00",
-    "MinSyncAge": "04:00:00",
-    "ReloadFromCacheOnStartup": false,
-    "OrchestratorAddress": null,
-    "IngestionPaused": false,
-    "Ports": { "Http": 5180 },
-    "RateLimiting": {
-      "MaxRequestsPerSecond": 5,
-      "BackoffBaseSeconds": 2,
-      "MaxRetries": 3
-    },
-    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
-    "AuxiliaryDatabase": {
-      "AuxiliaryDatabasePath": null,
-      "FhirSpecDatabasePath": null
-    },
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
-    }
+    "Spaces": ["FHIR", "FHIRI", "SOA"]
   }
 }
 ```
@@ -211,51 +139,8 @@ FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
     "FhirCoreRepositories": ["HL7/fhir"],
     "UtgRepositories": ["HL7/UTG"],
     "FhirExtensionsPackRepositories": ["HL7/fhir-extensions"],
-    "IncubatorRepositories": [],
-    "IgRepositories": [],
-    "ManualLinks": [],
-    "Auth": {
-      "Token": null,
-      "TokenEnvVar": "GITHUB_TOKEN"
-    },
-    "Provider": "gh-cli",
-    "GhCli": {
-      "ExecutablePath": "gh",
-      "Limit": 1000,
-      "Hostname": null,
-      "ProcessTimeout": "00:05:00"
-    },
-    "CachePath": "./cache",
-    "DatabasePath": "./data/github.db",
-    "SyncSchedule": "02:00:00",
-    "MinSyncAge": "04:00:00",
-    "ReloadFromCacheOnStartup": false,
-    "OrchestratorAddress": null,
-    "IngestionPaused": false,
-    "Ports": { "Http": 5190 },
-    "RateLimiting": {
-      "MaxRequestsPerSecond": 10,
-      "BackoffBaseSeconds": 5,
-      "MaxRetries": 5,
-      "RespectRateLimitHeaders": true
-    },
-    "Bm25": { "K1": 1.2, "B": 0.75, "UseLemmatization": true, "FtsTokenizer": null },
-    "AuxiliaryDatabase": {
-      "AuxiliaryDatabasePath": null,
-      "FhirSpecDatabasePath": null
-    },
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
-    },
-    "FileContentIndexing": {
-      "Enabled": true,
-      "MaxFileSizeBytes": 524288,
-      "MaxExtractedTextLength": 65536,
-      "MaxFilesPerRepo": 50000,
-      "IgnorePatterns": ["**/test-data/**", "**/testdata/**", "**/*.generated.*", "**/vendor/**", "**/third_party/**"]
-    }
+    "Auth": { "Token": null, "TokenEnvVar": "GITHUB_TOKEN" },
+    "Provider": "gh-cli"
   }
 }
 ```
@@ -272,42 +157,18 @@ GITHUB_TOKEN=ghp_...
 FHIR_AUGURY_GITHUB__GitHub__Auth__Token=ghp_...
 ```
 
-**Data provider:** The `Provider` setting selects the data fetch implementation:
+**Data provider:** The `Provider` setting selects the data fetch implementation
+(`gh-cli`, the default in `appsettings.json` and recommended, or `rest` for the
+GitHub REST API directly).
 
-- **`rest`** — Uses the GitHub REST API directly (default in code)
-- **`gh-cli`** — Uses the `gh` CLI tool (default in appsettings.json, recommended)
-
-The `GhCli` section configures the `gh` CLI provider:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `GhCli.ExecutablePath` | `gh` | Path to the gh CLI executable |
-| `GhCli.Limit` | `1000` | Maximum items per gh CLI query |
-| `GhCli.Hostname` | `null` | GitHub Enterprise hostname (null for github.com) |
-| `GhCli.ProcessTimeout` | `00:05:00` | Timeout for gh CLI processes |
-
-**Repository categories:** Repositories are organized by category, each with
-its own ingestion strategy:
-
-| Category | Default | Description |
-|----------|---------|-------------|
-| `FhirCoreRepositories` | `["HL7/fhir"]` | Core FHIR specification |
-| `UtgRepositories` | `["HL7/UTG"]` | Unified Terminology Governance |
-| `FhirExtensionsPackRepositories` | `["HL7/fhir-extensions"]` | FHIR Extensions Pack |
-| `IncubatorRepositories` | `[]` | Incubator projects |
-| `IgRepositories` | `[]` | Implementation Guides |
-
-**File content indexing:** The `FileContentIndexing` section controls cloning
-repositories and indexing file contents, FHIR StructureDefinitions, canonical
-artifacts, and FSH definitions:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `FileContentIndexing.Enabled` | `true` | Enable file content indexing |
-| `FileContentIndexing.MaxFileSizeBytes` | `524288` | Maximum file size (512 KB) |
-| `FileContentIndexing.MaxExtractedTextLength` | `65536` | Max extracted text per file (64 KB) |
-| `FileContentIndexing.MaxFilesPerRepo` | `50000` | Max files to index per repo |
-| `FileContentIndexing.IgnorePatterns` | (see config) | Gitignore-style patterns to exclude |
+The GitHub source also supports additional settings covered in full by the
+canonical reference: the `GhCli` provider options (`ExecutablePath`, `Limit`,
+`Hostname`, `ProcessTimeout`), the complete set of repository category lists
+(`FhirCoreRepositories`, `UtgRepositories`, `FhirExtensionsPackRepositories`,
+`IncubatorRepositories`, `IgRepositories`, `ManualLinks`), and the
+`FileContentIndexing` controls. See the
+[Configuration Reference](../configuration.md#github-source-service) for the
+complete tables and defaults.
 
 ---
 
@@ -326,28 +187,13 @@ search, cross-references, and related-item discovery.
       "Zulip": { "HttpAddress": "http://localhost:5170", "Enabled": true },
       "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
       "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true }
-    },
-    "Search": {
-      "DefaultLimit": 20,
-      "MaxLimit": 100,
-      "FreshnessWeights": { "jira": 0.5, "zulip": 2.0 }
-    },
-    "Related": {
-      "CrossSourceWeight": 10.0,
-      "Bm25SimilarityWeight": 3.0,
-      "SharedMetadataWeight": 2.0,
-      "DefaultLimit": 20,
-      "MaxKeyTerms": 15
-    },
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
     }
   }
 }
 ```
 
+The `Search`, `Related`, and `DictionaryDatabase` tuning sections are documented
+in the [Configuration Reference](../configuration.md#orchestrator-service).
 Configure which source services the orchestrator connects to:
 
 ```bash
@@ -356,6 +202,38 @@ FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__Enabled=true
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://localhost:5170
 FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 ```
+
+---
+
+## Processing Services
+
+Processing services share the `Processing` configuration shape and expose
+`/health`, `/status`, `/processing/start`, `/processing/stop`,
+`/processing/queue`, and `POST /processing/tickets/{key}`.
+
+> **Schema migration note (April 2026):** The Processing layer's SQLite schemas
+> are now derived from the `cslightdbgen.sqlitegen` annotations on the record
+> classes via generator-emitted `CreateTable` calls, and every Processing table
+> now has a `RowId INTEGER PRIMARY KEY` column in addition to its `Id` GUID.
+> Existing `CREATE TABLE IF NOT EXISTS` calls will not retro-fit `RowId` onto
+> tables built by an older revision, so after pulling this change you must
+> delete any pre-existing local Processing databases (for example
+> `./data/processor.jira.fhir.preparer.db` and
+> `./data/processor.jira.fhir.planner.db`). The services will recreate them on
+> startup. Production data is not affected — these databases are dev-only work
+> queues.
+
+### Jira FHIR Planner (`:5172`)
+
+The Planner queues resolved change-required tickets and runs `ticket-plan`. Its
+only Planner-specific knob is `Processing:Planner:RepoFilters` — an optional
+exact `owner/repo` allow-list (`null` or `[]` = no restriction). Non-empty lists
+are matched case-insensitively, do not support globs/wildcards/block-lists, and
+are passed to `ticket-plan` through the canonical `--repos` JSON-array argument.
+
+For the full `Processing` shape (Preparer, Planner, and Applier), every key, and
+the agent-command tokens, see
+[Configuration Reference → Processing Services](../configuration.md#processing-services).
 
 ---
 
@@ -369,24 +247,14 @@ environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FHIR_AUGURY_ORCHESTRATOR` | `http://localhost:5150` | Orchestrator HTTP address |
-| `FHIR_AUGURY_JIRA` | `http://localhost:5160` | Jira HTTP address |
-| `FHIR_AUGURY_ZULIP` | `http://localhost:5170` | Zulip HTTP address |
-| `FHIR_AUGURY_CONFLUENCE` | `http://localhost:5180` | Confluence HTTP address |
-| `FHIR_AUGURY_GITHUB` | `http://localhost:5190` | GitHub HTTP address |
 
 ### McpStdio
 
 The stdio-based server (`FhirAugury.McpStdio`) is configured entirely through
-environment variables (listed above). It supports `--mode` and `--source`
-command-line arguments for direct mode (connecting to a single source service,
-bypassing the orchestrator):
+environment variables (listed above):
 
 ```bash
-# Default mode (orchestrator)
 dotnet run --project src/FhirAugury.McpStdio
-
-# Direct mode — single source
-dotnet run --project src/FhirAugury.McpStdio -- --mode direct --source jira
 ```
 
 ### McpHttp
@@ -430,104 +298,56 @@ All source services also have a `MinSyncAge` setting (default `04:00:00`) that
 prevents over-syncing by skipping the startup incremental sync if the last sync
 occurred less than `MinSyncAge` ago.
 
+All source services also support a `RunIngestionOnStartupOnly` flag (default
+`false`). When `true`, the scheduled ingestion worker runs exactly one pass at
+startup (still honoring `MinSyncAge` and `IngestionPaused`) and then exits its
+loop cleanly. The service itself keeps running, so HTTP endpoints and manual
+ingestion via the `IngestionController` remain available. This is primarily
+useful for local/dev runs that should not continue syncing in the background.
+
 ---
 
 ## BM25 Tuning
 
 Each source service uses the
-[BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25) for keyword-based
-relevance scoring. The following parameters can be tuned per service:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `Bm25.K1` | `1.2` | Term frequency saturation — higher values give more weight to repeated terms (typical range 1.2–2.0) |
-| `Bm25.B` | `0.75` | Document length normalization — `0` = no length normalization, `1` = full normalization |
-| `Bm25.UseLemmatization` | `true` | Enable lemmatization during keyword indexing (normalizes inflected words to base forms) |
-| `Bm25.FtsTokenizer` | `null` | Custom FTS5 tokenizer (null uses the default SQLite tokenizer) |
-
-Different content types may benefit from different parameters. For example,
-short Zulip messages might use lower `B` values (less length normalization),
-while long Confluence pages might use higher `B` values.
-
-```json
-{
-  "Zulip": {
-    "Bm25": { "K1": 1.5, "B": 0.5 }
-  }
-}
-```
-
-Via environment variables:
+[BM25 algorithm](https://en.wikipedia.org/wiki/Okapi_BM25) for keyword relevance
+scoring. The `Bm25` parameters (`K1`, `B`, `UseLemmatization`, `FtsTokenizer`)
+can be tuned per service — for example, a lower `B` for short Zulip messages and
+a higher `B` for long Confluence pages:
 
 ```bash
 FHIR_AUGURY_ZULIP__Zulip__Bm25__K1=1.5
 FHIR_AUGURY_ZULIP__Zulip__Bm25__B=0.5
 ```
 
+See the [Configuration Reference](../configuration.md) for the full `Bm25`
+parameter table and defaults.
+
 ---
 
 ## Auxiliary Database (Optional)
 
 Each source service can optionally load extended stop words, lemmatization data,
-and FHIR vocabulary from read-only SQLite databases. This improves search
-quality by:
-
-- **Stop words** — Filtering out additional common words beyond the built-in set
-- **Lemmatization** — Normalizing inflected words to base forms (e.g.,
-  "patients" → "patient") for better recall
-- **FHIR vocabulary** — Recognizing additional FHIR element paths and operations
-  from a FHIR specification database
-
-Configure the paths in each source service's `AuxiliaryDatabase` section:
-
-```json
-{
-  "Jira": {
-    "AuxiliaryDatabase": {
-      "AuxiliaryDatabasePath": "/data/auxiliary.db",
-      "FhirSpecDatabasePath": "/data/fhir-spec.db"
-    }
-  }
-}
-```
-
-Via environment variables:
+and FHIR vocabulary from read-only SQLite databases to improve search quality.
+Configure the paths in each source's `AuxiliaryDatabase` section
+(`AuxiliaryDatabasePath` and `FhirSpecDatabasePath`); both are optional and fall
+back to built-in defaults when unset, with no loss of functionality:
 
 ```bash
 FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/data/auxiliary.db
 FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/data/fhir-spec.db
 ```
 
-Both paths are optional. When not configured (or when the files don't exist),
-the system falls back to its built-in defaults with no loss of functionality.
+See the [Configuration Reference](../configuration.md) for details.
 
 ---
 
 ## Dictionary Database
 
-All services (sources and orchestrator) include a `DictionaryDatabase` section
-that manages a compiled dictionary database from source text files. The
-dictionary is built automatically on startup from `*.words.txt` and
-`*.typo.txt` files in the source path.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `DictionaryDatabase.SourcePath` | `./cache/dictionary` | Directory containing dictionary source files |
-| `DictionaryDatabase.DatabasePath` | `./data/dictionary.db` | Path for the compiled SQLite dictionary database |
-| `DictionaryDatabase.ForceRebuild` | `false` | Force rebuild even if the database already exists |
-
-```json
-{
-  "Jira": {
-    "DictionaryDatabase": {
-      "SourcePath": "./cache/dictionary",
-      "DatabasePath": "./data/dictionary.db",
-      "ForceRebuild": false
-    }
-  }
-}
-```
-
+All services include a `DictionaryDatabase` section that compiles a dictionary
+database on startup from `*.words.txt` and `*.typo.txt` files in the source path.
 In Docker Compose, dictionary source files are shared across services via a
-read-only bind mount (`./cache/dictionary:/app/cache/dictionary:ro`). The
-compiled database is stored in each service's data volume.
+read-only bind mount (`./cache/dictionary:/app/cache/dictionary:ro`); the
+compiled database is stored in each service's data volume. See the
+[Configuration Reference](../configuration.md) for the `DictionaryDatabase` key
+table.

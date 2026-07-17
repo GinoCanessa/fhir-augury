@@ -23,7 +23,7 @@ public class GitHubDatabaseTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     [Fact]
@@ -180,6 +180,56 @@ public class GitHubDatabaseTests : IDisposable
     {
         string result = _db.CheckIntegrity();
         Assert.Equal("ok", result);
+    }
+
+    [Fact]
+    public void Initialize_CreatesCommitPrLinkNaturalUniqueIndex()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("ix_github_commit_pr_links_natural", GetIndexNames(conn));
+    }
+
+    [Fact]
+    public void Initialize_AddsRepoDefaultBranchColumn()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("DefaultBranch", GetColumnNames(conn, "github_repos"));
+    }
+
+    [Fact]
+    public void Initialize_CreatesCommentsExternalUniqueIndex()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        Assert.Contains("ix_github_comments_external", GetIndexNames(conn));
+    }
+
+    [Fact]
+    public void Initialize_AddsCommentIdentityColumns()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        List<string> columns = GetColumnNames(conn, "github_comments");
+        Assert.Contains("ExternalId", columns);
+        Assert.Contains("CommentKind", columns);
+    }
+
+    private static List<string> GetIndexNames(SqliteConnection conn)
+    {
+        List<string> names = [];
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index'";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(0));
+        return names;
+    }
+
+    private static List<string> GetColumnNames(SqliteConnection conn, string table)
+    {
+        List<string> names = [];
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using SqliteDataReader reader = cmd.ExecuteReader();
+        while (reader.Read()) names.Add(reader.GetString(1));
+        return names;
     }
 
     private static GitHubIssueRecord CreateSampleIssue(

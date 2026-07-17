@@ -85,7 +85,7 @@ public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryS
             cmd.ExecuteNonQuery();
         }
 
-        int mapCount = 0;
+        List<GitHubSpecFileMapRecord> records = [];
 
         // Map directories under source/ (core FHIR repo convention)
         string sourceDir = Path.Combine(clonePath, "source");
@@ -97,15 +97,14 @@ public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryS
                 string dirName = Path.GetFileName(dir);
                 string relativePath = Path.GetRelativePath(clonePath, dir).Replace('\\', '/');
 
-                GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+                records.Add(new GitHubSpecFileMapRecord
                 {
                     Id = GitHubSpecFileMapRecord.GetIndex(),
                     RepoFullName = repoFullName,
                     ArtifactKey = dirName,
                     FilePath = relativePath,
                     MapType = "directory",
-                }, ignoreDuplicates: true);
-                mapCount++;
+                });
             }
 
             foreach (string file in Directory.GetFiles(sourceDir, "*.xml", SearchOption.AllDirectories))
@@ -114,19 +113,32 @@ public class FhirCoreStrategy(ILogger<FhirCoreStrategy> logger) : IRepoCategoryS
                 string fileName = Path.GetFileNameWithoutExtension(file);
                 string relativePath = Path.GetRelativePath(clonePath, file).Replace('\\', '/');
 
-                GitHubSpecFileMapRecord.Insert(connection, new GitHubSpecFileMapRecord
+                records.Add(new GitHubSpecFileMapRecord
                 {
                     Id = GitHubSpecFileMapRecord.GetIndex(),
                     RepoFullName = repoFullName,
                     ArtifactKey = fileName,
                     FilePath = relativePath,
                     MapType = "file",
-                }, ignoreDuplicates: true);
-                mapCount++;
+                });
             }
         }
 
-        logger.LogInformation("Built {Count} artifact-file mappings for {Repo}", mapCount, repoFullName);
+        BatchInsertSpecFileMaps(connection, records);
+
+        logger.LogInformation("Built {Count} artifact-file mappings for {Repo}", records.Count, repoFullName);
+    }
+
+    private static void BatchInsertSpecFileMaps(SqliteConnection connection, List<GitHubSpecFileMapRecord> records)
+    {
+        if (records.Count == 0) return;
+
+        const int batchSize = 1000;
+        for (int i = 0; i < records.Count; i += batchSize)
+        {
+            List<GitHubSpecFileMapRecord> batch = records.GetRange(i, Math.Min(batchSize, records.Count - i));
+            batch.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
     }
 
     public List<string> DiscoverStructureDefinitionFiles(string repoFullName, string clonePath, CancellationToken ct)

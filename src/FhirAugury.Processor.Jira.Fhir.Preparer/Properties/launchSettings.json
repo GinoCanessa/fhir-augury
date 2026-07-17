@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "FhirAugury.Processor.Jira.Fhir.Preparer": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:60453;http://localhost:60454"
+    }
+  }
+}

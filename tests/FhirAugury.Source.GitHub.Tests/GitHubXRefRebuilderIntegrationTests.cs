@@ -1,9 +1,11 @@
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using FhirAugury.Source.GitHub.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Tests;
 
@@ -18,13 +20,16 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
         _dbPath = Path.Combine(Path.GetTempPath(), $"xref_integ_{Guid.NewGuid()}.db");
         _db = new GitHubDatabase(_dbPath, NullLogger<GitHubDatabase>.Instance);
         _db.Initialize();
-        _rebuilder = new GitHubXRefRebuilder(_db, NullLogger<GitHubXRefRebuilder>.Instance);
+        _rebuilder = new GitHubXRefRebuilder(
+            _db,
+            Options.Create(new GitHubServiceOptions()),
+            NullLogger<GitHubXRefRebuilder>.Instance);
     }
 
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private static GitHubIssueRecord MakeIssue(string repo, int number, string title, string? body = null) => new()
@@ -120,5 +125,105 @@ public class GitHubXRefRebuilderIntegrationTests : IDisposable
         // Assert — same count both times
         Assert.Equal(firstCount, secondCount);
         Assert.Equal(1, firstCount);
+    }
+
+    // ── Repo-scoped bare-number resolution ───────────────────────────
+
+    private static GitHubCommitRecord MakeCommit(string repo, string sha, string message, string? body = null) => new()
+    {
+        Id = GitHubCommitRecord.GetIndex(),
+        Sha = sha,
+        RepoFullName = repo,
+        Message = message,
+        Body = body,
+        Author = "Dev",
+        Date = DateTimeOffset.UtcNow,
+        Url = $"https://github.com/{repo}/commit/{sha}",
+    };
+
+    private static GitHubFileContentRecord MakeFile(string repo, string path, string content) => new()
+    {
+        Id = GitHubFileContentRecord.GetIndex(),
+        RepoFullName = repo,
+        FilePath = path,
+        FileExtension = ".md",
+        ParserType = "text",
+        ContentText = content,
+        ContentLength = content.Length,
+        ExtractedLength = content.Length,
+    };
+
+    [Fact]
+    public void RebuildAllRepos_ScopedCommit_ResolvesBareNumber()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/fhir", "sha-bare-1", "Fixed 54873 in core"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection));
+        Assert.Equal("FHIR-54873", row.JiraKey);
+        Assert.Equal("54873", row.OriginalLiteral);
+        Assert.Equal("commit", row.ContentType);
+    }
+
+    [Fact]
+    public void RebuildAllRepos_ScopedCommitBody_ResolvesBareNumber()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/fhir", "sha-bare-2", "Subject only", body: "Closes 54873"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection));
+        Assert.Equal("FHIR-54873", row.JiraKey);
+    }
+
+    [Fact]
+    public void RebuildAllRepos_UnscopedRepoCommit_YieldsNoBareNumber()
+    {
+        // HL7/us-core is not in the default config, so it has no Jira scope.
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubCommitRecord.Insert(connection, MakeCommit("HL7/us-core", "sha-bare-3", "Fixed 54873 in core"));
+
+        _rebuilder.RebuildAllRepos(["HL7/us-core"]);
+
+        Assert.Empty(JiraXRefRecord.SelectList(connection));
+    }
+
+    [Fact]
+    public void RebuildAllRepos_FileContent_NotBareMatched()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubFileContentRecord.Insert(connection, MakeFile("HL7/fhir", "notes.md", "incidental integer 54873 in prose"));
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        Assert.Empty(JiraXRefRecord.SelectList(connection));
+    }
+
+    [Fact]
+    public void RebuildAllRepos_ReviewThreadComment_CrossReferencedAsComment()
+    {
+        using SqliteConnection connection = _db.OpenConnection();
+        GitHubIssueRecord.Insert(connection, MakeIssue("HL7/fhir", 1, "A pull request"));
+        GitHubCommentRecord.Insert(connection, new GitHubCommentRecord
+        {
+            Id = GitHubCommentRecord.GetIndex(),
+            IssueId = 1,
+            RepoFullName = "HL7/fhir",
+            IssueNumber = 1,
+            Author = "reviewer",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Body = "This line should reference FHIR-12345 per spec",
+            IsReviewComment = true,
+            ExternalId = "987654",
+            CommentKind = "review_comment",
+        }, ignoreDuplicates: true);
+
+        _rebuilder.RebuildAllRepos(["HL7/fhir"]);
+
+        JiraXRefRecord row = Assert.Single(JiraXRefRecord.SelectList(connection, JiraKey: "FHIR-12345"));
+        Assert.Equal("comment", row.ContentType);
     }
 }

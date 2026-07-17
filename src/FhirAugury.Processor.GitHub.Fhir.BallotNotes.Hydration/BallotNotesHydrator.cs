@@ -1,0 +1,566 @@
+using FhirAugury.Parsing.Fhir;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Attribution;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Grouping;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Structural;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration;
+
+/// <summary>Inputs for a single hydration run.</summary>
+public sealed record BallotNotesHydrationRequest
+{
+    public required string RepoOwner { get; init; }
+    public required string RepoName { get; init; }
+    public required string SinceSha { get; init; }
+    public required string RunKey { get; init; }
+    public string RepoCategory { get; init; } = string.Empty;
+
+    /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
+    public string WindowLabel { get; init; } = string.Empty;
+
+    /// <summary>Owning work-group fallback when a unit has no attributed tickets.</summary>
+    public string? WorkGroupHint { get; init; }
+}
+
+/// <summary>The outcome of a hydration run, recorded on the run row.</summary>
+public sealed record HydrationResult
+{
+    public required string RunKey { get; init; }
+    public int UnitsHydrated { get; init; }
+    public int CommitsInWindow { get; init; }
+    public int TicketsAttributed { get; init; }
+    public required string Status { get; init; }
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Orchestrates server-side ballot-note hydration for a repo + since-commit
+/// window: groups changed files into units and, per unit (in parallel), walks
+/// the window, attributes tickets, resolves source files, captures the current
+/// ballot-note HTML, and upserts the evidence. Designed to be invoked
+/// fire-and-forget by the controller; it never throws past
+/// <see cref="BallotNotesDatabase.FinishRun"/>.
+/// </summary>
+public sealed class BallotNotesHydrator(
+    BallotNotesDatabase database,
+    TicketAttributor attributor,
+    IOptions<BallotNotesHydrationOptions> options,
+    ILogger<BallotNotesHydrator> logger)
+{
+    private readonly BallotNotesHydrationOptions _options = options.Value;
+
+    public async Task<HydrationResult> HydrateAsync(BallotNotesHydrationRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        string owner = request.RepoOwner.Trim();
+        string name = request.RepoName.Trim();
+        string clonePath = Path.Combine(_options.CloneRoot, $"{owner}_{name}", "clone");
+
+        int totalCommits = 0;
+        int totalTickets = 0;
+        int hydrated = 0;
+        object gate = new();
+
+        try
+        {
+            string headSha = (await GitRunner.RunAsync(clonePath, ["rev-parse", "HEAD"], ct).ConfigureAwait(false)).Trim();
+            string headShort = ShortSha(headSha);
+            string sinceFull = (await GitRunner.RunAsync(clonePath, ["rev-parse", request.SinceSha], ct).ConfigureAwait(false)).Trim();
+            string sinceShort = ShortSha(sinceFull);
+
+            IReadOnlyList<string> changed = await CommitWindowWalker
+                .ListChangedFilesAsync(clonePath, request.SinceSha, ct).ConfigureAwait(false);
+
+            bool isFhirCore = IsFhirCore(owner, name);
+            IReadOnlySet<string> ownedPages = isFhirCore
+                ? await ComputeDatatypeOwnedPagesAsync(clonePath, ct).ConfigureAwait(false)
+                : new HashSet<string>();
+
+            IReadOnlyList<HydrationUnit> units = BallotNotesUnitGrouper.Group(changed, isFhirCore, ownedPages);
+
+            database.UpdateRunPlan(request.RunKey, units.Count, headSha, headShort);
+
+            // Per-run shared state for the parallel unit workers: read every unit's
+            // candidate current-note intro at HEAD in one cat-file batch up front.
+            HydrationRunContext context = new()
+            {
+                CurrentNoteBlobs = await ReadCurrentNoteBlobsAsync(clonePath, units, ct).ConfigureAwait(false),
+            };
+
+            // Detect structural SD deltas across the whole window once; each unit
+            // filters this to its own source files.
+            IReadOnlyList<StructuralChange> structuralChanges = await StructuralDiffService
+                .DiffAsync(clonePath, sinceFull, headSha, logger, ct).ConfigureAwait(false);
+
+            ParallelOptions parallelOptions = new()
+            {
+                MaxDegreeOfParallelism = Math.Max(1, _options.MaxParallelism),
+                CancellationToken = ct,
+            };
+
+            await Parallel.ForEachAsync(units, parallelOptions, async (unit, token) =>
+            {
+                (int commits, int tickets) = await HydrateUnitAsync(
+                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit,
+                    structuralChanges, context, token)
+                    .ConfigureAwait(false);
+
+                lock (gate)
+                {
+                    totalCommits += commits;
+                    totalTickets += tickets;
+                    hydrated++;
+                    database.BumpRunProgress(request.RunKey, hydrated, totalCommits, totalTickets);
+                }
+            }).ConfigureAwait(false);
+
+            database.FinishRun(request.RunKey, "completed", null);
+            return new HydrationResult
+            {
+                RunKey = request.RunKey,
+                UnitsHydrated = hydrated,
+                CommitsInWindow = totalCommits,
+                TicketsAttributed = totalTickets,
+                Status = "completed",
+            };
+        }
+        catch (Exception ex)
+        {
+            string reason = ex is OperationCanceledException ? "Hydration cancelled." : ex.Message;
+            logger.LogError(ex, "BallotNotes hydration failed for {Owner}/{Name}", owner, name);
+            database.FinishRun(request.RunKey, "failed", reason);
+            return new HydrationResult
+            {
+                RunKey = request.RunKey,
+                UnitsHydrated = hydrated,
+                CommitsInWindow = totalCommits,
+                TicketsAttributed = totalTickets,
+                Status = "failed",
+                Error = reason,
+            };
+        }
+    }
+
+    private async Task<(int Commits, int Tickets)> HydrateUnitAsync(
+        string clonePath,
+        string owner,
+        string name,
+        BallotNotesHydrationRequest request,
+        string sinceFull,
+        string sinceShort,
+        string headSha,
+        string headShort,
+        HydrationUnit unit,
+        IReadOnlyList<StructuralChange> allStructuralChanges,
+        HydrationRunContext context,
+        CancellationToken ct)
+    {
+        IReadOnlyList<WindowCommit> commits = await CommitWindowWalker
+            .WalkAsync(clonePath, sinceFull, unit.ChangedPaths, ct).ConfigureAwait(false);
+
+        HashSet<string> touched = new(unit.ChangedPaths, StringComparer.OrdinalIgnoreCase);
+        foreach (WindowCommit commit in commits)
+        {
+            foreach (string path in commit.ChangedPaths) touched.Add(path);
+        }
+
+        UnitAttribution attribution = await attributor
+            .AttributeAsync(commits, request.WorkGroupHint, context, ct).ConfigureAwait(false);
+
+        SourceFileResolution resolution = await SourceFileResolver
+            .ResolveAsync(clonePath, unit, touched, ct).ConfigureAwait(false);
+
+        IReadOnlyList<string> headDatatypeNames = string.Equals(unit.Type, "DataType", StringComparison.OrdinalIgnoreCase)
+            ? await ListHeadDatatypeNamesAsync(clonePath, ct).ConfigureAwait(false)
+            : [];
+
+        IReadOnlyList<WorkGroupRef> owningWorkGroups = OwningWorkGroupResolver.Resolve(
+            unit, clonePath, owner, name, attribution, resolution.Files, headDatatypeNames, request.WorkGroupHint, _options, logger);
+        WorkGroupRef primaryWorkGroup = owningWorkGroups.Count > 0 ? owningWorkGroups[0] : WorkGroupRef.Unknown;
+
+        // The three distinct WG lineages (Listed / JIRA-index / Applied-by) are
+        // additive to the priority-collapsed primary owner above. Open the registry
+        // DB + a shared name cache once and pass them to both sibling resolvers.
+        WorkGroupLineages lineages;
+        AppliedWorkGroupResolution applied;
+        using (Microsoft.Data.Sqlite.SqliteConnection? wgDb = WorkGroupResolutionHelpers.TryOpenGitHubDb(_options.GitHubDbPath, logger))
+        {
+            Dictionary<string, string> nameCache = new(StringComparer.OrdinalIgnoreCase);
+            lineages = WorkGroupLineageResolver.Resolve(
+                unit, clonePath, owner, name, resolution.Files, headDatatypeNames, wgDb, nameCache, _options, logger);
+
+            HashSet<string> unitSourcePaths = new(unit.ChangedPaths, StringComparer.OrdinalIgnoreCase);
+            foreach (ResolvedSourceFile file in resolution.Files) unitSourcePaths.Add(file.Path);
+
+            applied = AppliedWorkGroupResolver.Resolve(commits, attribution, unitSourcePaths, wgDb, nameCache);
+        }
+
+        string sourceFilesNote = CombineNotes(resolution.Note, applied.WarningNote);
+
+        CurrentNoteResolution currentNote = ResolveCurrentNote(unit, context.CurrentNoteBlobs);
+        string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        NoteRecord note = new()
+        {
+            NoteId = noteId,
+            Type = unit.Type,
+            Name = unit.Name,
+            RepoOwner = owner,
+            RepoName = name,
+            RepoCategory = request.RepoCategory.Trim(),
+            WorkGroup = primaryWorkGroup.DisplayName,
+            WorkGroupCode = primaryWorkGroup.Code,
+            WorkGroupNames = WorkGroupRef.JoinNames(owningWorkGroups),
+            WorkGroupCodes = WorkGroupRef.JoinCodes(owningWorkGroups),
+            ListedWorkGroupNames = WorkGroupRef.JoinNames(lineages.Listed),
+            ListedWorkGroupCodes = WorkGroupRef.JoinCodes(lineages.Listed),
+            IndexWorkGroupNames = WorkGroupRef.JoinNames(lineages.Index),
+            IndexWorkGroupCodes = WorkGroupRef.JoinCodes(lineages.Index),
+            AppliedWorkGroupNames = WorkGroupRef.JoinNames(applied.Refs),
+            AppliedWorkGroupCodes = WorkGroupRef.JoinCodes(applied.Refs),
+            SinceSha = sinceFull,
+            SinceShortSha = sinceShort,
+            HeadSha = headSha,
+            HeadShortSha = headShort,
+            WindowLabel = request.WindowLabel,
+            CommitsInWindow = commits.Count,
+            TicketsAttributed = attribution.Tickets.Count,
+            NeedsNote = "unknown",
+            CurrentBallotNoteHtml = currentNote.CurrentHtml,
+            CurrentNoteIsAuguryGenerated = currentNote.IsAuguryGenerated,
+            PreservedHandAuthoredHtml = currentNote.PreservedHandAuthoredHtml,
+            SourceFilesNote = sourceFilesNote,
+            GeneratedAt = now,
+            SavedAt = now,
+        };
+
+        List<NoteSourceFileRecord> files = [];
+        int fileOrder = 0;
+        foreach (ResolvedSourceFile file in resolution.Files)
+        {
+            files.Add(new NoteSourceFileRecord
+            {
+                NoteId = noteId,
+                Path = file.Path,
+                Role = file.Role,
+                TouchedInWindow = file.TouchedInWindow,
+                FileOrder = fileOrder++,
+            });
+        }
+
+        List<NoteCommitRecord> commitRecords = [];
+        int commitOrder = 0;
+        foreach (WindowCommit commit in commits)
+        {
+            attribution.CommitTicketKeys.TryGetValue(commit.Sha, out IReadOnlyList<string>? keys);
+            commitRecords.Add(new NoteCommitRecord
+            {
+                NoteId = noteId,
+                Sha = commit.Sha,
+                ShortSha = string.IsNullOrEmpty(commit.ShortSha) ? ShortSha(commit.Sha) : commit.ShortSha,
+                AuthorName = commit.AuthorName,
+                AuthorDate = commit.AuthorDate,
+                Subject = commit.Subject,
+                WebUrl = $"https://github.com/{owner}/{name}/commit/{commit.Sha}",
+                TicketKeys = keys is null ? string.Empty : string.Join(", ", keys),
+                CommitOrder = commitOrder++,
+            });
+        }
+
+        List<NoteTicketRecord> ticketRecords = [];
+        int ticketOrder = 0;
+        foreach (AttributedTicket ticket in attribution.Tickets)
+        {
+            ticketRecords.Add(new NoteTicketRecord
+            {
+                NoteId = noteId,
+                TicketKey = ticket.Key,
+                Title = ticket.Title,
+                Resolution = ticket.Resolution,
+                WorkGroup = ticket.WorkGroup,
+                Specification = ticket.Specification,
+                Url = ticket.Url,
+                ChangeImpact = ticket.ChangeImpact,
+                ChangeCategory = ticket.ChangeCategory,
+                IssueType = ticket.IssueType,
+                RelatedTicketKeys = ticket.RelatedTicketKeys,
+                CommitCount = ticket.CommitCount,
+                TicketOrder = ticketOrder++,
+            });
+        }
+
+        // Structural deltas for this unit: filter the repo-wide diff to files this
+        // unit touched, and attribute each (file-level) to the tickets of the
+        // commit(s) that touched that SD file in the window.
+        List<NoteStructuralChangeRecord> structuralRecords = [];
+        int structuralOrder = 0;
+        foreach (StructuralChange change in allStructuralChanges)
+        {
+            if (!touched.Contains(change.SourcePath)) continue;
+
+            List<string> fileKeys = [];
+            HashSet<string> seenKeys = new(StringComparer.OrdinalIgnoreCase);
+            foreach (WindowCommit commit in commits)
+            {
+                if (!commit.ChangedPaths.Contains(change.SourcePath, StringComparer.OrdinalIgnoreCase)) continue;
+                if (!attribution.CommitTicketKeys.TryGetValue(commit.Sha, out IReadOnlyList<string>? keys)) continue;
+                foreach (string key in keys)
+                {
+                    if (seenKeys.Add(key)) fileKeys.Add(key);
+                }
+            }
+
+            structuralRecords.Add(new NoteStructuralChangeRecord
+            {
+                NoteId = noteId,
+                SourcePath = change.SourcePath,
+                ElementPath = change.ElementPath,
+                ChangeKind = change.ChangeKind,
+                Detail = change.Detail,
+                TicketKeys = string.Join(";", fileKeys),
+                ChangeOrder = structuralOrder++,
+            });
+        }
+
+        // Extensions cross-reference (#17): resolve extensions referenced by this
+        // unit's SD files against the CI build's HL7/fhir-extensions pack, keeping
+        // only those with a replacing core element.
+        List<NoteExtensionRefRecord> extensionRecords = BuildExtensionRefs(clonePath, noteId, resolution.Files);
+
+        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords, structuralRecords, extensionRecords);
+        return (commits.Count, attribution.Tickets.Count);
+    }
+
+    private List<NoteExtensionRefRecord> BuildExtensionRefs(
+        string clonePath,
+        string noteId,
+        IReadOnlyList<ResolvedSourceFile> sourceFiles)
+    {
+        if (string.IsNullOrWhiteSpace(_options.GitHubDbPath)) return [];
+
+        // Collect extension canonical URLs referenced by this unit's SD files at HEAD.
+        HashSet<string> urls = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ResolvedSourceFile file in sourceFiles)
+        {
+            if (!IsStructureDefinitionFile(file.Path)) continue;
+            string absolute = Path.Combine(clonePath, file.Path);
+            if (!File.Exists(absolute)) continue;
+
+            StructureDefinitionInfo? sd = FhirContentParser.TryParseStructureDefinition(absolute, logger);
+            if (sd is null) continue;
+
+            foreach (ElementInfo element in sd.DifferentialElements)
+            {
+                foreach (ElementTypeInfo type in element.Types)
+                {
+                    if (!string.Equals(type.Code, "Extension", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (type.Profiles is null) continue;
+                    foreach (string profile in type.Profiles)
+                    {
+                        if (!string.IsNullOrWhiteSpace(profile)) urls.Add(profile);
+                    }
+                }
+            }
+        }
+
+        if (urls.Count == 0) return [];
+
+        IReadOnlyList<ExtensionCrossRef> refs = ExtensionsCrossReferenceService.Resolve(_options.GitHubDbPath, urls, logger);
+        List<NoteExtensionRefRecord> records = [];
+        int order = 0;
+        foreach (ExtensionCrossRef crossRef in refs)
+        {
+            records.Add(new NoteExtensionRefRecord
+            {
+                NoteId = noteId,
+                ExtensionUrl = crossRef.ExtensionUrl,
+                ExtensionName = crossRef.ExtensionName,
+                ReplacementCoreElement = crossRef.ReplacementCoreElement,
+                Rationale = crossRef.Rationale,
+                RefOrder = order++,
+            });
+        }
+        return records;
+    }
+
+    private static bool IsStructureDefinitionFile(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        if (ext != ".xml" && ext != ".json") return false;
+        return Path.GetFileName(path).ToLowerInvariant().Contains("structuredefinition");
+    }
+
+    /// <summary>
+    /// Reads every unit's candidate current-note intro file at HEAD in one
+    /// <c>cat-file --batch</c> pass, keyed by the <c>HEAD:&lt;path&gt;</c> spec.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, BlobResult>> ReadCurrentNoteBlobsAsync(
+        string clonePath, IReadOnlyList<HydrationUnit> units, CancellationToken ct)
+    {
+        List<string> specs = [];
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (HydrationUnit unit in units)
+        {
+            foreach (string candidate in CurrentNoteCandidates(unit))
+            {
+                string spec = $"HEAD:{candidate}";
+                if (seen.Add(spec)) specs.Add(spec);
+            }
+        }
+        return await GitBlobBatchReader.ReadAsync(clonePath, specs, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves a unit's current ballot-note evidence from the pre-read HEAD intro
+    /// blobs (pure): the first candidate whose file exists and contains a note block
+    /// wins, matching the former per-unit <c>git show HEAD:&lt;path&gt;</c> scan.
+    /// </summary>
+    private static CurrentNoteResolution ResolveCurrentNote(
+        HydrationUnit unit, IReadOnlyDictionary<string, BlobResult> currentNoteBlobs)
+    {
+        foreach (string candidate in CurrentNoteCandidates(unit))
+        {
+            if (!currentNoteBlobs.TryGetValue($"HEAD:{candidate}", out BlobResult blob) || !blob.Found) continue;
+
+            IReadOnlyList<ClassifiedNoteBlock> blocks = BallotNoteHtmlExtractor.ExtractClassified(blob.Text);
+            if (blocks.Count == 0) continue;
+
+            ClassifiedNoteBlock? generated = blocks.FirstOrDefault(b => b.IsAuguryGenerated);
+            // The replace-target is the augury-generated block specifically; fall
+            // back to the first block as revision context when none is marked.
+            string current = generated?.Html ?? blocks[0].Html;
+            string preserved = string.Join(
+                "\n",
+                blocks.Where(b => !b.IsAuguryGenerated).Select(b => b.Html));
+            return new CurrentNoteResolution(current, generated is not null, preserved);
+        }
+        return CurrentNoteResolution.Empty;
+    }
+
+    /// <summary>The classified current-note evidence for a unit at HEAD.</summary>
+    private readonly record struct CurrentNoteResolution(string CurrentHtml, bool IsAuguryGenerated, string PreservedHandAuthoredHtml)
+    {
+        public static CurrentNoteResolution Empty { get; } = new(string.Empty, false, string.Empty);
+    }
+
+    private static IEnumerable<string> CurrentNoteCandidates(HydrationUnit unit) => unit.Type switch
+    {
+        "Page" => [$"source/{unit.Name}.html"],
+        "DataType" => ["source/datatypes.html"],
+        _ =>
+        [
+            $"source/{unit.Name}/{unit.Name}-introduction.xml",
+            $"source/{unit.Name}/{unit.Name}-notes.xml",
+            $"source/{unit.Name}/{unit.Name}-introduction.md",
+            $"source/{unit.Name}/{unit.Name}.html",
+        ],
+    };
+
+    private async Task<IReadOnlySet<string>> ComputeDatatypeOwnedPagesAsync(string clonePath, CancellationToken ct)
+    {
+        IReadOnlyList<string> topLevel = await ListTreeAsync(clonePath, "source/", ct).ConfigureAwait(false);
+        HashSet<string> htmlPages = new(StringComparer.OrdinalIgnoreCase);
+        List<string> datatypeNames = [];
+
+        IReadOnlyList<string> datatypeTree = await ListTreeAsync(clonePath, "source/datatypes/", ct).ConfigureAwait(false);
+        foreach (string path in datatypeTree)
+        {
+            // Top-level datatype SD files: source/datatypes/<stem>.xml (no nesting).
+            if (!path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
+            string remainder = path["source/datatypes/".Length..];
+            if (remainder.Contains('/')) continue;
+            string stem = remainder[..^".xml".Length];
+            if (stem.Contains('-')) continue; // skip intro/example variants
+            datatypeNames.Add(stem);
+        }
+
+        foreach (string path in topLevel)
+        {
+            if (!path.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) continue;
+            string remainder = path["source/".Length..];
+            if (remainder.Contains('/')) continue;
+            htmlPages.Add(path);
+        }
+
+        return DatatypePageMap.ComputeOwnedPages(datatypeNames, htmlPages.Contains);
+    }
+
+    /// <summary>
+    /// Lists the datatype names defined at HEAD (top-level
+    /// <c>source/datatypes/&lt;name&gt;.xml</c>, variant files excluded), used to
+    /// resolve owners for an aggregate-only datatypes change. Delegates to the
+    /// shared <see cref="HeadDatatypeLister"/> so the re-stamp tool lists
+    /// identically.
+    /// </summary>
+    private static Task<IReadOnlyList<string>> ListHeadDatatypeNamesAsync(string clonePath, CancellationToken ct)
+        => HeadDatatypeLister.ListAsync(clonePath, ct);
+
+    private static async Task<IReadOnlyList<string>> ListTreeAsync(string clonePath, string pathspec, CancellationToken ct)
+    {
+        GitRunner.GitResult result = await GitRunner.TryRunAsync(
+            clonePath, ["ls-tree", "-r", "--name-only", "HEAD", "--", pathspec], ct).ConfigureAwait(false);
+        if (result.ExitCode != 0) return [];
+
+        List<string> files = [];
+        foreach (string line in result.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.Length > 0) files.Add(trimmed);
+        }
+        return files;
+    }
+
+    private static bool IsFhirCore(string owner, string name)
+        => string.Equals(owner, "HL7", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(name, "fhir", StringComparison.OrdinalIgnoreCase);
+
+    private static string ShortSha(string fullSha)
+    {
+        string full = fullSha.Trim();
+        return full.Length > 12 ? full[..12] : full;
+    }
+
+    /// <summary>
+    /// Joins the source-file resolver note and the applied-by imprecision warning
+    /// into a single <c>SourceFilesNote</c>, dropping empties and de-duplicating.
+    /// </summary>
+    private static string CombineNotes(string resolverNote, string appliedWarning)
+    {
+        List<string> parts = [];
+        foreach (string note in new[] { resolverNote, appliedWarning })
+        {
+            string trimmed = (note ?? string.Empty).Trim();
+            if (trimmed.Length > 0 && !parts.Contains(trimmed)) parts.Add(trimmed);
+        }
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>Lowercase slug; non-alphanumeric runs collapse to a single hyphen.</summary>
+    private static string Slugify(string value)
+    {
+        System.Text.StringBuilder sb = new(value.Length);
+        bool lastHyphen = false;
+        foreach (char ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                sb.Append(char.ToLowerInvariant(ch));
+                lastHyphen = false;
+            }
+            else if (!lastHyphen)
+            {
+                sb.Append('-');
+                lastHyphen = true;
+            }
+        }
+        return sb.ToString().Trim('-');
+    }
+}

@@ -87,9 +87,12 @@ public class StreamsController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         });
     }
 
-    [HttpGet("streams/{streamName}/topics")]
-    public IActionResult GetStreamTopics([FromRoute] string streamName, [FromQuery] int? limit, [FromQuery] int? offset)
+    [HttpGet("streams/topics")]
+    public IActionResult GetStreamTopics([FromQuery] string? streamName, [FromQuery] int? limit, [FromQuery] int? offset)
     {
+        if (string.IsNullOrWhiteSpace(streamName))
+            return BadRequest(new { error = "streamName query parameter is required" });
+
         ZulipServiceOptions options = optsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
         int maxResults = Math.Min(limit ?? 50, 500);

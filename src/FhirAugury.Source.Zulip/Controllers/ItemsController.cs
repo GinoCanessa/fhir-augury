@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
 using FhirAugury.Source.Zulip.Database.Records;
@@ -198,5 +199,32 @@ public class ItemsController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
             resolvedFormat,
             ZulipUrlHelper.BuildMessageUrl(options, message.StreamName, message.Topic, msgId),
             null, null));
+    }
+
+    /// <summary>
+    /// Returns comments for a Zulip item. Zulip has no first-class comment
+    /// concept (replies are themselves top-level messages in the same
+    /// stream/topic), so this endpoint always returns an empty list. The
+    /// stub exists for shape parity with the Jira <c>items/{key}/comments</c>
+    /// endpoint so cross-source consumers can call uniformly.
+    /// </summary>
+    [HttpGet("items/{id}/comments")]
+    public IActionResult GetComments([FromRoute] string id)
+    {
+        _ = id;
+        return Ok(Array.Empty<ZulipCommentEntry>());
+    }
+
+    /// <summary>
+    /// Returns typed inter-item links for a Zulip item. Zulip does not expose
+    /// any link concept beyond the implicit stream/topic grouping, so this
+    /// endpoint always returns an empty list. The stub exists for shape parity
+    /// with the Jira <c>items/{key}/links</c> endpoint.
+    /// </summary>
+    [HttpGet("items/{id}/links")]
+    public IActionResult GetLinks([FromRoute] string id)
+    {
+        _ = id;
+        return Ok(Array.Empty<ZulipItemLinkEntry>());
     }
 }

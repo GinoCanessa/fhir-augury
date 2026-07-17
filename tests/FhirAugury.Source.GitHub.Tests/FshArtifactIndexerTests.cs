@@ -27,8 +27,8 @@ public class FshArtifactIndexerTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
-        try { Directory.Delete(_cloneDir, true); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_cloneDir);
     }
 
     private string CreateFshFile(string relativePath, string content)

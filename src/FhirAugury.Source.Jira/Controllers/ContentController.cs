@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Configuration;
@@ -12,11 +13,15 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Content search / refers-to endpoints. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT content is not exposed here.
+/// </summary>
 [ApiController]
-[Route("api/v1")]
+[Route("api/v1/content")]
 public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
 {
-    [HttpGet("content/refers-to")]
+    [HttpGet("refers-to")]
     public IActionResult RefersTo([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -38,7 +43,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         });
     }
 
-    [HttpGet("content/referred-by")]
+    [HttpGet("referred-by")]
     public IActionResult ReferredBy([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -60,7 +65,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         });
     }
 
-    [HttpGet("content/cross-referenced")]
+    [HttpGet("cross-referenced")]
     public IActionResult CrossReferenced([FromQuery] string? value, [FromQuery] string? sourceType, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -95,7 +100,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         });
     }
 
-    [HttpGet("content/search")]
+    [HttpGet("search")]
     public IActionResult Search([FromQuery] string? values, [FromQuery] string? sources, [FromQuery] int? limit)
     {
         if (string.IsNullOrWhiteSpace(values))
@@ -111,8 +116,8 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
             : null;
 
         // If sources filter is specified and doesn't include "jira", return empty
-        if (sourceList is not null &&
-            !sourceList.Any(s => string.Equals(s, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)))
+        if (sourceList.HasExplicitRestriction() &&
+            !sourceList!.Any(s => string.Equals(s, SourceSystems.Jira, StringComparison.OrdinalIgnoreCase)))
         {
             return Ok(new ContentSearchResponse
             {
@@ -136,11 +141,15 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
             string sql = """
                 SELECT ji.Key, ji.Title,
                        snippet(jira_issues_fts, 1, '<b>', '</b>', '...', 20) as Snippet,
-                       jira_issues_fts.rank, ji.Status, ji.UpdatedAt
+                       jira_issues_fts.rank * COALESCE(jp.BaselineValue, 5) / 5.0 as ScaledRank,
+                       ji.Status, ji.UpdatedAt,
+                       COALESCE(jp.BaselineValue, 5) as BaselineValue
                 FROM jira_issues_fts
                 JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
+                LEFT JOIN jira_projects jp ON jp.Key = ji.ProjectKey
                 WHERE jira_issues_fts MATCH @query
-                ORDER BY jira_issues_fts.rank
+                  AND COALESCE(jp.BaselineValue, 5) > 0
+                ORDER BY ScaledRank
                 LIMIT @limit
                 """;
 
@@ -179,7 +188,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         });
     }
 
-    [HttpGet("content/item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public IActionResult GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -208,6 +217,10 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         if (issue.Assignee is not null) metadata["assignee"] = issue.Assignee;
         if (issue.Reporter is not null) metadata["reporter"] = issue.Reporter;
         if (issue.Labels is not null) metadata["labels"] = issue.Labels;
+        if (issue.ChangeImpact is not null) metadata["change_impact"] = issue.ChangeImpact;
+        if (issue.ChangeCategory is not null) metadata["change_category"] = issue.ChangeCategory;
+        if (issue.RelatedIssues is not null) metadata["related_issues"] = issue.RelatedIssues;
+        if (issue.DuplicateOf is not null) metadata["duplicate_of"] = issue.DuplicateOf;
 
         List<CommentInfo>? comments = null;
         if (includeComments == true)
@@ -529,10 +542,12 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
 
         // Batch-query FTS5 for all source items matching the query value
         using SqliteCommand cmd = new("""
-            SELECT ji.Key, -jira_issues_fts.rank as Score
+            SELECT ji.Key, -(jira_issues_fts.rank) * COALESCE(jp.BaselineValue, 5) / 5.0 as Score
             FROM jira_issues_fts
             JOIN jira_issues ji ON ji.Id = jira_issues_fts.rowid
+            LEFT JOIN jira_projects jp ON jp.Key = ji.ProjectKey
             WHERE jira_issues_fts MATCH @query
+              AND COALESCE(jp.BaselineValue, 5) > 0
             """, connection);
         cmd.Parameters.AddWithValue("@query", ftsQuery);
 
@@ -556,7 +571,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
 
     // ── Keyword endpoints ────────────────────────────────────────
 
-    [HttpGet("content/keywords/{source}/{**id}")]
+    [HttpGet("keywords/{source}/{**id}")]
     public IActionResult GetKeywords(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] string? keywordType, [FromQuery] int? limit)
@@ -581,7 +596,7 @@ public class ContentController(JiraDatabase db, IOptions<JiraServiceOptions> opt
         });
     }
 
-    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    [HttpGet("related-by-keyword/{source}/{**id}")]
     public IActionResult RelatedByKeyword(
         [FromRoute] string source, [FromRoute] string id,
         [FromQuery] double? minScore, [FromQuery] string? keywordType, [FromQuery] int? limit)

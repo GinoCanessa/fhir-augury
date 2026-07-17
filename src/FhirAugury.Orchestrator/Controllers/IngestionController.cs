@@ -4,6 +4,7 @@ using FhirAugury.Common.Text;
 using FhirAugury.Orchestrator.Database;
 using FhirAugury.Orchestrator.Database.Records;
 using FhirAugury.Orchestrator.Routing;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 
@@ -22,6 +23,7 @@ public class IngestionController(
     public async Task<IActionResult> TriggerIngestion(
         [FromQuery] string? type,
         [FromQuery] string? sources,
+        [FromQuery(Name = "jira-project")] string? jiraProject,
         CancellationToken ct)
     {
         string ingestionType = type ?? "incremental";
@@ -40,7 +42,12 @@ public class IngestionController(
 
             try
             {
-                IngestionStatusResponse? result = await httpClient.TriggerIngestionAsync(sourceName, ingestionType, ct);
+                // jira-project is forwarded only to the Jira leg; never to other sources.
+                string? legProject = sourceName.Equals("jira", StringComparison.OrdinalIgnoreCase)
+                    ? jiraProject
+                    : null;
+                IngestionStatusResponse? result = await httpClient.TriggerIngestionAsync(
+                    sourceName, ingestionType, legProject, ct);
                 statuses.Add(new { source = sourceName, status = result?.Status ?? "unknown", itemsTotal = result?.ItemsTotal ?? 0 });
             }
             catch (Exception ex)
@@ -90,7 +97,20 @@ public class IngestionController(
         return Ok(new { indexType, results });
     }
 
+    /// <summary>
+    /// Receives an ingestion-completion notification from a source service and
+    /// fans the notification out to every other enabled source so they can
+    /// rebuild their cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the source-side <c>POST api/v1/notify-peer</c> endpoint
+    /// exposed by every source's <c>IngestionController</c>. A source POSTs
+    /// here when it finishes ingesting; the orchestrator records the
+    /// completion in the xref-scan-state table and forwards the notification
+    /// (via <c>SourceHttpClient.NotifyPeerAsync</c>) to all other sources.
+    /// </remarks>
     [HttpPost("notify-ingestion")]
+    [Tags("ingestion-notifications")]
     public async Task<IActionResult> NotifyIngestion([FromBody] PeerIngestionNotification notification, CancellationToken ct)
     {
         _logger.LogInformation("Ingestion complete from {Source}", notification.Source);

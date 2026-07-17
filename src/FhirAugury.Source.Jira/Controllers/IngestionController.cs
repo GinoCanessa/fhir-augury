@@ -1,11 +1,15 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
+using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
@@ -18,22 +22,39 @@ public class IngestionController(
     JiraIndexBuilder indexBuilder,
     JiraXRefRebuilder xrefRebuilder,
     JiraIndexer indexer,
-    IIndexTracker indexTracker) : ControllerBase
+    IOptions<JiraServiceOptions> optionsAccessor,
+    IIndexTracker indexTracker,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
+    private readonly JiraServiceOptions _options = optionsAccessor.Value;
+
     [HttpPost("ingest")]
-    public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, CancellationToken ct)
+    public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, [FromQuery] string? project, CancellationToken ct)
     {
+        if (project is not null)
+        {
+            List<JiraProjectConfig> configured = _options.GetEffectiveProjects();
+            JiraProjectConfig? match = configured
+                .FirstOrDefault(p => p.Key.Equals(project, StringComparison.OrdinalIgnoreCase));
+
+            if (match is null)
+                return BadRequest(new { error = $"Unknown project '{project}'" });
+
+            project = match.Key;
+        }
+
         string ingestionType = type ?? "incremental";
         try
         {
             IngestionResult result = ingestionType == "full"
-                ? await pipeline.RunFullIngestionAsync(ct: ct)
-                : await pipeline.RunIncrementalIngestionAsync(ct);
+                ? await pipeline.RunFullIngestionAsync(project: project, ct: ct)
+                : await pipeline.RunIncrementalIngestionAsync(project: project, ct: ct);
 
             return Ok(new
             {
                 result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated, result.ItemsFailed,
                 errors = result.Errors,
+                project = project ?? "all",
             });
         }
         catch (InvalidOperationException ex)
@@ -43,17 +64,29 @@ public class IngestionController(
     }
 
     [HttpPost("ingest/trigger")]
-    public IActionResult QueueIngestion([FromQuery] string? type)
+    public IActionResult QueueIngestion([FromQuery] string? type, [FromQuery] string? project)
     {
+        if (project is not null)
+        {
+            List<JiraProjectConfig> configured = _options.GetEffectiveProjects();
+            JiraProjectConfig? match = configured
+                .FirstOrDefault(p => p.Key.Equals(project, StringComparison.OrdinalIgnoreCase));
+
+            if (match is null)
+                return BadRequest(new { error = $"Unknown project '{project}'" });
+
+            project = match.Key;
+        }
+
         string ingestionType = (type ?? "incremental").ToLowerInvariant();
 
         workQueue.Enqueue(ct => ingestionType switch
         {
-            "full" => pipeline.RunFullIngestionAsync(ct: ct),
-            _ => pipeline.RunIncrementalIngestionAsync(ct),
-        }, $"jira-{ingestionType}");
+            "full" => pipeline.RunFullIngestionAsync(project: project, ct: ct),
+            _ => pipeline.RunIncrementalIngestionAsync(project: project, ct: ct),
+        }, $"jira-{ingestionType}{(project is not null ? $"-{project}" : "")}");
 
-        return Accepted(new { status = "queued", type = ingestionType });
+        return Accepted(new { status = "queued", type = ingestionType, project = project ?? "all" });
     }
 
     [HttpPost("rebuild")]
@@ -84,9 +117,31 @@ public class IngestionController(
         return Ok(new RebuildIndexResponse(true, $"queued {indexType} index rebuild", null, null));
     }
 
+    /// <summary>
+    /// Acknowledges an ingestion-completion notification from a peer source so
+    /// this service can rebuild its Jira-side cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the orchestrator-side
+    /// <c>POST api/v1/notify-ingestion</c> endpoint
+    /// (<c>FhirAugury.Orchestrator.Controllers.IngestionController.NotifyIngestion</c>).
+    /// The orchestrator fans completion notifications from one source out to
+    /// every other source via this endpoint.
+    /// </remarks>
     [HttpPost("notify-peer")]
+    [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(true));
+        }
+
         workQueue.Enqueue(ct =>
         {
             xrefRebuilder.RebuildAll(ct);

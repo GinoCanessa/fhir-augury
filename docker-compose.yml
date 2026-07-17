@@ -14,11 +14,11 @@ services:
     build:
       context: .
       dockerfile: src/FhirAugury.Source.Jira/Dockerfile
-    profiles: ["full", "jira-zulip", "jira-only"]
+    profiles: ["full", "jira-zulip", "jira-only", "processing"]
     volumes:
       - jira-cache:/app/cache
       - jira-data:/app/data
-      - ./cache/dictionary:/app/cache/dictionary:ro
+      - ./dictionary:/app/dictionary:ro
     ports:
       - "5160:5160"
     environment:
@@ -44,7 +44,7 @@ services:
     volumes:
       - zulip-cache:/app/cache
       - zulip-data:/app/data
-      - ./cache/dictionary:/app/cache/dictionary:ro
+      - ./dictionary:/app/dictionary:ro
     ports:
       - "5170:5170"
     environment:
@@ -70,7 +70,7 @@ services:
     volumes:
       - confluence-cache:/app/cache
       - confluence-data:/app/data
-      - ./cache/dictionary:/app/cache/dictionary:ro
+      - ./dictionary:/app/dictionary:ro
     ports:
       - "5180:5180"
     environment:
@@ -96,7 +96,7 @@ services:
     volumes:
       - github-cache:/app/cache
       - github-data:/app/data
-      - ./cache/dictionary:/app/cache/dictionary:ro
+      - ./dictionary:/app/dictionary:ro
     ports:
       - "5190:5190"
     environment:
@@ -105,6 +105,33 @@ services:
       - FHIR_AUGURY_GITHUB__GitHub__DatabasePath=/app/data/github.db
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5190/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  processor-jira-fhir-preparer:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Processor.Jira.Fhir.Preparer/Dockerfile
+    profiles: ["full", "processing"]
+    depends_on:
+      source-jira:
+        condition: service_healthy
+    volumes:
+      - preparer-data:/app/data
+    ports:
+      - "5171:5171"
+    environment:
+      - FHIR_AUGURY_PREPARER__Processing__DatabasePath=/app/data/processor.jira.fhir.preparer.db
+      - FHIR_AUGURY_PREPARER__Processing__StartProcessingOnStartup=false
+      - FHIR_AUGURY_PREPARER__Processing__Jira__JiraSourceAddress=http://source-jira:5160
+      - FHIR_AUGURY_PREPARER__Processing__Jira__AgentCliCommand=copilot run ticket-prep --ticket {ticketKey} --db {dbPath}
+      # v1 containers host the API/queue only by default. Actual processing
+      # requires an explicitly supplied Copilot-compatible agent runtime on PATH.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5171/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -130,7 +157,7 @@ services:
         required: false
     volumes:
       - orchestrator-data:/app/data
-      - ./cache/dictionary:/app/cache/dictionary:ro
+      - ./dictionary:/app/dictionary:ro
     ports:
       - "5150:5150"
     environment:
@@ -156,4 +183,5 @@ volumes:
   confluence-data:
   github-cache:
   github-data:
+  preparer-data:
   orchestrator-data:

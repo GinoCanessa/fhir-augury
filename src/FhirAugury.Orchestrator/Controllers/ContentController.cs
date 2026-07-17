@@ -144,6 +144,9 @@ public class ContentController(
 
         List<ScoredItem> allItems = [];
 
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
+
         foreach ((string sourceName, Task<ContentSearchResponse?> task) in tasks)
         {
             try
@@ -223,7 +226,7 @@ public class ContentController(
         });
     }
 
-    [HttpGet("item/{source}/{*id}")]
+    [HttpGet("item/{source}/{**id}")]
     public async Task<IActionResult> GetItem(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -250,7 +253,7 @@ public class ContentController(
         }
     }
 
-    [HttpGet("keywords/{source}/{*id}")]
+    [HttpGet("keywords/{source}/{**id}")]
     public async Task<IActionResult> GetKeywords(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -276,7 +279,7 @@ public class ContentController(
         }
     }
 
-    [HttpGet("related-by-keyword/{source}/{*id}")]
+    [HttpGet("related-by-keyword/{source}/{**id}")]
     public async Task<IActionResult> RelatedByKeyword(
         [FromRoute] string source,
         [FromRoute] string id,
@@ -300,6 +303,10 @@ public class ContentController(
         }
 
         List<RelatedByKeywordItem> allItems = [];
+
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
+
         foreach ((string sourceName, Task<RelatedByKeywordResponse?> task) in tasks)
         {
             try
@@ -351,6 +358,9 @@ public class ContentController(
         }
 
         List<CrossReferenceHit> allHits = [];
+
+        try { await Task.WhenAll(tasks.Values); }
+        catch { /* per-task failures surfaced in the loop below */ }
 
         foreach ((string sourceName, Task<CrossReferenceQueryResponse?> task) in tasks)
         {

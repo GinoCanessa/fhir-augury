@@ -44,17 +44,19 @@ public class GitHubFileContentIndexer(
         }
 
         IgnorePatternMatcher ignoreMatcher = BuildIgnoreMatcher(clonePath, additionalIgnorePatterns);
-        HashSet<string> additionalSkipExts = _config.AdditionalSkipExtensions.Count > 0
-            ? new HashSet<string>(_config.AdditionalSkipExtensions, StringComparer.OrdinalIgnoreCase)
+        List<string> effectiveSkipExtensions = _config.GetEffectiveAdditionalSkipExtensions();
+        HashSet<string> additionalSkipExts = effectiveSkipExtensions.Count > 0
+            ? new HashSet<string>(effectiveSkipExtensions, StringComparer.OrdinalIgnoreCase)
             : null!;
-        HashSet<string> additionalSkipDirs = _config.AdditionalSkipDirectories.Count > 0
-            ? new HashSet<string>(_config.AdditionalSkipDirectories, StringComparer.OrdinalIgnoreCase)
+        List<string> effectiveSkipDirectories = _config.GetEffectiveAdditionalSkipDirectories();
+        HashSet<string> additionalSkipDirs = effectiveSkipDirectories.Count > 0
+            ? new HashSet<string>(effectiveSkipDirectories, StringComparer.OrdinalIgnoreCase)
             : null!;
 
         // Merge priority paths with global IncludeOnlyPaths
         List<string> effectiveIncludeOnlyPaths = priorityPaths is not null
-            ? [.. _config.IncludeOnlyPaths, .. priorityPaths]
-            : _config.IncludeOnlyPaths;
+            ? [.. _config.GetEffectiveIncludeOnlyPaths(), .. priorityPaths]
+            : _config.GetEffectiveIncludeOnlyPaths();
 
         int indexed = 0, skippedByType = 0, skippedByPattern = 0, skippedBySize = 0, failed = 0;
         List<GitHubFileContentRecord> batch = new(500);
@@ -177,8 +179,9 @@ public class GitHubFileContentIndexer(
             return;
 
         IgnorePatternMatcher ignoreMatcher = BuildIgnoreMatcher(clonePath);
-        HashSet<string> additionalSkipExts = _config.AdditionalSkipExtensions.Count > 0
-            ? new HashSet<string>(_config.AdditionalSkipExtensions, StringComparer.OrdinalIgnoreCase)
+        List<string> effectiveSkipExtensions = _config.GetEffectiveAdditionalSkipExtensions();
+        HashSet<string> additionalSkipExts = effectiveSkipExtensions.Count > 0
+            ? new HashSet<string>(effectiveSkipExtensions, StringComparer.OrdinalIgnoreCase)
             : null!;
 
         using SqliteConnection connection = database.OpenConnection();
@@ -252,9 +255,10 @@ public class GitHubFileContentIndexer(
 
     private IgnorePatternMatcher BuildIgnoreMatcher(string clonePath, List<string>? additionalIgnorePatterns = null)
     {
+        List<string> effectiveIgnorePatterns = _config.GetEffectiveIgnorePatterns();
         List<string> allPatterns = additionalIgnorePatterns is not null
-            ? [.. _config.IgnorePatterns, .. additionalIgnorePatterns]
-            : _config.IgnorePatterns;
+            ? [.. effectiveIgnorePatterns, .. additionalIgnorePatterns]
+            : effectiveIgnorePatterns;
 
         string repoIgnoreFile = Path.Combine(clonePath, ".augury-index-ignore");
         return new IgnorePatternMatcher(

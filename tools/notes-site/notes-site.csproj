@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\src\common.props" />
+  <Import Project="..\..\src\sqlite.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Tools.NotesSite</RootNamespace>
+    <AssemblyName>notes-site</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Tools.NotesSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Self-contained report SPA (notes DB inlined as base64, loaded via sql.js) -->
+    <EmbeddedResource Include="web-assets\report\index.template.html" LogicalName="web-assets/report/index.template.html" />
+    <EmbeddedResource Include="web-assets\report\app.css" LogicalName="web-assets/report/app.css" />
+    <EmbeddedResource Include="web-assets\report\app.js" LogicalName="web-assets/report/app.js" />
+    <EmbeddedResource Include="web-assets\report\sql-wasm.js" LogicalName="web-assets/report/sql-wasm.js" />
+    <EmbeddedResource Include="web-assets\report\sql-wasm.wasm" LogicalName="web-assets/report/sql-wasm.wasm" />
+    <EmbeddedResource Include="web-assets\report\purify.min.js" LogicalName="web-assets/report/purify.min.js" />
+    <EmbeddedResource Include="web-assets\report\marked.min.js" LogicalName="web-assets/report/marked.min.js" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+</Project>

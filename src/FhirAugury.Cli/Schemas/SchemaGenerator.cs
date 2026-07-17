@@ -257,10 +257,15 @@ public static class SchemaGenerator
                 ["priorities"] = ArrayProp("string", "Filter by priorities"),
                 ["labels"] = ArrayProp("string", "Filter by labels"),
                 ["assignees"] = ArrayProp("string", "Filter by assignees"),
+                ["reporters"] = ArrayProp("string", "Filter by reporters"),
                 ["sortBy"] = new { type = "string", description = "Sort by field", defaultValue = "updated_at" },
                 ["sortOrder"] = new { type = "string", description = "Sort order", defaultValue = "desc" },
                 ["limit"] = IntProp("Maximum results", 20),
+                ["offset"] = IntProp("Pagination offset", 0),
                 ["updatedAfter"] = Prop("string", "Only issues updated after this date (ISO 8601)"),
+                ["updatedBefore"] = Prop("string", "Only issues updated before this date (ISO 8601)"),
+                ["createdAfter"] = Prop("string", "Only issues created after this date (ISO 8601)"),
+                ["createdBefore"] = Prop("string", "Only issues created before this date (ISO 8601)"),
             }),
             new
             {
@@ -298,15 +303,107 @@ public static class SchemaGenerator
             }
         ),
 
+        ["list-jira-workgroups"] = new(
+            "List all Jira work groups with issue counts and canonical HL7 fields (code, nameClean, definition, retired)",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-workgroups"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = new
+                    {
+                        type = "array",
+                        description = "Work groups joined with the canonical HL7 catalog. "
+                                    + "Canonical fields (code/nameClean/definition) are null for free-text Jira "
+                                    + "work groups with no HL7 match.",
+                        items = new
+                        {
+                            type = "object",
+                            properties = new Dictionary<string, object>
+                            {
+                                ["name"] = Prop("string", "Free-text work-group name as stored on jira_issues.WorkGroup"),
+                                ["code"] = Prop("string", "Canonical HL7 work-group code (e.g. 'oo', 'fhir')"),
+                                ["nameClean"] = Prop("string", "PascalCase slug derived by Hl7WorkGroupNameCleaner; safe for URLs and folder names"),
+                                ["definition"] = Prop("string", "HL7 work-group definition text"),
+                                ["retired"] = Prop("boolean", "True if the HL7 work group is retired"),
+                                ["issueCount"] = Prop("integer", "Total Jira issue count attributed to this work group"),
+                            },
+                        },
+                    },
+                },
+            }
+        ),
+
+        ["list-jira-specifications"] = new(
+            "List all Jira specifications with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-specifications"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Specifications with name and issueCount"),
+                },
+            }
+        ),
+
+        ["list-jira-labels"] = new(
+            "List all Jira labels with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-labels"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Labels with name and issueCount"),
+                },
+            }
+        ),
+
+        ["list-jira-statuses"] = new(
+            "List all Jira statuses with issue counts",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("list-jira-statuses"),
+                ["limit"] = IntProp("Maximum results to return", 0),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["dimension"] = Prop("string", "The dimension name"),
+                    ["items"] = ArrayProp("object", "Statuses with name and issueCount"),
+                },
+            }
+        ),
+
         ["ingest"] = new(
-            "Ingestion management (trigger, status, rebuild, index)",
+            "Ingestion management (trigger, status, reingest, reindex)",
             InputSchema(["command", "action"], new()
             {
                 ["command"] = Const("ingest"),
-                ["action"] = new { type = "string", description = "Action: trigger, status, rebuild, index", enumValues = new[] { "trigger", "status", "rebuild", "index" } },
+                ["action"] = new { type = "string", description = "Action: trigger, status, reingest, reindex", enumValues = new[] { "trigger", "status", "reingest", "reindex" } },
                 ["sources"] = ArrayProp("string", "Source filter (default: all)"),
                 ["type"] = new { type = "string", description = "Sync type (for trigger)", defaultValue = "incremental" },
-                ["indexType"] = new { type = "string", description = "Index type (for index action)", defaultValue = "all" },
+                ["indexType"] = new { type = "string", description = "Index type (for reindex action)", defaultValue = "all" },
+                ["jiraProject"] = new { type = "string", description = "Restrict a Jira run to a single project key (forwarded only to the Jira leg of the fan-out; surfaced over HTTP as ?jira-project=)" },
             }),
             new
             {
@@ -456,6 +553,114 @@ public static class SchemaGenerator
                 },
             }
         ),
+
+        ["sources"] = new(
+            "List enabled source services known to the orchestrator",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("sources"),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["sources"] = ArrayProp("string", "Enabled source service names"),
+                },
+            }
+        ),
+
+        ["commands"] = new(
+            "List operations available across the orchestrator and all enabled sources, derived from the merged OpenAPI document",
+            InputSchema(["command"], new()
+            {
+                ["command"] = Const("commands"),
+                ["source"] = Prop("string", "Filter to a single source (e.g., jira, zulip, orchestrator)"),
+                ["tag"] = Prop("string", "Filter to operations whose tag equals or starts with this value"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["commands"] = ArrayProp("object", "Discovered operations with operationId, method, path, summary, source, tags"),
+                },
+            }
+        ),
+
+        ["schema"] = new(
+            "Get the request and response JSON schemas for a single operation",
+            InputSchema(["command", "source", "operation"], new()
+            {
+                ["command"] = Const("schema"),
+                ["source"] = Prop("string", "Source name; combined with operation to form operationId '{source}.{operation}'"),
+                ["operation"] = Prop("string", "Operation name (the part after the source prefix in operationId)"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["operationId"] = Prop("string", "Resolved operationId"),
+                    ["method"] = Prop("string", "HTTP method"),
+                    ["path"] = Prop("string", "URL path template"),
+                    ["summary"] = Prop("string", "Operation summary"),
+                    ["parameters"] = ArrayProp("object", "Path/query/header parameters with name, in, required, schema"),
+                    ["requestBody"] = Prop("object", "Request body schema (or null)"),
+                    ["response"] = Prop("object", "First successful (2xx) JSON response schema (or null)"),
+                },
+            }
+        ),
+
+        ["call"] = new(
+            "Invoke any operation discovered via the merged OpenAPI document",
+            InputSchema(["command", "source", "operation"], new()
+            {
+                ["command"] = Const("call"),
+                ["source"] = Prop("string", "Source name; combined with operation to resolve operationId '{source}.{operation}'"),
+                ["operation"] = Prop("string", "Operation name (operationId tail)"),
+                ["params"] = Prop("object", "Path/query/header parameter values keyed by parameter name"),
+                ["body"] = Prop("object", "Request body. May be a JSON value, '@/path/to/file.json', or '@-' for stdin"),
+                ["refresh"] = BoolProp("Force a refresh of the cached OpenAPI document", false),
+                ["raw"] = BoolProp("Return the response body unwrapped", false),
+                ["timeoutSeconds"] = IntProp("HTTP timeout in seconds", 60),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["httpStatus"] = Prop("integer", "HTTP status code"),
+                    ["contentType"] = Prop("string", "Response content type"),
+                    ["data"] = Prop("object", "Parsed JSON response body (when application/json)"),
+                    ["bodyText"] = Prop("string", "Raw response body (when not JSON)"),
+                },
+            }
+        ),
+        ["prepared-ticket-write"] = new(
+            "Persist structured ticket-prep output into a preparer SQLite database",
+            InputSchema(["command", "dbPath", "payload"], new()
+            {
+                ["command"] = Const("prepared-ticket-write"),
+                ["dbPath"] = Prop("string", "Path to the preparer SQLite database"),
+                ["payload"] = Prop("object", "PreparedTicketPayload with structured ticket-prep fields"),
+            }),
+            new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["key"] = Prop("string", "Jira ticket key written"),
+                    ["preparedTicketRows"] = Prop("integer", "Parent rows written"),
+                    ["repoRows"] = Prop("integer", "Related repo rows written"),
+                    ["relatedJiraRows"] = Prop("integer", "Related Jira rows written"),
+                    ["relatedZulipRows"] = Prop("integer", "Related Zulip rows written"),
+                    ["relatedGitHubRows"] = Prop("integer", "Related GitHub rows written"),
+                },
+            }
+        ),
     };
 
     // Schema builder helpers
@@ -479,3 +684,4 @@ public static class SchemaGenerator
 
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);
 }
+

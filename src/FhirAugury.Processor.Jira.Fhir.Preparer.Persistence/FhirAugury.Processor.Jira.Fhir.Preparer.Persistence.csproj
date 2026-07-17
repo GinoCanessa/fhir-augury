@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+  <Import Project="..\sqlite.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processor.Jira.Fhir.Preparer.Persistence</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.622.1509" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Jira.Common\FhirAugury.Processing.Jira.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Hydration.Common\FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+</Project>

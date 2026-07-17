@@ -1,4 +1,5 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Common.WorkGroups;
 
 namespace FhirAugury.Source.Jira.Configuration;
 
@@ -34,16 +35,102 @@ public class JiraServiceOptions
     public bool IngestionPaused { get; set; } = false;
 
     /// <summary>
+    /// When true, the scheduled ingestion worker runs exactly one pass at
+    /// startup (honoring <see cref="MinSyncAge"/> and <see cref="IngestionPaused"/>)
+    /// and then exits its loop cleanly. The service itself keeps running, so HTTP
+    /// endpoints and manual ingestion remain available. Useful for local/dev
+    /// runs where a continuous sync loop is not desired.
+    /// </summary>
+    public bool RunIngestionOnStartupOnly { get; set; } = false;
+
+    /// <summary>
     /// When true, rebuilds the database from cached responses on startup.
     /// </summary>
     public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     public string DefaultProject { get; set; } = "FHIR";
     public string? DefaultJql { get; set; }
+
+    /// <summary>
+    /// List of Jira projects to download. Uses the null-as-default, empty-as-explicit-all convention; null falls back to <see cref="DefaultProject"/> and [] disables project ingestion. See docs/source-filter-conventions.md.
+    /// </summary>
+    public List<JiraProjectConfig>? Projects { get; set; }
+
+    public bool HasExplicitEmptyProjects => Projects is { Count: 0 };
+
+    /// <summary>
+    /// Returns the effective list of enabled projects. If <see cref="Projects"/>
+    /// is populated, returns only enabled entries. Otherwise creates a
+    /// single-element list from <see cref="DefaultProject"/>.
+    /// </summary>
+    public List<JiraProjectConfig> GetEffectiveProjects()
+    {
+        if (Projects is null)
+        {
+            return [new JiraProjectConfig { Key = DefaultProject }];
+        }
+
+        if (Projects.Count == 0)
+        {
+            return [];
+        }
+
+        return Projects.Where(p => p.Enabled).ToList();
+    }
+
+    /// <summary>
+    /// Returns a project-key → <see cref="JiraProjectShape"/> lookup built
+    /// from <see cref="Projects"/>. Used by the parser/upsert dispatch in
+    /// <c>JiraSource</c> and <c>JiraXmlParser</c> to route items to the
+    /// correct typed table. Unknown project keys default to
+    /// <see cref="JiraProjectShape.FhirChangeRequest"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, JiraProjectShape> ShapeByProjectKey =>
+        (Projects ?? []).GroupBy(p => p.Key, StringComparer.OrdinalIgnoreCase)
+                       .ToDictionary(g => g.Key, g => g.First().Shape, StringComparer.OrdinalIgnoreCase);
+
     public int PageSize { get; set; } = 100;
     public PortConfiguration Ports { get; set; } = new() { Http = 5160 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();
     public DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
     public Bm25Options Bm25 { get; set; } = new();
+
+    /// <summary>
+    /// Optional configuration for the HL7 work-group CodeSystem XML support
+    /// file. When unset, the acquirer logs a single info message and the
+    /// downstream work-group ingestion (FR-02) gracefully skips.
+    /// </summary>
+    public WorkGroupSourceXmlOptions Hl7WorkGroupSourceXml { get; set; } = new();
+
+    /// <summary>
+    /// Validates project-level configuration. Returns a list of human-readable
+    /// error messages; an empty list means the configuration is valid.
+    /// </summary>
+    public IEnumerable<string> Validate()
+    {
+        DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+        foreach (JiraProjectConfig p in Projects ?? [])
+        {
+            if (p.DownloadWindowDays < 1 || p.DownloadWindowDays > JiraProjectConfig.DownloadWindowDaysMax)
+                yield return $"Project '{p.Key}': DownloadWindowDays must be between 1 and {JiraProjectConfig.DownloadWindowDaysMax} (got {p.DownloadWindowDays}).";
+            if (p.StartDate is DateOnly sd && sd > today)
+                yield return $"Project '{p.Key}': StartDate must not be in the future (got {sd:yyyy-MM-dd}).";
+            if (p.BaselineValue < 0 || p.BaselineValue > 10)
+                yield return $"Project '{p.Key}': BaselineValue must be between 0 and 10 (got {p.BaselineValue}).";
+        }
+
+        string? filename = Hl7WorkGroupSourceXml.Filename;
+        if (string.IsNullOrWhiteSpace(filename))
+        {
+            yield return "Hl7WorkGroupSourceXml.Filename must be non-empty.";
+        }
+        else if (filename.IndexOf(Path.DirectorySeparatorChar) >= 0
+                 || filename.IndexOf(Path.AltDirectorySeparatorChar) >= 0
+                 || filename.IndexOf('\0') >= 0
+                 || filename.Contains(".."))
+        {
+            yield return $"Hl7WorkGroupSourceXml.Filename '{filename}' must not contain path separators or '..'.";
+        }
+    }
 }

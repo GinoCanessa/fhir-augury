@@ -89,6 +89,22 @@ public static class GhCliIssueMapper
             HasIssues = json.TryGetProperty("hasIssuesEnabled", out JsonElement hi) && hi.GetBoolean(),
             LastFetchedAt = DateTimeOffset.UtcNow,
             Category = category,
+            DefaultBranch = GetNestedString(json, "defaultBranchRef", "name"),
+        };
+    }
+
+    /// <summary>
+    /// Maps a commit SHA / PR number / repo triple to a
+    /// <see cref="GitHubCommitPrLinkRecord"/> with a fresh PK.
+    /// </summary>
+    public static GitHubCommitPrLinkRecord MapCommitPrLink(string sha, int prNumber, string repoFullName)
+    {
+        return new GitHubCommitPrLinkRecord
+        {
+            Id = GitHubCommitPrLinkRecord.GetIndex(),
+            CommitSha = sha,
+            PrNumber = prNumber,
+            RepoFullName = repoFullName,
         };
     }
 
@@ -108,6 +124,8 @@ public static class GhCliIssueMapper
             CreatedAt = ParseDate(GetString(json, "createdAt")),
             Body = json.GetProperty("body").GetString() ?? string.Empty,
             IsReviewComment = isReviewComment,
+            ExternalId = GetString(json, "id"),
+            CommentKind = "issue",
         };
     }
 
@@ -127,6 +145,31 @@ public static class GhCliIssueMapper
             CreatedAt = ParseDate(GetString(json, "submittedAt")),
             Body = json.GetProperty("body").GetString() ?? string.Empty,
             IsReviewComment = true,
+            ExternalId = GetString(json, "id"),
+            CommentKind = "review",
+        };
+    }
+
+    /// <summary>
+    /// Maps an inline PR review-thread comment element from the REST endpoint
+    /// <c>GET /repos/{repo}/pulls/{n}/comments</c> to a <see cref="GitHubCommentRecord"/>.
+    /// REST shape: <c>user.login</c>, <c>created_at</c>, <c>body</c>, numeric <c>id</c>.
+    /// </summary>
+    public static GitHubCommentRecord MapReviewThreadComment(
+        JsonElement json, int issueDbId, string repoFullName, int issueNumber)
+    {
+        return new GitHubCommentRecord
+        {
+            Id = GitHubCommentRecord.GetIndex(),
+            IssueId = issueDbId,
+            RepoFullName = repoFullName,
+            IssueNumber = issueNumber,
+            Author = GetNestedString(json, "user", "login") ?? "Unknown",
+            CreatedAt = ParseDate(GetString(json, "created_at")),
+            Body = GetString(json, "body") ?? string.Empty,
+            IsReviewComment = true,
+            ExternalId = GetString(json, "id"),
+            CommentKind = "review_comment",
         };
     }
 

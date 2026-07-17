@@ -246,6 +246,45 @@ public class FhirContentParserTests
         Assert.Equal(2, gp.Types[0].TargetProfiles?.Count);
     }
 
+    [Fact]
+    public void TryParseStructureDefinition_ExtractsMustSupport()
+    {
+        string xml = """
+            <StructureDefinition xmlns="http://hl7.org/fhir">
+              <url value="http://example.org/fhir/StructureDefinition/MsProfile"/>
+              <name value="MsProfile"/>
+              <status value="draft"/>
+              <kind value="resource"/>
+              <type value="Patient"/>
+              <baseDefinition value="http://hl7.org/fhir/StructureDefinition/Patient"/>
+              <derivation value="constraint"/>
+              <differential>
+                <element>
+                  <id value="Patient.identifier"/>
+                  <path value="Patient.identifier"/>
+                  <mustSupport value="true"/>
+                  <isModifier value="false"/>
+                  <isSummary value="true"/>
+                </element>
+                <element>
+                  <id value="Patient.name"/>
+                  <path value="Patient.name"/>
+                </element>
+              </differential>
+            </StructureDefinition>
+            """;
+
+        StructureDefinitionInfo? result = FhirContentParser.TryParseStructureDefinition(xml, "xml");
+
+        Assert.NotNull(result);
+        ElementInfo identifier = result.DifferentialElements[0];
+        Assert.True(identifier.MustSupport);
+        Assert.False(identifier.IsModifier);
+        Assert.True(identifier.IsSummary);
+        // Unset mustSupport stays null (not false).
+        Assert.Null(result.DifferentialElements[1].MustSupport);
+    }
+
     // ────────────────────────────────────────────────────────
     // Error handling
     // ────────────────────────────────────────────────────────

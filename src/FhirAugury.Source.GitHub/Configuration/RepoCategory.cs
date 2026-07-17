@@ -11,4 +11,5 @@ public enum RepoCategory
     FhirExtensionsPack,
     Incubator,
     Ig,
+    JiraSpecArtifacts,
 }

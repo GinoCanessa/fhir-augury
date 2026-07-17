@@ -1,3 +1,4 @@
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Ingestion;
 
 namespace FhirAugury.Source.GitHub.Tests;
@@ -103,6 +104,28 @@ public class FileTypeClassifierTests
     {
         HashSet<string> additionalSkips = new(StringComparer.OrdinalIgnoreCase) { ".custom" };
         Assert.Equal(FileTypeClassifier.FileAction.Skip, FileTypeClassifier.Classify("file.custom", additionalSkips));
+    }
+
+    [Fact]
+    public void FileContentOptions_NullAdditionalSkipLists_ReturnEmptyEffectiveLists()
+    {
+        FileContentIndexingOptions options = new();
+
+        Assert.Empty(options.GetEffectiveAdditionalSkipExtensions());
+        Assert.Empty(options.GetEffectiveAdditionalSkipDirectories());
+    }
+
+    [Fact]
+    public void FileContentOptions_ExplicitAdditionalSkipLists_ReturnConfiguredValues()
+    {
+        FileContentIndexingOptions options = new()
+        {
+            AdditionalSkipExtensions = [".custom"],
+            AdditionalSkipDirectories = ["generated"],
+        };
+
+        Assert.Equal([".custom"], options.GetEffectiveAdditionalSkipExtensions());
+        Assert.Equal(["generated"], options.GetEffectiveAdditionalSkipDirectories());
     }
 
     [Theory]

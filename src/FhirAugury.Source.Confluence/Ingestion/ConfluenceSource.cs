@@ -40,7 +40,7 @@ public class ConfluenceSource(
         HttpClient httpClient = httpClientFactory.CreateClient("confluence");
         using SqliteConnection connection = database.OpenConnection();
 
-        foreach (string spaceKey in options.Spaces)
+        foreach (string spaceKey in options.GetEffectiveSpaces())
         {
             if (ct.IsCancellationRequested) break;
 
@@ -141,7 +141,13 @@ public class ConfluenceSource(
         using SqliteConnection connection = database.OpenConnection();
 
         string sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
-        string spacesParam = string.Join(",", options.Spaces.Select(s => $"\"{s}\""));
+        List<string> effectiveSpaces = options.GetEffectiveSpaces();
+        if (effectiveSpaces.Count == 0)
+        {
+            logger.LogWarning("Confluence Spaces is explicitly empty; skipping page search");
+            return new IngestionResult(0, 0, 0, 0, errors, startedAt) { CompletedAt = DateTimeOffset.UtcNow };
+        }
+        string spacesParam = string.Join(",", effectiveSpaces.Select(s => $"\"{s}\""));
         string cql = $"lastModified >= \"{sinceStr}\" AND space in ({spacesParam}) AND type = page";
 
         int start = 0;
@@ -177,7 +183,7 @@ public class ConfluenceSource(
 
                 foreach (JsonElement pageJson in results.EnumerateArray())
                 {
-                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? options.Spaces.FirstOrDefault() ?? "FHIR";
+                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? effectiveSpaces[0];
 
                     string pageId = pageJson.GetProperty("id").GetString()!;
                     string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
@@ -374,29 +380,38 @@ public class ConfluenceSource(
             // Extract cross-references from page content
             string pageText = $"{title} {bodyPlain}";
 
+            List<JiraXRefRecord> jiraRefs = [];
             foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("page", pageId, null, pageText))
             {
                 r.Id = JiraXRefRecord.GetIndex();
-                JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                jiraRefs.Add(r);
             }
 
+            List<ZulipXRefRecord> zulipRefs = [];
             foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = ZulipXRefRecord.GetIndex();
-                ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                zulipRefs.Add(r);
             }
 
+            List<GitHubXRefRecord> githubRefs = [];
             foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = GitHubXRefRecord.GetIndex();
-                GitHubXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                githubRefs.Add(r);
             }
 
+            List<FhirElementXRefRecord> fhirRefs = [];
             foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("page", pageId, pageText))
             {
                 r.Id = FhirElementXRefRecord.GetIndex();
-                FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
+                fhirRefs.Add(r);
             }
+
+            jiraRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            zulipRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            githubRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+            fhirRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
 
             return isNew ? PageResult.New : PageResult.Updated;
         }

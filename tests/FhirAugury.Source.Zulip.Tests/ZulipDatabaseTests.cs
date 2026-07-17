@@ -22,7 +22,7 @@ public class ZulipDatabaseTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     [Fact]
@@ -214,7 +214,7 @@ public class ZulipDatabaseTests : IDisposable
         try
         {
             // Create a bare DB with the old schema (no BaselineValue column)
-            using (SqliteConnection rawConn = new SqliteConnection($"Data Source={dbPath2}"))
+            using (SqliteConnection rawConn = new SqliteConnection($"Data Source={dbPath2};Pooling=False"))
             {
                 rawConn.Open();
                 using SqliteCommand cmd = rawConn.CreateCommand();
@@ -249,7 +249,7 @@ public class ZulipDatabaseTests : IDisposable
         }
         finally
         {
-            try { File.Delete(dbPath2); } catch { }
+            TestFileCleanup.SafeDeleteFile(dbPath2);
         }
     }
 

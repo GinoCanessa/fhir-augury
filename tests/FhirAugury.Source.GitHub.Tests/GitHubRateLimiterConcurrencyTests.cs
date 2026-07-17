@@ -39,31 +39,29 @@ public class GitHubRateLimiterConcurrencyTests
     [Fact]
     public async Task SendAsync_ConcurrentRequests_AllowedWhenMaxIsHigher()
     {
+        const int expected = 3;
         IOptions<GitHubServiceOptions> options = Options.Create(new GitHubServiceOptions
         {
             RateLimiting = new GitHubRateLimitConfiguration
             {
-                MaxConcurrentRequests = 3,
+                MaxConcurrentRequests = expected,
                 RespectRateLimitHeaders = false,
             },
         });
 
-        GitHubRateLimiter handler = new GitHubRateLimiter(options)
-        {
-            InnerHandler = new ConcurrencyTrackingHandler(delay: TimeSpan.FromMilliseconds(200)),
-        };
-
+        RendezvousTrackingHandler tracker =
+            new RendezvousTrackingHandler(expected, TimeSpan.FromSeconds(20));
+        GitHubRateLimiter handler = new GitHubRateLimiter(options) { InnerHandler = tracker };
         using HttpClient client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost") };
 
-        Task<HttpResponseMessage>[] tasks = Enumerable.Range(0, 3)
+        Task<HttpResponseMessage>[] tasks = Enumerable.Range(0, expected)
             .Select(_ => client.GetAsync("/test"))
             .ToArray();
 
-        await Task.WhenAll(tasks);
+        // Fail fast if a regressed gate serializes instead of hanging the assembly.
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
 
-        ConcurrencyTrackingHandler tracker = (ConcurrencyTrackingHandler)handler.InnerHandler;
-        Assert.True(tracker.MaxConcurrent > 1,
-            $"Expected concurrent execution with MaxConcurrentRequests=3, but max concurrent was {tracker.MaxConcurrent}");
+        Assert.Equal(expected, tracker.MaxConcurrent);
     }
 
     [Fact]
@@ -130,6 +128,60 @@ public class GitHubRateLimiterConcurrencyTests
             try
             {
                 await Task.Delay(delay, cancellationToken);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _currentConcurrent);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Inner handler that holds each in-flight request until <c>expected</c> requests are
+    /// concurrently in the gate, then releases them all at once. A correct gate rendezvouses
+    /// in milliseconds; a regressed (serializing) gate never reaches the rendezvous and the
+    /// per-waiter timeout fails the test fast instead of hanging the assembly.
+    /// </summary>
+    private sealed class RendezvousTrackingHandler : HttpMessageHandler
+    {
+        private readonly int _expected;
+        private readonly TimeSpan _timeout;
+        private readonly TaskCompletionSource _allArrived =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrived;
+        private int _currentConcurrent;
+        private int _maxConcurrent;
+
+        public RendezvousTrackingHandler(int expected, TimeSpan timeout)
+        {
+            _expected = expected;
+            _timeout = timeout;
+        }
+
+        public int MaxConcurrent => Volatile.Read(ref _maxConcurrent);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            int current = Interlocked.Increment(ref _currentConcurrent);
+            int snapshot = Volatile.Read(ref _maxConcurrent);
+            while (current > snapshot)
+            {
+                int original = Interlocked.CompareExchange(ref _maxConcurrent, current, snapshot);
+                if (original == snapshot) break;
+                snapshot = original;
+            }
+
+            try
+            {
+                if (Interlocked.Increment(ref _arrived) == _expected)
+                    _allArrived.TrySetResult();
+
+                // Releases instantly once all expected requests are concurrently
+                // in-flight. If the gate serializes (regression), this times out
+                // -> deterministic failure, never a hang.
+                await _allArrived.Task.WaitAsync(_timeout, cancellationToken);
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
             finally

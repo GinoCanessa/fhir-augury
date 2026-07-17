@@ -1,8 +1,10 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
+using FhirAugury.Source.GitHub.Hosting;
 using FhirAugury.Source.GitHub.Indexing;
 using FhirAugury.Source.GitHub.Ingestion;
 using FhirAugury.Source.GitHub.Ingestion.Categories;
@@ -41,6 +43,12 @@ builder.WebHost.ConfigureKestrel(k =>
 // ── Services ─────────────────────────────────────────────────────
 
 builder.Services.AddControllers();
+
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: GitHub";
+    o.Description = "GitHub source service — issue/PR/spec ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -90,6 +98,7 @@ builder.Services.AddSingleton<GitHubRepoCloner>();
 builder.Services.AddSingleton<GitHubCommitFileExtractor>();
 builder.Services.AddSingleton<GitHubFileContentIndexer>();
 builder.Services.AddSingleton<GitHubXRefRebuilder>();
+builder.Services.AddSingleton<GitHubPrTicketLinkRebuilder>();
 builder.Services.AddSingleton(sp =>
 {
     GitHubServiceOptions opts = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;
@@ -108,6 +117,20 @@ builder.Services.AddSingleton<ArtifactFileMapper>();
 builder.Services.AddSingleton<CanonicalArtifactIndexer>();
 builder.Services.AddSingleton<StructureDefinitionIndexer>();
 builder.Services.AddSingleton<FshArtifactIndexer>();
+builder.Services.AddSingleton<JiraSpecXmlIndexer>();
+
+// HL7 work-group acquisition + resolution (Phase 2)
+builder.Services.AddHttpClient(GitHubWorkGroupSupportFileAcquirer.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/xml,*/*;q=0.8");
+}).AddStandardResilienceHandler();
+builder.Services.AddSingleton<GitHubWorkGroupSupportFileAcquirer>();
+builder.Services.AddSingleton<GitHubHl7WorkGroupIndexer>();
+builder.Services.AddSingleton<WorkGroupResolver>();
+builder.Services.AddSingleton<RepoDefaultWorkGroupResolver>();
+builder.Services.AddSingleton<WorkGroupResolutionPass>();
 
 // File tagging
 builder.Services.Configure<TagWeightOptions>(builder.Configuration.GetSection("GitHub:TagWeights"));
@@ -117,6 +140,7 @@ builder.Services.AddSingleton<IRepoCategoryStrategy, UtgStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, FhirExtensionsPackStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, IncubatorStrategy>();
 builder.Services.AddSingleton<IRepoCategoryStrategy, IgStrategy>();
+builder.Services.AddSingleton<IRepoCategoryStrategy, JiraSpecArtifactsStrategy>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -140,6 +164,12 @@ builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
+
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<GitHubStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<GitHubStartupRebuildService>());
 
 WebApplication app = builder.Build();
 
@@ -179,12 +209,18 @@ tracker.RegisterIndex("file-contents", "Repository file content indexing", () =>
     using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
     return FhirAugury.Source.GitHub.Database.Records.GitHubFileContentRecord.SelectCount(c);
 });
+tracker.RegisterIndex("jira-specs", "Jira specification artifact registry", () =>
+{
+    using Microsoft.Data.Sqlite.SqliteConnection c = githubDatabase.OpenConnection();
+    return FhirAugury.Source.GitHub.Database.Records.JiraSpecRecord.SelectCount(c);
+});
 
 // ── Health check ─────────────────────────────────────────────────
 app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database ───────────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
@@ -207,32 +243,8 @@ if (githubOpts.Provider.Equals("gh-cli", StringComparison.OrdinalIgnoreCase))
     }
 }
 
-// ── Reload from cache on startup (if configured) ─────────────────
-if (githubOpts.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<GitHubDatabase>().PrimaryContentTableIsEmpty())
-{
-    GitHubIngestionPipeline pipeline = app.Services.GetRequiredService<GitHubIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
-}
-else
-{
-    // Check individual index tables when not reloading from cache
-    GitHubDatabase githubDb = app.Services.GetRequiredService<GitHubDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (githubDb.TableIsEmpty("xref_jira"))
-    {
-        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        GitHubXRefRebuilder xrefRebuilder = app.Services.GetRequiredService<GitHubXRefRebuilder>();
-        List<string> repos = githubOpts.GetAllRepositoryNames();
-        xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, CancellationToken.None);
-    }
-
-    if (githubDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<GitHubIndexer>().RebuildFullIndex(CancellationToken.None);
-    }
-}
+// Startup rebuild work runs in GitHubStartupRebuildService (background hosted
+// service) so Kestrel can start serving /health immediately. The gh CLI
+// validation above intentionally remains pre-Run as a fail-fast config check.
 
 app.Run();

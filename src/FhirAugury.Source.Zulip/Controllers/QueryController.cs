@@ -42,6 +42,6 @@ public class QueryController(ZulipDatabase db, IOptions<ZulipServiceOptions> opt
             });
         }
 
-        return Ok(new { total = results.Count, messages = results });
+        return Ok(new { total = results.Count, results });
     }
 }

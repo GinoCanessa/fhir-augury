@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
 
-  <PropertyGroup>
+	<PropertyGroup>
     <RootNamespace>FhirAugury.Parsing.Fhir</RootNamespace>
   </PropertyGroup>
 
@@ -9,7 +10,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Hl7.Fhir.R5" Version="6.1.1" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Hl7.Fhir.R5" Version="6.2.1" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
+
+	<PropertyGroup>
+		<RootNamespace>FhirAugury.Parsing.Xml</RootNamespace>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="FhirAugury.Parsing.Xml.Tests" />
+	</ItemGroup>
+
+</Project>

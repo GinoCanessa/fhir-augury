@@ -15,4 +15,5 @@ public class ScheduledIngestionWorker(
     ILogger<ScheduledIngestionWorker> logger)
     : ScheduledIngestionWorker<ZulipIngestionPipeline>(
         pipeline, () => options.Value.SyncSchedule, () => options.Value.MinSyncAge,
-        () => options.Value.IngestionPaused, logger);
+        () => options.Value.IngestionPaused,
+        () => options.Value.RunIngestionOnStartupOnly, logger);

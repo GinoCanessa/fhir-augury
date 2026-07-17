@@ -35,6 +35,56 @@ public static class CommandDispatcher
         ["save-schemas"] = j => j.Deserialize<SaveSchemasRequest>(DeserializeOptions)!,
         ["keywords"] = j => j.Deserialize<KeywordsRequest>(DeserializeOptions)!,
         ["related-by-keyword"] = j => j.Deserialize<RelatedByKeywordRequest>(DeserializeOptions)!,
+        ["list-jira-workgroups"] = j => ParseDimension(j, "workgroups"),
+        ["list-jira-specifications"] = j => ParseDimension(j, "specifications"),
+        ["list-jira-labels"] = j => ParseDimension(j, "labels"),
+        ["list-jira-statuses"] = j => ParseDimension(j, "statuses"),
+        ["sources"] = j => j.Deserialize<SourcesRequest>(DeserializeOptions)!,
+        ["commands"] = j => j.Deserialize<CommandsRequest>(DeserializeOptions)!,
+        ["schema"] = j => j.Deserialize<SchemaRequest>(DeserializeOptions)!,
+        ["call"] = j => j.Deserialize<CallRequest>(DeserializeOptions)!,
+        // Phase D additions
+        ["jira-items"] = j => j.Deserialize<JiraItemsRequest>(DeserializeOptions)!,
+        ["jira-dimension"] = j => j.Deserialize<JiraDimensionRequest>(DeserializeOptions)!,
+        ["jira-workgroup"] = j => j.Deserialize<JiraWorkGroupRequest>(DeserializeOptions)!,
+        ["jira-project"] = j => j.Deserialize<JiraProjectRequest>(DeserializeOptions)!,
+        ["jira-baldef"] = j => j.Deserialize<JiraBalDefRequest>(DeserializeOptions)!,
+        ["jira-ballot"] = j => j.Deserialize<JiraBallotRequest>(DeserializeOptions)!,
+        ["jira-pss"] = j => j.Deserialize<JiraPssRequest>(DeserializeOptions)!,
+        ["jira-local-processing"] = j => j.Deserialize<JiraLocalProcessingRequest>(DeserializeOptions)!,
+        ["prepared-ticket-write"] = j => j.Deserialize<PreparedTicketWriteRequest>(DeserializeOptions)!,
+        ["zulip-items"] = j => j.Deserialize<ZulipItemsRequest>(DeserializeOptions)!,
+        ["zulip-messages"] = j => j.Deserialize<ZulipMessagesRequest>(DeserializeOptions)!,
+        ["zulip-streams"] = j => j.Deserialize<ZulipStreamsRequest>(DeserializeOptions)!,
+        ["zulip-threads"] = j => j.Deserialize<ZulipThreadsRequest>(DeserializeOptions)!,
+        ["confluence-pages"] = j => j.Deserialize<ConfluencePagesRequest>(DeserializeOptions)!,
+        ["confluence-items"] = j => j.Deserialize<ConfluenceItemsRequest>(DeserializeOptions)!,
+        ["github-items"] = j => j.Deserialize<GitHubItemsRequest>(DeserializeOptions)!,
+        ["github-repos"] = j => j.Deserialize<GitHubReposRequest>(DeserializeOptions)!,
+        ["github-workgroups"] = j => j.Deserialize<GitHubWorkGroupsRequest>(DeserializeOptions)!,
+        ["jira-specs"] = j => j.Deserialize<JiraSpecsRequest>(DeserializeOptions)!,
+        ["fhir-releases"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-resources"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-structure"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-datatypes"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-profiles"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-interfaces"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-elements"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-element"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystems"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystem"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystem-lookup"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-codesystem-concepts"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valuesets"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valueset-expand"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valueset-lookup"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-valueset-bindings"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-operations"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-operation"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-searchparameters"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-searchparameter"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-resolve"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
+        ["fhir-search"] = j => j.Deserialize<FhirRequest>(DeserializeOptions)!,
     };
 
     public static string[] KnownCommands => [.. Parsers.Keys];
@@ -144,8 +194,41 @@ public static class CommandDispatcher
             SaveSchemasRequest r => SaveSchemasHandler.HandleAsync(r),
             KeywordsRequest r => KeywordsHandler.HandleAsync(r, orchestratorAddr, ct),
             RelatedByKeywordRequest r => RelatedByKeywordHandler.HandleAsync(r, orchestratorAddr, ct),
+            ListJiraDimensionRequest r => ListJiraDimensionHandler.HandleAsync(r, orchestratorAddr, ct),
+            SourcesRequest r => SourcesHandler.HandleAsync(r, orchestratorAddr, ct),
+            CommandsRequest r => CommandsHandler.HandleAsync(r, orchestratorAddr, ct),
+            SchemaRequest r => SchemaHandler.HandleAsync(r, orchestratorAddr, ct),
+            CallRequest r => CallHandler.HandleAsync(r, orchestratorAddr, ct),
+            // Phase D additions
+            JiraItemsRequest r => JiraItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraDimensionRequest r => JiraDimensionHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraWorkGroupRequest r => JiraWorkGroupHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraProjectRequest r => JiraProjectHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraBalDefRequest r => JiraBalDefHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraBallotRequest r => JiraBallotHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraPssRequest r => JiraPssHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraLocalProcessingRequest r => JiraLocalProcessingHandler.HandleAsync(r, orchestratorAddr, ct),
+            PreparedTicketWriteRequest r => PreparedTicketWriteHandler.HandleAsync(r, ct),
+            ZulipItemsRequest r => ZulipItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipMessagesRequest r => ZulipMessagesHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipStreamsRequest r => ZulipStreamsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ZulipThreadsRequest r => ZulipThreadsHandler.HandleAsync(r, orchestratorAddr, ct),
+            ConfluencePagesRequest r => ConfluencePagesHandler.HandleAsync(r, orchestratorAddr, ct),
+            ConfluenceItemsRequest r => ConfluenceItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            GitHubItemsRequest r => GitHubItemsHandler.HandleAsync(r, orchestratorAddr, ct),
+            GitHubReposRequest r => GitHubReposHandler.HandleAsync(r, orchestratorAddr, ct),
+            GitHubWorkGroupsRequest r => GitHubWorkGroupsHandler.HandleAsync(r, orchestratorAddr, ct),
+            JiraSpecsRequest r => JiraSpecsHandler.HandleAsync(r, orchestratorAddr, ct),
+            FhirRequest r => FhirHandler.HandleAsync(r, orchestratorAddr, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}"),
         };
+
+    private static CliRequest ParseDimension(JsonElement j, string dimension)
+    {
+        ListJiraDimensionRequest request = j.Deserialize<ListJiraDimensionRequest>(DeserializeOptions)!;
+        request.Dimension = dimension;
+        return request;
+    }
 }
 
 /// <summary>
@@ -156,3 +239,4 @@ public interface IHasWarnings
     List<string>? TakeWarnings();
     object GetData();
 }
+

@@ -20,6 +20,8 @@
 		<RepositoryType>git</RepositoryType>
 		<RepositoryUrl>https://github.com/ginocanessa/fhir-augury</RepositoryUrl>
 		<NeutralLanguage>en</NeutralLanguage>
+
+	    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
 	</PropertyGroup>
 
 	<ItemGroup>

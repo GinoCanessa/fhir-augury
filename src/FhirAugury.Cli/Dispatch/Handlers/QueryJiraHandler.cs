@@ -13,16 +13,25 @@ public static class QueryJiraHandler
         {
             query = request.Query ?? "",
             statuses = request.Statuses,
+            resolutions = request.Resolutions,
+            projects = request.Projects,
+            excludeProjects = request.ExcludeProjects,
             workGroups = request.WorkGroups,
             specifications = request.Specifications,
             types = request.Types,
             priorities = request.Priorities,
             labels = request.Labels,
             assignees = request.Assignees,
+            reporters = request.Reporters,
+            inPersonRequesters = request.InPersonRequesters,
             sortBy = request.SortBy,
             sortOrder = request.SortOrder,
             limit = request.Limit,
+            offset = request.Offset,
             updatedAfter = request.UpdatedAfter,
+            updatedBefore = request.UpdatedBefore,
+            createdAfter = request.CreatedAfter,
+            createdBefore = request.CreatedBefore,
         };
 
         JsonElement response = await client.QueryJiraViaOrchestratorAsync(queryBody, ct);

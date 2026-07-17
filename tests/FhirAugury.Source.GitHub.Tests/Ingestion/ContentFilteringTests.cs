@@ -31,9 +31,7 @@ public class ContentFilteringTests : IDisposable
     public void Dispose()
     {
         _database.Dispose();
-        SqliteConnection.ClearAllPools();
-        if (Directory.Exists(_tempDir))
-            Directory.Delete(_tempDir, true);
+        TestFileCleanup.SafeDeleteDirectory(_tempDir);
     }
 
     // ── Cleanup Tests ─────────────────────────────────────
@@ -190,6 +188,35 @@ public class ContentFilteringTests : IDisposable
         Assert.True(result.Indexed >= 2, $"Expected at least 2 indexed, got {result.Indexed}");
     }
 
+    [Fact]
+    public void FileContentOptions_NullIgnorePatterns_UsesBuiltInDefaults()
+    {
+        FileContentIndexingOptions options = new();
+
+        List<string> patterns = options.GetEffectiveIgnorePatterns();
+
+        Assert.Contains("**/test-data/**", patterns);
+        Assert.Contains("**/vendor/**", patterns);
+    }
+
+    [Fact]
+    public void FileContentOptions_ExplicitEmptyIgnorePatterns_ReturnsEmpty()
+    {
+        FileContentIndexingOptions options = new() { IgnorePatterns = [] };
+
+        Assert.Empty(options.GetEffectiveIgnorePatterns());
+    }
+
+    [Fact]
+    public void FileContentOptions_NullAndEmptyIncludeOnlyPaths_AreNoRestriction()
+    {
+        FileContentIndexingOptions nullOptions = new();
+        FileContentIndexingOptions emptyOptions = new() { IncludeOnlyPaths = [] };
+
+        Assert.Empty(nullOptions.GetEffectiveIncludeOnlyPaths());
+        Assert.Empty(emptyOptions.GetEffectiveIncludeOnlyPaths());
+    }
+
     // ── Helpers ───────────────────────────────────────────
 
     private GitHubIngestionPipeline CreatePipeline()
@@ -212,9 +239,14 @@ public class ContentFilteringTests : IDisposable
             categoryStrategies: [],
             weightResolver: null!,
             xrefRebuilder: null!,
+            prTicketLinkRebuilder: null!,
             httpClientFactory: null!,
             tracker: null!,
             optionsAccessor: Options.Create(options),
+            workGroupAcquirer: null!,
+            workGroupIndexer: null!,
+            workGroupResolver: null!,
+            workGroupResolutionPass: null!,
             logger: NullLogger<GitHubIngestionPipeline>.Instance);
     }
 

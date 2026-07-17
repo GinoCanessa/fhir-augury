@@ -1,9 +1,14 @@
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Configuration;
 using FhirAugury.Common.Database;
+using FhirAugury.Common.OpenApi;
+using FhirAugury.Common.WorkGroups;
+using JiraIngestion = FhirAugury.Source.Jira.Ingestion;
+using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Hosting;
 using FhirAugury.Source.Jira.Indexing;
 using FhirAugury.Source.Jira.Ingestion;
 using FhirAugury.Source.Jira.Workers;
@@ -43,6 +48,13 @@ builder.WebHost.ConfigureKestrel(k =>
 
 // Controllers
 builder.Services.AddControllers();
+
+// OpenAPI
+builder.Services.AddAuguryOpenApi(o =>
+{
+    o.Title = "FHIR Augury Source: Jira";
+    o.Description = "Jira source service — issue ingestion, query, indexing.";
+});
 
 // Database
 builder.Services.AddSingleton(sp =>
@@ -90,7 +102,16 @@ builder.Services.AddHttpClient("jira-xml", client =>
 }).AddHttpMessageHandler<JiraAuthHandler>()
   .AddStandardResilienceHandler();
 
+// HTTP client for the work-group support file acquirer (no Jira auth — terminology endpoints don't accept it)
+builder.Services.AddHttpClient(JiraIngestion.WorkGroupSupportFileAcquirer.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(2);
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/xml,*/*;q=0.8");
+}).AddStandardResilienceHandler();
+
 // Ingestion
+builder.Services.AddSingleton<JiraUserMapper>();
 builder.Services.AddSingleton<JiraSource>();
 builder.Services.AddSingleton(sp =>
 {
@@ -108,6 +129,9 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<JiraIndexBuilder>();
 builder.Services.AddSingleton<JiraXRefRebuilder>();
+builder.Services.AddSingleton<JiraIngestion.Hl7WorkGroupIndexer>();
+builder.Services.AddSingleton<IHl7WorkGroupStore, JiraHl7WorkGroupStore>();
+builder.Services.AddSingleton<WorkGroupResolverFactory>();
 
 // Index tracker
 FhirAugury.Common.Indexing.IndexTracker indexTracker = new();
@@ -127,13 +151,31 @@ builder.Services.AddSingleton(indexTracker);
 }
 
 builder.Services.AddSingleton<JiraIngestionPipeline>();
+builder.Services.AddSingleton<JiraIngestion.WorkGroupSupportFileAcquirer>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 
 // Background worker
 builder.Services.AddHostedService<ScheduledIngestionWorker>();
 
+// Startup rebuild — runs after Kestrel binds, so port is open immediately.
+builder.Services.AddSingleton<JiraStartupRebuildService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<JiraStartupRebuildService>());
+builder.Services.AddSingleton<FhirAugury.Common.Hosting.IStartupRebuildStatus>(
+    sp => sp.GetRequiredService<JiraStartupRebuildService>());
+
 WebApplication app = builder.Build();
 JiraServiceOptions jiraOpts = app.Services.GetRequiredService<IOptions<JiraServiceOptions>>().Value;
+
+// ── Validate project config ─────────────────────────────────────
+{
+    List<string> validationErrors = jiraOpts.Validate().ToList();
+    if (validationErrors.Count > 0)
+    {
+        throw new InvalidOperationException(
+            "Invalid Jira project configuration:" + Environment.NewLine +
+            string.Join(Environment.NewLine, validationErrors));
+    }
+}
 
 // Register indexes with the tracker
 FhirAugury.Common.Indexing.IndexTracker tracker = app.Services.GetRequiredService<FhirAugury.Common.Indexing.IndexTracker>();
@@ -166,6 +208,7 @@ app.MapDefaultEndpoints();
 
 // ── HTTP API ─────────────────────────────────────────────────────
 app.MapControllers();
+app.MapAuguryOpenApi();
 
 // ── Ensure dictionary database exists ────────────────────────────
 await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
@@ -173,37 +216,32 @@ await FhirAugury.Common.Database.DictionaryDatabase.EnsureCreatedAsync(
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DictionaryDatabase"),
     CancellationToken.None);
 
-// ── Reload from cache on startup (if configured) ─────────────────
-if (jiraOpts.ReloadFromCacheOnStartup ||
-    app.Services.GetRequiredService<JiraDatabase>().PrimaryContentTableIsEmpty())
+// ── Cache migration (flat → project-scoped layout) ──────────────
 {
-    JiraIngestionPipeline pipeline = app.Services.GetRequiredService<JiraIngestionPipeline>();
-    await pipeline.RebuildFromCacheAsync(CancellationToken.None);
+    IResponseCache migrationCache = app.Services.GetRequiredService<IResponseCache>();
+    ILogger migrationLogger = app.Services
+        .GetRequiredService<ILoggerFactory>().CreateLogger("JiraCacheMigration");
+
+    await JiraCacheMigrator.MigrateToProjectLayoutAsync(
+        migrationCache, jiraOpts.DefaultProject, migrationLogger);
 }
-else
+
+// ── Log configured projects ─────────────────────────────────────
 {
-    // Check individual index tables when not reloading from cache
-    JiraDatabase jiraDb = app.Services.GetRequiredService<JiraDatabase>();
-    ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-
-    if (jiraDb.TableIsEmpty("jira_index_workgroups"))
+    ILogger startupLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+    List<JiraProjectConfig> effectiveProjects = jiraOpts.GetEffectiveProjects();
+    if (effectiveProjects.Count == 0)
     {
-        startupLogger.LogInformation("Facet indexes are empty — rebuilding");
-        using SqliteConnection conn = jiraDb.OpenConnection();
-        app.Services.GetRequiredService<JiraIndexBuilder>().RebuildIndexTables(conn);
+        startupLog.LogWarning("No enabled Jira projects configured — ingestion will be skipped");
     }
-
-    if (jiraDb.TableIsEmpty("xref_zulip"))
+    else
     {
-        startupLogger.LogInformation("Cross-reference indexes are empty — rebuilding");
-        app.Services.GetRequiredService<JiraXRefRebuilder>().RebuildAll(CancellationToken.None);
-    }
-
-    if (jiraDb.TableIsEmpty("index_keywords"))
-    {
-        startupLogger.LogInformation("BM25 index is empty — rebuilding");
-        app.Services.GetRequiredService<JiraIndexer>().RebuildFullIndex(CancellationToken.None);
+        startupLog.LogInformation("Configured Jira projects: {Projects}",
+            string.Join(", ", effectiveProjects.Select(p => p.Key)));
     }
 }
+
+// Startup rebuild work runs in JiraStartupRebuildService (background hosted
+// service) so Kestrel can start serving /health immediately.
 
 app.Run();

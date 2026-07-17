@@ -29,9 +29,7 @@ public class StubStrategyTests : IDisposable
     public void Dispose()
     {
         _database.Dispose();
-        SqliteConnection.ClearAllPools();
-        if (Directory.Exists(_tempDir))
-            Directory.Delete(_tempDir, true);
+        TestFileCleanup.SafeDeleteDirectory(_tempDir);
     }
 
     // ── UTG Strategy ──────────────────────────────────────

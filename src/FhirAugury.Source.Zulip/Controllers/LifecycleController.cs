@@ -2,6 +2,7 @@ using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Source.Zulip.Cache;
@@ -22,7 +23,8 @@ public class LifecycleController(
     ZulipDatabase db,
     IResponseCache cache,
     IIndexTracker indexTracker,
-    IOptions<ZulipServiceOptions> optsAccessor) : ControllerBase
+    IOptions<ZulipServiceOptions> optsAccessor,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpGet("status")]
     public IActionResult GetStatus()
@@ -70,6 +72,6 @@ public class LifecycleController(
     [HttpGet("health")]
     public IActionResult GetHealth()
     {
-        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline));
+        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline, startupRebuild));
     }
 }

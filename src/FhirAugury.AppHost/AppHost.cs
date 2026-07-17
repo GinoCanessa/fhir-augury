@@ -38,6 +38,14 @@ var github = builder.AddProject<Projects.FhirAugury_Source_GitHub>("source-githu
     })
     .WaitFor(jira);
 
+var fhir = builder.AddProject<Projects.FhirAugury_Source_Fhir>("source-fhir")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5195;
+        e.TargetPort = 5195;
+        e.IsProxied = false;
+    });
+
 // ── Orchestrator ─────────────────────────────────────────────────
 var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     .WithEndpoint("http", e =>
@@ -48,7 +56,67 @@ var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchest
     })
     .WaitFor(jira)
     .WaitFor(zulip)
-    .WaitFor(github);
+    .WaitFor(github)
+    .WaitFor(fhir);
+
+// ── Process services ────────────────────────────────────────────────
+IResourceBuilder<ProjectResource> preparer = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Preparer>("processor-jira-fhir-preparer")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5171;
+        e.TargetPort = 5171;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
+
+IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Planner>("processor-jira-fhir-planner")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5172;
+        e.TargetPort = 5172;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(github)
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
+// The planner service exposes the following parity HTTP surface
+// (mirroring the preparer service shape):
+//   GET  /api/v1/planned-tickets                 list (filters: repo, affectedFilePath, relatedJiraKey, limit, offset)
+//   GET  /api/v1/planned-tickets/{key}           per-ticket detail (repos, repo changes, impacts, validations, tests, open questions)
+//   GET  /api/v1/planned-tickets/{key}/related   per-ticket related items (repos)
+//   POST /api/v1/planned-tickets/query           combined-filter list body
+//   GET  /api/v1/planned-ticket-hydration/{workGroupClean}  per-workgroup hydrated-display projection (planned_jira_hydration self-rows)
+//   GET  /api/v1/planned-ticket-topics/{wg}/{spec}/{type}   topic grouping read
+//   PUT  /api/v1/planned-ticket-topics                       topic grouping write (consumed by a future orchestrator)
+//   POST /api/v1/admin/hydration/backfill                    on-demand full hydration sweep
+
+IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Applier>("processor-jira-fhir-applier")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5173;
+        e.TargetPort = 5173;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(orchestrator)
+    .WaitFor(planner)
+    .WithExplicitStart();
+
+// ── Ballot-notes processor (commit-triggered; GitHub source clone + Jira/orchestrator attribution) ──
+IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.FhirAugury_Processor_GitHub_Fhir_BallotNotes>("processor-github-fhir-ballotnotes")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5174;
+        e.TargetPort = 5174;
+        e.IsProxied = false;
+    })
+    .WaitFor(jira)
+    .WaitFor(github)
+    .WaitFor(orchestrator)
+    .WithExplicitStart();
 
 // ── Dev UI ───────────────────────────────────────────────────────
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")

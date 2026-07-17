@@ -1,9 +1,12 @@
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Indexing;
+using FhirAugury.Common.Text;
+using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.GitHub.Ingestion;
 
@@ -11,8 +14,12 @@ namespace FhirAugury.Source.GitHub.Ingestion;
 /// Scans GitHub content (issues, PRs, comments, commit messages) for
 /// cross-references to Jira, Zulip, Confluence, and FHIR elements.
 /// </summary>
-public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebuilder> logger)
+public class GitHubXRefRebuilder(
+    GitHubDatabase database,
+    IOptions<GitHubServiceOptions> options,
+    ILogger<GitHubXRefRebuilder> logger)
 {
+    private readonly GitHubServiceOptions _options = options.Value;
 
     /// <summary>
     /// Rebuilds cross-references for all repos: clears all xref tables once, then
@@ -57,35 +64,53 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
 
     private int ExtractRepoRefs(SqliteConnection connection, string repoFullName, HashSet<int>? validJiraNumbers, CancellationToken ct)
     {
-        int refCount = 0;
+        List<JiraXRefRecord> allJira = [];
+        List<ZulipXRefRecord> allZulip = [];
+        List<ConfluenceXRefRecord> allConfluence = [];
+        List<FhirElementXRefRecord> allFhir = [];
 
-        // Scan issues
+        // Repo-scoped bare-number resolution applies to prose (commit/issue/comment)
+        // content only — never to file contents (incidental integers).
+        RepoJiraScope? scope = _options.ResolveJiraScope(repoFullName);
+
+        void Collect(string text, string sourceType, string sourceId, RepoJiraScope? jiraScope)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            allJira.AddRange(ExtractJiraReferences(text, sourceType, sourceId, validJiraNumbers, jiraScope));
+            allZulip.AddRange(ZulipReferenceExtractor.GetReferences(sourceType, sourceId, text));
+            allConfluence.AddRange(ConfluenceReferenceExtractor.GetReferences(sourceType, sourceId, text));
+            allFhir.AddRange(FhirElementReferenceExtractor.GetReferences(sourceType, sourceId, text));
+        }
+
+        // Scan issues (prose — scoped)
         List<GitHubIssueRecord> allIssues = GitHubIssueRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubIssueRecord issue in allIssues)
         {
             ct.ThrowIfCancellationRequested();
-            string text = $"{issue.Title} {issue.Body}";
-            refCount += ExtractAndInsertAll(connection, text, ContentTypes.Issue, issue.UniqueKey, validJiraNumbers);
+            Collect($"{issue.Title} {issue.Body}", ContentTypes.Issue, issue.UniqueKey, scope);
         }
 
-        // Scan comments
+        // Scan comments (prose — scoped)
         List<GitHubCommentRecord> allComments = GitHubCommentRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubCommentRecord comment in allComments)
         {
             ct.ThrowIfCancellationRequested();
             string sourceId = $"{comment.RepoFullName}#{comment.IssueNumber}:{comment.Id}";
-            refCount += ExtractAndInsertAll(connection, comment.Body, ContentTypes.Comment, sourceId, validJiraNumbers);
+            Collect(comment.Body, ContentTypes.Comment, sourceId, scope);
         }
 
-        // Scan commits
+        // Scan commits (prose — scoped). Scan the full message text (subject + body).
         List<GitHubCommitRecord> allCommits = GitHubCommitRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubCommitRecord commit in allCommits)
         {
             ct.ThrowIfCancellationRequested();
-            refCount += ExtractAndInsertAll(connection, commit.Message, ContentTypes.Commit, commit.Sha, validJiraNumbers);
+            string commitText = string.IsNullOrEmpty(commit.Body)
+                ? commit.Message
+                : $"{commit.Message}\n{commit.Body}";
+            Collect(commitText, ContentTypes.Commit, commit.Sha, scope);
         }
 
-        // Scan file contents
+        // Scan file contents (NOT scoped — incidental integers are not tickets)
         List<GitHubFileContentRecord> fileContents = GitHubFileContentRecord.SelectList(connection, RepoFullName: repoFullName);
         foreach (GitHubFileContentRecord file in fileContents)
         {
@@ -93,77 +118,59 @@ public class GitHubXRefRebuilder(GitHubDatabase database, ILogger<GitHubXRefRebu
             if (!string.IsNullOrEmpty(file.ContentText))
             {
                 string sourceId = $"{file.RepoFullName}:{file.FilePath}";
-                refCount += ExtractAndInsertAll(connection, file.ContentText, ContentTypes.File, sourceId, validJiraNumbers);
+                Collect(file.ContentText, ContentTypes.File, sourceId, jiraScope: null);
             }
         }
+
+        int refCount = 0;
+        refCount += BulkInsertXRefs(connection, allJira, static r => r.Id = JiraXRefRecord.GetIndex(),
+            static (batch, c) => batch.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        refCount += BulkInsertXRefs(connection, allZulip, static r => r.Id = ZulipXRefRecord.GetIndex(),
+            static (batch, c) => batch.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        refCount += BulkInsertXRefs(connection, allConfluence, static r => r.Id = ConfluenceXRefRecord.GetIndex(),
+            static (batch, c) => batch.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
+        refCount += BulkInsertXRefs(connection, allFhir, static r => r.Id = FhirElementXRefRecord.GetIndex(),
+            static (batch, c) => batch.Insert(c, ignoreDuplicates: true, insertPrimaryKey: true));
 
         logger.LogInformation("Extracted {Count} cross-references from {Repo}", refCount, repoFullName);
         return refCount;
     }
 
-    /// <summary>
-    /// Runs all shared extractors on a single text and inserts all results into the xref tables.
-    /// </summary>
-    private static int ExtractAndInsertAll(
+    private static int BulkInsertXRefs<T>(
         SqliteConnection connection,
-        string text,
-        string sourceType,
-        string sourceId,
-        HashSet<int>? validJiraNumbers)
+        List<T> records,
+        Action<T> assignId,
+        Action<List<T>, SqliteConnection> insertBatch)
     {
-        if (string.IsNullOrWhiteSpace(text)) return 0;
-        int count = 0;
+        if (records.Count == 0) return 0;
 
-        // Jira: shared extractor (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
-        List<JiraXRefRecord> jiraRefs = ExtractJiraReferences(text, sourceType, sourceId, validJiraNumbers);
-        foreach (JiraXRefRecord r in jiraRefs)
+        foreach (T r in records) assignId(r);
+
+        const int batchSize = 1000;
+        for (int i = 0; i < records.Count; i += batchSize)
         {
-            r.Id = JiraXRefRecord.GetIndex();
-            JiraXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
+            List<T> batch = records.GetRange(i, Math.Min(batchSize, records.Count - i));
+            insertBatch(batch, connection);
         }
-
-        // Zulip
-        foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences(sourceType, sourceId, text))
-        {
-            r.Id = ZulipXRefRecord.GetIndex();
-            ZulipXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
-        }
-
-        // Confluence
-        foreach (ConfluenceXRefRecord r in ConfluenceReferenceExtractor.GetReferences(sourceType, sourceId, text))
-        {
-            r.Id = ConfluenceXRefRecord.GetIndex();
-            ConfluenceXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
-        }
-
-        // FHIR elements
-        foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences(sourceType, sourceId, text))
-        {
-            r.Id = FhirElementXRefRecord.GetIndex();
-            FhirElementXRefRecord.Insert(connection, r, ignoreDuplicates: true);
-            count++;
-        }
-
-        return count;
+        return records.Count;
     }
 
     /// <summary>
     /// Extracts Jira references using the shared extractor (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs).
+    /// When <paramref name="repoScope"/> is supplied, also resolves repo-scoped bare integers.
     /// </summary>
     internal static List<JiraXRefRecord> ExtractJiraReferences(
         string text,
         string sourceType,
         string sourceId,
-        HashSet<int>? validJiraNumbers)
+        HashSet<int>? validJiraNumbers,
+        RepoJiraScope? repoScope = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
 
         // Shared extractor for standard patterns (FHIR-N, JF-N, GF-N, J#N, GF#N, Jira URLs)
-        CrossRefExtractionContext? context = validJiraNumbers is not null
-            ? new CrossRefExtractionContext(ValidJiraNumbers: validJiraNumbers)
+        CrossRefExtractionContext? context = validJiraNumbers is not null || repoScope is not null
+            ? new CrossRefExtractionContext(ValidJiraNumbers: validJiraNumbers, RepoScope: repoScope)
             : null;
         return JiraReferenceExtractor.GetReferences(sourceType, sourceId, context, text);
     }

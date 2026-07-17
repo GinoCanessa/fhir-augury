@@ -25,50 +25,7 @@ public sealed class HttpServiceClient : IDisposable
 
     // ── Orchestrator calls ──────────────────────────────────────────────
 
-    public async Task<JsonElement> UnifiedSearchAsync(string query, string? sources, int? limit, CancellationToken ct)
-    {
-        string url = $"/api/v1/search?q={Uri.EscapeDataString(query)}";
-        if (!string.IsNullOrEmpty(sources))
-            url += $"&sources={Uri.EscapeDataString(sources)}";
-        if (limit.HasValue)
-            url += $"&limit={limit.Value}";
-        return await GetJsonAsync(_orchestratorClient, url, ct);
-    }
-
-    public async Task<JsonElement> GetItemAsync(string source, string id, CancellationToken ct)
-    {
-        string url = $"/api/v1/items/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}";
-        return await GetJsonAsync(_orchestratorClient, url, ct);
-    }
-
-    public async Task<JsonElement> GetSnapshotAsync(string source, string id, CancellationToken ct)
-    {
-        string url = $"/api/v1/items/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}/snapshot";
-        return await GetJsonAsync(_orchestratorClient, url, ct);
-    }
-
-    public async Task<JsonElement> FindRelatedAsync(string source, string id, int? limit, string? targetSources, CancellationToken ct)
-    {
-        string url = $"/api/v1/related/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}";
-        List<string> queryParams = [];
-        if (limit.HasValue)
-            queryParams.Add($"limit={limit.Value}");
-        if (!string.IsNullOrEmpty(targetSources))
-            queryParams.Add($"targetSources={Uri.EscapeDataString(targetSources)}");
-        if (queryParams.Count > 0)
-            url += "?" + string.Join("&", queryParams);
-        return await GetJsonAsync(_orchestratorClient, url, ct);
-    }
-
-    public async Task<JsonElement> GetCrossReferencesAsync(string source, string id, string? direction, CancellationToken ct)
-    {
-        string url = $"/api/v1/xref/{Uri.EscapeDataString(source)}/{Uri.EscapeDataString(id)}";
-        if (!string.IsNullOrEmpty(direction))
-            url += $"?direction={Uri.EscapeDataString(direction)}";
-        return await GetJsonAsync(_orchestratorClient, url, ct);
-    }
-
-    public async Task<JsonElement> TriggerSyncAsync(string? type, string? sources, CancellationToken ct)
+    public async Task<JsonElement> TriggerSyncAsync(string? type, string? sources, string? jiraProject, CancellationToken ct)
     {
         string url = "/api/v1/ingest/trigger";
         List<string> queryParams = [];
@@ -76,6 +33,8 @@ public sealed class HttpServiceClient : IDisposable
             queryParams.Add($"type={Uri.EscapeDataString(type)}");
         if (!string.IsNullOrEmpty(sources))
             queryParams.Add($"sources={Uri.EscapeDataString(sources)}");
+        if (!string.IsNullOrEmpty(jiraProject))
+            queryParams.Add($"jira-project={Uri.EscapeDataString(jiraProject)}");
         if (queryParams.Count > 0)
             url += "?" + string.Join("&", queryParams);
         return await PostJsonAsync(_orchestratorClient, url, null, ct);
@@ -97,16 +56,6 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> GetServicesStatusAsync(CancellationToken ct)
     {
         return await GetJsonAsync(_orchestratorClient, "/api/v1/services", ct);
-    }
-
-    public async Task<JsonElement> GetStatsAsync(CancellationToken ct)
-    {
-        return await GetJsonAsync(_orchestratorClient, "/api/v1/stats", ct);
-    }
-
-    public async Task<JsonElement> GetServiceEndpointsAsync(CancellationToken ct)
-    {
-        return await GetJsonAsync(_orchestratorClient, "/api/v1/endpoints", ct);
     }
 
     public async Task<JsonElement> QueryJiraAsync(string address, object queryParams, CancellationToken ct)
@@ -131,6 +80,27 @@ public sealed class HttpServiceClient : IDisposable
         return await PostJsonAsync(_orchestratorClient, "/api/v1/zulip/query", queryParams, ct);
     }
 
+    public async Task<JsonElement> GetFromOrchestratorAsync(string path, CancellationToken ct)
+    {
+        return await GetJsonAsync(_orchestratorClient, path, ct);
+    }
+
+    public async Task<JsonElement> PostToOrchestratorAsync(string path, object? body, CancellationToken ct)
+    {
+        return await PostJsonAsync(_orchestratorClient, path, body, ct);
+    }
+
+    public async Task<JsonElement> PutToOrchestratorAsync(string path, string? bodyJson, CancellationToken ct)
+    {
+        using HttpResponseMessage response = bodyJson is not null
+            ? await _orchestratorClient.PutAsync(path, new StringContent(bodyJson, System.Text.Encoding.UTF8, "application/json"), ct)
+            : await _orchestratorClient.PutAsync(path, content: null, ct);
+        response.EnsureSuccessStatusCode();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+        using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.Clone();
+    }
+
     // ── Content Query API ──────────────────────────────────────────────
 
     public async Task<JsonElement> ContentSearchAsync(List<string> values, string? sources, int? limit, CancellationToken ct)
@@ -150,9 +120,7 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> ContentGetItemAsync(string source, string id,
         bool includeContent, bool includeComments, bool includeSnapshot, CancellationToken ct)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23")
-            : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/item/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (includeContent) url.Append("includeContent=true&");
         if (includeComments) url.Append("includeComments=true&");
@@ -171,8 +139,7 @@ public sealed class HttpServiceClient : IDisposable
     public async Task<JsonElement> ContentKeywordsAsync(
         string source, string id, string? keywordType, int? limit, CancellationToken ct = default)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/keywords/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
         if (limit.HasValue) url.Append($"limit={limit.Value}&");
@@ -183,8 +150,7 @@ public sealed class HttpServiceClient : IDisposable
         string source, string id, double? minScore, string? keywordType, int? limit,
         CancellationToken ct = default)
     {
-        string encodedId = source.Equals("github", StringComparison.OrdinalIgnoreCase)
-            ? id.Replace("#", "%23") : Uri.EscapeDataString(id);
+        string encodedId = Uri.EscapeDataString(id);
         StringBuilder url = new($"/api/v1/content/related-by-keyword/{Uri.EscapeDataString(source)}/{encodedId}?");
         if (minScore.HasValue) url.Append($"minScore={minScore.Value}&");
         if (!string.IsNullOrEmpty(keywordType)) url.Append($"keywordType={Uri.EscapeDataString(keywordType)}&");
@@ -243,26 +209,22 @@ public sealed class HttpServiceClient : IDisposable
 
     private static async Task<JsonElement> GetJsonAsync(HttpClient client, string url, CancellationToken ct)
     {
-        HttpResponseMessage response = await client.GetAsync(url, ct);
+        using HttpResponseMessage response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(ct);
-        return JsonDocument.Parse(json).RootElement.Clone();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+        using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.Clone();
     }
 
     private static async Task<JsonElement> PostJsonAsync(HttpClient client, string url, object? body, CancellationToken ct)
     {
-        HttpResponseMessage response;
-        if (body is not null)
-        {
-            response = await client.PostAsJsonAsync(url, body, JsonOptions, ct);
-        }
-        else
-        {
-            response = await client.PostAsync(url, null, ct);
-        }
+        using HttpResponseMessage response = body is not null
+            ? await client.PostAsJsonAsync(url, body, JsonOptions, ct)
+            : await client.PostAsync(url, null, ct);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(ct);
-        return JsonDocument.Parse(json).RootElement.Clone();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+        using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.Clone();
     }
 
     public void Dispose()

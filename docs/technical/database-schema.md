@@ -301,17 +301,10 @@ Table names: `jira_index_workgroups`, `jira_index_specifications`,
 `jira_index_ballots`, `jira_index_labels`, `jira_index_types`,
 `jira_index_priorities`, `jira_index_statuses`, `jira_index_resolutions`
 
-#### `jira_spec_artifacts` — Specification artifact mappings
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Id` | INTEGER PK | Auto-increment |
-| `Family` | TEXT | Specification family |
-| `SpecKey` | TEXT | Specification key |
-| `SpecName` | TEXT | Specification name |
-| `GitUrl` | TEXT? | Git repository URL |
-| `PublishedUrl` | TEXT? | Published specification URL |
-| `DefaultWorkgroup` | TEXT? | Default work group |
+> **Note:** Spec-artifact data (the parsed `JIRA-Spec-Artifacts` repository) is
+> owned by the GitHub source's `jira_specs*` table family — not the Jira source.
+> See the GitHub-source schema and the `api/v1/jira-specs/...` endpoints for
+> that surface.
 
 #### `jira_issue_links` — Issue-to-issue links
 
@@ -461,6 +454,8 @@ Indexes: `(ConfluenceId)`, `(JiraKey)`
 | `Name` | TEXT | Repository name |
 | `Description` | TEXT? | Repository description |
 | `LastFetchedAt` | TEXT | Last fetch timestamp |
+| `Category` | TEXT | Repository category (enum string) |
+| `DefaultBranch` | TEXT? | Default branch (e.g., master/main); migrated column used for deterministic primary-PR selection |
 
 #### `github_issues`
 
@@ -499,8 +494,14 @@ Indexes: `(RepoFullName, Number)`, `(State)`, `(Milestone)`, `(UpdatedAt)`
 | `CreatedAt` | TEXT | Comment timestamp |
 | `Body` | TEXT | Comment body |
 | `IsReviewComment` | INTEGER | Boolean: is this a review comment |
+| `ExternalId` | TEXT? | Stable GitHub-native comment identity (GraphQL node id for gh-CLI issue comments/reviews; numeric REST id stringified for review-thread comments). Migrated column |
+| `CommentKind` | TEXT? | Comment kind discriminator: `issue`, `review`, or `review_comment`. Migrated column |
 
-Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`
+Indexes: `(IssueId)`, `(RepoFullName, IssueNumber)`; unique
+`(RepoFullName, CommentKind, ExternalId)` (`ix_github_comments_external`) so
+`INSERT OR IGNORE` dedupes all three comment kinds across re-ingestion (the
+GetIndex() PK cannot). Inline (line-anchored) PR review-thread comments are
+ingested here as `CommentKind = review_comment`.
 
 #### `github_commits`
 
@@ -532,6 +533,11 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `CommitSha` | TEXT | Parent commit SHA |
 | `FilePath` | TEXT | File path |
 | `ChangeType` | TEXT | Change type (added, modified, deleted) |
+| `BlobSha` | TEXT? | Post-image (new) blob SHA for this `(commit, file)`, captured from `git log --raw --no-abbrev` during ingestion. Null for deletions (all-zero sentinel) and for rows written by an older extractor before this column existed — consumers must tolerate its absence. |
+
+Indexes: covering `(CommitSha, FilePath, BlobSha, ChangeType)` and `(FilePath)`. The
+covering index lets a window reader load a commit's changed files (path, change type,
+and resolved blob) index-only, without touching the row heap.
 
 #### `github_commit_pr_links` — Commit-to-PR associations
 
@@ -542,6 +548,12 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `PrNumber` | INTEGER | Pull request number |
 | `RepoFullName` | TEXT | Repository full name |
 
+Indexes: `(CommitSha)`, `(PrNumber, RepoFullName)`; unique
+`(CommitSha, PrNumber, RepoFullName)` (`ix_github_commit_pr_links_natural`).
+Populated during PR ingestion from `gh pr view --json commits` with
+delete-then-insert (replace) semantics per PR, so a force-push that rewrites a
+PR's commit set does not leave stale links and re-ingestion stays idempotent.
+
 #### `github_spec_file_map` — Specification-to-file mappings
 
 | Column | Type | Description |
@@ -551,6 +563,8 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `ArtifactKey` | TEXT | Specification artifact key |
 | `FilePath` | TEXT | File path in repository |
 | `MapType` | TEXT | Mapping type |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code resolved by `WorkGroupResolutionPass` |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input; populated when it didn't resolve or resolved to a different code |
 
 #### `github_structure_definitions` — Parsed FHIR StructureDefinitions
 
@@ -573,6 +587,7 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `Description` | TEXT? | Description |
 | `Publisher` | TEXT? | Publisher |
 | `WorkGroup` | TEXT? | HL7 work group |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input preserved by `WorkGroupResolutionPass` when not canonical |
 | `FhirMaturity` | TEXT? | Maturity level (FMM) |
 | `StandardsStatus` | TEXT? | Standards status |
 | `Category` | TEXT? | Category |
@@ -610,7 +625,43 @@ Indexes: `(RepoFullName)`, `(Date)`
 | `Status` | TEXT? | Publication status |
 | `Description` | TEXT? | Description |
 | `Publisher` | TEXT? | Publisher |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code resolved by `WorkGroupResolutionPass` |
+| `WorkGroupRaw` | TEXT? | Original (pre-resolution) work-group input preserved when not canonical |
+| `FhirMaturity` | INTEGER? | Maturity level (FMM) |
+| `StandardsStatus` | TEXT? | Standards status |
+| `TypeSpecificData` | TEXT? | Per-resource-type extracted JSON |
 | `Format` | TEXT | Source format (xml, json, fsh) |
+
+#### `github_repo_workgroups` — Per-repo derived default work-group attribution
+
+Lives in its own table (rather than as a column on `github_repos`) so API-driven
+repo upserts in `GitHubRestProvider` / `GitHubCliProvider` — which fully rewrite
+the `github_repos` row from `MapRepo` output — cannot blank out the value
+derived by `WorkGroupResolutionPass`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `RepoFullName` | TEXT UNIQUE | Owner/Name (e.g., `HL7/fhir`) — one row per repo |
+| `WorkGroup` | TEXT? | Canonical HL7 work-group code, or `NULL` when no signal |
+| `WorkGroupRaw` | TEXT? | Original input preserved when not canonical |
+| `Source` | TEXT | Provenance (`config` or `majority-jira-spec`) |
+| `ResolvedAt` | TEXT | When the row was last derived |
+
+#### `hl7_workgroups` — Authoritative HL7 work-group codeset
+
+Local copy of the `CodeSystem-hl7-work-group` resource, populated from the
+support XML. Used by `WorkGroupResolutionPass` to canonicalize free-text
+work-group inputs.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `Code` | TEXT UNIQUE | Canonical work-group code (e.g., `fhir-i`) |
+| `Name` | TEXT | Display name |
+| `Definition` | TEXT? | Definition text |
+| `Retired` | INTEGER | Whether retired |
+| `NameClean` | TEXT | Normalized name (case/punct-folded) for fuzzy lookups |
 
 #### `github_file_contents` — Indexed repository file contents
 

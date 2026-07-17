@@ -8,19 +8,42 @@ using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Source.GitHub.Controllers;
 
+/// <summary>
+/// GitHub items endpoints. Unlike Jira / Zulip / Confluence (which use the
+/// id-first layout <c>items/{id}/{action}</c>), this controller deliberately
+/// uses an <b>action-first</b> layout — <c>items/related/{**key}</c>,
+/// <c>items/snapshot/{**key}</c>, <c>items/content/{**key}</c>, etc.
+/// <para>
+/// Rationale: GitHub keys (e.g. <c>owner/repo#123</c> or
+/// <c>owner/repo:path/to/file.json</c>) contain embedded slashes. Putting
+/// the action segment <em>before</em> the catch-all key removes ambiguity
+/// in route matching and lets every sub-resource share a single
+/// <c>{**key}</c> token without per-action template tweaks. This inversion
+/// is intentional and is preserved across the route-alignment work.
+/// </para>
+/// </summary>
 [ApiController]
 [Route("api/v1/items")]
 public class ItemsController(GitHubDatabase db) : ControllerBase
 {
     [HttpGet]
-    public IActionResult ListItems([FromQuery] int? limit, [FromQuery] int? offset)
+    public IActionResult ListItems([FromQuery] int? limit, [FromQuery] int? offset, [FromQuery] bool? pullRequest)
     {
         using SqliteConnection connection = db.OpenConnection();
         int maxResults = Math.Min(limit ?? 50, 500);
         int skip = Math.Max(offset ?? 0, 0);
 
+        string whereClause = pullRequest switch
+        {
+            true => "WHERE IsPullRequest = 1 ",
+            false => "WHERE IsPullRequest = 0 ",
+            null => "",
+        };
+
         using SqliteCommand cmd = new SqliteCommand(
-            "SELECT UniqueKey, Title, State, IsPullRequest, UpdatedAt FROM github_issues ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset",
+            "SELECT UniqueKey, Title, State, IsPullRequest, UpdatedAt FROM github_issues " +
+            whereClause +
+            "ORDER BY UpdatedAt DESC LIMIT @limit OFFSET @offset",
             connection);
         cmd.Parameters.AddWithValue("@limit", maxResults);
         cmd.Parameters.AddWithValue("@offset", skip);
@@ -30,6 +53,7 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
         while (reader.Read())
         {
             string uniqueKey = reader.GetString(0);
+            bool isPr = reader.GetBoolean(3);
             items.Add(new ItemSummary
             {
                 Id = uniqueKey,
@@ -39,7 +63,8 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
                 Metadata = new Dictionary<string, string>
                 {
                     ["state"] = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                    ["is_pull_request"] = reader.GetBoolean(3).ToString(),
+                    ["is_pull_request"] = isPr.ToString(),
+                    ["content_type"] = isPr ? ContentTypes.Pr : ContentTypes.Issue,
                 },
             });
         }
@@ -154,7 +179,8 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
 
         return Ok(new SnapshotResponse(
             issue.UniqueKey, SourceSystems.GitHub, md,
-            GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey), null));
+            GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey),
+            issue.IsPullRequest ? ContentTypes.Pr : ContentTypes.Issue));
     }
 
     [HttpGet("content/{*key}")]
@@ -183,7 +209,8 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
         return Ok(new ContentResponse(
             issue.UniqueKey, SourceSystems.GitHub,
             issue.Body ?? "", format ?? ContentFormats.Text,
-            GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey), null, null));
+            GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey), null,
+            issue.IsPullRequest ? ContentTypes.Pr : ContentTypes.Issue));
     }
 
     // IMPORTANT: This catch-all route MUST be defined last or use Order attribute
@@ -240,6 +267,7 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
         {
             ["state"] = issue.State,
             ["is_pull_request"] = issue.IsPullRequest.ToString(),
+            ["content_type"] = issue.IsPullRequest ? ContentTypes.Pr : ContentTypes.Issue,
             ["repo"] = issue.RepoFullName,
             ["number"] = issue.Number.ToString(),
         };
@@ -254,6 +282,7 @@ public class ItemsController(GitHubDatabase db) : ControllerBase
         return Ok(new ItemResponse
         {
             Source = SourceSystems.GitHub,
+            ContentType = issue.IsPullRequest ? ContentTypes.Pr : ContentTypes.Issue,
             Id = issue.UniqueKey,
             Title = issue.Title,
             Content = includeContent != false ? issue.Body : null,

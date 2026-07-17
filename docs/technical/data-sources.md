@@ -15,8 +15,16 @@ Orchestrator (:5150 HTTP)
 ├── Source.Jira       (:5160 HTTP)
 ├── Source.Zulip      (:5170 HTTP)
 ├── Source.Confluence  (:5180 HTTP)
-└── Source.GitHub     (:5190 HTTP)
+├── Source.GitHub     (:5190 HTTP)
+└── Source.Fhir       (:5195 HTTP, read-only spec reference)
 ```
+
+The first four sources ingest and index an external upstream (Jira, Zulip,
+Confluence, GitHub). `Source.Fhir` is a fifth, **read-only** source: it serves
+FHIR specification reference data (StructureDefinitions and other canonical
+resources) into unified search but has no external ingestion pipeline or sync
+worker. The processors (`:5171`–`:5174`) are covered in the
+[Processors Runbook](processors.md), not here.
 
 ## Common HTTP API Contract
 
@@ -38,9 +46,13 @@ contract for the Orchestrator:
 | `GetStats` | Return service statistics (item counts, DB size, last sync) |
 | `RebuildFromCache` | Rebuild the database from the file-system cache |
 | `GetItemCrossReferences` | Get cross-references for a specific item |
-| `NotifyPeerIngestionComplete` | Notify this source that a peer completed ingestion (triggers xref re-scan) |
+| `NotifyPeerIngestionComplete` | Notify this source that a peer completed ingestion (triggers xref re-scan). The orchestrator side of this contract is `POST /api/v1/notify-ingestion`; both halves carry the `ingestion-notifications` OpenAPI tag. See [`docs/user/api-reference.md`](../user/api-reference.md#internal-notification). |
 | `RebuildIndex` | Rebuild specific indexes (BM25, FTS, cross-refs, lookup tables, etc.) |
 | `HealthCheck` | Liveness/readiness probe |
+
+## Source list-filter convention
+
+All Source services use the [null-as-default, empty-as-explicit-all convention](../source-filter-conventions.md) for list-shaped string filters and ingestion selection lists. Jira query/local-processing filters, Zulip `StreamNames`/`SenderNames`, content-search `sources`, GitHub repository/file-content lists, and Confluence `Spaces` all follow this rule.
 
 ## Source-Specific HTTP API Endpoints
 
@@ -55,7 +67,6 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `ListByWorkGroup` | Issues filtered by HL7 work group |
 | `ListBySpecification` | Issues filtered by specification |
 | `QueryIssues` | Arbitrary JQL-like query |
-| `ListSpecArtifacts` | Specification artifact listing |
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
 
@@ -139,7 +150,9 @@ reusable infrastructure:
   per service), and `DictionaryDatabaseOptions` (compiled dictionary builder).
 - **`Caching/`** — `IResponseCache`, `FileSystemResponseCache` (atomic writes
   via temp + move), `CacheMode` enum (`Disabled`, `WriteThrough`, `CacheOnly`,
-  `WriteOnly`), `CacheFileNaming` (`_WeekOf_`/`DayOf_` batch naming).
+  `WriteOnly`), `CacheFileNaming` (flat `YYYYMMDD-YYYYMMDD-NNN.ext` range naming;
+  single-day files use `start == end`). Legacy `DayOf_`/`_WeekOf_` files are
+  rewritten in-place by `CacheFileNameMigrator` on first ingestion per process.
 - **`Text/`** — `CrossRefPatterns` (regex patterns for Jira keys, Jira/Zulip/
   GitHub/Confluence URLs, GitHub short refs `HL7/repo#123`),
   `FhirVocabulary` (100+ FHIR resource names, 30+ operations; extensible via
@@ -337,13 +350,30 @@ executable path, query limits, hostname, and process timeout.
 
 **Data model:**
 
-- `GitHubRepoRecord` — Full name, owner, name, description
+- `GitHubRepoRecord` — Full name, owner, name, description, default branch
 - `GitHubIssueRecord` — UniqueKey (`owner/repo#number`), number, isPullRequest
   flag, title, body, state, author, labels, assignees, milestone, merge state
-- `GitHubCommentRecord` — Author, date, body, IsReviewComment flag (IssueId FK)
+- `GitHubCommentRecord` — Author, date, body, IsReviewComment flag (IssueId FK),
+  plus a stable GitHub-native identity (`ExternalId` + `CommentKind` ∈
+  `issue`/`review`/`review_comment`) used to dedup across re-ingestion
 
 The GitHub Issues API returns both issues and PRs; the mapper detects PRs via
-the `pull_request` field.
+the `pull_request` field. The items surface treats `pr` as a first-class
+*content type* derived from `IsPullRequest`: `GET /api/v1/items?pullRequest=true`
+returns only PRs, `?pullRequest=false` only non-PR issues, and omitting the
+parameter returns both. Every items list/get/snapshot/content response carries a
+`content_type` of `pr` or `issue` accordingly. The `pullRequest` filter is
+mirrored across the orchestrator proxy, CLI (`github-items list`), MCP
+(`ListGitHubItems`), and the DevUI API catalog.
+
+During PR ingestion the source also populates `github_commit_pr_links` (the
+commit→PR mapping, written via `gh pr view --json commits` with replace-on-resync
+semantics so force-pushes don't leave stale links) and ingests inline
+(line-anchored) PR review-thread comments via
+`gh api repos/{repo}/pulls/{n}/comments`, so the full PR conversation flows
+through the xref/BM25 pipeline. Commit responses (`MapCommitToJson`) expose a
+`prs` array of applying PRs plus a deterministic `primaryPr` (merged →
+base-branch-is-repo-default → lowest PR number).
 
 **FHIR artifact indexing:**
 
@@ -371,11 +401,14 @@ specialized ingestion strategy:
 | Incubator | `IncubatorStrategy` | (configurable) |
 | Ig | `IgStrategy` | (configurable) |
 
-**Database tables:** `github_repos` (FullName unique), `github_issues`
-(UniqueKey unique, IsPullRequest, RepoFullName), `github_comments` (IssueId FK,
-IsReviewComment), `github_commits` (Sha, RepoFullName, Message, Body, Author, etc.),
+**Database tables:** `github_repos` (FullName unique, DefaultBranch),
+`github_issues` (UniqueKey unique, IsPullRequest, RepoFullName), `github_comments`
+(IssueId FK, IsReviewComment, ExternalId/CommentKind with a unique index on
+`(RepoFullName, CommentKind, ExternalId)` for dedup), `github_commits` (Sha,
+RepoFullName, Message, Body, Author, etc.),
 `github_commit_files` (CommitSha, FilePath, ChangeType), `github_commit_pr_links`
-(CommitSha, PrNumber, RepoFullName), `github_spec_file_map` (RepoFullName, ArtifactKey,
+(CommitSha, PrNumber, RepoFullName — populated on PR ingestion with a unique
+index on `(CommitSha, PrNumber, RepoFullName)`), `github_spec_file_map` (RepoFullName, ArtifactKey,
 FilePath, MapType), `github_structure_definitions` (Url, Name, Kind, ArtifactClass,
 Elements via github_sd_elements), `github_canonical_artifacts` (ResourceType, Url, Name,
 Format), `github_file_contents` (RepoFullName, FilePath, ContentText),
@@ -399,6 +432,17 @@ references found in its content pointing to other sources (e.g., `xref_jira`,
 `xref_zulip`, `xref_github`, `xref_confluence`, `xref_fhir_element`). These are
 shared record types defined in `FhirAugury.Common.Database.Records` and populated
 by shared extractors in `FhirAugury.Common.Indexing`.
+
+For the GitHub source, `xref_jira` rows come from `JiraTicketExtractor`, which
+matches prefixed/hashed keys (`FHIR-N`, `J#N`, `UP-N`, `UPSM-N`, …) and Jira
+URLs in all content, plus — for commit/issue/comment **prose only** — a
+repo-scoped *bare-integer* pass: a standalone number (e.g. `54873`) resolves to
+`PROJECT-N` when the repository's category (or a per-repo override) pins a
+project key and the number falls within that key's configured numeric range.
+File contents are never bare-matched (incidental integers), and a number already
+named by a prefixed key is never re-guessed. See the GitHub `BareNumber*` /
+`JiraNumberRanges` / `RepoOverrides` settings in
+[`docs/configuration.md`](../configuration.md#configuration-options).
 
 ---
 

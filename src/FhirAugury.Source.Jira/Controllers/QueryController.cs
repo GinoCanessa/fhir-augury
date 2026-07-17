@@ -7,9 +7,15 @@ using FhirAugury.Source.Jira.Indexing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Source.Jira.Controllers;
 
+/// <summary>
+/// Structured-query endpoint. Targets FHIR change requests
+/// (<c>jira_issues</c>); PSS/BALDEF/BALLOT are queried via their own
+/// per-shape controllers.
+/// </summary>
 [ApiController]
 [Route("api/v1")]
 public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optionsAccessor) : ControllerBase
@@ -51,7 +57,7 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             });
         }
 
-        return Ok(results);
+        return Ok(new { results });
     }
 
     [HttpGet("labels")]
@@ -62,5 +68,35 @@ public class QueryController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         return Ok(labels
             .Select(l => new { l.Name, l.IssueCount })
             .OrderByDescending(l => l.IssueCount));
+    }
+
+    [HttpGet("statuses")]
+    public IActionResult ListStatuses()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexStatusRecord> records = JiraIndexStatusRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
+
+    [HttpGet("users")]
+    public IActionResult ListUsers()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexUserRecord> records = JiraIndexUserRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
+    }
+
+    [HttpGet("inpersons")]
+    public IActionResult ListInPersonRequesters()
+    {
+        using SqliteConnection connection = db.OpenConnection();
+        List<JiraIndexInPersonRecord> records = JiraIndexInPersonRecord.SelectList(connection);
+        return Ok(records
+            .Select(r => new { r.Name, r.IssueCount })
+            .OrderByDescending(r => r.IssueCount));
     }
 }

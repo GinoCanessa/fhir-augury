@@ -10,7 +10,7 @@ namespace FhirAugury.Orchestrator.Routing;
 /// <summary>
 /// Routes proxied calls to source services via named HttpClients.
 /// </summary>
-public class SourceHttpClient
+public partial class SourceHttpClient
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly OrchestratorOptions _options;
@@ -49,7 +49,12 @@ public class SourceHttpClient
         if (source.Equals("github", StringComparison.OrdinalIgnoreCase))
             return id.Replace("#", "%23");
 
-        return Uri.EscapeDataString(id);
+        // Per-segment encoding so embedded '/' is preserved verbatim and
+        // routes to the source service's `{**id}` catch-all parameter.
+        string[] segments = id.Split('/');
+        for (int i = 0; i < segments.Length; i++)
+            segments[i] = Uri.EscapeDataString(segments[i]);
+        return string.Join('/', segments);
     }
 
     private static string BuildItemPath(string source, string id) =>
@@ -139,9 +144,17 @@ public class SourceHttpClient
     public async Task<IngestionStatusResponse?> TriggerIngestionAsync(
         string sourceName, string type, CancellationToken ct)
     {
+        return await TriggerIngestionAsync(sourceName, type, project: null, ct);
+    }
+
+    public async Task<IngestionStatusResponse?> TriggerIngestionAsync(
+        string sourceName, string type, string? project, CancellationToken ct)
+    {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsync(
-            $"/api/v1/ingest?type={Uri.EscapeDataString(type)}", null, ct);
+        string url = $"/api/v1/ingest?type={Uri.EscapeDataString(type)}";
+        if (!string.IsNullOrEmpty(project))
+            url += $"&project={Uri.EscapeDataString(project)}";
+        using HttpResponseMessage response = await client.PostAsync(url, null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<IngestionStatusResponse>(ct);
     }
@@ -150,7 +163,7 @@ public class SourceHttpClient
         string sourceName, PeerIngestionNotification notification, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsJsonAsync("/api/v1/notify-peer", notification, ct);
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/api/v1/notify-peer", notification, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<PeerIngestionAck>(ct);
     }
@@ -159,7 +172,7 @@ public class SourceHttpClient
         string sourceName, string indexType, CancellationToken ct)
     {
         HttpClient client = GetClientForSource(sourceName);
-        HttpResponseMessage response = await client.PostAsync(
+        using HttpResponseMessage response = await client.PostAsync(
             $"/api/v1/rebuild-index?type={Uri.EscapeDataString(indexType)}", null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<RebuildIndexResponse>(ct);

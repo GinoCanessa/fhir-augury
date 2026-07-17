@@ -24,7 +24,7 @@ public class ZulipXRefRebuilderTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     // ── Full Rebuild ─────────────────────────────────────────────────

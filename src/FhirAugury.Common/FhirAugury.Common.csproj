@@ -1,14 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
+	<Import Project="..\sqlite.props" />
 
-  <PropertyGroup>
+	<PropertyGroup>
     <RootNamespace>FhirAugury.Common</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.324.2022" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.*" />
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.622.1509" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
 </Project>

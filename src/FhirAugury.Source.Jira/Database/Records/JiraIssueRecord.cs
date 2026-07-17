@@ -2,44 +2,32 @@ using CsLightDbGen.SQLiteGenerator;
 
 namespace FhirAugury.Source.Jira.Database.Records;
 
-/// <summary>A Jira issue with core fields and HL7-specific custom fields.</summary>
+/// <summary>
+/// FHIR change-request style Jira ticket. Inherits the shared Jira base
+/// columns from <see cref="JiraIssueBaseRecord"/> and adds the HL7
+/// change-request-template custom-field columns. Houses tickets from
+/// FHIR/GCR/HTA/TSC/UP/UPSM (i.e. <c>JiraProjectShape.FhirChangeRequest</c>);
+/// PSS/BALDEF/BALLOT live in their own sibling tables.
+/// </summary>
 [LdgSQLiteTable("jira_issues")]
 [LdgSQLiteIndex(nameof(ProjectKey), nameof(Key))]
 [LdgSQLiteIndex(nameof(Status))]
-[LdgSQLiteIndex(nameof(WorkGroup), nameof(UpdatedAt))]
-[LdgSQLiteIndex(nameof(Specification), nameof(UpdatedAt))]
 [LdgSQLiteIndex(nameof(UpdatedAt))]
 [LdgSQLiteIndex(nameof(Type))]
 [LdgSQLiteIndex(nameof(Priority))]
-[LdgSQLiteIndex(nameof(Resolution))]
-[LdgSQLiteIndex(nameof(SelectedBallot))]
 [LdgSQLiteIndex(nameof(Assignee))]
 [LdgSQLiteIndex(nameof(Reporter))]
 [LdgSQLiteIndex(nameof(CreatedAt))]
-public partial record class JiraIssueRecord
+[LdgSQLiteIndex(nameof(ProcessedLocallyAt))]
+[LdgSQLiteIndex(nameof(WorkGroup), nameof(UpdatedAt))]
+[LdgSQLiteIndex(nameof(Specification), nameof(UpdatedAt))]
+[LdgSQLiteIndex(nameof(Resolution))]
+[LdgSQLiteIndex(nameof(SelectedBallot))]
+public partial record class JiraIssueRecord : JiraIssueBaseRecord
 {
-    [LdgSQLiteKey]
-    public required int Id { get; set; }
-
-    [LdgSQLiteUnique]
-    public required string Key { get; set; }
-
-    public required string ProjectKey { get; set; }
-    public required string Title { get; set; }
-    public required string? Description { get; set; }
-    public string? DescriptionPlain { get; set; }
-    public required string? Summary { get; set; }
-    public required string Type { get; set; }
-    public required string Priority { get; set; }
-    public required string Status { get; set; }
     public required string? Resolution { get; set; }
     public required string? ResolutionDescription { get; set; }
     public string? ResolutionDescriptionPlain { get; set; }
-    public required string? Assignee { get; set; }
-    public required string? Reporter { get; set; }
-    public required DateTimeOffset CreatedAt { get; set; }
-    public required DateTimeOffset UpdatedAt { get; set; }
-    public required DateTimeOffset? ResolvedAt { get; set; }
 
     // HL7 custom fields
     public required string? WorkGroup { get; set; }
@@ -58,8 +46,11 @@ public partial record class JiraIssueRecord
     public int? VoteForCount { get; set; }
     public int? VoteAgainstCount { get; set; }
     public int? VoteAbstainCount { get; set; }
-    public required string? Labels { get; set; }
-    public required int CommentCount { get; set; }
-    public required string? ChangeCategory { get; set; }
-    public required string? ChangeImpact { get; set; }
+
+    public string? ChangeCategory { get; set; }
+    public string? ChangeImpact { get; set; }
+
+    public string? Realm { get; set; }
+    public string? SponsoringWorkGroup { get; set; }
+    public string? CoSponsoringWorkGroups { get; set; }
 }

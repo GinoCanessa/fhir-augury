@@ -9,6 +9,7 @@ public class OrchestratorOptions
     public string DatabasePath { get; set; } = "./data/orchestrator.db";
     public PortConfiguration Ports { get; set; } = new();
     public Dictionary<string, SourceServiceConfig> Services { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, ProcessingServiceConfig> ProcessingServices { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public SearchOptions Search { get; set; } = new();
     public RelatedOptions Related { get; set; } = new();
     public FhirAugury.Common.Configuration.DictionaryDatabaseOptions DictionaryDatabase { get; set; } = new();
@@ -18,6 +19,18 @@ public class OrchestratorOptions
     /// Set to 0 to disable automatic reconnection.
     /// </summary>
     public int ReconnectIntervalSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Interval in seconds between periodic health checks of all enabled source services.
+    /// Default: 60.
+    /// </summary>
+    public int HealthCheckIntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Delay in seconds after startup before the first health sweep runs.
+    /// Default: 5. Set to 0 to run immediately.
+    /// </summary>
+    public int HealthCheckStartupDelaySeconds { get; set; } = 5;
 }
 
 public class PortConfiguration
@@ -29,6 +42,13 @@ public class SourceServiceConfig
 {
     public string HttpAddress { get; set; } = "";
     public bool Enabled { get; set; } = true;
+}
+
+public class ProcessingServiceConfig
+{
+    public string HttpAddress { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public string? Description { get; set; }
 }
 
 public class SearchOptions

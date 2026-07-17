@@ -1,4 +1,5 @@
 using System.Text;
+using FhirAugury.Common.Filtering;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Api;
 using Microsoft.Data.Sqlite;
@@ -38,10 +39,10 @@ public static class JiraQueryBuilder
         AddInClause(sb, parameters, "Assignee", request.Assignees, ref paramIdx);
         AddInClause(sb, parameters, "Reporter", request.Reporters, ref paramIdx);
 
-        if (request.Labels.Count > 0)
+        if (request.Labels.HasExplicitRestriction())
         {
             List<string> labelParamNames = [];
-            foreach (string label in request.Labels)
+            foreach (string label in request.Labels!)
             {
                 string name = $"@lbl{paramIdx++}";
                 labelParamNames.Add(name);
@@ -54,7 +55,27 @@ public static class JiraQueryBuilder
                 sb.Append($@" AND EXISTS (
             SELECT 1 FROM jira_issue_labels jil
             INNER JOIN jira_index_labels jlab ON jil.LabelId = jlab.Id
-            WHERE jil.IssueId = jira_issues.Id AND jlab.Name = {paramName})");
+            WHERE jil.IssueKey = jira_issues.Key AND jlab.Name = {paramName})");
+            }
+        }
+
+        if (request.InPersonRequesters.HasExplicitRestriction())
+        {
+            List<string> ipParamNames = [];
+            foreach (string name in request.InPersonRequesters!)
+            {
+                string paramName = $"@ip{paramIdx++}";
+                ipParamNames.Add(paramName);
+                parameters.Add(new SqliteParameter(paramName, name));
+            }
+
+            // AND semantics: every requested in-person user must be present
+            foreach (string paramName in ipParamNames)
+            {
+                sb.Append($@" AND EXISTS (
+            SELECT 1 FROM jira_issue_inpersons jip
+            INNER JOIN jira_users ju ON jip.UserId = ju.Id
+            WHERE jip.IssueKey = jira_issues.Key AND ju.DisplayName = {paramName})");
             }
         }
 
@@ -111,12 +132,12 @@ public static class JiraQueryBuilder
 
     private static void AddInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);
@@ -128,12 +149,12 @@ public static class JiraQueryBuilder
 
     private static void AddNotInClause(
         StringBuilder sb, List<SqliteParameter> parameters,
-        string column, List<string> values, ref int paramIdx)
+        string column, IReadOnlyCollection<string>? values, ref int paramIdx)
     {
-        if (values.Count == 0) return;
+        if (!values.HasExplicitRestriction()) return;
 
         List<string> names = [];
-        foreach (string v in values)
+        foreach (string v in values!)
         {
             string name = $"@p{paramIdx++}";
             names.Add(name);

@@ -11,10 +11,10 @@ public static class IngestHandler
         {
             "trigger" => await HandleTriggerAsync(request, orchestratorAddr, ct),
             "status" => await HandleStatusAsync(orchestratorAddr, ct),
-            "rebuild" => await HandleRebuildAsync(request, orchestratorAddr, ct),
-            "index" => await HandleIndexAsync(request, orchestratorAddr, ct),
+            "reingest" => await HandleReingestAsync(request, orchestratorAddr, ct),
+            "reindex" => await HandleReindexAsync(request, orchestratorAddr, ct),
             _ => throw new ArgumentException(
-                $"Unknown ingest action: {request.Action}. Valid actions: trigger, status, rebuild, index"),
+                $"Unknown ingest action: {request.Action}. Valid actions: trigger, status, reingest, reindex"),
         };
     }
 
@@ -23,7 +23,7 @@ public static class IngestHandler
         using HttpServiceClient client = new(orchestratorAddr);
         string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;
 
-        JsonElement response = await client.TriggerSyncAsync(request.Type, sources, ct);
+        JsonElement response = await client.TriggerSyncAsync(request.Type, sources, request.JiraProject, ct);
 
         List<object> statuses = [];
         if (response.TryGetProperty("statuses", out JsonElement statusesEl) && statusesEl.ValueKind == JsonValueKind.Array)
@@ -65,12 +65,12 @@ public static class IngestHandler
         return new { services = services.ToArray() };
     }
 
-    private static async Task<object> HandleRebuildAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
+    private static async Task<object> HandleReingestAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
     {
         using HttpServiceClient client = new(orchestratorAddr);
         string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;
 
-        JsonElement response = await client.TriggerSyncAsync("rebuild", sources, ct);
+        JsonElement response = await client.TriggerSyncAsync("rebuild", sources, request.JiraProject, ct);
 
         List<object> statuses = [];
         if (response.TryGetProperty("statuses", out JsonElement statusesEl) && statusesEl.ValueKind == JsonValueKind.Array)
@@ -89,7 +89,7 @@ public static class IngestHandler
         return new { statuses = statuses.ToArray() };
     }
 
-    private static async Task<object> HandleIndexAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
+    private static async Task<object> HandleReindexAsync(IngestRequest request, string orchestratorAddr, CancellationToken ct)
     {
         using HttpServiceClient client = new(orchestratorAddr);
         string? sources = request.Sources is { Length: > 0 } ? string.Join(",", request.Sources.Select(s => s.ToLowerInvariant())) : null;

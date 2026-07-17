@@ -19,17 +19,19 @@ public class ServicesController(
     private readonly ILogger _logger = loggerFactory.CreateLogger("OrchestratorHttpApi");
 
     [HttpGet("services")]
-    public async Task<IActionResult> GetServices(CancellationToken ct)
+    public IActionResult GetServices()
     {
-        await monitor.CheckAllAsync(ct);
         Dictionary<string, Health.ServiceHealthInfo> status = monitor.GetCurrentStatus();
+        DateTimeOffset? lastCheckedAt = monitor.LastCheckedAt;
 
         return Ok(new
         {
+            lastCheckedAt,
             services = status.Values.Select(s => new
             {
                 s.Name, s.Status, s.HttpAddress, s.UptimeSeconds,
                 s.Version, s.ItemCount, s.DbSizeBytes, s.LastSyncAt, s.LastError,
+                s.CheckedAt,
                 indexes = s.Indexes.Select(i => new
                 {
                     i.Name, i.Description, i.IsRebuilding,

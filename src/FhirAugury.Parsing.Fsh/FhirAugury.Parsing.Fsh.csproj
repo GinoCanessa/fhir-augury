@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
 
-  <PropertyGroup>
+	<PropertyGroup>
     <RootNamespace>FhirAugury.Parsing.Fsh</RootNamespace>
   </PropertyGroup>
 
@@ -9,7 +10,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\brianpos-fsh-processor\fsh-processor\fsh-processor.csproj" />
+    <PackageReference Include="Hl7.FhirShorthand.Serialization" Version="1.0.0-alpha.1" />
   </ItemGroup>
 
 </Project>

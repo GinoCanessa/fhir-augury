@@ -10,7 +10,7 @@ fhir-augury/
 ├── README.md                      # Project overview
 ├── LICENSE                        # MIT license
 ├── Dockerfile                     # Multi-stage Docker build
-├── docker-compose.yml             # Docker Compose (5 services, 3 profiles, 9 volumes)
+├── docker-compose.yml             # Docker Compose (6 services, 4 profiles, 10 volumes)
 ├── cache/                         # Response cache directory (gitignored)
 ├── docs/                          # Documentation
 │   ├── user/                      # User-facing documentation
@@ -19,10 +19,10 @@ fhir-augury/
 ├── src/                           # Source code
 │   ├── common.props               # Shared MSBuild properties (versioning, TFM, lang)
 │   ├── Directory.Build.props      # Auto-imports common.props
-│   └── (15 projects)
+│   └── (18 projects)
 └── tests/                         # Test code
     ├── Directory.Build.props      # Test-specific build properties
-    └── (9 test projects)
+    └── (16 test projects)
 ```
 
 ## API Contracts
@@ -36,6 +36,7 @@ used by all services for inter-service communication:
 - **`IngestionContracts`** — Ingestion trigger and status contracts
 - **`ServiceContracts`** — Service status, health, and endpoint contracts
 - **`ContentFormats`** — Content format definitions
+- **`JiraProcessingContracts`** — Jira issue summary and local-processing DTOs shared by Source.Jira, orchestrator proxies, and Processing.Jira services
 
 These contracts define the HTTP API surface that all source services implement
 and that the orchestrator uses for fan-out communication.
@@ -58,7 +59,8 @@ FhirAugury.Common/
 │                             #   DictionaryDatabase: compiled dictionary builder
 ├── Api/                      # Shared HTTP API contracts (SearchContracts,
 │                             #   ItemContracts, CrossReferenceContracts,
-│                             #   IngestionContracts, ServiceContracts, ContentFormats)
+│                             #   IngestionContracts, ServiceContracts,
+│                             #   ContentFormats, JiraProcessingContracts)
 ├── Http/                     # HTTP helpers: AtlassianAuthHandler,
 │                             #   HttpServiceLifecycle, HttpErrorMapper,
 │                             #   TransientHttpExtensions
@@ -135,7 +137,7 @@ FhirAugury.Parsing.Fhir/
 
 ### `FhirAugury.Parsing.Fsh`
 
-FSH (FHIR Shorthand) parsing library using ANTLR4 via the fsh-processor.
+FSH (FHIR Shorthand) parsing library using ANTLR4 via the Hl7.FhirShorthand.Serialization NuGet package.
 
 ```
 FhirAugury.Parsing.Fsh/
@@ -152,18 +154,122 @@ FhirAugury.Parsing.Fsh/
 └── FhirAugury.Parsing.Fsh.csproj
 ```
 
+### `FhirAugury.Processing.Common`
+
+Shared substrate for future `Processing.*` services. It provides Processing-service configuration, API contracts, lifecycle state, queue/store/handler abstractions, a concurrency-limited runner, hosted-service integration, endpoint mapping helpers, and CsLightDbGen base records for common processing columns. It does not implement a concrete Jira, preparer, or planner processor.
+
+```
+FhirAugury.Processing.Common/
+├── Api/                      # Processing status, lifecycle, and queue-stat contracts
+├── Configuration/            # ProcessingServiceOptions
+├── Database/                 # ProcessingDatabase and generated-record base columns
+├── Hosting/                  # DI, lifecycle, hosted service, endpoint mappings
+└── Queue/                    # Work-item store/handler contracts and runner
+```
+
+
+### `FhirAugury.Processing.Jira.Common`
+
+Shared Jira-specific processing layer used by future concrete `Processing.Jira.*` services. It consumes `FhirAugury.Processing.Common` for lifecycle/queue execution and adds Jira filters, source-ticket persistence, upstream discovery, agent command rendering, and the uniform `POST /processing/tickets/{key}` enqueue endpoint.
+
+```
+FhirAugury.Processing.Jira.Common/
+├── Agent/                    # Command rendering, CLI process runner, token providers
+├── Api/                      # Single-ticket enqueue endpoint contracts and mappings
+├── Configuration/            # Processing:Jira options and discovery-source enum
+├── Database/                 # SQLite source-ticket queue and lifecycle store
+├── Discovery/                # Source.Jira/orchestrator clients and sync service
+├── Filtering/                # Null/default/empty/restrict filter semantics
+├── Hosting/                  # DI registrations for concrete Jira processors
+└── Processing/               # Work-item handler that invokes the agent runner
+```
+
+### `FhirAugury.Processor.Jira.Fhir.Preparer`
+
+Concrete Jira/FHIR Processing service (HTTP :5171) that queues triaged Jira
+issues, invokes `ticket-prep`, and persists structured prepared-ticket output.
+It composes `FhirAugury.Processing.Common`, `FhirAugury.Processing.Jira.Common`,
+and its persistence project without owning common queue mechanics.
+
+To run a preparer pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
+
+### `FhirAugury.Processor.Jira.Fhir.Planner`
+
+Concrete Jira/FHIR Processing service (HTTP :5172) that queues resolved
+change-required Jira issues, invokes `ticket-plan`, and stores structured
+implementation-plan output in normalized SQLite tables.
+
+```
+FhirAugury.Processor.Jira.Fhir.Planner/
+├── Configuration/             # Planner defaults plus Processing:Planner:RepoFilters validation/rendering
+├── Database/                  # PlannerDatabase, output schema, records, ReplacementLineJson
+├── Processing/                # Planner token provider and cleanup-aware Jira ticket handler
+├── Program.cs                 # HTTP-only Processing service composition
+└── appsettings.json           # Defaults: DB path, Jira filters, port 5172
+```
+
+The planner uses the shared Processing/Jira layers for lifecycle endpoints,
+source-ticket queueing, filters, command rendering, and agent execution. It is a
+sibling of the preparer and does not depend on preparer code or records.
+
+To run a planner pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
+
+### `FhirAugury.Processor.Jira.Fhir.Applier`
+
+Concrete Jira/FHIR Processing service (HTTP :5173) that consumes completed
+plans from the Planner database and runs an agent in a per-(ticket, repo)
+git worktree to actually apply each planned change. After the agent finishes,
+the applier runs the per-repo `BuildCommand`, diffs the build output against
+a pre-built repo baseline, copies the surviving differences into a per-ticket
+output directory, and locally commits the worktree (success or failure). A
+push HTTP API (`POST /api/v1/applied-tickets/{ticketKey}/push`) lets an
+operator move successful local commits to the upstream remote on demand.
+
+```
+FhirAugury.Processor.Jira.Fhir.Applier/
+├── Configuration/             # ApplierOptions / ApplierAuthOptions / per-repo settings + Jira defaults
+├── Controllers/               # AppliedTicketsController (push API)
+├── Database/                  # ApplierDatabase, applied_* records, planner read-only DB, write store
+├── Processing/                # PlannerWorkQueue + ApplierTicketHandler (per-ticket orchestrator)
+├── Push/                      # IGitPushService / GitPushService + push-response DTOs
+├── Workspace/                 # Repo workspace lifecycle (clone, baseline, worktree, lock, diff, commit)
+├── Program.cs                 # HTTP composition + queue runner + hosted services
+└── appsettings.json           # Defaults: working dir, planner DB, repos, commit templates, port 5173
+```
+
+The applier polls the Planner database via `PlannerWorkQueue` to discover
+completed plans, queues them in its own SQLite `applied_ticket_queue_items`
+table, and processes each item via the shared
+`ProcessingHostedService<AppliedTicketQueueItemRecord>` runner. Per-(ticket,
+repo) outcomes (`Success` / `AgentFailed` / `BuildFailed` / `DiffFailed` /
+`WorktreeFailed` / `RepoNotConfigured`) live in the `applied_*` tables; the
+queue's `ProcessingStatus` reflects only transport / runtime outcome so a
+genuinely-failed agent run still completes the queue item normally.
+
+To start the applier and push applied tickets, see the
+[processors runbook](processors.md).
+
 ### `FhirAugury.Orchestrator`
 
 Central coordinator (HTTP :5150).
 
 ```
 FhirAugury.Orchestrator/
-├── Api/                      # ContentController, IngestionController, ServicesController, SourceProxyController (HTTP API)
-├── Configuration/            # Orchestrator settings, source endpoints
+├── Api/                      # ContentController, IngestionController, ServicesController, LifecycleController (HTTP API)
+├── Controllers/Proxies/      # Typed per-source proxy controllers — JiraProxyController,
+│                             #   ZulipProxyController, ConfluenceProxyController,
+│                             #   GitHubProxyController. Cover ~98 source endpoints under
+│                             #   /api/v1/{name}/...; replace the removed
+│                             #   GenericSourceProxyController.
+├── Controllers/              # OrchestratorSelfController (preserves /api/v1/source/orchestrator/...
+│                             #   for self-metadata; the only surviving "source/" route)
+├── Configuration/            # Orchestrator settings, source and Processing endpoints
 ├── Database/                 # Orchestrator SQLite DB (scan state)
-├── Health/                   # ServiceHealthMonitor (parallel checks, per-service timeouts)
+├── Health/                   # ServiceHealthMonitor (parallel source/Processing checks)
 ├── Related/                  # RelatedItemFinder (multi-signal ranking)
-├── Routing/                  # SourceHttpClient — named HTTP clients to source services
+├── Routing/                  # SourceHttpClient and ProcessingHttpClient named clients
 ├── Search/                   # FreshnessDecay, ScoreNormalizer
 ├── Workers/                  # HealthCheckWorker, SourceReconnectionWorker
 ├── Program.cs                # Kestrel HTTP server, DI registration
@@ -173,11 +279,20 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing 16 tool implementations in 4 tool classes.
+Shared MCP library containing tool implementations across 23 tool classes
+(2 cross-source — `UnifiedTools`, `ContentTools` — plus source-scoped
+families that mirror the typed orchestrator proxies one-for-one:
+`JiraItemsTools`, `JiraDimensionTools`, `JiraWorkGroupTools`,
+`JiraProjectTools`, `JiraLocalProcessingTools`, `JiraSpecsTools`,
+`JiraBalDefTools`, `JiraBallotTools`, `JiraPssTools`, `ZulipItemsTools`,
+`ZulipMessagesTools`, `ZulipStreamsTools`, `ZulipThreadsTools`,
+`ConfluenceItemsTools`, `ConfluencePagesTools`, `GitHubItemsTools`,
+`GitHubReposTools`, `FhirTools`, `WorkGroupTools`; the legacy umbrella
+`JiraTools` class remains for backwards-compatible cross-source helpers).
 
 ```
 FhirAugury.McpShared/
-├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs, ZulipTools.cs
+├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs
 ├── McpHttpRegistration.cs    # Shared DI registration for MCP HTTP clients
 └── FhirAugury.McpShared.csproj
 ```
@@ -209,7 +324,16 @@ FhirAugury.McpHttp/
 
 ### `FhirAugury.Cli`
 
-Command-line interface (13 commands via JSON-in/JSON-out, HTTP to orchestrator).
+Command-line interface (JSON-in/JSON-out, HTTP to orchestrator). Each
+handler under `Dispatch/Handlers/` corresponds 1:1 to one logical command;
+the source-scoped families (`JiraItemsHandler`, `JiraDimensionHandler`,
+`JiraWorkGroupHandler`, `JiraProjectHandler`, `JiraLocalProcessingHandler`,
+`JiraSpecsHandler`, `ZulipItemsHandler`, `ZulipMessagesHandler`,
+`ZulipStreamsHandler`, `ZulipThreadsHandler`, `ConfluenceItemsHandler`,
+`ConfluencePagesHandler`, `GitHubItemsHandler`, `GitHubReposHandler`)
+mirror the typed orchestrator proxies. The `ingest` handler exposes the
+`reingest` and `reindex` actions (renamed from `rebuild` and `index`
+respectively; no aliases).
 
 ```
 FhirAugury.Cli/
@@ -261,8 +385,8 @@ Key capabilities:
 ### `FhirAugury.AppHost`
 
 [.NET Aspire](https://learn.microsoft.com/en-us/dotnet/aspire/) distributed
-application host. Orchestrates all eight projects for local development with an
-integrated dashboard. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`
+application host. Orchestrates source services, Processing services, and developer
+tools for local development with an integrated dashboard. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart()`
 and must be started manually from the dashboard.
 
 ```
@@ -293,6 +417,9 @@ also wait for Jira. Confluence, Dev UI, MCP HTTP, and CLI use `WithExplicitStart
 | `FhirAugury.McpShared.Tests` | MCP shared library: tool functions (xUnit + NSubstitute) |
 | `FhirAugury.Parsing.Fhir.Tests` | FHIR resource parsing: StructureDefinitions, canonical artifacts |
 | `FhirAugury.Parsing.Fsh.Tests` | FSH parsing: definitions, sushi-config, canonical URL construction |
+| `FhirAugury.Processor.Jira.Fhir.Preparer.Tests` | Preparer service: persistence, handler, API, smoke tests |
+| `FhirAugury.Processor.Jira.Fhir.Planner.Tests` | Planner service: options, schema, handler, ticket-plan DB contract |
+| `FhirAugury.Processor.Jira.Fhir.Applier.Tests` | Applier service: schema, planner-discovery store, workspace lifecycle, output diff, commit, handler, push |
 
 ## Build Configuration
 

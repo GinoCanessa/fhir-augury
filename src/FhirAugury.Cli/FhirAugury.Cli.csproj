@@ -1,16 +1,44 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\common.props" />
+	<Import Project="..\sqlite.props" />
 
-  <PropertyGroup>
+	<PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>FhirAugury.Cli</RootNamespace>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>fhir-augury</ToolCommandName>
-    <PackageId>FhirAugury.Cli</PackageId>
-    <Description>FHIR Augury — unified knowledge platform CLI for searching HL7 FHIR community data sources via HTTP.</Description>
+
+	  <!-- .NET tool metadata -->
+	  <IsPackable>true</IsPackable>
+	  <PackAsTool>true</PackAsTool>
+	  <ToolCommandName>fhir-augury-cli</ToolCommandName>
+	  <PackageId>fhir-augury-cli</PackageId>
+	  <Description>FHIR Augury — unified knowledge platform CLI for searching HL7 FHIR community data sources via HTTP.</Description>
+	  <Authors>Gino Canessa</Authors>
+	  <Title>fhir-augury-cli</Title>
+	  <PackageOutputPath>..\..\nupkg</PackageOutputPath>
+	  <PackageReadmeFile>README.md</PackageReadmeFile>
+	  <DebugSymbols>true</DebugSymbols>
+	  <IncludeSymbols>true</IncludeSymbols>
+	  <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+	  <Deterministic>true</Deterministic>
+	  <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
 </Project>
+

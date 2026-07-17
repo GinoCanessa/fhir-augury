@@ -1,10 +1,12 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Hosting;
 using FhirAugury.Common.Http;
 using FhirAugury.Common.Indexing;
 using FhirAugury.Common.Ingestion;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Indexing;
 using FhirAugury.Source.Confluence.Ingestion;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Source.Confluence.Controllers;
@@ -18,7 +20,8 @@ public class IngestionController(
     ConfluenceIndexer indexer,
     ConfluenceXRefRebuilder xrefRebuilder,
     ConfluenceLinkRebuilder linkRebuilder,
-    IIndexTracker indexTracker) : ControllerBase
+    IIndexTracker indexTracker,
+    IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpPost("ingest")]
     public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, CancellationToken cancellationToken)
@@ -84,9 +87,31 @@ public class IngestionController(
         return Ok(new RebuildIndexResponse(true, $"queued {indexType} index rebuild", null, null));
     }
 
+    /// <summary>
+    /// Acknowledges an ingestion-completion notification from a peer source so
+    /// this service can rebuild its Confluence-side cross-references.
+    /// </summary>
+    /// <remarks>
+    /// Counterpart to the orchestrator-side
+    /// <c>POST api/v1/notify-ingestion</c> endpoint
+    /// (<c>FhirAugury.Orchestrator.Controllers.IngestionController.NotifyIngestion</c>).
+    /// The orchestrator fans completion notifications from one source out to
+    /// every other source via this endpoint.
+    /// </remarks>
     [HttpPost("notify-peer")]
+    [Tags("ingestion-notifications")]
     public IActionResult NotifyPeer([FromBody] PeerIngestionNotification notification)
     {
+        // Skip while the startup rebuild is still running. The startup rebuild ends with
+        // a full xref rebuild, so any peer notification arriving during startup is redundant.
+        // Enqueueing here would race with startup writes and surface as SQLITE_BUSY
+        // ("database is locked") because startup work runs outside the IngestionWorkQueue.
+        if (startupRebuild is not null &&
+            startupRebuild.State is StartupRebuildState.Pending or StartupRebuildState.Running)
+        {
+            return Ok(new PeerIngestionAck(Acknowledged: true));
+        }
+
         workQueue.Enqueue(ct =>
         {
             xrefRebuilder.RebuildAll(ct);

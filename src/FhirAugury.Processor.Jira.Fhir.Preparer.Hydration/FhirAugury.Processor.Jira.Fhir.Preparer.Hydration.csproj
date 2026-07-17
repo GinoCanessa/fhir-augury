@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processor.Jira.Fhir.Preparer.Hydration</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Hydration.Common\FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer" />
+    <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite.Tests" />
+  </ItemGroup>
+</Project>

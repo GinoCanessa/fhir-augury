@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace FhirAugury.Common.Api;
 
 /// <summary>Ingestion status for a single source service.</summary>
@@ -10,7 +12,14 @@ public record IngestionStatusResponse(
     string? LastError,
     string? SyncSchedule,
     List<IndexStatusInfo> Indexes,
-    List<string>? SupportedIndexTypes = null);
+    List<string>? SupportedIndexTypes = null)
+{
+    /// <summary>
+    /// Source-specific additional data. Used by individual sources to provide
+    /// extended status information (e.g., per-project sync state for Jira).
+    /// </summary>
+    public Dictionary<string, JsonElement>? AdditionalData { get; init; }
+};
 
 /// <summary>Status of a single index within a source service.</summary>
 public record IndexStatusInfo(
