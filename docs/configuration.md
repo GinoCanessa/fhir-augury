@@ -302,7 +302,11 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00"
+      "ProcessTimeout": "00:05:00",
+      "MaxConcurrentProcesses": 1,
+      "BackfillLimit": 5000,
+      "BackfillCheckpointInterval": 250,
+      "BackfillMaxRepairPasses": 3
     },
     "Auth": {
       "Token": null,
@@ -375,6 +379,10 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `GhCli.Limit` | int | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | string? | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | TimeSpan | `00:05:00` | Timeout for gh CLI processes |
+| `GhCli.MaxConcurrentProcesses` | int | `1` | Maximum concurrent `gh` processes. Default `1` prevents CLI state-file contention and rate-limit pressure |
+| `GhCli.BackfillLimit` | int | `5000` | Maximum items per `gh` list command during a per-repo history backfill. A phase whose returned count *equals* this value is treated as truncated and left incomplete (with a warning) rather than marked done |
+| `GhCli.BackfillCheckpointInterval` | int | `250` | Items processed between durable backfill checkpoint writes. A hard kill loses at most one interval; the graceful path always checkpoints on exit |
+| `GhCli.BackfillMaxRepairPasses` | int | `3` | Consecutive resume passes that may fail to shrink the pending-retry set before the repo is marked complete anyway, with a warning naming the abandoned items |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
 | `CachePath` | string | `./cache` | File-system cache directory |

@@ -163,12 +163,16 @@ GitHub REST API directly).
 
 The GitHub source also supports additional settings covered in full by the
 canonical reference: the `GhCli` provider options (`ExecutablePath`, `Limit`,
-`Hostname`, `ProcessTimeout`), the complete set of repository category lists
+`Hostname`, `ProcessTimeout`, `MaxConcurrentProcesses`, and the history-backfill
+controls `BackfillLimit`, `BackfillCheckpointInterval` and
+`BackfillMaxRepairPasses`), the complete set of repository category lists
 (`FhirCoreRepositories`, `UtgRepositories`, `FhirExtensionsPackRepositories`,
 `IncubatorRepositories`, `IgRepositories`, `ManualLinks`), and the
 `FileContentIndexing` controls. See the
 [Configuration Reference](../configuration.md#github-source-service) for the
-complete tables and defaults.
+complete tables and defaults, and
+[Data Sources](../technical/data-sources.md#history-backfill) for how the
+backfill resumes after an interrupted run.
 
 ---
 
