@@ -20,6 +20,7 @@ public class GitHubRestProvider(
     IHttpClientFactory httpClientFactory,
     GitHubDatabase database,
     IResponseCache cache,
+    GitHubBackfillCheckpointStore checkpointStore,
     ILogger<GitHubRestProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
@@ -49,10 +50,36 @@ public class GitHubRestProvider(
     /// comment-provenance PR↔ticket edges are thinner. The active provider is
     /// gh-cli; REST backfill is a documented fallback, not parity.
     /// </summary>
-    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    /// <remarks>
+    /// This path is not resumable — <paramref name="resumeFrom"/> is accepted for interface
+    /// parity and ignored. It still owns its terminal state, writing the completion marker
+    /// per repo only when that repo was neither cancelled nor errored.
+    /// </remarks>
+    public async Task<IngestionResult> DownloadBackfillAsync(
+        string? repoFilter = null,
+        GitHubBackfillCursor? resumeFrom = null,
+        CancellationToken ct = default)
     {
         List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
-        return await DownloadReposAsync(repos, since: null, ct);
+
+        if (resumeFrom is not null)
+        {
+            logger.LogDebug(
+                "REST backfill is not resumable; ignoring cursor and refetching {Count} repo(s) in full",
+                repos.Count);
+        }
+
+        IngestionResult result = await DownloadReposAsync(repos, since: null, ct);
+
+        if (!result.Canceled && result.Errors.Count == 0)
+        {
+            foreach (string repo in repos)
+            {
+                checkpointStore.MarkComplete(repo, result.ItemsProcessed);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Loads all issues from cached API responses (no network).</summary>

@@ -24,9 +24,13 @@ public class GitHubCliProvider(
     GhCliRunner runner,
     GitHubDatabase database,
     IResponseCache cache,
+    GitHubBackfillCheckpointStore checkpointStore,
     ILogger<GitHubCliProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
+
+    /// <summary>Hard ceiling on the pending-retry set, so a pathological run cannot bloat the cursor.</summary>
+    internal const int MaxPendingRetry = 1000;
 
     // Fields requested from gh issue list
     internal const string IssueListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,url";
@@ -61,10 +65,13 @@ public class GitHubCliProvider(
     }
 
     /// <inheritdoc />
-    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    public async Task<IngestionResult> DownloadBackfillAsync(
+        string? repoFilter = null,
+        GitHubBackfillCursor? resumeFrom = null,
+        CancellationToken ct = default)
     {
         List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
-        return await DownloadReposBackfillAsync(repos, ct);
+        return await DownloadReposBackfillAsync(repos, resumeFrom, ct);
     }
 
     /// <inheritdoc />
@@ -230,26 +237,35 @@ public class GitHubCliProvider(
         List<string> repos, DateTimeOffset since, CancellationToken ct)
     {
         string sinceStr = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        return DownloadReposListAsync(repos, _options.GhCli.Limit, $"updated:>={sinceStr}", ct);
+        return DownloadReposListAsync(
+            repos, _options.GhCli.Limit, $"updated:>={sinceStr}", resumeFrom: null, isBackfill: false, ct);
     }
 
-    private Task<IngestionResult> DownloadReposBackfillAsync(List<string> repos, CancellationToken ct)
+    private Task<IngestionResult> DownloadReposBackfillAsync(
+        List<string> repos, GitHubBackfillCursor? resumeFrom, CancellationToken ct)
     {
         // No search filter ⇒ full PR/issue history (drops the updated:>= bound).
-        return DownloadReposListAsync(repos, _options.GhCli.BackfillLimit, searchFilter: null, ct);
+        return DownloadReposListAsync(
+            repos, _options.GhCli.BackfillLimit, searchFilter: null, resumeFrom, isBackfill: true, ct);
     }
 
     /// <summary>
-    /// Shared <c>gh issue list</c> / <c>gh pr list</c> fetch body. The only
-    /// difference between the incremental and backfill paths is
-    /// <paramref name="searchFilter"/> (a <c>updated:&gt;=</c> bound vs. none) and
-    /// the <paramref name="limit"/>.
+    /// Shared <c>gh issue list</c> / <c>gh pr list</c> fetch body. The incremental path
+    /// passes a <c>updated:&gt;=</c> bound and no cursor; the backfill path passes no filter,
+    /// the larger limit, and (on a resume) a <see cref="GitHubBackfillCursor"/> whose
+    /// watermark lets already-completed items skip their detail fetch.
     /// </summary>
+    /// <remarks>
+    /// Under <paramref name="isBackfill"/> this method owns terminal state: it writes the
+    /// <c>backfill:&lt;repo&gt;</c> marker only when both phases enumerated to exhaustion with
+    /// nothing left to repair, and otherwise checkpoints progress for the next pass.
+    /// </remarks>
     private async Task<IngestionResult> DownloadReposListAsync(
-        List<string> repos, int limit, string? searchFilter, CancellationToken ct)
+        List<string> repos, int limit, string? searchFilter,
+        GitHubBackfillCursor? resumeFrom, bool isBackfill, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
+        ListCounters counters = new ListCounters();
         List<string> errors = [];
 
         using SqliteConnection connection = database.OpenConnection();
@@ -259,6 +275,10 @@ public class GitHubCliProvider(
         foreach (string repoFullName in repos)
         {
             if (ct.IsCancellationRequested) { canceled = true; break; }
+
+            RepoBackfillState state = new RepoBackfillState(isBackfill ? resumeFrom : null);
+            int incomingPendingCount = state.PendingRetry.Count;
+            bool repoCanceled = false;
 
             try
             {
@@ -276,35 +296,16 @@ public class GitHubCliProvider(
                 if (!hasIssues)
                 {
                     logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                    state.IssuesPhaseComplete = true;
                 }
                 else
                 {
                     string issueArgs = BuildListArgs("issue list", repoArgs, limit, searchFilter, IssueListFields);
                     try
                     {
-                        await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
-                        {
-                            ct.ThrowIfCancellationRequested();
-
-                            (ProcessOutcome outcome, string? error) = ProcessCliIssue(json, repoFullName, connection);
-                            itemsProcessed++;
-
-                            switch (outcome)
-                            {
-                                case ProcessOutcome.New: itemsNew++; break;
-                                case ProcessOutcome.Updated: itemsUpdated++; break;
-                                case ProcessOutcome.Failed:
-                                    itemsFailed++;
-                                    if (error is not null) errors.Add(error);
-                                    break;
-                            }
-
-                            if (outcome != ProcessOutcome.Failed)
-                            {
-                                int issueNumber = json.GetProperty("number").GetInt32();
-                                await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr: false, ct, errors);
-                            }
-                        }
+                        await RunListPhaseAsync(
+                            connection, repoFullName, issueArgs, isPr: false, limit,
+                            state, counters, errors, isBackfill, ct);
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
                     {
@@ -313,6 +314,7 @@ public class GitHubCliProvider(
                     catch (Exception ex) when (ex.Message.Contains("has disabled issues", StringComparison.OrdinalIgnoreCase))
                     {
                         logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                        state.IssuesPhaseComplete = true;
                     }
                     catch (Exception ex)
                     {
@@ -325,29 +327,9 @@ public class GitHubCliProvider(
                 string prArgs = BuildListArgs("pr list", repoArgs, limit, searchFilter, PrListFields);
                 try
                 {
-                    await foreach (JsonElement json in runner.StreamArrayAsync(prArgs, ct))
-                    {
-                        ct.ThrowIfCancellationRequested();
-
-                        (ProcessOutcome outcome, string? error) = ProcessCliPr(json, repoFullName, connection);
-                        itemsProcessed++;
-
-                        switch (outcome)
-                        {
-                            case ProcessOutcome.New: itemsNew++; break;
-                            case ProcessOutcome.Updated: itemsUpdated++; break;
-                            case ProcessOutcome.Failed:
-                                itemsFailed++;
-                                if (error is not null) errors.Add(error);
-                                break;
-                        }
-
-                        if (outcome != ProcessOutcome.Failed)
-                        {
-                            int prNumber = json.GetProperty("number").GetInt32();
-                            await FetchCommentsAsync(connection, repoFullName, prNumber, isPr: true, ct, errors);
-                        }
-                    }
+                    await RunListPhaseAsync(
+                        connection, repoFullName, prArgs, isPr: true, limit,
+                        state, counters, errors, isBackfill, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -362,26 +344,300 @@ public class GitHubCliProvider(
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 canceled = true;
-                break;
+                repoCanceled = true;
             }
+            finally
+            {
+                if (isBackfill)
+                {
+                    FinalizeRepoBackfill(
+                        repoFullName, state, counters, errors, incomingPendingCount, repoCanceled);
+                }
+            }
+
+            if (canceled) break;
         }
 
         if (canceled)
         {
             logger.LogInformation(
                 "List download canceled after {Processed} item(s): {New} new, {Updated} updated, {Failed} failed",
-                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+                counters.Processed, counters.New, counters.Updated, counters.Failed);
         }
         else
         {
             logger.LogInformation(
                 "List download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+                counters.Processed, counters.New, counters.Updated, counters.Failed);
         }
 
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        return new IngestionResult(
+            counters.Processed, counters.New, counters.Updated, counters.Failed, errors, startedAt)
         {
             Canceled = canceled,
+        };
+    }
+
+    /// <summary>
+    /// Runs one list phase (issues or PRs) for a single repo, descending by item number so a
+    /// single watermark describes everything already done.
+    /// </summary>
+    private async Task RunListPhaseAsync(
+        SqliteConnection connection, string repoFullName, string args, bool isPr, int limit,
+        RepoBackfillState state, ListCounters counters, List<string> errors,
+        bool isBackfill, CancellationToken ct)
+    {
+        int? watermark = isPr ? state.PrsCompletedAbove : state.IssuesCompletedAbove;
+        bool phaseAlreadyComplete = isPr ? state.PrsPhaseComplete : state.IssuesPhaseComplete;
+
+        // A finished phase with nothing to repair needs no list fetch at all. When repairs are
+        // outstanding the list is still cheap (one point) and is the only way to learn which
+        // side of the issue/PR split each pending number falls on.
+        if (isBackfill && phaseAlreadyComplete && state.PendingRetry.Count == 0)
+        {
+            logger.LogInformation(
+                "Skipping {Phase} phase for {Repo}: already complete with no pending retries",
+                isPr ? "PR" : "issue", repoFullName);
+            return;
+        }
+
+        List<JsonElement> items = [];
+        await foreach (JsonElement json in runner.StreamArrayAsync(args, ct))
+        {
+            ct.ThrowIfCancellationRequested();
+            items.Add(json);
+        }
+
+        // Enforce the descending invariant in our own code rather than inheriting gh's
+        // default ordering, which the watermark would otherwise silently depend on.
+        items.Sort((a, b) => b.GetProperty("number").GetInt32()
+            .CompareTo(a.GetProperty("number").GetInt32()));
+
+        if (isBackfill && (watermark is not null || state.PendingRetry.Count > 0))
+        {
+            logger.LogInformation(
+                "Resuming backfill for {Repo}: first item #{First}, watermark #{Watermark}, {PendingCount} pending retry",
+                repoFullName,
+                items.Count > 0 ? items[0].GetProperty("number").GetInt32() : 0,
+                watermark,
+                state.PendingRetry.Count);
+        }
+
+        int? lastCompleted = null;
+        int sinceCheckpoint = 0;
+        bool ranToExhaustion = false;
+
+        try
+        {
+            foreach (JsonElement json in items)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                // The list row is upserted unconditionally — the JSON is already in hand, so
+                // re-applying it costs nothing and keeps metadata fresh on a resume.
+                (ProcessOutcome outcome, string? error) = isPr
+                    ? ProcessCliPr(json, repoFullName, connection)
+                    : ProcessCliIssue(json, repoFullName, connection);
+
+                counters.Processed++;
+
+                switch (outcome)
+                {
+                    case ProcessOutcome.New: counters.New++; break;
+                    case ProcessOutcome.Updated: counters.Updated++; break;
+                    case ProcessOutcome.Failed:
+                        counters.Failed++;
+                        if (error is not null) errors.Add(error);
+                        break;
+                }
+
+                int number = json.GetProperty("number").GetInt32();
+
+                if (outcome == ProcessOutcome.Failed)
+                {
+                    if (isBackfill) state.AddPendingRetry(number);
+                    continue;
+                }
+
+                bool alreadyDone = watermark is int w
+                    && number >= w
+                    && !state.PendingRetry.Contains(number);
+
+                if (isBackfill && alreadyDone)
+                {
+                    // Traversing the already-completed prefix: no detail fetch, and no
+                    // watermark update, so the existing watermark cannot regress.
+                    continue;
+                }
+
+                int errorsBefore = errors.Count;
+                await FetchCommentsAsync(connection, repoFullName, number, isPr, ct, errors);
+
+                if (!isBackfill) continue;
+
+                if (errors.Count > errorsBefore)
+                {
+                    state.AddPendingRetry(number);
+                }
+                else
+                {
+                    state.PendingRetry.Remove(number);
+
+                    // Advance only past items whose detail work returned clean, and never
+                    // once the retry set has overflowed — beyond that point failures can no
+                    // longer be recorded, so nothing below may be claimed as done.
+                    if (!state.PendingOverflowed)
+                        lastCompleted = number;
+                }
+
+                if (++sinceCheckpoint >= Math.Max(1, _options.GhCli.BackfillCheckpointInterval))
+                {
+                    sinceCheckpoint = 0;
+                    CommitWatermark(state, isPr, lastCompleted, watermark);
+                    checkpointStore.WriteCheckpoint(
+                        repoFullName, state.ToCursor(), counters.Processed,
+                        errors.Count > 0 ? errors[^1] : null);
+                }
+            }
+
+            ranToExhaustion = true;
+        }
+        finally
+        {
+            // In a finally so an interrupted item is never counted as done and a cancelled
+            // pass still persists everything that genuinely completed.
+            if (isBackfill)
+            {
+                CommitWatermark(state, isPr, lastCompleted, watermark);
+
+                bool truncated = items.Count >= limit;
+                if (truncated)
+                {
+                    logger.LogWarning(
+                        "{Phase} list for {Repo} returned {Count} item(s), equal to GhCli.BackfillLimit — " +
+                        "the list was truncated and older items are unreachable; phase left incomplete. " +
+                        "Raise GhCli.BackfillLimit to close the gap",
+                        isPr ? "PR" : "Issue", repoFullName, items.Count);
+                }
+
+                bool complete = ranToExhaustion && !ct.IsCancellationRequested && !truncated;
+
+                if (isPr) state.PrsPhaseComplete = complete;
+                else state.IssuesPhaseComplete = complete;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Folds this pass's lowest cleanly-completed item into the phase watermark. Uses
+    /// <see cref="Math.Min(int, int)"/> so the watermark only ever descends, which keeps it
+    /// correct while traversing an already-completed prefix.
+    /// </summary>
+    private static void CommitWatermark(RepoBackfillState state, bool isPr, int? lastCompleted, int? existing)
+    {
+        if (lastCompleted is not int completed) return;
+
+        int value = Math.Min(completed, existing ?? int.MaxValue);
+
+        if (isPr) state.PrsCompletedAbove = value;
+        else state.IssuesCompletedAbove = value;
+    }
+
+    /// <summary>
+    /// Writes the repo's terminal marker or its resume checkpoint, applying the stall valve
+    /// that stops a permanently unfetchable item from recreating a backfill that never ends.
+    /// </summary>
+    private void FinalizeRepoBackfill(
+        string repoFullName, RepoBackfillState state, ListCounters counters,
+        List<string> errors, int incomingPendingCount, bool repoCanceled)
+    {
+        GitHubBackfillCursor cursor = state.ToCursor();
+
+        if (!repoCanceled && cursor.IsComplete)
+        {
+            checkpointStore.MarkComplete(repoFullName, counters.Processed);
+            return;
+        }
+
+        if (!repoCanceled &&
+            cursor.PendingRetry.Length > 0 &&
+            cursor.IssuesPhaseComplete &&
+            cursor.PrsPhaseComplete &&
+            cursor.PendingRetry.Length >= incomingPendingCount)
+        {
+            state.StalledRepairPasses++;
+            cursor = state.ToCursor();
+
+            if (state.StalledRepairPasses >= Math.Max(1, _options.GhCli.BackfillMaxRepairPasses))
+            {
+                logger.LogWarning(
+                    "Backfill for {Repo} stalled after {Passes} repair pass(es); marking complete and " +
+                    "abandoning {Count} unfetchable item(s): {Numbers}",
+                    repoFullName, state.StalledRepairPasses, cursor.PendingRetry.Length,
+                    string.Join(", ", cursor.PendingRetry.Take(50)));
+
+                checkpointStore.MarkComplete(repoFullName, counters.Processed);
+                return;
+            }
+        }
+
+        checkpointStore.WriteCheckpoint(
+            repoFullName, cursor, counters.Processed, errors.Count > 0 ? errors[^1] : null);
+    }
+
+    /// <summary>Mutable per-repo counters, shared across both list phases.</summary>
+    private sealed class ListCounters
+    {
+        public int Processed;
+        public int New;
+        public int Updated;
+        public int Failed;
+    }
+
+    /// <summary>Mutable working copy of a <see cref="GitHubBackfillCursor"/> for one repo.</summary>
+    private sealed class RepoBackfillState
+    {
+        public RepoBackfillState(GitHubBackfillCursor? resumeFrom)
+        {
+            IssuesCompletedAbove = resumeFrom?.IssuesCompletedAbove;
+            PrsCompletedAbove = resumeFrom?.PrsCompletedAbove;
+            IssuesPhaseComplete = resumeFrom?.IssuesPhaseComplete ?? false;
+            PrsPhaseComplete = resumeFrom?.PrsPhaseComplete ?? false;
+            StalledRepairPasses = resumeFrom?.StalledRepairPasses ?? 0;
+            PendingRetry = new SortedSet<int>(resumeFrom?.PendingRetry ?? []);
+        }
+
+        public int? IssuesCompletedAbove;
+        public int? PrsCompletedAbove;
+        public bool IssuesPhaseComplete;
+        public bool PrsPhaseComplete;
+        public int StalledRepairPasses;
+        public readonly SortedSet<int> PendingRetry;
+
+        /// <summary>True once the retry set hit its cap and a failure could not be recorded.</summary>
+        public bool PendingOverflowed { get; private set; }
+
+        public void AddPendingRetry(int number)
+        {
+            if (PendingRetry.Contains(number)) return;
+
+            if (PendingRetry.Count >= MaxPendingRetry)
+            {
+                PendingOverflowed = true;
+                return;
+            }
+
+            PendingRetry.Add(number);
+        }
+
+        public GitHubBackfillCursor ToCursor() => new GitHubBackfillCursor
+        {
+            IssuesCompletedAbove = IssuesCompletedAbove,
+            PrsCompletedAbove = PrsCompletedAbove,
+            IssuesPhaseComplete = IssuesPhaseComplete,
+            PrsPhaseComplete = PrsPhaseComplete,
+            PendingRetry = [.. PendingRetry],
+            StalledRepairPasses = StalledRepairPasses,
         };
     }
 

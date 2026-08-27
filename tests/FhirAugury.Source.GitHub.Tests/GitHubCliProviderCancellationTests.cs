@@ -42,12 +42,25 @@ internal sealed class FakeGhCliRunner : GhCliRunner
     /// <summary>1-based detail-call ordinal that throws an ordinary (non-cancellation) error.</summary>
     public int ThrowAtDetailCall { get; set; }
 
+    /// <summary>Item numbers whose detail fetch throws an ordinary (non-cancellation) error.</summary>
+    public HashSet<int> FailDetailForNumbers { get; set; } = [];
+
+    /// <summary>Item numbers whose detail fetch was requested, in call order.</summary>
+    public List<int> DetailNumbersInOrder { get; } = [];
+
     /// <summary>Detail-fetch invocations observed so far (repo metadata excluded).</summary>
     public int DetailCallCount { get; private set; }
 
     /// <summary>Counts invocations whose argument string starts with the given prefix.</summary>
     public int CountInvocations(string prefix) =>
         _invocations.Count(a => a.StartsWith(prefix, StringComparison.Ordinal));
+
+    /// <summary>Extracts the item number from a <c>{issue|pr} view {number} ...</c> argument string.</summary>
+    private static int ParseItemNumber(string arguments)
+    {
+        string[] parts = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 3 && int.TryParse(parts[2], out int number) ? number : 0;
+    }
 
     public override Task<JsonDocument> RunAsync(string arguments, CancellationToken ct)
     {
@@ -59,7 +72,13 @@ internal sealed class FakeGhCliRunner : GhCliRunner
         // Everything else on this path is a per-item detail fetch.
         DetailCallCount++;
 
+        int number = ParseItemNumber(arguments);
+        DetailNumbersInOrder.Add(number);
+
         if (ThrowAtDetailCall > 0 && DetailCallCount == ThrowAtDetailCall)
+            throw new InvalidOperationException("gh command failed (exit 1): synthetic failure");
+
+        if (FailDetailForNumbers.Contains(number))
             throw new InvalidOperationException("gh command failed (exit 1): synthetic failure");
 
         if (CancelOnDetailCall is not null && CancelAtDetailCall > 0 && DetailCallCount >= CancelAtDetailCall)
@@ -199,6 +218,7 @@ public class GitHubCliProviderCancellationTests : IDisposable
             runner,
             _db,
             cache: null!,
+            new GitHubBackfillCheckpointStore(_db, NullLogger<GitHubBackfillCheckpointStore>.Instance),
             NullLogger<GitHubCliProvider>.Instance);
     }
 
@@ -216,7 +236,7 @@ public class GitHubCliProviderCancellationTests : IDisposable
         };
 
         GitHubCliProvider provider = CreateProvider(runner);
-        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", cts.Token);
+        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, cts.Token);
 
         Assert.True(
             runner.DetailCallCount <= 4,
@@ -238,7 +258,7 @@ public class GitHubCliProviderCancellationTests : IDisposable
         };
 
         GitHubCliProvider provider = CreateProvider(runner);
-        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", cts.Token);
+        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, cts.Token);
 
         Assert.True(result.Canceled);
         Assert.DoesNotContain(result.Errors, e => e.Contains("cancel", StringComparison.OrdinalIgnoreCase));
@@ -255,11 +275,197 @@ public class GitHubCliProviderCancellationTests : IDisposable
         };
 
         GitHubCliProvider provider = CreateProvider(runner);
-        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", CancellationToken.None);
+        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
 
         Assert.False(result.Canceled);
         Assert.Equal(5, result.ItemsProcessed);
         Assert.Single(result.Errors);
         Assert.Contains("synthetic failure", result.Errors[0]);
+    }
+
+    // ── Phase 4: resume, watermark, and terminal-state ownership ─────────
+
+    private GitHubBackfillCheckpointStore CreateStore() =>
+        new GitHubBackfillCheckpointStore(_db, NullLogger<GitHubBackfillCheckpointStore>.Instance);
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WithResumeCursor_SkipsDetailFetchAboveWatermark()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+            PrNumbers = [],
+        };
+
+        GitHubBackfillCursor cursor = new GitHubBackfillCursor { IssuesCompletedAbove = 6 };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", cursor, CancellationToken.None);
+
+        // Items 10..6 are above the watermark and must skip their detail fetch; 5..1 must not.
+        Assert.Equal(5, runner.DetailCallCount);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WithPendingRetry_ReattemptsThoseItemsAboveWatermark()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+            PrNumbers = [],
+        };
+
+        GitHubBackfillCursor cursor = new GitHubBackfillCursor
+        {
+            IssuesCompletedAbove = 6,
+            PendingRetry = [9, 7],
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", cursor, CancellationToken.None);
+
+        // 5 below the watermark, plus the two re-attempted pending items.
+        Assert.Equal(7, runner.DetailCallCount);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WhenItemFails_DoesNotAdvanceWatermarkPastIt_AndRecordsPendingRetry()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [5, 4, 3, 2, 1],
+            PrNumbers = [],
+            ThrowAtDetailCall = 3, // item #3
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        GitHubBackfillCursor? cursor = CreateStore().ReadCursor("HL7/fhir");
+
+        Assert.NotNull(cursor);
+        Assert.Contains(3, cursor!.PendingRetry);
+        // The walk continued below #3, but #3 itself stays in the retry set so the
+        // watermark's "everything above is done, except PendingRetry" invariant holds.
+        Assert.Equal(1, cursor.IssuesCompletedAbove);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WhenCanceledMidItem_ExcludesThatItemFromWatermark()
+    {
+        using CancellationTokenSource cts = new CancellationTokenSource();
+
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+            PrNumbers = [],
+            CancelOnDetailCall = cts,
+            CancelAtDetailCall = 4, // item #7
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, cts.Token);
+
+        Assert.True(result.Canceled);
+
+        GitHubBackfillCursor? cursor = CreateStore().ReadCursor("HL7/fhir");
+        Assert.NotNull(cursor);
+        // #10, #9 and #8 completed; the interrupted #7 must not be inside the watermark.
+        Assert.Equal(8, cursor!.IssuesCompletedAbove);
+        Assert.False(cursor.IssuesPhaseComplete);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_SortsDescending_WhenRunnerReturnsAscending()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [1, 2, 3, 4, 5], // deliberately ascending
+            PrNumbers = [],
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        // The watermark invariant depends on a descending walk, so the provider must sort
+        // rather than inherit gh's ordering.
+        Assert.Equal([5, 4, 3, 2, 1], runner.DetailNumbersInOrder);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WhenCountEqualsBackfillLimit_DoesNotMarkPhaseComplete()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [3, 2, 1],
+            PrNumbers = [],
+        };
+
+        GitHubServiceOptions options = new()
+        {
+            SyncSchedule = "01:00:00",
+            FhirCoreRepositories = ["HL7/fhir"],
+            UtgRepositories = [],
+            FhirExtensionsPackRepositories = [],
+            GhCli = new GhCliConfiguration { BackfillLimit = 3 },
+        };
+
+        GitHubCliProvider provider = new GitHubCliProvider(
+            Options.Create(options), runner, _db, cache: null!, CreateStore(),
+            NullLogger<GitHubCliProvider>.Instance);
+
+        await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        GitHubBackfillCursor? cursor = CreateStore().ReadCursor("HL7/fhir");
+
+        Assert.NotNull(cursor);
+        Assert.False(cursor!.IssuesPhaseComplete);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_TraversingSkippedPrefix_DoesNotRegressWatermark()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [10, 9, 8, 7, 6],
+            PrNumbers = [200],
+            // Keeps the repo incomplete so the progress row survives to be asserted on.
+            FailDetailForNumbers = [200],
+        };
+
+        // Only #9 is outstanding; everything at or above #6 is otherwise done.
+        GitHubBackfillCursor cursor = new GitHubBackfillCursor
+        {
+            IssuesCompletedAbove = 6,
+            PendingRetry = [9],
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", cursor, CancellationToken.None);
+
+        GitHubBackfillCursor? updated = CreateStore().ReadCursor("HL7/fhir");
+
+        Assert.NotNull(updated);
+        // Repairing #9 must not drag the watermark up to 9; it stays at 6.
+        Assert.Equal(6, updated!.IssuesCompletedAbove);
+        Assert.DoesNotContain(9, updated.PendingRetry);
+    }
+
+    [Fact]
+    public async Task DownloadBackfillAsync_WhenBothPhasesExhaust_WritesTerminalMarkerAndClearsProgress()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [4, 3],
+            PrNumbers = [2, 1],
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        GitHubBackfillCheckpointStore store = CreateStore();
+
+        Assert.Contains("HL7/fhir", store.GetCompletedRepos());
+        Assert.Null(store.ReadCursor("HL7/fhir"));
     }
 }

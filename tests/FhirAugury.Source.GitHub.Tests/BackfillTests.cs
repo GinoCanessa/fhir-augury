@@ -94,6 +94,8 @@ public class BackfillMarkerGatingTests : IDisposable
             httpClientFactory: null!,
             tracker: null!,
             optionsAccessor: Options.Create(options),
+            checkpointStore: new GitHubBackfillCheckpointStore(
+                database, NullLogger<GitHubBackfillCheckpointStore>.Instance),
             workGroupAcquirer: null!,
             workGroupIndexer: null!,
             workGroupResolver: null!,
@@ -148,16 +150,24 @@ public class BackfillMarkerGatingTests : IDisposable
 internal sealed class StubBackfillProvider : IGitHubDataProvider
 {
     private readonly List<string?> _backfillCalls = [];
+    private readonly List<GitHubBackfillCursor?> _cursors = [];
 
     /// <summary>Repo filters passed to <see cref="DownloadBackfillAsync"/>, in call order.</summary>
     public IReadOnlyList<string?> BackfillCalls => _backfillCalls;
 
+    /// <summary>Resume cursors passed to <see cref="DownloadBackfillAsync"/>, in call order.</summary>
+    public IReadOnlyList<GitHubBackfillCursor?> Cursors => _cursors;
+
     /// <summary>When true, every returned result is flagged <c>Canceled</c>.</summary>
     public bool ReportCanceled { get; set; }
 
-    public Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    public Task<IngestionResult> DownloadBackfillAsync(
+        string? repoFilter = null,
+        GitHubBackfillCursor? resumeFrom = null,
+        CancellationToken ct = default)
     {
         _backfillCalls.Add(repoFilter);
+        _cursors.Add(resumeFrom);
 
         return Task.FromResult(new IngestionResult(3, 3, 0, 0, [], DateTimeOffset.UtcNow)
         {
@@ -223,7 +233,7 @@ public class BackfillCancellationTests : IDisposable
     }
 
     [Fact]
-    public async Task BackfillReposAsync_WhenNotCanceled_MarksRepoAndContinues()
+    public async Task BackfillReposAsync_WhenNotCanceled_ContinuesToRemainingRepos()
     {
         StubBackfillProvider provider = new StubBackfillProvider { ReportCanceled = false };
         GitHubIngestionPipeline pipeline = BackfillMarkerGatingTests.CreatePipeline(_db, provider);
@@ -231,7 +241,47 @@ public class BackfillCancellationTests : IDisposable
         await pipeline.BackfillReposAsync(["HL7/fhir", "HL7/us-core"], CancellationToken.None);
 
         Assert.Equal(2, provider.BackfillCalls.Count);
-        Assert.Empty(pipeline.GetReposNeedingBackfill());
+    }
+
+    /// <summary>
+    /// Terminal state moved to the provider in Phase 4 — only it knows whether each phase
+    /// enumerated to exhaustion. The pipeline must therefore write no markers of its own.
+    /// </summary>
+    [Fact]
+    public async Task BackfillReposAsync_WritesNoCompletionMarker()
+    {
+        StubBackfillProvider provider = new StubBackfillProvider { ReportCanceled = false };
+        GitHubIngestionPipeline pipeline = BackfillMarkerGatingTests.CreatePipeline(_db, provider);
+
+        await pipeline.BackfillReposAsync(["HL7/fhir", "HL7/us-core"], CancellationToken.None);
+
+        List<string> needing = pipeline.GetReposNeedingBackfill();
+        Assert.Contains("HL7/fhir", needing);
+        Assert.Contains("HL7/us-core", needing);
+    }
+
+    /// <summary>The stored resume cursor must reach the provider, or a resume silently restarts.</summary>
+    [Fact]
+    public async Task BackfillReposAsync_PassesStoredCursorToProvider()
+    {
+        GitHubBackfillCheckpointStore store = new GitHubBackfillCheckpointStore(
+            _db, NullLogger<GitHubBackfillCheckpointStore>.Instance);
+
+        store.WriteCheckpoint(
+            "HL7/fhir",
+            new GitHubBackfillCursor { PrsCompletedAbove = 4200, PendingRetry = [4199] },
+            itemsIngested: 10,
+            lastError: null);
+
+        StubBackfillProvider provider = new StubBackfillProvider { ReportCanceled = false };
+        GitHubIngestionPipeline pipeline = BackfillMarkerGatingTests.CreatePipeline(_db, provider);
+
+        await pipeline.BackfillReposAsync(["HL7/fhir"], CancellationToken.None);
+
+        Assert.Single(provider.Cursors);
+        Assert.NotNull(provider.Cursors[0]);
+        Assert.Equal(4200, provider.Cursors[0]!.PrsCompletedAbove);
+        Assert.Equal([4199], provider.Cursors[0]!.PendingRetry);
     }
 }
 

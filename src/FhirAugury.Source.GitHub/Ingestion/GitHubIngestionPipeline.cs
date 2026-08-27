@@ -32,6 +32,7 @@ public class GitHubIngestionPipeline(
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
+    GitHubBackfillCheckpointStore checkpointStore,
     GitHubWorkGroupSupportFileAcquirer workGroupAcquirer,
     GitHubHl7WorkGroupIndexer workGroupIndexer,
     WorkGroupResolver workGroupResolver,
@@ -442,60 +443,24 @@ public class GitHubIngestionPipeline(
 
     // ── History backfill (per-repo, marker-gated) ─────────────────────────
 
-    private const string BackfillMarkerPrefix = "backfill:";
-
     /// <summary>
-    /// Returns configured repos that have no <c>backfill:&lt;repo&gt;</c> marker
-    /// yet — i.e. that still need the one-time full-history fetch.
+    /// Returns configured repos with no terminal <c>backfill:&lt;repo&gt;</c> success
+    /// marker — i.e. that still need the full-history fetch. A repo that is part-way
+    /// through (progress row only) is still reported here so the next pass resumes it.
     /// </summary>
     public List<string> GetReposNeedingBackfill()
     {
-        using SqliteConnection connection = database.OpenConnection();
-        HashSet<string> marked = GitHubSyncStateRecord
-            .SelectList(connection, SourceName: IGitHubDataProvider.SourceName)
-            .Where(r => r.SubSource.StartsWith(BackfillMarkerPrefix, StringComparison.Ordinal))
-            .Select(r => r.SubSource[BackfillMarkerPrefix.Length..])
-            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string> completed = checkpointStore.GetCompletedRepos();
 
         return _options.GetAllRepositoryNames()
-            .Where(repo => !marked.Contains(repo))
+            .Where(repo => !completed.Contains(repo))
             .ToList();
     }
 
-    /// <summary>Writes the <c>backfill:&lt;repo&gt;</c> marker so the repo is not backfilled again.</summary>
-    private void MarkRepoBackfilled(string repo)
-    {
-        using SqliteConnection connection = database.OpenConnection();
-        string subSource = BackfillMarkerPrefix + repo;
-        GitHubSyncStateRecord? existing = GitHubSyncStateRecord.SelectSingle(
-            connection, SourceName: IGitHubDataProvider.SourceName, SubSource: subSource);
-
-        GitHubSyncStateRecord marker = new GitHubSyncStateRecord
-        {
-            Id = existing?.Id ?? GitHubSyncStateRecord.GetIndex(),
-            SourceName = IGitHubDataProvider.SourceName,
-            SubSource = subSource,
-            LastSyncAt = DateTimeOffset.UtcNow,
-            LastCursor = null,
-            ItemsIngested = 0,
-            SyncSchedule = null,
-            NextScheduledAt = null,
-            Status = "success",
-            LastError = null,
-        };
-
-        if (existing is not null)
-            GitHubSyncStateRecord.Update(connection, marker);
-        else
-            GitHubSyncStateRecord.Insert(connection, marker);
-    }
-
     /// <summary>
-    /// Backfills the given repos one at a time, marking each repo backfilled only
-    /// after its fetch completed without repo-local errors. The gh-CLI provider
-    /// accumulates per-repo errors rather than throwing, so a failed repo simply
-    /// leaves its marker absent and is retried on the next incremental run.
-    /// A cancelled repo aborts the remaining list rather than sweeping it.
+    /// Backfills the given repos one at a time. Terminal state is owned by the provider —
+    /// only it knows whether each phase enumerated to exhaustion — so this method writes no
+    /// markers. A cancelled repo aborts the remaining list rather than sweeping it.
     /// </summary>
     internal async Task<IngestionResult> BackfillReposAsync(IReadOnlyList<string> repos, CancellationToken ct)
     {
@@ -507,7 +472,7 @@ public class GitHubIngestionPipeline(
 
             _currentStatus = $"backfilling:{repo}";
             logger.LogInformation("Backfilling full history for {Repo}", repo);
-            IngestionResult repoResult = await source.DownloadBackfillAsync(repo, ct);
+            IngestionResult repoResult = await source.DownloadBackfillAsync(repo, checkpointStore.ReadCursor(repo), ct);
             ct.ThrowIfCancellationRequested();
             aggregate = MergeResults(aggregate, repoResult);
 
@@ -519,14 +484,10 @@ public class GitHubIngestionPipeline(
                 break;
             }
 
-            if (repoResult.Errors.Count == 0)
-            {
-                MarkRepoBackfilled(repo);
-            }
-            else
+            if (repoResult.Errors.Count > 0)
             {
                 logger.LogWarning(
-                    "Backfill for {Repo} completed with {Count} error(s); marker left absent for retry",
+                    "Backfill for {Repo} completed with {Count} error(s); failed items queued for repair",
                     repo, repoResult.Errors.Count);
             }
         }
