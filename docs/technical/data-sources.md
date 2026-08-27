@@ -281,10 +281,10 @@ Continues until `found_newest` is true.
 |----------|-------|
 | **Default target** | `https://confluence.hl7.org` |
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
-| **Data types** | Spaces + pages + comments |
+| **Data types** | Spaces + pages + comments + attachments (metadata and bytes) |
 | **Database** | `confluence.db` |
 | **API** | HTTP API controllers |
-| **Page size** | 25 |
+| **Page size** | 25 (fill); 200 (`SweepPageSize`, body-less sweep) |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
 
@@ -293,27 +293,60 @@ Continues until `found_newest` is true.
 - **Cookie mode** (default): Session cookie in the `cookie` header
 - **Basic mode**: HTTP Basic with `username:token`
 
+HL7's Confluence answers the read surface **anonymously**, so a credential is
+about *coverage* (restricted content) rather than access. It also sits behind an
+AWS WAF that rejects any non-browser-shaped `User-Agent` with `405`. See
+[Confluence API notes](confluence-api-notes.md).
+
 **Data model:**
 
 - `ConfluenceSpaceRecord` — Space key, name, description, URL
-- `ConfluencePageRecord` — Page ID, space key, title, parent ID, body
-  (storage format + plain text), labels, version, URL
+- `ConfluencePageRecord` — Page ID, space key, title, status
+  (`current` / `archived`), parent ID, body (storage format + plain text),
+  labels, version, URL
 - `ConfluenceCommentRecord` — Author, date, body as plain text (PageId FK)
+- `ConfluenceAttachmentRecord` — File name, media type, size, version,
+  download URL, and the cache key of the downloaded bytes (PageId FK)
 
 Body content is converted from Confluence storage format (XHTML) to plain text
 by `ConfluenceContentParser`, which handles macros, images, and attachments.
 
 **Database tables:** `confluence_spaces` (Key unique), `confluence_pages`
-(ConfluenceId unique, SpaceKey), `confluence_comments` (PageId FK),
+(ConfluenceId unique, SpaceKey, Status), `confluence_comments` (PageId FK),
+`confluence_attachments` (ConfluenceAttachmentId unique, PageId FK),
 `confluence_pages_fts` (FTS5), `index_keywords`, `index_corpus`,
 `index_doc_stats`, `sync_state`, `ingestion_log`.
 
-**Incremental sync:** Uses Confluence CQL:
-`lastModified >= "{since}" AND space in ("FHIR","FHIRI","SOA") AND type = page`
+**Incremental sync: manifest reconciliation.** There is no watermark and no
+full/incremental split. Acquisition splits into a cheap, body-less **sweep**
+that enumerates everything that *should* exist in a space into a per-space
+manifest stored in the cache, and an expensive **fill** that fetches only what
+the manifest says is missing or stale. Completeness is therefore a pure function
+of `(manifest, cache files)`, computable offline at any moment — see
+`GET /api/v1/cache/reconcile-report`.
 
-**Pagination:** Offset-based. Continues while `_links.next` exists.
+A manifest is written only when that space's sweep ran to exhaustion, so a
+partially failed run can never advance a watermark past pages it missed. Items
+the manifest no longer names are **tombstoned** by moving their cache file under
+`_vanished/`, never deleted, because absence can also mean "not visible to the
+credential this run used". Replay is manifest-driven and is the only path that
+writes the database.
 
-**Default spaces:** `["FHIR", "FHIRI", "SOA"]`
+**Sweep and fill:** each space is swept as three body-less streams —
+`GET /rest/api/content?spaceKey=…&type=page&expand=version` for pages, and CQL
+`type = comment` / `type = attachment` searches with
+`expand=version,container[,metadata]` for the rest. All three paginate through
+`_links.next` to exhaustion. The fill is one
+`GET /rest/api/content/{id}?expand=<profile>` per item, so every unit is
+independently retryable.
+
+**Default spaces:** every non-archived global space on the instance (~140).
+Configuration may still restrict the set; `Spaces = []` tracks nothing.
+
+**Attachments:** metadata is always swept, cached, replayed and indexed. Bytes
+are downloaded unless a blob exceeds `AttachmentMaxBytes` (default 100 MB), in
+which case the row still records the size and download URL with a null cache
+key and the space reports `complete_with_skips`.
 
 ---
 
@@ -594,8 +627,8 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 |---------|------|-------|------------|--------|
 | **Ports** | 5160 | 5170 | 5180 | 5190 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
-| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
-| **Pagination** | Offset | Anchor | Offset | Page number |
+| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | Manifest reconciliation | `since` param |
+| **Pagination** | Offset | Anchor | `_links.next` to exhaustion | Page number |
 | **Rate limiting** | Retry only | Retry only | Retry only | Dedicated limiter |
 | **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |

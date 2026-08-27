@@ -14,7 +14,7 @@ across services:
 |---------|---------------|----------|
 | **Source.Jira** | `jira.db` | Issues, comments, FTS5, BM25 index, sync state |
 | **Source.Zulip** | `zulip.db` | Streams, messages, FTS5, BM25 index, sync state |
-| **Source.Confluence** | `confluence.db` | Spaces, pages, comments, FTS5, BM25 index, sync state |
+| **Source.Confluence** | `confluence.db` | Spaces, pages, comments, attachments, FTS5, BM25 index, sync state |
 | **Source.GitHub** | `github.db` | Repos, issues/PRs, comments, FTS5, BM25 index, sync state |
 | **Orchestrator** | `orchestrator.db` | Cross-reference links, cross-ref scan state |
 
@@ -394,6 +394,7 @@ Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 | `ConfluenceId` | TEXT UNIQUE | Confluence page ID |
 | `SpaceKey` | TEXT | Parent space key |
 | `Title` | TEXT | Page title |
+| `Status` | TEXT | `current` or `archived`, projected from the sweep manifest |
 | `ParentId` | TEXT? | Parent page ID (hierarchy) |
 | `BodyStorage` | TEXT? | Body in Confluence storage format |
 | `BodyPlain` | TEXT? | Body as plain text |
@@ -403,7 +404,13 @@ Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 | `LastModifiedAt` | TEXT | Last modification timestamp |
 | `Url` | TEXT? | Page URL |
 
-Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
+Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`, `(Status)`
+
+`Status` is added to a pre-existing database by an `ALTER TABLE` in
+`ConfluenceDatabase.InitializeSchema`, because the generated `CreateTable` is
+create-if-not-exists and would otherwise leave the column missing while its
+generated index failed at startup. Adding it does **not** require rebuilding
+`confluence_pages_fts`, which indexes only `BodyPlain`, `Title` and `Labels`.
 
 #### `confluence_comments`
 
@@ -417,6 +424,27 @@ Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
 | `Body` | TEXT | Comment body (plain text) |
 
 Index: `(PageId)`
+
+#### `confluence_attachments`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `PageId` | INTEGER FK | → `confluence_pages.Id` |
+| `ConfluencePageId` | TEXT | Owning Confluence page ID |
+| `ConfluenceAttachmentId` | TEXT UNIQUE | Confluence attachment ID |
+| `FileName` | TEXT | Attachment file name |
+| `MediaType` | TEXT? | Reported media type |
+| `FileSizeBytes` | INTEGER? | Reported byte length; null when Confluence reports none |
+| `VersionNumber` | INTEGER | Attachment version |
+| `CreatedAt` | TEXT | Version timestamp |
+| `DownloadUrl` | TEXT? | Absolute download URL |
+| `CacheKey` | TEXT? | Cache key of the downloaded bytes; **null when the blob was skipped by `AttachmentMaxBytes` or not yet fetched** |
+
+Indexes: `(PageId)`, `(ConfluencePageId)`
+
+The row exists whether or not the bytes were downloaded, so an attachment
+excluded by policy stays discoverable, searchable, and fetchable by hand.
 
 #### `confluence_jira_refs` — Jira references found in Confluence pages
 
@@ -805,7 +833,7 @@ Source.Zulip (zulip.db)
 └── zulip_sync_state, ingestion_log     — Sync infrastructure
 
 Source.Confluence (confluence.db)
-├── confluence_spaces, confluence_pages, confluence_comments — Content tables
+├── confluence_spaces, confluence_pages, confluence_comments, confluence_attachments — Content tables
 ├── confluence_jira_refs                — Jira reference table
 ├── confluence_pages_fts                — FTS5 virtual table (content-synced)
 ├── index_keywords, index_corpus, index_doc_stats — BM25 index

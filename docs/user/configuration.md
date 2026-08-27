@@ -109,11 +109,14 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "AuthMode": "cookie",
     "Cookie": "",
     "Username": "",
-    "ApiToken": "",
-    "Spaces": ["FHIR", "FHIRI", "SOA"]
+    "ApiToken": ""
   }
 }
 ```
+
+`Spaces` is omitted above on purpose: leaving it unset (or `null`) indexes
+**every non-archived global space on the instance**. Set it to an explicit list
+to narrow that, or to `[]` to index nothing.
 
 **Authentication:** Choose one of two modes via `AuthMode`:
 

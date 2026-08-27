@@ -211,11 +211,13 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
   "Confluence": {
     "BaseUrl": "https://confluence.hl7.org",
     "AuthMode": "cookie",
-    "Spaces": ["FHIR", "FHIRI", "SOA"],
     "CachePath": "./cache",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
+    "SweepPageSize": 200,
+    "SpaceSweepMaxAge": "00:00:00",
+    "AttachmentMaxBytes": 104857600,
     "ReloadFromCacheOnStartup": false,
     "OrchestratorAddress": null,
     "IngestionPaused": false,
@@ -255,7 +257,10 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `Cookie` | string | | Session cookie for cookie auth |
 | `Username` | string | | Username for basic auth |
 | `ApiToken` | string | | API token for basic auth |
-| `Spaces` | string[] | `["FHIR","FHIRI","SOA"]` | Confluence spaces to index |
+| `Spaces` | string[]? | `null` | Spaces to index. `null` discovers **every non-archived global space on the instance** (~140); `[]` indexes none. See [source filter conventions](source-filter-conventions.md). |
+| `SweepPageSize` | int | `200` | Page size for the body-less sweep. HL7's Confluence honours 200 verbatim, so the whole instance enumerates in roughly 1,660 requests (~5.5 minutes at 5 req/s). Must be greater than zero. |
+| `SpaceSweepMaxAge` | TimeSpan | `00:00:00` | A space whose manifest is younger than this is skipped by the sweep and its previous manifest reused. The shipped default re-sweeps every space on every run. This is an *age threshold*, not a per-run request budget. |
+| `AttachmentMaxBytes` | long | `104857600` | Attachment blobs larger than this are not downloaded; their metadata is still swept, cached, replayed and indexed. `0` means unlimited; a **negative value is rejected at startup**. The cap gates *downloading*, not *keeping*: **lowering** it never removes bytes already on disk, and **raising** it turns a previously skipped blob into a gap that closes on the next run. |
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
@@ -265,7 +270,7 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5180` | HTTP listen port |
-| `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
+| `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit, enforced by a dedicated delegating handler on every physical send |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
@@ -277,6 +282,30 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
+
+### Cache completeness verdicts
+
+`GET /api/v1/cache/reconcile-report` (proxied by the orchestrator at
+`/api/v1/confluence/cache/reconcile-report`) answers "is my cache complete, and
+what is missing?" from local disk, with no network. It is answerable at any
+moment, including part-way through a long initial pull.
+
+Each space reports one of four verdicts:
+
+| Verdict | Meaning |
+|-|-|
+| `complete` | Every item the manifest names is cached at the current version and fidelity profile. |
+| `complete_with_skips` | Every item is accounted for, **but some attachment bytes were excluded by `AttachmentMaxBytes`**. `skippedByPolicy` and `skippedBytes` in the report give the detail. A distinct value rather than a footnote on `complete`, because the verdict travels alone to surfaces that carry no skip counts. |
+| `partial` | Something the manifest names is missing or stale. `missing`, `stale` and `missingIds` say what. |
+| `unknown` | The space has no manifest, a malformed one, an incomplete sweep, or a **failed sweep attempt more recent than the last good manifest**. A space that has never been successfully enumerated reports `unknown` — never `complete`, and never "empty". |
+
+The overall verdict is the least complete of the per-space verdicts.
+
+`/api/v1/stats` surfaces the same counts through `additionalCounts`
+(`manifest_items`, `cached`, `stale`, `missing`, `vanished`,
+`skipped_by_policy`, `attachments`). `skippedBytes` is deliberately **not**
+there: that dictionary is `Dictionary<string, int>` and a byte total would
+overflow it.
 
 ---
 
