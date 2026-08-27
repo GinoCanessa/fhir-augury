@@ -3,6 +3,7 @@ using System.Text.Json;
 using FhirAugury.Source.GitHub.Configuration;
 using FhirAugury.Source.GitHub.Database;
 using FhirAugury.Source.GitHub.Ingestion;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -48,6 +49,9 @@ internal sealed class FakeGhCliRunner : GhCliRunner
     /// <summary>Item numbers whose detail fetch was requested, in call order.</summary>
     public List<int> DetailNumbersInOrder { get; } = [];
 
+    /// <summary>Replaces the synthetic detail payload, for malformed-section tests.</summary>
+    public string? DetailJsonOverride { get; set; }
+
     /// <summary>Detail-fetch invocations observed so far (repo metadata excluded).</summary>
     public int DetailCallCount { get; private set; }
 
@@ -88,7 +92,7 @@ internal sealed class FakeGhCliRunner : GhCliRunner
         }
 
         ct.ThrowIfCancellationRequested();
-        return Task.FromResult(JsonDocument.Parse(DetailJson()));
+        return Task.FromResult(JsonDocument.Parse(DetailJsonOverride ?? DetailJson()));
     }
 
     public override async IAsyncEnumerable<JsonElement> StreamArrayAsync(
@@ -467,5 +471,72 @@ public class GitHubCliProviderCancellationTests : IDisposable
 
         Assert.Contains("HL7/fhir", store.GetCompletedRepos());
         Assert.Null(store.ReadCursor("HL7/fhir"));
+    }
+
+    // ── Phase 5: one combined pr view per PR ─────────────────────────────
+
+    [Fact]
+    public async Task DownloadBackfillAsync_IssuesOnePrViewCallPerPr()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [],
+            PrNumbers = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        // Was three `pr view` calls per PR (30 for ten PRs); the combined --json request
+        // makes it one. This is the guard for the ~3x GraphQL quota reduction.
+        Assert.Equal(10, runner.CountInvocations("pr view"));
+    }
+
+    [Fact]
+    public async Task FetchPrDetail_WhenReviewsSectionMalformed_StillAppliesCommentsAndCommitLinks()
+    {
+        FakeGhCliRunner runner = new FakeGhCliRunner
+        {
+            IssueNumbers = [],
+            PrNumbers = [42],
+            // `reviews` is an object where an array is required, so ApplyReviews throws.
+            DetailJsonOverride = """
+                {
+                  "comments": [
+                    {
+                      "id": "IC_kwDO1",
+                      "author": { "login": "someone" },
+                      "createdAt": "2024-02-01T00:00:00Z",
+                      "body": "a real comment"
+                    }
+                  ],
+                  "reviews": { "unexpected": true },
+                  "commits": [ { "oid": "0123456789abcdef0123456789abcdef01234567" } ],
+                  "baseRefName": "master",
+                  "mergedAt": "2024-03-01T00:00:00Z"
+                }
+                """,
+        };
+
+        GitHubCliProvider provider = CreateProvider(runner);
+        IngestionResult result = await provider.DownloadBackfillAsync("HL7/fhir", resumeFrom: null, CancellationToken.None);
+
+        // The shared fetch is a single point of failure; the three appliers are not.
+        Assert.Single(result.Errors);
+        Assert.StartsWith("reviews:HL7/fhir#42", result.Errors[0]);
+
+        using SqliteConnection connection = _db.OpenConnection();
+
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT COUNT(*) FROM github_comments WHERE RepoFullName = 'HL7/fhir' AND IssueNumber = 42";
+            Assert.Equal(1L, (long)cmd.ExecuteScalar()!);
+        }
+
+        using (SqliteCommand cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT COUNT(*) FROM github_commit_pr_links WHERE RepoFullName = 'HL7/fhir' AND PrNumber = 42";
+            Assert.Equal(1L, (long)cmd.ExecuteScalar()!);
+        }
     }
 }

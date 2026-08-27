@@ -748,6 +748,17 @@ public class GitHubCliProvider(
 
     // ── Comments & reviews ───────────────────────────────────────────────
 
+    /// <summary>Fields requested in the single combined <c>gh pr view</c> detail call.</summary>
+    internal const string PrDetailFields = "comments,reviews,commits,baseRefName,mergedAt";
+
+    /// <summary>
+    /// Builds the combined PR detail call. One invocation replaces the three separate
+    /// <c>pr view</c> calls this path used to make, cutting per-PR cost from ~3 GraphQL
+    /// points to ~1 and bringing a full <c>HL7/fhir</c> backfill inside one quota window.
+    /// </summary>
+    internal static string BuildPrDetailArgs(int number, string repoArgs) =>
+        $"pr view {number} {repoArgs} --json {PrDetailFields}";
+
     private async Task FetchCommentsAsync(
         SqliteConnection connection, string repoFullName, int issueNumber, bool isPr,
         CancellationToken ct, List<string> errors)
@@ -756,22 +767,96 @@ public class GitHubCliProvider(
         GitHubIssueRecord? issue = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
         int issueDbId = issue?.Id ?? 0;
 
-        // Fetch regular comments
+        string repoArgs = runner.BuildRepoArgs(repoFullName);
+
+        if (!isPr)
+        {
+            try
+            {
+                string args = $"issue view {issueNumber} {repoArgs} --json comments";
+                using JsonDocument doc = await runner.RunAsync(args, ct);
+                ApplyComments(connection, doc.RootElement, issueDbId, repoFullName, issueNumber);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to fetch comments for {Repo}#{Number}", repoFullName, issueNumber);
+                errors.Add($"comments:{repoFullName}#{issueNumber} - {ex.Message}");
+            }
+
+            return;
+        }
+
+        // One fetch for comments, reviews, commits, baseRefName and mergedAt.
+        JsonDocument? detail = null;
         try
         {
-            string repoArgs = runner.BuildRepoArgs(repoFullName);
-            string cmd = isPr ? "pr" : "issue";
-            string args = $"{cmd} view {issueNumber} {repoArgs} --json comments";
-            using JsonDocument doc = await runner.RunAsync(args, ct);
+            detail = await runner.RunAsync(BuildPrDetailArgs(issueNumber, repoArgs), ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to fetch PR detail for {Repo}#{Number}", repoFullName, issueNumber);
+            errors.Add($"pr_detail:{repoFullName}#{issueNumber} - {ex.Message}");
+        }
 
-            if (doc.RootElement.TryGetProperty("comments", out JsonElement comments))
+        if (detail is not null)
+        {
+            using (detail)
             {
-                foreach (JsonElement commentJson in comments.EnumerateArray())
+                JsonElement root = detail.RootElement;
+
+                // Sharing one fetch is the quota win; sharing one catch is not. A malformed
+                // section or a DB failure in one applier must not discard the other two.
+                try
                 {
-                    GitHubCommentRecord comment = GhCliIssueMapper.MapComment(
-                        commentJson, issueDbId, repoFullName, issueNumber);
-                    GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+                    ApplyComments(connection, root, issueDbId, repoFullName, issueNumber);
                 }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to apply comments for {Repo}#{Number}", repoFullName, issueNumber);
+                    errors.Add($"comments:{repoFullName}#{issueNumber} - {ex.Message}");
+                }
+
+                try
+                {
+                    ApplyReviews(connection, root, issueDbId, repoFullName, issueNumber);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to apply PR reviews for {Repo}#{Number}", repoFullName, issueNumber);
+                    errors.Add($"reviews:{repoFullName}#{issueNumber} - {ex.Message}");
+                }
+
+                try
+                {
+                    ApplyCommitLinks(connection, root, repoFullName, issueNumber);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to sync commit-PR links for {Repo}#{Number}", repoFullName, issueNumber);
+                    errors.Add($"commit_pr_links:{repoFullName}#{issueNumber} - {ex.Message}");
+                }
+            }
+        }
+
+        // Fetch inline (line-anchored) review-thread comments via REST so the
+        // full PR conversation is captured. These flow through the existing
+        // xref/BM25 passes (typed as ContentTypes.Comment) unchanged.
+        try
+        {
+            await foreach (JsonElement commentJson in runner.StreamPaginatedApiAsync(
+                $"/repos/{repoFullName}/pulls/{issueNumber}/comments?per_page=100", ct))
+            {
+                GitHubCommentRecord comment = GhCliIssueMapper.MapReviewThreadComment(
+                    commentJson, issueDbId, repoFullName, issueNumber);
+                GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -780,79 +865,52 @@ public class GitHubCliProvider(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to fetch comments for {Repo}#{Number}", repoFullName, issueNumber);
-            errors.Add($"comments:{repoFullName}#{issueNumber} - {ex.Message}");
+            logger.LogWarning(ex, "Failed to fetch PR review-thread comments for {Repo}#{Number}", repoFullName, issueNumber);
+            errors.Add($"review_comments:{repoFullName}#{issueNumber} - {ex.Message}");
         }
+    }
 
-        // Fetch PR review comments
-        if (isPr)
+    /// <summary>Inserts the <c>comments</c> section of an already-fetched detail payload.</summary>
+    private static void ApplyComments(
+        SqliteConnection connection, JsonElement root, int issueDbId, string repoFullName, int issueNumber)
+    {
+        if (!root.TryGetProperty("comments", out JsonElement comments)) return;
+
+        foreach (JsonElement commentJson in comments.EnumerateArray())
         {
-            try
-            {
-                string repoArgs = runner.BuildRepoArgs(repoFullName);
-                string args = $"pr view {issueNumber} {repoArgs} --json reviews";
-                using JsonDocument doc = await runner.RunAsync(args, ct);
+            GitHubCommentRecord comment = GhCliIssueMapper.MapComment(
+                commentJson, issueDbId, repoFullName, issueNumber);
+            GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+        }
+    }
 
-                if (doc.RootElement.TryGetProperty("reviews", out JsonElement reviews))
-                {
-                    foreach (JsonElement reviewJson in reviews.EnumerateArray())
-                    {
-                        // Only include reviews that have a body (non-empty review comments)
-                        string? body = reviewJson.TryGetProperty("body", out JsonElement bodyEl)
-                            ? bodyEl.GetString() : null;
-                        if (string.IsNullOrWhiteSpace(body)) continue;
+    /// <summary>Inserts the <c>reviews</c> section of an already-fetched detail payload.</summary>
+    private static void ApplyReviews(
+        SqliteConnection connection, JsonElement root, int issueDbId, string repoFullName, int issueNumber)
+    {
+        if (!root.TryGetProperty("reviews", out JsonElement reviews)) return;
 
-                        GitHubCommentRecord review = GhCliIssueMapper.MapReview(
-                            reviewJson, issueDbId, repoFullName, issueNumber);
-                        GitHubCommentRecord.Insert(connection, review, ignoreDuplicates: true);
-                    }
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to fetch PR reviews for {Repo}#{Number}", repoFullName, issueNumber);
-                errors.Add($"reviews:{repoFullName}#{issueNumber} - {ex.Message}");
-            }
+        foreach (JsonElement reviewJson in reviews.EnumerateArray())
+        {
+            // Only include reviews that have a body (non-empty review comments)
+            string? body = reviewJson.TryGetProperty("body", out JsonElement bodyEl)
+                ? bodyEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(body)) continue;
 
-            await SyncPrCommitLinksAsync(connection, repoFullName, issueNumber, ct, errors);
-
-            // Fetch inline (line-anchored) review-thread comments via REST so the
-            // full PR conversation is captured. These flow through the existing
-            // xref/BM25 passes (typed as ContentTypes.Comment) unchanged.
-            try
-            {
-                await foreach (JsonElement commentJson in runner.StreamPaginatedApiAsync(
-                    $"/repos/{repoFullName}/pulls/{issueNumber}/comments?per_page=100", ct))
-                {
-                    GitHubCommentRecord comment = GhCliIssueMapper.MapReviewThreadComment(
-                        commentJson, issueDbId, repoFullName, issueNumber);
-                    GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to fetch PR review-thread comments for {Repo}#{Number}", repoFullName, issueNumber);
-                errors.Add($"review_comments:{repoFullName}#{issueNumber} - {ex.Message}");
-            }
+            GitHubCommentRecord review = GhCliIssueMapper.MapReview(
+                reviewJson, issueDbId, repoFullName, issueNumber);
+            GitHubCommentRecord.Insert(connection, review, ignoreDuplicates: true);
         }
     }
 
     /// <summary>
-    /// Synchronises <c>github_commit_pr_links</c> for a single PR using
-    /// <c>gh pr view {n} --json commits,baseRefName,mergedAt</c>. Uses
-    /// delete-then-insert (replace) semantics so a force-push that rewrites the
-    /// PR's commit set does not leave stale links, and also backfills the PR
-    /// row's <c>BaseBranch</c>/<c>MergeState</c> (null after a full REST sync,
-    /// which omits <c>base.ref</c>/<c>merged_at</c>) so the primary-PR rule is
-    /// deterministic regardless of sync path.
+    /// Synchronises <c>github_commit_pr_links</c> for a single PR from the <c>commits</c>,
+    /// <c>baseRefName</c> and <c>mergedAt</c> sections of an already-fetched detail payload.
+    /// Uses delete-then-insert (replace) semantics so a force-push that rewrites the PR's
+    /// commit set does not leave stale links, and also backfills the PR row's
+    /// <c>BaseBranch</c>/<c>MergeState</c> (null after a full REST sync, which omits
+    /// <c>base.ref</c>/<c>merged_at</c>) so the primary-PR rule is deterministic regardless
+    /// of sync path.
     /// </summary>
     /// <remarks>
     /// PR fetch runs before <c>PostIngestionAsync</c> extracts commits from the
@@ -861,69 +919,50 @@ public class GitHubCliProvider(
     /// ahead of the commit rows is correct; resolution only joins to commits
     /// that exist.
     /// </remarks>
-    private async Task SyncPrCommitLinksAsync(
-        SqliteConnection connection, string repoFullName, int issueNumber,
-        CancellationToken ct, List<string> errors)
+    private static void ApplyCommitLinks(
+        SqliteConnection connection, JsonElement root, string repoFullName, int issueNumber)
     {
-        try
+        using (SqliteCommand del = connection.CreateCommand())
         {
-            string repoArgs = runner.BuildRepoArgs(repoFullName);
-            string args = $"pr view {issueNumber} {repoArgs} --json commits,baseRefName,mergedAt";
-            using JsonDocument doc = await runner.RunAsync(args, ct);
-            JsonElement root = doc.RootElement;
+            del.CommandText = "DELETE FROM github_commit_pr_links WHERE RepoFullName = @repo AND PrNumber = @n";
+            del.Parameters.AddWithValue("@repo", repoFullName);
+            del.Parameters.AddWithValue("@n", issueNumber);
+            del.ExecuteNonQuery();
+        }
 
-            using (SqliteCommand del = connection.CreateCommand())
+        if (root.TryGetProperty("commits", out JsonElement commits) &&
+            commits.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement commitJson in commits.EnumerateArray())
             {
-                del.CommandText = "DELETE FROM github_commit_pr_links WHERE RepoFullName = @repo AND PrNumber = @n";
-                del.Parameters.AddWithValue("@repo", repoFullName);
-                del.Parameters.AddWithValue("@n", issueNumber);
-                del.ExecuteNonQuery();
-            }
+                if (!commitJson.TryGetProperty("oid", out JsonElement oidEl)) continue;
+                string? oid = oidEl.GetString();
+                if (string.IsNullOrEmpty(oid)) continue;
 
-            if (root.TryGetProperty("commits", out JsonElement commits) &&
-                commits.ValueKind == JsonValueKind.Array)
-            {
-                foreach (JsonElement commitJson in commits.EnumerateArray())
-                {
-                    if (!commitJson.TryGetProperty("oid", out JsonElement oidEl)) continue;
-                    string? oid = oidEl.GetString();
-                    if (string.IsNullOrEmpty(oid)) continue;
-
-                    GitHubCommitPrLinkRecord link = GhCliIssueMapper.MapCommitPrLink(oid, issueNumber, repoFullName);
-                    GitHubCommitPrLinkRecord.Insert(connection, link, ignoreDuplicates: true);
-                }
-            }
-
-            // Backfill BaseBranch/MergeState on the PR row when a full sync left them null.
-            GitHubIssueRecord? pr = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
-            if (pr is not null)
-            {
-                string? baseRefName = root.TryGetProperty("baseRefName", out JsonElement brEl) ? brEl.GetString() : null;
-                string? mergedAt = root.TryGetProperty("mergedAt", out JsonElement maEl) ? maEl.GetString() : null;
-
-                bool changed = false;
-                if (pr.BaseBranch is null && !string.IsNullOrEmpty(baseRefName))
-                {
-                    pr.BaseBranch = baseRefName;
-                    changed = true;
-                }
-                if (pr.MergeState is null && !string.IsNullOrEmpty(mergedAt))
-                {
-                    pr.MergeState = "merged";
-                    changed = true;
-                }
-                if (changed) GitHubIssueRecord.Update(connection, pr);
+                GitHubCommitPrLinkRecord link = GhCliIssueMapper.MapCommitPrLink(oid, issueNumber, repoFullName);
+                GitHubCommitPrLinkRecord.Insert(connection, link, ignoreDuplicates: true);
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+
+        // Backfill BaseBranch/MergeState on the PR row when a full sync left them null.
+        GitHubIssueRecord? pr = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
+        if (pr is null) return;
+
+        string? baseRefName = root.TryGetProperty("baseRefName", out JsonElement brEl) ? brEl.GetString() : null;
+        string? mergedAt = root.TryGetProperty("mergedAt", out JsonElement maEl) ? maEl.GetString() : null;
+
+        bool changed = false;
+        if (pr.BaseBranch is null && !string.IsNullOrEmpty(baseRefName))
         {
-            throw;
+            pr.BaseBranch = baseRefName;
+            changed = true;
         }
-        catch (Exception ex)
+        if (pr.MergeState is null && !string.IsNullOrEmpty(mergedAt))
         {
-            logger.LogWarning(ex, "Failed to sync commit-PR links for {Repo}#{Number}", repoFullName, issueNumber);
-            errors.Add($"commit_pr_links:{repoFullName}#{issueNumber} - {ex.Message}");
+            pr.MergeState = "merged";
+            changed = true;
         }
+        if (changed) GitHubIssueRecord.Update(connection, pr);
     }
 
     private List<string> GetEffectiveRepositories()

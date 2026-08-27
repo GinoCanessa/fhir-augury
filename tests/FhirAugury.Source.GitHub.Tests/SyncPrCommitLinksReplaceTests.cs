@@ -10,7 +10,7 @@ namespace FhirAugury.Source.GitHub.Tests;
 /// Phase 2 (slot 0625-02): commit→PR link sync uses delete-then-insert
 /// (replace) semantics so a force-push that rewrites a PR's commit set does
 /// not leave stale links. This exercises the same DB operations
-/// <c>SyncPrCommitLinksAsync</c> performs (which is otherwise driven by a live
+/// <c>ApplyCommitLinks</c> performs (which is otherwise driven by a live
 /// <c>gh</c> subprocess): delete every link for the (repo, PR), then insert the
 /// new commit set idempotently.
 /// </summary>
