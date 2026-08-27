@@ -104,6 +104,14 @@ public static class ConfluenceCatalog
             // Spaces
             new ApiEndpointDescriptor("spaces.list", "List spaces", "Spaces",
                 HttpMethod.Get, "api/v1/spaces", []),
+
+            // Cache
+            new ApiEndpointDescriptor("cache.reconcileReport", "Reconcile report", "Cache",
+                HttpMethod.Get, "api/v1/cache/reconcile-report",
+                [
+                    new ApiParameter("missingSample", ApiParameterKind.Query, Required: false, DefaultValue: "20",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
         ];
 
         return list;
