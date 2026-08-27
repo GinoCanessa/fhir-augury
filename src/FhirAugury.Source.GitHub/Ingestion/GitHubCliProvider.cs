@@ -139,61 +139,89 @@ public class GitHubCliProvider(
 
         using SqliteConnection connection = database.OpenConnection();
 
+        bool canceled = false;
+
         foreach (string repoFullName in repos)
         {
-            if (ct.IsCancellationRequested) break;
-
-            logger.LogInformation("Fetching repository via gh CLI: {Repo}", repoFullName);
-
-            // Fetch and upsert repo metadata
-            await FetchRepoMetadataAsync(connection, repoFullName, ct, errors);
-
-            // Full sync: use gh api --paginate for REST-identical JSON
-            string apiPath = $"/repos/{repoFullName}/issues?state=all&per_page=100&sort=updated&direction=asc";
-
-            logger.LogInformation("Running gh api --paginate for {Repo}", repoFullName);
+            if (ct.IsCancellationRequested) { canceled = true; break; }
 
             try
             {
-                await foreach (JsonElement issueJson in runner.StreamPaginatedApiAsync(apiPath, ct))
+                logger.LogInformation("Fetching repository via gh CLI: {Repo}", repoFullName);
+
+                // Fetch and upsert repo metadata
+                await FetchRepoMetadataAsync(connection, repoFullName, ct, errors);
+
+                // Full sync: use gh api --paginate for REST-identical JSON
+                string apiPath = $"/repos/{repoFullName}/issues?state=all&per_page=100&sort=updated&direction=asc";
+
+                logger.LogInformation("Running gh api --paginate for {Repo}", repoFullName);
+
+                try
                 {
-                    (ProcessOutcome outcome, string? error) = ProcessRestIssue(issueJson, repoFullName, connection);
-                    itemsProcessed++;
-
-                    switch (outcome)
+                    await foreach (JsonElement issueJson in runner.StreamPaginatedApiAsync(apiPath, ct))
                     {
-                        case ProcessOutcome.New: itemsNew++; break;
-                        case ProcessOutcome.Updated: itemsUpdated++; break;
-                        case ProcessOutcome.Failed:
-                            itemsFailed++;
-                            if (error is not null) errors.Add(error);
-                            break;
-                    }
+                        ct.ThrowIfCancellationRequested();
 
-                    // Fetch comments for this issue
-                    if (outcome != ProcessOutcome.Failed)
-                    {
-                        int issueNumber = issueJson.GetProperty("number").GetInt32();
-                        bool isPr = issueJson.TryGetProperty("pull_request", out _);
-                        await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr, ct, errors);
-                    }
+                        (ProcessOutcome outcome, string? error) = ProcessRestIssue(issueJson, repoFullName, connection);
+                        itemsProcessed++;
 
-                    if (itemsProcessed % 1000 == 0)
-                        logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
+                        switch (outcome)
+                        {
+                            case ProcessOutcome.New: itemsNew++; break;
+                            case ProcessOutcome.Updated: itemsUpdated++; break;
+                            case ProcessOutcome.Failed:
+                                itemsFailed++;
+                                if (error is not null) errors.Add(error);
+                                break;
+                        }
+
+                        // Fetch comments for this issue
+                        if (outcome != ProcessOutcome.Failed)
+                        {
+                            int issueNumber = issueJson.GetProperty("number").GetInt32();
+                            bool isPr = issueJson.TryGetProperty("pull_request", out _);
+                            await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr, ct, errors);
+                        }
+
+                        if (itemsProcessed % 1000 == 0)
+                            logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed gh api --paginate for {Repo}", repoFullName);
+                    errors.Add($"repo:{repoFullName} - {ex.Message}");
                 }
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                logger.LogError(ex, "Failed gh api --paginate for {Repo}", repoFullName);
-                errors.Add($"repo:{repoFullName} - {ex.Message}");
+                canceled = true;
+                break;
             }
         }
 
-        logger.LogInformation(
-            "Full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        if (canceled)
+        {
+            logger.LogInformation(
+                "Full download canceled after {Processed} item(s): {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
 
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            Canceled = canceled,
+        };
     }
 
     // ── Incremental sync via gh issue list / gh pr list ───────────────────
@@ -226,33 +254,82 @@ public class GitHubCliProvider(
 
         using SqliteConnection connection = database.OpenConnection();
 
+        bool canceled = false;
+
         foreach (string repoFullName in repos)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested) { canceled = true; break; }
 
-            logger.LogInformation(
-                "List sync via gh CLI for {Repo} (filter: {Filter})",
-                repoFullName, searchFilter ?? "<full history>");
-            string repoArgs = runner.BuildRepoArgs(repoFullName);
-
-            // Fetch repo metadata so we know whether issues are enabled
-            await FetchRepoMetadataAsync(connection, repoFullName, ct, errors);
-            GitHubRepoRecord? repoRecord = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
-            bool hasIssues = repoRecord?.HasIssues ?? true; // assume enabled if unknown
-
-            // Fetch issues (skip when the repo has issues disabled)
-            if (!hasIssues)
+            try
             {
-                logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
-            }
-            else
-            {
-                string issueArgs = BuildListArgs("issue list", repoArgs, limit, searchFilter, IssueListFields);
+                logger.LogInformation(
+                    "List sync via gh CLI for {Repo} (filter: {Filter})",
+                    repoFullName, searchFilter ?? "<full history>");
+                string repoArgs = runner.BuildRepoArgs(repoFullName);
+
+                // Fetch repo metadata so we know whether issues are enabled
+                await FetchRepoMetadataAsync(connection, repoFullName, ct, errors);
+                GitHubRepoRecord? repoRecord = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
+                bool hasIssues = repoRecord?.HasIssues ?? true; // assume enabled if unknown
+
+                // Fetch issues (skip when the repo has issues disabled)
+                if (!hasIssues)
+                {
+                    logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                }
+                else
+                {
+                    string issueArgs = BuildListArgs("issue list", repoArgs, limit, searchFilter, IssueListFields);
+                    try
+                    {
+                        await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
+                        {
+                            ct.ThrowIfCancellationRequested();
+
+                            (ProcessOutcome outcome, string? error) = ProcessCliIssue(json, repoFullName, connection);
+                            itemsProcessed++;
+
+                            switch (outcome)
+                            {
+                                case ProcessOutcome.New: itemsNew++; break;
+                                case ProcessOutcome.Updated: itemsUpdated++; break;
+                                case ProcessOutcome.Failed:
+                                    itemsFailed++;
+                                    if (error is not null) errors.Add(error);
+                                    break;
+                            }
+
+                            if (outcome != ProcessOutcome.Failed)
+                            {
+                                int issueNumber = json.GetProperty("number").GetInt32();
+                                await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr: false, ct, errors);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex) when (ex.Message.Contains("has disabled issues", StringComparison.OrdinalIgnoreCase))
+                    {
+                        logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Failed to fetch issues for {Repo}", repoFullName);
+                        errors.Add($"issues:{repoFullName} - {ex.Message}");
+                    }
+                }
+
+                // Fetch PRs
+                string prArgs = BuildListArgs("pr list", repoArgs, limit, searchFilter, PrListFields);
                 try
                 {
-                    await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
+                    await foreach (JsonElement json in runner.StreamArrayAsync(prArgs, ct))
                     {
-                        (ProcessOutcome outcome, string? error) = ProcessCliIssue(json, repoFullName, connection);
+                        ct.ThrowIfCancellationRequested();
+
+                        (ProcessOutcome outcome, string? error) = ProcessCliPr(json, repoFullName, connection);
                         itemsProcessed++;
 
                         switch (outcome)
@@ -267,60 +344,45 @@ public class GitHubCliProvider(
 
                         if (outcome != ProcessOutcome.Failed)
                         {
-                            int issueNumber = json.GetProperty("number").GetInt32();
-                            await FetchCommentsAsync(connection, repoFullName, issueNumber, isPr: false, ct, errors);
+                            int prNumber = json.GetProperty("number").GetInt32();
+                            await FetchCommentsAsync(connection, repoFullName, prNumber, isPr: true, ct, errors);
                         }
                     }
                 }
-                catch (Exception ex) when (ex.Message.Contains("has disabled issues", StringComparison.OrdinalIgnoreCase))
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to fetch issues for {Repo}", repoFullName);
-                    errors.Add($"issues:{repoFullName} - {ex.Message}");
+                    logger.LogError(ex, "Failed to fetch PRs for {Repo}", repoFullName);
+                    errors.Add($"prs:{repoFullName} - {ex.Message}");
                 }
             }
-
-            // Fetch PRs
-            string prArgs = BuildListArgs("pr list", repoArgs, limit, searchFilter, PrListFields);
-            try
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                await foreach (JsonElement json in runner.StreamArrayAsync(prArgs, ct))
-                {
-                    (ProcessOutcome outcome, string? error) = ProcessCliPr(json, repoFullName, connection);
-                    itemsProcessed++;
-
-                    switch (outcome)
-                    {
-                        case ProcessOutcome.New: itemsNew++; break;
-                        case ProcessOutcome.Updated: itemsUpdated++; break;
-                        case ProcessOutcome.Failed:
-                            itemsFailed++;
-                            if (error is not null) errors.Add(error);
-                            break;
-                    }
-
-                    if (outcome != ProcessOutcome.Failed)
-                    {
-                        int prNumber = json.GetProperty("number").GetInt32();
-                        await FetchCommentsAsync(connection, repoFullName, prNumber, isPr: true, ct, errors);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to fetch PRs for {Repo}", repoFullName);
-                errors.Add($"prs:{repoFullName} - {ex.Message}");
+                canceled = true;
+                break;
             }
         }
 
-        logger.LogInformation(
-            "List download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        if (canceled)
+        {
+            logger.LogInformation(
+                "List download canceled after {Processed} item(s): {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
+        else
+        {
+            logger.LogInformation(
+                "List download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
 
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            Canceled = canceled,
+        };
     }
 
     // ── Process individual items ─────────────────────────────────────────
@@ -417,6 +479,10 @@ public class GitHubCliProvider(
                 GitHubRepoRecord.Insert(connection, record, ignoreDuplicates: true);
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to fetch repo metadata for {Repo}", repoFullName);
@@ -452,6 +518,10 @@ public class GitHubCliProvider(
                 }
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to fetch comments for {Repo}#{Number}", repoFullName, issueNumber);
@@ -482,6 +552,10 @@ public class GitHubCliProvider(
                     }
                 }
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to fetch PR reviews for {Repo}#{Number}", repoFullName, issueNumber);
@@ -502,6 +576,10 @@ public class GitHubCliProvider(
                         commentJson, issueDbId, repoFullName, issueNumber);
                     GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
                 }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -580,6 +658,10 @@ public class GitHubCliProvider(
                 }
                 if (changed) GitHubIssueRecord.Update(connection, pr);
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

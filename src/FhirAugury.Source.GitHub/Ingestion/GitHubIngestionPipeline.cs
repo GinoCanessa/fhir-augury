@@ -61,7 +61,7 @@ public class GitHubIngestionPipeline(
             IngestionResult downloadResult = await source.DownloadAllAsync(repoFilter, ct);
             IngestionResult result = MergeResults(cacheResult, downloadResult);
             await PostIngestionAsync(result, "full", ct);
-            await NotifyOrchestratorAsync(result, "full");
+            await NotifyOrchestratorAsync(result, "full", ct);
 
             _currentStatus = "idle";
             return result;
@@ -107,7 +107,7 @@ public class GitHubIngestionPipeline(
             IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
             IngestionResult result = MergeResults(cacheResult, MergeResults(backfillResult, downloadResult));
             await PostIngestionAsync(result, "incremental", ct);
-            await NotifyOrchestratorAsync(result, "incremental");
+            await NotifyOrchestratorAsync(result, "incremental", ct);
 
             _currentStatus = "idle";
             return result;
@@ -139,7 +139,7 @@ public class GitHubIngestionPipeline(
 
             IngestionResult result = await source.LoadFromCacheAsync(ct);
             await PostIngestionAsync(result, "rebuild", ct);
-            await NotifyOrchestratorAsync(result, "rebuild");
+            await NotifyOrchestratorAsync(result, "rebuild", ct);
 
             _currentStatus = "idle";
             return result;
@@ -247,6 +247,10 @@ public class GitHubIngestionPipeline(
                     }
                 }
                 catch (IngestionDataIntegrityException)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -519,7 +523,7 @@ public class GitHubIngestionPipeline(
 
             IngestionResult result = await BackfillReposAsync(repos, ct);
             await PostIngestionAsync(result, "backfill", ct);
-            await NotifyOrchestratorAsync(result, "backfill");
+            await NotifyOrchestratorAsync(result, "backfill", ct);
 
             _currentStatus = "idle";
             return result;
@@ -606,7 +610,7 @@ public class GitHubIngestionPipeline(
         }
     }
 
-    private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
+    private async Task NotifyOrchestratorAsync(IngestionResult result, string runType, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_options.OrchestratorAddress)) return;
 
@@ -619,7 +623,11 @@ public class GitHubIngestionPipeline(
                 type = runType,
                 itemsIngested = result.ItemsProcessed,
                 completedAt = result.CompletedAt,
-            });
+            }, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
