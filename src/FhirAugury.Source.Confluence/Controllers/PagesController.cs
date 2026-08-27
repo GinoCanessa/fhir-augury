@@ -283,6 +283,7 @@ public class PagesController(ConfluenceDatabase db, IOptions<ConfluenceServiceOp
         {
             ["space_key"] = page.SpaceKey,
             ["version"] = page.VersionNumber.ToString(),
+            ["status"] = page.Status,
         };
         if (page.Labels is not null) metadata["labels"] = page.Labels;
         if (page.ParentId is not null) metadata["parent_id"] = page.ParentId;

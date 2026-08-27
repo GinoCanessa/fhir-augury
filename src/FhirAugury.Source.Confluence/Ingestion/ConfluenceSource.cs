@@ -54,6 +54,7 @@ public class ConfluenceSource
     private readonly ConfluenceSweep _sweep;
     private readonly ILogger<ConfluenceSource> _logger;
     private readonly ConfluenceFetch _fetch;
+    private readonly ConfluenceBlobFetch _fetchBlob;
 
     public ConfluenceSource(
         IOptions<ConfluenceServiceOptions> optionsAccessor,
@@ -64,11 +65,12 @@ public class ConfluenceSource
         ConfluenceSweep sweep,
         ILogger<ConfluenceSource> logger)
         : this(optionsAccessor, database, cache, discovery, sweep, logger,
-            ConfluenceHttp.CreateFetch(httpClientFactory, optionsAccessor.Value))
+            ConfluenceHttp.CreateFetch(httpClientFactory, optionsAccessor.Value),
+            ConfluenceHttp.CreateBlobFetch(httpClientFactory, optionsAccessor.Value))
     {
     }
 
-    /// <summary>Test seam: supply the fetch directly.</summary>
+    /// <summary>Test seam: supply the fetches directly.</summary>
     public ConfluenceSource(
         IOptions<ConfluenceServiceOptions> optionsAccessor,
         ConfluenceDatabase database,
@@ -76,7 +78,8 @@ public class ConfluenceSource
         ConfluenceSpaceDiscovery discovery,
         ConfluenceSweep sweep,
         ILogger<ConfluenceSource> logger,
-        ConfluenceFetch fetch)
+        ConfluenceFetch fetch,
+        ConfluenceBlobFetch? fetchBlob = null)
     {
         _options = optionsAccessor.Value;
         _database = database;
@@ -85,6 +88,8 @@ public class ConfluenceSource
         _sweep = sweep;
         _logger = logger;
         _fetch = fetch;
+        _fetchBlob = fetchBlob
+            ?? ((_, _, _) => throw new InvalidOperationException("No blob fetch was configured."));
     }
 
     /// <summary>
@@ -200,6 +205,28 @@ public class ConfluenceSource
             }
         }
 
+        foreach (ConfluenceReconcileItem item in plan.BlobsToFetch)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                if (await FillBlobAsync(item, ct))
+                {
+                    fetched++;
+                }
+            }
+            catch (Exception ex)
+            {
+                ConfluenceAuthFailure.ThrowIfAuthFailure(ex);
+
+                failed++;
+                errors.Add($"blob:{spaceKey}:{item.Entry.Id}: {ex.Message}");
+                _logger.LogWarning(ex, "Failed to download attachment bytes for {Id} in space {SpaceKey}",
+                    item.Entry.Id, spaceKey);
+            }
+        }
+
         return (fetched, failed);
     }
 
@@ -228,6 +255,33 @@ public class ConfluenceSource
             item.Entry.FileSize);
 
         await WriteCacheAsync(item.CacheKey, artifact.ToJson(), ct);
+    }
+
+    /// <summary>
+    /// Downloads an attachment's bytes straight to the cache.
+    /// </summary>
+    /// <remarks>
+    /// The cap is enforced <b>on the wire</b>, not only from the manifest:
+    /// <c>extensions.fileSize</c> is preflight metadata that can be absent,
+    /// zero, or simply wrong, so a manifest-only gate would let an unbounded
+    /// blob through. The transfer is rejected on <c>Content-Length</c> when that
+    /// is available and aborted mid-copy by a counting stream when it is not.
+    /// </remarks>
+    private async Task<bool> FillBlobAsync(ConfluenceReconcileItem item, CancellationToken ct)
+    {
+        if (item.BlobCacheKey is null || string.IsNullOrEmpty(item.Entry.DownloadPath))
+        {
+            return false;
+        }
+
+        string url = item.Entry.DownloadPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? item.Entry.DownloadPath
+            : $"{_options.BaseUrl.TrimEnd('/')}/{item.Entry.DownloadPath.TrimStart('/')}";
+
+        return await _fetchBlob(url, _options.AttachmentMaxBytes, async stream =>
+        {
+            await _cache.PutAsync(SourceName, item.BlobCacheKey, stream, ct);
+        });
     }
 
     // ── Tombstones ────────────────────────────────────────────────────
@@ -353,6 +407,7 @@ public class ConfluenceSource
 
         using SqliteConnection connection = _database.OpenConnection();
         HashSet<string> allManifestPageIds = new(StringComparer.Ordinal);
+        HashSet<string> allManifestAttachmentIds = new(StringComparer.Ordinal);
 
         foreach (string spaceKey in catalog.Keys)
         {
@@ -390,12 +445,13 @@ public class ConfluenceSource
             }
 
             ReplayComments(connection, spaceKey, manifest, ct);
+            ReplayAttachments(connection, spaceKey, manifest, allManifestAttachmentIds, ct);
         }
 
         // Deletion runs after every space is materialized, so a page that moved
         // between two tracked spaces is re-homed rather than mistaken for a
         // disappearance.
-        DeleteAbsent(connection, catalog, allManifestPageIds, ct);
+        DeleteAbsent(connection, catalog, allManifestPageIds, allManifestAttachmentIds, ct);
 
         _logger.LogInformation(
             "Confluence replay complete: {Processed} pages, {New} new, {Updated} updated, {Failed} failed",
@@ -512,6 +568,67 @@ public class ConfluenceSource
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Upserts one row per attachment the manifest names — <b>including</b>
+    /// those whose bytes were skipped by policy, whose row records the size and
+    /// download URL with a null <c>CacheKey</c> so an oversized attachment stays
+    /// discoverable and fetchable by hand.
+    /// </summary>
+    private void ReplayAttachments(
+        SqliteConnection connection,
+        string spaceKey,
+        ConfluenceManifest manifest,
+        HashSet<string> seenIds,
+        CancellationToken ct)
+    {
+        foreach (ConfluenceManifestEntry entry in manifest.OfType(ContentTypes.Attachment))
+        {
+            if (ct.IsCancellationRequested) break;
+
+            seenIds.Add(entry.Id);
+
+            if (string.IsNullOrEmpty(entry.ContainerId)) continue;
+
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(
+                connection, ConfluenceId: entry.ContainerId);
+            if (page is null) continue;
+
+            string blobKey = ConfluenceCacheLayout.GetAttachmentBlobCacheKey(spaceKey, entry.Id);
+            bool hasBlob = _cache.TryGet(SourceName, blobKey, out Stream? blob);
+            blob?.Dispose();
+
+            ConfluenceAttachmentRecord record = new()
+            {
+                Id = ConfluenceAttachmentRecord.GetIndex(),
+                PageId = page.Id,
+                ConfluencePageId = entry.ContainerId,
+                ConfluenceAttachmentId = entry.Id,
+                FileName = entry.Title,
+                MediaType = entry.MediaType,
+                FileSizeBytes = entry.FileSize,
+                VersionNumber = entry.Version,
+                CreatedAt = entry.When ?? DateTimeOffset.MinValue,
+                DownloadUrl = string.IsNullOrEmpty(entry.DownloadPath)
+                    ? null
+                    : $"{_options.BaseUrl}{entry.DownloadPath}",
+                CacheKey = hasBlob ? blobKey : null,
+            };
+
+            ConfluenceAttachmentRecord? existing = ConfluenceAttachmentRecord.SelectSingle(
+                connection, ConfluenceAttachmentId: entry.Id);
+
+            if (existing is not null)
+            {
+                record.Id = existing.Id;
+                ConfluenceAttachmentRecord.Update(connection, record);
+            }
+            else
+            {
+                ConfluenceAttachmentRecord.Insert(connection, record, ignoreDuplicates: true);
+            }
+        }
+    }
+
     /// <summary>Removes rows for content no manifest names any more.</summary>
     /// <remarks>
     /// Without this, replay would be upsert-only and a tombstoned page would
@@ -522,6 +639,7 @@ public class ConfluenceSource
         SqliteConnection connection,
         ConfluenceSpaceCatalog catalog,
         HashSet<string> manifestPageIds,
+        HashSet<string> manifestAttachmentIds,
         CancellationToken ct)
     {
         if (ct.IsCancellationRequested) return;
@@ -531,6 +649,7 @@ public class ConfluenceSource
         try
         {
             CreateIdTable(connection, transaction, "manifest_page_ids", manifestPageIds);
+            CreateIdTable(connection, transaction, "manifest_attachment_ids", manifestAttachmentIds);
             CreateIdTable(connection, transaction, "catalog_space_keys", catalog.Keys);
 
             Execute(connection, transaction, """
@@ -540,6 +659,10 @@ public class ConfluenceSource
 
                 DELETE FROM confluence_comments
                     WHERE ConfluencePageId IN (SELECT ConfluenceId FROM vanished_pages);
+
+                DELETE FROM confluence_attachments
+                    WHERE ConfluenceAttachmentId NOT IN (SELECT Id FROM manifest_attachment_ids)
+                       OR ConfluencePageId IN (SELECT ConfluenceId FROM vanished_pages);
 
                 DELETE FROM confluence_page_links
                     WHERE SourcePageId IN (SELECT ConfluenceId FROM vanished_pages)
@@ -562,6 +685,7 @@ public class ConfluenceSource
 
                 DROP TABLE vanished_pages;
                 DROP TABLE manifest_page_ids;
+                DROP TABLE manifest_attachment_ids;
                 DROP TABLE catalog_space_keys;
                 """);
 
@@ -618,6 +742,7 @@ public class ConfluenceSource
                 ConfluenceId = pageId,
                 SpaceKey = spaceKey,
                 Title = title,
+                Status = entry.Status,
                 ParentId = ReadParentId(pageJson),
                 BodyStorage = bodyStorage,
                 BodyPlain = bodyPlain,

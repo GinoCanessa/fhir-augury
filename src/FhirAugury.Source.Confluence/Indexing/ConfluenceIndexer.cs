@@ -82,8 +82,9 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
     {
         List<ConfluencePageRecord> pages = ConfluencePageRecord.SelectList(connection);
         List<ConfluenceCommentRecord> comments = ConfluenceCommentRecord.SelectList(connection);
+        List<ConfluenceAttachmentRecord> attachments = ConfluenceAttachmentRecord.SelectList(connection);
 
-        List<IndexContent> documents = new(pages.Count + comments.Count);
+        List<IndexContent> documents = new(pages.Count + comments.Count + attachments.Count);
 
         foreach (ConfluencePageRecord page in pages)
         {
@@ -113,6 +114,27 @@ public class ConfluenceIndexer(ConfluenceDatabase database, AuxiliaryDatabase au
                     ContentType = ContentTypes.Comment,
                     SourceId = $"{comment.ConfluencePageId}:{comment.Id}",
                     Text = comment.Body
+                });
+            }
+        }
+
+        foreach (ConfluenceAttachmentRecord attachment in attachments)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            string text = string.Join(" ",
+                new[] { attachment.FileName, attachment.MediaType }
+                    .Where(s => !string.IsNullOrEmpty(s)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                documents.Add(new()
+                {
+                    ContentType = ContentTypes.Attachment,
+                    // The stable Confluence attachment id, not the volatile
+                    // database Id the comment branch above uses.
+                    SourceId = $"{attachment.ConfluencePageId}:{attachment.ConfluenceAttachmentId}",
+                    Text = text,
                 });
             }
         }
