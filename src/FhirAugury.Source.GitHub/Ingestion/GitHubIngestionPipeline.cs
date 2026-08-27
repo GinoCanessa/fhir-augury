@@ -66,6 +66,12 @@ public class GitHubIngestionPipeline(
             _currentStatus = "idle";
             return result;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _currentStatus = "canceled";
+            logger.LogInformation("Full ingestion canceled (host shutdown or client abort)");
+            throw;
+        }
         catch (Exception ex)
         {
             _currentStatus = $"error: {ex.Message}";
@@ -104,6 +110,8 @@ public class GitHubIngestionPipeline(
                 backfillResult = await BackfillReposAsync(needingBackfill, ct);
             }
 
+            ct.ThrowIfCancellationRequested();
+
             IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
             IngestionResult result = MergeResults(cacheResult, MergeResults(backfillResult, downloadResult));
             await PostIngestionAsync(result, "incremental", ct);
@@ -111,6 +119,12 @@ public class GitHubIngestionPipeline(
 
             _currentStatus = "idle";
             return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _currentStatus = "canceled";
+            logger.LogInformation("Incremental ingestion canceled (host shutdown or client abort)");
+            throw;
         }
         catch (Exception ex)
         {
@@ -143,6 +157,12 @@ public class GitHubIngestionPipeline(
 
             _currentStatus = "idle";
             return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _currentStatus = "canceled";
+            logger.LogInformation("Rebuild from cache canceled (host shutdown or client abort)");
+            throw;
         }
         catch (Exception ex)
         {
@@ -475,8 +495,9 @@ public class GitHubIngestionPipeline(
     /// after its fetch completed without repo-local errors. The gh-CLI provider
     /// accumulates per-repo errors rather than throwing, so a failed repo simply
     /// leaves its marker absent and is retried on the next incremental run.
+    /// A cancelled repo aborts the remaining list rather than sweeping it.
     /// </summary>
-    private async Task<IngestionResult> BackfillReposAsync(IReadOnlyList<string> repos, CancellationToken ct)
+    internal async Task<IngestionResult> BackfillReposAsync(IReadOnlyList<string> repos, CancellationToken ct)
     {
         IngestionResult aggregate = new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
 
@@ -487,7 +508,16 @@ public class GitHubIngestionPipeline(
             _currentStatus = $"backfilling:{repo}";
             logger.LogInformation("Backfilling full history for {Repo}", repo);
             IngestionResult repoResult = await source.DownloadBackfillAsync(repo, ct);
+            ct.ThrowIfCancellationRequested();
             aggregate = MergeResults(aggregate, repoResult);
+
+            if (repoResult.Canceled)
+            {
+                logger.LogInformation(
+                    "Backfill for {Repo} canceled after {Count} item(s); progress checkpointed for resume",
+                    repo, repoResult.ItemsProcessed);
+                break;
+            }
 
             if (repoResult.Errors.Count == 0)
             {
@@ -527,6 +557,12 @@ public class GitHubIngestionPipeline(
 
             _currentStatus = "idle";
             return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _currentStatus = "canceled";
+            logger.LogInformation("History backfill canceled (host shutdown or client abort)");
+            throw;
         }
         catch (Exception ex)
         {
@@ -571,7 +607,10 @@ public class GitHubIngestionPipeline(
             first.ItemsUpdated + second.ItemsUpdated,
             first.ItemsFailed + second.ItemsFailed,
             [.. first.Errors, .. second.Errors],
-            first.StartedAt);
+            first.StartedAt)
+        {
+            Canceled = first.Canceled || second.Canceled,
+        };
     }
 
     /// <summary>
