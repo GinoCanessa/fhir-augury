@@ -17,6 +17,7 @@ namespace FhirAugury.Source.Confluence.Controllers;
 [Route("api/v1")]
 public class LifecycleController(
     ConfluenceIngestionPipeline pipeline,
+    ConfluenceSource source,
     ConfluenceDatabase db,
     IResponseCache cache,
     IIndexTracker indexTracker,
@@ -53,8 +54,31 @@ public class LifecycleController(
         int commentCount = ConfluenceCommentRecord.SelectCount(connection);
         int spaceCount = ConfluenceSpaceRecord.SelectCount(connection);
         int linkCount = ConfluencePageLinkRecord.SelectCount(connection);
+        int attachmentCount = ConfluenceAttachmentRecord.SelectCount(connection);
         long dbSize = db.GetDatabaseSizeBytes();
         CacheStats cacheStats = cache.GetStats(ConfluenceCacheLayout.SourceName);
+
+        Dictionary<string, int> counts = new()
+        {
+            ["spaces"] = spaceCount,
+            ["page_links"] = linkCount,
+            ["attachments"] = attachmentCount,
+        };
+
+        // Reconciliation counts reach the CLI and orchestrator through plumbing
+        // that already exists. skippedBytes deliberately does NOT go here:
+        // AdditionalCounts is Dictionary<string, int> and a byte total would
+        // overflow it. It lives in the reconcile report only, which is why the
+        // verdict itself has to carry complete_with_skips.
+        foreach (ConfluenceReconcilePlan plan in source.ReconcileReport(source.BuildPolicy()))
+        {
+            Add(counts, "manifest_items", plan.ManifestItemCount);
+            Add(counts, "cached", plan.CachedCount);
+            Add(counts, "stale", plan.StaleCount);
+            Add(counts, "missing", plan.MissingCount);
+            Add(counts, "vanished", plan.VanishedCount);
+            Add(counts, "skipped_by_policy", plan.SkippedByPolicyCount);
+        }
 
         return Ok(new StatsResponse
         {
@@ -64,13 +88,12 @@ public class LifecycleController(
             DatabaseSizeBytes = dbSize,
             CacheSizeBytes = cacheStats.TotalBytes,
             CacheFiles = cacheStats.FileCount,
-            AdditionalCounts = new Dictionary<string, int>
-            {
-                ["spaces"] = spaceCount,
-                ["page_links"] = linkCount,
-            },
+            AdditionalCounts = counts,
         });
     }
+
+    private static void Add(Dictionary<string, int> counts, string key, int value) =>
+        counts[key] = counts.TryGetValue(key, out int existing) ? existing + value : value;
 
     [HttpGet("health")]
     public IActionResult GetHealth()

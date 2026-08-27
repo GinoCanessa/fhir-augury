@@ -87,4 +87,21 @@ public class ConfluenceProxyControllerTests
         Assert.Equal("/api/v1/ingest", h.Requests[0].RequestUri!.AbsolutePath);
         Assert.Equal("?type=full", h.Requests[0].RequestUri!.Query);
     }
+
+    [Fact]
+    public async Task CacheReconcileReport_ForwardsGetAndPreservesQueryString()
+    {
+        // The orchestrator stays the only aggregator; nothing gains a
+        // source-direct client for the completeness verdict.
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?missingSample=5");
+
+        IActionResult r = await c.GetCacheReconcileReport(5, default);
+        await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Single(h.Requests);
+        Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
+        Assert.Equal("/api/v1/cache/reconcile-report", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?missingSample=5", h.Requests[0].RequestUri!.Query);
+    }
 }

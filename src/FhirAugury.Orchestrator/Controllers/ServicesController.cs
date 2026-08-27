@@ -79,6 +79,7 @@ public class ServicesController(
                     totalComments = stats?.TotalComments ?? 0,
                     databaseSizeBytes = stats?.DatabaseSizeBytes ?? 0L,
                     cacheSizeBytes = stats?.CacheSizeBytes ?? 0L,
+                    additionalCounts = stats?.AdditionalCounts,
                     status = "ok",
                 });
             }
@@ -96,6 +97,7 @@ public class ServicesController(
                     totalComments = 0,
                     databaseSizeBytes = 0L,
                     cacheSizeBytes = 0L,
+                    additionalCounts = (Dictionary<string, int>?)null,
                     status = "unavailable",
                 });
             }

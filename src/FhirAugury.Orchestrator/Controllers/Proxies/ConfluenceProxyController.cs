@@ -152,6 +152,16 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     public Task<IActionResult> ListSpaces(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "spaces", Request, ct);
 
+    /// <summary>
+    /// Get the Confluence cache reconciliation report — per-space completeness
+    /// verdict, computed from local disk with no network.
+    /// </summary>
+    /// <param name="missingSample">How many missing ids to name per space.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("cache/reconcile-report")]
+    public Task<IActionResult> GetCacheReconcileReport([FromQuery] int? missingSample, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "cache/reconcile-report", Request, ct);
+
     // ── Ingestion ────────────────────────────────────────────────────────
 
     /// <summary>Trigger a synchronous ingestion run on the Confluence source.</summary>

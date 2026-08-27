@@ -160,6 +160,21 @@ public class ConfluenceCacheReplayTests : IDisposable
 
     private SqliteConnection Open() => _database.OpenConnection();
 
+    /// <summary>Moves a live cache entry under <c>_vanished/</c>, as the run does.</summary>
+    private void Tombstone(string key)
+    {
+        if (!_cache.TryGet(ConfluenceCacheLayout.SourceName, key, out Stream? stream)) return;
+
+        using (stream)
+        {
+            _cache.PutAsync(ConfluenceCacheLayout.SourceName,
+                ConfluenceCacheLayout.GetVanishedCacheKey(key), stream, CancellationToken.None)
+                .GetAwaiter().GetResult();
+        }
+
+        _cache.Remove(ConfluenceCacheLayout.SourceName, key);
+    }
+
     private int CountComments(string confluencePageId)
     {
         using SqliteConnection connection = Open();
@@ -282,16 +297,8 @@ public class ConfluenceCacheReplayTests : IDisposable
         // A tombstoned page still on disk. FileSystemResponseCache filters
         // _meta_*.json by file name only, so nothing under _vanished/ is
         // excluded by that filter — manifest-driven replay is what keeps it out.
-        string live = ConfluenceCacheLayout.GetPageCacheKey("FHIR", "999");
         WritePage("FHIR", "999");
-        using (Stream? stream = _cache.TryGet(ConfluenceCacheLayout.SourceName, live, out Stream? s) ? s : null)
-        {
-            _cache.PutAsync(ConfluenceCacheLayout.SourceName,
-                ConfluenceCacheLayout.GetVanishedCacheKey(live), stream!, CancellationToken.None)
-                .GetAwaiter().GetResult();
-        }
-
-        _cache.Remove(ConfluenceCacheLayout.SourceName, live);
+        Tombstone(ConfluenceCacheLayout.GetPageCacheKey("FHIR", "999"));
 
         Replay();
 
