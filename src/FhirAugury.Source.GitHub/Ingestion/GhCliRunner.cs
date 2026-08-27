@@ -21,7 +21,7 @@ public class GhCliRunner(
         optionsAccessor.Value.GhCli.MaxConcurrentProcesses);
 
     /// <summary>Runs a gh command and returns the parsed JSON output.</summary>
-    public async Task<JsonDocument> RunAsync(string arguments, CancellationToken ct)
+    public virtual async Task<JsonDocument> RunAsync(string arguments, CancellationToken ct)
     {
         (string stdout, string stderr, int exitCode) = await ExecuteProcessAsync(arguments, ct);
 
@@ -52,7 +52,7 @@ public class GhCliRunner(
     /// Runs a gh command that returns a JSON array and yields each element.
     /// Useful for processing large result sets without buffering the entire array.
     /// </summary>
-    public async IAsyncEnumerable<JsonElement> StreamArrayAsync(
+    public virtual async IAsyncEnumerable<JsonElement> StreamArrayAsync(
         string arguments,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
@@ -62,6 +62,7 @@ public class GhCliRunner(
         {
             foreach (JsonElement element in doc.RootElement.EnumerateArray())
             {
+                ct.ThrowIfCancellationRequested();
                 yield return element.Clone();
             }
         }
@@ -76,7 +77,7 @@ public class GhCliRunner(
     /// Runs a gh command that uses <c>gh api --paginate</c>, which outputs
     /// concatenated JSON arrays (one per page). Parses and yields all elements.
     /// </summary>
-    public async IAsyncEnumerable<JsonElement> StreamPaginatedApiAsync(
+    public virtual async IAsyncEnumerable<JsonElement> StreamPaginatedApiAsync(
         string apiPath,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
@@ -100,6 +101,7 @@ public class GhCliRunner(
 
         foreach (JsonElement element in elements)
         {
+            ct.ThrowIfCancellationRequested();
             yield return element;
         }
     }
@@ -218,17 +220,31 @@ public class GhCliRunner(
             process.BeginErrorReadLine();
 
             TimeSpan timeout = _config.GetProcessTimeout();
-            using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            linkedCts.CancelAfter(timeout);
+            using CancellationTokenSource timeoutCts = new CancellationTokenSource(timeout);
+            using CancellationTokenSource linkedCts =
+                CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
             try
             {
                 await process.WaitForExitAsync(linkedCts.Token);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Timeout — kill the process
                 try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+
+                // Reap before the finally-block releases the gate, so the next
+                // invocation cannot start while this child is still tearing down.
+                try
+                {
+                    await process.WaitForExitAsync(CancellationToken.None)
+                        .WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                }
+                catch { /* best effort */ }
+
+                // Caller cancel wins over a coincident timeout.
+                if (ct.IsCancellationRequested)
+                    throw new OperationCanceledException($"gh command canceled: gh {arguments}", ct);
+
                 throw new TimeoutException($"gh command timed out after {timeout}: gh {arguments}");
             }
 
