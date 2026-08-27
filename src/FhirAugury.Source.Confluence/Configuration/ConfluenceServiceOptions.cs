@@ -54,6 +54,46 @@ public class ConfluenceServiceOptions
     public bool ReloadFromCacheOnStartup { get; set; } = false;
 
     public int PageSize { get; set; } = 25;
+
+    /// <summary>
+    /// Page size used by the body-less sweep. Larger than <see cref="PageSize"/>
+    /// because a sweep entry carries no body: Confluence honours 200 verbatim
+    /// (see docs/technical/confluence-api-notes.md), so the whole instance
+    /// enumerates in roughly 1,660 requests.
+    /// </summary>
+    public int SweepPageSize { get; set; } = 200;
+
+    /// <summary>
+    /// Attachment blobs larger than this are not downloaded; their metadata is
+    /// still swept, cached, replayed and indexed. <c>0</c> means unlimited.
+    /// A negative value is rejected at startup.
+    /// </summary>
+    /// <remarks>
+    /// The cap gates <em>downloading</em>, not <em>keeping</em>: lowering it
+    /// never removes bytes already on disk, and raising it makes previously
+    /// skipped blobs converge on the next run.
+    /// </remarks>
+    public long AttachmentMaxBytes { get; set; } = 104_857_600;
+
+    /// <summary>
+    /// A space whose manifest is younger than this is skipped by the sweep and
+    /// its previous manifest reused. The shipped default re-sweeps every space
+    /// on every run.
+    /// </summary>
+    /// <remarks>
+    /// This is an age threshold, not a per-run request budget. It exists so the
+    /// full-sweep decision can be revisited by editing a default rather than by
+    /// a redesign; Phase 1's measurement (~5.5 minutes for the whole instance at
+    /// 5 req/s) gives no present reason to raise it.
+    /// </remarks>
+    public string SpaceSweepMaxAge { get; set; } = "00:00:00";
+
+    /// <summary>Parsed <see cref="SpaceSweepMaxAge"/>, falling back to zero.</summary>
+    public TimeSpan GetSpaceSweepMaxAge() =>
+        TimeSpan.TryParse(SpaceSweepMaxAge, out TimeSpan parsed) && parsed > TimeSpan.Zero
+            ? parsed
+            : TimeSpan.Zero;
+
     public PortConfiguration Ports { get; set; } = new() { Http = 5180 };
     public RateLimitConfiguration RateLimiting { get; set; } = new();
     public AuxiliaryDatabaseOptions AuxiliaryDatabase { get; set; } = new();

@@ -25,7 +25,13 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_CONFLUENCE_");
 
-builder.Services.Configure<ConfluenceServiceOptions>(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName));
+builder.Services.AddOptions<ConfluenceServiceOptions>()
+    .Bind(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName))
+    .Validate(o => o.AttachmentMaxBytes >= 0,
+        "Confluence:AttachmentMaxBytes must be zero (unlimited) or a positive byte count.")
+    .Validate(o => o.SweepPageSize > 0,
+        "Confluence:SweepPageSize must be greater than zero.")
+    .ValidateOnStart();
 
 // ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
 builder.AddServiceDefaults();
@@ -89,6 +95,8 @@ builder.Services.AddHttpClient("confluence", client =>
   .AddStandardResilienceHandler();
 
 // Ingestion
+builder.Services.AddSingleton<ConfluenceSpaceDiscovery>();
+builder.Services.AddSingleton<ConfluenceSweep>();
 builder.Services.AddSingleton<ConfluenceSource>();
 builder.Services.AddSingleton(sp =>
 {
