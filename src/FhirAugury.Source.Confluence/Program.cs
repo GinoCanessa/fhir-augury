@@ -71,12 +71,21 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
 
 // HTTP client with auth
 builder.Services.AddTransient<ConfluenceAuthHandler>();
+builder.Services.AddTransient<ConfluenceRateLimiter>();
 builder.Services.AddHttpClient("confluence", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
-    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    // HL7's Confluence sits behind an AWS WAF that captcha-challenges any
+    // non-browser-shaped User-Agent with 405 Not Allowed. A bare "FhirAugury/2.0"
+    // token is rejected on every request; the Mozilla-prefixed comment form
+    // passes while still identifying this client honestly.
+    // See docs/technical/confluence-api-notes.md.
+    client.DefaultRequestHeaders.TryAddWithoutValidation(
+        "user-agent",
+        "Mozilla/5.0 (compatible; FhirAugury/2.0; +https://github.com/GinoCanessa/fhir-augury)");
 }).AddHttpMessageHandler<ConfluenceAuthHandler>()
+  .AddHttpMessageHandler<ConfluenceRateLimiter>()
   .AddStandardResilienceHandler();
 
 // Ingestion
