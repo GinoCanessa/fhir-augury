@@ -42,9 +42,7 @@ public class ConfluenceIngestionPipeline(
         {
             logger.LogInformation("Starting full ingestion");
 
-            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
-            IngestionResult downloadResult = await source.DownloadAllAsync(ct);
-            IngestionResult result = MergeResults(cacheResult, downloadResult);
+            IngestionResult result = await source.ReconcileAsync(source.BuildPolicy(forceRefetchAll: true), ct);
             PostIngestion(result, "full", ct);
             await NotifyOrchestratorAsync(result, "full");
 
@@ -73,12 +71,9 @@ public class ConfluenceIngestionPipeline(
 
         try
         {
-            DateTimeOffset since = GetLastSyncTime();
-            logger.LogInformation("Starting incremental ingestion since {Since}", since);
+            logger.LogInformation("Starting incremental ingestion (manifest reconciliation)");
 
-            IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
-            IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
-            IngestionResult result = MergeResults(cacheResult, downloadResult);
+            IngestionResult result = await source.ReconcileAsync(source.BuildPolicy(), ct);
             PostIngestion(result, "incremental", ct);
             await NotifyOrchestratorAsync(result, "incremental");
 
@@ -129,8 +124,7 @@ public class ConfluenceIngestionPipeline(
         }
     }
 
-    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
-    {
+    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)    {
         ct.ThrowIfCancellationRequested();
 
         logger.LogInformation("Rebuilding BM25 index");
@@ -166,23 +160,79 @@ public class ConfluenceIngestionPipeline(
             result.ItemsProcessed, result.ItemsNew, result.ItemsUpdated);
     }
 
+    /// <summary>
+    /// Writes the run's sync-state row, plus the scheduling row when this was a
+    /// network reconciliation.
+    /// </summary>
+    /// <remarks>
+    /// The scheduling row is written under a single named sub-source so a
+    /// cache-only rebuild can never satisfy <c>MinSyncAge</c> and suppress the
+    /// next network sync.
+    /// </remarks>
     private void UpdateSyncState(IngestionResult result, string runType, CancellationToken ct = default)
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        ConfluenceSyncStateRecord? existing = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName, SubSource: runType);
+        string status = ResolveStatus(result, runType);
+        WriteSyncStateRow(connection, runType, result, status);
 
-        ConfluenceSyncStateRecord syncState = new ConfluenceSyncStateRecord
+        if (runType is "full" or "incremental")
+        {
+            WriteSyncStateRow(connection, ConfluenceSource.SchedulingSubSource, result, status);
+        }
+    }
+
+    /// <summary>
+    /// Status now comes from the reconciliation verdict rather than from
+    /// <c>Errors.Count == 0</c>: a run with no errors can still leave the cache
+    /// incomplete, and saying "success" then would be the false confidence this
+    /// design exists to remove.
+    /// </summary>
+    private string ResolveStatus(IngestionResult result, string runType)
+    {
+        if (runType == "rebuild")
+        {
+            return result.Errors.Count == 0 ? "success" : "completed_with_errors";
+        }
+
+        IReadOnlyList<ConfluenceReconcilePlan> plans = source.ReconcileReport(source.BuildPolicy());
+        if (plans.Count == 0)
+        {
+            return "unknown";
+        }
+
+        if (plans.Any(p => p.Verdict == ConfluenceSpaceVerdict.Unknown))
+        {
+            return "unknown";
+        }
+
+        if (plans.Any(p => p.Verdict == ConfluenceSpaceVerdict.Partial))
+        {
+            return "partial";
+        }
+
+        return plans.Any(p => p.Verdict == ConfluenceSpaceVerdict.CompleteWithSkips)
+            ? "complete_with_skips"
+            : "complete";
+    }
+
+    private void WriteSyncStateRow(
+        SqliteConnection connection, string subSource, IngestionResult result, string status)
+    {
+        ConfluenceSyncStateRecord? existing = ConfluenceSyncStateRecord.SelectSingle(
+            connection, SourceName: ConfluenceSource.SourceName, SubSource: subSource);
+
+        ConfluenceSyncStateRecord syncState = new()
         {
             Id = existing?.Id ?? ConfluenceSyncStateRecord.GetIndex(),
             SourceName = ConfluenceSource.SourceName,
-            SubSource = runType,
+            SubSource = subSource,
             LastSyncAt = result.CompletedAt,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
             SyncSchedule = optionsAccessor.Value.SyncSchedule,
             NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(optionsAccessor.Value.SyncSchedule)),
-            Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
+            Status = status,
             LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
         };
 
@@ -192,56 +242,23 @@ public class ConfluenceIngestionPipeline(
             ConfluenceSyncStateRecord.Insert(connection, syncState);
     }
 
-    private DateTimeOffset GetLastSyncTime()
-    {
-        using SqliteConnection connection = database.OpenConnection();
-        ConfluenceSyncStateRecord? state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
-        return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
-    }
-
+    /// <summary>
+    /// When the last <b>network</b> reconciliation completed. Selects the
+    /// scheduling sub-source exactly; previously it had no <c>SubSource</c>
+    /// filter and could return the row a cache rebuild wrote.
+    /// </summary>
     public DateTimeOffset? GetLastSyncCompletedAt()
     {
         using SqliteConnection connection = database.OpenConnection();
-        ConfluenceSyncStateRecord? state = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+        ConfluenceSyncStateRecord? state = ConfluenceSyncStateRecord.SelectSingle(
+            connection,
+            SourceName: ConfluenceSource.SourceName,
+            SubSource: ConfluenceSource.SchedulingSubSource);
         return state?.LastSyncAt;
     }
 
     async Task IIngestionPipeline.RunIncrementalIngestionAsync(CancellationToken ct)
         => await RunIncrementalIngestionAsync(ct);
-
-    private async Task<IngestionResult?> LoadCacheIfDatabaseEmptyAsync(CancellationToken ct)
-    {
-        using SqliteConnection connection = database.OpenConnection();
-        int spaceCount = ConfluenceSpaceRecord.SelectCount(connection);
-
-        if (spaceCount > 0)
-            return null;
-
-        logger.LogInformation("Database is empty; loading local cache before downloading");
-        IngestionResult cacheResult = await source.LoadFromCacheAsync(ct);
-
-        if (cacheResult.ItemsProcessed > 0)
-            logger.LogInformation("Pre-loaded {Count} items from cache ({New} new)",
-                cacheResult.ItemsProcessed, cacheResult.ItemsNew);
-        else
-            logger.LogInformation("No cached data found to pre-load");
-
-        return cacheResult;
-    }
-
-    private static IngestionResult MergeResults(IngestionResult? first, IngestionResult second)
-    {
-        if (first is null)
-            return second;
-
-        return new IngestionResult(
-            first.ItemsProcessed + second.ItemsProcessed,
-            first.ItemsNew + second.ItemsNew,
-            first.ItemsUpdated + second.ItemsUpdated,
-            first.ItemsFailed + second.ItemsFailed,
-            [.. first.Errors, .. second.Errors],
-            first.StartedAt);
-    }
 
     private async Task NotifyOrchestratorAsync(IngestionResult result, string runType)
     {

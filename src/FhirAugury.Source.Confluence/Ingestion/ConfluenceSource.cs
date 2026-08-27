@@ -1,13 +1,13 @@
+using System.Text;
 using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
-using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Indexing;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Confluence.Cache;
 using FhirAugury.Source.Confluence.Configuration;
 using FhirAugury.Source.Confluence.Database;
 using FhirAugury.Source.Confluence.Database.Records;
-using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,330 +17,615 @@ using static FhirAugury.Common.JsonElementHelper;
 namespace FhirAugury.Source.Confluence.Ingestion;
 
 /// <summary>
-/// Fetches pages from the Confluence REST API, caches responses, and upserts into the database.
+/// Acquires Confluence content by reconciliation — discover, sweep, reconcile,
+/// fill, tombstone, replay — and materializes the database from the cache.
 /// </summary>
-public class ConfluenceSource(
-    IOptions<ConfluenceServiceOptions> optionsAccessor,
-    IHttpClientFactory httpClientFactory,
-    ConfluenceDatabase database,
-    IResponseCache cache,
-    ILogger<ConfluenceSource> logger)
+/// <remarks>
+/// <para>
+/// There is no watermark and no full/incremental split. What still needs
+/// fetching is a pure function of (manifest, cache tree), so an interrupted run
+/// simply leaves more to do and the next run picks it up. Runs converge.
+/// </para>
+/// <para>
+/// Download writes <b>only</b> to the cache; replay is the only path that writes
+/// the database. That is what makes cache self-sufficiency provable rather than
+/// asserted.
+/// </para>
+/// </remarks>
+public class ConfluenceSource
 {
-    private readonly ConfluenceServiceOptions options = optionsAccessor.Value;
-
+    /// <summary>The source name used for cache and sync-state rows.</summary>
     public const string SourceName = SourceSystems.Confluence;
 
-    /// <summary>Performs a full download of all pages in configured spaces.</summary>
-    public async Task<IngestionResult> DownloadAllAsync(CancellationToken ct)
+    /// <summary>
+    /// Sync-state sub-source written <b>only</b> by network reconciliation.
+    /// </summary>
+    /// <remarks>
+    /// Scheduling reads this row exactly. Previously the lookup had no
+    /// <c>SubSource</c> filter, so a cache-only rebuild could satisfy
+    /// <c>MinSyncAge</c> and silently suppress the next network sync.
+    /// </remarks>
+    public const string SchedulingSubSource = "reconcile";
+
+    private readonly ConfluenceServiceOptions _options;
+    private readonly ConfluenceDatabase _database;
+    private readonly IResponseCache _cache;
+    private readonly ConfluenceSpaceDiscovery _discovery;
+    private readonly ConfluenceSweep _sweep;
+    private readonly ILogger<ConfluenceSource> _logger;
+    private readonly ConfluenceFetch _fetch;
+
+    public ConfluenceSource(
+        IOptions<ConfluenceServiceOptions> optionsAccessor,
+        IHttpClientFactory httpClientFactory,
+        ConfluenceDatabase database,
+        IResponseCache cache,
+        ConfluenceSpaceDiscovery discovery,
+        ConfluenceSweep sweep,
+        ILogger<ConfluenceSource> logger)
+        : this(optionsAccessor, database, cache, discovery, sweep, logger,
+            ConfluenceHttp.CreateFetch(httpClientFactory, optionsAccessor.Value))
+    {
+    }
+
+    /// <summary>Test seam: supply the fetch directly.</summary>
+    public ConfluenceSource(
+        IOptions<ConfluenceServiceOptions> optionsAccessor,
+        ConfluenceDatabase database,
+        IResponseCache cache,
+        ConfluenceSpaceDiscovery discovery,
+        ConfluenceSweep sweep,
+        ILogger<ConfluenceSource> logger,
+        ConfluenceFetch fetch)
+    {
+        _options = optionsAccessor.Value;
+        _database = database;
+        _cache = cache;
+        _discovery = discovery;
+        _sweep = sweep;
+        _logger = logger;
+        _fetch = fetch;
+    }
+
+    /// <summary>
+    /// One convergent pass: discover spaces, sweep them, reconcile against the
+    /// cache, fill the gaps, tombstone what disappeared, then replay.
+    /// </summary>
+    public async Task<IngestionResult> ReconcileAsync(ConfluenceReconcilePolicy policy, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        List<string> errors = new List<string>();
+        List<string> errors = [];
+        int fetched = 0;
+        int failed = 0;
 
-        HttpClient httpClient = httpClientFactory.CreateClient("confluence");
-        using SqliteConnection connection = database.OpenConnection();
+        ConfluenceSpaceCatalog catalog = await _discovery.DiscoverAsync(ct);
 
-        foreach (string spaceKey in options.GetEffectiveSpaces())
+        foreach (string spaceKey in catalog.Keys)
         {
             if (ct.IsCancellationRequested) break;
 
-            logger.LogInformation("Fetching space: {SpaceKey}", spaceKey);
-            await UpsertSpaceAsync(connection, spaceKey, ct, errors);
-
-            int start = 0;
-            bool hasMore = true;
-
-            while (hasMore && !ct.IsCancellationRequested)
+            ConfluenceSweepResult result = await _sweep.SweepSpaceAsync(spaceKey, ct);
+            if (!result.Succeeded)
             {
-                string url = $"{options.BaseUrl}/rest/api/content?spaceKey={Uri.EscapeDataString(spaceKey)}" +
-                          $"&type=page&expand=body.storage,version,ancestors,metadata.labels" +
-                          $"&start={start}&limit={options.PageSize}";
-
-                logger.LogInformation("Fetching pages: space={Space}, start={Start}", spaceKey, start);
-
-                JsonDocument doc;
-                try
-                {
-                    using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
-                    response.EnsureSuccessStatusCode();
-                    string json = await response.Content.ReadAsStringAsync(ct);
-                    doc = JsonDocument.Parse(json);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to fetch pages for space {Space} at start={Start}", spaceKey, start);
-                    errors.Add($"space:{spaceKey}:start:{start}: {ex.Message}");
-                    break;
-                }
-
-                using (doc)
-                {
-                    JsonElement root = doc.RootElement;
-                    JsonElement results = root.GetProperty("results");
-
-                    foreach (JsonElement pageJson in results.EnumerateArray())
-                    {
-                        // Cache individual page JSON
-                        string pageId = pageJson.GetProperty("id").GetString()!;
-                        string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
-                        byte[] pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
-                        using MemoryStream cacheStream = new MemoryStream(pageBytes);
-                        await cache.PutAsync(SourceName, cacheKey, cacheStream, ct);
-
-                        PageResult result = ProcessPage(pageJson, spaceKey, connection);
-                        itemsProcessed++;
-
-                        switch (result)
-                        {
-                            case PageResult.New: itemsNew++; break;
-                            case PageResult.Updated: itemsUpdated++; break;
-                            case PageResult.Failed: itemsFailed++; break;
-                        }
-
-                        if (itemsProcessed % 500 == 0)
-                            logger.LogInformation("Confluence progress: {Count} pages processed", itemsProcessed);
-                    }
-
-                    int size = results.GetArrayLength();
-                    start += size;
-                    hasMore = root.TryGetProperty("_links", out JsonElement links) &&
-                              links.TryGetProperty("next", out _);
-                }
+                errors.Add($"sweep:{spaceKey}: {result.Error}");
             }
         }
 
-        // Write cache metadata
-        await CacheMetadataService.WriteMetadataAsync(
-            cache.RootPath, ConfluenceCacheLayout.MetadataFileName,
-            new ConfluenceCacheMetadata
-            {
-                LastSyncDate = DateOnly.FromDateTime(DateTime.UtcNow).ToString("yyyy-MM-dd"),
-                LastSyncTimestamp = DateTimeOffset.UtcNow,
-                TotalFiles = itemsProcessed,
-                Format = "json",
-            }, ct);
-
-        logger.LogInformation(
-            "Confluence full download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
-
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        foreach (string spaceKey in catalog.Keys)
         {
-            CompletedAt = DateTimeOffset.UtcNow
+            if (ct.IsCancellationRequested) break;
+
+            ConfluenceReconcilePlan plan = ConfluenceReconciler.Reconcile(spaceKey, _cache, policy);
+            (int spaceFetched, int spaceFailed) = await FillAsync(spaceKey, plan, errors, ct);
+            fetched += spaceFetched;
+            failed += spaceFailed;
+        }
+
+        // Tombstoning runs only after every space has been swept and filled: a
+        // page that moves from space A to space B leaves A's manifest and joins
+        // B's, and tombstoning A's copy mid-run would discard content B has not
+        // yet fetched.
+        int tombstoned = await TombstoneAsync(catalog, ct);
+
+        IngestionResult replay = await LoadFromCacheAsync(ct);
+        await WriteCacheMetadataAsync(catalog, ct);
+
+        _logger.LogInformation(
+            "Confluence reconcile complete: {Spaces} spaces, {Fetched} fetched, {Failed} failed, {Tombstoned} tombstoned",
+            catalog.Spaces.Count, fetched, failed, tombstoned);
+
+        return new IngestionResult(
+            replay.ItemsProcessed,
+            replay.ItemsNew,
+            replay.ItemsUpdated,
+            failed + replay.ItemsFailed,
+            [.. errors, .. replay.Errors],
+            startedAt)
+        {
+            CompletedAt = DateTimeOffset.UtcNow,
         };
     }
 
-    /// <summary>Performs an incremental download of pages updated since the given timestamp.</summary>
-    public async Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct)
+    /// <summary>Computes the standing verdict for every catalogued space.</summary>
+    public IReadOnlyList<ConfluenceReconcilePlan> ReconcileReport(ConfluenceReconcilePolicy policy)
     {
-        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
-        int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        List<string> errors = new List<string>();
-
-        HttpClient httpClient = httpClientFactory.CreateClient("confluence");
-        using SqliteConnection connection = database.OpenConnection();
-
-        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm");
-        List<string> effectiveSpaces = options.GetEffectiveSpaces();
-        if (effectiveSpaces.Count == 0)
+        ConfluenceSpaceCatalog? catalog = ConfluenceReconciler.ReadSpaceCatalog(_cache);
+        if (catalog is null)
         {
-            logger.LogWarning("Confluence Spaces is explicitly empty; skipping page search");
-            return new IngestionResult(0, 0, 0, 0, errors, startedAt) { CompletedAt = DateTimeOffset.UtcNow };
+            return [];
         }
-        string spacesParam = string.Join(",", effectiveSpaces.Select(s => $"\"{s}\""));
-        string cql = $"lastModified >= \"{sinceStr}\" AND space in ({spacesParam}) AND type = page";
 
-        int start = 0;
-        bool hasMore = true;
+        return [.. catalog.Keys.Select(key => ConfluenceReconciler.Reconcile(key, _cache, policy))];
+    }
 
-        while (hasMore && !ct.IsCancellationRequested)
+    /// <summary>The reconcile policy implied by current configuration.</summary>
+    public ConfluenceReconcilePolicy BuildPolicy(bool forceRefetchAll = false) => new()
+    {
+        AttachmentMaxBytes = _options.AttachmentMaxBytes,
+        ForceRefetchAll = forceRefetchAll,
+    };
+
+    // ── Fill ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Fetches everything the plan says is missing or stale, one independently
+    /// retryable unit at a time, writing only to the cache.
+    /// </summary>
+    private async Task<(int Fetched, int Failed)> FillAsync(
+        string spaceKey, ConfluenceReconcilePlan plan, List<string> errors, CancellationToken ct)
+    {
+        int fetched = 0;
+        int failed = 0;
+
+        foreach (ConfluenceReconcileItem item in plan.ToFetch)
         {
-            string url = $"{options.BaseUrl}/rest/api/content/search?cql={Uri.EscapeDataString(cql)}" +
-                      $"&expand=body.storage,version,ancestors,metadata.labels" +
-                      $"&start={start}&limit={options.PageSize}";
+            if (ct.IsCancellationRequested) break;
 
-            logger.LogInformation("Fetching incremental pages: start={Start}, since={Since}", start, sinceStr);
-
-            JsonDocument doc;
             try
             {
-                using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(httpClient, url, ct, sourceName: SourceName);
-                response.EnsureSuccessStatusCode();
-                string json = await response.Content.ReadAsStringAsync(ct);
-                doc = JsonDocument.Parse(json);
+                await FillItemAsync(spaceKey, item, ct);
+                fetched++;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to fetch incremental pages at start={Start}", start);
-                errors.Add($"incremental:start:{start}: {ex.Message}");
-                break;
-            }
+                // An expired mid-run credential aborts the run rather than
+                // producing thousands of per-item failures that a later
+                // reconcile would misread as mass deletion.
+                ConfluenceAuthFailure.ThrowIfAuthFailure(ex);
 
-            using (doc)
-            {
-                JsonElement root = doc.RootElement;
-                JsonElement results = root.GetProperty("results");
-
-                foreach (JsonElement pageJson in results.EnumerateArray())
-                {
-                    string spaceKey = GetNestedString(pageJson, "space", "key") ?? effectiveSpaces[0];
-
-                    string pageId = pageJson.GetProperty("id").GetString()!;
-                    string cacheKey = ConfluenceCacheLayout.GetPageCacheKey(spaceKey, pageId);
-                    byte[] pageBytes = System.Text.Encoding.UTF8.GetBytes(pageJson.GetRawText());
-                    using MemoryStream cacheStream = new MemoryStream(pageBytes);
-                    await cache.PutAsync(SourceName, cacheKey, cacheStream, ct);
-
-                    PageResult result = ProcessPage(pageJson, spaceKey, connection);
-                    itemsProcessed++;
-
-                    switch (result)
-                    {
-                        case PageResult.New: itemsNew++; break;
-                        case PageResult.Updated: itemsUpdated++; break;
-                        case PageResult.Failed: itemsFailed++; break;
-                    }
-                }
-
-                int size = results.GetArrayLength();
-                start += size;
-                hasMore = root.TryGetProperty("_links", out JsonElement links) &&
-                          links.TryGetProperty("next", out _);
+                failed++;
+                errors.Add($"fill:{spaceKey}:{item.Entry.Type}:{item.Entry.Id}: {ex.Message}");
+                _logger.LogWarning(ex, "Failed to fill {Type} {Id} in space {SpaceKey}",
+                    item.Entry.Type, item.Entry.Id, spaceKey);
             }
         }
 
-        logger.LogInformation(
-            "Confluence incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
-
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
-        {
-            CompletedAt = DateTimeOffset.UtcNow
-        };
+        return (fetched, failed);
     }
 
-    /// <summary>Rebuilds the database from cached page JSON files.</summary>
-    public async Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
+    private async Task FillItemAsync(string spaceKey, ConfluenceReconcileItem item, CancellationToken ct)
+    {
+        string profile = ConfluenceCacheLayout.GetProfile(item.Entry.Type);
+        string url = $"{_options.BaseUrl}/rest/api/content/{Uri.EscapeDataString(item.Entry.Id)}" +
+                     $"?expand={Uri.EscapeDataString(profile)}";
+
+        // Archived content needs an explicit status. Without this, an archived
+        // entry would be enumerated by the sweep and then fail forever in the
+        // fill, leaving it permanently Missing.
+        if (item.Entry.IsArchived)
+        {
+            url += "&status=archived";
+        }
+
+        string json = await _fetch(url, ct);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        ConfluenceCachedArtifact artifact = ConfluenceCachedArtifact.Wrap(
+            document.RootElement,
+            item.Entry.Type,
+            spaceKey,
+            item.Entry.Version,
+            item.Entry.FileSize);
+
+        await WriteCacheAsync(item.CacheKey, artifact.ToJson(), ct);
+    }
+
+    // ── Tombstones ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Moves every cached artifact that its space's manifest no longer claims
+    /// under <c>_vanished/</c>. Nothing is ever hard-deleted: absence can also
+    /// mean "not visible to the credential this run used", and a
+    /// permission-scoped false positive must not cost bytes already paid for.
+    /// </summary>
+    private async Task<int> TombstoneAsync(ConfluenceSpaceCatalog catalog, CancellationToken ct)
+    {
+        HashSet<string> tracked = new(catalog.Keys, StringComparer.Ordinal);
+        int moved = 0;
+
+        // Untracked spaces are swept up too; otherwise a space dropped from
+        // configuration keeps its content live in the cache forever.
+        List<string> spacesOnDisk = [.. EnumerateCachedSpaceKeys().Union(tracked, StringComparer.Ordinal)];
+
+        foreach (string spaceKey in spacesOnDisk)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            bool isTracked = tracked.Contains(spaceKey);
+            ConfluenceManifest? manifest = isTracked
+                ? ConfluenceReconciler.ReadManifest(spaceKey, _cache)
+                : null;
+
+            // A tracked space with no trustworthy manifest is left alone:
+            // "we do not know" must never be read as "it is gone".
+            if (isTracked && manifest is not { Complete: true })
+            {
+                continue;
+            }
+
+            HashSet<string> claimed = manifest is null ? [] : ClaimedKeys(spaceKey, manifest);
+
+            foreach (string key in ConfluenceReconciler.EnumerateContentKeys(spaceKey, _cache).ToList())
+            {
+                if (claimed.Contains(key)) continue;
+
+                await MoveToVanishedAsync(key, ct);
+                moved++;
+            }
+        }
+
+        return moved;
+    }
+
+    private static HashSet<string> ClaimedKeys(string spaceKey, ConfluenceManifest manifest)
+    {
+        HashSet<string> claimed = new(StringComparer.Ordinal);
+
+        foreach (ConfluenceManifestEntry entry in manifest.Entries)
+        {
+            claimed.Add(ConfluenceCacheLayout.GetCacheKey(entry.Type, spaceKey, entry.Id));
+            if (entry.Type == ContentTypes.Attachment)
+            {
+                claimed.Add(ConfluenceCacheLayout.GetAttachmentBlobCacheKey(spaceKey, entry.Id));
+            }
+        }
+
+        return claimed;
+    }
+
+    private async Task MoveToVanishedAsync(string key, CancellationToken ct)
+    {
+        if (!_cache.TryGet(SourceName, key, out Stream? stream))
+        {
+            return;
+        }
+
+        using (stream)
+        {
+            await _cache.PutAsync(SourceName, ConfluenceCacheLayout.GetVanishedCacheKey(key), stream, ct);
+        }
+
+        _cache.Remove(SourceName, key);
+    }
+
+    private HashSet<string> EnumerateCachedSpaceKeys()
+    {
+        HashSet<string> keys = new(StringComparer.Ordinal);
+
+        foreach (string key in _cache.EnumerateKeys(SourceName, ConfluenceCacheLayout.SpacesSegment))
+        {
+            string[] segments = key.Split('/');
+            if (segments.Length > 2 && segments[0] == ConfluenceCacheLayout.SpacesSegment)
+            {
+                keys.Add(segments[1]);
+            }
+        }
+
+        return keys;
+    }
+
+    // ── Replay ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Rebuilds the database from the cache, driven by the space catalog and
+    /// each space's manifest.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <b>not</b> <c>cache.EnumerateKeys</c>-driven.
+    /// <c>FileSystemResponseCache</c> filters metadata files by <em>file name</em>
+    /// only, so its <c>_meta_</c> exclusion does not cover anything under
+    /// <c>_vanished/</c>. Iterating manifests is what keeps tombstones out of
+    /// the database.
+    /// </remarks>
+    public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
-        List<string> errors = new List<string>();
+        List<string> errors = [];
 
-        using SqliteConnection connection = database.OpenConnection();
+        ConfluenceSpaceCatalog? catalog = ConfluenceReconciler.ReadSpaceCatalog(_cache);
+        if (catalog is null)
+        {
+            _logger.LogWarning("No Confluence space catalog on disk; nothing to replay");
+            return Task.FromResult(
+                new IngestionResult(0, 0, 0, 0, errors, startedAt) { CompletedAt = DateTimeOffset.UtcNow });
+        }
 
-        IEnumerable<string> keys = cache.EnumerateKeys(SourceName);
+        using SqliteConnection connection = _database.OpenConnection();
+        HashSet<string> allManifestPageIds = new(StringComparer.Ordinal);
 
-        foreach (string key in keys)
+        foreach (string spaceKey in catalog.Keys)
         {
             if (ct.IsCancellationRequested) break;
-            if (!cache.TryGet(SourceName, key, out Stream? stream)) continue;
 
-            using (stream)
+            UpsertSpaceFromCache(connection, spaceKey);
+
+            ConfluenceManifest? manifest = ConfluenceReconciler.ReadManifest(spaceKey, _cache);
+            if (manifest is null)
             {
-                try
+                _logger.LogDebug("Space {SpaceKey} has no manifest; skipping replay for it", spaceKey);
+                continue;
+            }
+
+            foreach (ConfluenceManifestEntry entry in manifest.OfType(ContentTypes.Page))
+            {
+                if (ct.IsCancellationRequested) break;
+
+                allManifestPageIds.Add(entry.Id);
+
+                using JsonDocument? document = TryReadPayload(
+                    ConfluenceCacheLayout.GetPageCacheKey(spaceKey, entry.Id));
+
+                if (document is null) continue;
+
+                switch (ProcessPage(document.RootElement, spaceKey, entry, connection))
                 {
-                    using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-                    string spaceKey = GetNestedString(doc.RootElement, "space", "key") ?? "FHIR";
-
-                    if (doc.RootElement.TryGetProperty("space", out JsonElement spaceJson))
-                        UpsertSpaceFromJson(connection, spaceJson, spaceKey, ct);
-
-                    PageResult result = ProcessPage(doc.RootElement, spaceKey, connection);
-                    itemsProcessed++;
-
-                    switch (result)
-                    {
-                        case PageResult.New: itemsNew++; break;
-                        case PageResult.Updated: itemsUpdated++; break;
-                        case PageResult.Failed: itemsFailed++; break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Failed to process cached file {Key}", key);
-                    itemsFailed++;
-                    errors.Add($"cache:{key}: {ex.Message}");
+                    case PageResult.New: itemsNew++; itemsProcessed++; break;
+                    case PageResult.Updated: itemsUpdated++; itemsProcessed++; break;
+                    default:
+                        itemsFailed++;
+                        errors.Add($"replay:{spaceKey}:page:{entry.Id}");
+                        break;
                 }
             }
 
-            if (itemsProcessed % 500 == 0 && itemsProcessed > 0)
-                logger.LogInformation("Confluence cache ingestion progress: {Count} pages processed", itemsProcessed);
+            ReplayComments(connection, spaceKey, manifest, ct);
         }
 
-        logger.LogInformation(
-            "Confluence cache-only ingestion complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+        // Deletion runs after every space is materialized, so a page that moved
+        // between two tracked spaces is re-homed rather than mistaken for a
+        // disappearance.
+        DeleteAbsent(connection, catalog, allManifestPageIds, ct);
+
+        _logger.LogInformation(
+            "Confluence replay complete: {Processed} pages, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
-        {
-            CompletedAt = DateTimeOffset.UtcNow
-        };
+        return Task.FromResult(
+            new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+            {
+                CompletedAt = DateTimeOffset.UtcNow,
+            });
     }
 
-    private PageResult ProcessPage(JsonElement pageJson, string spaceKey, SqliteConnection connection)
+    /// <summary>
+    /// Replaces a page's comment set — but only when it actually changed.
+    /// </summary>
+    /// <remarks>
+    /// Comments carry no Confluence identity column, so keeping replay
+    /// idempotent without a schema change means deleting by
+    /// <c>ConfluencePageId</c> and re-inserting in ascending Confluence comment
+    /// id order. Doing that unconditionally would reshuffle the database ids
+    /// that <c>PagesController</c> exposes on every single replay, so an
+    /// unchanged set is detected and left alone. That both keeps ids stable for
+    /// untouched pages and avoids rewriting every comment row on each pass.
+    /// </remarks>
+    private void ReplayComments(
+        SqliteConnection connection, string spaceKey, ConfluenceManifest manifest, CancellationToken ct)
     {
-        string pageId = string.Empty;
+        IEnumerable<IGrouping<string, ConfluenceManifestEntry>> byPage = manifest
+            .OfType(ContentTypes.Comment)
+            .Where(e => !string.IsNullOrEmpty(e.ContainerId))
+            .GroupBy(e => e.ContainerId!, StringComparer.Ordinal);
+
+        foreach (IGrouping<string, ConfluenceManifestEntry> group in byPage)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            ConfluencePageRecord? page = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: group.Key);
+            if (page is null) continue;
+
+            List<ConfluenceCommentRecord> desired = [];
+
+            foreach (ConfluenceManifestEntry entry in group.OrderBy(e => e.Id, StringComparer.Ordinal))
+            {
+                using JsonDocument? document = TryReadPayload(
+                    ConfluenceCacheLayout.GetCommentCacheKey(spaceKey, entry.Id));
+
+                if (document is null) continue;
+
+                JsonElement root = document.RootElement;
+                desired.Add(new ConfluenceCommentRecord
+                {
+                    Id = 0,
+                    PageId = page.Id,
+                    ConfluencePageId = group.Key,
+                    Author = GetNestedString(root, "version", "by", "displayName") ?? "unknown",
+                    CreatedAt = ParseDate(GetNestedString(root, "version", "when")),
+                    Body = ConfluenceContentParser.ToPlainText(
+                        GetNestedString(root, "body", "storage", "value")),
+                });
+            }
+
+            if (IsUnchanged(connection, group.Key, page.Id, desired))
+            {
+                continue;
+            }
+
+            DeleteCommentsForPage(connection, group.Key);
+
+            foreach (ConfluenceCommentRecord record in desired)
+            {
+                record.Id = ConfluenceCommentRecord.GetIndex();
+            }
+
+            desired.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
+        }
+    }
+
+    private static bool IsUnchanged(
+        SqliteConnection connection,
+        string confluencePageId,
+        int pageId,
+        List<ConfluenceCommentRecord> desired)
+    {
+        List<ConfluenceCommentRecord> existing =
+            [.. ConfluenceCommentRecord.SelectList(connection, ConfluencePageId: confluencePageId)
+                .OrderBy(c => c.Id)];
+
+        if (existing.Count != desired.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < existing.Count; i++)
+        {
+            if (existing[i].PageId != pageId
+                || existing[i].Author != desired[i].Author
+                || existing[i].CreatedAt != desired[i].CreatedAt
+                || existing[i].Body != desired[i].Body)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void DeleteCommentsForPage(SqliteConnection connection, string confluencePageId)
+    {
+        // Deliberately not the generated single-value Delete overload: it never
+        // binds its parameter (see GitHubBackfillCheckpointStore.DeleteRow).
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "DELETE FROM confluence_comments WHERE ConfluencePageId = @pageId";
+        cmd.Parameters.AddWithValue("@pageId", confluencePageId);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Removes rows for content no manifest names any more.</summary>
+    /// <remarks>
+    /// Without this, replay would be upsert-only and a tombstoned page would
+    /// stay queryable and indexed forever — the disappearance goal met in the
+    /// cache and silently missed in the database.
+    /// </remarks>
+    private static void DeleteAbsent(
+        SqliteConnection connection,
+        ConfluenceSpaceCatalog catalog,
+        HashSet<string> manifestPageIds,
+        CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return;
+
+        using SqliteTransaction transaction = connection.BeginTransaction();
+
         try
         {
-            pageId = pageJson.GetProperty("id").GetString()!;
-            string title = GetString(pageJson, "title") ?? string.Empty;
+            CreateIdTable(connection, transaction, "manifest_page_ids", manifestPageIds);
+            CreateIdTable(connection, transaction, "catalog_space_keys", catalog.Keys);
+
+            Execute(connection, transaction, """
+                CREATE TEMP TABLE vanished_pages AS
+                    SELECT ConfluenceId FROM confluence_pages
+                    WHERE ConfluenceId NOT IN (SELECT Id FROM manifest_page_ids);
+
+                DELETE FROM confluence_comments
+                    WHERE ConfluencePageId IN (SELECT ConfluenceId FROM vanished_pages);
+
+                DELETE FROM confluence_page_links
+                    WHERE SourcePageId IN (SELECT ConfluenceId FROM vanished_pages)
+                       OR TargetPageId IN (SELECT ConfluenceId FROM vanished_pages);
+
+                DELETE FROM xref_jira
+                    WHERE ContentType = 'page' AND SourceId IN (SELECT ConfluenceId FROM vanished_pages);
+                DELETE FROM xref_zulip
+                    WHERE ContentType = 'page' AND SourceId IN (SELECT ConfluenceId FROM vanished_pages);
+                DELETE FROM xref_github
+                    WHERE ContentType = 'page' AND SourceId IN (SELECT ConfluenceId FROM vanished_pages);
+                DELETE FROM xref_fhir_element
+                    WHERE ContentType = 'page' AND SourceId IN (SELECT ConfluenceId FROM vanished_pages);
+
+                DELETE FROM confluence_pages
+                    WHERE ConfluenceId IN (SELECT ConfluenceId FROM vanished_pages);
+
+                DELETE FROM confluence_spaces
+                    WHERE Key NOT IN (SELECT Id FROM catalog_space_keys);
+
+                DROP TABLE vanished_pages;
+                DROP TABLE manifest_page_ids;
+                DROP TABLE catalog_space_keys;
+                """);
+
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    private static void CreateIdTable(
+        SqliteConnection connection, SqliteTransaction transaction, string name, IEnumerable<string> ids)
+    {
+        Execute(connection, transaction, $"CREATE TEMP TABLE {name} (Id TEXT PRIMARY KEY);");
+
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = $"INSERT OR IGNORE INTO {name} (Id) VALUES (@id)";
+        SqliteParameter parameter = cmd.Parameters.Add("@id", SqliteType.Text);
+
+        foreach (string id in ids)
+        {
+            parameter.Value = id;
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    private static void Execute(SqliteConnection connection, SqliteTransaction transaction, string sql)
+    {
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    // ── Materialization ───────────────────────────────────────────────
+
+    private PageResult ProcessPage(
+        JsonElement pageJson, string spaceKey, ConfluenceManifestEntry entry, SqliteConnection connection)
+    {
+        try
+        {
+            string pageId = GetString(pageJson, "id") ?? entry.Id;
+            string title = GetString(pageJson, "title") ?? entry.Title;
 
             string? bodyStorage = GetNestedString(pageJson, "body", "storage", "value");
             string bodyPlain = ConfluenceContentParser.ToPlainText(bodyStorage);
 
-            string? labels = null;
-            if (pageJson.TryGetProperty("metadata", out JsonElement metadata) &&
-                metadata.TryGetProperty("labels", out JsonElement labelsObj) &&
-                labelsObj.TryGetProperty("results", out JsonElement labelsArray))
-            {
-                List<string> labelNames = new List<string>();
-                foreach (JsonElement label in labelsArray.EnumerateArray())
-                {
-                    string? name = label.GetProperty("name").GetString();
-                    if (!string.IsNullOrEmpty(name)) labelNames.Add(name);
-                }
-                if (labelNames.Count > 0) labels = string.Join(",", labelNames);
-            }
-
-            string? parentId = null;
-            if (pageJson.TryGetProperty("ancestors", out JsonElement ancestors) &&
-                ancestors.ValueKind == JsonValueKind.Array &&
-                ancestors.GetArrayLength() > 0)
-            {
-                JsonElement lastAncestor = ancestors[ancestors.GetArrayLength() - 1];
-                parentId = lastAncestor.GetProperty("id").GetString();
-            }
-
-            int versionNumber = 1;
-            string? lastModifiedBy = null;
-            if (pageJson.TryGetProperty("version", out JsonElement version))
-            {
-                if (version.TryGetProperty("number", out JsonElement num))
-                    versionNumber = num.GetInt32();
-                lastModifiedBy = GetNestedString(version, "by", "displayName");
-            }
-
-            string url = $"{options.BaseUrl}/pages/{pageId}";
-            if (pageJson.TryGetProperty("_links", out JsonElement links) &&
-                links.TryGetProperty("webui", out JsonElement webui))
-            {
-                url = $"{options.BaseUrl}{webui.GetString()}";
-            }
-
-            ConfluencePageRecord record = new ConfluencePageRecord
+            ConfluencePageRecord record = new()
             {
                 Id = ConfluencePageRecord.GetIndex(),
                 ConfluenceId = pageId,
                 SpaceKey = spaceKey,
                 Title = title,
-                ParentId = parentId,
+                ParentId = ReadParentId(pageJson),
                 BodyStorage = bodyStorage,
                 BodyPlain = bodyPlain,
-                Labels = labels,
-                VersionNumber = versionNumber,
-                LastModifiedBy = lastModifiedBy,
+                Labels = ReadLabels(pageJson),
+                VersionNumber = ReadVersionNumber(pageJson, entry),
+                LastModifiedBy = GetNestedString(pageJson, "version", "by", "displayName"),
                 LastModifiedAt = ParseDate(GetNestedString(pageJson, "version", "when")),
-                Url = url,
+                Url = ReadUrl(pageJson, pageId),
             };
 
             ConfluencePageRecord? existing = ConfluencePageRecord.SelectSingle(connection, ConfluenceId: pageId);
@@ -358,98 +643,94 @@ public class ConfluenceSource(
                 isNew = true;
             }
 
-            // Extract and store internal page links
-            List<(string TargetPageId, string LinkType)> extractedLinks = ConfluenceLinkExtractor.ExtractLinks(bodyStorage);
+            ReplacePageLinks(connection, pageId, bodyStorage);
 
-            List<ConfluencePageLinkRecord> toInsert = [];
-
-            foreach ((string? targetPageId, string? linkType) in extractedLinks)
-            {
-                ConfluencePageLinkRecord linkRecord = new ConfluencePageLinkRecord
-                {
-                    Id = ConfluencePageLinkRecord.GetIndex(),
-                    SourcePageId = pageId,
-                    TargetPageId = targetPageId,
-                    LinkType = linkType,
-                };
-                toInsert.Add(linkRecord);
-            }
-
-            toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-
-            // Extract cross-references from page content
-            string pageText = $"{title} {bodyPlain}";
-
-            List<JiraXRefRecord> jiraRefs = [];
-            foreach (JiraXRefRecord r in JiraReferenceExtractor.GetReferences("page", pageId, null, pageText))
-            {
-                r.Id = JiraXRefRecord.GetIndex();
-                jiraRefs.Add(r);
-            }
-
-            List<ZulipXRefRecord> zulipRefs = [];
-            foreach (ZulipXRefRecord r in ZulipReferenceExtractor.GetReferences("page", pageId, pageText))
-            {
-                r.Id = ZulipXRefRecord.GetIndex();
-                zulipRefs.Add(r);
-            }
-
-            List<GitHubXRefRecord> githubRefs = [];
-            foreach (GitHubXRefRecord r in GitHubReferenceExtractor.GetReferences("page", pageId, pageText))
-            {
-                r.Id = GitHubXRefRecord.GetIndex();
-                githubRefs.Add(r);
-            }
-
-            List<FhirElementXRefRecord> fhirRefs = [];
-            foreach (FhirElementXRefRecord r in FhirElementReferenceExtractor.GetReferences("page", pageId, pageText))
-            {
-                r.Id = FhirElementXRefRecord.GetIndex();
-                fhirRefs.Add(r);
-            }
-
-            jiraRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-            zulipRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-            githubRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-            fhirRefs.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
-
+            // The inline xref_* extraction that used to live here was dead work:
+            // ConfluenceXRefRebuilder.RebuildAll, called from PostIngestion in the
+            // same run, opens by deleting all four tables and re-deriving them.
             return isNew ? PageResult.New : PageResult.Updated;
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to process page {PageId}", pageId);
+            _logger.LogWarning(ex, "Failed to process page {PageId}", entry.Id);
             return PageResult.Failed;
         }
     }
 
-    private async Task UpsertSpaceAsync(SqliteConnection connection, string spaceKey, CancellationToken ct, List<string> errors)
+    private static void ReplacePageLinks(SqliteConnection connection, string pageId, string? bodyStorage)
     {
-        try
+        using (SqliteCommand cmd = connection.CreateCommand())
         {
-            HttpClient httpClient = httpClientFactory.CreateClient("confluence");
-            string spaceUrl = $"{options.BaseUrl}/rest/api/space/{Uri.EscapeDataString(spaceKey)}";
-            using HttpResponseMessage spaceResponse = await HttpRetryHelper.GetWithRetryAsync(httpClient, spaceUrl, ct, sourceName: SourceName);
-            spaceResponse.EnsureSuccessStatusCode();
-            string spaceJson = await spaceResponse.Content.ReadAsStringAsync(ct);
-            using JsonDocument spaceDoc = JsonDocument.Parse(spaceJson);
-            UpsertSpaceFromJson(connection, spaceDoc.RootElement, spaceKey, ct);
+            cmd.CommandText = "DELETE FROM confluence_page_links WHERE SourcePageId = @pageId";
+            cmd.Parameters.AddWithValue("@pageId", pageId);
+            cmd.ExecuteNonQuery();
         }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to fetch space metadata for {SpaceKey}", spaceKey);
-            errors.Add($"space-metadata:{spaceKey}: {ex.Message}");
-        }
+
+        List<ConfluencePageLinkRecord> toInsert =
+        [
+            .. ConfluenceLinkExtractor.ExtractLinks(bodyStorage)
+                .Select(link => new ConfluencePageLinkRecord
+                {
+                    Id = ConfluencePageLinkRecord.GetIndex(),
+                    SourcePageId = pageId,
+                    TargetPageId = link.TargetPageId,
+                    LinkType = link.LinkType,
+                }),
+        ];
+
+        toInsert.Insert(connection, ignoreDuplicates: true, insertPrimaryKey: true);
     }
 
-    private void UpsertSpaceFromJson(SqliteConnection connection, JsonElement spaceJson, string spaceKey, CancellationToken ct = default)
+    private static string? ReadParentId(JsonElement pageJson) =>
+        pageJson.TryGetProperty("ancestors", out JsonElement ancestors)
+        && ancestors.ValueKind == JsonValueKind.Array
+        && ancestors.GetArrayLength() > 0
+            ? GetString(ancestors[ancestors.GetArrayLength() - 1], "id")
+            : null;
+
+    private static string? ReadLabels(JsonElement pageJson)
     {
-        ConfluenceSpaceRecord record = new ConfluenceSpaceRecord
+        if (!pageJson.TryGetProperty("metadata", out JsonElement metadata)
+            || !metadata.TryGetProperty("labels", out JsonElement labels)
+            || !labels.TryGetProperty("results", out JsonElement results)
+            || results.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        List<string> names = [.. results.EnumerateArray()
+            .Select(label => GetString(label, "name"))
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Cast<string>()];
+
+        return names.Count > 0 ? string.Join(",", names) : null;
+    }
+
+    private static int ReadVersionNumber(JsonElement pageJson, ConfluenceManifestEntry entry) =>
+        pageJson.TryGetProperty("version", out JsonElement version)
+        && version.TryGetProperty("number", out JsonElement number)
+        && number.TryGetInt32(out int parsed)
+            ? parsed
+            : entry.Version;
+
+    private string ReadUrl(JsonElement pageJson, string pageId) =>
+        GetNestedString(pageJson, "_links", "webui") is { Length: > 0 } webui
+            ? $"{_options.BaseUrl}{webui}"
+            : $"{_options.BaseUrl}/pages/{pageId}";
+
+    private void UpsertSpaceFromCache(SqliteConnection connection, string spaceKey)
+    {
+        using JsonDocument? document = TryReadJson(ConfluenceCacheLayout.GetSpaceCacheKey(spaceKey));
+
+        ConfluenceSpaceRecord record = new()
         {
             Id = ConfluenceSpaceRecord.GetIndex(),
             Key = spaceKey,
-            Name = GetString(spaceJson, "name") ?? spaceKey,
-            Description = GetNestedString(spaceJson, "description", "plain", "value"),
-            Url = $"{options.BaseUrl}/display/{spaceKey}",
+            Name = document is null ? spaceKey : GetString(document.RootElement, "name") ?? spaceKey,
+            Description = document is null
+                ? null
+                : GetNestedString(document.RootElement, "description", "plain", "value"),
+            Url = $"{_options.BaseUrl}/display/{spaceKey}",
             LastFetchedAt = DateTimeOffset.UtcNow,
         };
 
@@ -465,10 +746,107 @@ public class ConfluenceSource(
         }
     }
 
+    // ── Cache I/O ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Re-written at the end of <b>every</b> run, with <c>TotalFiles</c> derived
+    /// by summing the manifests rather than counted by the writer, so it cannot
+    /// drift from the cache it describes.
+    /// </summary>
+    private async Task WriteCacheMetadataAsync(ConfluenceSpaceCatalog catalog, CancellationToken ct)
+    {
+        int totalFiles = 0;
+
+        foreach (string spaceKey in catalog.Keys)
+        {
+            ConfluenceManifest? manifest = ConfluenceReconciler.ReadManifest(spaceKey, _cache);
+            totalFiles += manifest?.Entries.Count ?? 0;
+        }
+
+        await CacheMetadataService.WriteMetadataAsync(
+            _cache.RootPath,
+            ConfluenceCacheLayout.MetadataFileName,
+            new ConfluenceCacheMetadata
+            {
+                LastSyncDate = DateOnly.FromDateTime(DateTime.UtcNow).ToString("yyyy-MM-dd"),
+                LastSyncTimestamp = DateTimeOffset.UtcNow,
+                TotalFiles = totalFiles,
+                Format = "json",
+            },
+            ct);
+    }
+
+    private async Task WriteCacheAsync(string key, string json, CancellationToken ct)
+    {
+        using MemoryStream stream = new(Encoding.UTF8.GetBytes(json));
+        await _cache.PutAsync(SourceName, key, stream, ct);
+    }
+
+    /// <summary>Reads a cached artifact and returns its unwrapped payload.</summary>
+    /// <remarks>
+    /// Goes through <see cref="ConfluenceCachedArtifact.FromJson"/> rather than
+    /// hand-reading a property name, so the envelope's serialized shape stays
+    /// the type's business and cannot drift out of sync here.
+    /// </remarks>
+    private JsonDocument? TryReadPayload(string key)
+    {
+        ConfluenceCachedArtifact? artifact = ConfluenceCachedArtifact.FromJson(TryReadText(key));
+
+        if (artifact?.Payload is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonDocument.Parse(artifact.Payload.ToJsonString());
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Cached artifact {Key} has an unreadable payload; treating it as absent", key);
+            return null;
+        }
+    }
+
+    private string? TryReadText(string key)
+    {
+        if (!_cache.TryGet(SourceName, key, out Stream? stream))
+        {
+            return null;
+        }
+
+        using (stream)
+        using (StreamReader reader = new(stream))
+        {
+            return reader.ReadToEnd();
+        }
+    }
+
+    private JsonDocument? TryReadJson(string key)
+    {
+        if (!_cache.TryGet(SourceName, key, out Stream? stream))
+        {
+            return null;
+        }
+
+        using (stream)
+        {
+            try
+            {
+                return JsonDocument.Parse(stream);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Cached artifact {Key} is malformed; treating it as absent", key);
+                return null;
+            }
+        }
+    }
+
     private enum PageResult { New, Updated, Failed }
 }
 
-/// <summary>Represents the outcome of an ingestion run.</summary>
+/// <summary>Summary of one ingestion run.</summary>
 public record IngestionResult(
     int ItemsProcessed,
     int ItemsNew,

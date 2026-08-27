@@ -14,12 +14,14 @@ public class ConfluenceServiceOptions
     public string? Cookie { get; set; }
     public string? Username { get; set; }
     public string? ApiToken { get; set; }
-    /// <summary>Spaces to ingest. Uses the null-as-default, empty-as-explicit-all convention; null uses default spaces and [] ingests no spaces. See docs/source-filter-conventions.md.</summary>
+    /// <summary>Spaces to ingest. Null discovers every non-archived global space on the instance; [] ingests none. See docs/source-filter-conventions.md.</summary>
     public List<string>? Spaces { get; set; }
 
-    public bool HasExplicitEmptySpaces => Spaces is { Count: 0 };
+    /// <summary>True when configuration named an explicit, non-empty space list.</summary>
+    public bool SpacesAreExplicit => Spaces is { Count: > 0 };
 
-    public List<string> GetEffectiveSpaces() => Spaces ?? ["FHIR", "FHIRI", "SOA"];
+    /// <summary>True when configuration explicitly asked for no spaces at all.</summary>
+    public bool HasExplicitEmptySpaces => Spaces is { Count: 0 };
     public string CachePath { get; set; } = "./cache";
     public string DatabasePath { get; set; } = "./data/confluence.db";
     public string SyncSchedule { get; set; } = "1.00:00:00";

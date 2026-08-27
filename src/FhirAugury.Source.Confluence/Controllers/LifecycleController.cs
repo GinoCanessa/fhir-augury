@@ -26,7 +26,10 @@ public class LifecycleController(
     public IActionResult GetStatus()
     {
         using SqliteConnection connection = db.OpenConnection();
-        ConfluenceSyncStateRecord? syncState = ConfluenceSyncStateRecord.SelectSingle(connection, SourceName: ConfluenceSource.SourceName);
+        ConfluenceSyncStateRecord? syncState = ConfluenceSyncStateRecord.SelectSingle(
+            connection,
+            SourceName: ConfluenceSource.SourceName,
+            SubSource: ConfluenceSource.SchedulingSubSource);
 
         IngestionStatusResponse status = new IngestionStatusResponse(
             SourceSystems.Confluence,
