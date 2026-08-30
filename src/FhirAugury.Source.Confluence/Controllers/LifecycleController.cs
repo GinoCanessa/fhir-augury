@@ -10,6 +10,7 @@ using FhirAugury.Source.Confluence.Database.Records;
 using FhirAugury.Source.Confluence.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
 
 namespace FhirAugury.Source.Confluence.Controllers;
 
@@ -21,6 +22,7 @@ public class LifecycleController(
     ConfluenceDatabase db,
     IResponseCache cache,
     IIndexTracker indexTracker,
+    ConfluenceIngestionGate gate,
     IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpGet("status")]
@@ -32,16 +34,33 @@ public class LifecycleController(
             SourceName: ConfluenceSource.SourceName,
             SubSource: ConfluenceSource.SchedulingSubSource);
 
+        // A standing block outranks the last recorded sync status: nothing will
+        // move until a human clears it, and saying "complete" here is how the
+        // block becomes invisible.
+        bool blocked = gate.IsBlocked && !pipeline.IsRunning;
+
         IngestionStatusResponse status = new IngestionStatusResponse(
             SourceSystems.Confluence,
-            pipeline.IsRunning ? pipeline.CurrentStatus : (syncState?.Status ?? "unknown"),
+            pipeline.IsRunning
+                ? pipeline.CurrentStatus
+                : blocked ? ConfluenceIngestionGate.BlockedStatus : (syncState?.Status ?? "unknown"),
             syncState?.LastSyncAt,
             syncState?.ItemsIngested ?? 0,
             0,
-            syncState?.LastError,
+            blocked
+                ? ConfluenceHumanInterventionRequiredException.RemediationText
+                : syncState?.LastError,
             pipeline.IsRunning ? pipeline.CurrentStatus : null,
             HttpServiceLifecycle.ToIndexStatuses(indexTracker.GetAllStatuses()),
-            ["bm25", "cross-refs", "page-links", "fts", "all"]);
+            ["bm25", "cross-refs", "page-links", "fts", "all"])
+        {
+            AdditionalData = blocked && gate.Current is { } block
+                ? new Dictionary<string, JsonElement>
+                {
+                    ["ingestionBlock"] = JsonSerializer.SerializeToElement(block),
+                }
+                : null,
+        };
 
         return Ok(status);
     }
@@ -98,6 +117,17 @@ public class LifecycleController(
     [HttpGet("health")]
     public IActionResult GetHealth()
     {
-        return Ok(HttpServiceLifecycle.BuildHealthCheck(db, pipeline, startupRebuild));
+        HealthCheckResponse health = HttpServiceLifecycle.BuildHealthCheck(db, pipeline, startupRebuild);
+
+        // Degraded locally, not in the shared builder: this is a Confluence-only
+        // condition, and only a healthy result is overwritten so an initializing
+        // or already-degraded startup state survives.
+        return Ok(gate.IsBlocked && health.Status == "healthy"
+            ? health with
+            {
+                Status = "degraded",
+                Message = "Confluence ingestion blocked by AWS WAF captcha; service is up, downloads paused",
+            }
+            : health);
     }
 }
