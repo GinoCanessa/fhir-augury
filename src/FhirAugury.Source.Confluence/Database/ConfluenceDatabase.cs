@@ -32,6 +32,7 @@ public class ConfluenceDatabase : SourceDatabase
         ConfluenceAttachmentRecord.CreateTable(connection);
         ConfluencePageLinkRecord.CreateTable(connection);
         ConfluenceSyncStateRecord.CreateTable(connection);
+        ConfluenceIngestionBlockRecord.CreateTable(connection);
         ConfluenceKeywordRecord.CreateTable(connection);
         ConfluenceCorpusKeywordRecord.CreateTable(connection);
         ConfluenceDocStatsRecord.CreateTable(connection);
@@ -126,6 +127,12 @@ public class ConfluenceDatabase : SourceDatabase
     }
 
     /// <summary>Drops all tables and recreates the schema from scratch.</summary>
+    /// <remarks>
+    /// <c>confluence_ingestion_block</c> is deliberately absent from the drop
+    /// list. <c>RebuildFromCacheAsync</c> calls this, and a cache rebuild must
+    /// not silently discard an operator-visible ingestion block — the block
+    /// describes the state of the outside world, not of this database.
+    /// </remarks>
     public void ResetDatabase()
     {
         using SqliteConnection connection = OpenConnection();

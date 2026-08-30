@@ -98,6 +98,7 @@ builder.Services.AddHttpClient("confluence", client =>
 builder.Services.AddSingleton<ConfluenceSpaceDiscovery>();
 builder.Services.AddSingleton<ConfluenceSweep>();
 builder.Services.AddSingleton<ConfluenceSource>();
+builder.Services.AddSingleton<ConfluenceIngestionGate>();
 builder.Services.AddSingleton(sp =>
 {
     ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;
