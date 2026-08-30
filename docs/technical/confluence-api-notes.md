@@ -71,6 +71,66 @@ a `405` — not a `401`, `403` or `429` — so no retry, backoff or auth path wo
 have recovered it. The user-agent is changed in
 `src/FhirAugury.Source.Confluence/Program.cs`.
 
+#### The same gate can close again mid-run — the ingestion block
+
+A browser-shaped User-Agent satisfies the rule that was blocking every request,
+but it does not make the source immune. The WAF can decide at any time that the
+*session* — not the header — needs a challenge, and it answers the same way:
+
+```
+HTTP/1.1 405 Not Allowed
+x-amzn-waf-action: captcha
+```
+
+Note the reason phrase. The appliance sends **`Not Allowed`**, not the RFC's
+`Method Not Allowed`, which is a useful tell when reading logs.
+
+**The fingerprint is `405` plus an `x-amzn-waf-action` response header.** AWS
+stamps that header only when the web ACL takes a non-allow action, so `captcha`,
+`challenge` and `block` all count. A `405` **without** the header is an ordinary
+per-item HTTP failure and is treated exactly as it always was — that is what
+keeps a genuine `405 Method Not Allowed` from parking the service.
+
+When the source sees the fingerprint it **stops the run on the first sighting**
+rather than grinding through thousands of doomed requests. Detection lives in
+`ConfluenceChallengeDetector` at the Confluence HTTP boundary
+(`ConfluenceHttp.CreateFetch` / `CreateBlobFetch`), above the shared
+`HttpRetryHelper`, which is deliberately **not** taught about `405`: Jira, Zulip
+and GitHub would then manufacture false positives on real verb rejections.
+
+The stop is durable. `ConfluenceIngestionGate` writes a
+`confluence_ingestion_block` row in the source's own SQLite database, so a
+restart re-learns the block instead of resuming the assault. While the block
+stands:
+
+- the service reports `blocked_by_human_challenge` on `GET api/v1/status`, with
+  the block record under `additionalData.ingestionBlock`;
+- `GET api/v1/health` reports `degraded` — the service is up, downloads are
+  paused;
+- `POST api/v1/ingest` and `POST api/v1/ingest/trigger` return **`412`**;
+- the scheduled worker skips its ticks;
+- `POST api/v1/rebuild`, `POST api/v1/rebuild-index`, `POST api/v1/notify-peer`
+  and every read endpoint keep working. The block is about *outgoing HTTP*, not
+  about the service being unwell, and the block row is deliberately excluded
+  from `ConfluenceDatabase.ResetDatabase()` so a cache rebuild cannot silently
+  discard it.
+
+**Operator procedure**
+
+1. Open the Confluence site in a browser and solve the challenge.
+2. If the flagged identity is the configured session, refresh
+   `Confluence:Cookie` in `appsettings.local.json`.
+3. Clear the block through the Orchestrator:
+
+   ```bash
+   curl http://localhost:5150/api/v1/confluence/ingestion-block
+   curl -X POST "http://localhost:5150/api/v1/confluence/ingestion-block/clear?clearedBy=you"
+   ```
+
+Clearing is deliberately manual. The block self-clearing on a timer would send
+the service straight back into a hostile edge appliance, which is how a captcha
+becomes a ban.
+
 ### Anonymous access
 
 **Confirmed:** the whole `/rest/api` read surface used by this source — spaces,
