@@ -20,6 +20,7 @@ public class ConfluenceIngestionPipeline(
     ConfluenceXRefRebuilder xrefRebuilder,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IHttpClientFactory httpClientFactory,
+    ConfluenceIngestionGate gate,
     IOptions<ConfluenceServiceOptions> optionsAccessor,
     ILogger<ConfluenceIngestionPipeline> logger)
     : IIngestionPipeline
@@ -33,6 +34,8 @@ public class ConfluenceIngestionPipeline(
     /// <summary>Runs a full ingestion from the Confluence API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(CancellationToken ct = default)
     {
+        ThrowIfBlocked();
+
         if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
@@ -49,6 +52,11 @@ public class ConfluenceIngestionPipeline(
             _currentStatus = "idle";
             return result;
         }
+        catch (ConfluenceHumanInterventionRequiredException ex)
+        {
+            RecordBlock(ex, "full");
+            throw;
+        }
         catch (Exception ex)
         {
             _currentStatus = $"error: {ex.Message}";
@@ -64,6 +72,8 @@ public class ConfluenceIngestionPipeline(
     /// <summary>Runs an incremental ingestion from the Confluence API.</summary>
     public async Task<IngestionResult> RunIncrementalIngestionAsync(CancellationToken ct = default)
     {
+        ThrowIfBlocked();
+
         if (!await _runLock.WaitAsync(0, ct))
             throw new InvalidOperationException("An ingestion is already in progress.");
 
@@ -79,6 +89,11 @@ public class ConfluenceIngestionPipeline(
 
             _currentStatus = "idle";
             return result;
+        }
+        catch (ConfluenceHumanInterventionRequiredException ex)
+        {
+            RecordBlock(ex, "incremental");
+            throw;
         }
         catch (Exception ex)
         {
@@ -124,7 +139,81 @@ public class ConfluenceIngestionPipeline(
         }
     }
 
-    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)    {
+    /// <summary>
+    /// Refuses a network run that is already known to be doomed. Sits before the
+    /// run lock so a job queued <em>before</em> the block appeared re-checks at
+    /// execution time rather than walking into the wall.
+    /// </summary>
+    private void ThrowIfBlocked()
+    {
+        if (gate.IsBlocked && gate.Current is { } block)
+        {
+            throw new ConfluenceIngestionBlockedException(block);
+        }
+    }
+
+    /// <summary>
+    /// Parks the service after an edge challenge: record the durable block, mark
+    /// the status, and write the blocked sync-state rows.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does <b>not</b> call <c>PostIngestion</c> or
+    /// <c>NotifyOrchestratorAsync</c>. A blocked run is not a completed pass, and
+    /// telling the orchestrator otherwise is how a half-filled cache becomes a
+    /// "successful" ingestion.
+    /// </remarks>
+    private void RecordBlock(ConfluenceHumanInterventionRequiredException ex, string runType)
+    {
+        gate.Block(ex);
+        _currentStatus = ConfluenceIngestionGate.BlockedStatus;
+        WriteBlockedSyncState(runType, ex.Remediation);
+
+        logger.LogError(
+            ex, "{RunType} ingestion stopped: Confluence is serving an edge challenge and needs a human",
+            runType);
+    }
+
+    /// <summary>
+    /// Writes the blocked status onto both the run's row and the scheduling row,
+    /// so the block is visible wherever sync state is read.
+    /// </summary>
+    private void WriteBlockedSyncState(string runType, string remediation)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+
+        WriteBlockedSyncStateRow(connection, runType, remediation);
+        WriteBlockedSyncStateRow(connection, ConfluenceSource.SchedulingSubSource, remediation);
+    }
+
+    private void WriteBlockedSyncStateRow(
+        SqliteConnection connection, string subSource, string remediation)
+    {
+        ConfluenceSyncStateRecord? existing = ConfluenceSyncStateRecord.SelectSingle(
+            connection, SourceName: ConfluenceSource.SourceName, SubSource: subSource);
+
+        ConfluenceSyncStateRecord syncState = new()
+        {
+            Id = existing?.Id ?? ConfluenceSyncStateRecord.GetIndex(),
+            SourceName = ConfluenceSource.SourceName,
+            SubSource = subSource,
+            // A blocked run completed nothing, so the last genuine sync stands.
+            LastSyncAt = existing?.LastSyncAt ?? DateTimeOffset.MinValue,
+            LastCursor = existing?.LastCursor,
+            ItemsIngested = existing?.ItemsIngested ?? 0,
+            SyncSchedule = optionsAccessor.Value.SyncSchedule,
+            NextScheduledAt = null,
+            Status = ConfluenceIngestionGate.BlockedStatus,
+            LastError = remediation,
+        };
+
+        if (existing is not null)
+            ConfluenceSyncStateRecord.Update(connection, syncState);
+        else
+            ConfluenceSyncStateRecord.Insert(connection, syncState);
+    }
+
+    private void PostIngestion(IngestionResult result, string runType, CancellationToken ct)
+    {
         ct.ThrowIfCancellationRequested();
 
         logger.LogInformation("Rebuilding BM25 index");

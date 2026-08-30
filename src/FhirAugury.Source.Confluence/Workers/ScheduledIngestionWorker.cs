@@ -11,9 +11,12 @@ namespace FhirAugury.Source.Confluence.Workers;
 /// </summary>
 public class ScheduledIngestionWorker(
     ConfluenceIngestionPipeline pipeline,
+    ConfluenceIngestionGate gate,
     IOptions<ConfluenceServiceOptions> options,
     ILogger<ScheduledIngestionWorker> logger)
     : ScheduledIngestionWorker<ConfluenceIngestionPipeline>(
         pipeline, () => options.Value.SyncSchedule, () => options.Value.MinSyncAge,
-        () => options.Value.IngestionPaused,
+        // A durable block pauses the schedule exactly the way the configured
+        // pause does; the generic worker never learns Confluence semantics.
+        () => options.Value.IngestionPaused || gate.IsBlocked,
         () => options.Value.RunIngestionOnStartupOnly, logger);
