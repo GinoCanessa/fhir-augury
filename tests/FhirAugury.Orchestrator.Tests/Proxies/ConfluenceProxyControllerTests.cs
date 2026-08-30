@@ -104,4 +104,55 @@ public class ConfluenceProxyControllerTests
         Assert.Equal("/api/v1/cache/reconcile-report", h.Requests[0].RequestUri!.AbsolutePath);
         Assert.Equal("?missingSample=5", h.Requests[0].RequestUri!.Query);
     }
+
+    [Fact]
+    public async Task GetIngestionBlock_ForwardsGet()
+    {
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult r = await c.GetIngestionBlock(default);
+        await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Single(h.Requests);
+        Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
+        Assert.Equal("/api/v1/ingestion-block", h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ClearIngestionBlock_ForwardsPostAndPreservesQueryString()
+    {
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?clearedBy=gino");
+
+        IActionResult r = await c.ClearIngestionBlock("gino", default);
+        await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Single(h.Requests);
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal("/api/v1/ingestion-block/clear", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?clearedBy=gino", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task Ingest_RoundTripsAnUpstream412Unchanged()
+    {
+        // A blocked source has to reach the caller as a blocked source, not as
+        // an orchestrator-shaped 500 or a swallowed success.
+        (SourceHttpClient client, ProxyTestSupport.CapturingHandler h) =
+            ProxyTestSupport.CreateClient(
+                "confluence",
+                """{"error":"Confluence ingestion is blocked by an edge challenge."}""",
+                HttpStatusCode.PreconditionFailed);
+
+        ConfluenceProxyController c = new(client);
+        ProxyTestSupport.SetRequest(c, method: "POST");
+
+        IActionResult r = await c.Ingest(null, default);
+        (int status, string body, _, _) = await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Equal((int)HttpStatusCode.PreconditionFailed, status);
+        Assert.Contains("blocked by an edge challenge", body, StringComparison.Ordinal);
+        Assert.Equal("/api/v1/ingest", h.Requests[0].RequestUri!.AbsolutePath);
+    }
 }
