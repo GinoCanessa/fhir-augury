@@ -193,10 +193,10 @@ public class ConfluenceSource
             }
             catch (Exception ex)
             {
-                // An expired mid-run credential aborts the run rather than
-                // producing thousands of per-item failures that a later
-                // reconcile would misread as mass deletion.
-                ConfluenceAuthFailure.ThrowIfAuthFailure(ex);
+                // An expired mid-run credential or an edge challenge aborts the
+                // run rather than producing thousands of per-item failures that
+                // a later reconcile would misread as mass deletion.
+                ConfluenceRunStop.ThrowIfRunMustStop(ex);
 
                 failed++;
                 errors.Add($"fill:{spaceKey}:{item.Entry.Type}:{item.Entry.Id}: {ex.Message}");
@@ -218,7 +218,8 @@ public class ConfluenceSource
             }
             catch (Exception ex)
             {
-                ConfluenceAuthFailure.ThrowIfAuthFailure(ex);
+                // An expired credential or an edge challenge aborts the run.
+                ConfluenceRunStop.ThrowIfRunMustStop(ex);
 
                 failed++;
                 errors.Add($"blob:{spaceKey}:{item.Entry.Id}: {ex.Message}");

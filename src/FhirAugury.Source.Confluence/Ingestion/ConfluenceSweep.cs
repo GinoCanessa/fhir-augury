@@ -109,9 +109,10 @@ public class ConfluenceSweep
         }
         catch (Exception ex)
         {
-            // An expired credential aborts the whole run rather than turning
-            // every remaining space into an apparent mass deletion.
-            ConfluenceAuthFailure.ThrowIfAuthFailure(ex);
+            // An expired credential or an edge challenge aborts the whole run
+            // rather than turning every remaining space into an apparent mass
+            // deletion.
+            ConfluenceRunStop.ThrowIfRunMustStop(ex);
 
             string error = ex is OperationCanceledException ? "cancelled mid-sweep" : ex.Message;
             _logger.LogWarning(ex, "Sweep of space {SpaceKey} did not reach exhaustion", spaceKey);
