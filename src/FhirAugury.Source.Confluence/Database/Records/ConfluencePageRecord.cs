@@ -7,6 +7,7 @@ namespace FhirAugury.Source.Confluence.Database.Records;
 [LdgSQLiteIndex(nameof(SpaceKey))]
 [LdgSQLiteIndex(nameof(ParentId))]
 [LdgSQLiteIndex(nameof(LastModifiedAt))]
+[LdgSQLiteIndex(nameof(Status))]
 public partial record class ConfluencePageRecord
 {
     [LdgSQLiteKey]
@@ -17,6 +18,10 @@ public partial record class ConfluencePageRecord
 
     public required string SpaceKey { get; set; }
     public required string Title { get; set; }
+
+    /// <summary><c>current</c> or <c>archived</c>, projected from the sweep manifest.</summary>
+    public required string Status { get; set; }
+
     public required string? ParentId { get; set; }
     public required string? BodyStorage { get; set; }
     public required string? BodyPlain { get; set; }

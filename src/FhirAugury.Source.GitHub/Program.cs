@@ -84,6 +84,7 @@ builder.Services.AddHttpClient("github", client =>
 // Ingestion
 // Ingestion — provider selection based on config
 builder.Services.AddSingleton<GhCliRunner>();
+builder.Services.AddSingleton<GitHubBackfillCheckpointStore>();
 builder.Services.AddSingleton<IGitHubDataProvider>(sp =>
 {
     GitHubServiceOptions options = sp.GetRequiredService<IOptions<GitHubServiceOptions>>().Value;

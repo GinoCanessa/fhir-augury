@@ -243,6 +243,8 @@ public class ContentFilteringTests : IDisposable
             httpClientFactory: null!,
             tracker: null!,
             optionsAccessor: Options.Create(options),
+            checkpointStore: new GitHubBackfillCheckpointStore(
+                _database, NullLogger<GitHubBackfillCheckpointStore>.Instance),
             workGroupAcquirer: null!,
             workGroupIndexer: null!,
             workGroupResolver: null!,

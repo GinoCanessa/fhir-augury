@@ -223,6 +223,8 @@ Examples:
 | `GET`  | `/api/v1/zulip/items/{id}/comments` | Always returns `[]` (shape-parity stub) |
 | `GET`  | `/api/v1/zulip/items/{id}/links` | Always returns `[]` (shape-parity stub) |
 | `GET`  | `/api/v1/confluence/pages/{pageId}` | Get a Confluence page |
+| `GET`  | `/api/v1/confluence/ingestion-block` | Is Confluence ingestion blocked by an edge captcha challenge? |
+| `POST` | `/api/v1/confluence/ingestion-block/clear?clearedBy=you` | Clear the block after solving the challenge |
 | `GET`  | `/api/v1/github/repos` | List indexed GitHub repositories |
 | `GET`  | `/api/v1/github/items/snapshot/{**key}` | GitHub action-first item snapshot (catch-all key preserves `owner/name#123`) |
 

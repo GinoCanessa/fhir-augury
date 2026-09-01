@@ -38,6 +38,21 @@ public class GhCliConfiguration
     /// </summary>
     public int BackfillLimit { get; set; } = 5000;
 
+    /// <summary>
+    /// How many items a history backfill processes between durable checkpoint writes.
+    /// A hard kill loses at most one interval of work; the graceful path always
+    /// checkpoints on exit regardless of this value.
+    /// </summary>
+    public int BackfillCheckpointInterval { get; set; } = 250;
+
+    /// <summary>
+    /// Consecutive resume passes that may fail to shrink the pending-retry set before the
+    /// repo is marked complete anyway (with a warning naming the abandoned items). Bounds
+    /// the case where an item is permanently unfetchable — a deleted or transferred PR —
+    /// so it cannot recreate a backfill that never completes.
+    /// </summary>
+    public int BackfillMaxRepairPasses { get; set; } = 3;
+
     /// <summary>Parses <see cref="ProcessTimeout"/> as a <see cref="TimeSpan"/>.</summary>
     public TimeSpan GetProcessTimeout() => TimeSpan.TryParse(ProcessTimeout, out TimeSpan ts) ? ts : TimeSpan.FromMinutes(5);
 }

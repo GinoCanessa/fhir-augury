@@ -403,3 +403,9 @@ sandbox.dockerfile
 
 /*.tar
 /*.tgz
+
+# >>> dev-* skills (managed by dev-setup) >>>
+# Local scratch workspace for dev-* skills.
+# Already covered by the pre-existing `/scratch` rule above; this block is
+# kept so a dev-setup re-run can find and refresh its rules in place.
+# <<< dev-* skills (managed by dev-setup) <<<

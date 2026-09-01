@@ -152,6 +152,16 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     public Task<IActionResult> ListSpaces(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "spaces", Request, ct);
 
+    /// <summary>
+    /// Get the Confluence cache reconciliation report — per-space completeness
+    /// verdict, computed from local disk with no network.
+    /// </summary>
+    /// <param name="missingSample">How many missing ids to name per space.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("cache/reconcile-report")]
+    public Task<IActionResult> GetCacheReconcileReport([FromQuery] int? missingSample, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "cache/reconcile-report", Request, ct);
+
     // ── Ingestion ────────────────────────────────────────────────────────
 
     /// <summary>Trigger a synchronous ingestion run on the Confluence source.</summary>
@@ -159,6 +169,7 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     /// <param name="ct">Cancellation token.</param>
     /// <response code="200">Ingestion completed synchronously.</response>
     /// <response code="202">Ingestion queued.</response>
+    /// <response code="412">Ingestion is blocked by an edge challenge; clear it first.</response>
     [HttpPost("ingest")]
     public Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest", Request, ct);
@@ -183,4 +194,25 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     [HttpPost("notify-peer")]
     public Task<IActionResult> NotifyPeer(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "notify-peer", Request, ct);
+
+    /// <summary>
+    /// Get the Confluence ingestion block state. Ingestion parks here when the
+    /// site's edge appliance serves a captcha challenge and a human has to solve
+    /// it before downloads can resume.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">The current block state; <c>blocked</c> is false when ingestion is free to run.</response>
+    [HttpGet("ingestion-block")]
+    public Task<IActionResult> GetIngestionBlock(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "ingestion-block", Request, ct);
+
+    /// <summary>
+    /// Clear the Confluence ingestion block once the challenge has been solved.
+    /// </summary>
+    /// <param name="clearedBy">Optional operator name, recorded on the block row.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">The gate is open. <c>wasBlocked</c> reports whether it had been closed.</response>
+    [HttpPost("ingestion-block/clear")]
+    public Task<IActionResult> ClearIngestionBlock([FromQuery] string? clearedBy, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingestion-block/clear", Request, ct);
 }

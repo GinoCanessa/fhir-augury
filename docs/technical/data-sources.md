@@ -281,10 +281,10 @@ Continues until `found_newest` is true.
 |----------|-------|
 | **Default target** | `https://confluence.hl7.org` |
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
-| **Data types** | Spaces + pages + comments |
+| **Data types** | Spaces + pages + comments + attachments (metadata and bytes) |
 | **Database** | `confluence.db` |
 | **API** | HTTP API controllers |
-| **Page size** | 25 |
+| **Page size** | 25 (fill); 200 (`SweepPageSize`, body-less sweep) |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
 
@@ -293,27 +293,60 @@ Continues until `found_newest` is true.
 - **Cookie mode** (default): Session cookie in the `cookie` header
 - **Basic mode**: HTTP Basic with `username:token`
 
+HL7's Confluence answers the read surface **anonymously**, so a credential is
+about *coverage* (restricted content) rather than access. It also sits behind an
+AWS WAF that rejects any non-browser-shaped `User-Agent` with `405`. See
+[Confluence API notes](confluence-api-notes.md).
+
 **Data model:**
 
 - `ConfluenceSpaceRecord` — Space key, name, description, URL
-- `ConfluencePageRecord` — Page ID, space key, title, parent ID, body
-  (storage format + plain text), labels, version, URL
+- `ConfluencePageRecord` — Page ID, space key, title, status
+  (`current` / `archived`), parent ID, body (storage format + plain text),
+  labels, version, URL
 - `ConfluenceCommentRecord` — Author, date, body as plain text (PageId FK)
+- `ConfluenceAttachmentRecord` — File name, media type, size, version,
+  download URL, and the cache key of the downloaded bytes (PageId FK)
 
 Body content is converted from Confluence storage format (XHTML) to plain text
 by `ConfluenceContentParser`, which handles macros, images, and attachments.
 
 **Database tables:** `confluence_spaces` (Key unique), `confluence_pages`
-(ConfluenceId unique, SpaceKey), `confluence_comments` (PageId FK),
+(ConfluenceId unique, SpaceKey, Status), `confluence_comments` (PageId FK),
+`confluence_attachments` (ConfluenceAttachmentId unique, PageId FK),
 `confluence_pages_fts` (FTS5), `index_keywords`, `index_corpus`,
 `index_doc_stats`, `sync_state`, `ingestion_log`.
 
-**Incremental sync:** Uses Confluence CQL:
-`lastModified >= "{since}" AND space in ("FHIR","FHIRI","SOA") AND type = page`
+**Incremental sync: manifest reconciliation.** There is no watermark and no
+full/incremental split. Acquisition splits into a cheap, body-less **sweep**
+that enumerates everything that *should* exist in a space into a per-space
+manifest stored in the cache, and an expensive **fill** that fetches only what
+the manifest says is missing or stale. Completeness is therefore a pure function
+of `(manifest, cache files)`, computable offline at any moment — see
+`GET /api/v1/cache/reconcile-report`.
 
-**Pagination:** Offset-based. Continues while `_links.next` exists.
+A manifest is written only when that space's sweep ran to exhaustion, so a
+partially failed run can never advance a watermark past pages it missed. Items
+the manifest no longer names are **tombstoned** by moving their cache file under
+`_vanished/`, never deleted, because absence can also mean "not visible to the
+credential this run used". Replay is manifest-driven and is the only path that
+writes the database.
 
-**Default spaces:** `["FHIR", "FHIRI", "SOA"]`
+**Sweep and fill:** each space is swept as three body-less streams —
+`GET /rest/api/content?spaceKey=…&type=page&expand=version` for pages, and CQL
+`type = comment` / `type = attachment` searches with
+`expand=version,container[,metadata]` for the rest. All three paginate through
+`_links.next` to exhaustion. The fill is one
+`GET /rest/api/content/{id}?expand=<profile>` per item, so every unit is
+independently retryable.
+
+**Default spaces:** every non-archived global space on the instance (~140).
+Configuration may still restrict the set; `Spaces = []` tracks nothing.
+
+**Attachments:** metadata is always swept, cached, replayed and indexed. Bytes
+are downloaded unless a blob exceeds `AttachmentMaxBytes` (default 100 MB), in
+which case the row still records the size and download URL with a null cache
+key and the space reports `complete_with_skips`.
 
 ---
 
@@ -346,7 +379,9 @@ The GitHub source supports two data provider implementations selected via the
   authentication automatically and supports GitHub Enterprise
 
 The `gh-cli` provider is configured via the `GhCli` section with settings for
-executable path, query limits, hostname, and process timeout.
+executable path, query limits, hostname, process timeout, process concurrency,
+and the history-backfill controls (see
+[History backfill](#history-backfill) below).
 
 **Data model:**
 
@@ -367,13 +402,83 @@ mirrored across the orchestrator proxy, CLI (`github-items list`), MCP
 (`ListGitHubItems`), and the DevUI API catalog.
 
 During PR ingestion the source also populates `github_commit_pr_links` (the
-commit→PR mapping, written via `gh pr view --json commits` with replace-on-resync
-semantics so force-pushes don't leave stale links) and ingests inline
-(line-anchored) PR review-thread comments via
+commit→PR mapping, written from the combined `gh pr view` detail fetch below with
+replace-on-resync semantics so force-pushes don't leave stale links) and ingests
+inline (line-anchored) PR review-thread comments via
 `gh api repos/{repo}/pulls/{n}/comments`, so the full PR conversation flows
 through the xref/BM25 pipeline. Commit responses (`MapCommitToJson`) expose a
 `prs` array of applying PRs plus a deterministic `primaryPr` (merged →
 base-branch-is-repo-default → lowest PR number).
+
+Per-PR detail (comments, reviews, commits, `baseRefName`, `mergedAt`) is fetched
+in a **single** `gh pr view --json comments,reviews,commits,baseRefName,mergedAt`
+call. Each section is applied under its own try/catch, so a malformed section or
+a database failure in one cannot discard the other two; a failure lands the PR in
+the backfill's pending-retry set (below) for repair on the next pass.
+
+### History backfill
+
+The moving incremental window (`updated:>=`) can never reach a repo's older
+history, so each repo gets a one-time full-history backfill. It is resumable and
+self-repairing, and its state lives in **two** `sync_state` sub-source namespaces:
+
+| Sub-source | Purpose | `Status` values |
+|------------|---------|-----------------|
+| `backfill:<repo>` | **Terminal** completion marker. Written only when the repo's corpus is genuinely complete. | `success` |
+| `backfill-progress:<repo>` | **In-flight** resume state. Cursor JSON in `LastCursor`. | `partial`, `repair_required` |
+
+Only a `backfill:<repo>` row at `Status = "success"` gates a repo out of the
+needs-backfill set. Keeping partial progress under a *separate* prefix is a
+rollback-safety choice: an older binary matches only on `backfill:` and treats
+any such row as complete, so a partial row written there would silently skip the
+backfill forever. After a revert, progress rows are simply ignored and the
+backfill re-runs from scratch — the pre-change behavior — so no manual database
+cleanup is required.
+
+`GitHubSyncStateReader.GetMostRecentOperational` allowlists
+`["incremental", "full", "rebuild"]`, so neither prefix can corrupt the
+incremental window or surface as the reported "last sync".
+
+**Watermark and pending retries.** Each phase (issues, then PRs) is materialized
+and sorted **descending** by item number, so a single watermark describes
+everything already done: every item numbered at or above `IssuesCompletedAbove` /
+`PrsCompletedAbove` has been fully processed *except* those listed in
+`PendingRetry`. The watermark advances only past items whose detail work returned
+cleanly, is committed in a `finally` so an interrupted item is never counted as
+done, and only ever descends — so re-walking an already-completed prefix cannot
+regress it. Items whose detail fetch failed go into `PendingRetry` and are
+re-attempted on the next pass; the set is capped at 1,000 entries, and on
+overflow the watermark freezes rather than skipping unrecorded work.
+
+A phase is marked complete only when it enumerated to exhaustion, was not
+cancelled, **and** returned fewer items than `GhCli.BackfillLimit`. A count equal
+to the limit means the list was truncated and older items are unreachable, so the
+phase is left incomplete and a warning is logged.
+
+**Stall valve.** A permanently unfetchable item (a deleted or transferred PR)
+would otherwise keep `PendingRetry` non-empty forever. When a pass ends with both
+phases exhausted and the retry set no smaller than it started,
+`StalledRepairPasses` increments; at `GhCli.BackfillMaxRepairPasses` (default 3)
+the repo is marked complete anyway and a warning names the abandoned numbers.
+
+**Cancellation.** Stopping the service mid-backfill is a clean-but-incomplete
+outcome, not a failure: the run aborts within one item, logs a single
+informational line, checkpoints its progress, and does **not** fall through into
+the incremental pass. The next launch resumes below the watermark. Periodic
+checkpointing every `GhCli.BackfillCheckpointInterval` items (default 250) bounds
+what a hard kill can lose.
+
+**Forcing a re-backfill.** To discard all state for a repo and start over:
+
+```http
+POST /api/v1/ingest?type=backfill&repo=<owner>/<name>&force=true
+```
+
+`repo` is validated against the configured repository list (it flows into `gh`
+argument construction, so free-form values are rejected with `400`). Without
+`force`, an explicit repo run *resumes* from the existing cursor rather than
+re-fetching. The same parameters are accepted by the fire-and-forget
+`POST /api/v1/ingest/trigger`.
 
 **FHIR artifact indexing:**
 
@@ -522,8 +627,8 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 |---------|------|-------|------------|--------|
 | **Ports** | 5160 | 5170 | 5180 | 5190 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
-| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
-| **Pagination** | Offset | Anchor | Offset | Page number |
+| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | Manifest reconciliation | `since` param |
+| **Pagination** | Offset | Anchor | `_links.next` to exhaustion | Page number |
 | **Rate limiting** | Retry only | Retry only | Retry only | Dedicated limiter |
 | **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |

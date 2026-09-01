@@ -30,18 +30,30 @@ public class IngestionController(
     ArtifactFileMapper artifactFileMapper,
     IIndexTracker indexTracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
+    GitHubBackfillCheckpointStore checkpointStore,
     IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
     [HttpPost("ingest")]
-    public async Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken cancellationToken)
+    public async Task<IActionResult> Ingest(
+        [FromQuery] string? type,
+        [FromQuery] string? repo,
+        [FromQuery] bool force,
+        CancellationToken cancellationToken)
     {
         string ingestType = type ?? "incremental";
+
+        if (!TryResolveRepo(repo, out string? resolvedRepo, out IActionResult? failure))
+            return failure!;
+
+        if (force && resolvedRepo is not null)
+            checkpointStore.ClearProgress(resolvedRepo);
+
         try
         {
             IngestionResult result = ingestType switch
             {
-                "full" => await pipeline.RunFullIngestionAsync(ct: cancellationToken),
-                "backfill" => await pipeline.RunBackfillIngestionAsync(ct: cancellationToken),
+                "full" => await pipeline.RunFullIngestionAsync(resolvedRepo, cancellationToken),
+                "backfill" => await pipeline.RunBackfillIngestionAsync(resolvedRepo, cancellationToken),
                 _ => await pipeline.RunIncrementalIngestionAsync(cancellationToken),
             };
 
@@ -58,18 +70,52 @@ public class IngestionController(
     }
 
     [HttpPost("ingest/trigger")]
-    public IActionResult QueueIngestion([FromQuery] string? type)
+    public IActionResult QueueIngestion(
+        [FromQuery] string? type,
+        [FromQuery] string? repo,
+        [FromQuery] bool force)
     {
         string ingestionType = (type ?? "incremental").ToLowerInvariant();
 
+        if (!TryResolveRepo(repo, out string? resolvedRepo, out IActionResult? failure))
+            return failure!;
+
+        if (force && resolvedRepo is not null)
+            checkpointStore.ClearProgress(resolvedRepo);
+
         workQueue.Enqueue(ct => ingestionType switch
         {
-            "full" => pipeline.RunFullIngestionAsync(ct: ct),
-            "backfill" => pipeline.RunBackfillIngestionAsync(ct: ct),
+            "full" => pipeline.RunFullIngestionAsync(resolvedRepo, ct),
+            "backfill" => pipeline.RunBackfillIngestionAsync(resolvedRepo, ct),
             _ => pipeline.RunIncrementalIngestionAsync(ct),
         }, $"github-{ingestionType}");
 
-        return Accepted(new { status = "queued", type = ingestionType });
+        return Accepted(new { status = "queued", type = ingestionType, repo = resolvedRepo, force });
+    }
+
+    /// <summary>
+    /// Validates an optional <c>repo</c> query value against the configured repository list.
+    /// The value flows into <c>gh</c> argument construction, so it must never be free-form.
+    /// </summary>
+    private bool TryResolveRepo(string? repo, out string? resolved, out IActionResult? failure)
+    {
+        resolved = null;
+        failure = null;
+
+        if (string.IsNullOrWhiteSpace(repo))
+            return true;
+
+        List<string> configured = optionsAccessor.Value.GetAllRepositoryNames();
+        string? match = configured.FirstOrDefault(r => string.Equals(r, repo, StringComparison.OrdinalIgnoreCase));
+
+        if (match is null)
+        {
+            failure = BadRequest(new { error = $"Unknown repository '{repo}'. Must be one of the configured repositories." });
+            return false;
+        }
+
+        resolved = match;
+        return true;
     }
 
     [HttpPost("rebuild")]

@@ -14,7 +14,7 @@ For API query filters with no per-field default, `null` and `[]` both add no SQL
 
 - Jira query and local-processing filters follow the convention. `Jira.Projects = null` falls back to `DefaultProject`; `Jira.Projects = []` disables project ingestion.
 - Zulip `StreamNames` and `SenderNames` query filters follow the convention. Numeric stream/sender ID filters are unchanged.
-- Confluence `Spaces = null` uses `FHIR`, `FHIRI`, and `SOA`; `Spaces = []` ingests no spaces.
+- Confluence `Spaces = null` discovers every non-archived global space on the instance; `Spaces = []` ingests no spaces.
 - GitHub repository lists and file-content list options follow the convention. Defaulted repository and ignore-pattern lists use defaults only when the config key is absent or null.
 
 Operator configs that currently use `[]` on defaulted ingestion lists to mean "use defaults" should remove the key or set it to `null`.

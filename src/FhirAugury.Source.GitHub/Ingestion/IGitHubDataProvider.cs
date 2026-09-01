@@ -22,7 +22,21 @@ public interface IGitHubDataProvider
     /// no <c>updated:&gt;=</c> bound. Used once per repo to close the historical
     /// coverage gap that the moving incremental window can never reach.
     /// </summary>
-    Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default);
+    /// <param name="repoFilter">Restricts the run to a single repo when supplied.</param>
+    /// <param name="resumeFrom">
+    /// Progress from an earlier interrupted or partially-failed pass. Items above the
+    /// cursor's watermark skip their detail fetch, and numbers in its pending-retry set are
+    /// re-attempted. Null starts from the top.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// The implementation owns terminal state: only it knows whether each phase enumerated
+    /// to exhaustion, so it — not the pipeline — writes the completion marker.
+    /// </remarks>
+    Task<IngestionResult> DownloadBackfillAsync(
+        string? repoFilter = null,
+        GitHubBackfillCursor? resumeFrom = null,
+        CancellationToken ct = default);
 
     /// <summary>Reload from cached responses (no network).</summary>
     Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct = default);

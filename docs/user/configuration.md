@@ -109,11 +109,14 @@ FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
     "AuthMode": "cookie",
     "Cookie": "",
     "Username": "",
-    "ApiToken": "",
-    "Spaces": ["FHIR", "FHIRI", "SOA"]
+    "ApiToken": ""
   }
 }
 ```
+
+`Spaces` is omitted above on purpose: leaving it unset (or `null`) indexes
+**every non-archived global space on the instance**. Set it to an explicit list
+to narrow that, or to `[]` to index nothing.
 
 **Authentication:** Choose one of two modes via `AuthMode`:
 
@@ -163,12 +166,16 @@ GitHub REST API directly).
 
 The GitHub source also supports additional settings covered in full by the
 canonical reference: the `GhCli` provider options (`ExecutablePath`, `Limit`,
-`Hostname`, `ProcessTimeout`), the complete set of repository category lists
+`Hostname`, `ProcessTimeout`, `MaxConcurrentProcesses`, and the history-backfill
+controls `BackfillLimit`, `BackfillCheckpointInterval` and
+`BackfillMaxRepairPasses`), the complete set of repository category lists
 (`FhirCoreRepositories`, `UtgRepositories`, `FhirExtensionsPackRepositories`,
 `IncubatorRepositories`, `IgRepositories`, `ManualLinks`), and the
 `FileContentIndexing` controls. See the
 [Configuration Reference](../configuration.md#github-source-service) for the
-complete tables and defaults.
+complete tables and defaults, and
+[Data Sources](../technical/data-sources.md#history-backfill) for how the
+backfill resumes after an interrupted run.
 
 ---
 
