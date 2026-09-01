@@ -227,7 +227,7 @@ public class JiraProcessingSourceTicketStoreTests
         string path = Path.Combine(AppContext.BaseDirectory, $"jira-processing-{Guid.NewGuid():N}.db");
         _ = new JiraProcessingSourceTicketStore(path);
 
-        using SqliteConnection connection = new($"Data Source={path}");
+        using SqliteConnection connection = new($"Data Source={path};Pooling=False");
         connection.Open();
 
         Dictionary<string, (int Pk, string Type)> columns = ReadTableInfo(connection, "jira_processing_source_tickets");
@@ -320,7 +320,7 @@ public class JiraProcessingSourceTicketStoreTests
         string path = Path.Combine(AppContext.BaseDirectory, $"jira-processing-legacy-{Guid.NewGuid():N}.db");
         // Hand-write a legacy (pre-Specification) schema, mirroring the CsLightDbGen
         // CREATE TABLE shape but with the Specification column omitted.
-        await using (SqliteConnection seed = new($"Data Source={path}"))
+        await using (SqliteConnection seed = new($"Data Source={path};Pooling=False"))
         {
             await seed.OpenAsync();
             await using SqliteCommand cmd = seed.CreateCommand();
@@ -356,7 +356,7 @@ public class JiraProcessingSourceTicketStoreTests
         // Constructing the store triggers EnsureSchema, which must add Specification.
         JiraProcessingSourceTicketStore store = new(path);
 
-        await using SqliteConnection verify = new($"Data Source={path}");
+        await using SqliteConnection verify = new($"Data Source={path};Pooling=False");
         await verify.OpenAsync();
         Dictionary<string, (int Pk, string Type)> columns = ReadTableInfo(verify, "jira_processing_source_tickets");
         Assert.True(columns.ContainsKey("Specification"), "Specification column should exist after EnsureSchema");

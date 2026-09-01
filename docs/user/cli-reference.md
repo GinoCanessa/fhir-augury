@@ -200,21 +200,21 @@ Returns both outgoing and incoming cross-references for the specified item.
 // Check status
 { "command": "ingest", "action": "status" }
 
-// Rebuild from cache (formerly "rebuild" — renamed in the 2026-04 sync; no alias)
+// Rebuild from cache (formerly "rebuild"; no alias)
 { "command": "ingest", "action": "reingest", "sources": ["jira"] }
 
-// Rebuild indexes (formerly "index" — renamed in the 2026-04 sync; no alias)
+// Rebuild indexes (formerly "index"; no alias)
 { "command": "ingest", "action": "reindex", "sources": ["jira"], "indexType": "bm25" }
 ```
 
 **Actions:** `trigger`, `status`, `reingest`, `reindex`
 
-> **Breaking change.** The `rebuild` and `index` action names were renamed
-> to `reingest` and `reindex` respectively in the 2026-04 sync. There is
-> no backwards-compatibility alias — callers using the old names will get
+> **Breaking change.** The `ingest` action names are `reingest` and
+> `reindex` (formerly `rebuild` and `index`). There is no
+> backwards-compatibility alias — callers using the old names will get
 > `Unknown ingest action`. The wire-level orchestrator routes
 > (`POST /api/v1/rebuild`, `POST /api/v1/rebuild-index`) keep their
-> historical names; only the CLI / MCP surface was renamed.
+> historical names; only the CLI / MCP surface uses the newer names.
 
 **Optional fields:**
 
@@ -237,7 +237,7 @@ Returns both outgoing and incoming cross-references for the specified item.
 { "command": "services", "action": "stats" }
 ```
 
-### Source-scoped commands (added in the 2026-04 sync)
+### Source-scoped commands
 
 The CLI now ships per-source command families that mirror the typed
 orchestrator proxies (`/api/v1/{name}/...`) and the MCP tool families
@@ -255,8 +255,8 @@ object on stdin and emits a single JSON envelope on stdout. Use
 | `jira-specs` | `/api/v1/github/jira-specs/...` | Jira-spec ↔ GitHub-artifact resolution |
 | `zulip-items` | `/api/v1/zulip/items[/{id}/...]` | Zulip item shape (with `comments` / `links` returning `[]` shape stubs) |
 | `zulip-messages` | `/api/v1/zulip/messages[...]` | Single message, by-user lists, paged listings |
-| `zulip-streams` | `/api/v1/zulip/streams[/{id}\|/{name}/topics]` | Stream catalog and per-stream topic enumeration |
-| `zulip-threads` | `/api/v1/zulip/threads/{stream}/{topic}[/snapshot]` | Topic-thread retrieval |
+| `zulip-streams` | `/api/v1/zulip/streams[/{id}]`, `.../streams/topics?streamName=` | Stream catalog and per-stream topic enumeration (topics keyed by `streamName` query param) |
+| `zulip-threads` | `/api/v1/zulip/threads?streamName=&topic=[&limit=]`, `.../threads/snapshot?streamName=&topic=` | Topic-thread retrieval (stream/topic carried as query params, so `/` is safe) |
 | `confluence-pages` | `/api/v1/confluence/pages[/{id}/...]` | Pages, related, snapshot, content, comments, children, ancestors, linked, by-label |
 | `confluence-items` | `/api/v1/confluence/items[/{id}/...]` | Confluence-side item shape |
 | `github-items` | `/api/v1/github/items/{action}/{**key}` | Action-first item layout (catch-all key carries `owner/name#123`) |

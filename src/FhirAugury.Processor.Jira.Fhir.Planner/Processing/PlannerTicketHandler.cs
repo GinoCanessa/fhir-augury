@@ -6,7 +6,8 @@ using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
-using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Hydration;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -19,6 +20,7 @@ public sealed class PlannerTicketHandler(
     IJiraTicketDiscoveryClient discoveryClient,
     IJiraAgentExtensionTokenProvider extensionTokenProvider,
     PlannerDatabase database,
+    PlannedTicketHydrator hydrator,
     IOptions<ProcessingServiceOptions> processingOptions,
     IOptions<PlannerOptions> plannerOptions,
     ILogger<PlannerTicketHandler> logger) : IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>
@@ -76,6 +78,10 @@ public sealed class PlannerTicketHandler(
 
         await store.MarkCompleteAsync(item, DateTimeOffset.UtcNow, ct);
         await discoveryClient.MarkProcessedAsync(item.Key, item.SourceTicketShape, ct);
+        // Fire-after-success per-ticket hydration; HydrateAsync absorbs its own
+        // exceptions and never throws except OperationCanceledException, so
+        // failures here will not bubble up.
+        await hydrator.HydrateAsync(item.Key, ct);
         logger.LogInformation("Completed ticket-plan agent for {TicketKey} in {ElapsedMs} ms with exit code {ExitCode}", item.Key, stopwatch.Elapsed.TotalMilliseconds, result.ExitCode);
     }
 

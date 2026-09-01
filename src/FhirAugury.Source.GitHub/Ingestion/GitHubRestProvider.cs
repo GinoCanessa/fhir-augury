@@ -40,6 +40,21 @@ public class GitHubRestProvider(
         return await DownloadReposAsync(repos, since, ct);
     }
 
+    /// <summary>
+    /// Performs a full per-repo history backfill. Reuses the full
+    /// <c>?state=all</c> per-repo path (no <c>since</c> bound). Lower fidelity
+    /// than the gh-CLI backfill: the REST full path fetches issue/PR rows and
+    /// issue comments only — it does not populate PR commit links or PR review /
+    /// review-thread comments — so under REST the commit-provenance and some
+    /// comment-provenance PR↔ticket edges are thinner. The active provider is
+    /// gh-cli; REST backfill is a documented fallback, not parity.
+    /// </summary>
+    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    {
+        List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
+        return await DownloadReposAsync(repos, since: null, ct);
+    }
+
     /// <summary>Loads all issues from cached API responses (no network).</summary>
     public Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct = default)
     {

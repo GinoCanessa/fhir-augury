@@ -15,7 +15,7 @@ public class JiraToolsTests
                 ]
             }
             """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.GetJiraComments(factory, "FHIR-100");
 
@@ -29,7 +29,7 @@ public class JiraToolsTests
     public async Task GetJiraComments_NoComments_ReturnsMessage()
     {
         string json = """{ "comments": [] }""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.GetJiraComments(factory, "FHIR-999");
 
@@ -46,7 +46,7 @@ public class JiraToolsTests
                 ]
             }
             """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.QueryJiraIssues(factory, statuses: "Open");
 
@@ -56,28 +56,10 @@ public class JiraToolsTests
     }
 
     [Fact]
-    public async Task ListJiraIssues_ReturnsFormattedList()
-    {
-        string json = """
-            {
-                "items": [
-                    { "key": "FHIR-100", "title": "Test Issue", "updatedAt": "2024-01-01T00:00:00Z", "url": "https://jira.hl7.org/browse/FHIR-100" }
-                ]
-            }
-            """;
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
-
-        string result = await JiraTools.ListJiraIssues(factory);
-
-        Assert.Contains("Jira Issues", result);
-        Assert.Contains("FHIR-100", result);
-    }
-
-    [Fact]
     public async Task QueryJiraIssues_WithLabels_IncludesLabelsInBody()
     {
         string json = """{"results":[{"key":"PROJ-1","title":"Test","status":"Open"}]}""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.QueryJiraIssues(factory, labels: "bug,urgent");
 
@@ -88,7 +70,7 @@ public class JiraToolsTests
     public async Task ListJiraLabels_ReturnsMarkdownTable()
     {
         string json = """[{"name":"bug","issueCount":42},{"name":"feature","issueCount":10}]""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.ListJiraLabels(factory);
 
@@ -101,36 +83,11 @@ public class JiraToolsTests
     public async Task ListJiraLabels_Empty_ReturnsMessage()
     {
         string json = "[]";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.ListJiraLabels(factory);
 
         Assert.Equal("No labels found.", result);
-    }
-
-    // ── Work Groups ────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task ListJiraWorkGroups_ReturnsMarkdownTable()
-    {
-        string json = """[{"name":"FHIR Infrastructure","issueCount":4231},{"name":"Orders","issueCount":1894}]""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
-
-        string result = await JiraTools.ListJiraWorkGroups(factory);
-
-        Assert.Contains("| FHIR Infrastructure | 4231 |", result);
-        Assert.Contains("| Orders | 1894 |", result);
-        Assert.Contains("Work Group", result);
-    }
-
-    [Fact]
-    public async Task ListJiraWorkGroups_Empty_ReturnsMessage()
-    {
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
-
-        string result = await JiraTools.ListJiraWorkGroups(factory);
-
-        Assert.Equal("No work groups found.", result);
     }
 
     // ── Specifications ─────────────────────────────────────────────────
@@ -139,7 +96,7 @@ public class JiraToolsTests
     public async Task ListJiraSpecifications_ReturnsMarkdownTable()
     {
         string json = """[{"name":"FHIR Core","issueCount":300},{"name":"US Core","issueCount":150}]""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.ListJiraSpecifications(factory);
 
@@ -151,7 +108,7 @@ public class JiraToolsTests
     [Fact]
     public async Task ListJiraSpecifications_Empty_ReturnsMessage()
     {
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", "[]");
 
         string result = await JiraTools.ListJiraSpecifications(factory);
 
@@ -164,7 +121,7 @@ public class JiraToolsTests
     public async Task ListJiraStatuses_ReturnsMarkdownTable()
     {
         string json = """[{"name":"Open","issueCount":1000},{"name":"Closed","issueCount":2000}]""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.ListJiraStatuses(factory);
 
@@ -176,7 +133,7 @@ public class JiraToolsTests
     [Fact]
     public async Task ListJiraStatuses_Empty_ReturnsMessage()
     {
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", "[]");
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", "[]");
 
         string result = await JiraTools.ListJiraStatuses(factory);
 
@@ -189,7 +146,7 @@ public class JiraToolsTests
     public async Task QueryJiraIssues_WithAssigneesAndReporters_Succeeds()
     {
         string json = """{"results":[{"key":"FHIR-100","title":"Test","status":"Open","type":"Bug"}]}""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.QueryJiraIssues(factory,
             assignees: "user1,user2",
@@ -202,7 +159,7 @@ public class JiraToolsTests
     public async Task QueryJiraIssues_WithDateFilters_Succeeds()
     {
         string json = """{"results":[{"key":"FHIR-200","title":"Date test","status":"Open","type":"Task"}]}""";
-        IHttpClientFactory factory = McpTestHelper.CreateFactory("jira", json);
+        IHttpClientFactory factory = McpTestHelper.CreateFactory("orchestrator", json);
 
         string result = await JiraTools.QueryJiraIssues(factory,
             createdAfter: "2024-01-01",
@@ -210,5 +167,69 @@ public class JiraToolsTests
             offset: 10);
 
         Assert.Contains("FHIR-200", result);
+    }
+
+    // ── Orchestrator routing (path assertions) ──────────────────────────
+    // Every JiraTools tool must reach Jira through the orchestrator at
+    // /api/v1/jira/...; a wrong path would still return mocked JSON and pass
+    // the formatting tests above, so these pin the outgoing request path.
+
+    private static string PathAndQuery(MockHttpHandler handler)
+        => handler.LastRequest!.RequestUri!.PathAndQuery;
+
+    [Fact]
+    public async Task GetJiraComments_HitsOrchestratorCommentsRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) =
+            McpTestHelper.CreateFactoryWithCapture("orchestrator", """{ "comments": [] }""");
+
+        await JiraTools.GetJiraComments(factory, "FHIR-100", limit: 7);
+
+        Assert.Equal("/api/v1/jira/items/FHIR-100/comments?limit=7", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task QueryJiraIssues_PostsToOrchestratorQueryRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) =
+            McpTestHelper.CreateFactoryWithCapture("orchestrator", """{"results":[]}""");
+
+        await JiraTools.QueryJiraIssues(factory, statuses: "Open");
+
+        Assert.Equal("/api/v1/jira/query", PathAndQuery(handler));
+        Assert.Equal(HttpMethod.Post, handler.LastRequest!.Method);
+    }
+
+    [Fact]
+    public async Task ListJiraLabels_HitsOrchestratorLabelsRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) =
+            McpTestHelper.CreateFactoryWithCapture("orchestrator", "[]");
+
+        await JiraTools.ListJiraLabels(factory);
+
+        Assert.Equal("/api/v1/jira/labels", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task ListJiraSpecifications_HitsOrchestratorSpecificationsRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) =
+            McpTestHelper.CreateFactoryWithCapture("orchestrator", "[]");
+
+        await JiraTools.ListJiraSpecifications(factory);
+
+        Assert.Equal("/api/v1/jira/specifications", PathAndQuery(handler));
+    }
+
+    [Fact]
+    public async Task ListJiraStatuses_HitsOrchestratorStatusesRoute()
+    {
+        (IHttpClientFactory factory, MockHttpHandler handler) =
+            McpTestHelper.CreateFactoryWithCapture("orchestrator", "[]");
+
+        await JiraTools.ListJiraStatuses(factory);
+
+        Assert.Equal("/api/v1/jira/statuses", PathAndQuery(handler));
     }
 }

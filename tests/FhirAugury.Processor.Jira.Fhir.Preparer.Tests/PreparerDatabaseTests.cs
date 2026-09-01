@@ -1008,7 +1008,51 @@ public sealed class PreparerDatabaseTests
             db3.Dispose();
         }
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
+    }
+
+    [Fact]
+    public void Initialize_OnLegacyHydrationSchema_MissingWorkGroupClean_AddsColumnAndIndex()
+    {
+        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        // Build a fresh schema, then simulate a pre-WorkGroupClean legacy DB by
+        // dropping the column and its index from prepared_jira_hydration.
+        PreparerDatabase fresh = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        fresh.Initialize();
+        using (SqliteConnection conn = fresh.OpenConnection())
+        using (SqliteCommand drop = conn.CreateCommand())
+        {
+            drop.CommandText = """
+                DROP INDEX IF EXISTS IDX_prepared_jira_hydration_WorkGroupClean;
+                ALTER TABLE prepared_jira_hydration DROP COLUMN WorkGroupClean;
+                """;
+            drop.ExecuteNonQuery();
+        }
+        fresh.Dispose();
+
+        // Re-initialising must NOT throw. The generated CreateTable builds an
+        // index over WorkGroupClean; under DQS-off SQLite (SourceGear) the column
+        // must be re-added before that index is built. Regression guard for the
+        // migrate-before-CreateTable ordering.
+        PreparerDatabase upgraded = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        upgraded.Initialize();
+        try
+        {
+            using SqliteConnection conn = upgraded.OpenConnection();
+            using SqliteCommand info = conn.CreateCommand();
+            info.CommandText =
+                "SELECT COUNT(*) FROM pragma_table_info('prepared_jira_hydration') WHERE name = 'WorkGroupClean'";
+            Assert.Equal(1, Convert.ToInt32(info.ExecuteScalar()));
+        }
+        finally
+        {
+            upgraded.Dispose();
+        }
+
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     private static bool HasIndexOver(TestDatabase database, string table, string column)
@@ -1098,7 +1142,7 @@ public sealed class PreparerDatabaseTests
             db3.Dispose();
         }
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     [Fact]
@@ -1156,7 +1200,7 @@ public sealed class PreparerDatabaseTests
         Assert.Throws<WorkGroupCleanReslugAbortedException>(() => db3.Initialize());
         db3.Dispose();
 
-        try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
     private sealed class TestDatabase(string directory, PreparerDatabase database) : IDisposable
@@ -1167,13 +1211,7 @@ public sealed class PreparerDatabaseTests
         public void Dispose()
         {
             Database.Dispose();
-            try
-            {
-                System.IO.Directory.Delete(Directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(Directory);
         }
     }
 }

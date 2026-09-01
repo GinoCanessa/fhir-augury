@@ -10,7 +10,7 @@ fhir-augury/
 ├── README.md                      # Project overview
 ├── LICENSE                        # MIT license
 ├── Dockerfile                     # Multi-stage Docker build
-├── docker-compose.yml             # Docker Compose (5 services, 3 profiles, 9 volumes)
+├── docker-compose.yml             # Docker Compose (6 services, 4 profiles, 10 volumes)
 ├── cache/                         # Response cache directory (gitignored)
 ├── docs/                          # Documentation
 │   ├── user/                      # User-facing documentation
@@ -191,6 +191,9 @@ issues, invokes `ticket-prep`, and persists structured prepared-ticket output.
 It composes `FhirAugury.Processing.Common`, `FhirAugury.Processing.Jira.Common`,
 and its persistence project without owning common queue mechanics.
 
+To run a preparer pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
+
 ### `FhirAugury.Processor.Jira.Fhir.Planner`
 
 Concrete Jira/FHIR Processing service (HTTP :5172) that queues resolved
@@ -209,6 +212,9 @@ FhirAugury.Processor.Jira.Fhir.Planner/
 The planner uses the shared Processing/Jira layers for lifecycle endpoints,
 source-ticket queueing, filters, command rendering, and agent execution. It is a
 sibling of the preparer and does not depend on preparer code or records.
+
+To run a planner pass (trigger, monitor, output), see the
+[processors runbook](processors.md).
 
 ### `FhirAugury.Processor.Jira.Fhir.Applier`
 
@@ -242,6 +248,9 @@ repo) outcomes (`Success` / `AgentFailed` / `BuildFailed` / `DiffFailed` /
 queue's `ProcessingStatus` reflects only transport / runtime outcome so a
 genuinely-failed agent run still completes the queue item normally.
 
+To start the applier and push applied tickets, see the
+[processors runbook](processors.md).
+
 ### `FhirAugury.Orchestrator`
 
 Central coordinator (HTTP :5150).
@@ -270,20 +279,20 @@ FhirAugury.Orchestrator/
 
 ### `FhirAugury.McpShared`
 
-Shared MCP library containing tool implementations across 16 tool classes
-(2 cross-source — `UnifiedTools`, `ContentTools` — plus 14 source-scoped
-families added in the 2026-04 sync that mirror the typed orchestrator
-proxies one-for-one: `JiraItemsTools`, `JiraDimensionTools`,
-`JiraWorkGroupTools`, `JiraProjectTools`, `JiraLocalProcessingTools`,
-`JiraSpecsTools`, `ZulipItemsTools`, `ZulipMessagesTools`,
-`ZulipStreamsTools`, `ZulipThreadsTools`, `ConfluenceItemsTools`,
-`ConfluencePagesTools`, `GitHubItemsTools`, `GitHubReposTools`; the
-legacy umbrella `JiraTools` and `ZulipTools` classes remain for
-backwards-compatible cross-source helpers).
+Shared MCP library containing tool implementations across 23 tool classes
+(2 cross-source — `UnifiedTools`, `ContentTools` — plus source-scoped
+families that mirror the typed orchestrator proxies one-for-one:
+`JiraItemsTools`, `JiraDimensionTools`, `JiraWorkGroupTools`,
+`JiraProjectTools`, `JiraLocalProcessingTools`, `JiraSpecsTools`,
+`JiraBalDefTools`, `JiraBallotTools`, `JiraPssTools`, `ZulipItemsTools`,
+`ZulipMessagesTools`, `ZulipStreamsTools`, `ZulipThreadsTools`,
+`ConfluenceItemsTools`, `ConfluencePagesTools`, `GitHubItemsTools`,
+`GitHubReposTools`, `FhirTools`, `WorkGroupTools`; the legacy umbrella
+`JiraTools` class remains for backwards-compatible cross-source helpers).
 
 ```
 FhirAugury.McpShared/
-├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs, ZulipTools.cs
+├── Tools/                    # UnifiedTools.cs, ContentTools.cs, JiraTools.cs
 ├── McpHttpRegistration.cs    # Shared DI registration for MCP HTTP clients
 └── FhirAugury.McpShared.csproj
 ```
@@ -322,9 +331,9 @@ the source-scoped families (`JiraItemsHandler`, `JiraDimensionHandler`,
 `JiraSpecsHandler`, `ZulipItemsHandler`, `ZulipMessagesHandler`,
 `ZulipStreamsHandler`, `ZulipThreadsHandler`, `ConfluenceItemsHandler`,
 `ConfluencePagesHandler`, `GitHubItemsHandler`, `GitHubReposHandler`)
-were added in the 2026-04 sync alongside the typed orchestrator proxies.
-The `ingest` handler's actions were renamed at the same time
-(`rebuild`→`reingest`, `index`→`reindex`; no aliases).
+mirror the typed orchestrator proxies. The `ingest` handler exposes the
+`reingest` and `reindex` actions (renamed from `rebuild` and `index`
+respectively; no aliases).
 
 ```
 FhirAugury.Cli/

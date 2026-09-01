@@ -5,6 +5,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Push;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -44,7 +45,7 @@ public class AppliedTicketsControllerTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDirectoryTree(_root);
+        TestFileCleanup.SafeDeleteDirectory(_root);
     }
 
     private AppliedTicketsController NewController(IGitPushService push, IEnumerable<string>? configuredRepoFullNames = null)
@@ -57,7 +58,7 @@ public class AppliedTicketsControllerTests : IDisposable
             Repos = (configuredRepoFullNames ?? ["HL7/fhir"]).Select(fn =>
             {
                 string[] p = fn.Split('/');
-                return new ApplierRepoOptions { Owner = p[0], Name = p[1], BuildCommand = PlatformBuildCommands.True(), OutputRoots = ["output/**"] };
+                return new ApplierRepoOptions { Owner = p[0], Name = p[1], BuildCommand = "/usr/bin/true", OutputRoots = ["output/**"] };
             }).ToList(),
         };
         return new AppliedTicketsController(_writeStore, push, _lockManager, Options.Create(options));

@@ -1,17 +1,16 @@
 # Source Endpoint Reference
 
-This page mirrors the per-source HTTP surface as it stands after the
-2026-04 sync. Every endpoint listed here is reachable in two ways:
+This page mirrors the current per-source HTTP surface. Every endpoint
+listed here is reachable in two ways:
 
 1. **Directly** on the source service's port (e.g. Jira on `:5160`).
 2. **Through the orchestrator's typed proxy** at `/api/v1/{name}/...`
    (e.g. `:5150/api/v1/jira/...`). The proxy preserves method, query
    string, body, response status, and ETag / `Last-Modified`. This is
    the canonical entry point for cross-source consumers (CLI, MCP,
-   DevUI). The historical `/api/v1/source/{name}/...` generic proxy
-   was removed in the 2026-04 sync — see
-   [`docs/changelog/2026-04-sync.md`](../changelog/2026-04-sync.md).
-   The orchestrator self-metadata routes
+   DevUI). There is no generic `/api/v1/source/{name}/...` proxy; only
+   the typed `/api/v1/{name}/...` proxies are exposed. The orchestrator
+   self-metadata routes
    (`/api/v1/source/orchestrator/...`) are preserved by design.
 
 Route conventions:
@@ -116,10 +115,16 @@ family are identical to Jira (same shapes, same routes).
 | GET  | `api/v1/streams` |
 | GET  | `api/v1/streams/{zulipStreamId:int}` |
 | PUT  | `api/v1/streams/{zulipStreamId:int}` |
-| GET  | `api/v1/streams/{streamName}/topics` |
-| GET  | `api/v1/threads/{streamName}/{topic}` |
-| GET  | `api/v1/threads/{streamName}/{topic}/snapshot` |
+| GET  | `api/v1/streams/topics?streamName=&limit=&offset=` |
+| GET  | `api/v1/threads?streamName=&topic=&limit=` |
+| GET  | `api/v1/threads/snapshot?streamName=&topic=` |
 | POST | `api/v1/query` |
+
+> `streamName` and `topic` are passed as **query-string** parameters (not path
+> segments) so they safely carry reserved characters such as `/` (e.g.
+> `streamName=fhir/infrastructure-wg`). `limit`/`offset` remain optional paging
+> parameters. `streamName` is required for `streams/topics`; both `streamName`
+> and `topic` are required for the `threads` routes.
 
 ## Confluence (`src/FhirAugury.Source.Confluence/Controllers/`, port :5180)
 

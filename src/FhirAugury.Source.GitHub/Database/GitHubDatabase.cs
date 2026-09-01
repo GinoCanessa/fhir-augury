@@ -19,12 +19,29 @@ public class GitHubDatabase : SourceDatabase
 
     protected override void InitializeSchema(SqliteConnection connection)
     {
+        // Legacy-schema column migrations MUST run before the generated
+        // CreateTable calls below: several generated CreateTable bodies issue
+        // CREATE INDEX over these columns, which errors on a pre-feature table
+        // under DQS-off SQLite (SourceGear) when the column is not yet present.
+        // AddColumnIfMissing no-ops on a fresh DB (table absent); CreateTable
+        // then builds the full schema including these columns and their indexes.
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "jira_workgroups", "WorkGroupCode", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroup", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_repos", "DefaultBranch", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "ExternalId", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_comments", "CommentKind", "TEXT");
+        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_commit_files", "BlobSha", "TEXT");
+
         GitHubRepoRecord.CreateTable(connection);
         GitHubIssueRecord.CreateTable(connection);
         GitHubCommentRecord.CreateTable(connection);
         GitHubCommitRecord.CreateTable(connection);
         GitHubCommitFileRecord.CreateTable(connection);
         GitHubCommitPrLinkRecord.CreateTable(connection);
+        GitHubPrTicketLinkRecord.CreateTable(connection);
         JiraXRefRecord.CreateTable(connection);
         ZulipXRefRecord.CreateTable(connection);
         ConfluenceXRefRecord.CreateTable(connection);
@@ -48,23 +65,16 @@ public class GitHubDatabase : SourceDatabase
         Hl7WorkGroupRecord.CreateTable(connection);
         GitHubRepoWorkGroupRecord.CreateTable(connection);
 
-        // Phase 3 migration: add WorkGroupCode (nullable canonical HL7 code) +
-        // index to the existing jira_workgroups table for in-place upgrades.
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "jira_workgroups", "WorkGroupCode", "TEXT");
+        // Phase 3 migration: index on WorkGroupCode (column added above, before
+        // the generated CreateTable) to the existing jira_workgroups table.
         using (SqliteCommand idx = connection.CreateCommand())
         {
             idx.CommandText = "CREATE INDEX IF NOT EXISTS ix_jira_workgroups_WorkGroupCode ON jira_workgroups(WorkGroupCode)";
             idx.ExecuteNonQuery();
         }
 
-        // Phase 4 migrations: add WorkGroup + WorkGroupRaw to github_spec_file_map
-        // (legacy schema had neither) and add WorkGroupRaw to canonical_artifacts /
-        // structure_definitions (legacy schema already had WorkGroup).
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroup", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_spec_file_map", "WorkGroupRaw", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_canonical_artifacts", "WorkGroupRaw", "TEXT");
-        SqliteSchemaHelpers.AddColumnIfMissing(connection, "github_structure_definitions", "WorkGroupRaw", "TEXT");
-
+        // Phase 4 migrations: indexes on WorkGroup / WorkGroupRaw (columns added
+        // above, before the generated CreateTable) for in-place upgrades.
         using (SqliteCommand idx = connection.CreateCommand())
         {
             idx.CommandText = """
@@ -76,6 +86,48 @@ public class GitHubDatabase : SourceDatabase
                     ON github_canonical_artifacts(RepoFullName, WorkGroupRaw);
                 CREATE INDEX IF NOT EXISTS ix_github_structure_definitions_RepoFullName_WorkGroupRaw
                     ON github_structure_definitions(RepoFullName, WorkGroupRaw);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency: github_commit_pr_links PK is a GetIndex() value, so
+        // INSERT OR IGNORE only dedupes against a real UNIQUE constraint. This
+        // manual unique index over the natural key makes ignoreDuplicates inserts
+        // idempotent (created after CreateTable; no migrated columns involved).
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_commit_pr_links_natural
+                    ON github_commit_pr_links(CommitSha, PrNumber, RepoFullName);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency for comments: github_comments PK is a GetIndex() value, so
+        // dedup across (re-)ingestion needs a real UNIQUE constraint over the
+        // GitHub-native comment identity. CommentKind discriminates the three
+        // comment resources (issue / review / review_comment) whose numeric id
+        // spaces overlap. Built after CreateTable, with ExternalId/CommentKind
+        // already added via AddColumnIfMissing above.
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_comments_external
+                    ON github_comments(RepoFullName, CommentKind, ExternalId);
+                """;
+            idx.ExecuteNonQuery();
+        }
+
+        // Idempotency for PR↔ticket edges: github_pr_ticket_links PK is a
+        // GetIndex() value, so INSERT OR IGNORE only dedupes against a real
+        // UNIQUE constraint. This manual unique index over the natural key makes
+        // ignoreDuplicates inserts idempotent (created after CreateTable; no
+        // migrated columns involved).
+        using (SqliteCommand idx = connection.CreateCommand())
+        {
+            idx.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS ix_github_pr_ticket_links_natural
+                    ON github_pr_ticket_links(RepoFullName, PrNumber, JiraKey);
                 """;
             idx.ExecuteNonQuery();
         }
@@ -201,6 +253,7 @@ public class GitHubDatabase : SourceDatabase
             DROP TABLE IF EXISTS github_commits;
             DROP TABLE IF EXISTS github_commit_files;
             DROP TABLE IF EXISTS github_commit_pr_links;
+            DROP TABLE IF EXISTS github_pr_ticket_links;
             DROP TABLE IF EXISTS xref_jira;
             DROP TABLE IF EXISTS xref_zulip;
             DROP TABLE IF EXISTS xref_confluence;

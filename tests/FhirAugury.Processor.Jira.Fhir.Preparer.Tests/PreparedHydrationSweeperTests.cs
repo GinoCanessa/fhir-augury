@@ -1,3 +1,4 @@
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -156,7 +157,7 @@ public sealed class PreparedHydrationSweeperTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(_directory, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(_directory);
         }
     }
 

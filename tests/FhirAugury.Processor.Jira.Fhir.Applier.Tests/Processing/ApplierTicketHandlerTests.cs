@@ -8,6 +8,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Workspace;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -46,7 +47,7 @@ public class ApplierTicketHandlerTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDirectoryTree(_root);
+        TestFileCleanup.SafeDeleteDirectory(_root);
     }
 
     private sealed record SutBundle(
@@ -63,7 +64,7 @@ public class ApplierTicketHandlerTests : IDisposable
         IEnumerable<string>? configuredRepoFullNames = null,
         string? buildCommand = null)
     {
-        string effectiveBuildCommand = buildCommand ?? PlatformBuildCommands.True();
+        buildCommand ??= CrossPlatformShell.True;
         ApplierDatabase database = new(_applierDb, NullLogger<ApplierDatabase>.Instance);
         database.Initialize();
 
@@ -71,7 +72,7 @@ public class ApplierTicketHandlerTests : IDisposable
         {
             Owner = "HL7",
             Name = "fhir",
-            BuildCommand = effectiveBuildCommand,
+            BuildCommand = buildCommand,
             OutputRoots = ["output/**"],
             PrimaryBranch = "master",
         };
@@ -83,7 +84,7 @@ public class ApplierTicketHandlerTests : IDisposable
                 {
                     Owner = parts[0],
                     Name = parts[1],
-                    BuildCommand = effectiveBuildCommand,
+                    BuildCommand = buildCommand,
                     OutputRoots = ["output/**"],
                     PrimaryBranch = "master",
                 };
@@ -238,7 +239,7 @@ public class ApplierTicketHandlerTests : IDisposable
     [Fact]
     public async Task BuildFailure_PersistsAggregateFailed_WithBuildFailedOutcome()
     {
-        SutBundle sut = NewSut("FHIR-3", buildCommand: PlatformBuildCommands.ExitWithCode(1));
+        SutBundle sut = NewSut("FHIR-3", buildCommand: CrossPlatformShell.ExitCode(1));
         SeedPlanner("FHIR-3", [("HL7/fhir", "output/x.txt")]);
 
         sut.Agent.Behaviour = _ => new JiraAgentResult(0, string.Empty, string.Empty, TimeSpan.Zero, false);

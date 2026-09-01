@@ -42,6 +42,7 @@ public class PullRequestsController(GitHubDatabase db) : ControllerBase
             issue.BaseBranch,
             merged = issue.MergeState == "merged",
             url = GitHubUrlHelper.BuildIssueUrl(issue.UniqueKey),
+            contentType = ContentTypes.Pr,
         });
     }
 }

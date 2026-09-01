@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.2.1">
+<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
 	<Import Project="..\common.props" />
 
   <PropertyGroup>
@@ -13,6 +13,7 @@
     <ProjectReference Include="..\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />
     <ProjectReference Include="..\FhirAugury.Source.Confluence\FhirAugury.Source.Confluence.csproj" />
     <ProjectReference Include="..\FhirAugury.Source.GitHub\FhirAugury.Source.GitHub.csproj" />
+    <ProjectReference Include="..\FhirAugury.Source.Fhir\FhirAugury.Source.Fhir.csproj" />
     <ProjectReference Include="..\FhirAugury.McpHttp\FhirAugury.McpHttp.csproj" />
     <ProjectReference Include="..\FhirAugury.DevUi\FhirAugury.DevUi.csproj" />
     <ProjectReference Include="..\FhirAugury.Cli\FhirAugury.Cli.csproj" />
@@ -20,6 +21,7 @@
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner\FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Applier\FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
     <ProjectReference Include="..\FhirAugury.Server.Terminology\FhirAugury.Server.Terminology.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes\FhirAugury.Processor.GitHub.Fhir.BallotNotes.csproj" />
   </ItemGroup>
 
 </Project>

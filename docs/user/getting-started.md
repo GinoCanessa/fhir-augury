@@ -94,11 +94,12 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. Eight projects are
-registered: four sources, the orchestrator, the MCP HTTP server, the Dev UI,
-and the CLI tool. Confluence, Dev UI, the MCP HTTP server, and the CLI use
+The Aspire dashboard URL is shown in the console output. 13 projects are
+registered: five sources, the orchestrator, four processors, the MCP HTTP
+server, the Dev UI, and the CLI tool. Confluence, all four processors, Dev UI,
+the MCP HTTP server, and the CLI use
 `WithExplicitStart()` and must be started manually from the Aspire dashboard.
-The orchestrator waits for Jira, Zulip, and GitHub to be healthy before starting.
+The orchestrator waits for Jira, Zulip, GitHub, and FHIR to be healthy before starting.
 Zulip and GitHub also wait for Jira.
 
 ### 3. Configure credentials
@@ -431,9 +432,18 @@ for setup instructions and available tools.
 
 ## Next Steps
 
+- [User Guides Index](README.md) — all task-oriented guides in one place
 - [CLI Reference](cli-reference.md) — all commands and options
 - [API Reference](api-reference.md) — HTTP API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents
 - [Configuration](configuration.md) — full configuration reference
 - [Docker Deployment](docker.md) — advanced Docker Compose options
 - [Deployment Guide](../deployment.md) — Docker Compose and .NET Aspire deployment
+
+### Generating outputs
+
+End-to-end guides for the three output pipelines:
+
+- [Generating Ballot Notes](generating-ballot-notes.md) — BallotNotes → `notes-site`
+- [Generating Discussion Tickets](generating-discussion-tickets.md) — Preparer → `ticket-site` (Tickets for Discussion)
+- [Generating Application Tickets](generating-application-tickets.md) — Planner + Applier → `ticket-site` (Tickets for Applying)

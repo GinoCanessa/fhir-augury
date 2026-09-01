@@ -49,6 +49,12 @@ virtual tables for fast text search within its local database.
 | GitHub | `github_structure_definitions_fts` | `github_structure_definitions` | Name, Title, Description |
 | GitHub | `github_canonical_artifacts_fts` | `github_canonical_artifacts` | Name, Title, Description, Url |
 
+The GitHub `github_comments` table (and thus `github_comments_fts` + the BM25
+keyword index) holds all three comment kinds — issue comments, PR review
+summaries, and inline (line-anchored) PR review-thread comments — typed
+uniformly as `comment` for cross-referencing. Inline review comments are
+therefore part of the indexed and cross-referenced PR conversation.
+
 ### FTS5 Table Creation
 
 FTS5 tables are created by `SourceDatabase.CreateFts5Table()` from

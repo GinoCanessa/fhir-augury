@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><!-- __TITLE__ --></title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <header>
+    <h1><!-- __TITLE__ --></h1>
+    <nav id="breadcrumb"></nav>
+    <p id="provenance" class="prov"></p>
+  </header>
+  <main id="app">
+    <p class="loading">Loading…</p>
+  </main>
+  <script src="assets/sql-wasm.js"></script>
+  <script src="assets/purify.min.js"></script>
+  <script src="assets/marked.min.js"></script>
+  <!-- __PROVENANCE__ -->
+  <!-- __DB_BLOB__ -->
+  <script defer src="assets/app.js"></script>
+</body>
+</html>

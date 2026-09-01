@@ -237,15 +237,17 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger, WorkGroupRes
         CancellationToken ct)
     {
         int specCount = 0;
+        int filesFound = 0;
 
         foreach (string file in FindSpecFiles(clonePath, knownFamilies))
         {
             ct.ThrowIfCancellationRequested();
+            filesFound++;
 
             try
             {
-                ParseSingleSpecFile(repoFullName, clonePath, file, knownFamilies, specNameLookup, connection, ct);
-                specCount++;
+                if (ParseSingleSpecFile(repoFullName, clonePath, file, knownFamilies, specNameLookup, connection, ct))
+                    specCount++;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -254,9 +256,16 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger, WorkGroupRes
         }
 
         logger.LogInformation("Parsed {Count} specification files for {Repo}", specCount, repoFullName);
+
+        if (filesFound > 0 && specCount == 0)
+        {
+            throw new IngestionDataIntegrityException(
+                $"Found {filesFound} JIRA spec file(s) for {repoFullName} but indexed none; " +
+                "jira_specs/jira_spec_artifacts/jira_spec_pages would be empty.");
+        }
     }
 
-    private void ParseSingleSpecFile(
+    private bool ParseSingleSpecFile(
         string repoFullName,
         string clonePath,
         string filePath,
@@ -269,16 +278,32 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger, WorkGroupRes
         XDocument doc = XDocument.Load(xr);
         XElement? root = doc.Root;
         if (root is null)
-            return;
+            return false;
 
         string relativePath = Path.GetRelativePath(clonePath, filePath).Replace('\\', '/');
         string family = DetectFamily(filePath, knownFamilies);
-        string? specKey = (string?)root.Attribute("key");
+
+        // The individual FAMILY-<key>.xml files carry no root 'key' attribute;
+        // the spec key is the filename suffix after the family prefix
+        // (e.g. CDA-ahprbdr.xml -> family CDA, key ahprbdr). FindSpecFiles
+        // already guarantees the FAMILY-<key>.xml shape.
+        string fileName = Path.GetFileNameWithoutExtension(filePath);
+        int hyphenIndex = fileName.IndexOf('-');
+        string specKey = hyphenIndex > 0 ? fileName[(hyphenIndex + 1)..] : fileName;
 
         if (string.IsNullOrEmpty(specKey))
         {
-            logger.LogWarning("Spec file {File} missing 'key' attribute, skipping", relativePath);
-            return;
+            logger.LogWarning("Spec file {File} yields an empty key from its filename, skipping", relativePath);
+            return false;
+        }
+
+        // Non-blocking: an unknown key still indexes (with a null resolved name)
+        // so legitimate spec files are never silently dropped.
+        if (!specNameLookup.ContainsKey(specKey))
+        {
+            logger.LogWarning(
+                "Spec file {File} key '{Key}' not found in SPECS list; indexing without a resolved name",
+                relativePath, specKey);
         }
 
         // Parse artifact page extensions
@@ -316,6 +341,8 @@ public class JiraSpecXmlIndexer(ILogger<JiraSpecXmlIndexer> logger, WorkGroupRes
         ParseVersions(repoFullName, specKey, specRecord.Id, root, connection, ct);
         ParseArtifacts(repoFullName, specKey, specRecord.Id, root, connection, ct);
         ParsePages(repoFullName, specKey, specRecord.Id, root, connection, ct);
+
+        return true;
     }
 
     private void ParseVersions(

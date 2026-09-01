@@ -1,9 +1,11 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hosting;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using HydrationSweeperHostedService = FhirAugury.Processor.Jira.Fhir.Preparer.Hosting.HydrationSweeperHostedService;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 

@@ -1,5 +1,5 @@
 using FhirAugury.Processing.Common.Configuration;
-using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 

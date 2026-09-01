@@ -9,8 +9,11 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Hosting;
 using FhirAugury.Processing.Jira.Common.Agent;
 using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
-using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Hosting;
+using FhirAugury.Processor.Jira.Fhir.Planner.Hydration;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
@@ -24,7 +27,7 @@ builder.Configuration
 
 builder.AddServiceDefaults();
 
-IConfigurationSection portsSection = builder.Configuration.GetSection($"{ProcessingServiceOptions.SectionName}:Ports");
+IConfigurationSection portsSection = builder.Configuration.GetSection($"{PlannerServiceOptions.SectionName}:Ports");
 int httpPort = portsSection.GetValue<int>("Http", 5172);
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -38,10 +41,20 @@ builder.Services.AddAuguryOpenApi(o =>
     o.Description = "Jira FHIR ticket planning processor and structured plan persistence service.";
 });
 
+builder.Services.AddOptions<PlannerServiceOptions>()
+    .Bind(builder.Configuration.GetSection(PlannerServiceOptions.SectionName))
+    .Validate(options => !options.Validate().Any(), "Processing configuration is invalid.")
+    .ValidateOnStart();
+
 builder.Services.AddOptions<PlannerOptions>()
     .Bind(builder.Configuration.GetSection(PlannerOptions.SectionName))
     .Validate(options => !PlannerRepoFilters.Validate(options).Any(), "Processing:Planner configuration is invalid.")
     .ValidateOnStart();
+
+// Register the hydration sweeper hosted service BEFORE AddJiraProcessing so it
+// starts before the processing queue worker (host invokes hosted services in
+// registration order).
+builder.Services.AddHostedService<FhirAugury.Processor.Jira.Fhir.Planner.Hosting.HydrationSweeperHostedService>();
 
 builder.Services.AddJiraProcessing(
     builder.Configuration,
@@ -55,9 +68,45 @@ builder.Services.AddOptions<JiraProcessingOptions>()
 builder.Services.AddSingleton<IJiraAgentExtensionTokenProvider, PlannerAgentCommandTokenProvider>();
 builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, PlannerTicketHandler>();
 
+builder.Services.AddHttpClient<PlannedTicketHydrator>((sp, client) =>
+{
+    PlannerServiceOptions plannerOptions = sp.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
+    JiraProcessingOptions jiraOptions = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+    string address = !string.IsNullOrWhiteSpace(plannerOptions.OrchestratorAddress)
+        ? plannerOptions.OrchestratorAddress
+        : !string.IsNullOrWhiteSpace(jiraOptions.OrchestratorAddress)
+            ? jiraOptions.OrchestratorAddress
+            : jiraOptions.JiraSourceAddress;
+    if (string.IsNullOrWhiteSpace(address))
+    {
+        address = "http://localhost";
+    }
+
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
+
+builder.Services.AddHttpClient<SpecificationBackfillService>((sp, client) =>
+{
+    JiraProcessingOptions jiraOptions = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+    string address = jiraOptions.JiraSourceAddress;
+    if (string.IsNullOrWhiteSpace(address))
+    {
+        address = PlannerJiraProcessingDefaults.JiraSourceAddress;
+    }
+
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddOptions<HydrationOptions>()
+    .Bind(builder.Configuration.GetSection($"{PlannerServiceOptions.SectionName}:Hydration"))
+    .Validate(options => !options.Validate().Any(), "Processing:Hydration configuration is invalid.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<PlannedHydrationSweeper>();
+
 builder.Services.AddSingleton(sp =>
 {
-    ProcessingServiceOptions options = sp.GetRequiredService<IOptions<ProcessingServiceOptions>>().Value;
+    PlannerServiceOptions options = sp.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     PlannerDatabase database = new(dbPath, sp.GetRequiredService<ILogger<PlannerDatabase>>());

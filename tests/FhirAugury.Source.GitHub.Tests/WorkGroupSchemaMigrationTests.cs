@@ -27,7 +27,7 @@ public class WorkGroupSchemaMigrationTests : IDisposable
     public void Initialize_AddsWorkGroupColumnsAndIndexes_OnLegacySpecFileMap()
     {
         string dbPath = Path.Combine(_tempDir, "legacy.db");
-        using (SqliteConnection seed = new($"Data Source={dbPath}"))
+        using (SqliteConnection seed = new($"Data Source={dbPath};Pooling=False"))
         {
             seed.Open();
             using SqliteCommand create = seed.CreateCommand();
@@ -61,7 +61,7 @@ public class WorkGroupSchemaMigrationTests : IDisposable
     public void Initialize_AddsWorkGroupRawColumnAndIndex_OnLegacyCanonicalArtifacts()
     {
         string dbPath = Path.Combine(_tempDir, "legacy.db");
-        using (SqliteConnection seed = new($"Data Source={dbPath}"))
+        using (SqliteConnection seed = new($"Data Source={dbPath};Pooling=False"))
         {
             seed.Open();
             using SqliteCommand create = seed.CreateCommand();
@@ -103,7 +103,7 @@ public class WorkGroupSchemaMigrationTests : IDisposable
     public void Initialize_AddsWorkGroupRawColumnAndIndex_OnLegacyStructureDefinitions()
     {
         string dbPath = Path.Combine(_tempDir, "legacy.db");
-        using (SqliteConnection seed = new($"Data Source={dbPath}"))
+        using (SqliteConnection seed = new($"Data Source={dbPath};Pooling=False"))
         {
             seed.Open();
             using SqliteCommand create = seed.CreateCommand();
@@ -161,7 +161,7 @@ public class WorkGroupSchemaMigrationTests : IDisposable
 
     private static bool ColumnExists(string dbPath, string table, string column)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath}");
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         conn.Open();
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = $"PRAGMA table_info({table})";
@@ -178,7 +178,7 @@ public class WorkGroupSchemaMigrationTests : IDisposable
 
     private static bool IndexExists(string dbPath, string indexName)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath}");
+        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
         conn.Open();
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type='index' AND name=@n";

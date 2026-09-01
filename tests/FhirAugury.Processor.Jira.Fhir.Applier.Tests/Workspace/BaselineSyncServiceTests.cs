@@ -4,6 +4,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -16,8 +17,8 @@ public class BaselineSyncServiceTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDatabaseFile(_dbPath);
-        TestDbCleanup.DeleteDirectoryTree(_workingDir);
+        TestFileCleanup.SafeDeleteDirectory(_workingDir);
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private (BaselineSyncService Svc, RepoBaselineStore Baselines, RepoWorkspaceManager Manager, FakeGitProcessRunner Git, ApplierRepoOptions Repo, ApplierOptions Options) NewSut(
@@ -73,7 +74,9 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_RebuildsAllRepos()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
+        var (svc, baselines, _, _, repo, _) = NewSut(CrossPlatformShell.Wrap(
+            "mkdir -p output && echo hi > output/x.txt",
+            "mkdir output 2>nul & echo hi> output\\x.txt"));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -86,7 +89,9 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_SkipsWhenNewerThanMinAge()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
+        var (svc, baselines, _, _, repo, _) = NewSut(CrossPlatformShell.Wrap(
+            "mkdir -p output && echo hi > output/x.txt",
+            "mkdir output 2>nul & echo hi> output\\x.txt"));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -102,7 +107,9 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_RebuildsWhenOlderThanMinAge()
     {
-        var (svc, baselines, _, _, repo, _) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
+        var (svc, baselines, _, _, repo, _) = NewSut(CrossPlatformShell.Wrap(
+            "mkdir -p output && echo hi > output/x.txt",
+            "mkdir output 2>nul & echo hi> output\\x.txt"));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -117,7 +124,7 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_SwallowsPerRepoFailures()
     {
-        var (svc, _, _, _, _, options) = NewSut(PlatformBuildCommands.ExitWithCode(1));
+        var (svc, _, _, _, _, options) = NewSut(CrossPlatformShell.ExitCode(1));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -129,7 +136,9 @@ public class BaselineSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_BlocksWhileRepoLockHeld()
     {
-        var (_, baselines, manager, git, repo, options) = NewSut(PlatformBuildCommands.WriteFiles(("output/x.txt", "hi")));
+        var (_, baselines, manager, git, repo, options) = NewSut(CrossPlatformShell.Wrap(
+            "mkdir -p output && echo hi > output/x.txt",
+            "mkdir output 2>nul & echo hi> output\\x.txt"));
         string clonePath = Path.Combine(_workingDir, "clones", "HL7_fhir");
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 

@@ -1,0 +1,194 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --bg: #fafafa;
+  --muted: #6a6a6a;
+  --accent: #2c5aa0;
+  --chip-bg: #e8eef7;
+  --chip-fg: #2c5aa0;
+  --pre-bg: #f3f3f3;
+  --border: #d0d0d0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #f0f0f0;
+    --bg: #1a1a1a;
+    --muted: #9a9a9a;
+    --accent: #88b1ef;
+    --chip-bg: #2a3b55;
+    --chip-fg: #c0d6ff;
+    --pre-bg: #222;
+    --border: #444;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.breadcrumb { margin-bottom: 0.5rem; font-size: 0.9rem; }
+.breadcrumb a { color: var(--muted); text-decoration: none; }
+.breadcrumb a:hover { color: var(--accent); }
+#breadcrumb { color: var(--muted); }
+
+h1, h2 { margin: 0.5rem 0 1rem 0; }
+h3 { margin: 1.5rem 0 0.5rem 0; }
+h4 { margin: 1rem 0 0.5rem 0; }
+
+.chips { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  background: var(--chip-bg);
+  color: var(--chip-fg);
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th { font-weight: 600; background: var(--chip-bg); color: var(--chip-fg); }
+
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--accent); }
+thead th.sortable[aria-sort="ascending"],
+thead th.sortable[aria-sort="descending"] { color: var(--accent); }
+
+.filter-row { margin-bottom: 0.75rem; }
+.filter-row input[type="text"] {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ticket-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+.ticket-summary dt { font-weight: 600; color: var(--muted); }
+.ticket-summary dd { margin: 0; }
+
+a { color: var(--accent); }
+
+code, pre { font-family: ui-monospace, SFMono-Regular, monospace; }
+
+pre {
+  background: var(--pre-bg);
+  padding: 0.6rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}
+
+.repo-section {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  margin: 1.5rem 0;
+}
+
+/* Collapsible section chrome (applying ticket detail). Scoped to .accordion so
+   sanitized Markdown content may contain its own <details>/<summary> untouched. */
+.accordion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}
+.accordion > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--chip-bg);
+  color: var(--chip-fg);
+  font-weight: 600;
+  border-radius: 6px;
+}
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary::before {
+  content: '▸';
+  transition: transform 0.15s;
+}
+.accordion[open] > summary::before { transform: rotate(90deg); }
+.accordion[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.accordion > summary:hover { color: var(--accent); }
+.accordion > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.accordion > summary h3 { margin: 0; font-size: 1rem; display: inline; }
+.accordion-body { padding: 0.25rem 0.75rem 0.75rem; }
+
+.accordion.repo-section {
+  border-left: 3px solid var(--accent);
+  padding-left: 0;
+  margin: 0.75rem 0;
+}
+
+.muted { color: var(--muted); }
+.tooltip { border-bottom: 1px dotted var(--muted); cursor: help; }
+
+/* Rendered Markdown prose blocks (applying detail views). */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0.4rem 0; }
+.md ul, .md ol { margin: 0.4rem 0; padding-left: 1.4rem; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.8rem 0 0.4rem 0; }
+.md code { background: var(--pre-bg); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.md pre { margin: 0.4rem 0; }
+.md a { color: var(--accent); }
+
+header { position: relative; }
+
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 2.3rem;
+  right: 0;
+  font-size: 0.8rem;
+  color: #1e7e34;
+}
+@media (prefers-color-scheme: dark) {
+  .copy-ai-status { color: #7ee2a8; }
+}

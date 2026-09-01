@@ -1,0 +1,273 @@
+/* discussion sub-site stylesheet (Phase 3+). Plain, no framework. */
+:root {
+  color-scheme: light dark;
+  --fg: #111;
+  --muted: #555;
+  --bg: #fafafa;
+  --card: #fff;
+  --border: #ddd;
+  --link: #0a58ca;
+  --row-alt: #f4f4f4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #eee;
+    --muted: #aaa;
+    --bg: #181818;
+    --card: #242424;
+    --border: #3a3a3a;
+    --link: #8ab4f8;
+    --row-alt: #1f1f1f;
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+header {
+  padding: 1rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+header h1 { margin: 0; font-size: 1.4rem; }
+header nav { margin-top: 0.5rem; font-size: 0.9rem; color: var(--muted); }
+header nav a { margin-right: 0.75rem; }
+main {
+  max-width: 80rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h2 { margin-top: 1.75rem; font-size: 1.15rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { margin-top: 1.25rem; font-size: 1rem; color: var(--muted); }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+  background: var(--card);
+}
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+thead th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  border-bottom: 2px solid var(--border);
+}
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--link); }
+thead th.sortable[aria-sort="ascending"],
+thead th.sortable[aria-sort="descending"] { color: var(--link); }
+tbody tr:nth-child(even) { background: var(--row-alt); }
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+.summary-grid section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+}
+.summary-grid section h2 { margin-top: 0; }
+.filter-row { margin-bottom: 0.75rem; }
+.filter-row input[type="text"] {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--fg);
+}
+.ticket-body pre {
+  white-space: pre-wrap;
+  background: var(--card);
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ticket-header dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+.ticket-header dt { font-weight: 600; color: var(--muted); }
+.ticket-header dd { margin: 0; }
+.ticket-header dd a { color: var(--link); }
+
+/* Collapsible section chrome (discussion ticket detail). Ported from the
+   applying sub-site, adapted to discussion's CSS variables. Scoped to
+   .accordion so sanitized HTML content may carry its own <details>/<summary>
+   untouched. */
+.accordion {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}
+.accordion > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--row-alt);
+  color: var(--link);
+  font-weight: 600;
+  border-radius: 6px;
+}
+.accordion > summary::-webkit-details-marker { display: none; }
+.accordion > summary::before {
+  content: '▸';
+  transition: transform 0.15s;
+}
+.accordion[open] > summary::before { transform: rotate(90deg); }
+.accordion[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.accordion > summary:hover { color: var(--link); }
+.accordion > summary:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.accordion > summary h3 { margin: 0; font-size: 1rem; display: inline; color: inherit; }
+.accordion-body { padding: 0.25rem 0.75rem 0.75rem; }
+.accordion.repo-section {
+  border-left: 3px solid var(--link);
+  padding-left: 0;
+  margin: 0.75rem 0;
+}
+
+/* Rendered (sanitized) HTML prose blocks (discussion request/resolution). */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0.4rem 0; }
+.md ul, .md ol { margin: 0.4rem 0; padding-left: 1.4rem; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.8rem 0 0.4rem 0; }
+.md code { background: var(--row-alt); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.md pre { margin: 0.4rem 0; }
+.md a { color: var(--link); }
+.related-sidebar { margin-top: 2rem; font-size: 0.9rem; }
+.related-sidebar ul { padding-left: 1.25rem; }
+.muted { color: var(--muted); }
+.error { color: #c00; }
+.loading { padding: 1rem; color: var(--muted); font-style: italic; }
+
+#filter-banner {
+  margin-bottom: 0.75rem;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  margin-right: 6px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  background: var(--row-alt);
+  border: 1px solid var(--border);
+  font-size: 0.9em;
+  color: var(--fg);
+}
+.chip-remove {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0 0 0 2px;
+  font-size: inherit;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.chip-remove:hover,
+.chip-remove:focus {
+  color: var(--fg);
+  outline: none;
+}
+.summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.summary-row .show-ticket-list {
+  font-size: 0.9rem;
+}
+.summary-row .show-topic-list {
+  font-size: 0.9rem;
+  margin-left: 0.5rem;
+}
+.show-topic-list-disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+.crosscut-row {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--link);
+  text-align: left;
+  cursor: pointer;
+}
+.crosscut-row:hover,
+.crosscut-row:focus {
+  text-decoration: underline;
+  outline: none;
+}
+.topic-meta {
+  color: var(--muted);
+  margin-top: 0;
+}
+.topic-longer {
+  white-space: pre-wrap;
+}
+.topic-group {
+  margin-top: 1.5rem;
+}
+.topic-back {
+  margin-top: 1rem;
+}
+
+/* Copy for AI affordance (shared convention; identical across tools). */
+.copy-ai {
+  position: absolute;
+  top: 1rem;
+  right: 1.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.copy-ai[hidden] { display: none; }
+.copy-ai-status {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.5rem;
+  font-size: 0.8rem;
+  color: #1e7e34;
+}
+@media (prefers-color-scheme: dark) {
+  .copy-ai-status { color: #7ee2a8; }
+}

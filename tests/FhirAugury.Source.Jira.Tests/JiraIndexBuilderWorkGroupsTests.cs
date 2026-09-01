@@ -23,7 +23,7 @@ public class JiraIndexBuilderWorkGroupsTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private static JiraIssueRecord NewIssue(string key, string? workGroup, string? status) => new JiraIssueRecord

@@ -91,12 +91,102 @@ internal static class GitHubUrlHelper
 
     private static GitHubIssueRecord? ResolveCommitToIssue(SqliteConnection conn, string sourceId)
     {
-        GitHubCommitPrLinkRecord? prLink = GitHubCommitPrLinkRecord.SelectSingle(conn, CommitSha: sourceId);
-        if (prLink is null) return null;
+        List<GitHubCommitPrLinkRecord> links = GitHubCommitPrLinkRecord.SelectList(conn, CommitSha: sourceId);
+        if (links.Count == 0) return null;
 
-        string uniqueKey = $"{prLink.RepoFullName}#{prLink.PrNumber}";
-        return GitHubIssueRecord.SelectSingle(conn, UniqueKey: uniqueKey);
+        // Fast path: a single link resolves directly.
+        if (links.Count == 1)
+            return GitHubIssueRecord.SelectSingle(conn, UniqueKey: $"{links[0].RepoFullName}#{links[0].PrNumber}");
+
+        List<GitHubIssueRecord> prs = ResolveLinksToPrs(conn, links);
+        return SelectPrimaryPr(prs, conn);
     }
+
+    /// <summary>
+    /// Resolves commit→PR link rows to their <see cref="GitHubIssueRecord"/> PRs,
+    /// skipping links whose PR row is missing and de-duplicating by UniqueKey.
+    /// </summary>
+    private static List<GitHubIssueRecord> ResolveLinksToPrs(SqliteConnection conn, List<GitHubCommitPrLinkRecord> links)
+    {
+        List<GitHubIssueRecord> prs = [];
+        HashSet<string> seen = [];
+        foreach (GitHubCommitPrLinkRecord link in links)
+        {
+            string uniqueKey = $"{link.RepoFullName}#{link.PrNumber}";
+            if (!seen.Add(uniqueKey)) continue;
+            GitHubIssueRecord? pr = GitHubIssueRecord.SelectSingle(conn, UniqueKey: uniqueKey);
+            if (pr is not null) prs.Add(pr);
+        }
+        return prs;
+    }
+
+    /// <summary>
+    /// Deterministically selects the primary PR among a commit's linked PRs:
+    /// (a) prefer merged PRs; (b) among those, prefer the PR whose BaseBranch is
+    /// the repo's default branch (falling back to master/main when the default
+    /// branch is unknown); (c) tie-break by lowest PR number. Returns null when
+    /// there are no resolvable PRs.
+    /// </summary>
+    internal static GitHubIssueRecord? SelectPrimaryPr(IEnumerable<GitHubIssueRecord> prs, SqliteConnection conn)
+    {
+        Dictionary<string, string?> defaultBranchByRepo = [];
+
+        string? DefaultBranchFor(string repo)
+        {
+            if (!defaultBranchByRepo.TryGetValue(repo, out string? branch))
+            {
+                branch = GitHubRepoRecord.SelectSingle(conn, FullName: repo)?.DefaultBranch;
+                defaultBranchByRepo[repo] = branch;
+            }
+            return branch;
+        }
+
+        bool IsDefaultBase(GitHubIssueRecord pr)
+        {
+            if (pr.BaseBranch is null) return false;
+            string? defaultBranch = DefaultBranchFor(pr.RepoFullName);
+            if (!string.IsNullOrEmpty(defaultBranch))
+                return string.Equals(pr.BaseBranch, defaultBranch, StringComparison.OrdinalIgnoreCase);
+            return pr.BaseBranch is "master" or "main";
+        }
+
+        return prs
+            .OrderByDescending(pr => pr.MergeState == "merged")
+            .ThenByDescending(IsDefaultBase)
+            .ThenBy(pr => pr.Number)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Builds the per-commit pull-request surface: an ascending-by-number list
+    /// of linked-PR objects and the deterministic primary PR (see
+    /// <see cref="SelectPrimaryPr"/>).
+    /// </summary>
+    internal static (List<object> Prs, object? Primary, GitHubIssueRecord? PrimaryRecord) BuildCommitPrLinks(
+        SqliteConnection conn, string sha)
+    {
+        List<GitHubCommitPrLinkRecord> links = GitHubCommitPrLinkRecord.SelectList(conn, CommitSha: sha);
+        List<GitHubIssueRecord> prs = ResolveLinksToPrs(conn, links);
+
+        List<object> prObjects = prs
+            .OrderBy(pr => pr.Number)
+            .Select(ToPrObject)
+            .ToList();
+
+        GitHubIssueRecord? primaryRecord = SelectPrimaryPr(prs, conn);
+        object? primary = primaryRecord is null ? null : ToPrObject(primaryRecord);
+        return (prObjects, primary, primaryRecord);
+    }
+
+    private static object ToPrObject(GitHubIssueRecord pr) => new
+    {
+        number = pr.Number,
+        key = pr.UniqueKey,
+        url = BuildIssueUrl(pr.UniqueKey),
+        title = pr.Title,
+        merged = pr.MergeState == "merged",
+        baseBranch = pr.BaseBranch,
+    };
 
     internal static DateTimeOffset? ParseTimestamp(SqliteDataReader reader, int ordinal)
     {
@@ -110,6 +200,7 @@ internal static class GitHubUrlHelper
     internal static object MapCommitToJson(GitHubCommitRecord commit, SqliteConnection connection)
     {
         List<GitHubCommitFileRecord> files = GitHubCommitFileRecord.SelectList(connection, CommitSha: commit.Sha);
+        (List<object> prs, object? primaryPr, _) = BuildCommitPrLinks(connection, commit.Sha);
         return new
         {
             commit.Sha,
@@ -127,6 +218,8 @@ internal static class GitHubUrlHelper
             commit.Body,
             commit.Refs,
             changedFiles = files.Select(f => f.FilePath).ToList(),
+            prs,
+            primaryPr,
         };
     }
 

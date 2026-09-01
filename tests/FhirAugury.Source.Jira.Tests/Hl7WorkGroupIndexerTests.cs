@@ -26,7 +26,7 @@ public class Hl7WorkGroupIndexerTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
         try { if (Directory.Exists(_workDir)) Directory.Delete(_workDir, recursive: true); } catch { }
     }
 

@@ -24,4 +24,10 @@
     <ProjectReference Include="..\..\src\FhirAugury.Server.Terminology\FhirAugury.Server.Terminology.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Update="Microsoft.Data.Sqlite.Core" Version="10.0.11" />
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+
 </Project>

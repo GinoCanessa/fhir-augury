@@ -35,7 +35,9 @@ public static class JiraFieldMapper
     internal static string? CleanFieldValue(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
-        string cleaned = System.Net.WebUtility.HtmlDecode(value).Trim();
+        string cleaned = System.Net.WebUtility.HtmlDecode(value)
+            .Replace('\u00A0', ' ')
+            .Trim();
         return string.IsNullOrEmpty(cleaned) ? null : cleaned;
     }
 

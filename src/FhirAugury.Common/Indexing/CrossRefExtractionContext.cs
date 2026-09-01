@@ -1,3 +1,5 @@
+using FhirAugury.Common.Text;
+
 namespace FhirAugury.Common.Indexing;
 
 /// <summary>
@@ -5,5 +7,6 @@ namespace FhirAugury.Common.Indexing;
 /// Sources populate this with knowledge specific to their data.
 /// </summary>
 public record CrossRefExtractionContext(
-    HashSet<int>? ValidJiraNumbers = null
+    HashSet<int>? ValidJiraNumbers = null,
+    RepoJiraScope? RepoScope = null
 );

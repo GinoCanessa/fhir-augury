@@ -23,7 +23,7 @@ public class JiraIndexBuilderUserTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private JiraIssueRecord CreateIssue(SqliteConnection conn, string key,

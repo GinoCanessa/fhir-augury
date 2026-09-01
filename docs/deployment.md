@@ -4,6 +4,9 @@ FHIR Augury v2 uses a microservices architecture with five independent services
 communicating via HTTP. This guide covers Docker Compose and .NET Aspire
 deployment options.
 
+> Just want a Compose quick-start? See the [Docker guide](user/docker.md). This
+> page is the canonical deployment reference.
+
 ## Architecture Overview
 
 ```
@@ -44,13 +47,17 @@ The `docker-compose.yml` supports subset deployments via profiles:
 
 | Profile | Services Started | Use Case |
 |---------|-----------------|----------|
-| `full` | All 5 services | Production deployment |
+| `full` | All 6 services (including the optional preparer) | Production deployment |
+| `processing` | Jira + Jira FHIR Preparer | Local processing API/queue |
 | `jira-zulip` | Jira + Zulip + Orchestrator | Common subset |
 | `jira-only` | Jira only | Single source, no orchestrator |
 
 ```bash
 # Full stack
 docker compose --profile full up -d
+
+# Local processing pipeline (Jira + preparer)
+docker compose --profile processing up -d
 
 # Jira + Zulip only (with orchestrator)
 docker compose --profile jira-zulip up -d
@@ -61,14 +68,26 @@ docker compose --profile jira-only up -d
 
 ## Service Ports
 
-| Service | Port | Health Check |
-|---------|------|-------------|
-| Orchestrator | 5150 | `GET /health` |
-| Jira | 5160 | `GET /health` |
-| Zulip | 5170 | `GET /health` |
-| Confluence | 5180 | `GET /health` |
-| GitHub | 5190 | `GET /health` |
-| MCP (HTTP) | 5200 | `/mcp` |
+| Service | Port | Availability | Health Check |
+|---------|------|--------------|-------------|
+| Orchestrator | 5150 | Compose + Aspire | `GET /health` |
+| Jira | 5160 | Compose + Aspire | `GET /health` |
+| Zulip | 5170 | Compose + Aspire | `GET /health` |
+| Jira FHIR Preparer | 5171 | Compose + Aspire | `GET /health` |
+| Jira FHIR Planner | 5172 | Aspire only | `GET /health` |
+| Jira FHIR Applier | 5173 | Aspire only | `GET /health` |
+| BallotNotes Processor | 5174 | Aspire only | `GET /health` |
+| Confluence | 5180 | Compose + Aspire | `GET /health` |
+| GitHub | 5190 | Compose + Aspire | `GET /health` |
+| FHIR Spec | 5195 | Aspire only | `GET /health` |
+| MCP (HTTP) | 5200 | Aspire only | `/mcp` |
+| Dev UI | 5210 | Aspire only | — |
+
+> Docker Compose ships a **six-service subset** (Jira, Zulip, Confluence, GitHub,
+> the Jira FHIR Preparer, and the orchestrator — see the profiles above). The
+> remaining services (source-fhir, planner, applier, ballotnotes, the MCP HTTP
+> server, and the Dev UI) run under the full **.NET Aspire** topology — see
+> [.NET Aspire](#net-aspire) below.
 
 ## Volume Management
 
@@ -251,12 +270,13 @@ dotnet workload install aspire
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The AppHost registers eight projects (4 source services + orchestrator + MCP
-HTTP server on port 5200 + Dev UI on port 5210 + CLI tool) with the same fixed ports as Docker
-Compose. The orchestrator waits for Jira, Zulip, and GitHub sources to be
+The AppHost registers 13 projects (5 source services + orchestrator + 4
+processors on ports 5171–5174 + MCP HTTP server on port 5200 + Dev UI on
+port 5210 + CLI tool) with the same fixed ports as Docker
+Compose. The orchestrator waits for Jira, Zulip, GitHub, and FHIR sources to be
 healthy before accepting requests. Zulip and GitHub also wait for Jira.
-Confluence, Dev UI, the MCP HTTP server, and the CLI use `WithExplicitStart()` and
-must be started manually from the Aspire dashboard.
+Confluence, all four processors, Dev UI, the MCP HTTP server, and the CLI use
+`WithExplicitStart()` and must be started manually from the Aspire dashboard.
 
 The Aspire dashboard is available at the URL shown in the console output
 (typically `https://localhost:17128`). It provides:

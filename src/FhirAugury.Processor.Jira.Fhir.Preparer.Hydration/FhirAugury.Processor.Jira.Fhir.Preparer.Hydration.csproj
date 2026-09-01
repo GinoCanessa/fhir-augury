@@ -11,13 +11,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Hydration.Common\FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer" />
     <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
-    <InternalsVisibleTo Include="FhirAugury.Tools.PreparerSite" />
-    <InternalsVisibleTo Include="FhirAugury.Tools.PreparerSite.Tests" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketSite.Tests" />
   </ItemGroup>
 </Project>

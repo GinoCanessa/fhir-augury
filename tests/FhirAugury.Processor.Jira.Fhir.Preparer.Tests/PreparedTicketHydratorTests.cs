@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
@@ -16,7 +17,7 @@ public sealed class PreparedTicketHydratorTests
     public async Task Hydrate_HappyPath_WritesResolvedRowsForEverySource()
     {
         using TestDatabase database = CreateDatabase();
-        await SeedAgentRowsAsync(database, "FHIR-100", jiraKey: "FHIR-200", zulipThread: "implementers:ballot", githubItem: "HL7/fhir#42", repo: "HL7/fhir");
+        await SeedAgentRowsAsync(database, "FHIR-100", jiraKey: "FHIR-200", zulipThread: "fhir/infrastructure-wg:ballot", githubItem: "HL7/fhir#42", repo: "HL7/fhir");
 
         FakeHandler handler = new();
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-100",
@@ -36,8 +37,8 @@ public sealed class PreparedTicketHydratorTests
                 ["priority"] = "Major",
                 ["work_group"] = "FHIR-I",
             }, title: "related jira", url: "https://jira/browse/FHIR-200"));
-        handler.AddJsonResponse("/api/v1/zulip/threads/implementers/ballot",
-            """{"streamId":42,"stream":"implementers","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
+        handler.AddJsonResponse("/api/v1/zulip/threads",
+            """{"streamId":42,"stream":"fhir/infrastructure-wg","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
         handler.AddJsonResponse("/api/v1/github/items/HL7/fhir%2342",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -59,12 +60,18 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("FHIR", read.Parent.Specification);
         Assert.Equal(5, read.Parent.CommentCount);
         Assert.Equal("body", read.Parent.DescriptionPlain);
-        Assert.Single(read.JiraRows);
-        Assert.Equal("FHIR-200", read.JiraRows[0].JiraKey);
-        Assert.Equal("resolved", read.JiraRows[0].HydrationStatus);
+        Assert.Equal(2, read.JiraRows.Count);
+        PreparedJiraHydrationRow selfJira = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-100");
+        Assert.Equal("resolved", selfJira.HydrationStatus);
+        PreparedJiraHydrationRow related = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-200");
+        Assert.Equal("resolved", related.HydrationStatus);
         Assert.Single(read.ZulipRows);
         Assert.Equal(42, read.ZulipRows[0].StreamId);
         Assert.Equal(3, read.ZulipRows[0].MessageCount);
+        Assert.Contains(handler.RequestedPathsAndQueries,
+            p => p.StartsWith("/api/v1/zulip/threads?", StringComparison.Ordinal)
+                && p.Contains("streamName=fhir%2Finfrastructure-wg", StringComparison.Ordinal)
+                && p.Contains("topic=ballot", StringComparison.Ordinal));
         Assert.Single(read.GitHubRows);
         Assert.Equal("HL7", read.GitHubRows[0].Owner);
         Assert.Equal("fhir", read.GitHubRows[0].Repo);
@@ -93,8 +100,12 @@ public sealed class PreparedTicketHydratorTests
         Assert.NotNull(read);
         Assert.Equal("unresolved", read!.Parent!.HydrationStatus);
         Assert.Equal("orchestrator 404", read.Parent.HydrationReason);
-        Assert.Single(read.JiraRows);
-        Assert.Equal("resolved", read.JiraRows[0].HydrationStatus);
+        Assert.Equal(2, read.JiraRows.Count);
+        // Self-jira fetch uses the same parent endpoint, which 404'd, so the self-row is unresolved.
+        PreparedJiraHydrationRow selfJira = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-101");
+        Assert.Equal("unresolved", selfJira.HydrationStatus);
+        PreparedJiraHydrationRow related = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-300");
+        Assert.Equal("resolved", related.HydrationStatus);
     }
 
     [Fact]
@@ -114,9 +125,13 @@ public sealed class PreparedTicketHydratorTests
 
         PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-102");
         Assert.NotNull(read);
-        Assert.Single(read!.JiraRows);
-        Assert.Equal("unresolved", read.JiraRows[0].HydrationStatus);
-        Assert.Equal("orchestrator 503", read.JiraRows[0].HydrationReason);
+        Assert.Equal(2, read!.JiraRows.Count);
+        // Self-jira fetch uses the same parent endpoint, which succeeded.
+        PreparedJiraHydrationRow selfJira = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-102");
+        Assert.Equal("resolved", selfJira.HydrationStatus);
+        PreparedJiraHydrationRow related = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-400");
+        Assert.Equal("unresolved", related.HydrationStatus);
+        Assert.Equal("orchestrator 503", related.HydrationReason);
         Assert.Single(read.RepoRows);
         Assert.Equal("resolved", read.RepoRows[0].HydrationStatus);
     }
@@ -189,7 +204,8 @@ public sealed class PreparedTicketHydratorTests
 
         PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-105");
         Assert.NotNull(read);
-        Assert.Equal(2, read!.JiraRows.Count);
+        Assert.Equal(3, read!.JiraRows.Count);
+        Assert.Contains(read.JiraRows, r => r.JiraKey == "FHIR-105");
         Assert.Contains(read.JiraRows, r => r.JiraKey == "FHIR-500");
         Assert.Contains(read.JiraRows, r => r.JiraKey == "FHIR-501");
         Assert.Equal(2, read.JiraXrefRows.Count);
@@ -251,7 +267,8 @@ public sealed class PreparedTicketHydratorTests
         PreparedTicketHydrator firstHydrator = CreateHydrator(database, firstHandler);
         await firstHydrator.HydrateAsync("FHIR-108", CancellationToken.None);
         PreparedTicketHydrationReadModel? firstRead = await database.Database.GetHydrationAsync("FHIR-108");
-        Assert.Equal("first", firstRead!.JiraRows[0].Title);
+        Assert.Equal(2, firstRead!.JiraRows.Count);
+        Assert.Equal("first", Assert.Single(firstRead.JiraRows, r => r.JiraKey == "FHIR-600").Title);
 
         FakeHandler secondHandler = new();
         secondHandler.AddJsonResponse("/api/v1/jira/items/FHIR-108", JsonMetadata([], title: "p2", url: "x"));
@@ -261,8 +278,45 @@ public sealed class PreparedTicketHydratorTests
 
         PreparedTicketHydrationReadModel? secondRead = await database.Database.GetHydrationAsync("FHIR-108");
         Assert.NotNull(secondRead);
-        PreparedJiraHydrationRow row = Assert.Single(secondRead!.JiraRows);
+        Assert.Equal(2, secondRead!.JiraRows.Count);
+        PreparedJiraHydrationRow row = Assert.Single(secondRead.JiraRows, r => r.JiraKey == "FHIR-600");
         Assert.Equal("second", row.Title);
+    }
+
+    [Fact]
+    public async Task PreparedTicketHydrator_AlwaysWritesSelfJiraRow()
+    {
+        // Self-Jira inclusion contract (Phase 1 §5): a ticket's own
+        // prepared_jira_hydration row always exists, even if the agent
+        // omitted the self-key from RelatedJiraKeys. The
+        // PreparedTicketHydrationController reads self-rows where
+        // JiraKey == TicketKey, and this test prevents accidental
+        // regression of that behavior.
+        using TestDatabase database = CreateDatabase();
+        // Seed with NO related jira keys.
+        await SeedAgentRowsAsync(database, "FHIR-777");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-777",
+            JsonMetadata(new Dictionary<string, string>
+            {
+                ["status"] = "Triaged",
+                ["work_group"] = "FHIR-I",
+                ["specification"] = "FHIR",
+            }, title: "Self ticket", url: "https://jira/browse/FHIR-777"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        await hydrator.HydrateAsync("FHIR-777", CancellationToken.None);
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-777");
+        Assert.NotNull(read);
+        PreparedJiraHydrationRow self = Assert.Single(read!.JiraRows);
+        Assert.Equal("FHIR-777", self.JiraKey);
+        Assert.Equal("FHIR-777", self.TicketKey);
+        Assert.Equal("resolved", self.HydrationStatus);
+        Assert.Equal("Self ticket", self.Title);
+        Assert.Equal("FHIR-I", self.WorkGroup);
+        Assert.Equal("FHIR", self.Specification);
     }
 
     private static PreparedTicketHydrator CreateHydrator(TestDatabase database, FakeHandler handler)
@@ -331,7 +385,7 @@ public sealed class PreparedTicketHydratorTests
         public void Dispose()
         {
             Database.Dispose();
-            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+            TestFileCleanup.SafeDeleteDirectory(directory);
         }
     }
 
@@ -340,6 +394,7 @@ public sealed class PreparedTicketHydratorTests
         private readonly Dictionary<string, ScriptedResponse> _byPath = new(StringComparer.Ordinal);
 
         public List<string> RequestedPaths { get; } = [];
+        public List<string> RequestedPathsAndQueries { get; } = [];
 
         public void AddJsonResponse(string path, string json)
             => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, json, null);
@@ -353,13 +408,8 @@ public sealed class PreparedTicketHydratorTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             string path = request.RequestUri?.AbsolutePath ?? string.Empty;
-            string? query = request.RequestUri?.Query;
-            if (!string.IsNullOrEmpty(query))
-            {
-                // strip query when matching by path
-            }
-
             RequestedPaths.Add(path);
+            RequestedPathsAndQueries.Add(request.RequestUri?.PathAndQuery ?? path);
 
             if (!_byPath.TryGetValue(path, out ScriptedResponse? scripted))
             {

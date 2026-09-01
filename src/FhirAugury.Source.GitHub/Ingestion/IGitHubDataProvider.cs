@@ -17,6 +17,13 @@ public interface IGitHubDataProvider
     /// <summary>Incremental download since a given timestamp.</summary>
     Task<IngestionResult> DownloadIncrementalAsync(DateTimeOffset since, CancellationToken ct = default);
 
+    /// <summary>
+    /// Full per-repo history backfill: fetches the complete PR/issue history with
+    /// no <c>updated:&gt;=</c> bound. Used once per repo to close the historical
+    /// coverage gap that the moving incremental window can never reach.
+    /// </summary>
+    Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default);
+
     /// <summary>Reload from cached responses (no network).</summary>
     Task<IngestionResult> LoadFromCacheAsync(CancellationToken ct = default);
 }

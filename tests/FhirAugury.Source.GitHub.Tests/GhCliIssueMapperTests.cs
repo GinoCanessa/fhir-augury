@@ -187,6 +187,8 @@ public class GhCliIssueMapperTests
         Assert.Equal("commenter", record.Author);
         Assert.Equal("This is a comment", record.Body);
         Assert.False(record.IsReviewComment);
+        Assert.Equal("issue", record.CommentKind);
+        Assert.Equal("IC_abc123", record.ExternalId);
     }
 
     [Fact]
@@ -197,7 +199,8 @@ public class GhCliIssueMapperTests
             "author": { "login": "reviewer" },
             "body": "Looks good, minor nit",
             "state": "APPROVED",
-            "submittedAt": "2024-04-20T14:00:00Z"
+            "submittedAt": "2024-04-20T14:00:00Z",
+            "id": "PRR_xyz789"
         }
         """;
 
@@ -211,6 +214,8 @@ public class GhCliIssueMapperTests
         Assert.Equal("reviewer", record.Author);
         Assert.Equal("Looks good, minor nit", record.Body);
         Assert.True(record.IsReviewComment);
+        Assert.Equal("review", record.CommentKind);
+        Assert.Equal("PRR_xyz789", record.ExternalId);
     }
 
     [Fact]

@@ -8,12 +8,14 @@ exposed through typed per-source proxy controllers under
 `ZulipProxyController`, `ConfluenceProxyController`,
 `GitHubProxyController`).
 
-> **Note.** The previous generic reverse proxy at `/api/v1/source/{name}/...`
-> was removed in the 2026-04 sync. The orchestrator self-metadata routes
-> (`/api/v1/source/orchestrator/openapi.json` and
+> **Note.** There is no generic reverse proxy at `/api/v1/source/{name}/...`;
+> per-source operations are exposed through the typed proxies. The orchestrator
+> self-metadata routes (`/api/v1/source/orchestrator/openapi.json` and
 > `/api/v1/source/orchestrator/list-sources`) are preserved by design.
-> See [`docs/changelog/2026-04-sync.md`](changelog/2026-04-sync.md) for the
-> migration notes.
+
+> Looking for the point-and-click Scalar UI walkthrough instead? See the
+> [OpenAPI & Scalar UI guide](user/openapi.md). This page is the technical
+> reference (vendor extensions, the merged document, and the CI gate).
 
 The CLI uses these documents to enumerate available commands, fetch
 parameter and response schemas, and invoke any operation generically — no
@@ -48,6 +50,20 @@ Each source service (`source-jira`, `source-zulip`, `source-github`,
 - `GET /api/v1/openapi.json` — JSON, OpenAPI 3.1.
 - `GET /api/v1/openapi.yaml` — YAML, OpenAPI 3.1.
 
+### Processor documents
+
+The BallotNotes processor (`processor-github-fhir-ballotnotes`, port 5174)
+serves its own document the same way a source does:
+
+- `GET /api/v1/openapi.json` — JSON, OpenAPI 3.1.
+- `GET /api/v1/openapi.yaml` — YAML, OpenAPI 3.1.
+
+It is **not** merged into the orchestrator document (it is an explicit-start
+processor, not a registered source). Its surface is `/api/v1/ballot-notes`:
+hydrate + status poll, unit list/detail, and prose write-back. For the
+operational trigger → poll flow (and the other three processors), see the
+[processors runbook](technical/processors.md).
+
 ### Orchestrator merged document
 
 The orchestrator publishes the union of its own document and every enabled
@@ -68,8 +84,7 @@ When a typed-proxy stub and the rich source description point at the same
 `{path, method}` (which they always do for proxied operations), the merger
 performs a per-method merge instead of throwing — the source's richer
 operation (full parameters, schemas, tags, descriptions) wins, while the
-typed proxy contributes any operations the source did not describe. This
-behavior changed in the 2026-04 sync (previously a duplicate path threw).
+typed proxy contributes any operations the source did not describe.
 
 If a source is configured but unreachable when the merge runs, its paths
 are omitted and the merged document carries a top-level
@@ -164,10 +179,10 @@ The orchestrator test project enforces basic OpenAPI hygiene in
 - Each per-service-style document parses with zero diagnostic errors via
   `OpenApiDocument.Parse(json, "json", new OpenApiReaderSettings { Readers = { ["json"] = new OpenApiJsonReader() } })`.
 - All operations within a document have a unique `operationId`.
-- The merged orchestrator document passes the same checks. After the
-  2026-04 sync, every non-orchestrator path starts with `/api/v1/{name}/`
-  (typed proxy shape); no path may match `^/api/v1/source/[a-z]` other
-  than the preserved `api/v1/source/orchestrator/...` self-metadata routes.
+- The merged orchestrator document passes the same checks. Every
+  non-orchestrator path starts with `/api/v1/{name}/` (typed proxy shape);
+  no path may match `^/api/v1/source/[a-z]` other than the preserved
+  `api/v1/source/orchestrator/...` self-metadata routes.
 
 Companion tests under
 `tests/FhirAugury.Common.OpenApi.Tests/` (in particular

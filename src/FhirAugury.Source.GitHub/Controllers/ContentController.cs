@@ -324,6 +324,34 @@ public class ContentController(GitHubDatabase db) : ControllerBase
             }
         }
 
+        // Outgoing: commit SHA → Jira tickets (notes-site attribution motivator)
+        if (hits.Count < maxResults)
+        {
+            GitHubCommitRecord? commit = GitHubCommitRecord.SelectSingle(connection, Sha: value);
+            if (commit is not null)
+            {
+                foreach (JiraXRefRecord r in JiraXRefRecord.SelectList(connection, SourceId: value))
+                {
+                    string dedupeKey = $"out:{r.TargetType}:{r.JiraKey}";
+                    if (!seen.Add(dedupeKey)) continue;
+                    hits.Add(new CrossReferenceHit
+                    {
+                        SourceType = SourceSystems.GitHub,
+                        ContentType = r.ContentType,
+                        SourceId = value,
+                        SourceTitle = commit.Message,
+                        SourceUrl = commit.Url,
+                        TargetType = SourceSystems.Jira,
+                        TargetId = r.JiraKey,
+                        LinkType = r.LinkType,
+                        Context = r.Context,
+                        UpdatedAt = commit.Date,
+                    });
+                    if (hits.Count >= maxResults) break;
+                }
+            }
+        }
+
         // Incoming: referred-by
         if (hits.Count < maxResults && ValueFormatDetector.IsJiraKey(value))
         {

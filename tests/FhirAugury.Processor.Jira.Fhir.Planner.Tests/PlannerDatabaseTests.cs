@@ -1,4 +1,4 @@
-using FhirAugury.Processor.Jira.Fhir.Planner.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -206,13 +206,7 @@ public sealed class PlannerDatabaseTests
         public void Dispose()
         {
             Database.Dispose();
-            try
-            {
-                Directory.Delete(_directory, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TestFileCleanup.SafeDeleteDirectory(_directory);
         }
     }
 }

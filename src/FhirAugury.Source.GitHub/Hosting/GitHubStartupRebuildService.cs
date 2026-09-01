@@ -41,6 +41,14 @@ public sealed class GitHubStartupRebuildService(
             xrefRebuilder.RebuildAllRepos(repos, validJiraNumbers: null, ct);
         }
 
+        if (db.TableIsEmpty("github_pr_ticket_links"))
+        {
+            SetPhase("rebuilding PR↔ticket links");
+            GitHubPrTicketLinkRebuilder prTicketLinkRebuilder = services.GetRequiredService<GitHubPrTicketLinkRebuilder>();
+            List<string> repos = opts.GetAllRepositoryNames();
+            prTicketLinkRebuilder.RebuildAllRepos(repos, ct);
+        }
+
         if (db.TableIsEmpty("index_keywords"))
         {
             SetPhase("rebuilding BM25 index");

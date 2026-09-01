@@ -1,7 +1,7 @@
-using System.IO;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
+using FhirAugury.Testing.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Applier.Tests.Database;
 
@@ -17,7 +17,7 @@ public class AppliedTicketQueueItemStoreTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDatabaseFile(_path);
+        TestFileCleanup.SafeDeleteFile(_path);
     }
 
     [Fact]

@@ -1,54 +1,9 @@
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
-
-/// <summary>
-/// Why a hydration sweep is being run. Affects how an unavailable
-/// Specification upstream is surfaced: a <see cref="Startup"/> sweep
-/// throws to abort host startup; an <see cref="AdminRequest"/> sweep
-/// returns the failure as a result so the controller can map it to a
-/// 503 response without affecting service liveness.
-/// </summary>
-public enum HydrationSweepReason
-{
-    Startup,
-    AdminRequest,
-}
-
-/// <summary>
-/// Result of a per-ticket hydration sweep pass. <see cref="Eligible"/>
-/// is the number of <c>prepared_tickets</c> rows whose hydration row
-/// was missing or unresolved at the start of the sweep — i.e., the
-/// number of <see cref="PreparedTicketHydrator.HydrateAsync"/> calls
-/// the sweep issued.
-/// </summary>
-public sealed record PerTicketSweepResult(int Eligible, TimeSpan Elapsed)
-{
-    public static PerTicketSweepResult Empty { get; } = new(0, TimeSpan.Zero);
-}
-
-/// <summary>
-/// Composite result of a <see cref="PreparedHydrationSweeper.RunFullAsync"/>
-/// call.
-/// </summary>
-public sealed record HydrationSweepResult(
-    SpecificationBackfillResult Specification,
-    PerTicketSweepResult PerTicket,
-    TimeSpan TotalElapsed);
-
-/// <summary>
-/// Thrown by <see cref="PreparedHydrationSweeper.RunFullAsync"/> when
-/// invoked with <see cref="HydrationSweepReason.Startup"/> and the
-/// Specification backfill upstream is unreachable. Aborting host
-/// startup is the documented hard-fail behavior.
-/// </summary>
-public sealed class HydrationSweeperUnavailableException(SpecificationBackfillFailure failure)
-    : Exception(failure.Reason)
-{
-    public SpecificationBackfillFailure Failure { get; } = failure;
-}
 
 /// <summary>
 /// Coordinates the two passes of the preparer-service hydration sweep:
@@ -67,6 +22,16 @@ public sealed class HydrationSweeperUnavailableException(SpecificationBackfillFa
 /// collide on the SQLite WAL writer. The hydrator absorbs per-ticket
 /// exceptions into <c>unresolved</c> rows internally, so the sweep
 /// loop does not need try/catch around each call.
+/// </para>
+/// <para>
+/// Body left intact across the Phase 1 shared-library refactor: this
+/// sweeper calls <see cref="PreparedTicketHydrator.HydrateAsync"/>
+/// directly so that preparer-side test subclasses of
+/// <see cref="PreparedTicketHydrator"/> (probes used by
+/// <c>PreparedHydrationSweeperTests</c>) keep receiving every
+/// per-ticket call. The shared
+/// <see cref="HydrationSweeper"/> exists for the planner and any
+/// future processor that does not need this seam.
 /// </para>
 /// </remarks>
 public class PreparedHydrationSweeper(

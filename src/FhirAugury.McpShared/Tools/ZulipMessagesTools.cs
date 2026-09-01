@@ -79,6 +79,47 @@ public static class ZulipMessagesTools
         }
     }
 
+    [McpServerTool, Description("Query Zulip messages with structured filters (streams, topics, senders, dates).")]
+    public static async Task<string> QueryZulipMessages(
+        IHttpClientFactory httpClientFactory,
+        [Description("Filter by stream names (comma-separated)")] string? streams = null,
+        [Description("Filter by topic name")] string? topic = null,
+        [Description("Filter by topic keyword (partial match)")] string? topicKeyword = null,
+        [Description("Filter by sender names (comma-separated)")] string? senders = null,
+        [Description("Text query")] string? query = null,
+        [Description("Sort by field (default timestamp)")] string sortBy = "timestamp",
+        [Description("Sort order: asc or desc (default desc)")] string sortOrder = "desc",
+        [Description("Maximum results (default 20)")] int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            HttpClient client = httpClientFactory.CreateClient("orchestrator");
+            object body = new
+            {
+                streamNames = ParseCsv(streams),
+                senderNames = ParseCsv(senders),
+                topic = topic ?? "",
+                topicKeyword = topicKeyword ?? "",
+                query = query ?? "",
+                sortBy,
+                sortOrder,
+                limit,
+            };
+            JsonElement root = await UnifiedTools.PostJsonBodyAsync(client, "/api/v1/zulip/query", body, cancellationToken);
+            return FormatJson(root);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    private static List<string> ParseCsv(string? csv) =>
+        string.IsNullOrWhiteSpace(csv)
+            ? []
+            : [.. csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
     private static string FormatJson(JsonElement root) =>
         $"```json\n{JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true })}\n```";
 }

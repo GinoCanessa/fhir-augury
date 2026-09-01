@@ -1,4 +1,3 @@
-using System.IO;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
@@ -7,6 +6,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Processing;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Database;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -19,8 +19,8 @@ public class PlannerWorkQueueTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDatabaseFile(_plannerPath);
-        TestDbCleanup.DeleteDatabaseFile(_applierPath);
+        TestFileCleanup.SafeDeleteFile(_plannerPath);
+        TestFileCleanup.SafeDeleteFile(_applierPath);
     }
 
     private PlannerWorkQueue NewQueue(IReadOnlyCollection<string>? typeFilter = null)
@@ -132,7 +132,7 @@ public class PlannerWorkQueueTests : IDisposable
 
     private static void BumpPlannerCompletionId(string dbPath, string key, string newCompletionId)
     {
-        using Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={dbPath}");
+        using Microsoft.Data.Sqlite.SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         connection.Open();
         using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
         command.CommandText = "UPDATE jira_processing_source_tickets SET CompletionId = @cid WHERE Key = @key";

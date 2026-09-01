@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "FhirAugury.Processor.GitHub.Fhir.BallotNotes": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:61286;http://localhost:61287"
+    }
+  }
+}

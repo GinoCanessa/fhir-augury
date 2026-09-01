@@ -1,5 +1,6 @@
 using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -11,7 +12,7 @@ public class OutputDifferTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        TestFileCleanup.SafeDeleteDirectory(_root);
     }
 
     private (OutputDiffer Differ, ApplierRepoOptions Repo, string Worktree, string Baseline, string OutputDir) NewSut(
@@ -28,7 +29,7 @@ public class OutputDifferTests : IDisposable
         {
             Owner = "HL7",
             Name = "fhir",
-            BuildCommand = PlatformBuildCommands.True(),
+            BuildCommand = CrossPlatformShell.True,
             OutputRoots = ["output/**"],
         };
         OutputDiffer differ = new(Options.Create(options), NullLogger<OutputDiffer>.Instance);

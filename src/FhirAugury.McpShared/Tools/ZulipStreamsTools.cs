@@ -77,11 +77,9 @@ public static class ZulipStreamsTools
         try
         {
             HttpClient client = httpClientFactory.CreateClient("orchestrator");
-            StringBuilder url = new($"/api/v1/zulip/streams/{Uri.EscapeDataString(streamName)}/topics");
-            List<string> query = [];
-            if (limit != null) query.Add($"limit={limit.Value}");
-            if (offset != null) query.Add($"offset={offset.Value}");
-            if (query.Count > 0) url.Append($"?{string.Join('&', query)}");
+            StringBuilder url = new($"/api/v1/zulip/streams/topics?streamName={Uri.EscapeDataString(streamName)}");
+            if (limit != null) url.Append($"&limit={limit.Value}");
+            if (offset != null) url.Append($"&offset={offset.Value}");
 
             JsonElement root = await UnifiedTools.GetJsonAsync(client, url.ToString(), cancellationToken);
             return FormatJson(root);

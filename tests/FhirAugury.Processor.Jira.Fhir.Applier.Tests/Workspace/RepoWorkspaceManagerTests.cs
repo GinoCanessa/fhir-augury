@@ -2,6 +2,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database;
 using FhirAugury.Processor.Jira.Fhir.Applier.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -14,8 +15,8 @@ public class RepoWorkspaceManagerTests : IDisposable
 
     public void Dispose()
     {
-        TestDbCleanup.DeleteDatabaseFile(_dbPath);
-        TestDbCleanup.DeleteDirectoryTree(_workingDir);
+        TestFileCleanup.SafeDeleteDirectory(_workingDir);
+        TestFileCleanup.SafeDeleteFile(_dbPath);
     }
 
     private (RepoWorkspaceManager Manager, FakeGitProcessRunner Git, RepoBaselineStore Baselines, ApplierRepoOptions Repo) NewSut(
@@ -57,7 +58,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureCloneAsync_ClonesWhenMissing()
     {
-        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.True());
+        var (manager, git, _, repo) = NewSut(CrossPlatformShell.True);
         string clonePath = await manager.EnsureCloneAsync(repo, default);
         Assert.True(Directory.Exists(clonePath));
         Assert.Contains(git.Calls, c => c.Arguments.StartsWith("clone --branch main"));
@@ -66,7 +67,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureCloneAsync_FetchAndResetWhenPresent()
     {
-        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.True());
+        var (manager, git, _, repo) = NewSut(CrossPlatformShell.True);
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -80,11 +81,11 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_SnapshotsOnlyOutputRoots()
     {
-        // build command writes to output/ but also writes a sibling source file the
+        // shell command writes to output/ but also writes a sibling source file the
         // baseline must NOT include
-        string buildCmd = PlatformBuildCommands.WriteFiles(
-            ("output/sample.txt", "hi"),
-            ("sibling.txt", "other"));
+        string buildCmd = CrossPlatformShell.Wrap(
+            "mkdir -p output && echo hi > output/sample.txt && echo other > sibling.txt",
+            "mkdir output 2>nul & echo hi> output\\sample.txt && echo other> sibling.txt");
         var (manager, git, baselines, repo) = NewSut(buildCmd);
 
         string clonePath = manager.PrimaryClonePath(repo);
@@ -108,7 +109,9 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_WipesPriorBaseline()
     {
-        string buildCmd = PlatformBuildCommands.WriteFiles(("output/new.txt", "new"));
+        string buildCmd = CrossPlatformShell.Wrap(
+            "mkdir -p output && echo new > output/new.txt",
+            "mkdir output 2>nul & echo new> output\\new.txt");
         var (manager, git, _, repo) = NewSut(buildCmd);
 
         string clonePath = manager.PrimaryClonePath(repo);
@@ -128,7 +131,9 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task RebuildBaselineAsync_PropagatesBuildFailure()
     {
-        var (manager, git, _, repo) = NewSut(PlatformBuildCommands.ExitWithStderr("nope", 2));
+        var (manager, git, _, repo) = NewSut(CrossPlatformShell.Wrap(
+            "echo nope >&2 && exit 2",
+            "echo nope 1>&2 && exit 2"));
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
         git.Respond("rev-parse HEAD", new GitProcessResult(0, "abc", string.Empty));
@@ -141,7 +146,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureWorktreeAsync_RequiresPriorBaseline()
     {
-        var (manager, _, _, repo) = NewSut(PlatformBuildCommands.True());
+        var (manager, _, _, repo) = NewSut(CrossPlatformShell.True);
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -152,7 +157,7 @@ public class RepoWorkspaceManagerTests : IDisposable
     [Fact]
     public async Task EnsureWorktreeAsync_CleansStaleDirAndCopiesBaseline()
     {
-        var (manager, git, baselines, repo) = NewSut(PlatformBuildCommands.True());
+        var (manager, git, baselines, repo) = NewSut(CrossPlatformShell.True);
         string clonePath = manager.PrimaryClonePath(repo);
         Directory.CreateDirectory(Path.Combine(clonePath, ".git"));
 
@@ -177,7 +182,7 @@ public class RepoWorkspaceManagerTests : IDisposable
         // delete the dir so the manager's "if Directory.Exists" guard runs.
         git.Respond("worktree remove", () =>
         {
-            if (Directory.Exists(worktree)) Directory.Delete(worktree, true);
+            TestFileCleanup.SafeDeleteDirectory(worktree);
             return new GitProcessResult(0, string.Empty, string.Empty);
         });
 

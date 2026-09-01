@@ -27,8 +27,8 @@ public class CanonicalArtifactIndexerTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
-        try { Directory.Delete(_testDataDir, true); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_testDataDir);
     }
 
     [Fact]

@@ -20,6 +20,18 @@ This skill is a **sibling** of `index-prepared`, not a replacement.
 `index-prepared` continues to own the file-driven path; pick this skill
 when you want the preparer DB to be authoritative.
 
+> **Related**: the planner producer pair —
+> [`planner-topic-groupings`](../planner-topic-groupings/SKILL.md)
+> (per-workgroup) and
+> [`orchestrate-planner-topic-groupings`](../orchestrate-planner-topic-groupings/SKILL.md)
+> (bulk fan-out) — now writes `planned_ticket_topics*` rows so the
+> applying sub-site under
+> [`tools/ticket-site`](../../../tools/ticket-site/README.md) can
+> render live Topic lists. The matching DB-reader sibling skill
+> (`index-planned-db`) is still future work; the applying sub-site
+> renders the same shape directly from the planner DB in the
+> meantime.
+
 ## Data Access
 
 The skill talks to three HTTP surfaces, in this order, all via

@@ -420,4 +420,122 @@ public class JiraTicketExtractorTests
         Assert.Equal("FHIR-5678", results[0].JiraKey);
         Assert.Equal("FHIR#5678", results[0].OriginalLiteral);
     }
+
+    // ── UPSM vs UP Canonicalization ──────────────────────────────────
+
+    [Theory]
+    [InlineData("See UPSM-411 here", "UPSM-411", "UPSM-411")]
+    [InlineData("See UPSM#411 here", "UPSM-411", "UPSM#411")]
+    [InlineData("See UP-411 here", "UP-411", "UP-411")]
+    public void ExtractTickets_UpsmAndUp_AreDistinct(string text, string expectedKey, string expectedOriginal)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(text);
+
+        Assert.Single(results);
+        Assert.Equal(expectedKey, results[0].JiraKey);
+        Assert.Equal(expectedOriginal, results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_UpsmAndUp_BothPresent_NotCollapsed()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("UPSM-411 and UP-411 differ");
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, r => r.JiraKey == "UPSM-411");
+        Assert.Contains(results, r => r.JiraKey == "UP-411");
+    }
+
+    // ── Repo-Scoped Bare-Number Pass ─────────────────────────────────
+
+    private static RepoJiraScope FhirScope => new([new RepoJiraProjectScope("FHIR", 2839, 70000)]);
+    private static RepoJiraScope UpsmScope => new([new RepoJiraProjectScope("UPSM", 10, 2000)]);
+
+    [Fact]
+    public void ExtractTickets_NoScope_DoesNotResolveBareNumbers()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets("Fixed 54873 in core");
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void ExtractTickets_Scope_ResolvesBareNumberInRange()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "Fixed 54873 in core", validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-54873", results[0].JiraKey);
+        Assert.Equal("54873", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_Scope_IgnoresBareNumberOutOfRange()
+    {
+        // 100 is below the FHIR floor (2839); 99999 is above the ceiling (70000).
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "Touched 100 and 99999 here", validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void ExtractTickets_Scope_UpsmResolvesBareNumber()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "terminology fix 411", validJiraNumbers: null, repoScope: UpsmScope);
+
+        Assert.Single(results);
+        Assert.Equal("UPSM-411", results[0].JiraKey);
+    }
+
+    [Theory]
+    [InlineData("See #54873 here")]
+    [InlineData("See pull/54873 here")]
+    [InlineData("See issues/54873 here")]
+    [InlineData("Closes PR 54873 now")]
+    public void ExtractTickets_Scope_ExcludesGitHubRefContexts(string text)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            text, validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Empty(results);
+    }
+
+    [Theory]
+    [InlineData("Released on 2026-06-25 today")]
+    [InlineData("Bumped to 1.2.3 today")]
+    [InlineData("path/to/54873/file")]
+    public void ExtractTickets_Scope_ExcludesDateAndVersionFragments(string text)
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            text, validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public void ExtractTickets_Scope_SuppressesBareNumberAlreadyNamedByPrefixedKey()
+    {
+        // FHIR-54873 names 54873 explicitly; the trailing bare "54873" must not
+        // produce a second match.
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "FHIR-54873 also referenced as 54873", validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Single(results);
+        Assert.Equal("FHIR-54873", results[0].JiraKey);
+        Assert.Equal("FHIR-54873", results[0].OriginalLiteral);
+    }
+
+    [Fact]
+    public void ExtractTickets_Scope_PrefixedKeyAndDistinctBareNumber_BothExtracted()
+    {
+        List<JiraTicketMatch> results = JiraTicketExtractor.ExtractTickets(
+            "FHIR-3000 and bare 54873", validJiraNumbers: null, repoScope: FhirScope);
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, r => r.JiraKey == "FHIR-3000");
+        Assert.Contains(results, r => r.JiraKey == "FHIR-54873");
+    }
 }

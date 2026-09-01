@@ -350,6 +350,38 @@ public sealed class JiraProjectRequest : CliRequest
     [JsonPropertyName("body")] public JsonElement? Body { get; set; }
 }
 
+public sealed class JiraBalDefRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("cycle")] public string? Cycle { get; set; }
+    [JsonPropertyName("level")] public string? Level { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class JiraBallotRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("cycle")] public string? Cycle { get; set; }
+    [JsonPropertyName("specification")] public string? Specification { get; set; }
+    [JsonPropertyName("disposition")] public string? Disposition { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
+public sealed class JiraPssRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
+}
+
 public sealed class JiraLocalProcessingRequest : CliRequest
 {
     [JsonPropertyName("action")] public string Action { get; set; } = "";
@@ -422,6 +454,7 @@ public sealed class GitHubItemsRequest : CliRequest
     [JsonPropertyName("key")] public string? Key { get; set; }
     [JsonPropertyName("limit")] public int? Limit { get; set; }
     [JsonPropertyName("offset")] public int? Offset { get; set; }
+    [JsonPropertyName("pullRequest")] public bool? PullRequest { get; set; }
     [JsonPropertyName("includeContent")] public bool? IncludeContent { get; set; }
     [JsonPropertyName("includeComments")] public bool? IncludeComments { get; set; }
     [JsonPropertyName("includeRefs")] public bool? IncludeRefs { get; set; }
@@ -429,11 +462,46 @@ public sealed class GitHubItemsRequest : CliRequest
     [JsonPropertyName("format")] public string? Format { get; set; }
 }
 
+/// <summary>
+/// Single request envelope for the whole <c>fhir-*</c> command family. The
+/// specific command (e.g. <c>fhir-structure</c>) is carried by
+/// <see cref="CliRequest.Command"/>; the handler selects fields per command.
+/// </summary>
+public sealed class FhirRequest : CliRequest
+{
+    [JsonPropertyName("release")] public string? Release { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+    [JsonPropertyName("idOrCode")] public string? IdOrCode { get; set; }
+    [JsonPropertyName("system")] public string? System { get; set; }
+    [JsonPropertyName("url")] public string? Url { get; set; }
+    [JsonPropertyName("code")] public string? Code { get; set; }
+    [JsonPropertyName("base")] public string? Base { get; set; }
+    [JsonPropertyName("query")] public string? Query { get; set; }
+    [JsonPropertyName("types")] public string? Types { get; set; }
+    [JsonPropertyName("workGroup")] public string? WorkGroup { get; set; }
+    [JsonPropertyName("maturity")] public int? Maturity { get; set; }
+    [JsonPropertyName("status")] public string? Status { get; set; }
+    [JsonPropertyName("hierarchical")] public bool? Hierarchical { get; set; }
+    [JsonPropertyName("nested")] public bool? Nested { get; set; }
+    [JsonPropertyName("path")] public string? Path { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+}
+
 public sealed class GitHubReposRequest : CliRequest
 {
     [JsonPropertyName("action")] public string Action { get; set; } = "";
     [JsonPropertyName("owner")] public string? Owner { get; set; }
     [JsonPropertyName("name")] public string? Name { get; set; }
+}
+
+public sealed class GitHubWorkGroupsRequest : CliRequest
+{
+    [JsonPropertyName("action")] public string Action { get; set; } = "";
+    [JsonPropertyName("repo")] public string? Repo { get; set; }
+    [JsonPropertyName("workgroup")] public string? Workgroup { get; set; }
+    [JsonPropertyName("path")] public string? Path { get; set; }
+    [JsonPropertyName("limit")] public int? Limit { get; set; }
+    [JsonPropertyName("offset")] public int? Offset { get; set; }
 }
 
 public sealed class JiraSpecsRequest : CliRequest

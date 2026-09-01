@@ -28,6 +28,7 @@ public class GitHubIngestionPipeline(
     IEnumerable<IRepoCategoryStrategy> categoryStrategies,
     TagWeightResolver weightResolver,
     GitHubXRefRebuilder xrefRebuilder,
+    GitHubPrTicketLinkRebuilder prTicketLinkRebuilder,
     IHttpClientFactory httpClientFactory,
     FhirAugury.Common.Indexing.IIndexTracker tracker,
     IOptions<GitHubServiceOptions> optionsAccessor,
@@ -91,8 +92,20 @@ public class GitHubIngestionPipeline(
             logger.LogInformation("Starting incremental ingestion since {Since}", since);
 
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+
+            // One-time full-history backfill for any repo lacking a marker, so the
+            // historical PR/issue corpus (and thus xref_jira / PR↔ticket edges) is
+            // complete before the moving incremental window takes over.
+            List<string> needingBackfill = GetReposNeedingBackfill();
+            IngestionResult? backfillResult = null;
+            if (needingBackfill.Count > 0)
+            {
+                logger.LogInformation("Auto-backfilling {Count} repo(s) before incremental sync", needingBackfill.Count);
+                backfillResult = await BackfillReposAsync(needingBackfill, ct);
+            }
+
             IngestionResult downloadResult = await source.DownloadIncrementalAsync(since, ct);
-            IngestionResult result = MergeResults(cacheResult, downloadResult);
+            IngestionResult result = MergeResults(cacheResult, MergeResults(backfillResult, downloadResult));
             await PostIngestionAsync(result, "incremental", ct);
             await NotifyOrchestratorAsync(result, "incremental");
 
@@ -168,7 +181,7 @@ public class GitHubIngestionPipeline(
                     string clonePath = await cloner.EnsureCloneAsync(repo, ct);
 
                     _currentStatus = $"extracting_commits:{repo}";
-                    await commitExtractor.ExtractAsync(clonePath, repo, ct);
+                    await commitExtractor.ExtractAsync(clonePath, repo, _options.ResolveMaxInitialCommits(repo), ct);
 
                     // Resolve strategy for this repo's category
                     IRepoCategoryStrategy? strategy = _strategyMap.GetValueOrDefault(category);
@@ -233,6 +246,10 @@ public class GitHubIngestionPipeline(
                         }
                     }
                 }
+                catch (IngestionDataIntegrityException)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Failed to clone/extract commits/index files for {Repo}", repo);
@@ -261,11 +278,16 @@ public class GitHubIngestionPipeline(
                 List<string> allRepoNames = repos.Select(r => r.Name).ToList();
                 xrefRebuilder.RebuildAllRepos(allRepoNames, validJiraNumbers: null, ct);
                 tracker.MarkCompleted("cross-refs");
+
+                tracker.MarkStarted("pr-ticket-links");
+                prTicketLinkRebuilder.RebuildAllRepos(allRepoNames, ct);
+                tracker.MarkCompleted("pr-ticket-links");
             }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to extract cross-references");
                 tracker.MarkFailed("cross-refs", ex.Message);
+                tracker.MarkFailed("pr-ticket-links", ex.Message);
             }
         }
         catch (Exception ex)
@@ -273,6 +295,7 @@ public class GitHubIngestionPipeline(
             tracker.MarkFailed("commits", ex.Message);
             tracker.MarkFailed("file-contents", ex.Message);
             tracker.MarkFailed("cross-refs", ex.Message);
+            tracker.MarkFailed("pr-ticket-links", ex.Message);
             throw;
         }
 
@@ -382,15 +405,135 @@ public class GitHubIngestionPipeline(
     private DateTimeOffset GetLastSyncTime()
     {
         using SqliteConnection connection = database.OpenConnection();
-        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
+        GitHubSyncStateRecord? state = GitHubSyncStateReader.GetMostRecentOperational(connection);
         return state?.LastSyncAt ?? DateTimeOffset.UtcNow.AddDays(-30);
     }
 
     public DateTimeOffset? GetLastSyncCompletedAt()
     {
         using SqliteConnection connection = database.OpenConnection();
-        GitHubSyncStateRecord? state = GitHubSyncStateRecord.SelectSingle(connection, SourceName: IGitHubDataProvider.SourceName);
+        GitHubSyncStateRecord? state = GitHubSyncStateReader.GetMostRecentOperational(connection);
         return state?.LastSyncAt;
+    }
+
+    // ── History backfill (per-repo, marker-gated) ─────────────────────────
+
+    private const string BackfillMarkerPrefix = "backfill:";
+
+    /// <summary>
+    /// Returns configured repos that have no <c>backfill:&lt;repo&gt;</c> marker
+    /// yet — i.e. that still need the one-time full-history fetch.
+    /// </summary>
+    public List<string> GetReposNeedingBackfill()
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        HashSet<string> marked = GitHubSyncStateRecord
+            .SelectList(connection, SourceName: IGitHubDataProvider.SourceName)
+            .Where(r => r.SubSource.StartsWith(BackfillMarkerPrefix, StringComparison.Ordinal))
+            .Select(r => r.SubSource[BackfillMarkerPrefix.Length..])
+            .ToHashSet(StringComparer.Ordinal);
+
+        return _options.GetAllRepositoryNames()
+            .Where(repo => !marked.Contains(repo))
+            .ToList();
+    }
+
+    /// <summary>Writes the <c>backfill:&lt;repo&gt;</c> marker so the repo is not backfilled again.</summary>
+    private void MarkRepoBackfilled(string repo)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        string subSource = BackfillMarkerPrefix + repo;
+        GitHubSyncStateRecord? existing = GitHubSyncStateRecord.SelectSingle(
+            connection, SourceName: IGitHubDataProvider.SourceName, SubSource: subSource);
+
+        GitHubSyncStateRecord marker = new GitHubSyncStateRecord
+        {
+            Id = existing?.Id ?? GitHubSyncStateRecord.GetIndex(),
+            SourceName = IGitHubDataProvider.SourceName,
+            SubSource = subSource,
+            LastSyncAt = DateTimeOffset.UtcNow,
+            LastCursor = null,
+            ItemsIngested = 0,
+            SyncSchedule = null,
+            NextScheduledAt = null,
+            Status = "success",
+            LastError = null,
+        };
+
+        if (existing is not null)
+            GitHubSyncStateRecord.Update(connection, marker);
+        else
+            GitHubSyncStateRecord.Insert(connection, marker);
+    }
+
+    /// <summary>
+    /// Backfills the given repos one at a time, marking each repo backfilled only
+    /// after its fetch completed without repo-local errors. The gh-CLI provider
+    /// accumulates per-repo errors rather than throwing, so a failed repo simply
+    /// leaves its marker absent and is retried on the next incremental run.
+    /// </summary>
+    private async Task<IngestionResult> BackfillReposAsync(IReadOnlyList<string> repos, CancellationToken ct)
+    {
+        IngestionResult aggregate = new IngestionResult(0, 0, 0, 0, [], DateTimeOffset.UtcNow);
+
+        foreach (string repo in repos)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            _currentStatus = $"backfilling:{repo}";
+            logger.LogInformation("Backfilling full history for {Repo}", repo);
+            IngestionResult repoResult = await source.DownloadBackfillAsync(repo, ct);
+            aggregate = MergeResults(aggregate, repoResult);
+
+            if (repoResult.Errors.Count == 0)
+            {
+                MarkRepoBackfilled(repo);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Backfill for {Repo} completed with {Count} error(s); marker left absent for retry",
+                    repo, repoResult.Errors.Count);
+            }
+        }
+
+        return aggregate;
+    }
+
+    /// <summary>
+    /// Runs an explicit history backfill. With a <paramref name="repoFilter"/> it
+    /// forces a backfill of that repo; otherwise it backfills every repo that
+    /// still lacks a <c>backfill:&lt;repo&gt;</c> marker.
+    /// </summary>
+    public async Task<IngestionResult> RunBackfillIngestionAsync(string? repoFilter = null, CancellationToken ct = default)
+    {
+        if (!await _runLock.WaitAsync(0, ct))
+            throw new InvalidOperationException("An ingestion is already in progress.");
+
+        _currentStatus = "running_backfill";
+
+        try
+        {
+            List<string> repos = repoFilter is not null ? [repoFilter] : GetReposNeedingBackfill();
+            logger.LogInformation("Starting history backfill for {Count} repo(s)", repos.Count);
+
+            IngestionResult result = await BackfillReposAsync(repos, ct);
+            await PostIngestionAsync(result, "backfill", ct);
+            await NotifyOrchestratorAsync(result, "backfill");
+
+            _currentStatus = "idle";
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _currentStatus = $"error: {ex.Message}";
+            logger.LogError(ex, "History backfill failed");
+            throw;
+        }
+        finally
+        {
+            _runLock.Release();
+        }
     }
 
     private async Task<IngestionResult?> LoadCacheIfDatabaseEmptyAsync(CancellationToken ct)
@@ -501,6 +644,10 @@ public class GitHubIngestionPipeline(
             string? xmlPath = await workGroupAcquirer.EnsureAsync(ct).ConfigureAwait(false);
             int total = workGroupIndexer.Rebuild(xmlPath, ct);
             workGroupResolver.Reload();
+
+            WorkGroupRefreshIntegrity.ThrowIfConfiguredButEmpty(
+                _options.Hl7WorkGroupSourceXml, total, xmlPath);
+
             logger.LogInformation(
                 "hl7 workgroups refreshed: {Total} rows resolvable (xml={Xml})",
                 total, xmlPath ?? "<none>");
@@ -509,6 +656,11 @@ public class GitHubIngestionPipeline(
         catch (OperationCanceledException)
         {
             tracker.MarkFailed("workgroups", "cancelled");
+            throw;
+        }
+        catch (IngestionDataIntegrityException ex)
+        {
+            tracker.MarkFailed("workgroups", ex.Message);
             throw;
         }
         catch (Exception ex)

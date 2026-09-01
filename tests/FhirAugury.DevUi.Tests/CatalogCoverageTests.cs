@@ -23,6 +23,10 @@ public class CatalogCoverageTests
             (Func<IReadOnlyList<ApiEndpointDescriptor>>)GitHubCatalog.Build],
         ["Confluence", typeof(FhirAugury.Source.Confluence.Controllers.ItemsController).Assembly,
             (Func<IReadOnlyList<ApiEndpointDescriptor>>)ConfluenceCatalog.Build],
+        ["Fhir", typeof(FhirAugury.Source.Fhir.Controllers.ReleasesController).Assembly,
+            (Func<IReadOnlyList<ApiEndpointDescriptor>>)FhirCatalog.Build],
+        ["Orchestrator", typeof(FhirAugury.Orchestrator.Controllers.ContentController).Assembly,
+            (Func<IReadOnlyList<ApiEndpointDescriptor>>)OrchestratorCatalog.Build],
     ];
 
     [Theory]

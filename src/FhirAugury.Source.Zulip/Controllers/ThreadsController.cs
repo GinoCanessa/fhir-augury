@@ -12,9 +12,12 @@ namespace FhirAugury.Source.Zulip.Controllers;
 [Route("api/v1")]
 public class ThreadsController(ZulipDatabase db, IOptions<ZulipServiceOptions> optsAccessor) : ControllerBase
 {
-    [HttpGet("threads/{streamName}/{topic}")]
-    public IActionResult GetThread([FromRoute] string streamName, [FromRoute] string topic, [FromQuery] int? limit)
+    [HttpGet("threads")]
+    public IActionResult GetThread([FromQuery] string? streamName, [FromQuery] string? topic, [FromQuery] int? limit)
     {
+        if (string.IsNullOrWhiteSpace(streamName) || string.IsNullOrWhiteSpace(topic))
+            return BadRequest(new { error = "streamName and topic query parameters are required" });
+
         ZulipServiceOptions options = optsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
         int maxResults = Math.Min(limit ?? 200, 1000);
@@ -105,9 +108,12 @@ public class ThreadsController(ZulipDatabase db, IOptions<ZulipServiceOptions> o
         return source.Substring(0, cut) + "…";
     }
 
-    [HttpGet("threads/{streamName}/{topic}/snapshot")]
-    public IActionResult GetThreadSnapshot([FromRoute] string streamName, [FromRoute] string topic)
+    [HttpGet("threads/snapshot")]
+    public IActionResult GetThreadSnapshot([FromQuery] string? streamName, [FromQuery] string? topic)
     {
+        if (string.IsNullOrWhiteSpace(streamName) || string.IsNullOrWhiteSpace(topic))
+            return BadRequest(new { error = "streamName and topic query parameters are required" });
+
         ZulipServiceOptions options = optsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
 

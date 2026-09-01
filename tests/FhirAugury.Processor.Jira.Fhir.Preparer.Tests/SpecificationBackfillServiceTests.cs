@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -130,7 +131,7 @@ public sealed class SpecificationBackfillServiceTests
     {
         // Construct the store so EnsureSchema runs against a fresh DB.
         _ = new JiraProcessingSourceTicketStore(dbPath);
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         foreach ((string key, string spec) in tickets)
         {
@@ -152,7 +153,7 @@ public sealed class SpecificationBackfillServiceTests
     private static async Task<Dictionary<string, string>> ReadSpecsAsync(string dbPath)
     {
         Dictionary<string, string> specs = new(StringComparer.Ordinal);
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         await using SqliteCommand cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT Key, Specification FROM jira_processing_source_tickets";
@@ -168,7 +169,7 @@ public sealed class SpecificationBackfillServiceTests
     private static async Task SeedJiraSourceDbAsync(string dbPath, IReadOnlyDictionary<string, string> specsByKey)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dbPath)) ?? ".");
-        await using SqliteConnection connection = new($"Data Source={dbPath}");
+        await using SqliteConnection connection = new($"Data Source={dbPath};Pooling=False");
         await connection.OpenAsync();
         await using SqliteCommand create = connection.CreateCommand();
         create.CommandText = "CREATE TABLE jira_issues (Key TEXT PRIMARY KEY, Specification TEXT)";

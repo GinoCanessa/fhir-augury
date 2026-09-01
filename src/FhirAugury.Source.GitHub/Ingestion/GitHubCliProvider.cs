@@ -29,10 +29,22 @@ public class GitHubCliProvider(
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
 
     // Fields requested from gh issue list
-    private const string IssueListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,url";
+    internal const string IssueListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,url";
 
     // Fields requested from gh pr list
-    private const string PrListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,mergedAt,headRefName,baseRefName,isDraft,url";
+    internal const string PrListFields = "number,title,body,state,author,assignees,labels,milestone,createdAt,updatedAt,closedAt,mergedAt,headRefName,baseRefName,isDraft,url";
+
+    /// <summary>
+    /// Builds a <c>gh issue list</c> / <c>gh pr list</c> argument string. When
+    /// <paramref name="searchFilter"/> is null (history backfill) the
+    /// <c>-S "&lt;filter&gt;"</c> clause is omitted entirely, so the full history
+    /// is fetched; the incremental path passes <c>updated:&gt;=&lt;ts&gt;</c>.
+    /// </summary>
+    internal static string BuildListArgs(string command, string repoArgs, int limit, string? searchFilter, string fields)
+    {
+        string searchClause = searchFilter is not null ? $" -S \"{searchFilter}\"" : "";
+        return $"{command} {repoArgs} --state all --limit {limit}{searchClause} --json {fields}";
+    }
 
     /// <inheritdoc />
     public async Task<IngestionResult> DownloadAllAsync(string? repoFilter = null, CancellationToken ct = default)
@@ -46,6 +58,13 @@ public class GitHubCliProvider(
     {
         List<string> repos = GetEffectiveRepositories();
         return await DownloadReposIncrementalAsync(repos, since, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    {
+        List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
+        return await DownloadReposBackfillAsync(repos, ct);
     }
 
     /// <inheritdoc />
@@ -179,22 +198,41 @@ public class GitHubCliProvider(
 
     // ── Incremental sync via gh issue list / gh pr list ───────────────────
 
-    private async Task<IngestionResult> DownloadReposIncrementalAsync(
+    private Task<IngestionResult> DownloadReposIncrementalAsync(
         List<string> repos, DateTimeOffset since, CancellationToken ct)
+    {
+        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        return DownloadReposListAsync(repos, _options.GhCli.Limit, $"updated:>={sinceStr}", ct);
+    }
+
+    private Task<IngestionResult> DownloadReposBackfillAsync(List<string> repos, CancellationToken ct)
+    {
+        // No search filter ⇒ full PR/issue history (drops the updated:>= bound).
+        return DownloadReposListAsync(repos, _options.GhCli.BackfillLimit, searchFilter: null, ct);
+    }
+
+    /// <summary>
+    /// Shared <c>gh issue list</c> / <c>gh pr list</c> fetch body. The only
+    /// difference between the incremental and backfill paths is
+    /// <paramref name="searchFilter"/> (a <c>updated:&gt;=</c> bound vs. none) and
+    /// the <paramref name="limit"/>.
+    /// </summary>
+    private async Task<IngestionResult> DownloadReposListAsync(
+        List<string> repos, int limit, string? searchFilter, CancellationToken ct)
     {
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         int itemsNew = 0, itemsUpdated = 0, itemsFailed = 0, itemsProcessed = 0;
         List<string> errors = [];
 
         using SqliteConnection connection = database.OpenConnection();
-        string sinceStr = since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        int limit = _options.GhCli.Limit;
 
         foreach (string repoFullName in repos)
         {
             if (ct.IsCancellationRequested) break;
 
-            logger.LogInformation("Incremental sync via gh CLI for {Repo} since {Since}", repoFullName, sinceStr);
+            logger.LogInformation(
+                "List sync via gh CLI for {Repo} (filter: {Filter})",
+                repoFullName, searchFilter ?? "<full history>");
             string repoArgs = runner.BuildRepoArgs(repoFullName);
 
             // Fetch repo metadata so we know whether issues are enabled
@@ -202,14 +240,14 @@ public class GitHubCliProvider(
             GitHubRepoRecord? repoRecord = GitHubRepoRecord.SelectSingle(connection, FullName: repoFullName);
             bool hasIssues = repoRecord?.HasIssues ?? true; // assume enabled if unknown
 
-            // Fetch updated issues (skip when the repo has issues disabled)
+            // Fetch issues (skip when the repo has issues disabled)
             if (!hasIssues)
             {
                 logger.LogInformation("Skipping issues for {Repo} (issues are disabled)", repoFullName);
             }
             else
             {
-                string issueArgs = $"issue list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {IssueListFields}";
+                string issueArgs = BuildListArgs("issue list", repoArgs, limit, searchFilter, IssueListFields);
                 try
                 {
                     await foreach (JsonElement json in runner.StreamArrayAsync(issueArgs, ct))
@@ -245,8 +283,8 @@ public class GitHubCliProvider(
                 }
             }
 
-            // Fetch updated PRs
-            string prArgs = $"pr list {repoArgs} --state all --limit {limit} -S \"updated:>={sinceStr}\" --json {PrListFields}";
+            // Fetch PRs
+            string prArgs = BuildListArgs("pr list", repoArgs, limit, searchFilter, PrListFields);
             try
             {
                 await foreach (JsonElement json in runner.StreamArrayAsync(prArgs, ct))
@@ -279,7 +317,7 @@ public class GitHubCliProvider(
         }
 
         logger.LogInformation(
-            "Incremental download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+            "List download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
             itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
 
         return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);
@@ -364,7 +402,7 @@ public class GitHubCliProvider(
         try
         {
             string repoArgs = runner.BuildRepoArgs(repoFullName);
-            string args = $"repo view {repoFullName} --json name,nameWithOwner,description,hasIssuesEnabled,owner";
+            string args = $"repo view {repoFullName} --json name,nameWithOwner,description,hasIssuesEnabled,owner,defaultBranchRef";
             using JsonDocument doc = await runner.RunAsync(args, ct);
             GitHubRepoRecord record = GhCliIssueMapper.MapRepo(doc.RootElement);
 
@@ -449,6 +487,104 @@ public class GitHubCliProvider(
                 logger.LogWarning(ex, "Failed to fetch PR reviews for {Repo}#{Number}", repoFullName, issueNumber);
                 errors.Add($"reviews:{repoFullName}#{issueNumber} - {ex.Message}");
             }
+
+            await SyncPrCommitLinksAsync(connection, repoFullName, issueNumber, ct, errors);
+
+            // Fetch inline (line-anchored) review-thread comments via REST so the
+            // full PR conversation is captured. These flow through the existing
+            // xref/BM25 passes (typed as ContentTypes.Comment) unchanged.
+            try
+            {
+                await foreach (JsonElement commentJson in runner.StreamPaginatedApiAsync(
+                    $"/repos/{repoFullName}/pulls/{issueNumber}/comments?per_page=100", ct))
+                {
+                    GitHubCommentRecord comment = GhCliIssueMapper.MapReviewThreadComment(
+                        commentJson, issueDbId, repoFullName, issueNumber);
+                    GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to fetch PR review-thread comments for {Repo}#{Number}", repoFullName, issueNumber);
+                errors.Add($"review_comments:{repoFullName}#{issueNumber} - {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Synchronises <c>github_commit_pr_links</c> for a single PR using
+    /// <c>gh pr view {n} --json commits,baseRefName,mergedAt</c>. Uses
+    /// delete-then-insert (replace) semantics so a force-push that rewrites the
+    /// PR's commit set does not leave stale links, and also backfills the PR
+    /// row's <c>BaseBranch</c>/<c>MergeState</c> (null after a full REST sync,
+    /// which omits <c>base.ref</c>/<c>merged_at</c>) so the primary-PR rule is
+    /// deterministic regardless of sync path.
+    /// </summary>
+    /// <remarks>
+    /// PR fetch runs before <c>PostIngestionAsync</c> extracts commits from the
+    /// clone, so some linked SHAs may not yet have a <c>github_commits</c> row.
+    /// The link table does not FK to <c>github_commits</c>, so writing links
+    /// ahead of the commit rows is correct; resolution only joins to commits
+    /// that exist.
+    /// </remarks>
+    private async Task SyncPrCommitLinksAsync(
+        SqliteConnection connection, string repoFullName, int issueNumber,
+        CancellationToken ct, List<string> errors)
+    {
+        try
+        {
+            string repoArgs = runner.BuildRepoArgs(repoFullName);
+            string args = $"pr view {issueNumber} {repoArgs} --json commits,baseRefName,mergedAt";
+            using JsonDocument doc = await runner.RunAsync(args, ct);
+            JsonElement root = doc.RootElement;
+
+            using (SqliteCommand del = connection.CreateCommand())
+            {
+                del.CommandText = "DELETE FROM github_commit_pr_links WHERE RepoFullName = @repo AND PrNumber = @n";
+                del.Parameters.AddWithValue("@repo", repoFullName);
+                del.Parameters.AddWithValue("@n", issueNumber);
+                del.ExecuteNonQuery();
+            }
+
+            if (root.TryGetProperty("commits", out JsonElement commits) &&
+                commits.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement commitJson in commits.EnumerateArray())
+                {
+                    if (!commitJson.TryGetProperty("oid", out JsonElement oidEl)) continue;
+                    string? oid = oidEl.GetString();
+                    if (string.IsNullOrEmpty(oid)) continue;
+
+                    GitHubCommitPrLinkRecord link = GhCliIssueMapper.MapCommitPrLink(oid, issueNumber, repoFullName);
+                    GitHubCommitPrLinkRecord.Insert(connection, link, ignoreDuplicates: true);
+                }
+            }
+
+            // Backfill BaseBranch/MergeState on the PR row when a full sync left them null.
+            GitHubIssueRecord? pr = GitHubIssueRecord.SelectSingle(connection, UniqueKey: $"{repoFullName}#{issueNumber}");
+            if (pr is not null)
+            {
+                string? baseRefName = root.TryGetProperty("baseRefName", out JsonElement brEl) ? brEl.GetString() : null;
+                string? mergedAt = root.TryGetProperty("mergedAt", out JsonElement maEl) ? maEl.GetString() : null;
+
+                bool changed = false;
+                if (pr.BaseBranch is null && !string.IsNullOrEmpty(baseRefName))
+                {
+                    pr.BaseBranch = baseRefName;
+                    changed = true;
+                }
+                if (pr.MergeState is null && !string.IsNullOrEmpty(mergedAt))
+                {
+                    pr.MergeState = "merged";
+                    changed = true;
+                }
+                if (changed) GitHubIssueRecord.Update(connection, pr);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to sync commit-PR links for {Repo}#{Number}", repoFullName, issueNumber);
+            errors.Add($"commit_pr_links:{repoFullName}#{issueNumber} - {ex.Message}");
         }
     }
 

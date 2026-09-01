@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+  <Import Project="..\sqlite.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="cslightdbgen.sqlitegen" Version="2026.622.1509" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- notes-site ships as assembly "notes-site" (AssemblyName override), so the
+         tool's real assembly name is used here rather than the project name. -->
+    <InternalsVisibleTo Include="FhirAugury.Processor.GitHub.Fhir.BallotNotes" />
+    <InternalsVisibleTo Include="FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests" />
+    <InternalsVisibleTo Include="notes-site" />
+    <InternalsVisibleTo Include="FhirAugury.Tools.NotesSite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+</Project>

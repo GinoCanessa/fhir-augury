@@ -29,6 +29,9 @@ public class JiraProxyControllerTests
         ["ListSpecifications", "/api/v1/specifications"],
         ["AllWorkGroupIssues", "/api/v1/work-groups/issues"],
         ["ListProjects", "/api/v1/projects"],
+        ["ListBalDef", "/api/v1/baldef"],
+        ["ListBallot", "/api/v1/ballot"],
+        ["ListPss", "/api/v1/pss"],
     ];
 
     [Theory]
@@ -48,6 +51,9 @@ public class JiraProxyControllerTests
             "ListSpecifications" => await c.ListSpecifications(default),
             "AllWorkGroupIssues" => await c.AllWorkGroupIssues(default),
             "ListProjects" => await c.ListProjects(default),
+            "ListBalDef" => await c.ListBalDef(null, null, null, null, null, default),
+            "ListBallot" => await c.ListBallot(null, null, null, null, null, default),
+            "ListPss" => await c.ListPss(null, null, null, null, default),
             _ => throw new InvalidOperationException(),
         };
         (int status, string body, _, _) = await ProxyTestSupport.ExecuteAsync(c, result);
@@ -74,6 +80,37 @@ public class JiraProxyControllerTests
         Assert.Equal("?includeContent=true&includeComments=false", h.Requests[0].RequestUri!.Query);
         Assert.Equal(200, status);
         Assert.Contains("FHIR-1", body);
+    }
+
+    public static IEnumerable<object[]> ByKeyCases =>
+    [
+        ["baldef", "BALDEF-1", "/api/v1/baldef/BALDEF-1"],
+        ["ballot", "BALLOT-1", "/api/v1/ballot/BALLOT-1"],
+        ["pss", "PSS-1", "/api/v1/pss/PSS-1"],
+    ];
+
+    [Theory]
+    [MemberData(nameof(ByKeyCases))]
+    public async Task ReadModelByKey_ForwardsCorrectPath(string model, string key, string expectedPath)
+    {
+        JiraProxyController c = NewController(out ProxyTestSupport.CapturingHandler h,
+            responseBody: $$"""{"key":"{{key}}"}""");
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult r = model switch
+        {
+            "baldef" => await c.GetBalDef(key, default),
+            "ballot" => await c.GetBallot(key, default),
+            "pss" => await c.GetPss(key, default),
+            _ => throw new InvalidOperationException(),
+        };
+        (int status, string body, _, _) = await ProxyTestSupport.ExecuteAsync(c, r);
+
+        Assert.Single(h.Requests);
+        Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal(200, status);
+        Assert.Contains(key, body);
     }
 
     [Fact]

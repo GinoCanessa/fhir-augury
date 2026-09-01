@@ -6,14 +6,6 @@
         "agent",
         "mcp"
       ]
-    },
-    "FhirAugury": {
-      "type": "http",
-      "url": "http://localhost:5200/",
-      "headers": {},
-      "tools": [
-        "*"
-      ]
     }
   }
 }

@@ -26,8 +26,8 @@ public class SdElementIndexingIntegrationTests : IDisposable
     public void Dispose()
     {
         _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
-        try { Directory.Delete(_tempDir, true); } catch { }
+        TestFileCleanup.SafeDeleteFile(_dbPath);
+        TestFileCleanup.SafeDeleteDirectory(_tempDir);
     }
 
     [Fact]

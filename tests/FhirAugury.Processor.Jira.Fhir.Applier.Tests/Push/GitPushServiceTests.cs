@@ -2,6 +2,7 @@ using FhirAugury.Processor.Jira.Fhir.Applier.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Applier.Push;
 using FhirAugury.Processor.Jira.Fhir.Applier.Tests.Workspace;
 using FhirAugury.Processor.Jira.Fhir.Applier.Workspace;
+using FhirAugury.Testing.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -18,7 +19,7 @@ public class GitPushServiceTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_worktree)) Directory.Delete(_worktree, recursive: true);
+        TestFileCleanup.SafeDeleteDirectory(_worktree);
     }
 
     private (GitPushService Svc, FakeGitProcessRunner Git) NewSut(string? token = null, string remoteName = "origin")

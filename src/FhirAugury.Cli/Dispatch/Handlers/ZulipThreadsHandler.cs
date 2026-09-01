@@ -14,10 +14,13 @@ public static class ZulipThreadsHandler
 
         string streamName = Uri.EscapeDataString(request.StreamName);
         string topic = Uri.EscapeDataString(request.Topic);
+        string threadsBase = $"/api/v1/zulip/threads?streamName={streamName}&topic={topic}";
         return action switch
         {
-            "get" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/zulip/threads/{streamName}/{topic}", ct) },
-            "snapshot" => new { data = await client.GetFromOrchestratorAsync($"/api/v1/zulip/threads/{streamName}/{topic}/snapshot", ct) },
+            "get" => new { data = await client.GetFromOrchestratorAsync(
+                request.Limit != null ? $"{threadsBase}&limit={request.Limit.Value}" : threadsBase, ct) },
+            "snapshot" => new { data = await client.GetFromOrchestratorAsync(
+                $"/api/v1/zulip/threads/snapshot?streamName={streamName}&topic={topic}", ct) },
             _ => throw new ArgumentException($"Unknown action: {request.Action}. Valid: get, snapshot"),
         };
     }

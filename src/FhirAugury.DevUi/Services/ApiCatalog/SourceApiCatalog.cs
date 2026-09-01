@@ -15,6 +15,7 @@ public static class SourceApiCatalog
     public const string Zulip = "zulip";
     public const string GitHub = "github";
     public const string Confluence = "confluence";
+    public const string Fhir = "fhir";
 
     private static readonly Dictionary<string, IReadOnlyList<ApiEndpointDescriptor>> _byName =
         new(StringComparer.OrdinalIgnoreCase)
@@ -24,6 +25,7 @@ public static class SourceApiCatalog
             [Zulip] = Catalogs.ZulipCatalog.Build(),
             [GitHub] = Catalogs.GitHubCatalog.Build(),
             [Confluence] = Catalogs.ConfluenceCatalog.Build(),
+            [Fhir] = Catalogs.FhirCatalog.Build(),
         };
 
     public static IReadOnlyList<ApiEndpointDescriptor> GetCatalog(string sourceName)
