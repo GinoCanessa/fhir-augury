@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
@@ -13,6 +14,91 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
 public sealed class PreparedTicketHydratorTests
 {
+    [Fact]
+    public async Task HydrateWithResult_HappyPath_ReturnsPersistedBatch()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-90");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-90",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                },
+                title: "ticket",
+                url: "https://jira/browse/FHIR-90"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptResult result = await hydrator.HydrateWithResultAsync("FHIR-90", CancellationToken.None);
+
+        HydrationAttemptSuccess success = Assert.IsType<HydrationAttemptSuccess>(result);
+        Assert.Equal("FHIR-90", success.Batch.TicketKey);
+        Assert.Equal("resolved", success.Batch.Parent.HydrationStatus);
+        Assert.Single(success.Batch.JiraRows);
+
+        PreparedTicketHydrationReadModel? persisted = await database.Database.GetHydrationAsync("FHIR-90");
+        Assert.NotNull(persisted);
+        Assert.Equal(success.Batch.Parent.HydrationStatus, persisted!.Parent!.HydrationStatus);
+        Assert.Equal(success.Batch.JiraRows[0].Title, Assert.Single(persisted.JiraRows).Title);
+    }
+
+    [Fact]
+    public async Task HydrateWithResult_UnexpectedFailure_ReturnsTypedFailure()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-91");
+
+        FakeHandler handler = new();
+        handler.AddExceptionResponse("/api/v1/jira/items/FHIR-91", new InvalidOperationException("script failed"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptResult result = await hydrator.HydrateWithResultAsync("FHIR-91", CancellationToken.None);
+
+        HydrationAttemptFailure failure = Assert.IsType<HydrationAttemptFailure>(result);
+        Assert.Equal("FHIR-91", failure.TicketKey);
+        Assert.Equal(HydrationAttemptResult.UnexpectedErrorCode, failure.FailureCode);
+        Assert.Equal(nameof(InvalidOperationException), failure.ExceptionType);
+        Assert.Equal("script failed", failure.Reason);
+        Assert.Null(await database.Database.GetHydrationAsync("FHIR-91"));
+    }
+
+    [Fact]
+    public async Task Hydrate_Transient503_RetriesThenResolves()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-92");
+
+        FakeHandler handler = new();
+        handler.AddStatusResponse("/api/v1/jira/items/FHIR-92", HttpStatusCode.ServiceUnavailable, TimeSpan.Zero);
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-92",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                },
+                title: "retried",
+                url: "https://jira/browse/FHIR-92"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        await hydrator.HydrateAsync("FHIR-92", CancellationToken.None);
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-92");
+        Assert.NotNull(read);
+        Assert.Equal("resolved", read!.Parent!.HydrationStatus);
+        Assert.Equal("resolved", Assert.Single(read.JiraRows).HydrationStatus);
+        Assert.True(handler.RequestedPaths.Count(path => path == "/api/v1/jira/items/FHIR-92") >= 3);
+    }
+
     [Fact]
     public async Task Hydrate_HappyPath_WritesResolvedRowsForEverySource()
     {
@@ -391,19 +477,30 @@ public sealed class PreparedTicketHydratorTests
 
     private sealed class FakeHandler : HttpMessageHandler
     {
-        private readonly Dictionary<string, ScriptedResponse> _byPath = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Queue<ScriptedResponse>> _byPath = new(StringComparer.Ordinal);
 
         public List<string> RequestedPaths { get; } = [];
         public List<string> RequestedPathsAndQueries { get; } = [];
 
         public void AddJsonResponse(string path, string json)
-            => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, json, null);
+            => AddResponse(path, new ScriptedResponse(HttpStatusCode.OK, json, null, null));
 
-        public void AddStatusResponse(string path, HttpStatusCode statusCode)
-            => _byPath[path] = new ScriptedResponse(statusCode, null, null);
+        public void AddStatusResponse(string path, HttpStatusCode statusCode, TimeSpan? retryAfter = null)
+            => AddResponse(path, new ScriptedResponse(statusCode, null, null, retryAfter));
 
         public void AddExceptionResponse(string path, Exception exception)
-            => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, null, exception);
+            => AddResponse(path, new ScriptedResponse(HttpStatusCode.OK, null, exception, null));
+
+        private void AddResponse(string path, ScriptedResponse response)
+        {
+            if (!_byPath.TryGetValue(path, out Queue<ScriptedResponse>? responses))
+            {
+                responses = new Queue<ScriptedResponse>();
+                _byPath[path] = responses;
+            }
+
+            responses.Enqueue(response);
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -411,7 +508,7 @@ public sealed class PreparedTicketHydratorTests
             RequestedPaths.Add(path);
             RequestedPathsAndQueries.Add(request.RequestUri?.PathAndQuery ?? path);
 
-            if (!_byPath.TryGetValue(path, out ScriptedResponse? scripted))
+            if (!_byPath.TryGetValue(path, out Queue<ScriptedResponse>? responses) || responses.Count == 0)
             {
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
                 {
@@ -419,6 +516,7 @@ public sealed class PreparedTicketHydratorTests
                 });
             }
 
+            ScriptedResponse scripted = responses.Count > 1 ? responses.Dequeue() : responses.Peek();
             if (scripted.Exception is not null)
             {
                 throw scripted.Exception;
@@ -429,10 +527,18 @@ public sealed class PreparedTicketHydratorTests
             {
                 response.Content = new StringContent(scripted.Json, Encoding.UTF8, "application/json");
             }
+            if (scripted.RetryAfter is { } retryAfter)
+            {
+                response.Headers.RetryAfter = new RetryConditionHeaderValue(retryAfter);
+            }
 
             return Task.FromResult(response);
         }
 
-        private sealed record ScriptedResponse(HttpStatusCode StatusCode, string? Json, Exception? Exception);
+        private sealed record ScriptedResponse(
+            HttpStatusCode StatusCode,
+            string? Json,
+            Exception? Exception,
+            TimeSpan? RetryAfter);
     }
 }

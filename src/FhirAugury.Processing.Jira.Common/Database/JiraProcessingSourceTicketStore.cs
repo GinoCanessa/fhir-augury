@@ -14,11 +14,13 @@ namespace FhirAugury.Processing.Jira.Common.Database;
 public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>
 {
     private readonly string _dbPath;
+    private readonly string _connectionString;
     private readonly Func<ResolvedJiraProcessingFilters> _filtersFactory;
 
     public JiraProcessingSourceTicketStore(string dbPath, ResolvedJiraProcessingFilters? filters = null)
     {
         _dbPath = dbPath;
+        _connectionString = CreateConnectionString(dbPath);
         _filtersFactory = () => filters ?? new ResolvedJiraProcessingFilters();
         EnsureSchema();
     }
@@ -29,6 +31,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         JiraProcessingFilterResolver filterResolver)
     {
         _dbPath = processingOptions.Value.DatabasePath;
+        _connectionString = CreateConnectionString(_dbPath);
         _filtersFactory = () => filterResolver.Resolve(jiraOptions.Value);
         EnsureSchema();
     }
@@ -317,10 +320,16 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
 
     private SqliteConnection OpenConnection()
     {
-        SqliteConnection connection = new($"Data Source={_dbPath}");
+        SqliteConnection connection = new(_connectionString);
         connection.Open();
         return connection;
     }
+
+    private static string CreateConnectionString(string dbPath) => new SqliteConnectionStringBuilder
+    {
+        DataSource = dbPath,
+        Pooling = false,
+    }.ToString();
 
     private void EnsureSchema()
     {

@@ -368,6 +368,43 @@ public class JiraProcessingSourceTicketStoreTests
         Assert.Equal("fhir-core", row.Specification);
     }
 
+    [Fact]
+    public async Task CompletedOperations_ReleaseDatabaseFileForExclusiveMoveAndDelete()
+    {
+        string directory = Path.Combine(
+            Environment.CurrentDirectory,
+            "temp",
+            "jira-processing-handle-release",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "source.db");
+        string movedPath = Path.Combine(directory, "source.moved.db");
+        try
+        {
+            JiraProcessingSourceTicketStore store = new(path);
+            JiraProcessingSourceTicketRecord record = await store.UpsertAsync(
+                CreateTicket("FHIR-100"),
+                "fhir",
+                false,
+                CancellationToken.None);
+            await store.MarkCompleteAsync(record, DateTimeOffset.UtcNow, CancellationToken.None);
+
+            using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+            }
+
+            File.Move(path, movedPath);
+            File.Delete(movedPath);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
+        }
+    }
+
     private static Dictionary<string, (int Pk, string Type)> ReadTableInfo(SqliteConnection connection, string table)
     {
         Dictionary<string, (int Pk, string Type)> columns = [];

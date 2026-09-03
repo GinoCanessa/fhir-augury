@@ -17,6 +17,11 @@ public class HydrationCoordinator(
 {
     public virtual async Task HydrateAsync(string ticketKey, CancellationToken ct)
     {
+        _ = await HydrateWithResultAsync(ticketKey, ct);
+    }
+
+    public virtual async Task<HydrationAttemptResult> HydrateWithResultAsync(string ticketKey, CancellationToken ct)
+    {
         ArgumentException.ThrowIfNullOrEmpty(ticketKey);
         DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
         try
@@ -80,14 +85,20 @@ public class HydrationCoordinator(
                 JiraXrefRows: xrefRows);
 
             await target.SaveHydrationAsync(batch, ct);
+            return new HydrationAttemptSuccess(batch);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Hydration failed for {TicketKey}; leaving prior hydration state intact.", ticketKey);
+            return new HydrationAttemptFailure(
+                ticketKey,
+                HydrationAttemptResult.UnexpectedErrorCode,
+                ex.GetType().Name,
+                string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message);
         }
     }
 }

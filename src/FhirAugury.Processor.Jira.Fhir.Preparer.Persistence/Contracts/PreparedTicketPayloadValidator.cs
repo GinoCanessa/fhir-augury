@@ -4,21 +4,6 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
 public sealed partial class PreparedTicketPayloadValidator
 {
-    private static readonly HashSet<string> ValidImpacts = new(StringComparer.Ordinal)
-    {
-        "Non-substantive",
-        "Compatible, substantive",
-        "Non-compatible",
-    };
-
-    private static readonly HashSet<string> ValidRecommendations = new(StringComparer.Ordinal)
-    {
-        "existing",
-        "A",
-        "B",
-        "C",
-    };
-
     private static readonly HashSet<string> ValidLinkTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "linked",
@@ -39,17 +24,17 @@ public sealed partial class PreparedTicketPayloadValidator
         Require(payload.ProposalB, nameof(payload.ProposalB), errors);
         Require(payload.ProposalC, nameof(payload.ProposalC), errors);
         Require(payload.RecommendationJustification, nameof(payload.RecommendationJustification), errors);
-        if (!ValidImpacts.Contains(payload.ProposalAImpact))
+        if (!PreparedTicketImpactValues.Supported.Contains(payload.ProposalAImpact))
         {
             errors.Add("ProposalAImpact is not supported.");
         }
 
-        if (!ValidImpacts.Contains(payload.ProposalBImpact))
+        if (!PreparedTicketImpactValues.Supported.Contains(payload.ProposalBImpact))
         {
             errors.Add("ProposalBImpact is not supported.");
         }
 
-        if (!ValidRecommendations.Contains(payload.Recommendation))
+        if (!PreparedTicketRecommendationValues.Supported.Contains(payload.Recommendation))
         {
             errors.Add("Recommendation is not supported.");
         }

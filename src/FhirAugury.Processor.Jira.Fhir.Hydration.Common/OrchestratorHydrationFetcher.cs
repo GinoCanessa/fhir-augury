@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using FhirAugury.Common;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 using Microsoft.Extensions.Logging;
 
@@ -337,7 +338,11 @@ public class OrchestratorHydrationFetcher(
     {
         try
         {
-            using HttpResponseMessage response = await httpClient.GetAsync(path, ct);
+            using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
+                httpClient,
+                path,
+                ct,
+                sourceName: "orchestrator");
             if (!response.IsSuccessStatusCode)
             {
                 return new FetchResult<T>(null, $"orchestrator {(int)response.StatusCode}");
@@ -351,6 +356,10 @@ public class OrchestratorHydrationFetcher(
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return new FetchResult<T>(null, "orchestrator timeout");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is { } statusCode && HttpRetryHelper.IsAuthFailure(statusCode))
+        {
+            return new FetchResult<T>(null, $"orchestrator {(int)statusCode}");
         }
         catch (HttpRequestException ex)
         {
