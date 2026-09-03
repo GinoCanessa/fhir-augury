@@ -429,6 +429,82 @@ public sealed class PreparerSiteFilterTests
     }
 
     [Fact]
+    public async Task Render_NotAssessedImpact_RemainsDistinctAndFilterable()
+    {
+        using TempScope scope = new();
+        await PreparerTestDb.SeedAsync(
+            scope.DbPath,
+            [new("FHIR-1001"), new("FHIR-1002")],
+            impactsByKey: new Dictionary<string, PreparerTestDb.ProposalImpactSeed>
+            {
+                ["FHIR-1001"] = new(
+                    "Not assessed",
+                    "Non-substantive"),
+                ["FHIR-1002"] = new(
+                    "Compatible, substantive",
+                    "Non-compatible"),
+            });
+
+        (int exit, _, _) = await RunMainAsync(
+            "--preparer-db",
+            scope.DbPath,
+            "--out",
+            scope.OutDir);
+        Assert.Equal(0, exit);
+
+        string html = await File.ReadAllTextAsync(
+            Path.Combine(scope.OutDir, "discussion", "index.html"));
+        byte[] dbBytes = ExtractInlinedDbBytes(html);
+        string extractedDb = Path.Combine(scope.OutDir, "impact-check.db");
+        await File.WriteAllBytesAsync(extractedDb, dbBytes);
+        await using (SqliteConnection connection = new(
+                         $"Data Source={extractedDb};Mode=ReadOnly;Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT k
+                FROM (
+                    SELECT COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') AS k
+                    FROM prepared_tickets
+                    UNION
+                    SELECT COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') AS k
+                    FROM prepared_tickets
+                )
+                ORDER BY k
+                """;
+            List<string> impacts = [];
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                impacts.Add(reader.GetString(0));
+            }
+
+            Assert.Equal(
+                [
+                    "Compatible, substantive",
+                    "Non-compatible",
+                    "Non-substantive",
+                    "Not assessed",
+                ],
+                impacts);
+            Assert.DoesNotContain("(unknown)", impacts);
+        }
+
+        string appJs = await File.ReadAllTextAsync(
+            Path.Combine(scope.OutDir, "discussion", "assets", "app.js"));
+        Assert.Contains(
+            "COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)')",
+            appJs,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)')",
+            appJs,
+            StringComparison.Ordinal);
+        Assert.Contains("case 'impact':", appJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Render_BundledAppJs_PromotesTypeToChipDimension()
     {
         using TempScope scope = new();

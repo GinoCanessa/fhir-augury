@@ -15,17 +15,26 @@ internal static class PreparerTestDb
         string Type = "Change Request",
         string Specification = "");
 
+    public sealed record ProposalImpactSeed(
+        string ProposalAImpact,
+        string ProposalBImpact);
+
     public static async Task SeedAsync(
         string dbPath,
         IReadOnlyList<SourceTicketSeed> tickets,
         IReadOnlyDictionary<string, string?>? specByKey = null,
-        bool seedAllChildTables = false)
+        bool seedAllChildTables = false,
+        IReadOnlyDictionary<string, ProposalImpactSeed>? impactsByKey = null)
     {
         using PreparerDatabase preparer = new(dbPath, NullLogger<PreparerDatabase>.Instance);
         preparer.Initialize();
 
         foreach (SourceTicketSeed ticket in tickets)
         {
+            ProposalImpactSeed impacts = impactsByKey?.GetValueOrDefault(ticket.Key)
+                ?? new ProposalImpactSeed(
+                    PreparedTicketImpactValues.NonSubstantive,
+                    PreparedTicketImpactValues.CompatibleSubstantive);
             PreparedTicketPayload payload = new()
             {
                 Key = ticket.Key,
@@ -33,10 +42,10 @@ internal static class PreparerTestDb
                 CommentSummary = $"Comment summary for {ticket.Key}.",
                 ProposalA = "Proposal A.",
                 ProposalAJustification = "Justification A.",
-                ProposalAImpact = "Non-substantive",
+                ProposalAImpact = impacts.ProposalAImpact,
                 ProposalB = "Proposal B.",
                 ProposalBJustification = "Justification B.",
-                ProposalBImpact = "Compatible, substantive",
+                ProposalBImpact = impacts.ProposalBImpact,
                 ProposalC = "Proposal C.",
                 Recommendation = "A",
                 RecommendationJustification = "Recommendation justification.",

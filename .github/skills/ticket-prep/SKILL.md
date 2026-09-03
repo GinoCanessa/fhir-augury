@@ -355,6 +355,11 @@ Proposal A/B impact values (`Non-substantive`, `Compatible, substantive`, or
 justification, and related repo/Jira/Zulip/GitHub collections. Do not include a
 `ProposalCImpact` field in v1.
 
+`Not assessed` is an importer-only compatibility value for recovering historical
+Markdown that never recorded a Proposal A or B impact. Newly authored
+`ticket-prep` output must not use it: assess each Proposal A/B impact and choose
+one of the three normal values above.
+
 ## Important Rules
 
 - **Use only data from the `fhir-augury-cli` skill (CLI / MCP).** Do not

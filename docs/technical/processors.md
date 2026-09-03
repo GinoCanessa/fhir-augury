@@ -112,6 +112,37 @@ the `Processing` section. Key defaults: DB path
 `./data/processor.jira.fhir.preparer.db`, `SyncSchedule` `00:01:00`,
 `MaxConcurrentProcessingThreads` `8`, `StartProcessingOnStartup` `true`.
 
+### One-time Markdown recovery
+
+`tools/ticket-md-to-db` is a temporary migration tool for reconstructing a
+preparer database from historical ticket-review Markdown. Start the Jira source
+and Orchestrator before write mode so hydration remains behind the owning
+services' HTTP APIs; the importer never opens the Jira source database. Run a
+full-corpus dry run first, review its explicit-missing template and any
+fingerprint-bound overrides, then perform the certified write. See the
+[tool README](../../tools/ticket-md-to-db/README.md) for path guards, readiness
+rules, digest validation, backups, and promotion-boundary recovery.
+
+Treat the digest-matched database/audit pair as an immutable recovery artifact.
+Create a separate working copy for downstream processing and record the
+certified SHA-256 from which it came. To expose that copy through the preparer
+HTTP APIs used by topic grouping, configure:
+
+```text
+Processing:DatabasePath=<working-copy.db>
+Processing:StartProcessingOnStartup=false
+Processing:Hydration:BackfillOnStartup=false
+```
+
+Set those values before starting
+`FhirAugury.Processor.Jira.Fhir.Preparer`; otherwise startup queue processing,
+source synchronization, or hydration backfill can mutate recovered content
+before the operator deliberately begins work. Topic grouping writes grouping
+rows through the preparer API. `ticket-site` reads the hydrated database
+directly. Once either a processor workflow or grouping mutates the working
+copy, the original recovery audit no longer represents it; never point a
+mutating workflow at the sole certified artifact.
+
 ---
 
 ## Planner (`processor-jira-fhir-planner`, :5172)
