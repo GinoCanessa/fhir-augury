@@ -15,6 +15,7 @@ COPY src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj 
 COPY src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj src/FhirAugury.Processing.Jira.Common/
 COPY src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/
+COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer/
@@ -30,6 +31,7 @@ COPY src/FhirAugury.Processing.Contracts/ src/FhirAugury.Processing.Contracts/
 COPY src/FhirAugury.Processing.Common/ src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Processing.Jira.Common/ src/FhirAugury.Processing.Jira.Common/
 COPY src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/ src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/
+COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/ src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/ src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/ src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer/ src/FhirAugury.Processor.Jira.Fhir.Preparer/

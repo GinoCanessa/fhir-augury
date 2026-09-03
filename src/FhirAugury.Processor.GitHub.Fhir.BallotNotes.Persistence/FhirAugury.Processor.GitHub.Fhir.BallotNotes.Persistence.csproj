@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -78,11 +78,69 @@ public sealed partial class DockerfileProjectClosureTests
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
     }
 
+    [Fact]
+    public void PublicContractProjects_HaveNoImplementationDependencies()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string processingContracts =
+            "src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj";
+        string[] domainContracts =
+        [
+            "src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj",
+            "src/FhirAugury.Processor.Jira.Fhir.Planner.Contracts/FhirAugury.Processor.Jira.Fhir.Planner.Contracts.csproj",
+            "src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj",
+        ];
+
+        AssertImplementationFree(repositoryRoot, processingContracts, expectedProjectReferences: []);
+        foreach (string project in domainContracts)
+        {
+            AssertImplementationFree(repositoryRoot, project, [processingContracts]);
+        }
+    }
+
     private static HashSet<string> GetProjectClosure(string repositoryRoot, string targetProject)
     {
         HashSet<string> closure = new(StringComparer.OrdinalIgnoreCase);
         AddProjectAndReferences(repositoryRoot, targetProject, closure);
         return closure;
+    }
+
+    private static void AssertImplementationFree(
+        string repositoryRoot,
+        string project,
+        IReadOnlyCollection<string> expectedProjectReferences)
+    {
+        XDocument document = XDocument.Load(ToFileSystemPath(repositoryRoot, project));
+        string[] projectReferences = document
+            .Descendants("ProjectReference")
+            .Select(reference => reference.Attribute("Include")?.Value)
+            .Where(include => !string.IsNullOrWhiteSpace(include))
+            .Select(include =>
+            {
+                string projectDirectory = Path.GetDirectoryName(ToFileSystemPath(repositoryRoot, project))!;
+                string fullPath = Path.GetFullPath(
+                    Path.Combine(
+                        projectDirectory,
+                        include!
+                            .Replace('\\', Path.DirectorySeparatorChar)
+                            .Replace('/', Path.DirectorySeparatorChar)));
+                return Normalize(Path.GetRelativePath(repositoryRoot, fullPath));
+            })
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.Equal(
+            expectedProjectReferences.Order(StringComparer.OrdinalIgnoreCase),
+            projectReferences,
+            StringComparer.OrdinalIgnoreCase);
+        Assert.Empty(document.Descendants("PackageReference"));
+        Assert.Empty(document.Descendants("FrameworkReference"));
+        Assert.DoesNotContain(
+            document.Descendants("Import"),
+            import => string.Equals(
+                import.Attribute("Project")?.Value,
+                @"..\sqlite.props",
+                StringComparison.OrdinalIgnoreCase));
     }
 
     private static void AddProjectAndReferences(
