@@ -109,22 +109,59 @@ public sealed record CliOptions(
             return false;
         }
 
-        string databasePath = values["--db"];
-        string auditPath = values.GetValueOrDefault("--audit")
-            ?? $"{databasePath}.import-audit.json";
-        string overrideTemplatePath = values.GetValueOrDefault("--override-template")
-            ?? $"{databasePath}.override-template.json";
+        bool dryRun = switches.Contains("--dry-run");
+        bool replaceExisting = switches.Contains("--replace-existing");
+        bool acceptUnresolved = switches.Contains("--accept-unresolved-hydration");
+        if (dryRun && replaceExisting)
+        {
+            options = null;
+            error = "--replace-existing is valid only in write mode.";
+            return false;
+        }
+        if (dryRun && acceptUnresolved)
+        {
+            options = null;
+            error = "--accept-unresolved-hydration is valid only in write mode.";
+            return false;
+        }
+
+        string inputRoot;
+        string databasePath;
+        string? overridesPath;
+        string auditPath;
+        string overrideTemplatePath;
+        try
+        {
+            inputRoot = Path.GetFullPath(values["--input"]);
+            databasePath = Path.GetFullPath(values["--db"]);
+            overridesPath = values.TryGetValue("--overrides", out string? rawOverrides)
+                ? Path.GetFullPath(rawOverrides)
+                : null;
+            auditPath = Path.GetFullPath(
+                values.GetValueOrDefault("--audit")
+                ?? $"{databasePath}.import-audit.json");
+            overrideTemplatePath = Path.GetFullPath(
+                values.GetValueOrDefault("--override-template")
+                ?? $"{databasePath}.override-template.json");
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            options = null;
+            error = $"One or more file-system paths are invalid: {ex.Message}";
+            return false;
+        }
+
         options = new CliOptions(
-            values["--input"],
+            inputRoot,
             databasePath,
             orchestrator,
             expectedCount,
-            values.GetValueOrDefault("--overrides"),
+            overridesPath,
             auditPath,
             overrideTemplatePath,
-            switches.Contains("--dry-run"),
-            switches.Contains("--replace-existing"),
-            switches.Contains("--accept-unresolved-hydration"));
+            dryRun,
+            replaceExisting,
+            acceptUnresolved);
         error = null;
         return true;
     }

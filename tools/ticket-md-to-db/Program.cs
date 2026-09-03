@@ -1,5 +1,5 @@
-using FhirAugury.Tools.TicketMdToDb.Audit;
 using FhirAugury.Tools.TicketMdToDb.Compilation;
+using FhirAugury.Tools.TicketMdToDb.Import;
 
 namespace FhirAugury.Tools.TicketMdToDb;
 
@@ -21,33 +21,10 @@ public static class ProgramEntry
             return 2;
         }
 
-        CompilationResult compilation = ReportCompiler.Compile(new CompilationRequest(
-            options!.InputRoot,
-            options.ExpectedCount,
-            options.OverridesPath));
-        ImportAudit audit = ImportAudit.ForCompilation(
-            compilation,
-            options.DatabasePath,
-            options.Orchestrator,
-            options.OverridesPath,
-            options.AuditPath,
-            options.OverrideTemplatePath,
-            options.DryRun,
-            options.ReplaceExisting,
-            options.AcceptUnresolvedHydration);
-        try
-        {
-            await ImportAuditWriter.WriteAuditAsync(options.AuditPath, audit, ct);
-            await ImportAuditWriter.WriteOverrideTemplateAsync(
-                options.OverrideTemplatePath,
-                compilation.OverrideTemplate,
-                ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            Console.Error.WriteLine($"Could not write import evidence: {ex.GetType().Name}: {ex.Message}");
-            return 1;
-        }
+        TicketImportRunResult result = await new TicketImportRunner().RunAsync(
+            options!,
+            ct);
+        CompilationResult compilation = result.Compilation;
 
         foreach (ImportDiagnostic diagnostic in compilation.Manifest.Diagnostics)
         {
@@ -62,12 +39,13 @@ public static class ProgramEntry
             $"{compilation.Manifest.Files.Count} files, " +
             $"{compilation.Manifest.Tickets.Count} tickets, " +
             $"{compilation.Manifest.Diagnostics.Count(diagnostic => diagnostic.IsBlocking)} errors.");
-        if (!options.DryRun && compilation.Success)
+        foreach (string message in result.Messages)
         {
-            Console.Error.WriteLine("Write mode is unavailable until staging and promotion have been configured.");
-            return 1;
+            Console.Error.WriteLine(message);
         }
-
-        return compilation.Success ? 0 : 1;
+        Console.WriteLine(
+            $"Run {result.Audit.Run.RunId}: {result.Audit.Run.Status}" +
+            (result.EvidencePath is null ? string.Empty : $"; evidence {result.EvidencePath}"));
+        return result.ExitCode;
     }
 }

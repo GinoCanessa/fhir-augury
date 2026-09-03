@@ -14,17 +14,44 @@ public static class ImportAuditWriter
         string path,
         ImportAudit audit,
         CancellationToken ct = default) =>
-        WriteJsonAtomicallyAsync(path, audit, ct);
+        WriteJsonAtomicallyAsync(path, audit, overwrite: true, ct);
+
+    public static Task WriteNewAuditAsync(
+        string path,
+        ImportAudit audit,
+        CancellationToken ct = default) =>
+        WriteJsonAtomicallyAsync(path, audit, overwrite: false, ct);
 
     public static Task WriteOverrideTemplateAsync(
         string path,
         ImportOverrideTemplate template,
         CancellationToken ct = default) =>
-        WriteJsonAtomicallyAsync(path, template, ct);
+        WriteJsonAtomicallyAsync(path, template, overwrite: true, ct);
+
+    public static bool TryReadAudit(string path, out ImportAudit? audit)
+    {
+        try
+        {
+            audit = JsonSerializer.Deserialize<ImportAudit>(
+                File.ReadAllText(path),
+                JsonOptions);
+            return audit is not null;
+        }
+        catch (Exception ex) when (ex is
+            IOException
+            or UnauthorizedAccessException
+            or JsonException
+            or NotSupportedException)
+        {
+            audit = null;
+            return false;
+        }
+    }
 
     private static async Task WriteJsonAtomicallyAsync<T>(
         string path,
         T value,
+        bool overwrite,
         CancellationToken ct)
     {
         string absolutePath = Path.GetFullPath(path);
@@ -48,7 +75,7 @@ public static class ImportAuditWriter
                 await stream.FlushAsync(ct);
             }
 
-            File.Move(temporaryPath, absolutePath, true);
+            File.Move(temporaryPath, absolutePath, overwrite);
         }
         finally
         {
