@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\src\common.props" />
+  <Import Project="..\..\src\sqlite.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FhirAugury.Tools.TicketMdToDb</RootNamespace>
+    <AssemblyName>ticket-md-to-db</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="1.3.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processing.Jira.Common\FhirAugury.Processing.Jira.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration\FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Tools.TicketMdToDb.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+</Project>

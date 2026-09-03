@@ -59,6 +59,7 @@
     <Project Path="tests/FhirAugury.Tools.FhirSpecReview.Tests/FhirAugury.Tools.FhirSpecReview.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.NotesSite.Tests/FhirAugury.Tools.NotesSite.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.BallotNotesReallocateWg.Tests/FhirAugury.Tools.BallotNotesReallocateWg.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Tools.TicketMdToDb.Tests/FhirAugury.Tools.TicketMdToDb.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
@@ -67,6 +68,7 @@
     <Project Path="tools/ticket-site/ticket-site.csproj" />
     <Project Path="tools/fhir-spec-review/fhir-spec-review.csproj" />
     <Project Path="tools/dictionary-build/dictionary-build.csproj" />
+    <Project Path="tools/ticket-md-to-db/ticket-md-to-db.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
