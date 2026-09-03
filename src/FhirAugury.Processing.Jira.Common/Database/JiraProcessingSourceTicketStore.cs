@@ -1,6 +1,7 @@
 using System.Globalization;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Configuration;
@@ -16,6 +17,8 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     private readonly string _dbPath;
     private readonly string _connectionString;
     private readonly Func<ResolvedJiraProcessingFilters> _filtersFactory;
+
+    public string DatabasePath => _dbPath;
 
     public JiraProcessingSourceTicketStore(string dbPath, ResolvedJiraProcessingFilters? filters = null)
     {
@@ -43,6 +46,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ticket);
+        sourceTicketShape = NormalizeSourceTicketShape(sourceTicketShape);
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(ct);
@@ -89,6 +93,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
 
     public async Task<JiraProcessingSourceTicketRecord?> ResetForReprocessingAsync(string key, string sourceTicketShape, CancellationToken ct)
     {
+        sourceTicketShape = NormalizeSourceTicketShape(sourceTicketShape);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(ct);
         JiraProcessingSourceTicketRecord? existing = await SelectByKeyAsync(connection, transaction, key, sourceTicketShape, ct);
@@ -116,7 +121,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             LIMIT @limit
             """;
         command.Parameters.AddWithValue("@stale", ProcessingStatusValues.Stale);
-        command.Parameters.AddWithValue("@shape", filters.SourceTicketShape);
+        command.Parameters.AddWithValue("@shape", NormalizeSourceTicketShape(filters.SourceTicketShape));
         command.Parameters.AddWithValue("@limit", Math.Max(maxItems * 5, maxItems));
         List<JiraProcessingSourceTicketRecord> rows = [];
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
@@ -301,7 +306,89 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     public async Task<JiraProcessingSourceTicketRecord?> GetByKeyAsync(string key, string sourceTicketShape, CancellationToken ct)
     {
         await using SqliteConnection connection = OpenConnection();
-        return await SelectByKeyAsync(connection, null, key, sourceTicketShape, ct);
+        return await SelectByKeyAsync(
+            connection,
+            null,
+            key,
+            NormalizeSourceTicketShape(sourceTicketShape),
+            ct);
+    }
+
+    public async Task<JiraProcessingSourceTicketRecord?> GetByIdAsync(
+        string id,
+        CancellationToken ct)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT * FROM jira_processing_source_tickets WHERE Id = @id";
+        command.Parameters.AddWithValue("@id", id);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRecord(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<JiraProcessingSourceTicketRecord>> GetAuthoringCandidatesAsync(
+        ResolvedJiraProcessingFilters filters,
+        int maxItems,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(filters);
+        Func<IJiraProcessingTicketFilterCandidate, bool> predicate =
+            JiraSourceTicketPredicateBuilder.Build(filters);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT *
+            FROM jira_processing_source_tickets
+            WHERE SourceTicketShape = @shape
+            ORDER BY LastUpdated ASC, Key ASC
+            """;
+        command.Parameters.AddWithValue("@shape", NormalizeSourceTicketShape(filters.SourceTicketShape));
+
+        List<JiraProcessingSourceTicketRecord> candidates = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            JiraProcessingSourceTicketRecord row = ReadRecord(reader);
+            if (predicate(row))
+            {
+                candidates.Add(row);
+            }
+        }
+        await reader.DisposeAsync();
+
+        List<JiraProcessingSourceTicketRecord> pending = [];
+        foreach (JiraProcessingSourceTicketRecord candidate in candidates)
+        {
+            if (!await HasFrozenRevisionAsync(connection, candidate, ct))
+            {
+                pending.Add(candidate);
+                if (pending.Count >= maxItems)
+                {
+                    break;
+                }
+            }
+        }
+        return pending;
+    }
+
+    public static string GetSourceRevision(JiraProcessingSourceTicketRecord ticket)
+    {
+        ArgumentNullException.ThrowIfNull(ticket);
+        if (ticket.LastUpdated is not null)
+        {
+            return ticket.LastUpdated.Value.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        return AuthoringResultHasher.HashNormalizedUtf8(
+            string.Join(
+                "\n",
+                ticket.Key,
+                ticket.Title,
+                ticket.Status,
+                ticket.WorkGroup,
+                ticket.Type,
+                ticket.Specification));
     }
 
     private static void ClearProcessing(JiraProcessingSourceTicketRecord record)
@@ -323,6 +410,27 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         SqliteConnection connection = new(_connectionString);
         connection.Open();
         return connection;
+    }
+
+    private static async Task<bool> HasFrozenRevisionAsync(
+        SqliteConnection connection,
+        JiraProcessingSourceTicketRecord ticket,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM authoring_run_items
+            WHERE BusinessKey = @businessKey
+              AND ItemKind = @itemKind
+              AND ExpectedSourceRevision = @sourceRevision
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("@businessKey", ticket.Key);
+        command.Parameters.AddWithValue("@itemKind", ticket.SourceTicketShape);
+        command.Parameters.AddWithValue("@sourceRevision", GetSourceRevision(ticket));
+        return await command.ExecuteScalarAsync(ct) is not null;
     }
 
     private static string CreateConnectionString(string dbPath) => new SqliteConnectionStringBuilder
@@ -380,8 +488,46 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     public static void EnsureCompositeUniqueIndex(SqliteConnection connection)
     {
         using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_key_shape ON jira_processing_source_tickets(Key, SourceTicketShape);";
+        command.CommandText = "BEGIN IMMEDIATE";
         command.ExecuteNonQuery();
+        try
+        {
+            command.CommandText =
+                """
+                DROP INDEX IF EXISTS idx_jira_processing_source_tickets_key_shape;
+                DELETE FROM jira_processing_source_tickets
+                WHERE RowId IN (
+                    SELECT RowId
+                    FROM (
+                        SELECT
+                            RowId,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY UPPER(Key), LOWER(TRIM(SourceTicketShape))
+                                ORDER BY
+                                    COALESCE(LastUpdated, '') DESC,
+                                    LastSyncedAt DESC,
+                                    RowId DESC
+                            ) AS DuplicateOrder
+                        FROM jira_processing_source_tickets
+                        WHERE LOWER(TRIM(SourceTicketShape)) = 'fhir'
+                    )
+                    WHERE DuplicateOrder > 1
+                );
+                UPDATE jira_processing_source_tickets
+                SET Key = UPPER(Key), SourceTicketShape = 'fhir'
+                WHERE LOWER(TRIM(SourceTicketShape)) = 'fhir';
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_processing_source_tickets_key_shape
+                ON jira_processing_source_tickets(Key COLLATE NOCASE, SourceTicketShape COLLATE NOCASE);
+                COMMIT;
+                """;
+            command.ExecuteNonQuery();
+        }
+        catch
+        {
+            command.CommandText = "ROLLBACK";
+            command.ExecuteNonQuery();
+            throw;
+        }
     }
 
     private static async Task InsertAsync(SqliteConnection connection, SqliteTransaction transaction, JiraProcessingSourceTicketRecord record, CancellationToken ct)
@@ -530,6 +676,10 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     }
 
     private static string Format(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);
+    private static string NormalizeSourceTicketShape(string value)
+        => string.Equals(value, "fhir", StringComparison.OrdinalIgnoreCase)
+            ? "fhir"
+            : value.Trim().ToLowerInvariant();
     private static object FormatNullable(DateTimeOffset? value) => value is null ? DBNull.Value : Format(value.Value);
 
     private static string? GetNullableString(SqliteDataReader reader, string name)

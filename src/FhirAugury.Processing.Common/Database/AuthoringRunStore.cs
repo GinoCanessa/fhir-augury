@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using FhirAugury.Common.Database;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
@@ -39,6 +40,17 @@ public sealed class AuthoringRunStore
     {
         ArgumentNullException.ThrowIfNull(connection);
 
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_run_items",
+            "PostPersistenceLeaseId",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_run_items",
+            "PostPersistenceLeaseAcquiredAt",
+            "TEXT NULL");
+
         AuthoringRunRecord.CreateTable(connection);
         AuthoringRunItemRecord.CreateTable(connection);
         AuthoringRunAttemptRecord.CreateTable(connection);
@@ -48,9 +60,20 @@ public sealed class AuthoringRunStore
         AuthoringProcessorModeRecord.CreateTable(connection);
         AuthoringReviewSnapshotRecord.CreateTable(connection);
 
+        using (SqliteCommand dropIdentityIndexes = connection.CreateCommand())
+        {
+            dropIdentityIndexes.CommandText =
+                """
+                DROP INDEX IF EXISTS idx_authoring_run_items_identity;
+                DROP INDEX IF EXISTS idx_authoring_run_items_revision;
+                """;
+            dropIdentityIndexes.ExecuteNonQuery();
+        }
+
         string[] indexes =
         [
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_identity ON authoring_run_items(RunId, ItemKind, BusinessKey);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_identity ON authoring_run_items(RunId, ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_revision ON authoring_run_items(ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE, ExpectedSourceRevision);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_attempts_number ON authoring_run_attempts(RunItemId, AttemptNumber);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_stages_identity ON authoring_run_stages(RunId, StageName, PartitionKey);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_review_snapshots_sequence ON authoring_review_snapshots(ProcessorKind, Sequence);",
@@ -298,7 +321,7 @@ public sealed class AuthoringRunStore
             """
             SELECT RowId, Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision, Status,
                    CurrentOperationId, AcceptedReceiptId, AttemptCount, CreatedAt, StartedAt,
-                   CompletedAt, Error
+                   CompletedAt, Error, PostPersistenceLeaseId, PostPersistenceLeaseAcquiredAt
             FROM authoring_run_items
             WHERE RunId = @runId
             ORDER BY RowId
@@ -312,6 +335,19 @@ public sealed class AuthoringRunStore
             items.Add(ReadRunItem(reader));
         }
         return items;
+    }
+
+    public async Task<AuthoringResultReceipt?> GetReceiptByOperationAsync(
+        string operationId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        await using SqliteConnection connection = _openConnection();
+        AuthoringResultReceiptRecord? receipt = await ReadReceiptByOperationAsync(
+            connection,
+            operationId,
+            ct);
+        return receipt is null ? null : ToContract(receipt);
     }
 
     public async Task<bool> TryAcquireMutationFenceAsync(
@@ -652,6 +688,8 @@ public sealed class AuthoringRunStore
                 UPDATE authoring_run_items
                 SET Status = @status,
                     CurrentOperationId = CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE CurrentOperationId END,
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
                     StartedAt = CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE StartedAt END,
                     CompletedAt = NULL,
                     Error = NULL
@@ -691,7 +729,11 @@ public sealed class AuthoringRunStore
             connection,
             """
             UPDATE authoring_run_items
-            SET Status = @status, CompletedAt = @completedAt, Error = NULL
+            SET Status = @status,
+                CompletedAt = @completedAt,
+                PostPersistenceLeaseId = NULL,
+                PostPersistenceLeaseAcquiredAt = NULL,
+                Error = NULL
             WHERE Id = @itemId
               AND AcceptedReceiptId = @receiptId
               AND Status = @expectedStatus
@@ -707,6 +749,85 @@ public sealed class AuthoringRunStore
             throw new AuthoringConflictException(
                 AuthoringConflictCode.ItemNotClaimable,
                 $"Item '{itemId}' is not persisted with receipt '{receiptId}'.");
+        }
+    }
+
+    public async Task<string?> ClaimPersistedItemAsync(
+        string itemId,
+        string receiptId,
+        string operationId,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        string leaseId = Guid.NewGuid().ToString("N");
+        await using SqliteConnection connection = _openConnection();
+        int updated = await ExecuteAsync(
+            connection,
+            """
+            UPDATE authoring_run_items
+            SET Status = @status,
+                StartedAt = @startedAt,
+                PostPersistenceLeaseId = @leaseId,
+                PostPersistenceLeaseAcquiredAt = @leaseAcquiredAt,
+                CompletedAt = NULL,
+                Error = NULL
+            WHERE Id = @itemId
+              AND AcceptedReceiptId = @receiptId
+              AND CurrentOperationId = @operationId
+              AND Status = @expectedStatus
+            """,
+            ct,
+            ("@status", AuthoringStatusValues.Items.InProgress),
+            ("@startedAt", Format(timestamp)),
+            ("@leaseId", leaseId),
+            ("@leaseAcquiredAt", Format(timestamp)),
+            ("@itemId", itemId),
+            ("@receiptId", receiptId),
+            ("@operationId", operationId),
+            ("@expectedStatus", AuthoringStatusValues.Items.Persisted));
+        return updated == 1 ? leaseId : null;
+    }
+
+    public async Task MarkClaimCompleteAsync(
+        string itemId,
+        string receiptId,
+        string operationId,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        int updated = await ExecuteAsync(
+            connection,
+            """
+            UPDATE authoring_run_items
+            SET Status = @status,
+                CompletedAt = @completedAt,
+                PostPersistenceLeaseId = NULL,
+                PostPersistenceLeaseAcquiredAt = NULL,
+                Error = NULL
+            WHERE Id = @itemId
+              AND AcceptedReceiptId = @receiptId
+              AND (
+                  (PostPersistenceLeaseId IS NULL AND CurrentOperationId = @claimId)
+                  OR PostPersistenceLeaseId = @claimId
+              )
+              AND Status IN (@persistedStatus, @inProgressStatus)
+            """,
+            ct,
+            ("@status", AuthoringStatusValues.Items.Complete),
+            ("@completedAt", Format(timestamp)),
+            ("@itemId", itemId),
+            ("@receiptId", receiptId),
+            ("@claimId", operationId),
+            ("@persistedStatus", AuthoringStatusValues.Items.Persisted),
+            ("@inProgressStatus", AuthoringStatusValues.Items.InProgress));
+        if (updated != 1)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StaleOperation,
+                $"Operation '{operationId}' no longer owns item '{itemId}'.");
         }
     }
 
@@ -739,6 +860,135 @@ public sealed class AuthoringRunStore
             throw new AuthoringConflictException(
                 AuthoringConflictCode.ItemNotClaimable,
                 $"Item '{itemId}' is not active or persisted.");
+        }
+    }
+
+    public async Task MarkClaimErrorAsync(
+        string itemId,
+        string operationId,
+        string error,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        int updated = await ExecuteAsync(
+            connection,
+            """
+            UPDATE authoring_run_items
+            SET Status = @status,
+                CompletedAt = @completedAt,
+                PostPersistenceLeaseId = NULL,
+                PostPersistenceLeaseAcquiredAt = NULL,
+                Error = @error
+            WHERE Id = @itemId
+              AND (
+                  (PostPersistenceLeaseId IS NULL AND CurrentOperationId = @claimId)
+                  OR PostPersistenceLeaseId = @claimId
+              )
+              AND Status = @expectedStatus
+            """,
+            ct,
+            ("@status", AuthoringStatusValues.Items.Error),
+            ("@completedAt", Format(timestamp)),
+            ("@error", TruncateError(error)),
+            ("@itemId", itemId),
+            ("@claimId", operationId),
+            ("@expectedStatus", AuthoringStatusValues.Items.InProgress));
+        if (updated != 1)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StaleOperation,
+                $"Operation '{operationId}' no longer owns item '{itemId}'.");
+        }
+    }
+
+    public async Task<AuthoringRetryResult> RecoverOrphanedClaimAsync(
+        string itemId,
+        string operationId,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringRunItemRecord item = await ReadRunItemAsync(connection, itemId, ct)
+                ?? throw new KeyNotFoundException($"Authoring item '{itemId}' was not found.");
+            AuthoringRunRecord run = await ReadRunAsync(connection, item.RunId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{item.RunId}' was not found.");
+            await EnsureFenceOwnedAsync(connection, run.ProcessorKind, run.Id, ct);
+            if (!string.Equals(item.Status, AuthoringStatusValues.Items.InProgress, StringComparison.Ordinal) ||
+                !(string.Equals(item.PostPersistenceLeaseId, operationId, StringComparison.Ordinal) ||
+                  (item.PostPersistenceLeaseId is null &&
+                   string.Equals(item.CurrentOperationId, operationId, StringComparison.Ordinal))))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StaleOperation,
+                    $"Operation '{operationId}' no longer owns item '{itemId}'.");
+            }
+
+            bool requiresAuthoring = string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
+            if (requiresAuthoring)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_run_attempts
+                    SET Status = @status,
+                        CompletedAt = COALESCE(CompletedAt, @completedAt)
+                    WHERE OperationId = @operationId AND Status = @activeStatus
+                    """,
+                    ct,
+                    ("@status", AuthoringStatusValues.Attempts.Superseded),
+                    ("@completedAt", Format(timestamp)),
+                    ("@operationId", operationId),
+                    ("@activeStatus", AuthoringStatusValues.Attempts.Active));
+            }
+
+            string nextStatus = requiresAuthoring
+                ? AuthoringStatusValues.Items.Pending
+                : AuthoringStatusValues.Items.Persisted;
+            int updated = await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_items
+                SET Status = @status,
+                    CurrentOperationId = CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE CurrentOperationId END,
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
+                    StartedAt = NULL,
+                    CompletedAt = NULL,
+                    Error = NULL
+                WHERE Id = @itemId
+                  AND (
+                      PostPersistenceLeaseId = @claimId
+                      OR (PostPersistenceLeaseId IS NULL AND CurrentOperationId = @claimId)
+                  )
+                  AND Status = @expectedStatus
+                """,
+                ct,
+                ("@status", nextStatus),
+                ("@requiresAuthoring", requiresAuthoring),
+                ("@itemId", itemId),
+                ("@claimId", operationId),
+                ("@expectedStatus", AuthoringStatusValues.Items.InProgress));
+            if (updated != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StaleOperation,
+                    $"Operation '{operationId}' lost item '{itemId}' during orphan recovery.");
+            }
+
+            await CommitAsync(connection, ct);
+            return new AuthoringRetryResult(itemId, requiresAuthoring);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
         }
     }
 
@@ -964,10 +1214,11 @@ public sealed class AuthoringRunStore
             """
             SELECT COUNT(*)
             FROM authoring_run_items
-            WHERE RunId = @runId AND Status <> @complete
+            WHERE RunId = @runId AND Status NOT IN (@complete, @superseded)
             """;
         command.Parameters.AddWithValue("@runId", runId);
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture) == 0;
     }
 
@@ -1069,6 +1320,215 @@ public sealed class AuthoringRunStore
             }
 
             await CommitAsync(connection, ct);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
+    public async Task SupersedeRunAsync(
+        string runId,
+        string reason,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringRunRecord run = await ReadRunAsync(connection, runId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+            if (string.Equals(run.Status, AuthoringStatusValues.Runs.Superseded, StringComparison.Ordinal))
+            {
+                await CommitAsync(connection, ct);
+                return;
+            }
+
+            AuthoringStatusValues.EnsureRunTransition(run.Status, AuthoringStatusValues.Runs.Superseded);
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_attempts
+                SET Status = @superseded,
+                    CompletedAt = COALESCE(CompletedAt, @completedAt),
+                    Error = COALESCE(Error, @error)
+                WHERE RunId = @runId AND Status = @active
+                """,
+                ct,
+                ("@superseded", AuthoringStatusValues.Attempts.Superseded),
+                ("@completedAt", Format(timestamp)),
+                ("@error", TruncateError(reason)),
+                ("@runId", runId),
+                ("@active", AuthoringStatusValues.Attempts.Active));
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_items
+                SET Status = @errorStatus,
+                    CompletedAt = @completedAt,
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
+                    Error = @error
+                WHERE RunId = @runId AND Status <> @completeStatus
+                """,
+                ct,
+                ("@errorStatus", AuthoringStatusValues.Items.Error),
+                ("@completedAt", Format(timestamp)),
+                ("@error", TruncateError(reason)),
+                ("@runId", runId),
+                ("@completeStatus", AuthoringStatusValues.Items.Complete));
+
+            int updated = await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_runs
+                SET Status = @status, CompletedAt = @completedAt, Error = @error
+                WHERE Id = @runId AND Status = @expectedStatus
+                """,
+                ct,
+                ("@status", AuthoringStatusValues.Runs.Superseded),
+                ("@completedAt", Format(timestamp)),
+                ("@error", TruncateError(reason)),
+                ("@runId", runId),
+                ("@expectedStatus", run.Status));
+            if (updated != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Run '{runId}' changed before it could be superseded.");
+            }
+
+            await ExecuteAsync(
+                connection,
+                "DELETE FROM authoring_mutation_fences WHERE ProcessorKind = @processorKind AND RunId = @runId",
+                ct,
+                ("@processorKind", run.ProcessorKind),
+                ("@runId", runId));
+            await CommitAsync(connection, ct);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
+    public async Task<bool> SupersedeRunItemsAsync(
+        string runId,
+        IReadOnlyCollection<string> itemIds,
+        string reason,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(itemIds);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        if (itemIds.Count == 0)
+        {
+            return false;
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringRunRecord run = await ReadRunAsync(connection, runId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+            string[] ids = itemIds.Distinct(StringComparer.Ordinal).ToArray();
+            string placeholders = string.Join(", ", ids.Select((_, index) => $"@item{index}"));
+
+            await using (SqliteCommand attempts = connection.CreateCommand())
+            {
+                attempts.CommandText =
+                    $"""
+                    UPDATE authoring_run_attempts
+                    SET Status = @superseded,
+                        CompletedAt = COALESCE(CompletedAt, @completedAt),
+                        Error = COALESCE(Error, @error)
+                    WHERE RunItemId IN ({placeholders}) AND Status = @active
+                    """;
+                attempts.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Attempts.Superseded);
+                attempts.Parameters.AddWithValue("@completedAt", Format(timestamp));
+                attempts.Parameters.AddWithValue("@error", TruncateError(reason));
+                attempts.Parameters.AddWithValue("@active", AuthoringStatusValues.Attempts.Active);
+                AddItemIdParameters(attempts, ids);
+                await attempts.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (SqliteCommand items = connection.CreateCommand())
+            {
+                items.CommandText =
+                    $"""
+                    UPDATE authoring_run_items
+                    SET Status = @superseded,
+                        CompletedAt = @completedAt,
+                        PostPersistenceLeaseId = NULL,
+                        PostPersistenceLeaseAcquiredAt = NULL,
+                        Error = @error
+                    WHERE RunId = @runId
+                      AND Id IN ({placeholders})
+                      AND AcceptedReceiptId IS NULL
+                      AND Status <> @complete
+                    """;
+                items.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
+                items.Parameters.AddWithValue("@completedAt", Format(timestamp));
+                items.Parameters.AddWithValue("@error", TruncateError(reason));
+                items.Parameters.AddWithValue("@runId", runId);
+                items.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+                AddItemIdParameters(items, ids);
+                await items.ExecuteNonQueryAsync(ct);
+            }
+
+            await using SqliteCommand remaining = connection.CreateCommand();
+            remaining.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM authoring_run_items
+                WHERE RunId = @runId AND Status <> @superseded
+                """;
+            remaining.Parameters.AddWithValue("@runId", runId);
+            remaining.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
+            bool wholeRunSuperseded =
+                Convert.ToInt32(await remaining.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture) == 0;
+            if (wholeRunSuperseded)
+            {
+                AuthoringStatusValues.EnsureRunTransition(
+                    run.Status,
+                    AuthoringStatusValues.Runs.Superseded);
+                int updated = await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_runs
+                    SET Status = @status, CompletedAt = @completedAt, Error = @error
+                    WHERE Id = @runId AND Status = @expectedStatus
+                    """,
+                    ct,
+                    ("@status", AuthoringStatusValues.Runs.Superseded),
+                    ("@completedAt", Format(timestamp)),
+                    ("@error", TruncateError(reason)),
+                    ("@runId", runId),
+                    ("@expectedStatus", run.Status));
+                if (updated != 1)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.RunNotActive,
+                        $"Run '{runId}' changed before it could be superseded.");
+                }
+
+                await ExecuteAsync(
+                    connection,
+                    "DELETE FROM authoring_mutation_fences WHERE ProcessorKind = @processorKind AND RunId = @runId",
+                    ct,
+                    ("@processorKind", run.ProcessorKind),
+                    ("@runId", runId));
+            }
+
+            await CommitAsync(connection, ct);
+            return wholeRunSuperseded;
         }
         catch
         {
@@ -1450,7 +1910,7 @@ public sealed class AuthoringRunStore
                 $"""
                 SELECT RowId, Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision, Status,
                        CurrentOperationId, AcceptedReceiptId, AttemptCount, CreatedAt, StartedAt,
-                       CompletedAt, Error
+                       CompletedAt, Error, PostPersistenceLeaseId, PostPersistenceLeaseAcquiredAt
                 FROM authoring_run_items
                 WHERE RunId = @runId
                   AND Status = @status
@@ -1623,10 +2083,11 @@ public sealed class AuthoringRunStore
             """
             SELECT COUNT(*)
             FROM authoring_run_items
-            WHERE RunId = @runId AND Status <> @complete
+            WHERE RunId = @runId AND Status NOT IN (@complete, @superseded)
             """;
         command.Parameters.AddWithValue("@runId", runId);
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
     }
 
@@ -1723,7 +2184,7 @@ public sealed class AuthoringRunStore
             """
             SELECT RowId, Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision, Status,
                    CurrentOperationId, AcceptedReceiptId, AttemptCount, CreatedAt, StartedAt,
-                   CompletedAt, Error
+                   CompletedAt, Error, PostPersistenceLeaseId, PostPersistenceLeaseAcquiredAt
             FROM authoring_run_items
             WHERE Id = @itemId
             """;
@@ -1749,6 +2210,8 @@ public sealed class AuthoringRunStore
             StartedAt = ReadNullableDate(reader, 11),
             CompletedAt = ReadNullableDate(reader, 12),
             Error = ReadNullableString(reader, 13),
+            PostPersistenceLeaseId = ReadNullableString(reader, 14),
+            PostPersistenceLeaseAcquiredAt = ReadNullableDate(reader, 15),
         };
 
     private static async Task<AuthoringRunAttemptRecord?> ReadAttemptAsync(
@@ -1949,6 +2412,14 @@ public sealed class AuthoringRunStore
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
         return await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static void AddItemIdParameters(SqliteCommand command, IReadOnlyList<string> itemIds)
+    {
+        for (int index = 0; index < itemIds.Count; index++)
+        {
+            command.Parameters.AddWithValue($"@item{index}", itemIds[index]);
+        }
     }
 
     private static Task BeginImmediateAsync(SqliteConnection connection, CancellationToken ct)

@@ -1,6 +1,8 @@
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Discovery;
@@ -117,10 +119,23 @@ public class JiraTicketSyncWorkerTests
                 StartProcessingOnStartup = startRunning,
             });
             ProcessingLifecycleService lifecycle = new(processingOptions);
+            JiraProcessingDatabase processingDatabase = new(
+                dbPath,
+                NullLogger<JiraProcessingDatabase>.Instance);
+            processingDatabase.Initialize();
+            AuthoringRunStore authoringStore = new(processingDatabase);
+            JiraProcessingFilterResolver filterResolver = new();
+            JiraAuthoringRunCoordinator coordinator = new(
+                authoringStore,
+                store,
+                filterResolver,
+                jiraOptions);
             JiraTicketSyncService syncService = new(
                 discovery,
                 store,
-                new JiraProcessingFilterResolver(),
+                authoringStore,
+                coordinator,
+                filterResolver,
                 jiraOptions,
                 NullLogger<JiraTicketSyncService>.Instance);
             JiraTicketSyncWorker worker = new(syncService, lifecycle, processingOptions, NullLogger<JiraTicketSyncWorker>.Instance);

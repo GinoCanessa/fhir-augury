@@ -12,6 +12,7 @@ public sealed partial class JiraAgentCommandRenderer(IOptions<JiraProcessingOpti
     public JiraAgentCommand Render(JiraAgentCommandContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        context.Validate();
         string template = _options.AgentCliCommand;
         if (!template.Contains("{ticketKey}", StringComparison.Ordinal))
         {
@@ -40,6 +41,11 @@ public sealed partial class JiraAgentCommandRenderer(IOptions<JiraProcessingOpti
 
             return value;
         });
+        if (context.OperationToken is not null &&
+            rendered.Contains(context.OperationToken, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AgentCliCommand must not place the authoring operation token on argv.");
+        }
 
         List<string> parts = SplitCommandLine(rendered);
         if (parts.Count == 0)

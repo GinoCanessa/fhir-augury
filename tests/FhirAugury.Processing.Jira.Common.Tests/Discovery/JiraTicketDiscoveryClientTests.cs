@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Discovery;
@@ -22,6 +24,26 @@ public class JiraTicketDiscoveryClientTests
 
         Assert.Single(tickets);
         Assert.Equal("api/v1/local-processing/tickets?type=fhir", handler.Requests[0].RequestUri!.PathAndQuery.TrimStart('/'));
+        Assert.False(handler.RequestBodies[0]!.ProcessedLocally);
+    }
+
+    [Fact]
+    public async Task DirectClient_RunBackedListOmitsProcessedLocallyFilter()
+    {
+        CapturingHandler handler = new(
+            new JiraLocalProcessingListResponse([CreateTicket("FHIR-1")], 500, 0, 1));
+        DirectJiraTicketDiscoveryClient client = new(
+            CreateHttpClient(handler),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+
+        IReadOnlyList<JiraIssueSummaryEntry> tickets = await client.ListTicketsForModeAsync(
+            new ResolvedJiraProcessingFilters { SourceTicketShape = "fhir" },
+            runBacked: true,
+            CancellationToken.None);
+
+        Assert.Single(tickets);
+        Assert.Null(handler.RequestBodies[0]!.ProcessedLocally);
     }
 
     [Fact]
@@ -93,7 +115,26 @@ public class JiraTicketDiscoveryClientTests
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
         string path = Path.Combine(AppContext.BaseDirectory, $"jira-sync-{Guid.NewGuid():N}.db");
         JiraProcessingSourceTicketStore store = new(path);
-        JiraTicketSyncService service = new(client, store, new JiraProcessingFilterResolver(), Options(false), NullLogger<JiraTicketSyncService>.Instance);
+        JiraProcessingDatabase processingDatabase = new(
+            path,
+            NullLogger<JiraProcessingDatabase>.Instance);
+        processingDatabase.Initialize();
+        AuthoringRunStore authoringStore = new(processingDatabase);
+        JiraProcessingFilterResolver filterResolver = new();
+        IOptions<JiraProcessingOptions> options = Options(false);
+        JiraAuthoringRunCoordinator coordinator = new(
+            authoringStore,
+            store,
+            filterResolver,
+            options);
+        JiraTicketSyncService service = new(
+            client,
+            store,
+            authoringStore,
+            coordinator,
+            filterResolver,
+            options,
+            NullLogger<JiraTicketSyncService>.Instance);
 
         int count = await service.SyncAsync(CancellationToken.None);
 

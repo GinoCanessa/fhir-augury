@@ -14,6 +14,7 @@ public enum AuthoringConflictCode
     StageFingerprintMismatch,
     StageAlreadyInProgress,
     StageLeaseLost,
+    RevisionAlreadyScheduled,
 }
 
 public sealed class AuthoringConflictException(

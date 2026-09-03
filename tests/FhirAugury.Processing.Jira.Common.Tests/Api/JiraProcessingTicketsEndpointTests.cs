@@ -1,14 +1,20 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Jira.Common.Tests.Api;
@@ -31,7 +37,7 @@ public class JiraProcessingTicketsEndpointTests
         await client.PostAsync("/processing/tickets/FHIR-1", null);
         await store.MarkErrorAsync((await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None))!, "old", 1, DateTimeOffset.UtcNow, CancellationToken.None);
 
-        HttpResponseMessage response = await client.PostAsync("/processing/tickets/FHIR-1", null);
+        HttpResponseMessage response = await client.PostAsync("/processing/tickets/FHIR-1?shape=FHIR", null);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord? row = await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None);
@@ -74,15 +80,203 @@ public class JiraProcessingTicketsEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Fact]
+    public async Task PostAuthoringRun_LegacyAndCuttingOverModesRejectActivation()
+    {
+        FakeDiscovery legacyDiscovery = new(CreateTicket("FHIR-1", "Triaged"));
+        using HttpClient legacy = CreateClientForMode(
+            legacyDiscovery,
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            out _,
+            out _,
+            out _);
+        HttpResponseMessage legacyResponse = await legacy.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1"]));
+        Assert.Equal(HttpStatusCode.Conflict, legacyResponse.StatusCode);
+
+        FakeDiscovery cuttingOverDiscovery = new(CreateTicket("FHIR-1", "Triaged"));
+        using HttpClient cuttingOver = CreateClientForMode(
+            cuttingOverDiscovery,
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            out _,
+            out _,
+            out _);
+        HttpResponseMessage cuttingOverResponse = await cuttingOver.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1"]));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, cuttingOverResponse.StatusCode);
+        Assert.Empty(cuttingOverDiscovery.RequestedShapes);
+    }
+
+    [Fact]
+    public async Task PostTicket_RunBackedCreatesOneItemRunWithoutResettingLegacyStatus()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out AuthoringRunStore authoringStore,
+            out _);
+        JiraProcessingSourceTicketRecord legacy = await store.UpsertAsync(
+            CreateTicket("FHIR-1", "Triaged"),
+            "fhir",
+            false,
+            CancellationToken.None);
+        await store.MarkCompleteAsync(legacy, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        HttpResponseMessage response = await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse payload =
+            (await response.Content.ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>())!;
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.NotNull(payload.RunId);
+        Assert.NotNull(payload.RunItemId);
+        Assert.Equal(
+            ProcessingStatusValues.Complete,
+            (await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None))!.ProcessingStatus);
+        Assert.NotNull(await authoringStore.GetRunAsync(payload.RunId!));
+
+        HttpResponseMessage replayResponse = await client.PostAsync("/processing/tickets/FHIR-1?shape=fhir", null);
+        JiraProcessingEnqueueTicketResponse replay =
+            (await replayResponse.Content.ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>())!;
+        Assert.Equal(payload.RunId, replay.RunId);
+    }
+
+    [Fact]
+    public async Task PostTicket_ExistingBatchRunReturnsMatchedItem()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out _,
+            out JiraAuthoringRunCoordinator coordinator);
+        JiraIssueSummaryEntry first = CreateTicket("FHIR-1", "Triaged");
+        JiraIssueSummaryEntry second = CreateTicket("FHIR-2", "Triaged");
+        await store.UpsertAsync(first, "fhir", false, CancellationToken.None);
+        await store.UpsertAsync(second, "fhir", false, CancellationToken.None);
+        JiraAuthoringRunCreation batch = (await coordinator.CreateScheduledRunAsync())!;
+        Assert.Equal(2, batch.Items.Count);
+
+        HttpResponseMessage response = await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse payload =
+            (await response.Content.ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>())!;
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(batch.Run.Id, payload.RunId);
+        Assert.Equal(
+            batch.Items.Single(item => item.BusinessKey == "FHIR-1").Id,
+            payload.RunItemId);
+    }
+
+    [Fact]
+    public async Task PostAuthoringRun_ReplaysExactBatchAndConflictsOnOverlapOrModeChange()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out _,
+            out _);
+        foreach (string key in new[] { "FHIR-1", "FHIR-2", "FHIR-3" })
+        {
+            await store.UpsertAsync(
+                CreateTicket(key, "Triaged"),
+                "fhir",
+                false,
+                CancellationToken.None);
+        }
+
+        JiraAuthoringRunRequest exact = new(["FHIR-1", "FHIR-2"], DatabaseOnly: false);
+        HttpResponseMessage firstResponse = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            exact);
+        JiraAuthoringRunResponse first =
+            (await firstResponse.Content.ReadFromJsonAsync<JiraAuthoringRunResponse>())!;
+        HttpResponseMessage replayResponse = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            exact);
+        JiraAuthoringRunResponse replay =
+            (await replayResponse.Content.ReadFromJsonAsync<JiraAuthoringRunResponse>())!;
+
+        Assert.Equal(HttpStatusCode.Accepted, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replayResponse.StatusCode);
+        Assert.Equal(first.Run.RunId, replay.Run.RunId);
+
+        HttpResponseMessage overlap = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1", "FHIR-3"]));
+        HttpResponseMessage modeChange = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            exact with { DatabaseOnly = true });
+
+        Assert.Equal(HttpStatusCode.Conflict, overlap.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, modeChange.StatusCode);
+    }
+
     private static HttpClient CreateClient(FakeDiscovery discovery, out JiraProcessingSourceTicketStore store)
+        => CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            out store,
+            out _,
+            out _);
+
+    private static HttpClient CreateClientForMode(
+        FakeDiscovery discovery,
+        string mode,
+        out JiraProcessingSourceTicketStore store,
+        out AuthoringRunStore authoringStore,
+        out JiraAuthoringRunCoordinator coordinator)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
         string dbPath = Path.Combine(AppContext.BaseDirectory, $"jira-endpoint-{Guid.NewGuid():N}.db");
         store = new JiraProcessingSourceTicketStore(dbPath, new ResolvedJiraProcessingFilters { TicketStatuses = ["Triaged"], SourceTicketShape = "fhir" });
+        JiraProcessingDatabase processingDatabase = new(
+            dbPath,
+            NullLogger<JiraProcessingDatabase>.Instance);
+        processingDatabase.Initialize();
+        authoringStore = new AuthoringRunStore(processingDatabase);
+        IOptions<JiraProcessingOptions> options = Options.Create(new JiraProcessingOptions
+        {
+            AgentCliCommand = "agent {ticketKey}",
+            JiraSourceAddress = "http://source",
+            SourceTicketShape = "fhir",
+        });
+        coordinator = new JiraAuthoringRunCoordinator(
+            authoringStore,
+            store,
+            new JiraProcessingFilterResolver(),
+            options);
+        authoringStore.EnsureProcessorModeAsync(coordinator.ProcessorKind).GetAwaiter().GetResult();
+        if (mode == AuthoringStatusValues.ProcessorModes.CuttingOver)
+        {
+            authoringStore.TransitionProcessorModeAsync(
+                coordinator.ProcessorKind,
+                AuthoringStatusValues.ProcessorModes.Legacy,
+                AuthoringStatusValues.ProcessorModes.CuttingOver).GetAwaiter().GetResult();
+        }
+        else if (mode == AuthoringStatusValues.ProcessorModes.RunBacked)
+        {
+            authoringStore.TransitionProcessorModeAsync(
+                coordinator.ProcessorKind,
+                AuthoringStatusValues.ProcessorModes.Legacy,
+                AuthoringStatusValues.ProcessorModes.CuttingOver).GetAwaiter().GetResult();
+            authoringStore.TransitionProcessorModeAsync(
+                coordinator.ProcessorKind,
+                AuthoringStatusValues.ProcessorModes.CuttingOver,
+                AuthoringStatusValues.ProcessorModes.RunBacked).GetAwaiter().GetResult();
+        }
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton(authoringStore);
+        builder.Services.AddSingleton(coordinator);
         builder.Services.AddSingleton<IJiraTicketDiscoveryClient>(discovery);
-        builder.Services.AddSingleton(Options.Create(new JiraProcessingOptions { AgentCliCommand = "agent {ticketKey}", JiraSourceAddress = "http://source", SourceTicketShape = "fhir" }));
+        builder.Services.AddSingleton(options);
         WebApplication app = builder.Build();
         app.MapJiraProcessingTicketEndpoints();
         app.StartAsync().GetAwaiter().GetResult();

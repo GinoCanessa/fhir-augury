@@ -1,5 +1,9 @@
 using System.Text.RegularExpressions;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -16,6 +20,8 @@ public static partial class JiraProcessingTicketEndpointHandler
         string? shape,
         IJiraTicketDiscoveryClient discoveryClient,
         JiraProcessingSourceTicketStore store,
+        AuthoringRunStore authoringStore,
+        JiraAuthoringRunCoordinator runCoordinator,
         IOptions<JiraProcessingOptions> optionsAccessor,
         CancellationToken ct)
     {
@@ -29,6 +35,15 @@ public static partial class JiraProcessingTicketEndpointHandler
         {
             return Results.BadRequest(new { error = $"Source ticket shape '{sourceTicketShape}' is not supported in v1." });
         }
+        sourceTicketShape = "fhir";
+
+        string mode = (await authoringStore.EnsureProcessorModeAsync(runCoordinator.ProcessorKind, ct: ct)).Mode;
+        if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.CuttingOver, StringComparison.Ordinal))
+        {
+            return Results.Json(
+                new { error = "cutover-in-progress" },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         JiraIssueSummaryEntry? ticket = await discoveryClient.GetTicketAsync(key, sourceTicketShape, ct);
         if (ticket is null)
@@ -36,7 +51,36 @@ public static partial class JiraProcessingTicketEndpointHandler
             return Results.NotFound(new { error = $"Ticket {key} was not found." });
         }
 
-        JiraProcessingSourceTicketRecord row = await store.UpsertAsync(ticket, sourceTicketShape, resetProcessingStatus: true, ct);
+        bool runBacked = string.Equals(
+            mode,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            StringComparison.Ordinal);
+        JiraProcessingSourceTicketRecord row = await store.UpsertAsync(
+            ticket,
+            sourceTicketShape,
+            resetProcessingStatus: !runBacked,
+            ct);
+        if (runBacked)
+        {
+            JiraAuthoringRunCreation creation = await runCoordinator.CreateOneItemRunAsync(
+                row,
+                databaseOnly: true,
+                ct);
+            string sourceRevision = JiraProcessingSourceTicketStore.GetSourceRevision(row);
+            AuthoringRunItemRecord item = creation.Items.Single(value =>
+                string.Equals(value.BusinessKey, row.Key, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(value.ItemKind, sourceTicketShape, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(value.ExpectedSourceRevision, sourceRevision, StringComparison.Ordinal));
+            return Results.Accepted(
+                $"/processing/authoring/runs/{Uri.EscapeDataString(creation.Run.Id)}",
+                new JiraProcessingEnqueueTicketResponse(
+                    row.Id,
+                    row.Key,
+                    item.Status,
+                    creation.Run.Id,
+                    item.Id));
+        }
+
         return Results.Accepted($"/processing/queue/{Uri.EscapeDataString(row.Id)}", new JiraProcessingEnqueueTicketResponse(row.Id, row.Key, row.ProcessingStatus));
     }
 

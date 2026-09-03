@@ -26,12 +26,22 @@ public abstract class JiraTicketDiscoveryClientBase(
     protected abstract string SetProcessedPath { get; }
 
     public async Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct)
+        => await ListTicketsForModeAsync(filters, runBacked: false, ct);
+
+    public async Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsForModeAsync(
+        ResolvedJiraProcessingFilters filters,
+        bool runBacked,
+        CancellationToken ct)
     {
         string path = $"{LocalProcessingTicketsPath}?type={Uri.EscapeDataString(filters.SourceTicketShape)}";
         List<JiraIssueSummaryEntry> aggregate = [];
         for (int offset = 0; ; offset += PageSize)
         {
-            JiraLocalProcessingListRequest request = requestFactory.CreateListRequest(filters, limit: PageSize, offset: offset);
+            JiraLocalProcessingListRequest request = requestFactory.CreateListRequest(
+                filters,
+                limit: PageSize,
+                offset: offset,
+                runBacked: runBacked);
             using HttpResponseMessage response = await httpClient.PostAsJsonAsync(path, request, ct);
             response.EnsureSuccessStatusCode();
             JiraLocalProcessingListResponse? payload = await response.Content.ReadFromJsonAsync<JiraLocalProcessingListResponse>(cancellationToken: ct);

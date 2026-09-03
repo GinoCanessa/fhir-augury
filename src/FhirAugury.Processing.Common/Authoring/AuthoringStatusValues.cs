@@ -17,6 +17,7 @@ public static class AuthoringStatusValues
         public const string Completed = "completed";
         public const string CompletedDatabaseOnly = "completed-database-only";
         public const string Error = "error";
+        public const string Superseded = "superseded";
     }
 
     public static class Items
@@ -26,6 +27,7 @@ public static class AuthoringStatusValues
         public const string Persisted = "persisted";
         public const string Complete = "complete";
         public const string Error = "error";
+        public const string Superseded = "superseded";
     }
 
     public static class Attempts
@@ -75,9 +77,12 @@ public static class AuthoringStatusValues
             (Runs.Queued, Runs.Running) => true,
             (Runs.Running, Runs.Finalizing) => true,
             (Runs.Running, Runs.Error) => true,
+            (Runs.Running, Runs.Superseded) => true,
+            (Runs.Queued, Runs.Superseded) => true,
             (Runs.Finalizing, Runs.Error) => true,
             (Runs.Error, Runs.Running) => true,
             (Runs.Error, Runs.Finalizing) => true,
+            (Runs.Error, Runs.Superseded) => true,
             (Runs.Finalizing, Runs.Completed) => true,
             (Runs.Finalizing, Runs.CompletedDatabaseOnly) => true,
             _ when string.Equals(current, next, StringComparison.Ordinal) => true,
@@ -97,8 +102,11 @@ public static class AuthoringStatusValues
             (Items.Pending, Items.InProgress) => true,
             (Items.InProgress, Items.Persisted) => true,
             (Items.InProgress, Items.Error) => true,
+            (Items.InProgress, Items.Superseded) => true,
             (Items.Persisted, Items.Complete) => true,
             (Items.Persisted, Items.Error) => true,
+            (Items.Pending, Items.Superseded) => true,
+            (Items.Error, Items.Superseded) => true,
             (Items.Error, Items.Pending) => true,
             (Items.Error, Items.Persisted) => true,
             _ when string.Equals(current, next, StringComparison.Ordinal) => true,

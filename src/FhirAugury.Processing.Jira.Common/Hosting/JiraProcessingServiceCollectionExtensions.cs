@@ -1,7 +1,10 @@
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -10,6 +13,8 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Jira.Common.Hosting;
@@ -58,14 +63,32 @@ public static class JiraProcessingServiceCollectionExtensions
         services.AddSingleton(defaults ?? JiraProcessingFilterDefaults.None);
         services.AddSingleton<JiraProcessingFilterResolver>(sp => new JiraProcessingFilterResolver(sp.GetRequiredService<JiraProcessingFilterDefaults>()));
         services.AddSingleton<JiraLocalProcessingRequestFactory>();
+        services.AddSingleton<JiraProcessingDatabase>(sp =>
+        {
+            string path = sp.GetRequiredService<IOptions<ProcessingServiceOptions>>().Value.DatabasePath;
+            JiraProcessingDatabase database = new(
+                path,
+                sp.GetRequiredService<ILogger<JiraProcessingDatabase>>());
+            database.Initialize();
+            return database;
+        });
+        services.AddSingleton<AuthoringRunStore>(sp => new AuthoringRunStore(
+            sp.GetRequiredService<JiraProcessingDatabase>(),
+            sp.GetRequiredService<ILogger<AuthoringRunStore>>()));
         services.AddSingleton<JiraProcessingSourceTicketStore>();
         services.AddSingleton<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>(sp => sp.GetRequiredService<JiraProcessingSourceTicketStore>());
+        services.AddSingleton<JiraAuthoringRunCoordinator>();
+        services.AddSingleton<JiraAuthoringWorkItemStore>();
+        services.AddSingleton<IAuthoringQueueStore<JiraAuthoringWorkItem>>(sp =>
+            sp.GetRequiredService<JiraAuthoringWorkItemStore>());
         services.AddSingleton<JiraAgentCommandRenderer>();
         services.AddSingleton<IJiraAgentCliRunner, JiraAgentCliRunner>();
         services.AddSingleton<IJiraAgentExtensionTokenProvider, EmptyJiraAgentExtensionTokenProvider>();
         services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, JiraTicketProcessingHandler>();
+        services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>, JiraAuthoringWorkItemHandler>();
         services.AddSingleton<ProcessingQueueRunner<JiraProcessingSourceTicketRecord>>();
-        services.AddHostedService<ProcessingHostedService<JiraProcessingSourceTicketRecord>>();
+        services.AddSingleton<AuthoringQueueRunner<JiraAuthoringWorkItem>>();
+        services.AddHostedService<JiraModeAwareProcessingHostedService>();
         services.AddHttpClient<DirectJiraTicketDiscoveryClient>((sp, client) =>
         {
             JiraProcessingOptions options = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
@@ -91,4 +114,34 @@ public static class JiraProcessingServiceCollectionExtensions
     }
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
+}
+
+internal sealed class JiraModeAwareProcessingHostedService(
+    ProcessingQueueRunner<JiraProcessingSourceTicketRecord> legacyRunner,
+    AuthoringQueueRunner<JiraAuthoringWorkItem> authoringRunner,
+    AuthoringRunStore authoringStore,
+    JiraAuthoringRunCoordinator coordinator)
+    : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            string mode = (await authoringStore.EnsureProcessorModeAsync(
+                coordinator.ProcessorKind,
+                ct: stoppingToken)).Mode;
+            if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.Legacy, StringComparison.Ordinal))
+            {
+                await legacyRunner.RunAsync(stoppingToken);
+                return;
+            }
+            if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.RunBacked, StringComparison.Ordinal))
+            {
+                await authoringRunner.RunAsync(stoppingToken);
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        }
+    }
 }

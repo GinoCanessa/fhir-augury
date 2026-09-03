@@ -4,7 +4,11 @@ namespace FhirAugury.Processing.Jira.Common.Filtering;
 
 public sealed class JiraLocalProcessingRequestFactory
 {
-    public JiraLocalProcessingListRequest CreateListRequest(ResolvedJiraProcessingFilters filters, int? limit = null, int? offset = null)
+    public JiraLocalProcessingListRequest CreateListRequest(
+        ResolvedJiraProcessingFilters filters,
+        int? limit = null,
+        int? offset = null,
+        bool runBacked = false)
     {
         ArgumentNullException.ThrowIfNull(filters);
         return new JiraLocalProcessingListRequest
@@ -14,7 +18,7 @@ public sealed class JiraLocalProcessingRequestFactory
             Specifications = ToList(filters.Specifications),
             WorkGroups = ToList(filters.WorkGroups),
             Types = ToList(filters.TicketTypes),
-            ProcessedLocally = false,
+            ProcessedLocally = runBacked ? null : false,
             Limit = limit,
             Offset = offset,
         };

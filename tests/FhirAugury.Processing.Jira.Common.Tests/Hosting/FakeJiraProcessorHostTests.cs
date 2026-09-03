@@ -1,8 +1,10 @@
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
@@ -33,6 +35,8 @@ public class FakeJiraProcessorHostTests
             null,
             provider.GetRequiredService<IJiraTicketDiscoveryClient>(),
             store,
+            provider.GetRequiredService<AuthoringRunStore>(),
+            provider.GetRequiredService<JiraAuthoringRunCoordinator>(),
             provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<FhirAugury.Processing.Jira.Common.Configuration.JiraProcessingOptions>>(),
             CancellationToken.None);
         IReadOnlyList<JiraProcessingSourceTicketRecord> pending = await store.GetPendingAsync(1, CancellationToken.None);

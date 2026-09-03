@@ -1,5 +1,7 @@
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -22,6 +24,8 @@ public class JiraProcessingServiceCollectionExtensionsTests
 
         Assert.NotNull(provider.GetRequiredService<IOptions<JiraProcessingOptions>>().Value);
         Assert.NotNull(provider.GetRequiredService<JiraProcessingSourceTicketStore>());
+        Assert.NotNull(provider.GetRequiredService<JiraProcessingDatabase>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunStore>());
         Assert.Same(
             provider.GetRequiredService<JiraProcessingSourceTicketStore>(),
             provider.GetRequiredService<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>());
@@ -29,6 +33,11 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(provider.GetRequiredService<JiraAgentCommandRenderer>());
         Assert.NotNull(provider.GetRequiredService<IJiraAgentCliRunner>());
         Assert.NotNull(provider.GetRequiredService<IJiraTicketDiscoveryClient>());
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringRunCoordinator>());
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringWorkItemStore>());
+        Assert.NotNull(provider.GetRequiredService<IAuthoringQueueStore<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringQueueRunner<JiraAuthoringWorkItem>>());
     }
 
     [Fact]
@@ -40,6 +49,9 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(worker);
         Assert.Same(worker, provider.GetRequiredService<JiraTicketSyncWorker>());
         Assert.Contains(provider.GetServices<IHostedService>(), s => ReferenceEquals(s, worker));
+        Assert.Contains(
+            provider.GetServices<IHostedService>(),
+            service => service.GetType().Name == "JiraModeAwareProcessingHostedService");
     }
 
     [Fact]

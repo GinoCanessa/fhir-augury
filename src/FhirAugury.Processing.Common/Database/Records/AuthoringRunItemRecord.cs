@@ -23,6 +23,8 @@ public partial record class AuthoringRunItemRecord
     public required string Status { get; set; }
     public string? CurrentOperationId { get; set; }
     public string? AcceptedReceiptId { get; set; }
+    public string? PostPersistenceLeaseId { get; set; }
+    public DateTimeOffset? PostPersistenceLeaseAcquiredAt { get; set; }
     public int AttemptCount { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
