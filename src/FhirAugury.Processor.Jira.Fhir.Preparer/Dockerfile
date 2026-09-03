@@ -4,15 +4,19 @@ WORKDIR /src
 
 COPY fhir-augury.slnx .
 COPY src/common.props src/common.props
-COPY src/Directory.Build.props src/Directory.Build.props
+COPY src/sqlite.props src/sqlite.props
+COPY src/SqliteProviderModuleInitializer.cs src/SqliteProviderModuleInitializer.cs
 
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
 COPY src/FhirAugury.Common.OpenApi/FhirAugury.Common.OpenApi.csproj src/FhirAugury.Common.OpenApi/
 COPY src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj src/FhirAugury.ServiceDefaults/
+COPY src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj src/FhirAugury.Processing.Contracts/
 COPY src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj src/FhirAugury.Processing.Jira.Common/
+COPY src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/
+COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj src/FhirAugury.Processor.Jira.Fhir.Preparer/
 COPY protos/ protos/
 
@@ -22,9 +26,12 @@ RUN dotnet restore src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Proces
 COPY src/FhirAugury.Common/ src/FhirAugury.Common/
 COPY src/FhirAugury.Common.OpenApi/ src/FhirAugury.Common.OpenApi/
 COPY src/FhirAugury.ServiceDefaults/ src/FhirAugury.ServiceDefaults/
+COPY src/FhirAugury.Processing.Contracts/ src/FhirAugury.Processing.Contracts/
 COPY src/FhirAugury.Processing.Common/ src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Processing.Jira.Common/ src/FhirAugury.Processing.Jira.Common/
+COPY src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/ src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/ src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/
+COPY src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/ src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/
 COPY src/FhirAugury.Processor.Jira.Fhir.Preparer/ src/FhirAugury.Processor.Jira.Fhir.Preparer/
 
 RUN dotnet publish src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj \

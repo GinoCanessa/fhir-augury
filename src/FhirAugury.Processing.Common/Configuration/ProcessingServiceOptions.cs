@@ -16,6 +16,11 @@ public class ProcessingServiceOptions
     public string? OrchestratorAddress { get; set; }
     public PortConfiguration Ports { get; set; } = new() { Http = 5170 };
     public string OrphanedInProgressThreshold { get; set; } = "00:10:00";
+    public string AuthoringRetryDelay { get; set; } = "00:01:00";
+    public int AuthoringMaxAttempts { get; set; } = 3;
+    public string SnapshotDirectory { get; set; } = "./data/snapshots";
+    public int SnapshotSchemaVersion { get; set; } = 1;
+    public bool ReconcileSnapshotsOnStartup { get; set; } = true;
 
     /// <summary>
     /// Validates configuration. Returns human-readable errors; an empty sequence means valid.
@@ -40,6 +45,26 @@ public class ProcessingServiceOptions
         if (!TimeSpan.TryParse(OrphanedInProgressThreshold, out TimeSpan orphanedThreshold) || orphanedThreshold <= TimeSpan.Zero)
         {
             yield return "OrphanedInProgressThreshold must be a positive TimeSpan string.";
+        }
+
+        if (!TimeSpan.TryParse(AuthoringRetryDelay, out TimeSpan retryDelay) || retryDelay <= TimeSpan.Zero)
+        {
+            yield return "AuthoringRetryDelay must be a positive TimeSpan string.";
+        }
+
+        if (AuthoringMaxAttempts < 1)
+        {
+            yield return "AuthoringMaxAttempts must be greater than or equal to 1.";
+        }
+
+        if (string.IsNullOrWhiteSpace(SnapshotDirectory))
+        {
+            yield return "SnapshotDirectory must be non-empty.";
+        }
+
+        if (SnapshotSchemaVersion < 1)
+        {
+            yield return "SnapshotSchemaVersion must be greater than or equal to 1.";
         }
 
         if (Ports.Http <= 0 || Ports.Http > 65535)

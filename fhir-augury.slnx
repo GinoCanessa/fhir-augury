@@ -18,6 +18,7 @@
     <Project Path="src/FhirAugury.Parsing.Fhir/FhirAugury.Parsing.Fhir.csproj" />
     <Project Path="src/FhirAugury.Parsing.Fsh/FhirAugury.Parsing.Fsh.csproj" />
     <Project Path="src/FhirAugury.Parsing.Xml/FhirAugury.Parsing.Xml.csproj" />
+    <Project Path="src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj" />
     <Project Path="src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj" />
     <Project Path="src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
@@ -77,4 +78,3 @@
     <File Path="src/common.props" />
   </Folder>
 </Solution>
-

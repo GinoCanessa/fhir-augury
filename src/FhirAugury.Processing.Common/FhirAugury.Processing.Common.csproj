@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Contracts\FhirAugury.Processing.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

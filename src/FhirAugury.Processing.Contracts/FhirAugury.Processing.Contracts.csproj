@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processing.Contracts</RootNamespace>
+  </PropertyGroup>
+</Project>

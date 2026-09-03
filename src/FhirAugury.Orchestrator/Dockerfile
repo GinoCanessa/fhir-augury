@@ -4,16 +4,25 @@ WORKDIR /src
 
 COPY fhir-augury.slnx .
 COPY src/common.props src/common.props
-COPY src/Directory.Build.props src/Directory.Build.props
+COPY src/sqlite.props src/sqlite.props
+COPY src/SqliteProviderModuleInitializer.cs src/SqliteProviderModuleInitializer.cs
 
 # Copy project files for restore
 COPY src/FhirAugury.Common/FhirAugury.Common.csproj src/FhirAugury.Common/
+COPY src/FhirAugury.Common.OpenApi/FhirAugury.Common.OpenApi.csproj src/FhirAugury.Common.OpenApi/
+COPY src/FhirAugury.ServiceDefaults/FhirAugury.ServiceDefaults.csproj src/FhirAugury.ServiceDefaults/
+COPY src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj src/FhirAugury.Processing.Contracts/
+COPY src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj src/FhirAugury.Orchestrator/
 
 RUN dotnet restore src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj
 
 # Copy source and build
 COPY src/FhirAugury.Common/ src/FhirAugury.Common/
+COPY src/FhirAugury.Common.OpenApi/ src/FhirAugury.Common.OpenApi/
+COPY src/FhirAugury.ServiceDefaults/ src/FhirAugury.ServiceDefaults/
+COPY src/FhirAugury.Processing.Contracts/ src/FhirAugury.Processing.Contracts/
+COPY src/FhirAugury.Processing.Common/ src/FhirAugury.Processing.Common/
 COPY src/FhirAugury.Orchestrator/ src/FhirAugury.Orchestrator/
 
 RUN dotnet publish src/FhirAugury.Orchestrator/FhirAugury.Orchestrator.csproj \
