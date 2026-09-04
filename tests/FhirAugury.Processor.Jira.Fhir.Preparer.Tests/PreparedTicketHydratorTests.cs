@@ -114,7 +114,11 @@ public sealed class PreparedTicketHydratorTests
                 ["specification"] = "FHIR",
                 ["comment_count"] = "5",
                 ["description_plain"] = "body",
-            }, title: "parent", url: "https://jira/browse/FHIR-100"));
+                ["resolution_description"] = "<p>resolution</p>",
+                ["reporter"] = "Ada",
+                ["related_artifacts"] = "Patient, Observation",
+                ["related_pages"] = "patient.html; observation.html",
+            }, title: "parent", url: "https://jira/browse/FHIR-100", content: "<p>body</p>"));
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-200",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -146,6 +150,12 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("FHIR", read.Parent.Specification);
         Assert.Equal(5, read.Parent.CommentCount);
         Assert.Equal("body", read.Parent.DescriptionPlain);
+        Assert.Equal("<p>body</p>", read.Parent.DescriptionHtml);
+        Assert.Equal("<p>resolution</p>", read.Parent.ResolutionDescriptionHtml);
+        Assert.Equal("Ada", read.Parent.Reporter);
+        Assert.NotNull(read.Parent.CreatedAt);
+        Assert.Equal("Patient, Observation", read.Parent.RelatedArtifactsRaw);
+        Assert.Equal("patient.html; observation.html", read.Parent.RelatedPagesRaw);
         Assert.Equal(2, read.JiraRows.Count);
         PreparedJiraHydrationRow selfJira = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-100");
         Assert.Equal("resolved", selfJira.HydrationStatus);
@@ -166,6 +176,21 @@ public sealed class PreparedTicketHydratorTests
         Assert.Single(read.RepoRows);
         Assert.Equal("core", read.RepoRows[0].Description);
         Assert.Empty(read.JiraXrefRows);
+        using Microsoft.Data.Sqlite.SqliteConnection connection = database.Database.OpenConnection();
+        using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM prepared_ticket_jira_content WHERE TicketKey = 'FHIR-100'";
+        using Microsoft.Data.Sqlite.SqliteDataReader content = command.ExecuteReader();
+        Assert.True(content.Read());
+        Assert.Equal("<p>body</p>", content.GetString(0));
+        Assert.Equal("<p>resolution</p>", content.GetString(1));
+        content.Close();
+        command.CommandText =
+            "SELECT GROUP_CONCAT(Value, ',') FROM (SELECT Value FROM prepared_ticket_artifacts WHERE TicketKey = 'FHIR-100' ORDER BY Value)";
+        Assert.Equal("Observation,Patient", command.ExecuteScalar());
+        command.CommandText =
+            "SELECT GROUP_CONCAT(Value, ',') FROM (SELECT Value FROM prepared_ticket_pages WHERE TicketKey = 'FHIR-100' ORDER BY Value)";
+        Assert.Equal("observation.html,patient.html", command.ExecuteScalar());
     }
 
     [Fact]
@@ -442,13 +467,19 @@ public sealed class PreparedTicketHydratorTests
         await database.Database.SavePreparedTicketAsync(payload);
     }
 
-    private static string JsonMetadata(Dictionary<string, string> metadata, string title, string url)
+    private static string JsonMetadata(
+        Dictionary<string, string> metadata,
+        string title,
+        string url,
+        string? content = null)
     {
         var payload = new
         {
             id = "x",
             title,
+            content,
             url,
+            createdAt = "2026-04-01T00:00:00Z",
             metadata,
         };
         return JsonSerializer.Serialize(payload);

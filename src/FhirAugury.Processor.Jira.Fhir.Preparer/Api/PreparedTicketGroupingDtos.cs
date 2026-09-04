@@ -20,7 +20,8 @@ public sealed record PreparedTicketGroupingMemberRequest(string TicketKey, int O
 
 public sealed record PreparedTicketGroupingPutRequest(
     string WorkGroupDisplay,
-    IReadOnlyList<PreparedTicketGroupingTopicRequest> Topics);
+    IReadOnlyList<PreparedTicketGroupingTopicRequest> Topics,
+    PreparedTicketGroupingStageContext? Authoring = null);
 
 public sealed record PreparedTicketGroupingMemberDto(string TicketKey, int Order);
 

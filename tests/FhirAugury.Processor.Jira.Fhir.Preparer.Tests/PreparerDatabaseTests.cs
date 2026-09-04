@@ -1,3 +1,7 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -21,6 +25,76 @@ public sealed class PreparerDatabaseTests
         Assert.True(IsRowIdPrimaryKey(database, "prepared_tickets"));
         Assert.True(HasUniqueIndexOver(database, "prepared_tickets", "Key"));
         Assert.True(HasUniqueIndexOver(database, "prepared_tickets", "Id"));
+        Assert.True(Exists(database, "table", "prepared_ticket_jira_content"));
+        Assert.True(Exists(database, "table", "prepared_ticket_artifacts"));
+        Assert.True(Exists(database, "table", "prepared_ticket_pages"));
+        Assert.True(Exists(database, "table", "prepared_ticket_authoring_state"));
+        Assert.True(Exists(database, "table", "prepared_ticket_partition_receipts"));
+    }
+
+    [Fact]
+    public async Task ClassifyLegacyPreparedTickets_MarksRowsWithoutInventingReceipts()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SavePreparedTicketAsync(SamplePayload("FHIR-123"));
+
+        int classified = await database.Database.ClassifyLegacyPreparedTicketsAsync();
+
+        Assert.Equal(1, classified);
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT Classification FROM prepared_ticket_authoring_state WHERE TicketKey = 'FHIR-123'";
+        Assert.Equal("legacy-unverified", command.ExecuteScalar());
+        command.CommandText = "SELECT COUNT(*) FROM authoring_result_receipts";
+        Assert.Equal(0, Convert.ToInt32(command.ExecuteScalar()));
+        Assert.Equal(1, await database.Database.CountLegacyUnverifiedAsync());
+    }
+
+    [Fact]
+    public async Task MaintenanceLeaseExcludesAuthoringFenceUntilReleased()
+    {
+        using TestDatabase database = CreateDatabase();
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        AuthoringRunRecord run = await store.CreateRunAsync(
+            "jira-fhir",
+            [new AuthoringRunItemDefinition("FHIR-1", "fhir", "revision-1")]);
+        using (SqliteConnection connection = database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO authoring_mutation_fences(ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES('jira-fhir', 'maintenance:previous-process:test', 'old-lease', @at)
+                """;
+            command.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+        PreparerMaintenanceLease lease =
+            Assert.IsType<PreparerMaintenanceLease>(
+                await database.Database.TryAcquireMaintenanceLeaseAsync("test"));
+        using (SqliteConnection connection = database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                "UPDATE authoring_mutation_fences SET AcquiredAt = '2000-01-01T00:00:00.0000000+00:00' WHERE RunId = @runId";
+            command.Parameters.AddWithValue("@runId", lease.RunId);
+            command.ExecuteNonQuery();
+        }
+
+        Assert.Null(await database.Database.TryAcquireMaintenanceLeaseAsync("second"));
+        Assert.False(await store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
+        await database.Database.ReleaseMaintenanceLeaseAsync(lease);
+        Assert.True(await store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
     }
 
     [Fact]
@@ -1143,6 +1217,57 @@ public sealed class PreparerDatabaseTests
         }
 
         TestFileCleanup.SafeDeleteDirectory(directory);
+    }
+
+    [Fact]
+    public async Task BackfillTicketTopicsWorkGroupClean_v1_AllowsUniqueSlugSwap()
+    {
+        string directory = Path.Combine(
+            Environment.CurrentDirectory,
+            "temp",
+            "preparer-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+        PreparerDatabase db1 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db1.Initialize();
+        await using (SqliteConnection seed = db1.OpenConnection())
+        {
+            await using SqliteCommand insert = seed.CreateCommand();
+            insert.CommandText =
+                """
+                INSERT INTO prepared_ticket_topics
+                    (Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint, SavedAt)
+                VALUES
+                    (@id1, 'PatientAdministration', 'Orders & Observations', 'FHIR Core', 'Change Request', 'Topic A', 'one', NULL, @at),
+                    (@id2, 'OrdersAndObservations', 'Patient Administration', 'FHIR Core', 'Change Request', 'Topic A', 'two', NULL, @at);
+                DELETE FROM schema_migrations WHERE Name = 'ticket-topics-clean-v1';
+                """;
+            insert.Parameters.AddWithValue("@id1", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("@id2", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
+            await insert.ExecuteNonQueryAsync();
+        }
+        db1.Dispose();
+
+        PreparerDatabase db2 = new(dbPath, NullLogger<PreparerDatabase>.Instance);
+        db2.Initialize();
+        try
+        {
+            await using SqliteConnection check = db2.OpenConnection();
+            await using SqliteCommand command = check.CreateCommand();
+            command.CommandText =
+                "SELECT WorkGroupClean FROM prepared_ticket_topics WHERE WorkGroupDisplay = 'Orders & Observations'";
+            Assert.Equal("OrdersAndObservations", await command.ExecuteScalarAsync());
+            command.CommandText =
+                "SELECT WorkGroupClean FROM prepared_ticket_topics WHERE WorkGroupDisplay = 'Patient Administration'";
+            Assert.Equal("PatientAdministration", await command.ExecuteScalarAsync());
+        }
+        finally
+        {
+            db2.Dispose();
+            TestFileCleanup.SafeDeleteDirectory(directory);
+        }
     }
 
     [Fact]

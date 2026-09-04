@@ -27,4 +27,9 @@ public interface IHydrationTargetDatabase
     Task<IReadOnlyList<string>> ListUnresolvedOrMissingHydrationKeysAsync(CancellationToken ct);
 
     Task SaveHydrationAsync(HydrationBatch batch, CancellationToken ct);
+
+    Task SaveWorkGroupCatalogAsync(
+        IReadOnlyList<HydrationWorkGroupRow> workGroups,
+        CancellationToken ct)
+        => Task.CompletedTask;
 }

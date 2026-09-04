@@ -18,6 +18,7 @@ public sealed class PreparerServiceOptions : ProcessingServiceOptions
         StartProcessingOnStartup = true;
         Ports.Http = 5171;
         OrchestratorAddress = "http://localhost:5150";
+        SnapshotDirectory = "./data/snapshots/preparer";
     }
 
     public HydrationOptions Hydration { get; set; } = new();

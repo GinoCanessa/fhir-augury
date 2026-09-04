@@ -52,6 +52,7 @@ public class ItemsControllerTests : IDisposable
             i.DuplicateOf = "FHIR-99";
             i.RelatedIssues = "FHIR-101, FHIR-102";
             i.RelatedArtifacts = "FHIR-103, R4/observation";
+            i.RelatedPages = "patient.html, observation.html";
             i.DescriptionPlain = "plaintext description body";
         }));
 
@@ -69,6 +70,7 @@ public class ItemsControllerTests : IDisposable
         Assert.Equal("FHIR-99", metadata["duplicate_of"]);
         Assert.Equal("FHIR-101, FHIR-102", metadata["related_issues"]);
         Assert.Equal("FHIR-103, R4/observation", metadata["related_artifacts"]);
+        Assert.Equal("patient.html, observation.html", metadata["related_pages"]);
         Assert.Equal("plaintext description body", metadata["description_plain"]);
     }
 

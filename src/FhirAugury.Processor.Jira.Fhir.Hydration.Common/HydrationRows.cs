@@ -24,7 +24,13 @@ public sealed record HydrationTicketRow(
     string? DescriptionPlain,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record HydrationJiraRow(
     string TicketKey,
@@ -41,7 +47,13 @@ public sealed record HydrationJiraRow(
     string? Url,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record HydrationZulipRow(
     string TicketKey,
@@ -91,6 +103,12 @@ public sealed record HydrationJiraXrefRow(
     string TicketKey,
     string JiraKey,
     string Source);
+
+public sealed record HydrationWorkGroupRow(
+    string Code,
+    string Name,
+    string NameClean,
+    DateTimeOffset UpdatedAt);
 
 public sealed record HydrationBatch(
     string TicketKey,

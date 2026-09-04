@@ -16,6 +16,24 @@ public sealed class PreparerServiceOptionsTests
         Assert.Equal(4, processing.MaxConcurrentProcessingThreads);
         Assert.Equal(["Triaged"], jira.TicketStatusesToProcess);
         Assert.Equal(PreparerJiraProcessingDefaults.AgentCliCommand, jira.AgentCliCommand);
+        Assert.Equal("./data/snapshots/preparer", processing.SnapshotDirectory);
+        Assert.Empty(
+            PreparerJiraProcessingDefaults.ValidateAuthoringCommand(
+                PreparerJiraProcessingDefaults.AuthoringAgentCliCommand));
+    }
+
+    [Fact]
+    public void ValidateAuthoringCommand_RejectsDatabaseAndSecretArgvTokens()
+    {
+        string command =
+            "agent {ticketKey} --db {dbPath} --token {operationToken}";
+
+        string[] errors =
+            PreparerJiraProcessingDefaults.ValidateAuthoringCommand(command).ToArray();
+
+        Assert.Contains(
+            errors,
+            error => error.Contains("worker environment", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -35,6 +35,7 @@ public static class JiraXmlParser
         ["customfield_11808"] = nameof(JiraIssueRecord.RaisedInVersion),
         ["customfield_10618"] = nameof(JiraIssueRecord.ResolutionDescription),
         ["customfield_11300"] = nameof(JiraIssueRecord.RelatedArtifacts),
+        ["customfield_11301"] = nameof(JiraIssueRecord.RelatedPages),
         ["customfield_10902"] = nameof(JiraIssueRecord.SelectedBallot),
         ["customfield_14905"] = nameof(JiraIssueRecord.RelatedIssues),
         ["customfield_14909"] = nameof(JiraIssueRecord.DuplicateOf),
@@ -262,6 +263,7 @@ public static class JiraXmlParser
             RaisedInVersion = null,
             SelectedBallot = null,
             RelatedArtifacts = null,
+            RelatedPages = null,
             RelatedIssues = null,
             DuplicateOf = null,
             AppliedVersions = null,
@@ -286,6 +288,7 @@ public static class JiraXmlParser
                     case nameof(JiraIssueRecord.RaisedInVersion): record.RaisedInVersion = value; break;
                     case nameof(JiraIssueRecord.ResolutionDescription): record.ResolutionDescription = value; break;
                     case nameof(JiraIssueRecord.RelatedArtifacts): record.RelatedArtifacts = value; break;
+                    case nameof(JiraIssueRecord.RelatedPages): record.RelatedPages = value; break;
                     case nameof(JiraIssueRecord.SelectedBallot): record.SelectedBallot = value; break;
                     case nameof(JiraIssueRecord.RelatedIssues): record.RelatedIssues = value; break;
                     case nameof(JiraIssueRecord.DuplicateOf): record.DuplicateOf = value; break;

@@ -5,6 +5,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 public static class PreparerJiraProcessingDefaults
 {
     public const string AgentCliCommand = "copilot run ticket-prep --ticket {ticketKey} --db {dbPath}";
+    public const string AuthoringAgentCliCommand =
+        "copilot run ticket-prep --ticket {ticketKey}";
     public const string JiraSourceAddress = "http://localhost:5160";
     public const string OrchestratorAddress = "http://localhost:5150";
 
@@ -40,6 +42,20 @@ public static class PreparerJiraProcessingDefaults
         if (!options.AgentCliCommand.Contains("{dbPath}", StringComparison.Ordinal))
         {
             yield return "Processing:Jira:AgentCliCommand must include the {dbPath} token.";
+        }
+    }
+
+    public static IEnumerable<string> ValidateAuthoringCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command) ||
+            !command.Contains("{ticketKey}", StringComparison.Ordinal))
+        {
+            yield return "The staged authoring command must include the {ticketKey} token.";
+        }
+        if (command.Contains("{dbPath}", StringComparison.Ordinal) ||
+            command.Contains("{operationToken}", StringComparison.Ordinal))
+        {
+            yield return "The staged authoring command must use callback context from the worker environment.";
         }
     }
 }

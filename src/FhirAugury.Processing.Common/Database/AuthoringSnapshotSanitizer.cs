@@ -6,7 +6,7 @@ public sealed record AuthoringSnapshotTable(
     string Name,
     IReadOnlyCollection<string>? Columns = null);
 
-public sealed class AuthoringSnapshotSanitizer
+public class AuthoringSnapshotSanitizer
 {
     private readonly IReadOnlyDictionary<string, AuthoringSnapshotTable> _tables;
 
@@ -19,7 +19,17 @@ public sealed class AuthoringSnapshotSanitizer
     public static AuthoringSnapshotSanitizer CreateCore(
         IEnumerable<AuthoringSnapshotTable>? domainTables = null)
     {
-        List<AuthoringSnapshotTable> tables =
+        List<AuthoringSnapshotTable> tables = [.. GetCoreTableDefinitions()];
+
+        if (domainTables is not null)
+        {
+            tables.AddRange(domainTables);
+        }
+        return new AuthoringSnapshotSanitizer(tables);
+    }
+
+    public static IReadOnlyList<AuthoringSnapshotTable> GetCoreTableDefinitions()
+        =>
         [
             new(
                 "authoring_runs",
@@ -80,14 +90,7 @@ public sealed class AuthoringSnapshotSanitizer
                 ]),
         ];
 
-        if (domainTables is not null)
-        {
-            tables.AddRange(domainTables);
-        }
-        return new AuthoringSnapshotSanitizer(tables);
-    }
-
-    public async Task SanitizeAsync(SqliteConnection connection, CancellationToken ct = default)
+    public virtual async Task SanitizeAsync(SqliteConnection connection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(connection);
 

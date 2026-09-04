@@ -1,5 +1,6 @@
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
@@ -17,7 +18,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 public sealed class HydrationAdminController(
     PreparedHydrationSweeper sweeper,
     ILogger<HydrationAdminController> logger,
-    IHostApplicationLifetime lifetime) : ControllerBase
+    IHostApplicationLifetime lifetime,
+    PreparerDatabase? database = null) : ControllerBase
 {
     /// <summary>
     /// Triggers a full hydration sweep without bouncing the service.
@@ -32,9 +34,33 @@ public sealed class HydrationAdminController(
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> TriggerBackfill(CancellationToken ct)
     {
-        SpecificationBackfillResult spec = await sweeper.RunSpecificationBackfillAsync(ct);
+        PreparerMaintenanceLease? lease = database is null
+            ? null
+            : await database.TryAcquireMaintenanceLeaseAsync("hydration-backfill", ct);
+        if (database is not null && lease is null)
+        {
+            return Conflict(new { error = "authoring-run-active" });
+        }
+
+        SpecificationBackfillResult spec;
+        try
+        {
+            spec = await sweeper.RunSpecificationBackfillAsync(ct);
+        }
+        catch
+        {
+            if (database is not null && lease is not null)
+            {
+                await database.ReleaseMaintenanceLeaseAsync(lease, CancellationToken.None);
+            }
+            throw;
+        }
         if (spec.Failure is not null)
         {
+            if (database is not null && lease is not null)
+            {
+                await database.ReleaseMaintenanceLeaseAsync(lease, CancellationToken.None);
+            }
             return Problem(
                 statusCode: StatusCodes.Status503ServiceUnavailable,
                 title: "Jira source unreachable",
@@ -44,9 +70,22 @@ public sealed class HydrationAdminController(
         // Fire-and-forget the per-ticket phase; the lifetime token cancels it on shutdown.
         // The sweeper's HydrateAsync never throws (per its contract), but we still attach a
         // ContinueWith to log any unexpected fault rather than leaking an unobserved exception.
-        Task perTicket = Task.Run(
-            () => sweeper.RunPerTicketSweepAsync(lifetime.ApplicationStopping),
-            lifetime.ApplicationStopping);
+        Task perTicket = Task.Run(async () =>
+        {
+            try
+            {
+                await sweeper.RunPerTicketSweepAsync(lifetime.ApplicationStopping);
+            }
+            finally
+            {
+                if (database is not null && lease is not null)
+                {
+                    await database.ReleaseMaintenanceLeaseAsync(
+                        lease,
+                        CancellationToken.None);
+                }
+            }
+        }, CancellationToken.None);
         _ = perTicket.ContinueWith(
             t => logger.LogError(t.Exception, "Admin-triggered per-ticket sweep faulted."),
             TaskContinuationOptions.OnlyOnFaulted);

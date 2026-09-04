@@ -1,3 +1,7 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -363,6 +367,108 @@ public sealed class PreparedTicketGroupingPersistenceTests
         Assert.Contains(view.Partitions, p => p.Type == "Comment");
     }
 
+    [Fact]
+    public async Task SaveGroupingForRun_AtomicallyRecordsFingerprintAndRejectsStaleLease()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedPreparedTicketAsync(database, "FHIR-1");
+        await SeedPreparedTicketAsync(database, "FHIR-2");
+        await SeedPreparedTicketAsync(database, "FHIR-50");
+        AuthoringRunStore authoringStore = new(database.Database);
+        await authoringStore.EnsureProcessorModeAsync("jira-fhir");
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        AuthoringRunRecord run = await authoringStore.CreateRunAsync(
+            "jira-fhir",
+            [
+                new AuthoringRunItemDefinition("FHIR-1", "fhir", "revision-1"),
+                new AuthoringRunItemDefinition("FHIR-2", "fhir", "revision-2"),
+                new AuthoringRunItemDefinition("FHIR-50", "fhir", "revision-50"),
+            ],
+            databaseOnly: true);
+        Assert.True(await authoringStore.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
+        foreach (AuthoringRunItemRecord item in await authoringStore.GetRunItemsAsync(run.Id))
+        {
+            AuthoringOperationClaim claim =
+                (await authoringStore.ClaimItemAsync(run.Id, item.Id))!;
+            PreparedTicketPayload authoredPayload = CreatePreparedTicketPayload(item.BusinessKey);
+            string contentHash = AuthoringResultHasher.HashNormalizedUtf8(item.BusinessKey);
+            AuthoringReceiptAcceptance receipt = await authoringStore.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    item.ExpectedSourceRevision,
+                    contentHash),
+                claim.OperationToken,
+                (connection, ct) => database.Database.SavePreparedTicketForAuthoringAsync(
+                    connection,
+                    authoredPayload,
+                    contentHash,
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    ct));
+            await authoringStore.MarkItemCompleteAsync(item.Id, receipt.Receipt.ReceiptId);
+            await SeedHydrationSelfAsync(
+                database,
+                item.BusinessKey,
+                WorkGroupDisplay,
+                Type,
+                Specification);
+        }
+        string partitionKey = PreparerDatabase.GetPartitionKey(
+            WorkGroupClean,
+            Specification,
+            Type);
+        AuthoringRunStageRecord stage = await authoringStore.EnsureRunStageAsync(
+            run.Id,
+            "grouping",
+            partitionKey,
+            "fingerprint-1");
+        AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
+            await authoringStore.TryStartRunStageAsync(stage.Id));
+
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingAsync(SamplePayload()));
+        PreparedTicketGroupingPayload wrongPartition = SamplePayload();
+        wrongPartition.Type = "Comment";
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingForRunAsync(
+                wrongPartition,
+                run.Id,
+                stage.Id,
+                lease.LeaseId,
+                "fingerprint-1"));
+
+        PreparedTicketGroupingSaveResult result =
+            await database.Database.SaveGroupingForRunAsync(
+                SamplePayload(),
+                run.Id,
+                stage.Id,
+                lease.LeaseId,
+                "fingerprint-1");
+
+        Assert.Equal(1, result.TopicRows);
+        Assert.Equal(1, Count(database, "prepared_ticket_partition_receipts"));
+        PreparedTicketGroupingPayload replacement = SamplePayload();
+        replacement.Topics = [];
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingForRunAsync(
+                replacement,
+                run.Id,
+                stage.Id,
+                "stale-lease",
+                "fingerprint-1"));
+        Assert.Equal(1, Count(database, "prepared_ticket_topics"));
+    }
+
     private static PreparedTicketGroupingPayload SamplePayload() => new()
     {
         WorkGroupClean = WorkGroupClean,
@@ -396,7 +502,11 @@ public sealed class PreparedTicketGroupingPersistenceTests
 
     private static async Task SeedPreparedTicketAsync(TestDatabase database, string key)
     {
-        PreparedTicketPayload payload = new()
+        await database.Database.SavePreparedTicketAsync(CreatePreparedTicketPayload(key));
+    }
+
+    private static PreparedTicketPayload CreatePreparedTicketPayload(string key)
+        => new()
         {
             Key = key,
             RequestSummary = "summary",
@@ -419,8 +529,6 @@ public sealed class PreparedTicketGroupingPersistenceTests
             SavedAt = DateTimeOffset.Parse("2026-05-18T00:00:00Z"),
             Repos = [new PreparedTicketRepoPayload { Repo = "HL7/fhir", RepoCategory = "FHIR Core", Justification = "r" }],
         };
-        await database.Database.SavePreparedTicketAsync(payload);
-    }
 
     private static async Task SeedHydrationSelfAsync(TestDatabase database, string ticketKey, string workGroup, string type, string specification)
     {

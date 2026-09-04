@@ -1,9 +1,11 @@
 using FhirAugury.Common.OpenApi;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -59,7 +61,11 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .Validate(options => !PreparerJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the preparer.")
     .ValidateOnStart();
 
-builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, FhirTicketPrepHandler>();
+builder.Services.AddSingleton<FhirTicketPrepHandler>();
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>>(sp =>
+    sp.GetRequiredService<FhirTicketPrepHandler>());
+builder.Services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>(sp =>
+    sp.GetRequiredService<FhirTicketPrepHandler>());
 
 builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
 {
@@ -77,6 +83,15 @@ builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
         address = "http://localhost";
     }
 
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
+builder.Services.AddHttpClient<OrchestratorWorkGroupCatalogFetcher>((sp, client) =>
+{
+    ProcessingServiceOptions processingOptions =
+        sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+    string address = string.IsNullOrWhiteSpace(processingOptions.OrchestratorAddress)
+        ? "http://localhost:5150"
+        : processingOptions.OrchestratorAddress;
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
 
@@ -108,6 +123,10 @@ builder.Services.AddSingleton(sp =>
     return database;
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
+builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
+builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, UnconfiguredPreparedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PreparedTicketRunPostProcessor>());
 
 WebApplication app = builder.Build();
 
@@ -120,4 +139,3 @@ app.MapAuguryOpenApi();
 app.Run();
 
 public partial class Program;
-

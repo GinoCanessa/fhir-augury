@@ -76,7 +76,13 @@ public class OrchestratorHydrationFetcher(
             DescriptionPlain: metadata.GetValueOrDefault("description_plain"),
             HydratedAt: hydratedAt,
             HydrationStatus: "resolved",
-            HydrationReason: null);
+            HydrationReason: null,
+            DescriptionHtml: result.Value.Content,
+            ResolutionDescriptionHtml: metadata.GetValueOrDefault("resolution_description"),
+            Reporter: metadata.GetValueOrDefault("reporter"),
+            CreatedAt: result.Value.CreatedAt,
+            RelatedArtifactsRaw: metadata.GetValueOrDefault("related_artifacts"),
+            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"));
 
         AppendXref(ticketKey, metadata.GetValueOrDefault("duplicate_of"), "DuplicateOf", xrefRows);
         AppendXref(ticketKey, metadata.GetValueOrDefault("related_issues"), "RelatedIssues", xrefRows);
@@ -111,7 +117,7 @@ public class OrchestratorHydrationFetcher(
 
     public virtual async Task<HydrationJiraRow> FetchJiraAsync(string ticketKey, string jiraKey, DateTimeOffset hydratedAt, CancellationToken ct)
     {
-        string path = $"api/v1/jira/items/{Uri.EscapeDataString(jiraKey)}";
+        string path = $"api/v1/jira/items/{Uri.EscapeDataString(jiraKey)}?includeContent=true";
         FetchResult<OrchestratorItemResponse> result = await GetJsonAsync<OrchestratorItemResponse>(path, ct);
         if (result.Reason is not null || result.Value is null)
         {
@@ -149,7 +155,13 @@ public class OrchestratorHydrationFetcher(
             Url: result.Value.Url,
             HydratedAt: hydratedAt,
             HydrationStatus: "resolved",
-            HydrationReason: null);
+            HydrationReason: null,
+            DescriptionHtml: result.Value.Content,
+            ResolutionDescriptionHtml: metadata.GetValueOrDefault("resolution_description"),
+            Reporter: metadata.GetValueOrDefault("reporter"),
+            CreatedAt: result.Value.CreatedAt,
+            RelatedArtifactsRaw: metadata.GetValueOrDefault("related_artifacts"),
+            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"));
     }
 
     public virtual async Task<HydrationZulipRow> FetchZulipAsync(string ticketKey, string threadId, DateTimeOffset hydratedAt, CancellationToken ct)

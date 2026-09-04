@@ -53,7 +53,9 @@ public sealed class SqliteReviewSnapshotWriter(
 
         try
         {
-            await CreateSnapshotFileAsync(record, request, ct);
+            IReadOnlyDictionary<string, long> actualCounts =
+                await CreateSnapshotFileAsync(record, request, ct);
+            await store.UpdateSnapshotTableCountsAsync(record.Id, actualCounts, ct);
             File.Move(tempPath, finalPath);
             string? promotionCleanupError = TryDeleteSnapshotArtifacts(tempPath);
             if (promotionCleanupError is not null)
@@ -86,7 +88,7 @@ public sealed class SqliteReviewSnapshotWriter(
         }
     }
 
-    private async Task CreateSnapshotFileAsync(
+    private async Task<IReadOnlyDictionary<string, long>> CreateSnapshotFileAsync(
         AuthoringReviewSnapshotRecord record,
         SqliteReviewSnapshotRequest request,
         CancellationToken ct)
@@ -146,6 +148,17 @@ public sealed class SqliteReviewSnapshotWriter(
         }
 
         await request.Sanitizer.SanitizeAsync(destination, ct);
+        IReadOnlyDictionary<string, long> actualCounts =
+            await ReadTableCountsAsync(destination, request.TableCounts.Keys, ct);
+        await using (SqliteCommand updateProvenance = destination.CreateCommand())
+        {
+            updateProvenance.CommandText =
+                "UPDATE authoring_snapshot_provenance SET TableCountsJson = @tableCountsJson";
+            updateProvenance.Parameters.AddWithValue(
+                "@tableCountsJson",
+                JsonSerializer.Serialize(actualCounts));
+            await updateProvenance.ExecuteNonQueryAsync(ct);
+        }
         await using SqliteCommand integrity = destination.CreateCommand();
         integrity.CommandText = "PRAGMA integrity_check;";
         string result = (string?)await integrity.ExecuteScalarAsync(ct) ?? "unknown";
@@ -153,6 +166,7 @@ public sealed class SqliteReviewSnapshotWriter(
         {
             throw new InvalidOperationException($"Snapshot integrity check failed: {result}");
         }
+        return actualCounts;
     }
 
     public static async Task<string> ComputeSha256Async(
@@ -194,5 +208,21 @@ public sealed class SqliteReviewSnapshotWriter(
             }
         }
         return errors.Count == 0 ? null : string.Join("; ", errors);
+    }
+
+    private static async Task<IReadOnlyDictionary<string, long>> ReadTableCountsAsync(
+        SqliteConnection connection,
+        IEnumerable<string> tableNames,
+        CancellationToken ct)
+    {
+        Dictionary<string, long> counts = new(StringComparer.Ordinal);
+        foreach (string tableName in tableNames.Distinct(StringComparer.Ordinal))
+        {
+            string quoted = $"\"{tableName.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = $"SELECT COUNT(*) FROM {quoted}";
+            counts[tableName] = Convert.ToInt64(await command.ExecuteScalarAsync(ct));
+        }
+        return counts;
     }
 }

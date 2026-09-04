@@ -13,3 +13,9 @@ public sealed record PreparedTicketAuthoringResultRequest(
 public sealed record PreparedTicketAuthoringRunResponse(
     AuthoringRunStatus Run,
     IReadOnlyList<AuthoringRunItemStatus> Items);
+
+public sealed record PreparedTicketGroupingStageContext(
+    string RunId,
+    string StageId,
+    string StageLeaseId,
+    string InputFingerprint);

@@ -8,7 +8,9 @@ internal sealed record OrchestratorItemResponse
 {
     public string? Id { get; init; }
     public string? Title { get; init; }
+    public string? Content { get; init; }
     public string? Url { get; init; }
+    public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
     public Dictionary<string, string>? Metadata { get; init; }
 }

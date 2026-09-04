@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Jira.Common.Api;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
@@ -27,6 +28,11 @@ public sealed class PreparerServiceSmokeTests
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/processing/start", null)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/processing/stop", null)).StatusCode);
         Assert.Equal(HttpStatusCode.Accepted, (await client.PostAsync("/processing/tickets/FHIR-123", null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync(
+                "/processing/authoring/runs",
+                new JiraAuthoringRunRequest())).StatusCode);
     }
 
     [Fact]

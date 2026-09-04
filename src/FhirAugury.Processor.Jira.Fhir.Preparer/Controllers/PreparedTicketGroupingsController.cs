@@ -1,5 +1,7 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -87,12 +89,20 @@ public sealed class PreparedTicketGroupingsController(PreparerDatabase database)
         try
         {
             string canonical = Canonicalise(workGroupClean);
-            PreparedTicketGroupingSaveResult result = await database.SaveGroupingAsync(
-                PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request),
-                ct);
+            PreparedTicketGroupingPayload payload =
+                PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request);
+            PreparedTicketGroupingSaveResult result = request.Authoring is null
+                ? await database.SaveGroupingAsync(payload, ct)
+                : await database.SaveGroupingForRunAsync(
+                    payload,
+                    request.Authoring.RunId,
+                    request.Authoring.StageId,
+                    request.Authoring.StageLeaseId,
+                    request.Authoring.InputFingerprint,
+                    ct);
             return Ok(PreparedTicketGroupingDtoMapper.ToDto(result));
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (ex is ArgumentException or AuthoringConflictException)
         {
             return BadRequest(new ProblemDetails { Title = "Invalid grouping payload", Detail = ex.Message });
         }
@@ -107,8 +117,19 @@ public sealed class PreparedTicketGroupingsController(PreparerDatabase database)
     public async Task<IActionResult> DeletePartition(string workGroupClean, string specification, string type, CancellationToken ct)
     {
         string canonical = Canonicalise(workGroupClean);
-        await database.DeleteGroupingAsync(canonical, specification, type, ct);
-        return NoContent();
+        try
+        {
+            await database.DeleteGroupingAsync(canonical, specification, type, ct);
+            return NoContent();
+        }
+        catch (AuthoringConflictException ex)
+        {
+            return Conflict(new ProblemDetails
+            {
+                Title = "Authoring run active",
+                Detail = ex.Message,
+            });
+        }
     }
 
     private static string Canonicalise(string raw)

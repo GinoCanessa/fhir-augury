@@ -21,6 +21,11 @@ public class JiraDatabase : SourceDatabase
     {
         JiraUserRecord.CreateTable(connection);
         JiraProjectRecord.CreateTable(connection);
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "jira_issues",
+            "RelatedPages",
+            "TEXT NULL");
         JiraIssueRecord.CreateTable(connection);
         JiraProjectScopeStatementRecord.CreateTable(connection);
         JiraBaldefRecord.CreateTable(connection);

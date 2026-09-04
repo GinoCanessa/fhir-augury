@@ -52,6 +52,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         if (issue.DuplicateOf is not null) metadata["duplicate_of"] = issue.DuplicateOf;
         if (issue.RelatedIssues is not null) metadata["related_issues"] = issue.RelatedIssues;
         if (issue.RelatedArtifacts is not null) metadata["related_artifacts"] = issue.RelatedArtifacts;
+        if (issue.RelatedPages is not null) metadata["related_pages"] = issue.RelatedPages;
         if (includeContent == true && issue.DescriptionPlain is not null) metadata["description_plain"] = issue.DescriptionPlain;
 
         List<CommentInfo>? comments = null;

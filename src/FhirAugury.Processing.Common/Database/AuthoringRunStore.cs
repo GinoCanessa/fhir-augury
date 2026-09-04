@@ -1778,6 +1778,31 @@ public sealed class AuthoringRunStore
         }
     }
 
+    public async Task UpdateSnapshotTableCountsAsync(
+        string snapshotId,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tableCounts);
+        await using SqliteConnection connection = _openConnection();
+        int updated = await ExecuteAsync(
+            connection,
+            """
+            UPDATE authoring_review_snapshots
+            SET TableCountsJson = @tableCountsJson
+            WHERE Id = @snapshotId AND Status = @status
+            """,
+            ct,
+            ("@tableCountsJson", JsonSerializer.Serialize(tableCounts)),
+            ("@snapshotId", snapshotId),
+            ("@status", AuthoringStatusValues.Snapshots.Creating));
+        if (updated != 1)
+        {
+            throw new InvalidOperationException(
+                $"Snapshot '{snapshotId}' is not in the creating state.");
+        }
+    }
+
     public async Task<AuthoringSnapshotDescriptor> MarkSnapshotReadyAsync(
         string snapshotId,
         DateTimeOffset? now = null,

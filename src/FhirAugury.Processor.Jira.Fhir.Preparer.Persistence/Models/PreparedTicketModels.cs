@@ -25,7 +25,13 @@ public sealed record PreparedTicketHydrationRow(
     string? DescriptionPlain,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record PreparedJiraHydrationRow(
     string TicketKey,
@@ -42,7 +48,13 @@ public sealed record PreparedJiraHydrationRow(
     string? Url,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record PreparedZulipHydrationRow(
     string TicketKey,
