@@ -1,8 +1,10 @@
 using FhirAugury.Common.OpenApi;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -66,7 +68,12 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IJiraAgentExtensionTokenProvider, PlannerAgentCommandTokenProvider>();
-builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, PlannerTicketHandler>();
+builder.Services.AddSingleton(sp =>
+    ActivatorUtilities.CreateInstance<PlannerTicketHandler>(sp));
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>>(sp =>
+    sp.GetRequiredService<PlannerTicketHandler>());
+builder.Services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>(sp =>
+    sp.GetRequiredService<PlannerTicketHandler>());
 
 builder.Services.AddHttpClient<PlannedTicketHydrator>((sp, client) =>
 {
@@ -82,6 +89,15 @@ builder.Services.AddHttpClient<PlannedTicketHydrator>((sp, client) =>
         address = "http://localhost";
     }
 
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
+builder.Services.AddHttpClient<OrchestratorWorkGroupCatalogFetcher>((sp, client) =>
+{
+    ProcessingServiceOptions processingOptions =
+        sp.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
+    string address = string.IsNullOrWhiteSpace(processingOptions.OrchestratorAddress)
+        ? "http://localhost:5150"
+        : processingOptions.OrchestratorAddress;
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
 
@@ -114,6 +130,10 @@ builder.Services.AddSingleton(sp =>
     return database;
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PlannerDatabase>());
+builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
+builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, UnconfiguredPlannedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<PlannedTicketRunPostProcessor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannedTicketRunPostProcessor>());
 
 WebApplication app = builder.Build();
 

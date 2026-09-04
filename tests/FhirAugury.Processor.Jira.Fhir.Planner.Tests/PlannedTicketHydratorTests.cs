@@ -25,6 +25,20 @@ public sealed class PlannedTicketHydratorTests
         Assert.NotNull(read);
         Assert.Equal("resolved", read!.Parent!.HydrationStatus);
         Assert.Equal("planned", Assert.Single(read.JiraRows).Title);
+        Assert.Equal("<p>body</p>", read.Parent.DescriptionHtml);
+        Assert.Equal("<p>resolution</p>", read.Parent.ResolutionDescriptionHtml);
+        Assert.Equal("Ada", read.Parent.Reporter);
+        Assert.NotNull(read.Parent.CreatedAt);
+        Assert.Equal("Patient, Observation", read.Parent.RelatedArtifactsRaw);
+        Assert.Equal("patient.html", read.Parent.RelatedPagesRaw);
+        using Microsoft.Data.Sqlite.SqliteConnection connection = database.Database.OpenConnection();
+        using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM planned_ticket_jira_content WHERE TicketKey = 'FHIR-201'";
+        using Microsoft.Data.Sqlite.SqliteDataReader content = command.ExecuteReader();
+        Assert.True(content.Read());
+        Assert.Equal("<p>body</p>", content.GetString(0));
+        Assert.Equal("<p>resolution</p>", content.GetString(1));
     }
 
     [Fact]
@@ -72,12 +86,18 @@ public sealed class PlannedTicketHydratorTests
         id = "x",
         title,
         url = "https://jira/browse/FHIR-201",
+        content = "<p>body</p>",
+        createdAt = "2026-04-01T00:00:00Z",
         metadata = new Dictionary<string, string>
         {
             ["status"] = "Triaged",
             ["type"] = "Change Request",
             ["work_group"] = "FHIR-I",
             ["specification"] = "FHIR",
+            ["resolution_description"] = "<p>resolution</p>",
+            ["reporter"] = "Ada",
+            ["related_artifacts"] = "Patient, Observation",
+            ["related_pages"] = "patient.html",
         },
     });
 

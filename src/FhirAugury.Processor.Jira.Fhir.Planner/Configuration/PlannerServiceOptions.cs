@@ -21,6 +21,7 @@ public sealed class PlannerServiceOptions : ProcessingServiceOptions
         StartProcessingOnStartup = true;
         Ports.Http = 5172;
         OrchestratorAddress = "http://localhost:5150";
+        SnapshotDirectory = "./data/snapshots/planner";
     }
 
     public HydrationOptions Hydration { get; set; } = new();

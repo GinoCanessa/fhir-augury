@@ -18,6 +18,11 @@ public sealed class PlannerDatabaseTests
         Assert.True(TableExists(fixture.Database, "planned_ticket_change_validations"));
         Assert.True(TableExists(fixture.Database, "planned_ticket_testing_considerations"));
         Assert.True(TableExists(fixture.Database, "planned_ticket_open_questions"));
+        Assert.True(TableExists(fixture.Database, "planned_ticket_jira_content"));
+        Assert.True(TableExists(fixture.Database, "planned_ticket_authoring_state"));
+        Assert.True(TableExists(fixture.Database, "planned_ticket_partition_receipts"));
+        Assert.True(TableExists(fixture.Database, "planned_ticket_run_item_partitions"));
+        Assert.True(TableExists(fixture.Database, "jira_review_workgroups"));
         Assert.Contains("RepoRevision", Columns(fixture.Database, "planned_ticket_repos"));
         Assert.Contains("ReplacementLines", Columns(fixture.Database, "planned_ticket_repo_changes"));
         Assert.True(IsRowIdPrimaryKey(fixture.Database, "planned_tickets"));

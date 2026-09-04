@@ -55,4 +55,16 @@ public sealed class PlannerOptionsTests
         Assert.True(PlannerRepoFilters.MatchesRepositoryFullName("hl7/FHIR", options.RepoFilters));
         Assert.False(PlannerRepoFilters.MatchesRepositoryFullName("HL7/fhir-ig-publisher", options.RepoFilters));
     }
+
+    [Fact]
+    public void ServiceDefaults_KeepLegacyCommandAndConfigureSnapshots()
+    {
+        PlannerServiceOptions options = new();
+
+        Assert.Equal("./data/snapshots/planner", options.SnapshotDirectory);
+        Assert.Empty(PlannerJiraProcessingDefaults.ValidateAuthoringCommand(
+            PlannerJiraProcessingDefaults.AuthoringAgentCliCommand));
+        Assert.Contains("{dbPath}", PlannerJiraProcessingDefaults.AgentCliCommand);
+        Assert.DoesNotContain("{dbPath}", PlannerJiraProcessingDefaults.AuthoringAgentCliCommand);
+    }
 }

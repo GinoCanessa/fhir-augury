@@ -30,6 +30,11 @@ public sealed class PlannerPersistenceTests
             "planned_ticket_topic_groups",
             "planned_ticket_topic_members",
             "planned_ticket_topic_repos",
+            "planned_ticket_jira_content",
+            "planned_ticket_authoring_state",
+            "planned_ticket_partition_receipts",
+            "planned_ticket_run_item_partitions",
+            "jira_review_workgroups",
             "planner_schema_migrations",
         ];
         foreach (string table in expected)

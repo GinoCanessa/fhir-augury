@@ -56,6 +56,10 @@ public class PlannerWorkQueueTests : IDisposable
         PlannerWorkQueue.PollSummary summary = await queue.PollOnceAsync(default);
 
         Assert.Equal(2, summary.Inserted);
+        AppliedTicketQueueItemStore store = new(_applierPath);
+        var first = (await store.GetByKeyAsync("FHIR-1", "fhir", default))!;
+        Assert.Equal("cid-1", first.PlannerCompletionId);
+        Assert.Equal(now, first.PlannerCompletedAt);
     }
 
     [Fact]

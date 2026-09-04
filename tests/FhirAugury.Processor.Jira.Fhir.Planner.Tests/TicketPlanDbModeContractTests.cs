@@ -21,6 +21,19 @@ public sealed class TicketPlanDbModeContractTests
         Assert.Contains("RepoRevision", skill, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void StagedWorkerCommandOmitsDatabaseAndRetainsRepoFilters()
+    {
+        string command =
+            FhirAugury.Processor.Jira.Fhir.Planner.Configuration.PlannerJiraProcessingDefaults
+                .AuthoringAgentCliCommand;
+
+        Assert.Contains("{ticketKey}", command, StringComparison.Ordinal);
+        Assert.Contains("{repoFilters}", command, StringComparison.Ordinal);
+        Assert.DoesNotContain("{dbPath}", command, StringComparison.Ordinal);
+        Assert.DoesNotContain("{operationToken}", command, StringComparison.Ordinal);
+    }
+
     private static string FindSkillPath()
     {
         DirectoryInfo? directory = new(Environment.CurrentDirectory);

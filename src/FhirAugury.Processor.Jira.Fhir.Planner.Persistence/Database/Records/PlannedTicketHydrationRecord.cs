@@ -23,6 +23,12 @@ public partial record class PlannedTicketHydrationRecord
     public string? Labels { get; set; }
     public int? CommentCount { get; set; }
     public string? DescriptionPlain { get; set; }
+    public string? DescriptionHtml { get; set; }
+    public string? ResolutionDescriptionHtml { get; set; }
+    public string? Reporter { get; set; }
+    public DateTimeOffset? CreatedAt { get; set; }
+    public string? RelatedArtifactsRaw { get; set; }
+    public string? RelatedPagesRaw { get; set; }
     public DateTimeOffset HydratedAt { get; set; }
     public required string HydrationStatus { get; set; }
     public string? HydrationReason { get; set; }

@@ -1,4 +1,5 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Planner.Api;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
@@ -41,10 +42,23 @@ public sealed class PlannedTicketTopicsController(PlannerDatabase database) : Co
         try
         {
             PlannedTicketTopicGroupingPayload payload = request.ToPayload();
-            await database.SaveTopicGroupingAsync(payload, ct);
+            if (request.Authoring is null)
+            {
+                await database.SaveTopicGroupingAsync(payload, ct);
+            }
+            else
+            {
+                await database.SaveTopicGroupingForRunAsync(
+                    payload,
+                    request.Authoring.RunId,
+                    request.Authoring.StageId,
+                    request.Authoring.StageLeaseId,
+                    request.Authoring.InputFingerprint,
+                    ct);
+            }
             return NoContent();
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (ex is ArgumentException or AuthoringConflictException)
         {
             return BadRequest(new { error = ex.Message });
         }

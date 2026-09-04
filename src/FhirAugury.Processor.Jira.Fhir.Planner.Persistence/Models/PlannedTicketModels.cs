@@ -19,7 +19,13 @@ public sealed record PlannedTicketHydrationRow(
     string? DescriptionPlain,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record PlannedJiraHydrationRow(
     string IssueKey,
@@ -37,7 +43,13 @@ public sealed record PlannedJiraHydrationRow(
     string? Url,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null);
 
 public sealed record PlannedZulipHydrationRow(
     string IssueKey,
@@ -171,3 +183,14 @@ public sealed record PlannedTicketTopicsForCategory(
     string Type,
     DateTimeOffset SavedAt,
     IReadOnlyList<PlannedTicketTopicDetail> Topics);
+
+public sealed record PlannedTicketRunPartition(
+    string WorkGroupClean,
+    string WorkGroupDisplay,
+    string Specification,
+    string Type,
+    string PartitionKey,
+    string InputFingerprint,
+    IReadOnlyList<string> TicketKeys);
+
+public sealed record PlannerMaintenanceLease(string RunId, string LeaseId);
