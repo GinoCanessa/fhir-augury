@@ -7,6 +7,7 @@ internal static class FilterResolver
     public static async Task<ResolvedFilters?> TryResolveAsync(
         string dbPath,
         CliOptions cli,
+        string kind,
         TextWriter stderr,
         CancellationToken ct)
     {
@@ -14,6 +15,7 @@ internal static class FilterResolver
         {
             DataSource = dbPath,
             Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
         };
         await using SqliteConnection connection = new(builder.ConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
@@ -23,7 +25,9 @@ internal static class FilterResolver
         {
             List<string> values = await GetDistinctAsync(
                 connection,
-                "SELECT DISTINCT Specification FROM prepared_ticket_hydration WHERE Specification IS NOT NULL",
+                kind == PlannerSubSiteEmitter.Kind
+                    ? "SELECT DISTINCT Specification FROM planned_ticket_hydration WHERE Specification IS NOT NULL"
+                    : "SELECT DISTINCT Specification FROM prepared_ticket_hydration WHERE Specification IS NOT NULL",
                 ct).ConfigureAwait(false);
             canonicalSpec = MatchCaseInsensitive(values, cli.FilterSpec);
             if (canonicalSpec is null)
@@ -38,7 +42,11 @@ internal static class FilterResolver
         {
             List<string> values = await GetDistinctAsync(
                 connection,
-                "SELECT DISTINCT Project FROM jira_processing_source_tickets WHERE Project IS NOT NULL",
+                cli.SnapshotMode
+                    ? kind == PlannerSubSiteEmitter.Kind
+                        ? "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM planned_tickets WHERE instr(Key, '-') > 1"
+                        : "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM prepared_tickets WHERE instr(Key, '-') > 1"
+                    : "SELECT DISTINCT Project FROM jira_processing_source_tickets WHERE Project IS NOT NULL",
                 ct).ConfigureAwait(false);
             canonicalProject = MatchCaseInsensitive(values, cli.FilterProject);
             if (canonicalProject is null)
@@ -53,7 +61,11 @@ internal static class FilterResolver
         {
             List<string> wgValues = await GetDistinctAsync(
                 connection,
-                "SELECT DISTINCT WorkGroup FROM jira_processing_source_tickets WHERE WorkGroup IS NOT NULL",
+                cli.SnapshotMode
+                    ? kind == PlannerSubSiteEmitter.Kind
+                        ? "SELECT DISTINCT WorkGroup FROM planned_jira_hydration WHERE IssueKey = JiraKey AND WorkGroup IS NOT NULL"
+                        : "SELECT DISTINCT WorkGroup FROM prepared_jira_hydration WHERE TicketKey = JiraKey AND WorkGroup IS NOT NULL"
+                    : "SELECT DISTINCT WorkGroup FROM jira_processing_source_tickets WHERE WorkGroup IS NOT NULL",
                 ct).ConfigureAwait(false);
 
             string? directMatch = MatchCaseInsensitive(wgValues, cli.FilterWorkGroup);
@@ -63,12 +75,17 @@ internal static class FilterResolver
             }
             else
             {
-                string? resolved = await WorkGroupResolver.TryResolveAsync(
-                    cli.FilterWorkGroup,
-                    cli.JiraSourceUrl,
-                    cli.JiraSourceDbPath,
-                    stderr,
-                    ct).ConfigureAwait(false);
+                string? resolved = cli.SnapshotMode
+                    ? await WorkGroupResolver.TryResolveFromSnapshotAsync(
+                        cli.FilterWorkGroup,
+                        dbPath,
+                        ct).ConfigureAwait(false)
+                    : await WorkGroupResolver.TryResolveAsync(
+                        cli.FilterWorkGroup,
+                        cli.JiraSourceUrl,
+                        cli.JiraSourceDbPath,
+                        stderr,
+                        ct).ConfigureAwait(false);
 
                 if (resolved is not null)
                 {
@@ -77,7 +94,12 @@ internal static class FilterResolver
 
                 if (canonicalWorkGroup is null)
                 {
-                    await WriteUnknownAsync(stderr, "--wg", cli.FilterWorkGroup, wgValues, appendWgHint: true).ConfigureAwait(false);
+                    await WriteUnknownAsync(
+                        stderr,
+                        "--wg",
+                        cli.FilterWorkGroup,
+                        wgValues,
+                        appendWgHint: !cli.SnapshotMode).ConfigureAwait(false);
                     return null;
                 }
             }

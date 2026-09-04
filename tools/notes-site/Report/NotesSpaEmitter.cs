@@ -2,6 +2,8 @@ using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using FhirAugury.Common.IO;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
@@ -23,11 +25,42 @@ internal sealed class NotesSpaEmitter
     private const string ProvenanceMarker = "<!-- __PROVENANCE__ -->";
 
     private readonly string _notesDbPath;
+    private readonly byte[]? _snapshotBytes;
+    private readonly AuthoringSnapshotDescriptor? _snapshotDescriptor;
     private readonly string _title;
+
+    public static string RendererAssetsVersion =>
+        StagedDirectoryPublisher.GetRendererAssetsVersion(
+            typeof(NotesSpaEmitter).Assembly);
 
     public NotesSpaEmitter(string notesDbPath, string title)
     {
         _notesDbPath = notesDbPath;
+        _title = title;
+    }
+
+    public NotesSpaEmitter(
+        byte[] snapshotBytes,
+        AuthoringSnapshotDescriptor descriptor,
+        string title)
+    {
+        ArgumentNullException.ThrowIfNull(snapshotBytes);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        _notesDbPath = string.Empty;
+        _snapshotBytes = snapshotBytes;
+        _snapshotDescriptor = descriptor;
+        _title = title;
+    }
+
+    public NotesSpaEmitter(
+        byte[] databaseBytes,
+        string notesDbPath,
+        string title)
+    {
+        ArgumentNullException.ThrowIfNull(databaseBytes);
+        ArgumentException.ThrowIfNullOrWhiteSpace(notesDbPath);
+        _notesDbPath = notesDbPath;
+        _snapshotBytes = databaseBytes;
         _title = title;
     }
 
@@ -43,10 +76,12 @@ internal sealed class NotesSpaEmitter
         string assetsDir = Path.Combine(outDir, "assets");
         Directory.CreateDirectory(assetsDir);
 
-        byte[] dbBytes = SnapshotDbBytes(_notesDbPath);
+        byte[] dbBytes = _snapshotBytes ?? SnapshotDbBytes(_notesDbPath);
         string base64 = Convert.ToBase64String(GzipBytes(dbBytes));
         string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
-        string provenanceScript = BuildProvenanceScript(_notesDbPath);
+        string provenanceScript = _snapshotDescriptor is null
+            ? BuildProvenanceScript(_notesDbPath)
+            : BuildSnapshotProvenanceScript(_snapshotDescriptor);
         string encodedTitle = WebUtility.HtmlEncode(_title);
 
         Assembly asm = typeof(NotesSpaEmitter).Assembly;
@@ -94,7 +129,7 @@ internal sealed class NotesSpaEmitter
         return output.ToArray();
     }
 
-    private static byte[] SnapshotDbBytes(string notesDbPath)
+    public static byte[] SnapshotDbBytes(string notesDbPath)
     {
         string tempPath = Path.Combine(
             Path.GetTempPath(), "notes-site-snap-" + Guid.NewGuid().ToString("N")[..8] + ".db");
@@ -208,5 +243,23 @@ internal sealed class NotesSpaEmitter
     {
         if (value is null) writer.WriteNull(name);
         else writer.WriteString(name, value);
+    }
+
+    private static string BuildSnapshotProvenanceScript(
+        AuthoringSnapshotDescriptor descriptor)
+    {
+        string json = JsonSerializer.Serialize(new
+        {
+            processorKind = descriptor.ProcessorKind,
+            runId = descriptor.RunId,
+            snapshotId = descriptor.SnapshotId,
+            authoringEpoch = descriptor.AuthoringEpoch,
+            snapshotSequence = descriptor.Sequence,
+            snapshotCreatedAt = descriptor.CreatedAt,
+            noteCount = descriptor.TableCounts.TryGetValue("notes", out long count)
+                ? count
+                : descriptor.ItemCount,
+        });
+        return $"<script>window.__RUN__={json};</script>";
     }
 }

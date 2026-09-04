@@ -101,6 +101,36 @@ internal static class WorkGroupResolver
         return ResolveUsingSharedResolver(raw, snapshot);
     }
 
+    public static async Task<string?> TryResolveFromSnapshotAsync(
+        string raw,
+        string snapshotDbPath,
+        CancellationToken ct)
+    {
+        SqliteConnectionStringBuilder builder = new()
+        {
+            DataSource = snapshotDbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        };
+        await using SqliteConnection connection = new(builder.ConnectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        List<WorkGroupDto> groups = [];
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT Name, Code, NameClean FROM jira_review_workgroups ORDER BY Name";
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            groups.Add(new WorkGroupDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+        return ResolveUsingSharedResolver(raw, groups);
+    }
+
     private static string? ResolveUsingSharedResolver(string raw, IReadOnlyList<WorkGroupDto> groups)
     {
         List<Hl7WorkGroupDto> snapshot = new(groups.Count);

@@ -1,4 +1,3 @@
-using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.TicketSite;
@@ -18,9 +17,15 @@ internal static class PreparerDbTrimmer
         "prepared_repo_hydration",
         "prepared_ticket_repos",
         "prepared_ticket_topic_members",
+        "prepared_ticket_jira_content",
+        "prepared_ticket_artifacts",
+        "prepared_ticket_pages",
     ];
 
-    public sealed record BuildResult(string TempDbPath, long SurvivingTicketCount);
+    public sealed record BuildResult(
+        string TempDbPath,
+        long SurvivingTicketCount,
+        bool OwnsTempFile);
 
     /// <summary>
     /// Copies the source preparer DB to a temp file and runs the filter-aware
@@ -40,12 +45,22 @@ internal static class PreparerDbTrimmer
     public static async Task<BuildResult> BuildAsync(
         string sourceDbPath,
         ResolvedFilters filters,
+        bool immutableSnapshot,
         CancellationToken ct)
     {
+        if (immutableSnapshot && !filters.HasAnyFilter)
+        {
+            return new BuildResult(
+                sourceDbPath,
+                await CountAsync(sourceDbPath, "prepared_tickets", ct).ConfigureAwait(false),
+                OwnsTempFile: false);
+        }
+
         string tempPath = Path.GetTempFileName();
         try
         {
             File.Copy(sourceDbPath, tempPath, overwrite: true);
+            File.SetAttributes(tempPath, FileAttributes.Normal);
 
             long surviving;
             SqliteConnectionStringBuilder builder = new()
@@ -58,12 +73,11 @@ internal static class PreparerDbTrimmer
             await using SqliteConnection connection = new(builder.ConnectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
-            // Self-migrate older preparer DBs that predate later schema
-            // additions (e.g., the prepared_ticket_topic* tables). EnsureSchema
-            // is idempotent — every statement is CREATE [TABLE|INDEX] IF NOT
-            // EXISTS — so this is a no-op on already-current DBs and never
-            // touches existing rows.
-            PreparerDatabase.EnsureSchema(connection);
+            if (!immutableSnapshot)
+            {
+                FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.PreparerDatabase
+                    .EnsureSchema(connection);
+            }
 
             await using SqliteTransaction tx = (SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
@@ -72,16 +86,28 @@ internal static class PreparerDbTrimmer
             await using (SqliteCommand cmd = connection.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = """
-                    DELETE FROM prepared_tickets WHERE Key NOT IN (
-                      SELECT pt.Key FROM prepared_tickets pt
-                      LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key
-                      LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
-                      WHERE (@project IS NULL OR LOWER(jst.Project) = LOWER(@project))
-                        AND (@wg      IS NULL OR LOWER(jst.WorkGroup) = LOWER(@wg))
-                        AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
-                    )
-                    """;
+                cmd.CommandText = immutableSnapshot
+                    ? """
+                      DELETE FROM prepared_tickets WHERE Key NOT IN (
+                        SELECT pt.Key FROM prepared_tickets pt
+                        LEFT JOIN prepared_jira_hydration jh
+                          ON jh.TicketKey = pt.Key AND jh.JiraKey = pt.Key
+                        LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
+                        WHERE (@project IS NULL OR LOWER(substr(pt.Key, 1, instr(pt.Key, '-') - 1)) = LOWER(@project))
+                          AND (@wg      IS NULL OR LOWER(jh.WorkGroup) = LOWER(@wg))
+                          AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
+                      )
+                      """
+                    : """
+                      DELETE FROM prepared_tickets WHERE Key NOT IN (
+                        SELECT pt.Key FROM prepared_tickets pt
+                        LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key
+                        LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
+                        WHERE (@project IS NULL OR LOWER(jst.Project) = LOWER(@project))
+                          AND (@wg      IS NULL OR LOWER(jst.WorkGroup) = LOWER(@wg))
+                          AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
+                      )
+                      """;
                 cmd.Parameters.AddWithValue("@project", (object?)filters.Project ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@wg", (object?)filters.WorkGroup ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@spec", (object?)filters.Specification ?? DBNull.Value);
@@ -97,12 +123,39 @@ internal static class PreparerDbTrimmer
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
-            // Drop orphan topic groups first (so the topics delete sees an
-            // accurate post-trim view of which topics still have members),
-            // then drop orphan topics. Both are no-ops when no filters are
-            // active because every member row survived above.
-            await using (SqliteCommand cmd = connection.CreateCommand())
+            if (immutableSnapshot)
             {
+                await using SqliteCommand cmd = connection.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText =
+                    """
+                    CREATE TEMP TABLE invalid_filtered_groups AS
+                    SELECT g.RowId
+                    FROM prepared_ticket_topic_groups g
+                    LEFT JOIN prepared_ticket_topic_members m
+                      ON m.TopicGroupRowId = g.RowId
+                    GROUP BY g.RowId, g.FirstTicketKey
+                    HAVING COUNT(m.TicketKey) < 2
+                       OR SUM(CASE WHEN m.TicketKey = g.FirstTicketKey THEN 1 ELSE 0 END) = 0;
+                    UPDATE prepared_ticket_topic_members
+                    SET TopicGroupRowId = NULL
+                    WHERE TopicGroupRowId IN (SELECT RowId FROM invalid_filtered_groups);
+                    DELETE FROM prepared_ticket_topic_groups
+                    WHERE RowId IN (SELECT RowId FROM invalid_filtered_groups);
+                    DELETE FROM prepared_ticket_topic_members
+                    WHERE TopicRowId IN (
+                      SELECT t.RowId
+                      FROM prepared_ticket_topics t
+                      LEFT JOIN prepared_ticket_topic_members m ON m.TopicRowId = t.RowId
+                      GROUP BY t.RowId
+                      HAVING COUNT(m.TicketKey) < 2
+                    );
+                    """;
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await using SqliteCommand cmd = connection.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandText =
                     "DELETE FROM prepared_ticket_topic_groups WHERE RowId NOT IN (" +
@@ -120,8 +173,9 @@ internal static class PreparerDbTrimmer
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
-            await using (SqliteCommand cmd = connection.CreateCommand())
+            if (!immutableSnapshot)
             {
+                await using SqliteCommand cmd = connection.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandText =
                     "DELETE FROM jira_processing_source_tickets " +
@@ -139,12 +193,42 @@ internal static class PreparerDbTrimmer
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
 
-            return new BuildResult(tempPath, surviving);
+            if (immutableSnapshot)
+            {
+                await using SqliteCommand vacuum = connection.CreateCommand();
+                vacuum.CommandText = "VACUUM";
+                await vacuum.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            return new BuildResult(tempPath, surviving, OwnsTempFile: true);
         }
         catch
         {
             try { File.Delete(tempPath); } catch { /* best-effort */ }
             throw;
         }
+    }
+
+    public static Task<BuildResult> BuildAsync(
+        string sourceDbPath,
+        ResolvedFilters filters,
+        CancellationToken ct)
+        => BuildAsync(sourceDbPath, filters, immutableSnapshot: false, ct);
+
+    private static async Task<long> CountAsync(
+        string dbPath,
+        string table,
+        CancellationToken ct)
+    {
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {table}";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
     }
 }

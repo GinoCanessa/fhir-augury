@@ -5,7 +5,13 @@ internal sealed record ReportOptions(
     string DbPath,
     string OutPath,
     string Title,
-    bool Force);
+    bool Force,
+    string? SnapshotDbPath = null,
+    string? SnapshotDescriptorPath = null,
+    bool DbSupplied = false)
+{
+    public bool SnapshotMode => SnapshotDbPath is not null;
+}
 
 internal static class CliOptions
 {
@@ -19,6 +25,9 @@ internal static class CliOptions
         string db = DefaultDb;
         string outPath = DefaultOut;
         string title = DefaultTitle;
+        string? snapshotDb = null;
+        string? snapshotDescriptor = null;
+        bool dbSupplied = false;
         bool force = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -28,6 +37,23 @@ internal static class CliOptions
             {
                 case "--db":
                     if (!TryTakeValue(args, ref i, arg, out db, out error)) { options = DefaultReport(); return false; }
+                    dbSupplied = true;
+                    break;
+                case "--snapshot-db":
+                    if (!TryTakeValue(args, ref i, arg, out string snapshotValue, out error))
+                    {
+                        options = DefaultReport();
+                        return false;
+                    }
+                    snapshotDb = snapshotValue;
+                    break;
+                case "--snapshot-descriptor":
+                    if (!TryTakeValue(args, ref i, arg, out string descriptorValue, out error))
+                    {
+                        options = DefaultReport();
+                        return false;
+                    }
+                    snapshotDescriptor = descriptorValue;
                     break;
                 case "--out":
                     if (!TryTakeValue(args, ref i, arg, out outPath, out error)) { options = DefaultReport(); return false; }
@@ -45,7 +71,33 @@ internal static class CliOptions
             }
         }
 
-        options = new ReportOptions(db, outPath, title, force);
+        if (snapshotDb is not null && dbSupplied)
+        {
+            options = DefaultReport();
+            error = "--db and --snapshot-db are mutually exclusive.";
+            return false;
+        }
+        if (snapshotDb is not null && snapshotDescriptor is null)
+        {
+            options = DefaultReport();
+            error = "Snapshot mode requires --snapshot-descriptor <path>.";
+            return false;
+        }
+        if (snapshotDb is null && snapshotDescriptor is not null)
+        {
+            options = DefaultReport();
+            error = "--snapshot-descriptor is valid only with --snapshot-db.";
+            return false;
+        }
+
+        options = new ReportOptions(
+            db,
+            outPath,
+            title,
+            force,
+            snapshotDb,
+            snapshotDescriptor,
+            dbSupplied);
         error = null;
         return true;
     }
@@ -63,5 +115,6 @@ internal static class CliOptions
         return true;
     }
 
-    private static ReportOptions DefaultReport() => new(DefaultDb, DefaultOut, DefaultTitle, false);
+    private static ReportOptions DefaultReport() =>
+        new(DefaultDb, DefaultOut, DefaultTitle, false);
 }

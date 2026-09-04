@@ -55,6 +55,46 @@ public sealed class ChooserAndCliTests
     }
 
     [Fact]
+    public async Task Cli_SnapshotRequiresDescriptor()
+    {
+        StringWriter err = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(err);
+        try
+        {
+            int exit = await Program.Main(["--preparer-snapshot", "snapshot.db"]);
+            Assert.Equal(2, exit);
+            Assert.Contains("--snapshot-descriptor", err.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+    }
+
+    [Fact]
+    public async Task Cli_SnapshotRejectsJiraInputs()
+    {
+        StringWriter err = new();
+        TextWriter originalErr = Console.Error;
+        Console.SetError(err);
+        try
+        {
+            int exit = await Program.Main([
+                "--preparer-snapshot", "snapshot.db",
+                "--snapshot-descriptor", "snapshot.json",
+                "--jira-source-db", "jira.db",
+            ]);
+            Assert.Equal(2, exit);
+            Assert.Contains("self-contained", err.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+    }
+
+    [Fact]
     public async Task PreparerOnly_BuildsDiscussionAndChooserShowsApplyingGreyed()
     {
         using TempScope scope = new();

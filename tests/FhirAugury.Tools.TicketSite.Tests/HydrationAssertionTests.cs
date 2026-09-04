@@ -60,6 +60,39 @@ public sealed class HydrationAssertionTests
         Assert.Contains("not hydrated", stderr.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task SnapshotValidationRejectsDescriptorProcessorMismatch()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"hydration-descriptor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            await TicketSnapshotFixture.WriteDescriptorAsync(
+                snapshot.DescriptorPath,
+                snapshot.Descriptor with { ProcessorKind = "wrong-processor" });
+
+            using StringWriter stderr = new();
+            HydrationAssertion.SnapshotValidationResult? result =
+                await HydrationAssertion.ValidateSnapshotAsync(
+                    snapshot.DatabasePath,
+                    snapshot.DescriptorPath,
+                    PreparerSubSiteEmitter.Kind,
+                    stderr,
+                    CancellationToken.None);
+
+            Assert.Null(result);
+            Assert.Contains("processor kind", stderr.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
     private static string NewDbPath()
         => Path.Combine(AppContext.BaseDirectory, $"hydration-assert-{Guid.NewGuid():N}.db");
 }

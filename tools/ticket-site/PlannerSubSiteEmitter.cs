@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using FhirAugury.Common.IO;
 
 namespace FhirAugury.Tools.TicketSite;
 
@@ -23,6 +24,10 @@ internal static class PlannerSubSiteEmitter
     private const string TitleMarker = "<!-- __TITLE__ -->";
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string FiltersMarker = "<!-- __FILTERS__ -->";
+
+    public static string RendererAssetsVersion =>
+        StagedDirectoryPublisher.GetRendererAssetsVersion(
+            typeof(PlannerSubSiteEmitter).Assembly);
 
     public static void Emit(string subSiteOut, string baseTitle, ResolvedFilters filters, byte[] dbBytes)
     {

@@ -69,4 +69,40 @@ public class WorkGroupResolverParseTests
         List<WorkGroupResolver.WorkGroupDto> parsed = WorkGroupResolver.ParseWorkGroups(element);
         Assert.Empty(parsed);
     }
+
+    [Fact]
+    public async Task SnapshotCatalogResolvesCodeNameAndCleanName()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"wg-snapshot-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            Assert.Equal(
+                "FHIR Infrastructure",
+                await WorkGroupResolver.TryResolveFromSnapshotAsync(
+                    "fhir-i",
+                    snapshot.DatabasePath,
+                    CancellationToken.None));
+            Assert.Equal(
+                "FHIR Infrastructure",
+                await WorkGroupResolver.TryResolveFromSnapshotAsync(
+                    "FHIRInfrastructure",
+                    snapshot.DatabasePath,
+                    CancellationToken.None));
+            Assert.Equal(
+                "FHIR Infrastructure",
+                await WorkGroupResolver.TryResolveFromSnapshotAsync(
+                    "FHIR Infrastructure",
+                    snapshot.DatabasePath,
+                    CancellationToken.None));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
 }

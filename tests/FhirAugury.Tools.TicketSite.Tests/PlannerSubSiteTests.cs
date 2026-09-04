@@ -373,6 +373,34 @@ public sealed class PlannerSubSiteTests
         Assert.Contains("Ticket summary", appJs, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task SnapshotModeEmitsApplyingSiteFromCanonicalTables()
+    {
+        using TempScope scope = new();
+        Directory.CreateDirectory(scope.OutDir);
+        TicketSnapshotFixture snapshot =
+            await TicketSnapshotFixture.CreatePlannerAsync(scope.OutDir);
+        string siteOut = Path.Combine(scope.OutDir, "snapshot-site");
+
+        int exit = await Program.Main([
+            "--planner-snapshot", snapshot.DatabasePath,
+            "--snapshot-descriptor", snapshot.DescriptorPath,
+            "--out", siteOut,
+        ]);
+        Assert.Equal(0, exit);
+
+        await using SqliteConnection connection =
+            await OpenInlinedPlannerDbAsync(siteOut);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT DescriptionHtml FROM planned_ticket_jira_content WHERE TicketKey='FHIR-2001'";
+        Assert.Equal("<p>planner request</p>", await command.ExecuteScalarAsync());
+        Assert.True(File.Exists(Path.Combine(
+            siteOut,
+            "applying",
+            SiteBuildManifest.FileName)));
+    }
+
     private static async Task CreateFakeJiraSourceDbAsync(
         string dbPath,
         IReadOnlyDictionary<string, (string? Description, string? ResolutionDescription)> contentByKey)

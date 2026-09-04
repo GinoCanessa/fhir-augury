@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using FhirAugury.Common.IO;
 
 namespace FhirAugury.Tools.TicketSite;
 
@@ -24,7 +25,16 @@ internal static class PreparerSubSiteEmitter
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string FiltersMarker = "<!-- __FILTERS__ -->";
 
-    public static void Emit(string subSiteOut, string baseTitle, ResolvedFilters filters, byte[] dbBytes)
+    public static string RendererAssetsVersion =>
+        StagedDirectoryPublisher.GetRendererAssetsVersion(
+            typeof(PreparerSubSiteEmitter).Assembly);
+
+    public static void Emit(
+        string subSiteOut,
+        string baseTitle,
+        ResolvedFilters filters,
+        byte[] dbBytes,
+        bool snapshotMode = false)
     {
         if (Directory.Exists(subSiteOut))
         {
@@ -69,6 +79,29 @@ internal static class PreparerSubSiteEmitter
                     : name.Substring(SharedPrefix.Length);
                 string outFile = Path.Combine(assetsDir, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
+                if (snapshotMode &&
+                    string.Equals(relative, "app.js", StringComparison.Ordinal))
+                {
+                    using StreamReader reader = new(stream);
+                    string script = reader.ReadToEnd();
+                    const string anchor = "db = new SQL.Database(bytes);";
+                    const string compatibilityView =
+                        """
+                        db.run("CREATE TEMP VIEW jira_processing_source_tickets AS SELECT jh.JiraKey AS Key, jh.Title AS Title, CASE WHEN instr(jh.JiraKey, '-') > 1 THEN substr(jh.JiraKey, 1, instr(jh.JiraKey, '-') - 1) ELSE '' END AS Project, jh.Status AS Status, jh.WorkGroup AS WorkGroup, jh.Type AS Type, jh.Specification AS Specification FROM prepared_jira_hydration jh WHERE jh.TicketKey = jh.JiraKey");
+                        """;
+                    if (!script.Contains(anchor, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            "Discussion app.js database initialization marker is missing.");
+                    }
+                    File.WriteAllText(
+                        outFile,
+                        script.Replace(
+                            anchor,
+                            anchor + Environment.NewLine + compatibilityView,
+                            StringComparison.Ordinal));
+                    continue;
+                }
                 using FileStream fs = File.Create(outFile);
                 stream.CopyTo(fs);
             }

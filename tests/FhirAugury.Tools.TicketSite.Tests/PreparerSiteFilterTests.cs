@@ -299,7 +299,7 @@ public sealed class PreparerSiteFilterTests
     }
 
     [Fact]
-    public async Task Marker_PreExistingDirNoMarker_OverwritesWithoutForce()
+    public async Task Marker_PreExistingDirNoMarker_RequiresForceForTakeover()
     {
         using TempScope scope = new();
         await PreparerTestDb.SeedAsync(
@@ -312,9 +312,15 @@ public sealed class PreparerSiteFilterTests
             Path.Combine(scope.OutDir, "discussion", "index.html"),
             "<html>previously emitted, no marker</html>");
 
-        (int exit, _, _) = await RunMainAsync(
+        (int exit, _, string error) = await RunMainAsync(
             "--preparer-db", scope.DbPath, "--out", scope.OutDir, "--project", "FHIR");
-        Assert.Equal(0, exit);
+        Assert.Equal(1, exit);
+        Assert.Contains("not owned", error, StringComparison.OrdinalIgnoreCase);
+
+        (int forcedExit, _, _) = await RunMainAsync(
+            "--preparer-db", scope.DbPath, "--out", scope.OutDir,
+            "--project", "FHIR", "--force");
+        Assert.Equal(0, forcedExit);
         Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName)));
     }
 
@@ -868,5 +874,54 @@ public sealed class PreparerSiteFilterTests
         Assert.Contains("Unknown value for --spec: 'Bogus'.", stderr, StringComparison.Ordinal);
         Assert.Contains("No values are present for --spec in the database.", stderr, StringComparison.Ordinal);
         Assert.DoesNotContain("Available values:", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SnapshotFiltersMatchLegacySelectorsWithoutJiraDependency()
+    {
+        using TempScope scope = new();
+        Directory.CreateDirectory(scope.OutDir);
+        TicketSnapshotFixture snapshot =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                scope.OutDir,
+                includeSecondTicket: true);
+        string siteOut = Path.Combine(scope.OutDir, "snapshot-site");
+
+        (int exit, string stdout, string stderr) = await RunMainAsync(
+            "--preparer-snapshot", snapshot.DatabasePath,
+            "--snapshot-descriptor", snapshot.DescriptorPath,
+            "--out", siteOut,
+            "--project", "fhir",
+            "--wg", "fhir-i",
+            "--spec", "fhir");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(string.Empty, stderr);
+        Assert.Contains("Resolved --project 'fhir' → 'FHIR'.", stdout, StringComparison.Ordinal);
+        Assert.Contains("Resolved --wg 'fhir-i' → 'FHIR Infrastructure'.", stdout, StringComparison.Ordinal);
+        Assert.Contains("Resolved --spec 'fhir' → 'FHIR'.", stdout, StringComparison.Ordinal);
+
+        SiteBuildManifest manifest = SiteBuildManifest.Read(Path.Combine(
+            siteOut,
+            "discussion",
+            SiteBuildManifest.FileName));
+        Assert.Equal(1, manifest.IncludedItemCount);
+        Assert.Equal("FHIR", manifest.Filters.Project);
+        Assert.Equal("FHIR Infrastructure", manifest.Filters.Wg);
+        Assert.Equal("FHIR", manifest.Filters.Spec);
+
+        string html = await File.ReadAllTextAsync(Path.Combine(
+            siteOut,
+            "discussion",
+            "index.html"));
+        byte[] bytes = ExtractInlinedDbBytes(html);
+        string extracted = Path.Combine(scope.OutDir, "filtered-snapshot.db");
+        await File.WriteAllBytesAsync(extracted, bytes);
+        await using SqliteConnection connection = new(
+            $"Data Source={extracted};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        Assert.Equal(1, await CountAsync(connection, "prepared_tickets"));
+        Assert.Equal(2, await CountAsync(connection, "authoring_run_items"));
+        Assert.Equal(2, await CountAsync(connection, "jira_review_workgroups"));
     }
 }

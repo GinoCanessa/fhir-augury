@@ -283,12 +283,66 @@ public sealed class PreparerSiteSmokeTests
         }
     }
 
+    [Fact]
+    public async Task SnapshotModePreservesCanonicalHtmlArtifactPageAndPublicProvenance()
+    {
+        using TempScope scope = new();
+        Directory.CreateDirectory(scope.OutDir);
+        TicketSnapshotFixture snapshot =
+            await TicketSnapshotFixture.CreatePreparerAsync(scope.OutDir);
+        string siteOut = Path.Combine(scope.OutDir, "site");
+
+        int exit = await Program.Main([
+            "--preparer-snapshot", snapshot.DatabasePath,
+            "--snapshot-descriptor", snapshot.DescriptorPath,
+            "--out", siteOut,
+        ]);
+        Assert.Equal(0, exit);
+
+        await using SqliteConnection connection =
+            await OpenInlinedDbAsync(siteOut);
+        Assert.Equal("<p>request html</p>", await ReadScalarAsync(
+            connection,
+            "SELECT DescriptionHtml FROM prepared_ticket_jira_content WHERE TicketKey='FHIR-1001'"));
+        Assert.Equal("Observation", await ReadScalarAsync(
+            connection,
+            "SELECT Value FROM prepared_ticket_artifacts WHERE TicketKey='FHIR-1001'"));
+        Assert.Equal("patient.html", await ReadScalarAsync(
+            connection,
+            "SELECT Value FROM prepared_ticket_pages WHERE TicketKey='FHIR-1001'"));
+        Assert.Equal(1, await ReadCountAsync(
+            connection,
+            "SELECT COUNT(*) FROM authoring_snapshot_provenance"));
+        Assert.Equal(0, await ReadCountAsync(
+            connection,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='authoring_run_attempts'"));
+
+        string appJs = await File.ReadAllTextAsync(Path.Combine(
+            siteOut,
+            "discussion",
+            "assets",
+            "app.js"));
+        Assert.Contains(
+            "CREATE TEMP VIEW jira_processing_source_tickets",
+            appJs,
+            StringComparison.Ordinal);
+    }
+
     private static async Task<int> ReadCountAsync(SqliteConnection conn, string sql)
     {
         await using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         object? value = await cmd.ExecuteScalarAsync();
         return Convert.ToInt32(value);
+    }
+
+    private static async Task<string> ReadScalarAsync(
+        SqliteConnection connection,
+        string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(await command.ExecuteScalarAsync())!;
     }
 
     private static async Task SeedHydrationAsync(string dbPath)

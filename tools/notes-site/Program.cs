@@ -69,6 +69,8 @@ public static class Program
 
             report options:
               --db <path>     Notes SQLite DB to read (default: ./cache/ballot-notes.db).
+              --snapshot-db <path> Immutable BallotNotes snapshot SQLite file.
+              --snapshot-descriptor <path> Trusted descriptor JSON required with --snapshot-db.
               --out <dir>     Output directory for the static site (default: ./cache/notes-site).
               --title <text>  Site title (default: "FHIR Ballot Notes").
               --force         Overwrite an existing output directory.

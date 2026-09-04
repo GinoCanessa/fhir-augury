@@ -5,6 +5,11 @@ internal sealed record CliOptions(
     bool PreparerDbSupplied,
     string? PlannerDbPath,
     bool PlannerDbSupplied,
+    string? PreparerSnapshotPath,
+    bool PreparerSnapshotSupplied,
+    string? PlannerSnapshotPath,
+    bool PlannerSnapshotSupplied,
+    string? SnapshotDescriptorPath,
     string? OutPath,
     string Title,
     string? FilterSpec,
@@ -13,4 +18,8 @@ internal sealed record CliOptions(
     string? JiraSourceUrl,
     string? JiraSourceDbPath,
     bool Force,
-    bool Help);
+    bool Help)
+{
+    public bool SnapshotMode =>
+        PreparerSnapshotSupplied || PlannerSnapshotSupplied;
+}
