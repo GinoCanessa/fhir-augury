@@ -75,7 +75,11 @@ builder.Services.AddHttpClient("confluence", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
-    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    // confluence.hl7.org sits behind an edge proxy that answers 405 to
+    // non-browser user-agents before the request reaches Confluence, so the
+    // client has to present a browser-like agent.
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 }).AddHttpMessageHandler<ConfluenceAuthHandler>()
   .AddStandardResilienceHandler();
 
