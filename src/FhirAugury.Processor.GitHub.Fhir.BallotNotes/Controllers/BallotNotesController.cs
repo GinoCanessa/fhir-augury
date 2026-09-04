@@ -1,3 +1,5 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
@@ -12,7 +14,9 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Controllers;
 [ApiController]
 [Route("api/v1/ballot-notes")]
 [Produces("application/json")]
-public sealed class BallotNotesController(BallotNotesDatabase database) : ControllerBase
+public sealed class BallotNotesController(
+    BallotNotesDatabase database,
+    AuthoringRunStore authoringStore) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -46,17 +50,52 @@ public sealed class BallotNotesController(BallotNotesDatabase database) : Contro
     public IActionResult Get([FromRoute] string slug)
     {
         NoteDetail? detail = database.GetNote(slug);
-        return detail is null
-            ? NotFound(new { error = $"Note '{slug}' not found." })
-            : Ok(BallotNoteDtoMapper.ToDetailDto(detail));
+        if (detail is null)
+        {
+            return NotFound(new { error = $"Note '{slug}' not found." });
+        }
+        BallotNoteDetailDto dto = BallotNoteDtoMapper.ToDetailDto(detail) with
+        {
+            CurrentHydrationExecutionId =
+                detail.Note.CurrentHydrationExecutionId,
+            CurrentEvidenceHash = detail.Note.CurrentEvidenceHash,
+            CurrentEvidenceRevision = detail.Note.CurrentEvidenceRevision,
+            ProseHydrationExecutionId =
+                detail.Note.ProseHydrationExecutionId,
+            ProseEvidenceRevision = detail.Note.ProseEvidenceRevision,
+            ProseVerificationStatus = detail.Note.ProseVerificationStatus,
+        };
+        return Ok(dto);
     }
 
     [HttpPut("{slug}/note")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public IActionResult PutNote([FromRoute] string slug, [FromBody] BallotNoteProsePutRequest request)
+    public async Task<IActionResult> PutNote(
+        [FromRoute] string slug,
+        [FromBody] BallotNoteProsePutRequest request,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
+        string mode = (await authoringStore.EnsureProcessorModeAsync(
+            BallotNotesDatabase.AuthoringProcessorKind,
+            ct: ct)).Mode;
+        if (string.Equals(
+            mode,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            StringComparison.Ordinal))
+        {
+            return Conflict(new { error = "run-backed-write-required" });
+        }
+        if (string.Equals(
+            mode,
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            StringComparison.Ordinal))
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "cutover-in-progress" });
+        }
 
         BallotNoteProse prose = new()
         {
@@ -69,7 +108,11 @@ public sealed class BallotNotesController(BallotNotesDatabase database) : Contro
 
         bool updated = database.UpdateNoteProse(slug, prose, DateTimeOffset.UtcNow);
         return updated
-            ? Ok(new BallotNoteProseSaveResultDto { NoteId = slug, Status = "authored" })
+            ? Ok(new BallotNoteProseSaveResultDto
+            {
+                NoteId = slug,
+                Status = "legacy-unverified",
+            })
             : NotFound(new { error = $"Note '{slug}' was never hydrated; prose cannot attach to a non-existent unit." });
     }
 

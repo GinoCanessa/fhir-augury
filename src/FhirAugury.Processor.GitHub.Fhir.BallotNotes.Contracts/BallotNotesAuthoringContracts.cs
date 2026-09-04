@@ -3,7 +3,7 @@ using FhirAugury.Processing.Contracts;
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 
 public sealed record BallotNotesAuthoringRunRequest(
-    string HydrationExecutionId,
+    string? HydrationExecutionId = null,
     IReadOnlyList<string>? NoteIds = null,
     bool DatabaseOnly = false);
 

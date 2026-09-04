@@ -18,6 +18,7 @@ public sealed record HydrateRequest
 /// <summary>Returned with <c>202 Accepted</c> when a hydration run is queued.</summary>
 public sealed record HydrateAcceptedDto
 {
+    public required string ExecutionId { get; init; }
     public required string RunKey { get; init; }
     public required string Status { get; init; }
     public int UnitsTotal { get; init; }
@@ -26,7 +27,10 @@ public sealed record HydrateAcceptedDto
 /// <summary>Pollable status of a hydration run.</summary>
 public sealed record HydrationStatusDto
 {
+    public string ExecutionId { get; init; } = string.Empty;
     public required string RunKey { get; init; }
+    public string SinceSha { get; init; } = string.Empty;
+    public string HeadSha { get; init; } = string.Empty;
     public required string Status { get; init; }
     public int UnitsTotal { get; init; }
     public int UnitsHydrated { get; init; }
@@ -131,6 +135,12 @@ public sealed record BallotNoteDetailDto
     public string SinceShortSha { get; init; } = string.Empty;
     public string HeadSha { get; init; } = string.Empty;
     public string HeadShortSha { get; init; } = string.Empty;
+    public string CurrentHydrationExecutionId { get; init; } = string.Empty;
+    public string CurrentEvidenceHash { get; init; } = string.Empty;
+    public string CurrentEvidenceRevision { get; init; } = string.Empty;
+    public string ProseHydrationExecutionId { get; init; } = string.Empty;
+    public string ProseEvidenceRevision { get; init; } = string.Empty;
+    public string ProseVerificationStatus { get; init; } = "unverified";
 
     /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
     public string WindowLabel { get; init; } = string.Empty;

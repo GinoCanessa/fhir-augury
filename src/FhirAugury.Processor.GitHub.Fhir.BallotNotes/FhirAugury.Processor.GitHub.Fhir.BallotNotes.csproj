@@ -15,6 +15,7 @@
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
     <ProjectReference Include="..\FhirAugury.ServiceDefaults\FhirAugury.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Common\FhirAugury.Processing.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.csproj" />

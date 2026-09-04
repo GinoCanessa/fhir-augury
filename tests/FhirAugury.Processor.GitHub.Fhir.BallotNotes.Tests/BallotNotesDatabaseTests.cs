@@ -80,7 +80,19 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         using BallotNotesDatabase db = NewDb();
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");
         conn.Open();
-        foreach (string table in new[] { "notes", "note_source_files", "note_commits", "note_tickets", "notes_runs" })
+        foreach (string table in new[]
+        {
+            "notes",
+            "note_source_files",
+            "note_commits",
+            "note_tickets",
+            "notes_runs",
+            "notes_hydration_executions",
+            "notes_hydration_run_items",
+            "note_authoring_state",
+            "authoring_runs",
+            "authoring_result_receipts",
+        })
         {
             using SqliteCommand cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$n";
@@ -125,7 +137,7 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Seed(db, Evidence(commits: 5));
 
         NoteDetail detail = db.GetNote("hl7-fhir-artifact-observation")!;
-        Assert.Equal("authored", detail.Status);
+        Assert.Equal("legacy-unverified", detail.Status);
         Assert.NotNull(detail.Note.AuthoredAt);
         Assert.Equal("yes", detail.Note.NeedsNote);
         Assert.Equal("<blockquote class=\"ballot-note\">drafted</blockquote>", detail.Note.ProposedBallotNoteHtml);
@@ -170,13 +182,14 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { Type = "Artifact" }).Count);
         Assert.Single(db.ListNotes(new NoteQueryFilter { Type = "Page" }));
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { WorkGroupCode = "OO" }).Count);
-        Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
+        Assert.Empty(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { Status = "awaiting-note" }).Count);
+        Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "legacy-unverified" }));
         Assert.Single(db.ListNotes(new NoteQueryFilter { NeedsNote = "yes" }));
 
-        NoteListRow authored = Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
-        Assert.Equal("hl7-fhir-artifact-observation", authored.NoteId);
-        Assert.Equal("authored", authored.Status);
+        NoteListRow unverified = db.ListNotes(new NoteQueryFilter())
+            .Single(row => row.NoteId == "hl7-fhir-artifact-observation");
+        Assert.Equal("legacy-unverified", unverified.Status);
     }
 
     [Fact]
@@ -238,7 +251,7 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal(before.Note.SavedAt, after.Note.SavedAt);
         Assert.Equal(before.Note.GeneratedAt, after.Note.GeneratedAt);
         Assert.Equal(before.Note.HydratedAt, after.Note.HydratedAt);
-        Assert.Equal("authored", after.Status);
+        Assert.Equal("legacy-unverified", after.Status);
     }
 
     [Fact]

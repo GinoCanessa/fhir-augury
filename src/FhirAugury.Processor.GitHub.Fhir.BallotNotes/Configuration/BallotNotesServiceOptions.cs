@@ -1,4 +1,5 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Configuration;
@@ -9,28 +10,48 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Configuration;
 /// it is co-consumed by the local <c>notes-site</c> renderer (mirroring
 /// <c>ticket-site</c>'s <c>./cache/jira-preparer.db</c> default).
 /// </summary>
-public sealed class BallotNotesServiceOptions
+public sealed class BallotNotesServiceOptions : ProcessingServiceOptions
 {
-    public const string SectionName = "BallotNotes";
+    public new const string SectionName = "BallotNotes";
 
-    /// <summary>Canonical notes DB path, shared with the notes-site renderer.</summary>
-    public string DatabasePath { get; set; } = "./cache/ballot-notes.db";
-
-    public PortConfiguration Ports { get; set; } = new() { Http = 5174 };
+    public BallotNotesServiceOptions()
+    {
+        DatabasePath = "./cache/ballot-notes.db";
+        SyncSchedule = "00:00:01";
+        MaxConcurrentProcessingThreads = 4;
+        StartProcessingOnStartup = true;
+        Ports = new PortConfiguration { Http = 5174 };
+        SnapshotDirectory = "./cache/snapshots/ballot-notes";
+    }
 
     public BallotNotesHydrationOptions Hydration { get; set; } = new();
+    public string ArtifactAuthoringCommand { get; set; } =
+        "copilot --allow-all-tools -p \"/notes-artifact {noteId}\"";
+    public string PageAuthoringCommand { get; set; } =
+        "copilot --allow-all-tools -p \"/notes-page {noteId}\"";
+    public string DataTypeAuthoringCommand { get; set; } =
+        "copilot --allow-all-tools -p \"/notes-datatype {noteId}\"";
+    public string? AuthoringCallbackAddress { get; set; }
 
     /// <summary>Validates configuration. Returns human-readable errors; empty means valid.</summary>
-    public IEnumerable<string> Validate()
+    public new IEnumerable<string> Validate()
     {
-        if (string.IsNullOrWhiteSpace(DatabasePath))
+        foreach (string error in base.Validate())
         {
-            yield return "DatabasePath must be configured.";
+            yield return error;
         }
-
-        if (Ports.Http <= 0)
+        foreach ((string name, string command) in new[]
         {
-            yield return "Ports:Http must be a positive port number.";
+            (nameof(ArtifactAuthoringCommand), ArtifactAuthoringCommand),
+            (nameof(PageAuthoringCommand), PageAuthoringCommand),
+            (nameof(DataTypeAuthoringCommand), DataTypeAuthoringCommand),
+        })
+        {
+            if (string.IsNullOrWhiteSpace(command) ||
+                !command.Contains("{noteId}", StringComparison.Ordinal))
+            {
+                yield return $"{name} must be non-empty and contain the {{noteId}} token.";
+            }
         }
 
         foreach (string error in Hydration.Validate())

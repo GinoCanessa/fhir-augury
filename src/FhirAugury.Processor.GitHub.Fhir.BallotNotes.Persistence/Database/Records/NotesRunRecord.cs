@@ -20,6 +20,9 @@ public partial record class NotesRunRecord
     [LdgSQLiteUnique]
     public required string RunKey { get; set; }
 
+    /// <summary>The latest immutable execution recorded for this logical window.</summary>
+    public string LatestExecutionId { get; set; } = string.Empty;
+
     public required string RepoOwner { get; set; }
     public required string RepoName { get; set; }
     public string RepoCategory { get; set; } = string.Empty;

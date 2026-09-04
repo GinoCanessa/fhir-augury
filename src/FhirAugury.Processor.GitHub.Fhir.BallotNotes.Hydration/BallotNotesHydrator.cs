@@ -1,4 +1,5 @@
 using FhirAugury.Parsing.Fhir;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Attribution;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
@@ -15,10 +16,13 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration;
 /// <summary>Inputs for a single hydration run.</summary>
 public sealed record BallotNotesHydrationRequest
 {
+    public required string ExecutionId { get; init; }
     public required string RepoOwner { get; init; }
     public required string RepoName { get; init; }
     public required string SinceSha { get; init; }
     public required string RunKey { get; init; }
+    public required string HeadSha { get; init; }
+    public required HydrationMutationLease MutationLease { get; init; }
     public string RepoCategory { get; init; } = string.Empty;
 
     /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
@@ -31,6 +35,7 @@ public sealed record BallotNotesHydrationRequest
 /// <summary>The outcome of a hydration run, recorded on the run row.</summary>
 public sealed record HydrationResult
 {
+    public required string ExecutionId { get; init; }
     public required string RunKey { get; init; }
     public int UnitsHydrated { get; init; }
     public int CommitsInWindow { get; init; }
@@ -61,18 +66,30 @@ public sealed class BallotNotesHydrator(
 
         string owner = request.RepoOwner.Trim();
         string name = request.RepoName.Trim();
-        string clonePath = Path.Combine(_options.CloneRoot, $"{owner}_{name}", "clone");
+        string sourceClonePath = Path.Combine(_options.CloneRoot, $"{owner}_{name}", "clone");
+        string worktreeRoot = Path.Combine(
+            Path.GetDirectoryName(sourceClonePath)!,
+            ".augury-hydration");
+        string clonePath = Path.Combine(worktreeRoot, request.ExecutionId);
 
         int totalCommits = 0;
         int totalTickets = 0;
         int hydrated = 0;
         object gate = new();
+        bool worktreeCreated = false;
 
         try
         {
-            string headSha = (await GitRunner.RunAsync(clonePath, ["rev-parse", "HEAD"], ct).ConfigureAwait(false)).Trim();
+            Directory.CreateDirectory(worktreeRoot);
+            await GitRunner.RunAsync(
+                sourceClonePath,
+                ["worktree", "add", "--detach", "--force", clonePath, request.HeadSha],
+                ct).ConfigureAwait(false);
+            worktreeCreated = true;
+
+            string headSha = request.HeadSha;
             string headShort = ShortSha(headSha);
-            string sinceFull = (await GitRunner.RunAsync(clonePath, ["rev-parse", request.SinceSha], ct).ConfigureAwait(false)).Trim();
+            string sinceFull = request.SinceSha;
             string sinceShort = ShortSha(sinceFull);
 
             IReadOnlyList<string> changed = await CommitWindowWalker
@@ -85,12 +102,21 @@ public sealed class BallotNotesHydrator(
 
             IReadOnlyList<HydrationUnit> units = BallotNotesUnitGrouper.Group(changed, isFhirCore, ownedPages);
 
-            database.UpdateRunPlan(request.RunKey, units.Count, headSha, headShort);
+            HydrationMembershipDefinition[] membership = units
+                .Select(unit => new HydrationMembershipDefinition(
+                    Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}"),
+                    unit.Type))
+                .ToArray();
+            database.SetHydrationMembership(
+                request.ExecutionId,
+                request.MutationLease,
+                membership);
 
             // Per-run shared state for the parallel unit workers: read every unit's
             // candidate current-note intro at HEAD in one cat-file batch up front.
             HydrationRunContext context = new()
             {
+                ExecutionId = request.ExecutionId,
                 CurrentNoteBlobs = await ReadCurrentNoteBlobsAsync(clonePath, units, ct).ConfigureAwait(false),
             };
 
@@ -107,23 +133,48 @@ public sealed class BallotNotesHydrator(
 
             await Parallel.ForEachAsync(units, parallelOptions, async (unit, token) =>
             {
-                (int commits, int tickets) = await HydrateUnitAsync(
-                    clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit,
-                    structuralChanges, context, token)
-                    .ConfigureAwait(false);
+                string noteId = Slugify($"{owner}-{name}-{unit.Type}-{unit.Name}");
+                int commits;
+                int tickets;
+                try
+                {
+                    (commits, tickets) = await HydrateUnitAsync(
+                        clonePath, owner, name, request, sinceFull, sinceShort, headSha, headShort, unit,
+                        structuralChanges, context, token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    database.MarkHydrationItemFailed(
+                        request.ExecutionId,
+                        request.MutationLease,
+                        noteId,
+                        ex.Message);
+                    throw;
+                }
 
                 lock (gate)
                 {
                     totalCommits += commits;
                     totalTickets += tickets;
                     hydrated++;
-                    database.BumpRunProgress(request.RunKey, hydrated, totalCommits, totalTickets);
+                    database.BumpHydrationProgress(
+                        request.ExecutionId,
+                        request.MutationLease,
+                        hydrated,
+                        totalCommits,
+                        totalTickets);
                 }
             }).ConfigureAwait(false);
 
-            database.FinishRun(request.RunKey, "completed", null);
+            database.FinishHydrationExecution(
+                request.ExecutionId,
+                request.MutationLease,
+                "completed",
+                null);
             return new HydrationResult
             {
+                ExecutionId = request.ExecutionId,
                 RunKey = request.RunKey,
                 UnitsHydrated = hydrated,
                 CommitsInWindow = totalCommits,
@@ -135,9 +186,26 @@ public sealed class BallotNotesHydrator(
         {
             string reason = ex is OperationCanceledException ? "Hydration cancelled." : ex.Message;
             logger.LogError(ex, "BallotNotes hydration failed for {Owner}/{Name}", owner, name);
-            database.FinishRun(request.RunKey, "failed", reason);
+            try
+            {
+                database.FinishHydrationExecution(
+                    request.ExecutionId,
+                    request.MutationLease,
+                    "failed",
+                    reason);
+            }
+            catch (AuthoringConflictException leaseError)
+                when (leaseError.Code ==
+                    AuthoringConflictCode.MutationFenceUnavailable)
+            {
+                logger.LogWarning(
+                    leaseError,
+                    "BallotNotes hydration {ExecutionId} could not record failure because its durable lease was lost.",
+                    request.ExecutionId);
+            }
             return new HydrationResult
             {
+                ExecutionId = request.ExecutionId,
                 RunKey = request.RunKey,
                 UnitsHydrated = hydrated,
                 CommitsInWindow = totalCommits,
@@ -145,6 +213,17 @@ public sealed class BallotNotesHydrator(
                 Status = "failed",
                 Error = reason,
             };
+        }
+        finally
+        {
+            database.ReleaseMutationLease(request.MutationLease);
+            if (worktreeCreated)
+            {
+                await GitRunner.TryRunAsync(
+                    sourceClonePath,
+                    ["worktree", "remove", "--force", clonePath],
+                    CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -335,7 +414,15 @@ public sealed class BallotNotesHydrator(
         // only those with a replacing core element.
         List<NoteExtensionRefRecord> extensionRecords = BuildExtensionRefs(clonePath, noteId, resolution.Files);
 
-        database.UpsertUnitEvidence(note, files, commitRecords, ticketRecords, structuralRecords, extensionRecords);
+        database.UpsertUnitEvidence(
+            request.ExecutionId,
+            request.MutationLease,
+            note,
+            files,
+            commitRecords,
+            ticketRecords,
+            structuralRecords,
+            extensionRecords);
         return (commits.Count, attribution.Tickets.Count);
     }
 

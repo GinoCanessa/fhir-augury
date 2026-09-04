@@ -13,6 +13,8 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration;
 /// </summary>
 public sealed class HydrationRunContext
 {
+    public string ExecutionId { get; init; } = string.Empty;
+
     /// <summary>
     /// Every unit's candidate current-note intro file, read at HEAD in one
     /// <c>git cat-file --batch</c> pass and keyed by the <c>HEAD:&lt;path&gt;</c>

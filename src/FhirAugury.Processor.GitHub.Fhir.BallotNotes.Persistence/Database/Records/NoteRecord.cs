@@ -124,6 +124,15 @@ public partial record class NoteRecord
     public string HeadSha { get; set; } = string.Empty;
     public string HeadShortSha { get; set; } = string.Empty;
 
+    /// <summary>The immutable hydration execution that currently owns this evidence.</summary>
+    public string CurrentHydrationExecutionId { get; set; } = string.Empty;
+
+    /// <summary>Deterministic hash of the current evidence graph.</summary>
+    public string CurrentEvidenceHash { get; set; } = string.Empty;
+
+    /// <summary>Execution-scoped revision accepted by authoring and maintenance callbacks.</summary>
+    public string CurrentEvidenceRevision { get; set; } = string.Empty;
+
     /// <summary>Human-readable window label (e.g. <c>R6 Ballot 4</c>); empty when not supplied.</summary>
     public string WindowLabel { get; set; } = string.Empty;
 
@@ -160,6 +169,21 @@ public partial record class NoteRecord
 
     /// <summary>Optional free-text note about source-file patterns that produced no match. Prose.</summary>
     public string SourceFilesNote { get; set; } = string.Empty;
+
+    /// <summary>The execution for which the preserved prose was last submitted.</summary>
+    public string ProseHydrationExecutionId { get; set; } = string.Empty;
+
+    /// <summary>The evidence revision for which the preserved prose was last submitted.</summary>
+    public string ProseEvidenceRevision { get; set; } = string.Empty;
+
+    /// <summary>The accepted operation that last persisted prose, if any.</summary>
+    public string CurrentAuthoringOperationId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Display classification only. Authoritative authored status additionally
+    /// requires a matching accepted receipt.
+    /// </summary>
+    public string ProseVerificationStatus { get; set; } = "unverified";
 
     /// <summary>When the unit's evidence was last hydrated by the processor.</summary>
     public DateTimeOffset? HydratedAt { get; set; }
