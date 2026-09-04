@@ -481,6 +481,12 @@ public sealed class AuthoringRunStore
         ArgumentException.ThrowIfNullOrWhiteSpace(operationToken);
         ArgumentException.ThrowIfNullOrWhiteSpace(submission.ContentHash);
         ArgumentException.ThrowIfNullOrWhiteSpace(submission.ObservedSourceRevision);
+        submission = submission with
+        {
+            ObservedSourceRevision =
+                AuthoringSourceRevision.CanonicalizeTimestamp(
+                    submission.ObservedSourceRevision),
+        };
 
         DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
         await using SqliteConnection connection = _openConnection();
@@ -1906,6 +1912,30 @@ public sealed class AuthoringRunStore
         return record is not null &&
             string.Equals(record.Status, AuthoringStatusValues.Snapshots.Ready, StringComparison.Ordinal)
             ? ToDescriptor(record)
+            : null;
+    }
+
+    public async Task<AuthoringReviewSnapshotRecord?> GetReadySnapshotRecordAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = _openConnection();
+        AuthoringRunRecord? run = await ReadRunAsync(connection, runId, ct);
+        if (run?.SnapshotId is null)
+        {
+            return null;
+        }
+
+        AuthoringReviewSnapshotRecord? snapshot =
+            await ReadSnapshotAsync(connection, run.SnapshotId, ct);
+        return snapshot is not null &&
+            string.Equals(snapshot.RunId, runId, StringComparison.Ordinal) &&
+            string.Equals(
+                snapshot.Status,
+                AuthoringStatusValues.Snapshots.Ready,
+                StringComparison.Ordinal)
+            ? snapshot
             : null;
     }
 

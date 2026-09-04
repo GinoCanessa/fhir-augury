@@ -45,11 +45,23 @@ public class JiraAgentCommandRendererTests
     {
         JiraAgentCommandContext context = WorkerContext();
 
-        JiraAgentCommand command = Renderer("agent {ticketKey}").Render(context);
+        JiraAgentCommand command = Renderer(
+            "legacy {ticketKey} --db {dbPath}",
+            "authoring {ticketKey}").Render(context);
 
+        Assert.Equal("authoring", command.FileName);
         Assert.DoesNotContain(context.OperationToken!, command.Arguments);
+        Assert.DoesNotContain(context.DatabasePath, command.Arguments);
         Assert.DoesNotContain(context.OperationToken!, context.ToString(), StringComparison.Ordinal);
         Assert.Contains("[REDACTED]", context.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WorkerRejectsDatabaseTokenInAuthoringTemplate()
+    {
+        Assert.Throws<InvalidOperationException>(() => Renderer(
+            "legacy {ticketKey} --db {dbPath}",
+            "authoring {ticketKey} --db {DBPATH}").Render(WorkerContext()));
     }
 
     [Fact]
@@ -90,7 +102,39 @@ public class JiraAgentCommandRendererTests
         Assert.Equal("[REDACTED]", result.StderrTail);
     }
 
-    private static JiraAgentCommandRenderer Renderer(string command) => new(Options.Create(new JiraProcessingOptions { AgentCliCommand = command, JiraSourceAddress = "http://source" }));
+    [Fact]
+    public async Task CliRunner_RemovesProcessingDatabaseFromWorkerEnvironment()
+    {
+        JiraAgentCommand command = OperatingSystem.IsWindows()
+            ? new JiraAgentCommand(
+                "powershell",
+                [
+                    "-NoProfile",
+                    "-Command",
+                    "if ($null -eq $env:FHIR_AUGURY_PROCESSING_DB) { [Console]::Out.Write('<absent>') } else { [Console]::Out.Write($env:FHIR_AUGURY_PROCESSING_DB) }",
+                ])
+            : new JiraAgentCommand(
+                "/bin/sh",
+                ["-c", "printf %s \"${FHIR_AUGURY_PROCESSING_DB-<absent>}\""]);
+
+        JiraAgentResult result = await new JiraAgentCliRunner().RunAsync(
+            command,
+            WorkerContext(),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("<absent>", result.StdoutTail);
+    }
+
+    private static JiraAgentCommandRenderer Renderer(
+        string command,
+        string? authoringCommand = null) =>
+        new(Options.Create(new JiraProcessingOptions
+        {
+            AgentCliCommand = command,
+            AuthoringAgentCliCommand = authoringCommand ?? command,
+            JiraSourceAddress = "http://source",
+        }));
 
     private static JiraAgentCommandContext Context(IReadOnlyDictionary<string, string>? extensionTokens = null) => new()
     {

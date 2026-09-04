@@ -46,6 +46,28 @@ public sealed class PlannedTicketAuthoringRunTests
     }
 
     [Fact]
+    public async Task RunBackedModeRefusesLegacyGroupingWriter()
+    {
+        using Fixture fixture = new();
+        PlannedTicketTopicsController controller =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        IActionResult result = await controller.PutTopics(
+            new PlannedTicketTopicGroupingRequest
+            {
+                WorkGroupClean = "FHIRInfrastructure",
+                WorkGroupDisplay = "FHIR Infrastructure",
+                Specification = "FHIR Core",
+                Type = "Change Request",
+            },
+            CancellationToken.None);
+
+        ConflictObjectResult conflict =
+            Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
+    }
+
+    [Fact]
     public async Task SubmitResult_PersistsReceiptAndExactApplierCoordinatesAndReplays()
     {
         using Fixture fixture = new();
@@ -129,6 +151,36 @@ public sealed class PlannedTicketAuthoringRunTests
         Assert.Equal(
             first.Receipt.PersistedAt,
             fixture.ScalarDate("SELECT CompletedProcessingAt FROM jira_processing_source_tickets WHERE Key = 'FHIR-1'"));
+    }
+
+    [Fact]
+    public async Task SubmitResult_RevalidatesCurrentSourceRevisionInReceiptTransaction()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item, AuthoringOperationClaim claim) =
+            await fixture.CreateClaimAsync();
+        await fixture.AdvanceSourceRevisionAsync();
+
+        IActionResult result = await fixture.Controller.SubmitResult(
+            run.Id,
+            item.Id,
+            claim.OperationToken,
+            fixture.Request(
+                run,
+                item,
+                claim,
+                CreatePayload("FHIR-1", "stale")),
+            CancellationToken.None);
+
+        Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(
+            0,
+            fixture.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_result_receipts"));
+        Assert.Equal(
+            0,
+            fixture.Scalar<int>(
+                "SELECT COUNT(*) FROM planned_tickets"));
     }
 
     [Fact]

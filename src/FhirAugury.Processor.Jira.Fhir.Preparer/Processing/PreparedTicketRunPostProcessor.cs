@@ -9,6 +9,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 
@@ -66,11 +67,22 @@ public sealed class PreparedTicketRunPostProcessor(
             "grouping",
             partition.PartitionKey,
             partition.InputFingerprint,
-            (lease, cancellationToken) => groupingDispatcher.ReplaceGroupingAsync(
-                runId,
-                partition,
-                lease,
-                cancellationToken))));
+            async (lease, cancellationToken) =>
+            {
+                await groupingDispatcher.ReplaceGroupingAsync(
+                    runId,
+                    partition,
+                    lease,
+                    cancellationToken);
+                _ = await database.GetGroupingReceiptAsync(
+                        runId,
+                        lease.StageId,
+                        partition.PartitionKey,
+                        partition.InputFingerprint,
+                        cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        $"Grouping partition '{partition.PartitionKey}' completed without a durable receipt.");
+            })));
 
         AuthoringRunFinalizer finalizer = new(authoringStore);
         return await finalizer.FinalizeAsync(
@@ -161,4 +173,92 @@ public sealed class UnconfiguredPreparedTicketGroupingDispatcher
         CancellationToken ct)
         => throw new InvalidOperationException(
             $"No grouping dispatcher is configured for partition '{partition.PartitionKey}'.");
+}
+
+public sealed class PreviewPreparedTicketGroupingDispatcher(
+    IOptions<PreparerServiceOptions> optionsAccessor,
+    ILogger<PreviewPreparedTicketGroupingDispatcher> logger)
+    : IPreparedTicketGroupingDispatcher
+{
+    private readonly PreparerServiceOptions _options = optionsAccessor.Value;
+
+    public async Task ReplaceGroupingAsync(
+        string runId,
+        PreparedTicketRunPartition partition,
+        AuthoringRunStageLease lease,
+        CancellationToken ct)
+    {
+        ProcessStartInfo startInfo = CreateStartInfo(runId, partition, lease);
+
+        using Process process = new() { StartInfo = startInfo };
+        process.Start();
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(ct);
+        try
+        {
+            await process.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            throw;
+        }
+
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"topic-groupings exited with code {process.ExitCode}: {Tail(stderr)}");
+        }
+        logger.LogInformation(
+            "Preview grouping completed for {PartitionKey}: {Output}",
+            partition.PartitionKey,
+            Tail(stdout));
+    }
+
+    internal ProcessStartInfo CreateStartInfo(
+        string runId,
+        PreparedTicketRunPartition partition,
+        AuthoringRunStageLease lease)
+    {
+        ProcessStartInfo startInfo = new("copilot")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-p");
+        startInfo.ArgumentList.Add("/topic-groupings");
+        startInfo.ArgumentList.Add("--allow-all");
+        AddEnvironment(startInfo, runId, partition, lease);
+        return startInfo;
+    }
+
+    private void AddEnvironment(
+        ProcessStartInfo startInfo,
+        string runId,
+        PreparedTicketRunPartition partition,
+        AuthoringRunStageLease lease)
+    {
+        startInfo.Environment["FHIR_AUGURY_GROUPING_WORKER"] = "1";
+        startInfo.Environment["FHIR_AUGURY_GROUPING_PROCESSOR_URL"] =
+            $"http://localhost:{_options.Ports.Http}";
+        startInfo.Environment["FHIR_AUGURY_GROUPING_RUN_ID"] = runId;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_STAGE_ID"] = lease.StageId;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_STAGE_LEASE_ID"] = lease.LeaseId;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_INPUT_FINGERPRINT"] =
+            partition.InputFingerprint;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_WORK_GROUP_CLEAN"] =
+            partition.WorkGroupClean;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_SPECIFICATION"] =
+            partition.Specification;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_TYPE"] = partition.Type;
+    }
+
+    private static string Tail(string value)
+        => value.Length <= 4096 ? value : value[^4096..];
 }

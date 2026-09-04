@@ -5,6 +5,26 @@ description: "Plans the implementation of a resolved FHIR Jira ticket. USE FOR: 
 
 # Ticket Plan Skill
 
+## Authoring modes (Phase 8 preview)
+
+Choose exactly one mode before the workflow below:
+
+- **Worker mode** requires `FHIR_AUGURY_AUTHORING_WORKER=1` plus complete
+  run, item, callback, operation, token, and source-revision environment
+  values. Reject partial/mixed context. Retain the exact Jira `updatedAt`
+  returned by the ticket read as `observedSourceRevision`, produce the typed
+  plan payload, and invoke `planned-ticket-authoring` action `submit`; the
+  CLI carries the token only in the callback header and success requires a
+  matching receipt.
+- **Outer mode** requires every worker value to be absent. Invoke
+  `planned-ticket-authoring` action `start` for the one ticket with
+  `databaseOnly:true`, poll `status`, and use `retry` only for its failed
+  item. `409 authoring-not-activated` selects the legacy report/DB workflow
+  below; `503 cutover-in-progress` aborts. A successful preview start forbids
+  direct planner SQL, `--db`, or report existence as a success signal.
+
+Never start a nested run from worker mode.
+
 Produces a structured implementation plan for a resolved FHIR Jira ticket.
 Given a ticket key, the skill gathers the resolution details, determines which
 repositories are affected, and builds a markdown report containing a feature

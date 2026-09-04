@@ -640,7 +640,7 @@ public static class SchemaGenerator
             }
         ),
         ["prepared-ticket-write"] = new(
-            "Persist structured ticket-prep output into a preparer SQLite database",
+            "Transitional legacy-only write into a preparer SQLite database; refuses run-backed or cutting-over databases",
             InputSchema(["command", "dbPath", "payload"], new()
             {
                 ["command"] = Const("prepared-ticket-write"),
@@ -661,6 +661,21 @@ public static class SchemaGenerator
                 },
             }
         ),
+        ["prepared-ticket-authoring"] = AuthoringSchema(
+            "prepared-ticket-authoring",
+            "Typed Preparer run control, worker submission, retry, and snapshot download",
+            "ticketKeys",
+            "PreparedTicketPayload"),
+        ["planned-ticket-authoring"] = AuthoringSchema(
+            "planned-ticket-authoring",
+            "Typed Planner run control, worker submission, retry, and snapshot download",
+            "ticketKeys",
+            "PlannedTicketPayload"),
+        ["ballot-note-authoring"] = AuthoringSchema(
+            "ballot-note-authoring",
+            "Typed BallotNotes run control, worker submission, retry, and snapshot download",
+            "noteIds",
+            "BallotNoteProsePutRequest"),
     };
 
     // Schema builder helpers
@@ -682,6 +697,58 @@ public static class SchemaGenerator
     private static object BoolProp(string description, bool defaultValue) =>
         new { type = "boolean", description, defaultValue };
 
+    private static CommandSchema AuthoringSchema(
+        string command,
+        string description,
+        string selectionProperty,
+        string submissionType) =>
+        new(
+            description,
+            InputSchema(["command", "action"], new()
+            {
+                ["command"] = Const(command),
+                ["action"] = new
+                {
+                    type = "string",
+                    enumValues = new[] { "start", "status", "retry", "submit", "snapshot" },
+                    description = "Authoring action",
+                },
+                [selectionProperty] = ArrayProp(
+                    "string",
+                    "Items selected when action is start"),
+                ["hydrationExecutionId"] = Prop(
+                    "string",
+                    "BallotNotes hydration execution selected when action is start"),
+                ["databaseOnly"] = BoolProp(
+                    "Complete without creating a review snapshot",
+                    false),
+                ["runId"] = Prop(
+                    "string",
+                    "Run identifier for status, retry, or snapshot"),
+                ["itemId"] = Prop(
+                    "string",
+                    "Run item identifier for retry"),
+                ["payload"] = Prop(
+                    "object",
+                    $"{submissionType} used by prepared/planned worker submit"),
+                ["prose"] = Prop(
+                    "object",
+                    $"{submissionType} used by BallotNotes worker submit"),
+                ["snapshotPath"] = Prop(
+                    "string",
+                    "Destination directory or preferred path; the trusted descriptor filename is authoritative"),
+                ["descriptorPath"] = Prop(
+                    "string",
+                    "Destination path for the trusted snapshot descriptor JSON"),
+                ["observedSourceRevision"] = Prop(
+                    "string",
+                    "Exact Jira updatedAt or BallotNotes evidence revision actually observed by a worker submit"),
+            }),
+            new
+            {
+                type = "object",
+                description = "Typed run, retry, receipt, or snapshot result for the selected action",
+            });
+
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);
 }
-

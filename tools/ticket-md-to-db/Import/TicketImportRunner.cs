@@ -7,6 +7,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using FhirAugury.Tools.TicketMdToDb.Audit;
 using FhirAugury.Tools.TicketMdToDb.Compilation;
 using FhirAugury.Tools.TicketMdToDb.Hydration;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Tools.TicketMdToDb.Import;
@@ -80,6 +81,10 @@ public sealed class TicketImportRunner(
                     paths.AuditPath,
                     messages);
             }
+
+            await RefuseRunBackedDestinationAsync(
+                paths.DestinationDatabase,
+                ct);
 
             CompilationResult confirmed = ReportCompiler.Compile(new CompilationRequest(
                 paths.InputRoot,
@@ -505,4 +510,45 @@ public sealed class TicketImportRunner(
                         failure,
                         status == "degraded-accepted"))
                 .ToArray());
+
+    private static async Task RefuseRunBackedDestinationAsync(
+        string destinationDatabase,
+        CancellationToken ct)
+    {
+        if (!File.Exists(destinationDatabase))
+        {
+            return;
+        }
+
+        await using SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = destinationDatabase,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ConnectionString);
+        await connection.OpenAsync(ct);
+        await using SqliteCommand table = connection.CreateCommand();
+        table.CommandText =
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'authoring_processor_modes'";
+        if (await table.ExecuteScalarAsync(ct) is null)
+        {
+            return;
+        }
+
+        await using SqliteCommand mode = connection.CreateCommand();
+        mode.CommandText =
+            """
+            SELECT Mode
+            FROM authoring_processor_modes
+            WHERE Mode IN ('run-backed', 'cutting-over')
+            LIMIT 1
+            """;
+        string? blockedMode = Convert.ToString(await mode.ExecuteScalarAsync(ct));
+        if (!string.IsNullOrWhiteSpace(blockedMode))
+        {
+            throw new InvalidOperationException(
+                $"ticket-md-to-db cannot replace a processor database in '{blockedMode}' mode.");
+        }
+    }
 }

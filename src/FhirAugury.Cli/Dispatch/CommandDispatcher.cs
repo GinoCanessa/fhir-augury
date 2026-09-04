@@ -53,6 +53,9 @@ public static class CommandDispatcher
         ["jira-pss"] = j => j.Deserialize<JiraPssRequest>(DeserializeOptions)!,
         ["jira-local-processing"] = j => j.Deserialize<JiraLocalProcessingRequest>(DeserializeOptions)!,
         ["prepared-ticket-write"] = j => j.Deserialize<PreparedTicketWriteRequest>(DeserializeOptions)!,
+        ["prepared-ticket-authoring"] = j => j.Deserialize<PreparedTicketAuthoringRequest>(DeserializeOptions)!,
+        ["planned-ticket-authoring"] = j => j.Deserialize<PlannedTicketAuthoringRequest>(DeserializeOptions)!,
+        ["ballot-note-authoring"] = j => j.Deserialize<BallotNoteAuthoringRequest>(DeserializeOptions)!,
         ["zulip-items"] = j => j.Deserialize<ZulipItemsRequest>(DeserializeOptions)!,
         ["zulip-messages"] = j => j.Deserialize<ZulipMessagesRequest>(DeserializeOptions)!,
         ["zulip-streams"] = j => j.Deserialize<ZulipStreamsRequest>(DeserializeOptions)!,
@@ -209,6 +212,9 @@ public static class CommandDispatcher
             JiraPssRequest r => JiraPssHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraLocalProcessingRequest r => JiraLocalProcessingHandler.HandleAsync(r, orchestratorAddr, ct),
             PreparedTicketWriteRequest r => PreparedTicketWriteHandler.HandleAsync(r, ct),
+            PreparedTicketAuthoringRequest r => PreparedTicketAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
+            PlannedTicketAuthoringRequest r => PlannedTicketAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
+            BallotNoteAuthoringRequest r => BallotNoteAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipItemsRequest r => ZulipItemsHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipMessagesRequest r => ZulipMessagesHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipStreamsRequest r => ZulipStreamsHandler.HandleAsync(r, orchestratorAddr, ct),
@@ -239,4 +245,3 @@ public interface IHasWarnings
     List<string>? TakeWarnings();
     object GetData();
 }
-

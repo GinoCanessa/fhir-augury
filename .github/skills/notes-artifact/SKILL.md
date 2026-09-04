@@ -5,6 +5,20 @@ description: "Drafts an updated ballot note for a single FHIR artifact (resource
 
 # Notes — Artifact Skill
 
+## Authoring modes (Phase 8 preview)
+
+Require exactly one mode. **Worker mode** requires
+`FHIR_AUGURY_AUTHORING_WORKER=1` and complete run/item/callback/operation/
+token/source-revision values (plus the processor-provided execution ID);
+reject partial context. Read the hydrated artifact, retain its exact
+`CurrentEvidenceRevision` as `observedSourceRevision`, author the prose, and
+call `ballot-note-authoring` action `submit`; never issue the bare PUT.
+**Outer mode** requires all worker values absent and calls
+`ballot-note-authoring` action `start` with this note ID and, when supplied,
+its hydration execution ID, using `databaseOnly:true`, then polls/retries.
+`409 authoring-not-activated` selects the legacy GET/PUT workflow below;
+`503 cutover-in-progress` stops. Never recurse from worker to outer mode.
+
 Drafts an updated **ballot note** for a single FHIR artifact (resource,
 profile, IG artifact, terminology bundle, …) from the evidence the
 **BallotNotes processor** has already hydrated for the artifact's unit.

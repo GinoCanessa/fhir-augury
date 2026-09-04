@@ -28,7 +28,10 @@
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
-    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Contracts\FhirAugury.Processing.Contracts.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner.Contracts\FhirAugury.Processor.Jira.Fhir.Planner.Contracts.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -41,4 +44,3 @@
   </ItemGroup>
 
 </Project>
-

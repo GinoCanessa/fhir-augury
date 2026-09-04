@@ -16,6 +16,9 @@ public sealed class PreparerServiceOptionsTests
         Assert.Equal(4, processing.MaxConcurrentProcessingThreads);
         Assert.Equal(["Triaged"], jira.TicketStatusesToProcess);
         Assert.Equal(PreparerJiraProcessingDefaults.AgentCliCommand, jira.AgentCliCommand);
+        Assert.Equal(
+            PreparerJiraProcessingDefaults.AuthoringAgentCliCommand,
+            jira.AuthoringAgentCliCommand);
         Assert.Equal("./data/snapshots/preparer", processing.SnapshotDirectory);
         Assert.Empty(
             PreparerJiraProcessingDefaults.ValidateAuthoringCommand(
@@ -26,7 +29,7 @@ public sealed class PreparerServiceOptionsTests
     public void ValidateAuthoringCommand_RejectsDatabaseAndSecretArgvTokens()
     {
         string command =
-            "agent {ticketKey} --db {dbPath} --token {operationToken}";
+            "agent {ticketKey} --db {DBPATH} --token {OPERATIONTOKEN}";
 
         string[] errors =
             PreparerJiraProcessingDefaults.ValidateAuthoringCommand(command).ToArray();
@@ -34,6 +37,20 @@ public sealed class PreparerServiceOptionsTests
         Assert.Contains(
             errors,
             error => error.Contains("worker environment", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_RejectsMissingAuthoringCommand()
+    {
+        JiraProcessingOptions options = new()
+        {
+            AgentCliCommand = "agent {ticketKey} --db {dbPath}",
+            JiraSourceAddress = PreparerJiraProcessingDefaults.JiraSourceAddress,
+        };
+
+        Assert.Contains(
+            PreparerJiraProcessingDefaults.Validate(options),
+            error => error.Contains("staged authoring command", StringComparison.Ordinal));
     }
 
     [Fact]

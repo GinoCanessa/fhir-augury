@@ -96,6 +96,27 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
+    public async Task RunBackedModeRefusesBareProsePut()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        BallotNotesController controller =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        IActionResult result = await controller.PutNote(
+            "note-a",
+            new BallotNoteProsePutRequest
+            {
+                NeedsNote = "yes",
+            },
+            CancellationToken.None);
+
+        ConflictObjectResult conflict =
+            Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
+    }
+
+    [Fact]
     public async Task CreateEndpointExactlyReplaysAndRejectsPartialOverlap()
     {
         using Fixture fixture = new();
@@ -144,6 +165,61 @@ public sealed class BallotNotesAuthoringRunTests
         Assert.Contains(
             nameof(AuthoringConflictCode.RevisionAlreadyScheduled),
             partial.Value!.ToString());
+    }
+
+    [Fact]
+    public async Task ReadySnapshotBytesAreReturnedBesideDescriptorEndpoint()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution("note-a", "Artifact");
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: false));
+        byte[] expected = [9, 8, 7, 6];
+        string snapshotPath = Path.Combine(
+            Path.GetDirectoryName(fixture.DatabasePath)!,
+            "ready-snapshot.db");
+        await File.WriteAllBytesAsync(snapshotPath, expected);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO authoring_review_snapshots(
+                    Id, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                    SchemaVersion, Status, TempPath, Path, ChecksumSha256,
+                    SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
+                    CreatedAt)
+                VALUES(
+                    'snapshot-ready', 'ballot-notes', @runId, 1, 1,
+                    1, 'ready', '', @path, 'hash',
+                    @size, 1, 1, '{}', @createdAt);
+                UPDATE authoring_runs
+                SET SnapshotId = 'snapshot-ready'
+                WHERE Id = @runId
+                """;
+            command.Parameters.AddWithValue("@runId", creation.Run.Id);
+            command.Parameters.AddWithValue("@path", snapshotPath);
+            command.Parameters.AddWithValue("@size", expected.Length);
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                DateTimeOffset.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+
+        PhysicalFileResult result = Assert.IsType<PhysicalFileResult>(
+            await fixture.CreateController().GetSnapshotBytes(
+                creation.Run.Id,
+                CancellationToken.None));
+
+        Assert.Equal(
+            "application/vnd.sqlite3",
+            result.ContentType);
+        Assert.Equal(expected, await File.ReadAllBytesAsync(result.FileName));
     }
 
     [Fact]

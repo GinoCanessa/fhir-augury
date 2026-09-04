@@ -3,6 +3,7 @@ using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Processing.Common.Api;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace FhirAugury.Orchestrator.Controllers;
 
@@ -100,5 +101,121 @@ public class ProcessingController(
 
         FhirAugury.Common.Api.HealthCheckResponse? response = await processingHttpClient.HealthCheckAsync(name, ct);
         return response is null ? StatusCode(StatusCodes.Status502BadGateway) : Ok(response);
+    }
+
+    [HttpPost("{name}/authoring/runs")]
+    public async Task<IActionResult> CreateAuthoringRun(
+        string name,
+        [FromBody] JsonElement request,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.CreateAuthoringRunAsync(name, request, ct));
+    }
+
+    [HttpGet("{name}/authoring/runs/{runId}")]
+    public async Task<IActionResult> GetAuthoringRun(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.GetAuthoringRunAsync(name, runId, ct));
+    }
+
+    [HttpPost("{name}/authoring/runs/{runId}/items/{itemId}/retry")]
+    public async Task<IActionResult> RetryAuthoringItem(
+        string name,
+        string runId,
+        string itemId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.RetryAuthoringItemAsync(
+                name,
+                runId,
+                itemId,
+                ct));
+    }
+
+    [HttpGet("{name}/authoring/runs/{runId}/snapshot")]
+    public async Task<IActionResult> GetAuthoringSnapshot(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.GetAuthoringSnapshotAsync(
+                name,
+                runId,
+                bytes: false,
+                ct));
+    }
+
+    [HttpGet("{name}/authoring/runs/{runId}/snapshot/bytes")]
+    public async Task<IActionResult> GetAuthoringSnapshotBytes(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        ProcessingProxyResponse response =
+            await processingHttpClient.GetAuthoringSnapshotAsync(
+                name,
+                runId,
+                bytes: true,
+                ct);
+        if ((int)response.StatusCode is >= 200 and < 300)
+        {
+            CopyProxyHeaders(response);
+            return File(
+                response.Content,
+                response.ContentType ?? "application/vnd.sqlite3");
+        }
+
+        return ToActionResult(response);
+    }
+
+    private ContentResult ToActionResult(ProcessingProxyResponse response)
+    {
+        CopyProxyHeaders(response);
+        return new ContentResult
+        {
+            StatusCode = (int)response.StatusCode,
+            ContentType = response.ContentType ?? "application/json",
+            Content = System.Text.Encoding.UTF8.GetString(response.Content),
+        };
+    }
+
+    private void CopyProxyHeaders(ProcessingProxyResponse response)
+    {
+        if (!string.IsNullOrWhiteSpace(response.RetryAfter))
+        {
+            Response.Headers.RetryAfter = response.RetryAfter;
+        }
     }
 }

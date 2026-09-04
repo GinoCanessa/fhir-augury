@@ -5,6 +5,18 @@ description: "Orchestrates bulk drafting of ballot notes for a GitHub repo, anch
 
 # Orchestrate Notes Skill
 
+## Processor-run preview branch
+
+The optional **workflow mode** is `legacy` by default or `preview`.
+`legacy` retains the hydration/fan-out/report path below. In `preview`,
+hydrate once and capture the immutable execution ID, reject worker
+environment values, then call `ballot-note-authoring` action `start` with
+that execution ID. Poll processor run/item state and retry failed items.
+Unless `databaseOnly`, download snapshot bytes plus descriptor together and
+invoke `notes-site` snapshot mode. `409 authoring-not-activated` and
+`503 cutover-in-progress` are hard preview failures. Do not use bare PUTs,
+report files, or local fan-out ledgers as preview completion signals.
+
 Bulk-drafts ballot notes for a GitHub repository by **hydrating** the
 commit window between a caller-supplied **since-commit** and the cached
 clone's HEAD in the **BallotNotes processor**, then dispatching one

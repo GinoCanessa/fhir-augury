@@ -1,4 +1,6 @@
 using System.Net.Http.Json;
+using System.Net;
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Processing.Common.Api;
@@ -6,6 +8,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Orchestrator.Routing;
+
+public sealed record ProcessingProxyResponse(
+    HttpStatusCode StatusCode,
+    string? ContentType,
+    byte[] Content,
+    string? RetryAfter);
 
 /// <summary>
 /// Routes proxied calls to configured Processing services via named HttpClients.
@@ -70,6 +78,84 @@ public class ProcessingHttpClient
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<ProcessingLifecycleResponse>(ct);
     }
+
+    public Task<ProcessingProxyResponse> CreateAuthoringRunAsync(
+        string name,
+        JsonElement request,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            GetAuthoringPath(name),
+            request,
+            ct);
+
+    public Task<ProcessingProxyResponse> GetAuthoringRunAsync(
+        string name,
+        string runId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Get,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> RetryAuthoringItemAsync(
+        string name,
+        string runId,
+        string itemId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/items/{Uri.EscapeDataString(itemId)}/retry",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> GetAuthoringSnapshotAsync(
+        string name,
+        string runId,
+        bool bytes,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Get,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/snapshot{(bytes ? "/bytes" : string.Empty)}",
+            body: null,
+            ct);
+
+    private async Task<ProcessingProxyResponse> ForwardAsync(
+        string name,
+        HttpMethod method,
+        string path,
+        JsonElement? body,
+        CancellationToken ct)
+    {
+        HttpClient client = GetClientForProcessingService(name);
+        using HttpRequestMessage request = new(method, path);
+        if (body is JsonElement json)
+        {
+            request.Content = JsonContent.Create(json);
+        }
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct);
+        return new ProcessingProxyResponse(
+            response.StatusCode,
+            response.Content.Headers.ContentType?.ToString(),
+            await response.Content.ReadAsByteArrayAsync(ct),
+            response.Headers.TryGetValues("Retry-After", out IEnumerable<string>? values)
+                ? string.Join(", ", values)
+                : null);
+    }
+
+    private static string GetAuthoringPath(string serviceName) =>
+        string.Equals(serviceName, "BallotNotes", StringComparison.OrdinalIgnoreCase)
+            ? "/api/v1/ballot-notes/authoring/runs"
+            : "/processing/authoring/runs";
 
     private HttpClient GetClientForProcessingService(string serviceName)
     {

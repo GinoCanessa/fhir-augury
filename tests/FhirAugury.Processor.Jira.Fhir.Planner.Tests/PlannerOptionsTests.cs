@@ -60,10 +60,15 @@ public sealed class PlannerOptionsTests
     public void ServiceDefaults_KeepLegacyCommandAndConfigureSnapshots()
     {
         PlannerServiceOptions options = new();
+        FhirAugury.Processing.Jira.Common.Configuration.JiraProcessingOptions jira = new();
+        PlannerJiraProcessingDefaults.Apply(jira);
 
         Assert.Equal("./data/snapshots/planner", options.SnapshotDirectory);
         Assert.Empty(PlannerJiraProcessingDefaults.ValidateAuthoringCommand(
             PlannerJiraProcessingDefaults.AuthoringAgentCliCommand));
+        Assert.Equal(
+            PlannerJiraProcessingDefaults.AuthoringAgentCliCommand,
+            jira.AuthoringAgentCliCommand);
         Assert.Contains("{dbPath}", PlannerJiraProcessingDefaults.AgentCliCommand);
         Assert.DoesNotContain("{dbPath}", PlannerJiraProcessingDefaults.AuthoringAgentCliCommand);
     }

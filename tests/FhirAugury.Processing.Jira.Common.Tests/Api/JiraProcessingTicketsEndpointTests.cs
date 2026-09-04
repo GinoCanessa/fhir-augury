@@ -3,7 +3,9 @@ using System.Net.Http.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Api;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
@@ -13,6 +15,7 @@ using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -218,6 +221,69 @@ public class JiraProcessingTicketsEndpointTests
         Assert.Equal(HttpStatusCode.Conflict, modeChange.StatusCode);
     }
 
+    [Fact]
+    public async Task ReadySnapshotBytesAreStreamedFromProcessorOwnedRecord()
+    {
+        using HttpClient client = CreateClientForMode(
+            new FakeDiscovery(CreateTicket("FHIR-1", "Triaged")),
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out _,
+            out AuthoringRunStore authoringStore,
+            out JiraAuthoringRunCoordinator coordinator,
+            out string dbPath);
+        AuthoringRunRecord run = await authoringStore.CreateRunAsync(
+            coordinator.ProcessorKind,
+            [
+                new AuthoringRunItemDefinition(
+                    "FHIR-1",
+                    "fhir",
+                    "revision-1"),
+            ]);
+        byte[] expected = [5, 4, 3, 2, 1];
+        string snapshotPath = Path.Combine(
+            Path.GetDirectoryName(dbPath)!,
+            $"jira-snapshot-{Guid.NewGuid():N}.db");
+        await File.WriteAllBytesAsync(snapshotPath, expected);
+        await using (SqliteConnection connection =
+            new($"Data Source={dbPath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO authoring_review_snapshots(
+                    Id, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                    SchemaVersion, Status, TempPath, Path, ChecksumSha256,
+                    SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
+                    CreatedAt)
+                VALUES(
+                    'snapshot-1', 'jira-fhir', @runId, 1, 1,
+                    1, 'ready', '', @path, 'hash',
+                    @size, 1, 1, '{}', @createdAt);
+                UPDATE authoring_runs
+                SET SnapshotId = 'snapshot-1'
+                WHERE Id = @runId
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            command.Parameters.AddWithValue("@path", snapshotPath);
+            command.Parameters.AddWithValue("@size", expected.Length);
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/processing/authoring/runs/{run.Id}/snapshot/bytes");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            "application/vnd.sqlite3",
+            response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(expected, await response.Content.ReadAsByteArrayAsync());
+        File.Delete(snapshotPath);
+    }
+
     private static HttpClient CreateClient(FakeDiscovery discovery, out JiraProcessingSourceTicketStore store)
         => CreateClientForMode(
             discovery,
@@ -232,10 +298,25 @@ public class JiraProcessingTicketsEndpointTests
         out JiraProcessingSourceTicketStore store,
         out AuthoringRunStore authoringStore,
         out JiraAuthoringRunCoordinator coordinator)
+        => CreateClientForMode(
+            discovery,
+            mode,
+            out store,
+            out authoringStore,
+            out coordinator,
+            out _);
+
+    private static HttpClient CreateClientForMode(
+        FakeDiscovery discovery,
+        string mode,
+        out JiraProcessingSourceTicketStore store,
+        out AuthoringRunStore authoringStore,
+        out JiraAuthoringRunCoordinator coordinator,
+        out string dbPath)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
-        string dbPath = Path.Combine(AppContext.BaseDirectory, $"jira-endpoint-{Guid.NewGuid():N}.db");
+        dbPath = Path.Combine(AppContext.BaseDirectory, $"jira-endpoint-{Guid.NewGuid():N}.db");
         store = new JiraProcessingSourceTicketStore(dbPath, new ResolvedJiraProcessingFilters { TicketStatuses = ["Triaged"], SourceTicketShape = "fhir" });
         JiraProcessingDatabase processingDatabase = new(
             dbPath,

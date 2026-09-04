@@ -95,6 +95,38 @@ public sealed class SqliteReviewSnapshotWriterTests
     }
 
     [Fact]
+    public async Task ReadySnapshotLookupUsesSnapshotSelectedByCompletedRun()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, _) = await PrepareCompletedItemAsync(database);
+        string outputDirectory = Path.Combine(
+            Path.GetDirectoryName(database.DatabasePath)!,
+            "snapshots");
+        SqliteReviewSnapshotWriter writer = new(
+            database.OpenConnection,
+            database.Store);
+        SqliteReviewSnapshotRequest request = new(
+            "test",
+            run.Id,
+            outputDirectory,
+            1,
+            1,
+            1,
+            new Dictionary<string, long>(),
+            AuthoringSnapshotSanitizer.CreateCore());
+        AuthoringSnapshotDescriptor selected = await writer.WriteAsync(request);
+        AuthoringSnapshotDescriptor later = await writer.WriteAsync(request);
+        await database.Store.CompleteRunAsync(run.Id, selected.SnapshotId);
+
+        AuthoringReviewSnapshotRecord snapshot =
+            Assert.IsType<AuthoringReviewSnapshotRecord>(
+                await database.Store.GetReadySnapshotRecordAsync(run.Id));
+
+        Assert.Equal(selected.SnapshotId, snapshot.Id);
+        Assert.NotEqual(later.SnapshotId, snapshot.Id);
+    }
+
+    [Fact]
     public async Task WriteAsync_SanitizationFailureRemovesUnsanitizedStagingDatabase()
     {
         using AuthoringTestDatabase database = new();

@@ -124,7 +124,7 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
-builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, UnconfiguredPreparedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, PreviewPreparedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PreparedTicketRunPostProcessor>());
 

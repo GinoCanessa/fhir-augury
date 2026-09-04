@@ -66,7 +66,7 @@ public sealed class PreparedTicketAuthoringRunTests
                 run.Id,
                 item.Id,
                 claim.OperationId,
-                item.ExpectedSourceRevision,
+                "2026-09-01T00:00:00+00:00",
                 contentHash),
             payload);
         PreparedTicketAuthoringRunsController controller = fixture.CreateController();
@@ -139,6 +139,60 @@ public sealed class PreparedTicketAuthoringRunTests
         Assert.IsType<ConflictObjectResult>(result);
         Assert.False(await fixture.Database.PreparedTicketExistsAsync("FHIR-1"));
         Assert.Equal(0, fixture.Scalar<int>("SELECT COUNT(*) FROM authoring_result_receipts"));
+    }
+
+    [Fact]
+    public async Task SubmitResult_RevalidatesCurrentSourceRevisionInReceiptTransaction()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item, AuthoringOperationClaim claim) =
+            await fixture.CreateClaimAsync();
+        await fixture.AdvanceSourceRevisionAsync();
+        PreparedTicketPayload payload = CreatePayload("FHIR-1");
+
+        IActionResult result = await fixture.CreateController().SubmitResult(
+            run.Id,
+            item.Id,
+            claim.OperationToken,
+            new PreparedTicketAuthoringResultRequest(
+                new AuthoringResultSubmission(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    item.ExpectedSourceRevision,
+                    PreparedTicketAuthoringDtos.ComputeContentHash(payload)),
+                payload),
+            CancellationToken.None);
+
+        Assert.IsType<ConflictObjectResult>(result);
+        Assert.False(await fixture.Database.PreparedTicketExistsAsync("FHIR-1"));
+        Assert.Equal(
+            0,
+            fixture.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_result_receipts"));
+    }
+
+    [Fact]
+    public async Task RunBackedModeRefusesLegacyGroupingWriter()
+    {
+        using Fixture fixture = new();
+        await fixture.CreateClaimAsync();
+        PreparedTicketGroupingsController controller =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        ActionResult<PreparedTicketGroupingSaveResultDto> result =
+            await controller.PutPartition(
+                "FHIRInfrastructure",
+                "FHIR Core",
+                "Change Request",
+                new PreparedTicketGroupingPutRequest(
+                    "FHIR Infrastructure",
+                    []),
+                CancellationToken.None);
+
+        ConflictObjectResult conflict =
+            Assert.IsType<ConflictObjectResult>(result.Result);
+        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
     }
 
     private static PreparedTicketPayload CreatePayload(string key)
@@ -221,6 +275,30 @@ public sealed class PreparedTicketAuthoringRunTests
 
         public PreparedTicketAuthoringRunsController CreateController()
             => new(AuthoringStore, Coordinator, Database);
+
+        public Task<JiraProcessingSourceTicketRecord> AdvanceSourceRevisionAsync()
+            => _sourceStore.UpsertAsync(
+                new JiraIssueSummaryEntry
+                {
+                    Key = "FHIR-1",
+                    ProjectKey = "FHIR",
+                    Title = "Title",
+                    Type = "Change Request",
+                    Status = "Triaged",
+                    WorkGroup = "FHIR-I",
+                    Specification = "FHIR",
+                    UpdatedAt = new DateTimeOffset(
+                        2026,
+                        9,
+                        2,
+                        0,
+                        0,
+                        0,
+                        TimeSpan.Zero),
+                },
+                "fhir",
+                false,
+                CancellationToken.None);
 
         public T Scalar<T>(string sql)
         {

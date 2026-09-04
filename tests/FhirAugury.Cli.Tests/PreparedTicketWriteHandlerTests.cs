@@ -41,6 +41,42 @@ public sealed class PreparedTicketWriteHandlerTests
     }
 
     [Fact]
+    public async Task ReplacingTicketRemovesStaleGroupingMembership()
+    {
+        string dbPath = CreateDbPath();
+        PreparedTicketWriteRequest request = new()
+        {
+            Command = "prepared-ticket-write",
+            DbPath = dbPath,
+            Payload = SamplePayload("FHIR-123"),
+        };
+        Assert.True(
+            (await CommandDispatcher.ExecuteAsync(
+                JsonSerializer.Serialize(request))).Success);
+        using (SqliteConnection connection =
+            new($"Data Source={dbPath};Pooling=False"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE prepared_ticket_topic_members(
+                    TicketKey TEXT NOT NULL
+                );
+                INSERT INTO prepared_ticket_topic_members(TicketKey)
+                VALUES('FHIR-123');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        OutputEnvelope envelope = await CommandDispatcher.ExecuteAsync(
+            JsonSerializer.Serialize(request));
+
+        Assert.True(envelope.Success);
+        Assert.Equal(0, Count(dbPath, "prepared_ticket_topic_members"));
+    }
+
+    [Fact]
     public async Task MissingDbPathReturnsFailureEnvelope()
     {
         PreparedTicketWriteRequest request = new() { Command = "prepared-ticket-write", Payload = SamplePayload("FHIR-123") };
@@ -49,6 +85,44 @@ public sealed class PreparedTicketWriteHandlerTests
 
         Assert.False(envelope.Success);
         Assert.Equal("INVALID_ARGUMENT", envelope.Error?.Code);
+    }
+
+    [Theory]
+    [InlineData("run-backed")]
+    [InlineData("cutting-over")]
+    public async Task DurableModeRefusesTransitionalWrite(string mode)
+    {
+        string dbPath = CreateDbPath();
+        using (SqliteConnection connection = new($"Data Source={dbPath};Pooling=False"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE authoring_processor_modes(Mode TEXT NOT NULL);
+                INSERT INTO authoring_processor_modes(Mode) VALUES(@mode);
+                """;
+            command.Parameters.AddWithValue("@mode", mode);
+            command.ExecuteNonQuery();
+        }
+
+        OutputEnvelope envelope = await CommandDispatcher.ExecuteAsync(
+            JsonSerializer.Serialize(new PreparedTicketWriteRequest
+            {
+                Command = "prepared-ticket-write",
+                DbPath = dbPath,
+                Payload = SamplePayload("FHIR-123"),
+            }));
+
+        Assert.False(envelope.Success);
+        Assert.Equal("INVALID_ARGUMENT", envelope.Error?.Code);
+        Assert.Contains(mode, envelope.Error?.Message);
+        using SqliteConnection verify = new($"Data Source={dbPath};Pooling=False");
+        verify.Open();
+        using SqliteCommand exists = verify.CreateCommand();
+        exists.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prepared_tickets'";
+        Assert.Equal(0L, Convert.ToInt64(exists.ExecuteScalar()));
     }
 
     private static string CreateDbPath()

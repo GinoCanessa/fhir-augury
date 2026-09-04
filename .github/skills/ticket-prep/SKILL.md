@@ -5,6 +5,28 @@ description: "Prepares FHIR Jira tickets for workgroup review. USE FOR: ticket r
 
 # Ticket Prep Skill
 
+## Authoring modes (Phase 8 preview)
+
+Choose exactly one mode before the workflow below:
+
+- **Worker mode** exists only when `FHIR_AUGURY_AUTHORING_WORKER=1` and all
+  six values `..._RUN_ID`, `..._ITEM_ID`, `..._CALLBACK_URL`,
+  `..._OPERATION_ID`, `..._OPERATION_TOKEN`, and
+  `..._SOURCE_REVISION` are non-empty. Reject partial context. Gather the
+  normal evidence, retain the exact Jira `updatedAt` returned by the ticket
+  read as `observedSourceRevision`, build the typed payload, then call
+  `prepared-ticket-authoring` action `submit`. The CLI reads the token from
+  the environment, sends it only in the operation header, validates the
+  returned receipt coordinates, and must be the only persistence action.
+- **Outer mode** requires the sentinel and all six worker values to be
+  absent. Call `prepared-ticket-authoring` action `start` for the one ticket
+  with `databaseOnly:true`, then poll `status` and use `retry` only for the
+  failed item. `409 authoring-not-activated` means use the legacy workflow
+  below; `503 cutover-in-progress` is a hard stop. Once start succeeds, do
+  not use `prepared-ticket-write`, `--db`, or an output file as completion.
+
+Never mix the branches or recursively start an outer run from worker mode.
+
 Prepares a structured report for a FHIR Jira ticket to support workgroup
 review and disposition. The report is built by querying for ticket details,
 cross-references, related conversations, and linked artifacts.

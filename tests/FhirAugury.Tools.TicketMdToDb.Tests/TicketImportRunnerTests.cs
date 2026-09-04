@@ -67,6 +67,49 @@ public sealed class TicketImportRunnerTests
         Assert.True(result.Audit.Persistence.DeepReadbackMatched);
     }
 
+    [Theory]
+    [InlineData("run-backed")]
+    [InlineData("cutting-over")]
+    public async Task WriteRun_RefusesDurableProcessorModeBeforeStaging(
+        string mode)
+    {
+        using ImportTestDirectory directory = new();
+        directory.CopyFixture("CanonicalWithEmbeddedHeading.md", "FHIR-100.md");
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(directory.DatabasePath)!);
+        await using (SqliteConnection connection = new(
+            $"Data Source={directory.DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE authoring_processor_modes(Mode TEXT NOT NULL);
+                INSERT INTO authoring_processor_modes(Mode) VALUES(@mode);
+                """;
+            command.Parameters.AddWithValue("@mode", mode);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        TicketImportRunResult result = await directory.RunAsync(
+            new FakeOrchestratorHandler(),
+            replaceExisting: true);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(
+            result.Messages,
+            message => message.Contains(mode, StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(directory.OutputRoot),
+            path => path.EndsWith(".staging", StringComparison.Ordinal));
+        await using SqliteConnection verify = new(
+            $"Data Source={directory.DatabasePath};Pooling=False");
+        await verify.OpenAsync();
+        await using SqliteCommand read = verify.CreateCommand();
+        read.CommandText = "SELECT Mode FROM authoring_processor_modes";
+        Assert.Equal(mode, Convert.ToString(await read.ExecuteScalarAsync()));
+    }
+
     [Fact]
     public async Task WriteRun_DeduplicatedChildrenHydrateWithoutUniqueConstraintFailure()
     {
@@ -147,7 +190,7 @@ public sealed class TicketImportRunnerTests
 
     [Theory]
     [InlineData(FakeJiraHydrationMode.NotFound)]
-    [InlineData(FakeJiraHydrationMode.MissingSelfMetadata)]
+    [InlineData(FakeJiraHydrationMode.MissingParentSpecification)]
     public async Task WriteRun_UnresolvedOrIncompleteSelfRefusesPromotionByDefault(
         FakeJiraHydrationMode mode)
     {

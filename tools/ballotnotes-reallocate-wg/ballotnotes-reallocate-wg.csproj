@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration\FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.csproj" />
   </ItemGroup>

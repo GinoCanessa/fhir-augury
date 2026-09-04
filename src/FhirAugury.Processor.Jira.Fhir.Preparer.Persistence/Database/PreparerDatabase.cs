@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
@@ -1063,6 +1064,42 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    public async Task<AuthoringRunStageReceipt?> GetGroupingReceiptAsync(
+        string runId,
+        string stageId,
+        string partitionKey,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT TopicRows, TopicGroupRows, MemberRows, PersistedAt
+            FROM prepared_ticket_partition_receipts
+            WHERE RunId = @runId
+              AND StageId = @stageId
+              AND PartitionKey = @partitionKey
+              AND InputFingerprint = @inputFingerprint
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@stageId", stageId);
+        command.Parameters.AddWithValue("@partitionKey", partitionKey);
+        command.Parameters.AddWithValue("@inputFingerprint", inputFingerprint);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? new AuthoringRunStageReceipt(
+                runId,
+                stageId,
+                partitionKey,
+                inputFingerprint,
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                reader.GetInt32(2),
+                ParseDate(reader.GetString(3)))
+            : null;
     }
 
     public async Task CertifyExistingGroupingAsync(

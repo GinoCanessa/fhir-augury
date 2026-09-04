@@ -5,6 +5,20 @@ description: "Generates Topic and Linked Ticket Group groupings for one or more 
 
 # Topic Groupings Skill
 
+## Grouping modes (Phase 8 preview)
+
+Choose exactly one mode. **Processor partition mode** requires
+`FHIR_AUGURY_GROUPING_WORKER=1` plus processor URL, run ID, stage ID, stage
+lease ID, input fingerprint, work-group clean name, specification, and type
+environment values; reject partial context. Process only that frozen
+partition. PUT one complete replacement carrying an `authoring` object with
+the four run-stage coordinates, including an explicit empty `topics` array
+when no topics exist, and require the processor receipt response.
+**Legacy mode** requires all grouping-worker values absent and follows the
+workflow below. A legacy PUT/DELETE returning `run-backed-write-required`,
+`authoring-not-activated`, or `cutover-in-progress` is terminal; never switch
+write modes mid-run.
+
 Generates the **`(WorkGroup, Specification, Type) → Topic → Linked
 Ticket Group`** decomposition for one workgroup at a time and writes
 it into the **jira-preparer** service over HTTP. Each `(Spec, Type)`
@@ -354,8 +368,12 @@ For each non-empty `(Specification, Type)` partition:
    ```
 3. `PUT {preparerBaseUrl}/api/v1/prepared-ticket-groupings/{wg}/{spec}/{type}`
    with that body. Percent-encode `{spec}` and `{type}`.
-   - `200 OK` → record `TopicRows / TopicGroupRows / MemberRows`
-     from the response in the run report.
+   - Legacy mode: `200 OK` → record
+     `TopicRows / TopicGroupRows / MemberRows` from the response.
+   - Processor partition mode: `200 OK` is success only when
+     `AuthoringReceipt` carries the exact run ID, stage ID, partition key,
+     and input fingerprint from the worker environment. Record its row
+     counts in the run report.
    - `400 Bad Request` → the validator rejected the payload.
      Capture the `ProblemDetails.Detail` verbatim into the run
      report and continue with the next partition; do not retry with

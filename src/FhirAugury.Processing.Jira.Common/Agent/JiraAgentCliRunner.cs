@@ -20,7 +20,14 @@ public sealed class JiraAgentCliRunner : IJiraAgentCliRunner
             startInfo.ArgumentList.Add(argument);
         }
 
-        startInfo.Environment["FHIR_AUGURY_PROCESSING_DB"] = context.DatabasePath;
+        if (context.IsAuthoringWorker)
+        {
+            startInfo.Environment.Remove("FHIR_AUGURY_PROCESSING_DB");
+        }
+        else
+        {
+            startInfo.Environment["FHIR_AUGURY_PROCESSING_DB"] = context.DatabasePath;
+        }
         startInfo.Environment["FHIR_AUGURY_TICKET_KEY"] = context.TicketKey;
         startInfo.Environment["FHIR_AUGURY_SOURCE_TICKET_ID"] = context.SourceTicketId;
         startInfo.Environment["FHIR_AUGURY_SOURCE_TICKET_SHAPE"] = context.SourceTicketShape;

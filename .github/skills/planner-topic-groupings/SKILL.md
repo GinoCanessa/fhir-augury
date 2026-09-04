@@ -5,6 +5,20 @@ description: "Generates Topic and Linked Ticket Group groupings for one FHIR wor
 
 # Planner Topic Groupings Skill
 
+## Grouping modes (Phase 8 preview)
+
+Choose exactly one mode. **Processor partition mode** requires
+`FHIR_AUGURY_GROUPING_WORKER=1` plus processor URL, run ID, stage ID, stage
+lease ID, input fingerprint, work-group clean name, specification, and type
+environment values; reject partial context. Process only that frozen
+partition. PUT one complete replacement carrying an `authoring` object with
+the four run-stage coordinates, including an explicit empty `topics` array
+when no topics exist, and require the processor receipt response.
+**Legacy mode** requires all grouping-worker values absent and follows the
+workflow below. A legacy PUT returning `run-backed-write-required`,
+`authoring-not-activated`, or `cutover-in-progress` is terminal; never
+switch write modes mid-run.
+
 Generates the **`(WorkGroup, Specification, Type) → Topic → Linked
 Ticket Group`** decomposition for **one workgroup** at a time on the
 **planner** side and writes it into the **jira-planner** service over
@@ -429,8 +443,11 @@ For each non-empty partition:
 2. `PUT {plannerBaseUrl}/api/v1/planned-ticket-topics` with that
    body.
 
-   - `204 No Content` → success. Record `Topics`,
+   - Legacy mode: `204 No Content` → success. Record `Topics`,
      `LinkedTicketGroups`, and member counts in the run report.
+   - Processor partition mode: `200 OK` is success only with an authoring
+     stage receipt whose run, stage, partition, and input fingerprint exactly
+     match the worker environment. Record its row counts in the run report.
    - `400 Bad Request` → validator rejected the payload. Capture
      the `{error: ...}` body verbatim into the run report and
      continue with the next partition; do **not** retry with edited

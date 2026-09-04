@@ -33,6 +33,9 @@ public static class JiraAuthoringRunEndpointExtensions
         endpoints.MapGet(
             $"{prefix}/processing/authoring/runs/{{runId}}/snapshot",
             GetSnapshotAsync);
+        endpoints.MapGet(
+            $"{prefix}/processing/authoring/runs/{{runId}}/snapshot/bytes",
+            GetSnapshotBytesAsync);
     }
 
     private static async Task<IResult> CreateRunAsync(
@@ -178,6 +181,25 @@ public static class JiraAuthoringRunEndpointExtensions
         return descriptor is null
             ? Results.NotFound(new { error = $"Run '{runId}' has no ready snapshot." })
             : Results.Ok(descriptor);
+    }
+
+    private static async Task<IResult> GetSnapshotBytesAsync(
+        string runId,
+        AuthoringRunStore store,
+        CancellationToken ct)
+    {
+        AuthoringReviewSnapshotRecord? snapshot =
+            await store.GetReadySnapshotRecordAsync(runId, ct);
+        if (snapshot is null || !File.Exists(snapshot.Path))
+        {
+            return Results.NotFound(new { error = $"Run '{runId}' has no ready snapshot bytes." });
+        }
+
+        return Results.File(
+            snapshot.Path,
+            "application/vnd.sqlite3",
+            Path.GetFileName(snapshot.Path),
+            enableRangeProcessing: true);
     }
 
     internal static async Task<IResult?> GetModeFailureAsync(

@@ -132,6 +132,25 @@ public sealed class BallotNotesAuthoringRunsController(
             : Ok(descriptor);
     }
 
+    [HttpGet("{runId}/snapshot/bytes")]
+    public async Task<IActionResult> GetSnapshotBytes(
+        string runId,
+        CancellationToken ct)
+    {
+        AuthoringReviewSnapshotRecord? snapshot =
+            await authoringStore.GetReadySnapshotRecordAsync(runId, ct);
+        if (snapshot is null || !System.IO.File.Exists(snapshot.Path))
+        {
+            return NotFound(new { error = "snapshot-not-ready" });
+        }
+
+        return PhysicalFile(
+            Path.GetFullPath(snapshot.Path),
+            "application/vnd.sqlite3",
+            Path.GetFileName(snapshot.Path),
+            enableRangeProcessing: true);
+    }
+
     [HttpPost("{runId}/items/{itemId}/{type}/{slug}/result")]
     public async Task<IActionResult> SubmitResult(
         string runId,

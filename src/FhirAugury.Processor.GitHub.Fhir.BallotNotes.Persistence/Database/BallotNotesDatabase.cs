@@ -666,7 +666,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         {
             return false;
         }
-        ReallocateWorkGroupsAsync(
+        ReallocateWorkGroupsLegacyAsync(
             new BallotNotesWorkGroupReallocationRequest(
                 [
                     new BallotNoteWorkGroupReallocation(
@@ -676,7 +676,8 @@ public sealed class BallotNotesDatabase : SourceDatabase
                         workGroupCode,
                         workGroupNames,
                         workGroupCodes),
-                ])).GetAwaiter().GetResult();
+                ]),
+            ct: CancellationToken.None).GetAwaiter().GetResult();
         return true;
     }
 
@@ -1918,6 +1919,24 @@ public sealed class BallotNotesDatabase : SourceDatabase
     public async Task<BallotNotesWorkGroupReallocationResult> ReallocateWorkGroupsAsync(
         BallotNotesWorkGroupReallocationRequest request,
         CancellationToken ct = default)
+        => await ReallocateWorkGroupsAsync(
+            request,
+            requireLegacyMode: false,
+            ct: ct);
+
+    public async Task<BallotNotesWorkGroupReallocationResult>
+        ReallocateWorkGroupsLegacyAsync(
+            BallotNotesWorkGroupReallocationRequest request,
+            CancellationToken ct = default)
+        => await ReallocateWorkGroupsAsync(
+            request,
+            requireLegacyMode: true,
+            ct: ct);
+
+    private async Task<BallotNotesWorkGroupReallocationResult> ReallocateWorkGroupsAsync(
+        BallotNotesWorkGroupReallocationRequest request,
+        bool requireLegacyMode,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Changes.Count == 0)
@@ -1930,6 +1949,11 @@ public sealed class BallotNotesDatabase : SourceDatabase
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
+            if (requireLegacyMode)
+            {
+                await EnsureLegacyModeAsync(connection, ct);
+            }
+
             string runId =
                 $"maintenance:{_mutationOwnerGeneration}:workgroup-reallocation:{operationId}";
             string leaseId = Guid.NewGuid().ToString("N");
@@ -2004,6 +2028,37 @@ public sealed class BallotNotesDatabase : SourceDatabase
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    private static async Task EnsureLegacyModeAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Mode
+            FROM authoring_processor_modes
+            WHERE ProcessorKind = @processorKind
+            """;
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        string? mode = Convert.ToString(await command.ExecuteScalarAsync(ct));
+        if (string.IsNullOrWhiteSpace(mode) ||
+            string.Equals(
+                mode,
+                AuthoringStatusValues.ProcessorModes.Legacy,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new AuthoringConflictException(
+            mode == AuthoringStatusValues.ProcessorModes.CuttingOver
+                ? AuthoringConflictCode.CutoverInProgress
+                : AuthoringConflictCode.AuthoringNotActivated,
+            $"Direct workgroup reallocation is unavailable while processor mode is '{mode}'.");
     }
 
     public async Task<IReadOnlyList<string>> ListRunsReadyForFinalizationAsync(

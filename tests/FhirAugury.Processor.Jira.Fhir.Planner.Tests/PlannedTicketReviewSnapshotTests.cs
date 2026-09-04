@@ -13,10 +13,12 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Planner.Api;
 using FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Planner.Controllers;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Models;
 using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -67,6 +69,101 @@ public sealed class PlannedTicketReviewSnapshotTests
 
         Assert.Equal(1, Scalar<int>(snapshot, "SELECT COUNT(*) FROM planned_ticket_topics"));
         Assert.Equal(1, Scalar<int>(snapshot, "SELECT COUNT(*) FROM planned_ticket_topic_members"));
+    }
+
+    [Fact]
+    public async Task FinalizeRunRefusesGroupingWithoutDurableReceipt()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) = await fixture.CreateCompletedRunAsync();
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => fixture.CreatePostProcessor(
+                    new NoOpGroupingDispatcher()).FinalizeRunAsync(run.Id));
+
+        Assert.Contains("durable receipt", error.Message, StringComparison.Ordinal);
+        AuthoringRunStageRecord grouping = Assert.Single(
+            await fixture.AuthoringStore.GetRunStagesAsync(run.Id),
+            stage => stage.StageName == "grouping");
+        Assert.Equal(AuthoringStatusValues.Stages.Error, grouping.Status);
+    }
+
+    [Fact]
+    public void PreviewGroupingDispatcherUsesSupportedPromptInvocation()
+    {
+        PreviewPlannedTicketGroupingDispatcher dispatcher = new(
+            Options.Create(new PlannerServiceOptions()),
+            NullLogger<PreviewPlannedTicketGroupingDispatcher>.Instance);
+        PlannedTicketRunPartition partition = new(
+            "FHIRInfrastructure",
+            "FHIR Infrastructure",
+            "FHIR",
+            "Change Request",
+            PlannerDatabase.GetPartitionKey(
+                "FHIRInfrastructure",
+                "FHIR",
+                "Change Request"),
+            "fingerprint",
+            ["FHIR-1"]);
+
+        System.Diagnostics.ProcessStartInfo startInfo =
+            dispatcher.CreateStartInfo(
+                "run-1",
+                partition,
+                new AuthoringRunStageLease("stage-1", "lease-1", 1));
+
+        Assert.Equal(
+            ["-p", "/planner-topic-groupings", "--allow-all"],
+            startInfo.ArgumentList);
+        Assert.Equal(
+            "1",
+            startInfo.Environment["FHIR_AUGURY_GROUPING_WORKER"]);
+        Assert.Equal(
+            "http://localhost:5172",
+            startInfo.Environment["FHIR_AUGURY_GROUPING_PROCESSOR_URL"]);
+    }
+
+    [Fact]
+    public async Task RunScopedGroupingEndpointReturnsMatchingDurableReceipt()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) = await fixture.CreateCompletedRunAsync();
+        PlannedTicketRunPartition partition = Assert.Single(
+            await fixture.Database.GetRunPartitionsAsync(run.Id));
+        AuthoringRunStageRecord stage =
+            await fixture.AuthoringStore.EnsureRunStageAsync(
+                run.Id,
+                "grouping",
+                partition.PartitionKey,
+                partition.InputFingerprint);
+        AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
+            await fixture.AuthoringStore.TryStartRunStageAsync(stage.Id));
+        PlannedTicketTopicsController controller =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        IActionResult result = await controller.PutTopics(
+            new PlannedTicketTopicGroupingRequest
+            {
+                WorkGroupClean = partition.WorkGroupClean,
+                WorkGroupDisplay = partition.WorkGroupDisplay,
+                Specification = partition.Specification,
+                Type = partition.Type,
+                Authoring = new PlannedTicketGroupingStageContext(
+                    run.Id,
+                    stage.Id,
+                    lease.LeaseId,
+                    partition.InputFingerprint),
+            },
+            CancellationToken.None);
+
+        AuthoringRunStageReceipt receipt =
+            Assert.IsType<AuthoringRunStageReceipt>(
+                Assert.IsType<OkObjectResult>(result).Value);
+        Assert.Equal(run.Id, receipt.RunId);
+        Assert.Equal(stage.Id, receipt.StageId);
+        Assert.Equal(partition.PartitionKey, receipt.PartitionKey);
+        Assert.Equal(partition.InputFingerprint, receipt.InputFingerprint);
     }
 
     private static SqliteConnection OpenReadOnly(string path)
@@ -318,6 +415,17 @@ public sealed class PlannedTicketReviewSnapshotTests
                 lease.LeaseId,
                 partition.InputFingerprint,
                 ct);
+    }
+
+    private sealed class NoOpGroupingDispatcher
+        : IPlannedTicketGroupingDispatcher
+    {
+        public Task ReplaceGroupingAsync(
+            string runId,
+            PlannedTicketRunPartition partition,
+            AuthoringRunStageLease lease,
+            CancellationToken ct) =>
+            Task.CompletedTask;
     }
 
     private sealed class WorkGroupHandler : HttpMessageHandler

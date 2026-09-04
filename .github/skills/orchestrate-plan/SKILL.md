@@ -5,6 +5,18 @@ description: "Orchestrates bulk implementation planning of resolved FHIR Jira ti
 
 # Orchestrate Plan Skill
 
+## Run-backed preview branch
+
+The optional **workflow mode** is `legacy` by default or `preview`.
+`legacy` follows the existing file/Jira-ledger workflow below. `preview`
+must first reject any authoring worker environment, select the ticket keys,
+then call `planned-ticket-authoring` action `start`. Poll `status`, retry
+only failed items, and, unless `databaseOnly`, download both snapshot bytes
+and descriptor with action `snapshot` before running `ticket-site` snapshot
+mode. Treat `409 authoring-not-activated` and `503 cutover-in-progress` as
+explicit preview failures; do not fall back after preview was selected.
+Processor run/item state, not files or Jira flags, determines completion.
+
 Bulk-plans implementation for resolved FHIR Jira tickets by drawing
 unprocessed tickets directly from the Jira source, dispatching concurrent
 `ticket-plan` sub-agents, and reporting completion back to the source.

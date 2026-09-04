@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -391,6 +392,45 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 ticket.Specification));
     }
 
+    public static async Task EnsureCurrentSourceRevisionAsync(
+        SqliteConnection connection,
+        string key,
+        string sourceTicketShape,
+        string observedSourceRevision,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceTicketShape);
+        ArgumentException.ThrowIfNullOrWhiteSpace(observedSourceRevision);
+        JiraProcessingSourceTicketRecord? current = await SelectByKeyAsync(
+            connection,
+            transaction: null,
+            key: key,
+            sourceTicketShape: NormalizeSourceTicketShape(sourceTicketShape),
+            ct: ct);
+        if (current is null)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.SourceRevisionMismatch,
+                $"Jira source ticket '{key}' is no longer available.");
+        }
+
+        string currentRevision = GetSourceRevision(current);
+        observedSourceRevision =
+            AuthoringSourceRevision.CanonicalizeTimestamp(
+                observedSourceRevision);
+        if (!string.Equals(
+                currentRevision,
+                observedSourceRevision,
+                StringComparison.Ordinal))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.SourceRevisionMismatch,
+                $"Observed source revision '{observedSourceRevision}' is no longer current; processor source revision is '{currentRevision}'.");
+        }
+    }
+
     private static void ClearProcessing(JiraProcessingSourceTicketRecord record)
     {
         record.StartedProcessingAt = null;
@@ -609,7 +649,8 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT * FROM jira_processing_source_tickets WHERE Key = @key AND SourceTicketShape = @shape";
+        command.CommandText =
+            "SELECT * FROM jira_processing_source_tickets WHERE Key = @key COLLATE NOCASE AND SourceTicketShape = @shape COLLATE NOCASE";
         command.Parameters.AddWithValue("@key", key);
         command.Parameters.AddWithValue("@shape", sourceTicketShape);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);

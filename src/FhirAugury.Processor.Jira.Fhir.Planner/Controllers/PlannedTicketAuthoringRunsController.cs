@@ -2,6 +2,7 @@ using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Authoring;
+using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Planner.Api;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
@@ -71,13 +72,23 @@ public sealed class PlannedTicketAuthoringRunsController(
             AuthoringReceiptAcceptance result = await authoringStore.AcceptResultAsync(
                 request.Submission,
                 operationToken,
-                (connection, cancellationToken) => database.SavePlannedTicketForAuthoringAsync(
-                    connection,
-                    request.Payload,
-                    runId,
-                    itemId,
-                    request.Submission.OperationId,
-                    cancellationToken),
+                async (connection, cancellationToken) =>
+                {
+                    await JiraProcessingSourceTicketStore
+                        .EnsureCurrentSourceRevisionAsync(
+                            connection,
+                            request.Payload.Key,
+                            item.ItemKind,
+                            request.Submission.ObservedSourceRevision,
+                            cancellationToken);
+                    await database.SavePlannedTicketForAuthoringAsync(
+                        connection,
+                        request.Payload,
+                        runId,
+                        itemId,
+                        request.Submission.OperationId,
+                        cancellationToken);
+                },
                 ct: ct);
             return Ok(result);
         }

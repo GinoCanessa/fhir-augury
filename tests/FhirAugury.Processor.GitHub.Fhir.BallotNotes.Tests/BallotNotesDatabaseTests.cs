@@ -1,3 +1,6 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
@@ -259,6 +262,71 @@ public sealed class BallotNotesDatabaseTests : IDisposable
     {
         using BallotNotesDatabase db = NewDb();
         Assert.False(db.UpdateNoteWorkGroups("does-not-exist", "wg", "code", "wg", "code"));
+    }
+
+    [Fact]
+    public async Task UpdateNoteWorkGroups_RefusesDurableModeInsideWriteTransaction()
+    {
+        using BallotNotesDatabase db = NewDb();
+        Seed(db, Evidence());
+        AuthoringRunStore store = new(db.OpenConnection);
+        await store.EnsureProcessorModeAsync(
+            BallotNotesDatabase.AuthoringProcessorKind);
+        await store.TransitionProcessorModeAsync(
+            BallotNotesDatabase.AuthoringProcessorKind,
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+
+        AuthoringConflictException error =
+            Assert.Throws<AuthoringConflictException>(() =>
+                db.UpdateNoteWorkGroups(
+                    "hl7-fhir-artifact-observation",
+                    "New WG",
+                    "new",
+                    "New WG",
+                    "new"));
+
+        Assert.Equal(AuthoringConflictCode.CutoverInProgress, error.Code);
+        Assert.Equal(
+            "OO",
+            db.GetNote("hl7-fhir-artifact-observation")!.Note.WorkGroupCode);
+    }
+
+    [Fact]
+    public async Task LegacyReallocationBatchUsesCapturedRevisionsAtomically()
+    {
+        using BallotNotesDatabase db = NewDb();
+        Seed(db, Evidence("note-a"));
+        Seed(db, Evidence("note-b"));
+        NoteDetail noteA = db.GetNote("note-a")!;
+        NoteDetail noteB = db.GetNote("note-b")!;
+
+        await Assert.ThrowsAsync<AuthoringConflictException>(() =>
+            db.ReallocateWorkGroupsLegacyAsync(
+                new BallotNotesWorkGroupReallocationRequest(
+                [
+                    new BallotNoteWorkGroupReallocation(
+                        "note-a",
+                        noteA.Note.CurrentEvidenceRevision,
+                        "New WG",
+                        "new",
+                        "New WG",
+                        "new"),
+                    new BallotNoteWorkGroupReallocation(
+                        "note-b",
+                        "stale-revision",
+                        "New WG",
+                        "new",
+                        "New WG",
+                        "new"),
+                ])));
+
+        Assert.Equal(
+            noteA.Note.WorkGroupCode,
+            db.GetNote("note-a")!.Note.WorkGroupCode);
+        Assert.Equal(
+            noteB.Note.WorkGroupCode,
+            db.GetNote("note-b")!.Note.WorkGroupCode);
     }
 
     [Fact]

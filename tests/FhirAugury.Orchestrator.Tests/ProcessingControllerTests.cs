@@ -5,6 +5,7 @@ using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Controllers;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Routing;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -29,6 +30,50 @@ public class ProcessingControllerTests
         Assert.Equal("running", Json(start.Value).GetProperty("Status").GetString());
         Assert.Equal("paused", Json(stop.Value).GetProperty("Status").GetString());
         Assert.Equal("ok", Json(health.Value).GetProperty("Status").GetString());
+    }
+
+    [Fact]
+    public async Task AuthoringEndpoints_PreserveStatusJsonAndSnapshotBytes()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+        JsonElement request = JsonDocument.Parse(
+            """{"ticketKeys":["FHIR-1"]}""").RootElement.Clone();
+
+        ContentResult created = Assert.IsType<ContentResult>(
+            await controller.CreateAuthoringRun(
+                "Planner",
+                request,
+                CancellationToken.None));
+        ContentResult status = Assert.IsType<ContentResult>(
+            await controller.GetAuthoringRun(
+                "Planner",
+                "run-1",
+                CancellationToken.None));
+        ContentResult retry = Assert.IsType<ContentResult>(
+            await controller.RetryAuthoringItem(
+                "Planner",
+                "run-1",
+                "item-1",
+                CancellationToken.None));
+        ContentResult descriptor = Assert.IsType<ContentResult>(
+            await controller.GetAuthoringSnapshot(
+                "Planner",
+                "run-1",
+                CancellationToken.None));
+        FileContentResult bytes = Assert.IsType<FileContentResult>(
+            await controller.GetAuthoringSnapshotBytes(
+                "Planner",
+                "run-1",
+                CancellationToken.None));
+
+        Assert.Equal(StatusCodes.Status202Accepted, created.StatusCode);
+        Assert.Contains("run-1", status.Content);
+        Assert.Contains("item-1", retry.Content);
+        Assert.Equal(
+            "7",
+            controller.Response.Headers.RetryAfter.ToString());
+        Assert.Contains("snapshot-1", descriptor.Content);
+        Assert.Equal([1, 2, 3, 4], bytes.FileContents);
     }
 
     [Fact]
@@ -76,7 +121,13 @@ public class ProcessingControllerTests
         SourceHttpClient sourceClient = new(factory, optionsAccessor, NullLogger<SourceHttpClient>.Instance);
         ProcessingHttpClient processingClient = new(factory, optionsAccessor, NullLogger<ProcessingHttpClient>.Instance);
         ServiceHealthMonitor monitor = new(sourceClient, optionsAccessor, NullLogger<ServiceHealthMonitor>.Instance, processingClient);
-        return new ProcessingController(processingClient, monitor);
+        return new ProcessingController(processingClient, monitor)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext(),
+            },
+        };
     }
 
     private static JsonElement Json(object? value)
@@ -102,14 +153,39 @@ public class ProcessingControllerTests
                 "/api/v1/processing/start" => @"{""status"":""running"",""isRunning"":true,""message"":""started""}",
                 "/api/v1/processing/stop" => @"{""status"":""paused"",""isRunning"":false,""message"":""stopped""}",
                 "/api/v1/health" => @"{""status"":""ok"",""version"":null,""uptimeSeconds"":1,""message"":null}",
+                "/processing/authoring/runs" => RunEnvelope,
+                "/processing/authoring/runs/run-1" => RunEnvelope,
+                "/processing/authoring/runs/run-1/items/item-1/retry" =>
+                    """{"itemId":"item-1","requiresAuthoring":true}""",
+                "/processing/authoring/runs/run-1/snapshot" =>
+                    """{"processorKind":"jira-fhir","runId":"run-1","snapshotId":"snapshot-1","authoringEpoch":1,"sequence":1,"schemaVersion":1,"sha256":"x","sizeBytes":4,"itemCount":1,"receiptCount":1,"tableCounts":{},"fileName":"snapshot.db","createdAt":"2026-09-04T00:00:00Z"}""",
                 _ => "{}",
             };
-            HttpResponseMessage response = new(HttpStatusCode.OK)
+            HttpStatusCode status = path == "/processing/authoring/runs" &&
+                request.Method == HttpMethod.Post
+                ? HttpStatusCode.Accepted
+                : HttpStatusCode.OK;
+            HttpResponseMessage response = new(status)
             {
-                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                Content = path.EndsWith(
+                    "/snapshot/bytes",
+                    StringComparison.Ordinal)
+                    ? new ByteArrayContent([1, 2, 3, 4])
+                    : new StringContent(
+                        json,
+                        Encoding.UTF8,
+                        "application/json"),
             };
+            if (path.EndsWith("/retry", StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new System.Net.Http.Headers.RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(7));
+            }
             return Task.FromResult(response);
         }
+
+        private const string RunEnvelope =
+            """{"run":{"runId":"run-1","processorKind":"jira-fhir","authoringEpoch":1,"status":"running","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null},"items":[{"itemId":"item-1","runId":"run-1","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"pending","currentOperationId":null,"acceptedReceiptId":null,"attemptCount":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null}]}""";
     }
 }
-

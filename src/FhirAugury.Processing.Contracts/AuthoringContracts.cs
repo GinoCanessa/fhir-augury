@@ -1,4 +1,31 @@
+using System.Globalization;
+
 namespace FhirAugury.Processing.Contracts;
+
+public static class AuthoringSourceRevision
+{
+    public static string CanonicalizeTimestamp(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        bool looksLikeIsoTimestamp =
+            value.Length >= 20 &&
+            value[4] == '-' &&
+            value[7] == '-' &&
+            value[10] == 'T' &&
+            (value.EndsWith('Z') ||
+             value.Length >= 6 &&
+             (value[^6] is '+' or '-') &&
+             value[^3] == ':');
+        return looksLikeIsoTimestamp &&
+            DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out DateTimeOffset timestamp)
+            ? timestamp.ToString("O", CultureInfo.InvariantCulture)
+            : value;
+    }
+}
 
 public sealed record AuthoringRunItemDefinition(
     string BusinessKey,
@@ -70,6 +97,16 @@ public sealed record AuthoringRunStageStatus(
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
     string? Error);
+
+public sealed record AuthoringRunStageReceipt(
+    string RunId,
+    string StageId,
+    string PartitionKey,
+    string InputFingerprint,
+    int TopicRows,
+    int TopicGroupRows,
+    int MemberRows,
+    DateTimeOffset PersistedAt);
 
 public sealed record AuthoringSnapshotDescriptor(
     string ProcessorKind,

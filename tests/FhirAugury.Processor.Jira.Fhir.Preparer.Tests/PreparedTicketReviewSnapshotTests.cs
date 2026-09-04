@@ -11,11 +11,14 @@ using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -99,6 +102,105 @@ public sealed class PreparedTicketReviewSnapshotTests
         Assert.Equal(
             AuthoringStatusValues.Runs.CompletedDatabaseOnly,
             (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task FinalizeRun_RefusesGroupingWithoutDurableReceipt()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync(databaseOnly: true);
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => fixture.CreatePostProcessor(
+                    new NoOpGroupingDispatcher()).FinalizeRunAsync(run.Id));
+
+        Assert.Contains("durable receipt", error.Message, StringComparison.Ordinal);
+        AuthoringRunStageRecord grouping = Assert.Single(
+            await fixture.AuthoringStore.GetRunStagesAsync(run.Id),
+            stage => stage.StageName == "grouping");
+        Assert.Equal(AuthoringStatusValues.Stages.Error, grouping.Status);
+    }
+
+    [Fact]
+    public void PreviewGroupingDispatcher_UsesSupportedPromptInvocation()
+    {
+        PreviewPreparedTicketGroupingDispatcher dispatcher = new(
+            Options.Create(new PreparerServiceOptions()),
+            NullLogger<PreviewPreparedTicketGroupingDispatcher>.Instance);
+        PreparedTicketRunPartition partition = new(
+            "FHIRInfrastructure",
+            "FHIR Infrastructure",
+            "FHIR",
+            "Change Request",
+            PreparerDatabase.GetPartitionKey(
+                "FHIRInfrastructure",
+                "FHIR",
+                "Change Request"),
+            "fingerprint",
+            ["FHIR-1"]);
+
+        System.Diagnostics.ProcessStartInfo startInfo =
+            dispatcher.CreateStartInfo(
+                "run-1",
+                partition,
+                new AuthoringRunStageLease("stage-1", "lease-1", 1));
+
+        Assert.Equal(
+            ["-p", "/topic-groupings", "--allow-all"],
+            startInfo.ArgumentList);
+        Assert.Equal(
+            "1",
+            startInfo.Environment["FHIR_AUGURY_GROUPING_WORKER"]);
+        Assert.Equal(
+            "http://localhost:5171",
+            startInfo.Environment["FHIR_AUGURY_GROUPING_PROCESSOR_URL"]);
+    }
+
+    [Fact]
+    public async Task RunScopedGroupingEndpointReturnsMatchingDurableReceipt()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync(databaseOnly: true);
+        PreparedTicketRunPartition partition = Assert.Single(
+            await fixture.Database.GetRunPartitionsAsync(run.Id));
+        AuthoringRunStageRecord stage =
+            await fixture.AuthoringStore.EnsureRunStageAsync(
+                run.Id,
+                "grouping",
+                partition.PartitionKey,
+                partition.InputFingerprint);
+        AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
+            await fixture.AuthoringStore.TryStartRunStageAsync(stage.Id));
+        PreparedTicketGroupingsController controller =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        ActionResult<PreparedTicketGroupingSaveResultDto> result =
+            await controller.PutPartition(
+                partition.WorkGroupClean,
+                partition.Specification,
+                partition.Type,
+                new PreparedTicketGroupingPutRequest(
+                    partition.WorkGroupDisplay,
+                    [],
+                    new PreparedTicketGroupingStageContext(
+                        run.Id,
+                        stage.Id,
+                        lease.LeaseId,
+                        partition.InputFingerprint)),
+                CancellationToken.None);
+
+        PreparedTicketGroupingSaveResultDto body =
+            Assert.IsType<PreparedTicketGroupingSaveResultDto>(
+                Assert.IsType<OkObjectResult>(result.Result).Value);
+        Assert.Equal(run.Id, body.AuthoringReceipt!.RunId);
+        Assert.Equal(stage.Id, body.AuthoringReceipt.StageId);
+        Assert.Equal(partition.PartitionKey, body.AuthoringReceipt.PartitionKey);
+        Assert.Equal(
+            partition.InputFingerprint,
+            body.AuthoringReceipt.InputFingerprint);
     }
 
     [Fact]
@@ -331,7 +433,8 @@ public sealed class PreparedTicketReviewSnapshotTests
             return (creation.Run, item);
         }
 
-        public PreparedTicketRunPostProcessor CreatePostProcessor()
+        public PreparedTicketRunPostProcessor CreatePostProcessor(
+            IPreparedTicketGroupingDispatcher? groupingDispatcher = null)
         {
             HttpClient client = new(new WorkGroupHandler())
             {
@@ -349,7 +452,7 @@ public sealed class PreparedTicketReviewSnapshotTests
                 new SqliteReviewSnapshotReconciler(AuthoringStore),
                 _coordinator,
                 new OrchestratorWorkGroupCatalogFetcher(client),
-                new EmptyGroupingDispatcher(Database),
+                groupingDispatcher ?? new EmptyGroupingDispatcher(Database),
                 Options.Create(options),
                 NullLogger<PreparedTicketRunPostProcessor>.Instance);
         }
@@ -388,6 +491,17 @@ public sealed class PreparedTicketReviewSnapshotTests
                     partition.InputFingerprint,
                     ct);
         }
+    }
+
+    private sealed class NoOpGroupingDispatcher
+        : IPreparedTicketGroupingDispatcher
+    {
+        public Task ReplaceGroupingAsync(
+            string runId,
+            PreparedTicketRunPartition partition,
+            AuthoringRunStageLease lease,
+            CancellationToken ct) =>
+            Task.CompletedTask;
     }
 
     private sealed class WorkGroupHandler : HttpMessageHandler

@@ -1,4 +1,5 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -63,7 +64,8 @@ public sealed record PreparedTicketGroupingSaveResultDto(
     string Type,
     int TopicRows,
     int TopicGroupRows,
-    int MemberRows);
+    int MemberRows,
+    AuthoringRunStageReceipt? AuthoringReceipt = null);
 
 public static class PreparedTicketGroupingDtoMapper
 {

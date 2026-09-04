@@ -5,6 +5,16 @@ description: "Orchestrates bulk Topic-grouping generation across FHIR workgroups
 
 # Orchestrate Planner Topic Groupings Skill
 
+## Processor-invoked partition mode
+
+If `FHIR_AUGURY_GROUPING_WORKER=1`, require the complete grouping stage
+environment documented by `planner-topic-groupings`, reject every user
+selector or fan-out option, and invoke exactly one
+`planner-topic-groupings` partition operation. Return its receipt/failure
+without dispatching sub-agents. With no grouping worker values, retain the
+legacy bulk workflow below. Never mix the modes; durable-mode conflicts
+from the planner are terminal.
+
 Bulk-generates Topic / Linked Ticket Group decompositions across one
 or more FHIR workgroups on the **planner** side by dispatching
 concurrent

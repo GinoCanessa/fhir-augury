@@ -131,7 +131,7 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PlannerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
-builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, UnconfiguredPlannedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, PreviewPlannedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<PlannedTicketRunPostProcessor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannedTicketRunPostProcessor>());
 

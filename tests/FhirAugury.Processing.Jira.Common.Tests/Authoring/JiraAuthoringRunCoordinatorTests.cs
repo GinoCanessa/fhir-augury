@@ -209,6 +209,7 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
         Options = Microsoft.Extensions.Options.Options.Create(new JiraProcessingOptions
         {
             AgentCliCommand = "agent {ticketKey}",
+            AuthoringAgentCliCommand = "agent {ticketKey}",
             JiraSourceAddress = "http://source",
             SourceTicketShape = "fhir",
             TicketStatusesToProcess = ["Triaged"],
