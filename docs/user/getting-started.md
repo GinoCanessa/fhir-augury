@@ -214,7 +214,21 @@ Create `src/FhirAugury.Source.Jira/appsettings.local.json`:
 }
 ```
 
-**API token** (recommended for long-term use):
+**Personal access token** (recommended for long-term use):
+
+`jira.hl7.org` runs Jira Data Center, whose personal access tokens are
+bearer credentials. Create one under Profile → Personal Access Tokens:
+
+```json
+{
+  "Jira": {
+    "AuthMode": "pat",
+    "ApiToken": "your-personal-access-token"
+  }
+}
+```
+
+**API token** (Atlassian Cloud deployments):
 
 ```json
 {

@@ -82,7 +82,11 @@ builder.Services.AddHttpClient("jira", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
-    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    // jira.hl7.org sits behind an edge proxy that answers 403 to non-browser
+    // user-agents before the request reaches Jira, so the REST client has to
+    // present the same browser-like agent the XML client below uses.
+    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 }).AddHttpMessageHandler<JiraAuthHandler>()
   .AddStandardResilienceHandler();
 

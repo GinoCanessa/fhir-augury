@@ -62,18 +62,32 @@ Each source service runs independently with its own database, cache, and ports.
 }
 ```
 
-**Authentication:** Choose one of two modes via `AuthMode`:
+**Authentication:** Choose one of three modes via `AuthMode`:
 
 - **`cookie`** — Set `Cookie` to your Jira session cookie
-  (`JSESSIONID=...`)
-- **`apitoken`** — Set `Email` and `ApiToken`
+  (`JSESSIONID=...`). Ingests via the XML export endpoint.
+- **`pat`** (alias `bearer`) — Set `ApiToken` to a Jira Data Center
+  personal access token (Profile → Personal Access Tokens). Sent as
+  `Authorization: Bearer`. This is the durable option for a Data Center
+  deployment such as `jira.hl7.org`; no `Email` is needed, because the
+  token identifies the user on its own.
+- **`apitoken`** (alias `basic`) — Set `Email` and `ApiToken`. Sent as
+  `Authorization: Basic`, which is the Atlassian Cloud credential model.
+
+All modes except `cookie` ingest via the REST API (`/rest/api/2/search`)
+and cache under a separate `json/` subdirectory, so switching auth mode
+means the next sync re-downloads rather than reusing the XML cache.
 
 ```bash
 # Cookie auth
 FHIR_AUGURY_JIRA__Jira__AuthMode=cookie
 FHIR_AUGURY_JIRA__Jira__Cookie=JSESSIONID=ABC123...
 
-# API token auth
+# Personal access token (Jira Data Center)
+FHIR_AUGURY_JIRA__Jira__AuthMode=pat
+FHIR_AUGURY_JIRA__Jira__ApiToken=your-personal-access-token
+
+# API token auth (Atlassian Cloud)
 FHIR_AUGURY_JIRA__Jira__AuthMode=apitoken
 FHIR_AUGURY_JIRA__Jira__Email=you@example.com
 FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
