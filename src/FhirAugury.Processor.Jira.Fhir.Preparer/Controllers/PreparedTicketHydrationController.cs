@@ -14,8 +14,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 /// <c>(WorkGroup, Specification, Type) → Topic → Linked Ticket Group</c>
 /// decomposition, while this controller provides the per-ticket display
 /// fields (<c>Title</c>, <c>Status</c>, <c>Type</c>, <c>Specification</c>,
-/// <c>WorkGroup</c>, <c>Url</c>, <c>UpdatedAt</c>) keyed by ticket key.
-/// Consumed by the <c>index-prepared-db</c> skill.
+/// <c>WorkGroup</c>, <c>Url</c>, <c>UpdatedAt</c>) keyed by ticket key for
+/// reviewer-facing API clients.
 /// </summary>
 [ApiController]
 [Route("api/v1/prepared-ticket-hydration")]
@@ -33,10 +33,8 @@ public sealed class PreparedTicketHydrationController(PreparerDatabase database)
     /// defensively, so callers may submit either form interchangeably.
     /// The <c>code</c> form (e.g. <c>"oo"</c>) requires pre-resolution
     /// at the orchestrator / CLI / MCP layer where the HL7 catalog is
-    /// available. Returns an empty <c>Items</c> list (200 OK) when no
-    /// rows match — callers (the <c>index-prepared-db</c> skill) do not
-    /// need to distinguish "unknown workgroup" from "no hydrated
-    /// tickets" to render an empty README.
+    /// available. Returns an empty <c>Items</c> list (200 OK) when no rows
+    /// match, preserving the endpoint's compatibility semantics for callers.
     /// </summary>
     [HttpGet("{workGroupClean}")]
     [ProducesResponseType(typeof(PreparedJiraHydrationListResponse), StatusCodes.Status200OK)]

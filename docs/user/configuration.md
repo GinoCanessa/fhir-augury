@@ -40,6 +40,8 @@ Double underscores (`__`) separate nested keys.
 | Orchestrator | `FHIR_AUGURY_ORCHESTRATOR_` | `Orchestrator` |
 | Jira FHIR Preparer | `FHIR_AUGURY_PREPARER_` | `Processing` |
 | Jira FHIR Planner | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_` | `Processing` |
+| Jira FHIR Applier | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_APPLIER_` | `Processing` |
+| BallotNotes Processor | `FHIR_AUGURY_BALLOTNOTES_` | `BallotNotes` |
 
 ---
 
@@ -214,21 +216,27 @@ FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
 
 ## Processing Services
 
-Processing services share the `Processing` configuration shape and expose
-`/health`, `/status`, `/processing/start`, `/processing/stop`,
-`/processing/queue`, and `POST /processing/tickets/{key}`.
+Preparer and Planner use processor-owned authoring runs. Their live SQLite
+databases are private service state; outer clients use the typed CLI or
+Orchestrator proxy, then build sites from a downloaded snapshot plus descriptor.
+BallotNotes uses the equivalent options under its `BallotNotes` section.
 
-> **Schema migration note (April 2026):** The Processing layer's SQLite schemas
-> are now derived from the `cslightdbgen.sqlitegen` annotations on the record
-> classes via generator-emitted `CreateTable` calls, and every Processing table
-> now has a `RowId INTEGER PRIMARY KEY` column in addition to its `Id` GUID.
-> Existing `CREATE TABLE IF NOT EXISTS` calls will not retro-fit `RowId` onto
-> tables built by an older revision, so after pulling this change you must
-> delete any pre-existing local Processing databases (for example
-> `./data/processor.jira.fhir.preparer.db` and
-> `./data/processor.jira.fhir.planner.db`). The services will recreate them on
-> startup. Production data is not affected — these databases are dev-only work
-> queues.
+The shipped authoring processors enable `ActivateRunBackedAuthoring`. On first
+startup the service acquires exclusive ownership, creates and verifies
+`PreCutoverBackupPath`, classifies existing rows as `legacy-unverified`, and
+creates an initial revalidation run when that legacy corpus is non-empty. A
+fresh empty database activates directly without a revalidation run. Do not
+delete or replace the live database to perform this migration.
+
+Key authoring options:
+
+| Key | Purpose |
+|-----|---------|
+| `AuthoringRetryDelay` / `AuthoringMaxAttempts` | Bound retries before a receipt is accepted |
+| `SnapshotDirectory` / `SnapshotSchemaVersion` | Processor-owned immutable review snapshots |
+| `ReconcileSnapshotsOnStartup` | Recover interrupted snapshot creation and recording |
+| `ActivateRunBackedAuthoring` | Enable the one-way cutover and initial revalidation |
+| `PreCutoverBackupPath` | Required verified rollback backup for activation |
 
 ### Jira FHIR Planner (`:5172`)
 
@@ -236,10 +244,15 @@ The Planner queues resolved change-required tickets and runs `ticket-plan`. Its
 only Planner-specific knob is `Processing:Planner:RepoFilters` — an optional
 exact `owner/repo` allow-list (`null` or `[]` = no restriction). Non-empty lists
 are matched case-insensitively, do not support globs/wildcards/block-lists, and
-are passed to `ticket-plan` through the canonical `--repos` JSON-array argument.
+are passed to the processor-launched `ticket-plan` worker through the canonical
+`--repos` JSON-array argument.
 
-For the full `Processing` shape (Preparer, Planner, and Applier), every key, and
-the agent-command tokens, see
+Jira worker commands use `Processing:Jira:AuthoringAgentCliCommand`. The
+processor supplies callback, operation token, run/item, and source-revision
+values through `FHIR_AUGURY_AUTHORING_*` environment variables. Do not put a
+database path or token placeholder in the command.
+
+For the complete Preparer, Planner, Applier, and BallotNotes tables, see
 [Configuration Reference → Processing Services](../configuration.md#processing-services).
 
 ---

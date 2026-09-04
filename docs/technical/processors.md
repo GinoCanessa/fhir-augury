@@ -1,337 +1,268 @@
 # Processors runbook
 
-Operator-facing guide for **kicking off a processing run** on each of the four
-FHIR Augury processors. Every processor section leads with the **raw HTTP
-trigger** (curl-able), then covers prerequisites, how to monitor a run, where the
-output lands, and finally the `orchestrate-*` agent skill that wraps it for bulk
-runs.
+Operator reference for the Preparer, Planner, Applier, and BallotNotes
+processors. Preparer, Planner, and BallotNotes use durable run-backed
+authoring. Their databases are private service state; clients control runs
+through HTTP or the typed CLI and publish review sites only from verified
+snapshot pairs.
 
-> Audience: a developer/operator running the stack locally (via the Aspire
-> AppHost or standalone) who has a processor up and listening but needs to know
-> the trigger. For config reference see [configuration.md](../configuration.md);
-> for the project layout see [project-structure.md](project-structure.md); for
-> the overall design see [architecture.md](architecture.md).
+## Topology
 
-## Overview
+| Processor | Port | Upstreams | Result |
+|-----------|------|-----------|--------|
+| Preparer | 5171 | Jira source, Orchestrator | Prepared discussion tickets |
+| Planner | 5172 | Jira source, GitHub source, Orchestrator | Structured implementation plans |
+| Applier | 5173 | Planner compatibility projection | Local repository commits, push on demand |
+| BallotNotes | 5174 | GitHub source/clone, Jira source, Orchestrator | Hydrated and authored ballot notes |
 
-A **source service** (`source-jira`, `source-zulip`, `source-confluence`,
-`source-github`, `source-fhir`) ingests and serves upstream data. A
-**processor** consumes that data and produces derived artifacts (prepared
-tickets, implementation plans, applied commits, ballot notes). There are four:
+All four resources use `WithExplicitStart()` under Aspire. Start the required
+sources and Orchestrator first, then start the processor.
 
-| Processor | Project | Port | Role |
-|-----------|---------|------|------|
-| Preparer | `FhirAugury.Processor.Jira.Fhir.Preparer` | 5171 | Queues triaged Jira tickets, runs `ticket-prep`, persists prepared output |
-| Planner | `FhirAugury.Processor.Jira.Fhir.Planner` | 5172 | Queues resolved change-required tickets, runs `ticket-plan`, persists plans |
-| Applier | `FhirAugury.Processor.Jira.Fhir.Applier` | 5173 | Auto-discovers completed plans, applies each in a git worktree, push on demand |
-| BallotNotes | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | 5174 | Hydrates ballot-note evidence for a repo + since-commit window |
+## Run-backed authoring contract
 
-The Jira processors form a chain — **Preparer → Planner → Applier** — while
-**BallotNotes** is standalone (GitHub-source driven). There are two ways to drive
-any of them:
+### One-way activation
 
-1. **Raw HTTP trigger** (this page leads with these) — the primitive an operator
-   or an automation hits directly.
-2. **`orchestrate-*` agent skills** — higher-level bulk wrappers
-   (`orchestrate-prep`, `orchestrate-plan`, `orchestrate-notes`). There is **no**
-   `orchestrate-applier` skill.
+Preparer, Planner, and BallotNotes ship with
+`ActivateRunBackedAuthoring:true`. On the first startup against a legacy
+database the service:
 
-All four processors are registered in the AppHost with `WithExplicitStart()`, so
-an operator must **start the resource first** — click "Start" on the resource in
-the Aspire dashboard, or run the project standalone (`dotnet run`) — before any
-trigger below will reach a listening service.
+1. Acquires exclusive startup ownership.
+2. Closes authoring and maintenance admission.
+3. Creates and verifies the configured pre-cutover SQLite backup.
+4. Classifies existing domain rows without real receipts as
+   `legacy-unverified`.
+5. Allocates the next authoring epoch and creates a fenced initial
+   revalidation run.
 
-### Lifecycle vs. trigger
+The active epoch cannot transition back to legacy after accepting a receipt.
+Ordinary runs, grouping maintenance, and the first canonical snapshot remain
+blocked until initial revalidation succeeds. If source revisions change, the
+processor replaces the revalidation run while retaining unchanged accepted
+provenance in the logical revalidation corpus.
 
-The three Jira processors share a uniform processing lifecycle and queue model:
+### Runs, items, and receipts
 
-- `StartProcessingOnStartup` defaults to **`true`**, so a *started* processor
-  begins processing on boot.
-- `POST /processing/start` and `POST /processing/stop` toggle processing at
-  runtime.
-- A background sync worker feeds the local queue automatically on the
-  `SyncSchedule` cadence; the single-ticket HTTP enqueue endpoint is an **ad-hoc**
-  path, not the bulk mechanism.
+A run freezes its item membership and expected source/evidence revisions.
+Typical run states are `queued`, `running`, `finalizing`, `completed`,
+`completed-database-only`, `error`, and `superseded`.
 
-BallotNotes does **not** use this lifecycle model — it is purely on-demand: each
-`POST .../hydrate` validates and runs one commit-window hydration.
+Each item receives an operation ID plus a secret token. The token is supplied
+only to the processor-launched worker through environment variables. Result
+submission validates the operation, token, run/item coordinates, authoring
+epoch, content hash, and observed source revision in the same transaction that
+persists the domain result and immutable receipt.
 
-Every lifecycle route below is mapped at both the bare path and an `/api/v1`
-prefix (e.g. `/processing/start` **and** `/api/v1/processing/start`).
+Only an unpersisted retry gets a new operation ID and token. Once a receipt is
+accepted, retries resume post-persistence work without dispatching the author
+again.
 
----
+### Finalization and snapshots
+
+For Preparer and Planner, post-persistence item processing completes hydration
+before the item becomes `complete`. Fenced run finalization then refreshes the
+workgroup catalog, performs grouping for every affected partition, and creates
+the snapshot. Grouping callbacks carry a run ID, stage ID, stage lease, and
+input fingerprint. BallotNotes finalization verifies current evidence/prose
+provenance. A processor-wide mutation fence excludes other authoring and
+maintenance writers through snapshot completion.
+
+Normal runs produce:
+
+- an immutable SQLite snapshot,
+- a trusted descriptor containing processor/run/epoch identity, monotonic
+  sequence, schema version, file name, size, SHA-256, item/receipt counts, and
+  table counts,
+- a `completed` run state only after the descriptor and bytes are ready.
+
+`databaseOnly:true` is the sole explicit snapshot/site opt-out and completes as
+`completed-database-only`.
+
+The CLI downloads and verifies the descriptor/byte pair, then promotes both
+files atomically. `ticket-site` and `notes-site` reject live processor
+databases.
+
+### Failure boundaries
+
+- **Before receipt acceptance:** retry the failed item within the configured
+  finite limit. A new operation credential may be issued.
+- **After receipt acceptance:** hydration, grouping, or snapshot failure does
+  not invalidate the receipt. Finalization resumes from durable stages.
+- **Snapshot download failure:** retry the download; do not re-author.
+- **Site publication failure:** preserve the verified pair and rerun only the
+  site tool. Processor state is unchanged.
+- **Source revision change:** stale work is superseded or the initial
+  revalidation run is atomically replaced. The gate is not cleared by stale
+  work.
 
 ## Preparer (`processor-jira-fhir-preparer`, :5171)
 
-**Purpose:** Queue triaged/submitted Jira FHIR tickets, run the `ticket-prep`
-agent, and persist structured prepared-ticket output for the `ticket-site`
-renderer.
-
-**Prerequisites:** `source-jira` (:5160) and `orchestrator` (:5150) reachable
-(the AppHost `WaitFor`s both). The resource must be started.
-
-**Kick-off:**
-
-Because `StartProcessingOnStartup` defaults to `true` and a
-`JiraTicketSyncWorker` feeds the queue from the Jira source on the `SyncSchedule`
-cadence (`00:01:00` in the shipped `appsettings.json`), a started Preparer begins
-working automatically — no trigger call is required for the bulk path. To control
-processing explicitly:
-
-```bash
-# Begin (or resume) processing
-curl -X POST http://localhost:5171/processing/start
-
-# Pause processing (in-flight items drain)
-curl -X POST http://localhost:5171/processing/stop
-```
-
-To enqueue or reset a **single** ticket ad hoc (not the bulk path):
-
-```bash
-curl -X POST http://localhost:5171/processing/tickets/FHIR-12345
-```
-
-For a **bulk** run driven by an agent, use the `orchestrate-prep` skill. Note:
-that skill draws tickets from the **Jira source** (via the `jira-local-processing`
-surface) and dispatches `ticket-prep` agents itself — it does **not** route
-through this processor's `/processing` queue.
-
-**Monitor:**
-
-```bash
-curl http://localhost:5171/status            # running/paused, SyncSchedule, StartProcessingOnStartup
-curl http://localhost:5171/processing/queue  # processed / remaining / in-flight / error counts
-```
-
-**Output:** `./data/processor.jira.fhir.preparer.db` → rendered by the
-`ticket-site` tool.
-
-**Config:** Detailed reference lives in the project's `appsettings.json` under
-the `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.preparer.db`, `SyncSchedule` `00:01:00`,
-`MaxConcurrentProcessingThreads` `8`, `StartProcessingOnStartup` `true`.
-
-### One-time Markdown recovery
-
-`tools/ticket-md-to-db` is a temporary migration tool for reconstructing a
-preparer database from historical ticket-review Markdown. Start the Jira source
-and Orchestrator before write mode so hydration remains behind the owning
-services' HTTP APIs; the importer never opens the Jira source database. Run a
-full-corpus dry run first, review its explicit-missing template and any
-fingerprint-bound overrides, then perform the certified write. See the
-[tool README](../../tools/ticket-md-to-db/README.md) for path guards, readiness
-rules, digest validation, backups, and promotion-boundary recovery.
-
-Treat the digest-matched database/audit pair as an immutable recovery artifact.
-Create a separate working copy for downstream processing and record the
-certified SHA-256 from which it came. To expose that copy through the preparer
-HTTP APIs used by topic grouping, configure:
+The Preparer selects configured Jira tickets and launches `ticket-prep`
+workers. Use the outer-control skill for the complete flow:
 
 ```text
-Processing:DatabasePath=<working-copy.db>
-Processing:StartProcessingOnStartup=false
-Processing:Hydration:BackfillOnStartup=false
+/orchestrate-prep
 ```
 
-Set those values before starting
-`FhirAugury.Processor.Jira.Fhir.Preparer`; otherwise startup queue processing,
-source synchronization, or hydration backfill can mutate recovered content
-before the operator deliberately begins work. Topic grouping writes grouping
-rows through the preparer API. `ticket-site` reads the hydrated database
-directly. Once either a processor workflow or grouping mutates the working
-copy, the original recovery audit no longer represents it; never point a
-mutating workflow at the sole certified artifact.
+Manual CLI control:
 
----
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
+```
+
+Publish:
+
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --preparer-snapshot "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\jira-ticket-site `
+  --force
+```
+
+Grouping is part of finalization. To intentionally refresh all current
+grouping partitions later, use the processor-owned maintenance endpoint:
+
+```powershell
+curl -X POST http://localhost:5171/api/v1/prepared-ticket-groupings/maintenance `
+  -H "Content-Type: application/json" `
+  -d '{}'
+```
 
 ## Planner (`processor-jira-fhir-planner`, :5172)
 
-**Purpose:** Queue resolved change-required Jira FHIR tickets, run the
-`ticket-plan` agent, and persist structured implementation-plan output.
+The Planner selects configured Jira tickets and launches `ticket-plan`
+workers. It also maintains the existing completion ID/timestamp projection
+consumed by the Applier.
 
-**Prerequisites:** `source-jira` (:5160), `source-github` (:5190), and
-`orchestrator` (:5150) reachable. The resource must be started.
-
-**Kick-off:** Same lifecycle model as the Preparer — a started Planner processes
-automatically via its sync worker:
-
-```bash
-curl -X POST http://localhost:5172/processing/start
-curl -X POST http://localhost:5172/processing/stop
-
-# Ad-hoc single-ticket enqueue/reset:
-curl -X POST http://localhost:5172/processing/tickets/FHIR-12345
+```text
+/orchestrate-plan
 ```
 
-For a bulk agent-driven run, use the `orchestrate-plan` skill (same honesty note
-as the Preparer: it draws from the Jira source, not the processor's queue).
+Manual CLI control:
 
-**Monitor:**
-
-```bash
-curl http://localhost:5172/status
-curl http://localhost:5172/processing/queue
+```powershell
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\planner\\<runId>\\"}'
 ```
 
-**Output:** `./data/processor.jira.fhir.planner.db` → rendered by the
-`ticket-site` tool; also the input the Applier auto-discovers.
+Publish:
 
-**Config:** `appsettings.json` `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.planner.db`, `SyncSchedule` `00:01:00`,
-`MaxConcurrentProcessingThreads` `3`, `StartProcessingOnStartup` `true`.
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --planner-snapshot "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\jira-ticket-site `
+  --force
+```
 
----
+Grouping maintenance:
+
+```powershell
+curl -X POST http://localhost:5172/api/v1/planned-ticket-topics/maintenance `
+  -H "Content-Type: application/json" `
+  -d '{}'
+```
 
 ## Applier (`processor-jira-fhir-applier`, :5173)
 
-**Purpose:** Consume completed plans from the Planner database and run an agent in
-a per-(ticket, repo) git worktree to actually apply each planned change, then
-locally commit the result. Successful commits are pushed to the upstream remote
-**on demand**.
+The Applier retains its existing queue contract. It auto-discovers completed
+Planner output, applies each plan in per-ticket repository worktrees, and
+commits successful changes locally.
 
-**Prerequisites:** `source-jira` (:5160), `orchestrator` (:5150), and the Planner
-(:5172) reachable; completed plans must exist in the Planner DB
-(`./data/processor.jira.fhir.planner.db`). The resource must be started.
-
-**Kick-off:** The Applier has **no per-ticket HTTP enqueue trigger**. Once
-started, it **auto-discovers** completed plans by polling the Planner DB via its
-`PlannerWorkQueue` on the `SyncSchedule` cadence and processes them itself:
-
-```bash
+```powershell
 curl -X POST http://localhost:5173/processing/start
 curl -X POST http://localhost:5173/processing/stop
-```
-
-The operator-facing HTTP action is the **push** API, which moves a ticket's
-successful local commits to the upstream remote:
-
-```bash
-curl -X POST http://localhost:5173/api/v1/applied-tickets/FHIR-12345/push
-```
-
-The push returns `200` with a per-repo result summary, `404` if the ticket has no
-applied record, or `409` if no repo has a successful local commit yet. There is
-**no** `orchestrate-applier` skill.
-
-**Monitor:**
-
-```bash
-curl http://localhost:5173/status
 curl http://localhost:5173/processing/queue
 ```
 
-**Output:** Per-(ticket, repo) commits in worktrees under
-`./data/applier-workspaces`; surviving build-output diffs under `./out/applier`;
-applied-ticket state in `./data/processor.jira.fhir.applier.db`. Pushes go to the
-configured upstream remote on demand.
+Push successful local commits for one ticket on demand:
 
-**Config:** `appsettings.json` `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.applier.db`, `SyncSchedule` `00:05:00`,
-`MaxConcurrentProcessingThreads` `1`, `StartProcessingOnStartup` `true`;
-`Applier.WorkingDirectory` `./data/applier-workspaces`, `Applier.OutputDirectory`
-`./out/applier`, `Applier.PlannerDatabasePath`
-`./data/processor.jira.fhir.planner.db`.
+```powershell
+curl -X POST http://localhost:5173/api/v1/applied-tickets/FHIR-12345/push
+```
 
----
+There is no `orchestrate-applier` skill.
 
 ## BallotNotes (`processor-github-fhir-ballotnotes`, :5174)
 
-**Purpose:** Hydrate ballot-note evidence for a GitHub repo across a
-since-commit → HEAD window (commit-window walk, ticket attribution, source-file
-resolution, current-note capture) so the `notes-*` skills can author updated
-ballot notes.
+BallotNotes first creates an immutable hydration execution for one repository
+window, then creates a separate authoring run over all or a selected subset of
+that execution's completed units.
 
-**Prerequisites:** The GitHub source must have **cloned** the target repo —
-BallotNotes expects a clone at `<CloneRoot>/<owner>_<name>/clone` (default
-`CloneRoot` is `./cache/github/repos`). A missing clone or an unresolvable
-since-commit returns `503`. `source-jira` (:5160), `source-github` (:5190), and
-`orchestrator` (:5150) back attribution. The resource must be started.
+Recommended:
 
-**Kick-off:** Unlike the Jira processors, BallotNotes is purely on-demand. Trigger
-a hydration with the repo and the since-commit to walk from:
+```text
+/orchestrate-notes
+```
 
-```bash
-curl -X POST http://localhost:5174/api/v1/ballot-notes/hydrate \
-  -H "Content-Type: application/json" \
+Hydrate:
+
+```powershell
+curl -X POST http://localhost:5174/api/v1/ballot-notes/hydrate `
+  -H "Content-Type: application/json" `
   -d '{"repoOwner":"HL7","repoName":"fhir","sinceSha":"<sha>"}'
+curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status?executionId=<executionId>"
 ```
 
-The body requires `repoOwner`, `repoName`, and `sinceSha`; `repoCategory` and
-`workGroupHint` are optional. The call validates the clone + since-commit
-synchronously (`503` if either is missing/unresolvable, `400` on a malformed
-body), then returns `202 Accepted` with a `runKey` and fires the walk
-fire-and-forget.
+Author and download:
 
-**Monitor:** Poll the dedicated status endpoint (BallotNotes does **not** expose
-`/status` or `/processing/queue`). The `runKey` contains `/`, so it is a query
-parameter — omit it to read the latest run:
-
-```bash
-# Latest run:
-curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status"
-
-# A specific run:
-curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status?runKey=<runKey>"
+```powershell
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"start","hydrationExecutionId":"<executionId>","noteIds":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\ballot-notes\\<runId>\\"}'
 ```
 
-The status response reports `status` (`running` / `completed` / `failed`),
-`unitsTotal`, `unitsHydrated`, `commitsInWindow`, `ticketsAttributed`,
-`startedAt`, `completedAt`, and `error`. The run is done when `status` is
-`completed` or `failed`.
+Publish:
 
-For a bulk run that hydrates and then authors notes across the whole window, use
-the `orchestrate-notes` skill, which hydrates via this same endpoint, polls the
-status endpoint until the run completes, and dispatches the `notes-artifact` /
-`notes-page` / `notes-datatype` authoring agents.
+```powershell
+dotnet run --project tools\notes-site -- report `
+  --snapshot-db "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\notes-site `
+  --force
+```
 
-**Output:** `./cache/ballot-notes.db` → rendered by the `notes-site` tool.
+The processor is the only authoring writer. Per-unit worker submissions require
+callback context; outer clients cannot use the retired bare prose write.
+Workgroup reallocation also submits one expected-revision batch through the
+processor mutation fence.
 
-**Config:** See the [BallotNotes Processor Service](../configuration.md#ballotnotes-processor-service)
-section of `configuration.md` for the full appsettings/env reference. Key
-defaults: DB path `./cache/ballot-notes.db`, `Hydration.CloneRoot`
-`./cache/github/repos`, `Hydration.MaxParallelism` `4`.
+## Worker callback environment
 
-**Hydration internals (performance):** The hydrator is tuned to minimize
-per-unit git-process and network churn while producing byte-for-byte identical
-ballot-note output:
+Processor-launched Jira and BallotNotes workers receive:
 
-- **Per-unit commit walk stays on `git log` (by design).** Each unit's window
-  commit list comes from a per-unit pathspec walk
-  (`git log <since>..HEAD --no-merges --name-status … -- <paths>`), **not** from
-  the `github_commit_files` index. Git applies *history simplification*
-  (TREESAME pruning) to a pathspec `git log`: it omits a non-merge commit that
-  genuinely changed a path when that change is also reachable via a simpler route
-  through the DAG. The raw commit-file index records every commit's changes with
-  no such simplification, so an index-driven walk would over-include pruned
-  commits, feed a different commit set into ticket attribution, and change the
-  emitted note. Because the pruning depends on the commit graph at query time, it
-  cannot be reconstructed from the index — so the walk deliberately remains a live
-  `git log`.
-- **Batched blob reads.** Every unit's candidate current-note intro at `HEAD`,
-  and both the since- and head-side of every changed StructureDefinition, are read
-  with a single `git cat-file --batch` pass each, replacing a `git show` spawn per
-  blob. A leading UTF-8 BOM is stripped from decoded blob text so the batched read
-  matches git's own `StreamReader` decoding byte-for-byte (git strips a detected
-  BOM preamble; a raw UTF-8 decode would not).
-- **In-run memoization.** The structural-diff pass parses each distinct
-  `(format, blob)` at most once per run. Attribution cross-references each distinct
-  commit SHA once, and fetches each distinct ticket's enrichment once, per run —
-  shared across the parallel unit fan-out via best-effort concurrent memos, so a
-  commit or ticket touched by many units still costs a single upstream call.
-- **Validation-only index infrastructure.** A `WindowIndexReader` and the
-  `github_commit_files.BlobSha` covering index (see
-  [database schema](database-schema.md#github_commit_files--files-changed-in-commits))
-  exist as a coverage oracle for the ingested window; they are **not** on the
-  output-critical hydration path and do not gate a run.
+- `FHIR_AUGURY_AUTHORING_WORKER=1`
+- `FHIR_AUGURY_AUTHORING_RUN_ID`
+- `FHIR_AUGURY_AUTHORING_ITEM_ID`
+- `FHIR_AUGURY_AUTHORING_CALLBACK_URL`
+- `FHIR_AUGURY_AUTHORING_OPERATION_ID`
+- `FHIR_AUGURY_AUTHORING_OPERATION_TOKEN`
+- `FHIR_AUGURY_AUTHORING_SOURCE_REVISION`
 
----
+BallotNotes also supplies note type and hydration execution variables.
+Grouping workers receive a separate `FHIR_AUGURY_GROUPING_*` run/stage/lease
+context. These values are processor-generated capabilities; do not put them in
+configuration files or outer-control commands.
 
-## Output destinations at a glance
+## Output destinations
 
-| Processor | Output store | Downstream renderer / next stage |
-|-----------|--------------|----------------------------------|
-| Preparer | `./data/processor.jira.fhir.preparer.db` | `ticket-site` tool |
-| Planner | `./data/processor.jira.fhir.planner.db` | `ticket-site` tool; input for the Applier |
-| Applier | per-ticket worktree commits + `./out/applier` + `./data/processor.jira.fhir.applier.db` | on-demand push to upstream remote |
-| BallotNotes | `./cache/ballot-notes.db` | `notes-site` tool |
+| Processor | Durable service state | Review publication |
+|-----------|-----------------------|--------------------|
+| Preparer | `data\processor.jira.fhir.preparer.db` | Verified snapshot -> `ticket-site` discussion |
+| Planner | `data\processor.jira.fhir.planner.db` | Verified snapshot -> `ticket-site` applying |
+| Applier | worktrees, local commits, `data\processor.jira.fhir.applier.db` | On-demand upstream push |
+| BallotNotes | `cache\ballot-notes.db` | Verified snapshot -> `notes-site` |
+
+The database paths above are operator backup/configuration locations, not
+client integration surfaces. The Orchestrator and CLI proxy run control over
+HTTP; static sites consume only trusted snapshots.
+
+Markdown remains supported as authored content inside structured database
+fields and explicit site copy/export features. It is not a processor input,
+completion ledger, database import format, or fallback when snapshot
+publication fails.

@@ -14,7 +14,10 @@ as an independent service with its own SQLite database and FTS5 index. A central
 orchestrator aggregates search across all sources, manages cross-references, and
 provides a unified API to clients. A separate **processor** stack (Preparer,
 Planner, Applier, BallotNotes) consumes that data to produce derived
-artifacts — see the [processors runbook](processors.md).
+artifacts. Each authoring processor owns its database, durable run/receipt
+ledger, mutation fence, and review snapshots. The Orchestrator exposes thin
+HTTP proxies for run control and snapshot transfer; it never opens a processor
+database. See the [processors runbook](processors.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -80,16 +83,16 @@ Ports (HTTP only):
 | **Parsing.Fhir** | `FhirAugury.Parsing.Fhir` | FHIR XML/JSON parsing library — StructureDefinitions, canonical artifacts (CodeSystem, ValueSet, etc.), Bundles, artifact classification |
 | **Parsing.Fsh** | `FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) parsing library — Profile, Extension, Resource, Logical, CodeSystem, ValueSet, Instance definitions; sushi-config.yaml parsing |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **Processing.Common** | `FhirAugury.Processing.Common` | Generic Processing substrate — options, lifecycle endpoints, queue runner, work-item contracts |
-| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira Processing layer — source-ticket queue, filters, discovery, agent invocation, single-ticket enqueue endpoint |
-| **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — queues triaged Jira tickets, runs `ticket-prep`, persists prepared output |
-| **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — queues resolved change-required tickets, runs `ticket-plan`, persists implementation plans |
+| **Processing.Common** | `FhirAugury.Processing.Common` | Durable runs/items/attempts/receipts, operation tokens, retry, mutation fencing, one-way cutover, finalization stages, and snapshot descriptors |
+| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira candidate discovery and frozen source revisions, processor worker dispatch, callback handling, and final source-revision guards |
+| **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — owns ticket-preparation runs, hydration, grouping, receipts, and discussion snapshots |
+| **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — owns planning runs, grouping, receipts, applying snapshots, and the Applier compatibility projection |
 | **Processor.Jira.Fhir.Applier** | `FhirAugury.Processor.Jira.Fhir.Applier` | Applier processor (port 5173) — auto-discovers completed plans, applies each in a git worktree, push API on demand |
-| **Processor.GitHub.Fhir.BallotNotes** | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | BallotNotes processor (port 5174) — hydrates ballot-note evidence for a repo + since-commit window; read by `notes-site` |
+| **Processor.GitHub.Fhir.BallotNotes** | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | BallotNotes processor (port 5174) — owns immutable hydration executions, note-authoring runs, receipts, maintenance batches, and snapshots |
 | **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 22 tool-type classes (126 tool methods — UnifiedTools, ContentTools, JiraTools, FhirTools, …) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
-| **CLI** | `FhirAugury.Cli` | Command-line interface (64 commands, HTTP to orchestrator) |
+| **CLI** | `FhirAugury.Cli` | Command-line interface for source queries plus typed processor run control and snapshot download (HTTP to Orchestrator) |
 | **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, HTTP to orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
@@ -120,7 +123,7 @@ FhirAugury.Processing.Jira.Common ← Common + Processing.Common (Jira queue/dis
 FhirAugury.Processor.Jira.Fhir.Preparer       ← Processing.Common + Processing.Jira.Common (ticket-prep, :5171)
 FhirAugury.Processor.Jira.Fhir.Planner        ← Processing.Common + Processing.Jira.Common (ticket-plan, :5172)
 FhirAugury.Processor.Jira.Fhir.Applier        ← Processing.Common + Processing.Jira.Common (apply plans in worktrees, :5173)
-FhirAugury.Processor.GitHub.Fhir.BallotNotes  ← Common (commit-window hydration, GitHub clone + attribution, :5174)
+FhirAugury.Processor.GitHub.Fhir.BallotNotes  ← Common + Processing.Common (hydration + run-backed authoring, :5174)
     ↑
 FhirAugury.McpShared            ← Common (shared MCP tool implementations, HTTP clients)
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
@@ -223,24 +226,51 @@ The `RelatedItemFinder` combines four signals to rank related items:
 
 ### Processing Stack
 
-Processing services are layered separately from source ingestion. `FhirAugury.Processing.Common` owns service-wide Processing options, lifecycle state, queue stats, `start`/`stop`/`status` endpoints, and the concurrency-limited runner over `IProcessingWorkItemStore<T>` plus `IProcessingWorkItemHandler<T>`.
+Processing services are layered separately from source ingestion.
+`FhirAugury.Processing.Common` owns the durable authoring state machine:
+frozen runs and items, public operation IDs plus secret token verifiers,
+immutable persistence receipts, item retry, processor mutation fences,
+resumable finalization stages, one-way legacy cutover/revalidation, and
+monotonic snapshot descriptors.
 
-`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed processors. It persists source tickets in `jira_processing_source_tickets`, applies the shared null/default/empty/restrict filter conventions, discovers tickets through Source.Jira or the orchestrator using shared Jira DTOs, invokes an agent command without shell expansion, and exposes `POST /processing/tickets/{key}` for ad-hoc enqueue/reset. Concrete preparer/planner services provide processor-specific defaults, output records, extension tokens such as repository filters, service ports/appsettings defaults, and the delete/upsert logic that overwrites prior processor output for a ticket before writing fresh results.
+`FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed
+processors. It discovers candidates through Source.Jira or the Orchestrator,
+freezes exact source revisions into a run, launches workers without shell
+expansion, supplies callback capabilities through the worker environment, and
+performs a final source-revision check inside the transaction that completes an
+initial revalidation run. Concrete Preparer and Planner services are the only
+writers of their domain databases and own their hydration and grouping stages.
+
+The run-backed data flow is:
+
+1. A client starts a scheduled or explicit run through the typed CLI or
+   Orchestrator proxy.
+2. The processor freezes item membership/revisions and acquires its mutation
+   fence.
+3. Workers submit typed results through operation-scoped callbacks.
+4. The processor atomically persists the domain result and receipt, then
+   completes required post-persistence work such as ticket hydration.
+5. After every item is complete or superseded, fenced finalization refreshes
+   shared catalogs, performs grouping, and creates a sanitized immutable
+   snapshot.
+6. The client downloads the verified descriptor/byte pair and invokes the
+   static site tool. Publication is outside processor state.
 
 There are four concrete processors:
 
 - **Preparer** (`Processor.Jira.Fhir.Preparer`, :5171) — queues triaged Jira
-  tickets and runs `ticket-prep`. Started-on-boot lifecycle; queue auto-fed from
-  the Jira source.
+  tickets and runs `ticket-prep` as processor-owned workers, completes
+  per-item hydration, then finalizes grouping and a discussion snapshot.
 - **Planner** (`Processor.Jira.Fhir.Planner`, :5172) — queues resolved
-  change-required tickets and runs `ticket-plan`. Same lifecycle model as the
-  preparer.
+  change-required tickets and runs `ticket-plan`, then finalizes grouping and
+  an applying snapshot while preserving the Applier projection.
 - **Applier** (`Processor.Jira.Fhir.Applier`, :5173) — auto-discovers completed
   plans from the planner DB, applies each in a per-(ticket, repo) git worktree,
   and exposes `POST /api/v1/applied-tickets/{key}/push` to push on demand.
 - **BallotNotes** (`Processor.GitHub.Fhir.BallotNotes`, :5174) — standalone,
-  GitHub-source driven. On-demand `POST /api/v1/ballot-notes/hydrate` walks a
-  commit window and hydrates ballot-note evidence read by the `notes-site` tool.
+  GitHub-source driven. On-demand hydration freezes one commit-window
+  execution; a separate processor-owned authoring run produces receipts and a
+  snapshot consumed by `notes-site`.
 
 For operator instructions (kick-off curl, monitoring, output locations), see the
 [processors runbook](processors.md).
@@ -249,10 +279,14 @@ For operator instructions (kick-off curl, monitoring, output locations), see the
 
 ### SQLite per Service (Not Shared)
 
-Each source service owns its own SQLite database. This provides process
-isolation, independent scaling, and eliminates cross-service write contention.
-The orchestrator has a separate SQLite database for scan state coordination. WAL mode
-enables concurrent reads within each service.
+Each source and processor service owns its own SQLite database. Clients,
+skills, site generators, and unrelated processors do not open that live store.
+Cross-service access uses the owning HTTP API; review publication uses an
+immutable snapshot explicitly released by the owner. The deliberate exception
+is the existing Applier compatibility path, which opens the Planner database
+read-only through `Processing:Applier:PlannerDatabasePath`. The Orchestrator has
+a separate SQLite database for scan state coordination. WAL mode enables
+concurrent reads within each service.
 
 ### HTTP/REST for Inter-Service Communication
 
@@ -267,8 +301,10 @@ contract classes in `FhirAugury.Common/Api/` define the request/response types:
 - `ContentFormats` — Content format definitions
 
 Services use `IHttpClientFactory` with named clients for HTTP communication.
-The orchestrator communicates with source services via HTTP, and MCP/CLI
-clients connect to the orchestrator via HTTP.
+The Orchestrator communicates with source services via HTTP and exposes typed,
+thin authoring proxies for the processors. MCP/CLI clients connect to the
+Orchestrator via HTTP. The Orchestrator does not aggregate processor databases
+or perform authoring persistence.
 
 ### Source-Generated CRUD over ORM
 
@@ -303,13 +339,13 @@ API responses without hitting the remote API.
 
 ### MCP and CLI as HTTP Clients
 
-Both MCP servers and the CLI are thin HTTP clients to the orchestrator. They
-contain no database access or business logic — all intelligence lives in the
-orchestrator and source services. The MCP servers use `IHttpClientFactory` with
-named clients ("orchestrator", "jira", "zulip", "confluence", "github"). The
-CLI uses `HttpServiceClient` for HTTP communication. McpHttp is also an
-ASP.NET Core web application (port 5200, `/mcp` endpoint) that participates
-in Aspire orchestration via ServiceDefaults.
+Both MCP servers and the CLI are thin HTTP clients to the Orchestrator. They
+contain no live service-database access. Typed CLI authoring commands start,
+inspect, retry, submit worker callbacks, and download snapshots through the
+Orchestrator proxies. The CLI verifies snapshot identity, size, and SHA-256
+before atomically promoting the descriptor/byte pair. McpHttp is also an
+ASP.NET Core web application (port 5200, `/mcp` endpoint) that participates in
+Aspire orchestration via ServiceDefaults.
 
 ## Concurrency Model
 
@@ -319,6 +355,11 @@ in Aspire orchestration via ServiceDefaults.
   (HTTP request handlers alongside the ingestion writer)
 - **Parallel fan-out:** The orchestrator sends HTTP requests to all source
   services in parallel using `Task.WhenAll`
+- **Processor mutation fence:** One mutating/finalizing authoring or maintenance
+  run owns a processor database at a time; item workers may still execute
+  concurrently inside that run
+- **Startup ownership:** Preparer, Planner, and BallotNotes acquire an exclusive
+  owner lock before schema migration or abandoned-fence recovery
 - **Health monitoring:** `ServiceHealthMonitor` polls source services every 60
   seconds; unhealthy sources are excluded from fan-out
 

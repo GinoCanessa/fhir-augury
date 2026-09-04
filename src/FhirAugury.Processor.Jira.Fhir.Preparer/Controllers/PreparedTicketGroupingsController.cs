@@ -13,10 +13,10 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 /// <summary>
 /// Reads and writes the reviewer-facing
 /// <c>(WorkGroup, Specification, Type) → Topic → Linked Ticket Group</c>
-/// decomposition documented in the <c>index-prepared</c> skill. Callers
-/// must percent-encode the <c>{specification}</c> and <c>{type}</c>
-/// path segments — they typically contain spaces (e.g. <c>"FHIR Core"</c>,
-/// <c>"Change Request"</c>).
+/// decomposition used by processor finalization, grouping maintenance, and
+/// snapshot-backed review sites. Callers must percent-encode the
+/// <c>{specification}</c> and <c>{type}</c> path segments — they typically
+/// contain spaces (e.g. <c>"FHIR Core"</c>, <c>"Change Request"</c>).
 /// </summary>
 [ApiController]
 [Route("api/v1/prepared-ticket-groupings")]

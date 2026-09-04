@@ -34,7 +34,7 @@ builder.Services.AddControllers();
 builder.Services.AddAuguryOpenApi(o =>
 {
     o.Title = "FHIR Augury Processor: GitHub FHIR BallotNotes";
-    o.Description = "Ballot-note hydration and authoring API backing the notes-site renderer.";
+    o.Description = "Ballot-note hydration, run-backed authoring, maintenance, and snapshot API.";
 });
 
 builder.Services.AddOptions<BallotNotesServiceOptions>()
@@ -105,9 +105,8 @@ builder.Services.AddHostedService(sp =>
 
 WebApplication app = builder.Build();
 
-// Eagerly initialize the database so its schema exists for the notes-site
-// renderer even before the first hydrate request (the singleton is otherwise
-// created lazily on first controller resolution).
+// Eagerly acquire ownership and initialize processor state before hosted
+// authoring or hydration work begins.
 _ = app.Services.GetRequiredService<BallotNotesDatabase>();
 BallotNotesDatabase ballotNotesDatabase =
     app.Services.GetRequiredService<BallotNotesDatabase>();

@@ -6,9 +6,8 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Configuration;
 
 /// <summary>
 /// Strongly typed configuration for the BallotNotes processor. Bound from the
-/// <c>BallotNotes</c> section. The notes DB lives under <c>./cache/</c> because
-/// it is co-consumed by the local <c>notes-site</c> renderer (mirroring
-/// <c>ticket-site</c>'s <c>./cache/jira-preparer.db</c> default).
+/// <c>BallotNotes</c> section. The processor owns the live notes database and
+/// publishes sanitized immutable snapshots for review-site generation.
 /// </summary>
 public sealed class BallotNotesServiceOptions : ProcessingServiceOptions
 {

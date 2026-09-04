@@ -1,123 +1,126 @@
 # Generating Discussion Tickets
 
-This guide walks you from a cold **Preparer** processor to an opened
-**"Tickets for Discussion"** sub-site. It calls out the easy-to-miss
-**topic-grouping** step, without which the site has no topic list.
+This guide produces a static **Tickets for Discussion** review site from a
+processor-owned Preparer run. The Preparer owns ticket selection, authoring
+workers, result receipts, hydration, topic grouping, and snapshot creation.
+`ticket-site` reads only the immutable snapshot and descriptor downloaded after
+the run completes.
 
 ## What you'll produce
 
-The `ticket-site` **discussion** sub-site under `<out>/discussion/` (with a
-chooser landing page at `<out>/index.html`), rendered from the Preparer database
-`./data/processor.jira.fhir.preparer.db`. The site is labelled
-**Tickets for Discussion**.
+- A completed Preparer authoring run with one durable receipt per accepted
+  ticket.
+- A verified snapshot pair under
+  `cache\authoring-snapshots\preparer\<runId>\`.
+- A self-contained discussion site under
+  `cache\jira-ticket-site\discussion\`.
+
+The live processor database is not a site input.
 
 ## Prerequisites
 
-- `source-jira` (`:5160`) and the `orchestrator` (`:5150`) are reachable.
-- The `processor-jira-fhir-preparer` resource is started (see Step 1).
+- `source-jira` (`:5160`) and the Orchestrator (`:5150`) are healthy.
+- `processor-jira-fhir-preparer` (`:5171`) is started. Under Aspire it uses
+  explicit start.
+- `fhir-augury-cli` is installed, or use
+  `dotnet run --project src\FhirAugury.Cli --` in place of the executable.
 
-Confirm the processor is listening:
-
-```bash
-curl http://localhost:5171/status
-# → running/paused, SyncSchedule, StartProcessingOnStartup
+```powershell
+fhir-augury-cli --json '{"command":"services","action":"status"}'
+curl http://localhost:5171/health
 ```
 
-## Steps
+## Recommended flow
 
-### 1. Start the Preparer processor
+Invoke the [`orchestrate-prep`](../../.github/skills/orchestrate-prep/SKILL.md)
+skill. With no ticket list it requests the processor's configured scheduled
+selection; with ticket keys it requests an explicit frozen run. The skill
+polls processor state, retries eligible failed items within a finite limit,
+downloads the trusted snapshot pair, and publishes the site.
 
-`processor-jira-fhir-preparer` is a `WithExplicitStart()` resource. Either click
-**Start** on that resource in the Aspire dashboard, or run it standalone:
+Set `databaseOnly` only when the caller explicitly wants structured processor
+state without a snapshot or site.
 
-```bash
-dotnet run --project src/FhirAugury.Processor.Jira.Fhir.Preparer
+## Manual equivalent
+
+### 1. Start the authoring run
+
+Configured candidate selection:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
 ```
 
-**Verify:** `curl http://localhost:5171/status` returns `200`.
+Explicit tickets:
 
-### 2. Process tickets
-
-A started Preparer **auto-processes** via its sync worker
-(`StartProcessingOnStartup` is `true`, `SyncSchedule` is `00:01:00`). You can
-also drive it explicitly, or do a bulk agent run with the **`orchestrate-prep`**
-skill.
-
-```bash
-# explicit control (optional)
-curl -X POST http://localhost:5171/processing/start
-curl -X POST http://localhost:5171/processing/stop
-
-# check progress
-curl http://localhost:5171/processing/queue
-# → processed / remaining / in-flight / error counts
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start","ticketKeys":["FHIR-100","FHIR-101"],"databaseOnly":false}'
 ```
 
-**Verify:** `processed` is greater than `0`.
+`no-candidates` is a successful no-op. Otherwise retain `runId`,
+`authoringEpoch`, and every item ID.
 
-### 3. Run the topic-grouping pass — the easy-to-miss step
+### 2. Poll authoritative state
 
-> **Without this pass the rendered site has no topic list.** Topic rows are
-> written by the topic-grouping pass, not by ticket processing.
-
-Run the **`orchestrate-topic-groupings`** skill to populate the
-`prepared_ticket_topics*` tables. If you need to refresh hydration on demand,
-you can also backfill:
-
-```bash
-curl -X POST http://localhost:5171/api/v1/admin/hydration/backfill
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
 ```
 
-**Verify:** after rendering (Step 4), the discussion landing page shows a live
-**`Show Topic List →`** affordance. A greyed-out affordance means no topic rows
-survived — the topic-grouping pass did not run (or trimmed every topic away).
+Continue while the run is `queued`, `running`, or `finalizing`. An authored
+item is successful only when it is `complete` and has an
+`acceptedReceiptId`. Retry a current `error` item, not the whole run:
 
-### 4. Render the discussion sub-site
-
-```bash
-dotnet run --project tools/ticket-site -- \
-    --preparer-db ./data/processor.jira.fhir.preparer.db \
-    --out ./cache/jira-ticket-site \
-    --title "Discussion — May 2026"
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 ```
 
-Optional filters: `--spec`, `--project`, `--jira-source-db`.
+Normal success is `completed`. `completed-database-only` is valid only for a
+run that was explicitly started with `databaseOnly:true`.
 
-**Verify:** `./cache/jira-ticket-site/index.html` and
-`./cache/jira-ticket-site/discussion/` exist.
+Topic grouping is part of fenced finalization. Do not run a separate direct
+database grouping pass. The grouping maintenance endpoint exists only for an
+intentional later refresh and still runs as a processor-owned fenced operation.
 
-### 5. Open the site
+### 3. Download the canonical snapshot
 
-Open `./cache/jira-ticket-site/index.html` and choose the **Tickets for
-Discussion** card.
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
+```
 
-**Verify:** the discussion sub-site loads and lists tickets; if topics were
-grouped, **`Show Topic List →`** is a live link.
+The CLI verifies the descriptor, file name, size, run identity, and SHA-256
+before atomically promoting the pair.
 
-## Did I miss a step?
+### 4. Publish the site
 
-- **`ticket-site` fails fast with `Database '<path>' is not hydrated…` ⇒** you
-  rendered against a DB the Preparer never processed. Run the Preparer against
-  that DB first (the startup sweep, or
-  `POST /api/v1/admin/hydration/backfill` on a running service), then re-render.
-- **Greyed-out `Show Topic List →` / empty topic list ⇒** the topic-grouping
-  pass (Step 3, `orchestrate-topic-groupings`) was not run, or every topic's
-  members were trimmed away.
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --preparer-snapshot "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\jira-ticket-site `
+  --title "Tickets for Discussion" `
+  --force
+```
+
+Open `cache\jira-ticket-site\index.html` and choose **Tickets for Discussion**.
+
+## Failure boundaries
+
+- An unpersisted authoring failure may be retried at the item level with a new
+  operation token.
+- Once a receipt is accepted, later hydration, grouping, snapshot, or site
+  failure does not invalidate it.
+- A snapshot failure is retried by processor finalization; do not re-author
+  accepted items.
+- A site publication failure is client-side. Keep the snapshot pair and rerun
+  only `ticket-site`.
+- Existing pre-cutover rows remain `legacy-unverified` until the processor's
+  initial revalidation run accepts real receipts. Ordinary runs and the first
+  canonical snapshot remain blocked until that gate clears.
 
 ## Reference
 
-- [Processors runbook — Preparer](../technical/processors.md) — the operator
-  reference for endpoints, ports, and lifecycle.
-- [`ticket-site` tool README](../../tools/ticket-site/README.md) — sub-site
-  emission, flags, and topic-table sources.
-- [`orchestrate-prep` skill](../../.github/skills/orchestrate-prep/SKILL.md) —
-  bulk ticket preparation.
-- [`orchestrate-topic-groupings` skill](../../.github/skills/orchestrate-topic-groupings/SKILL.md)
-  — the topic-grouping pass.
-- [Configuration reference](../configuration.md) — environment variables and
-  defaults.
-
-## See also
-
-- [Generating Ballot Notes](generating-ballot-notes.md)
+- [Processors runbook](../technical/processors.md)
+- [`ticket-site` reference](../../tools/ticket-site/README.md)
+- [Configuration reference](../configuration.md#processing-services)
 - [Generating Application Tickets](generating-application-tickets.md)
+- [Generating Ballot Notes](generating-ballot-notes.md)

@@ -68,8 +68,9 @@ dotnet run --project src/FhirAugury.AppHost
 ```
 
 The Aspire dashboard provides real-time service health, logs, traces, and
-metrics at the URL shown in the console output. Confluence, Dev UI, MCP HTTP,
-and CLI use explicit start and must be started manually from the dashboard.
+metrics at the URL shown in the console output. Confluence, all four
+processors, Dev UI, MCP HTTP, and CLI use explicit start and must be started
+manually from the dashboard.
 
 ### From Source
 
@@ -90,10 +91,10 @@ dotnet run --project src/FhirAugury.Orchestrator
 | Orchestrator | [5150](http://localhost:5150/health) | Compose + Aspire | Unified search, cross-references, aggregation |
 | Jira | [5160](http://localhost:5160/health) | Compose + Aspire | HL7 Jira issues and comments |
 | Zulip | [5170](http://localhost:5170/health) | Compose + Aspire | FHIR Zulip chat messages |
-| Jira FHIR Preparer | [5171](http://localhost:5171/health) | Compose + Aspire | Processing service for Triaged FHIR Jira ticket prep outputs (`/api/v1/prepared-tickets`) |
-| Jira FHIR Planner | [5172](http://localhost:5172/health) | Aspire only | Processing service that queues resolved change-required tickets and runs `ticket-plan` (Tickets for Applying) |
+| Jira FHIR Preparer | [5171](http://localhost:5171/health) | Compose + Aspire | Run-backed ticket preparation with durable receipts, fenced grouping, and review snapshots |
+| Jira FHIR Planner | [5172](http://localhost:5172/health) | Aspire only | Run-backed implementation planning with durable receipts, fenced grouping, and review snapshots |
 | Jira FHIR Applier | [5173](http://localhost:5173/health) | Aspire only | Processing service that applies planned changes in per-(ticket, repo) git worktrees (`/api/v1/applied-tickets`) |
-| BallotNotes Processor | [5174](http://localhost:5174/health) | Aspire only | Commit-triggered ballot-note hydration + authoring API backing the `notes-site` renderer (`/api/v1/ballot-notes`) |
+| BallotNotes Processor | [5174](http://localhost:5174/health) | Aspire only | Immutable commit-window hydration plus run-backed ballot-note authoring and snapshots |
 | Confluence | [5180](http://localhost:5180/health) | Compose + Aspire | HL7 Confluence wiki pages |
 | GitHub | [5190](http://localhost:5190/health) | Compose + Aspire | HL7 GitHub issues, PRs, and commits |
 | FHIR Spec | [5195](http://localhost:5195/health) | Aspire only | Read-only FHIR specification reference data (StructureDefinitions, canonical resources) |
@@ -115,6 +116,8 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **FHIR artifact parsing** — indexes StructureDefinitions, canonical artifacts, and FSH definitions from cloned repositories
 - **MCP servers** — stdio and HTTP/SSE transports for integration with LLM agents
 - **CLI tool** for searching and managing services via HTTP
+- **Processor-owned authoring** with frozen runs, atomic receipts, item retry,
+  mutation fencing, and immutable review snapshots
 - **Docker Compose** deployment with profiles for subset stacks
 - **.NET Aspire** orchestration with dashboard, OpenTelemetry, and service discovery
 
@@ -184,13 +187,13 @@ docker compose --profile terminology up -d  # Terminology server only
 |-----------|---------|-------------|
 | Orchestrator | `src/FhirAugury.Orchestrator` | Aggregator, cross-references, unified search |
 | Jira Source | `src/FhirAugury.Source.Jira` | Jira issue ingestion and search |
-| Jira FHIR Preparer | `src/FhirAugury.Processor.Jira.Fhir.Preparer` | Processing service that defaults to Triaged FHIR Jira tickets, overwrites structured prep output without history, and exposes read/query APIs; Docker processing requires a host-provided agent runtime |
-| Jira FHIR Planner | `src/FhirAugury.Processor.Jira.Fhir.Planner` | Processing service that queues resolved change-required tickets and runs `ticket-plan` to produce implementation plans (Tickets for Applying) |
+| Jira FHIR Preparer | `src/FhirAugury.Processor.Jira.Fhir.Preparer` | Owns frozen preparation runs, worker callbacks, accepted receipts, hydration, grouping, and discussion snapshots |
+| Jira FHIR Planner | `src/FhirAugury.Processor.Jira.Fhir.Planner` | Owns frozen planning runs, worker callbacks, accepted receipts, grouping, applying snapshots, and the Applier compatibility projection |
 | Jira FHIR Applier | `src/FhirAugury.Processor.Jira.Fhir.Applier` | Processing service that applies planned changes in per-(ticket, repo) git worktrees and can push on demand |
-| BallotNotes Processor | `src/FhirAugury.Processor.GitHub.Fhir.BallotNotes` | Commit-triggered processor that hydrates ballot-note evidence (commit window, ticket attribution, source-file resolution) and serves read/author APIs under `/api/v1/ballot-notes`; consumed by the `notes-site` renderer |
+| BallotNotes Processor | `src/FhirAugury.Processor.GitHub.Fhir.BallotNotes` | Owns immutable hydration executions, note-authoring runs, accepted receipts, maintenance batches, and review snapshots |
 | Processor satellites | `src/FhirAugury.Processor.*.{Persistence,Hydration}`, `*.Hydration.Common` | Per-family persistence + hydration support libraries for the Preparer / Planner / BallotNotes processors |
-| Processing Common | `src/FhirAugury.Processing.Common` | Shared processing substrate (queue lifecycle, agent invocation, HTTP surface) for all processors |
-| Processing (Jira Common) | `src/FhirAugury.Processing.Jira.Common` | Jira-specific processing base (source-ticket persistence, filter conventions, discovery) |
+| Processing Common | `src/FhirAugury.Processing.Common` | Shared run/item/receipt ledger, operation-token verification, retry, mutation fences, cutover, finalization stages, and snapshot descriptors |
+| Processing (Jira Common) | `src/FhirAugury.Processing.Jira.Common` | Jira candidate discovery plus frozen run creation, worker dispatch, source-revision guards, and callback handling |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
@@ -213,10 +216,10 @@ docker compose --profile terminology up -d  # Terminology server only
 
 | Utility | Project | Description |
 |---------|---------|-------------|
-| Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | One-shot `dotnet`-run utility that turns a `cache/jira-preparer.db` (Tickets for Discussion) or a `cache/jira-planner.db` (Tickets for Applying) into a self-contained static HTML review sub-site (sql.js in the browser; opens from `file://`). A chooser landing page at `<out>/index.html` links into whichever sub-site(s) have been built. |
+| Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | Builds the discussion or applying static review site from exactly one trusted Preparer/Planner snapshot plus its descriptor; never opens the live processor store. |
 | Dictionary build | [`tools/dictionary-build`](tools/dictionary-build/README.md) | One-shot `dotnet`-run utility that rebuilds `cache/dictionary.db` from the spell-check source files under `dictionary/`. Run after editing anything under `dictionary/`. |
-| Notes site | [`tools/notes-site`](tools/notes-site/README.md) | Read-only `dotnet`-run utility that renders the BallotNotes processor's notes database into a self-contained, searchable static HTML review SPA (opens from `file://`, no server). |
-| BallotNotes reallocate-WG | [`tools/ballotnotes-reallocate-wg`](tools/ballotnotes-reallocate-wg/README.md) | One-off, idempotent maintenance command that re-stamps the owning Work Group on existing ballot-note rows by re-running only the deterministic resolver — no re-hydration, re-attribution, or authoring. |
+| Notes site | [`tools/notes-site`](tools/notes-site/README.md) | Builds the BallotNotes static review SPA from a trusted immutable snapshot and descriptor. |
+| BallotNotes reallocate-WG | [`tools/ballotnotes-reallocate-wg`](tools/ballotnotes-reallocate-wg/README.md) | Recomputes workgroup ownership from read-only evidence and submits one expected-revision batch through the BallotNotes processor fence. |
 | FHIR spec review | [`tools/fhir-spec-review`](tools/fhir-spec-review/README.md) | Read-only `dotnet`-run utility that runs FMG-style content-quality checks over the current HL7/fhir build and emits a self-contained, searchable report SPA. |
 
 ## Discovery
@@ -292,12 +295,14 @@ are documented fallbacks (see the `fhir-augury-cli` skill).
 | [`repo-analysis`](.github/skills/repo-analysis/SKILL.md) | On-demand generator that writes per-repo briefings to `cache/github/repos/<owner>_<name>/repo-analysis/`. |
 | [`ticket-prep`](.github/skills/ticket-prep/SKILL.md) | Prepares Jira tickets for workgroup review. |
 | [`ticket-plan`](.github/skills/ticket-plan/SKILL.md) | Plans the implementation of a resolved Jira ticket; consumes saved per-repo briefings. |
-| [`orchestrate-prep`](.github/skills/orchestrate-prep/SKILL.md) | Bulk ticket-prep over a worklist. |
-| [`orchestrate-plan`](.github/skills/orchestrate-plan/SKILL.md) | Bulk ticket-plan over a worklist. |
+| [`orchestrate-prep`](.github/skills/orchestrate-prep/SKILL.md) | Starts and monitors processor-owned preparation runs, downloads snapshots, and publishes the discussion site. |
+| [`orchestrate-plan`](.github/skills/orchestrate-plan/SKILL.md) | Starts and monitors processor-owned planning runs, downloads snapshots, and publishes the applying site. |
+| [`orchestrate-notes`](.github/skills/orchestrate-notes/SKILL.md) | Hydrates a repository window, controls processor-owned note authoring, downloads the snapshot, and publishes the notes site. |
 
 The table above is a curated subset; the repository ships two dozen-plus skills
-under `.github/skills/` — browse that directory for the full set (orchestration,
-indexing, ballot-notes, and `dev-*` workflow skills).
+under `.github/skills/` — browse that directory for the full set
+(orchestration, ballot-notes, repository analysis, and `dev-*` workflow
+skills).
 
 If a repo is miscategorized for `repo-analysis`, fix it in
 `src/FhirAugury.Source.GitHub/appsettings.json` (under the appropriate

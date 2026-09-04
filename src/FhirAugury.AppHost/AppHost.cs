@@ -82,16 +82,9 @@ IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugu
     .WaitFor(github)
     .WaitFor(orchestrator)
     .WithExplicitStart();
-// The planner service exposes the following parity HTTP surface
-// (mirroring the preparer service shape):
-//   GET  /api/v1/planned-tickets                 list (filters: repo, affectedFilePath, relatedJiraKey, limit, offset)
-//   GET  /api/v1/planned-tickets/{key}           per-ticket detail (repos, repo changes, impacts, validations, tests, open questions)
-//   GET  /api/v1/planned-tickets/{key}/related   per-ticket related items (repos)
-//   POST /api/v1/planned-tickets/query           combined-filter list body
-//   GET  /api/v1/planned-ticket-hydration/{workGroupClean}  per-workgroup hydrated-display projection (planned_jira_hydration self-rows)
-//   GET  /api/v1/planned-ticket-topics/{wg}/{spec}/{type}   topic grouping read
-//   PUT  /api/v1/planned-ticket-topics                       topic grouping write (consumed by a future orchestrator)
-//   POST /api/v1/admin/hydration/backfill                    on-demand full hydration sweep
+// Planner authoring, grouping, and snapshot writes are processor-owned.
+// Outer clients use the Orchestrator/CLI run proxies; grouping maintenance
+// remains an explicit fenced processor operation.
 
 IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Applier>("processor-jira-fhir-applier")
     .WithEndpoint("http", e =>
@@ -140,7 +133,7 @@ serverTerminology.WithCommand(
     },
     commandOptions: new CommandOptions { Description = "Queues a fresh THO NPM package download + re-index pass." });
 
-// ── Ballot-notes processor (commit-triggered; GitHub source clone + Jira/orchestrator attribution) ──
+// ── Ballot-notes processor (immutable hydration executions + run-backed authoring) ──
 IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.FhirAugury_Processor_GitHub_Fhir_BallotNotes>("processor-github-fhir-ballotnotes")
     .WithEndpoint("http", e =>
     {

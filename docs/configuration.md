@@ -577,13 +577,12 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 **Ports:** 5171 (Preparer), 5172 (Planner), 5173 (Applier)
 
 The three Jira FHIR processors — Preparer, Planner, and Applier — share the
-`Processing` configuration shape. The Preparer
-and Planner each queue Jira tickets matching their filters, invoke an agent CLI
-command per ticket, and persist structured output (overwriting prior output for a
-ticket without history). The Applier instead auto-discovers completed plans from
-the Planner database and applies each in a per-(ticket, repo) git worktree. All
-expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
-`/processing/queue`, and `POST /processing/tickets/{key}`.
+`Processing` configuration shape. Preparer and Planner use the run-backed
+authoring lifecycle: the processor freezes source revisions, launches callback
+workers, persists immutable receipts, owns hydration/grouping, and emits
+sanitized review snapshots. Their database paths are private service state, not
+client inputs. The Applier retains its existing work queue over the Planner
+compatibility projection.
 
 ### appsettings.json (Planner shown; Preparer omits the `Planner` block)
 
@@ -594,6 +593,14 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
     "SyncSchedule": "00:01:00",
     "MaxConcurrentProcessingThreads": 3,
     "StartProcessingOnStartup": true,
+    "OrphanedInProgressThreshold": "00:10:00",
+    "AuthoringRetryDelay": "00:01:00",
+    "AuthoringMaxAttempts": 3,
+    "SnapshotDirectory": "./data/snapshots/planner",
+    "SnapshotSchemaVersion": 1,
+    "ReconcileSnapshotsOnStartup": true,
+    "ActivateRunBackedAuthoring": true,
+    "PreCutoverBackupPath": "./data/processor.jira.fhir.planner.pre-cutover.db",
     "OrchestratorAddress": "http://localhost:5150",
     "Ports": {
       "Http": 5172
@@ -604,7 +611,7 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
       "SpecificationsToInclude": [],
       "WorkGroupsToInclude": null,
       "TicketTypesToProcess": null,
-      "AgentCliCommand": "copilot -p '/ticket-plan {ticketKey} --db {dbPath} --repos {repoFilters} ...'",
+      "AuthoringAgentCliCommand": "copilot -p '/ticket-plan {ticketKey} --repos {repoFilters}' --allow-all",
       "JiraSourceAddress": "http://localhost:5160",
       "OrchestratorAddress": "http://localhost:5150",
       "DiscoverySource": "DirectJiraSource",
@@ -621,18 +628,27 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
 }
 ```
 
-The `AgentCliCommand` above is abbreviated — the shipped default carries a long
-`--allow-tool`/`--deny-tool` allow-list; consult the project's `appsettings.json`
-for the full value.
+The worker command receives run/item/callback/operation/token/source-revision
+context through processor-generated `FHIR_AUGURY_AUTHORING_*` environment
+variables. Do not put callback tokens or a database path in the command
+template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 
 ### Configuration Options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `Processing.DatabasePath` | string | per-processor | Structured processor output SQLite DB (overwritten per ticket without history) |
+| `Processing.DatabasePath` | string | per-processor | Private processor-owned SQLite state |
 | `Processing.SyncSchedule` | TimeSpan | `00:01:00` | Queue poll / discovery interval |
 | `Processing.MaxConcurrentProcessingThreads` | int | `3`–`8` | Max tickets processed concurrently (per-processor default) |
 | `Processing.StartProcessingOnStartup` | bool | `true` | Begin processing the queue on boot |
+| `Processing.OrphanedInProgressThreshold` | TimeSpan | `00:10:00` | Age after which an abandoned in-progress claim is recoverable |
+| `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Delay before retrying an eligible authoring item |
+| `Processing.AuthoringMaxAttempts` | int | `3` | Maximum unpersisted authoring attempts |
+| `Processing.SnapshotDirectory` | string | per-processor | Directory owned by the processor for immutable review snapshots |
+| `Processing.SnapshotSchemaVersion` | int | `1` | Public snapshot schema version |
+| `Processing.ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot creation/promotion/recording |
+| `Processing.ActivateRunBackedAuthoring` | bool | `true` in Preparer/Planner | Perform the one-way legacy cutover and require initial revalidation |
+| `Processing.PreCutoverBackupPath` | string | per-processor | Verified rollback backup required when activation is enabled |
 | `Processing.OrchestratorAddress` | string | `http://localhost:5150` | Orchestrator HTTP address |
 | `Processing.Ports.Http` | int | per-processor | HTTP listen port (5171 / 5172 / 5173) |
 | `Processing.Jira.TicketStatusesToProcess` | string[] | per-processor | Jira statuses to pull (Preparer: `Triaged`/`Submitted`; Planner: `Resolved - change required`) |
@@ -640,7 +656,7 @@ for the full value.
 | `Processing.Jira.SpecificationsToInclude` | string[] | `[]` | Restrict to specific specifications (empty = all) |
 | `Processing.Jira.WorkGroupsToInclude` | string[]? | `null` | Restrict to specific work groups (null = all) |
 | `Processing.Jira.TicketTypesToProcess` | string[]? | `null` | Restrict to specific ticket types (null = all) |
-| `Processing.Jira.AgentCliCommand` | string | per-processor | Agent command template run per ticket (`{ticketKey}`, `{dbPath}`, `{repoFilters}` tokens; no shell expansion) |
+| `Processing.Jira.AuthoringAgentCliCommand` | string | per-processor | Processor-launched callback worker command (`{ticketKey}` and optional `{repoFilters}`; no shell expansion) |
 | `Processing.Jira.JiraSourceAddress` | string | `http://localhost:5160` | Jira source used for direct discovery |
 | `Processing.Jira.DiscoverySource` | string | `DirectJiraSource` | Where tickets are discovered (`DirectJiraSource` or the orchestrator) |
 | `Processing.Jira.SourceTicketShape` | string | `fhir` | Source ticket DTO shape |
@@ -658,12 +674,11 @@ for the full value.
 **Prefix:** `FHIR_AUGURY_BALLOTNOTES_`
 **Port:** 5174
 
-Commit-triggered processor that hydrates ballot-note evidence for a GitHub repo
-+ since-commit window (commit-window walk, ticket attribution, source-file
-resolution, current-note capture) and serves read/query + prose write-back
-endpoints under `/api/v1/ballot-notes`. The `notes-site` tool reads its database
-directly to emit the static review SPA. Registered in the AppHost as
-`processor-github-fhir-ballotnotes` with `WithExplicitStart()`.
+BallotNotes creates immutable hydration executions for GitHub commit windows,
+then runs processor-owned artifact/page/datatype authoring with callback-only
+workers and accepted receipts. Normal runs emit trusted snapshots consumed by
+`notes-site`; the live database is not a renderer input. The AppHost resource
+uses `WithExplicitStart()`.
 
 > To run a hydration (and for the Preparer/Planner/Applier operational flow),
 > see the [processors runbook](technical/processors.md).
@@ -674,6 +689,17 @@ directly to emit the static review SPA. Registered in the AppHost as
 {
   "BallotNotes": {
     "DatabasePath": "./cache/ballot-notes.db",
+    "AuthoringRetryDelay": "00:01:00",
+    "AuthoringMaxAttempts": 3,
+    "SnapshotDirectory": "./cache/snapshots/ballot-notes",
+    "SnapshotSchemaVersion": 1,
+    "ReconcileSnapshotsOnStartup": true,
+    "ActivateRunBackedAuthoring": true,
+    "PreCutoverBackupPath": "./cache/ballot-notes.pre-cutover.db",
+    "ArtifactAuthoringCommand": "copilot -p \"/notes-artifact {noteId}\" --allow-all",
+    "PageAuthoringCommand": "copilot -p \"/notes-page {noteId}\" --allow-all",
+    "DataTypeAuthoringCommand": "copilot -p \"/notes-datatype {noteId}\" --allow-all",
+    "AuthoringCallbackAddress": null,
     "Ports": {
       "Http": 5174
     },
@@ -691,8 +717,17 @@ directly to emit the static review SPA. Registered in the AppHost as
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `DatabasePath` | string | `./cache/ballot-notes.db` | SQLite notes DB path (read directly by the `notes-site` renderer) |
+| `DatabasePath` | string | `./cache/ballot-notes.db` | Private processor-owned SQLite state |
 | `Ports.Http` | int | `5174` | HTTP listen port |
+| `AuthoringRetryDelay` | TimeSpan | `00:01:00` | Delay before retrying eligible authoring work |
+| `AuthoringMaxAttempts` | int | `3` | Maximum unpersisted authoring attempts |
+| `SnapshotDirectory` | string | `./cache/snapshots/ballot-notes` | Processor-owned immutable snapshot directory |
+| `SnapshotSchemaVersion` | int | `1` | Public snapshot schema version |
+| `ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot publication |
+| `ActivateRunBackedAuthoring` | bool | `true` | Perform one-way cutover and initial prose revalidation |
+| `PreCutoverBackupPath` | string | `./cache/ballot-notes.pre-cutover.db` | Verified backup created before activation |
+| `ArtifactAuthoringCommand` / `PageAuthoringCommand` / `DataTypeAuthoringCommand` | string | per type | Processor-launched worker command containing `{noteId}` and no database/token arguments |
+| `AuthoringCallbackAddress` | string? | `null` | Optional externally reachable callback base; defaults to the local processor address |
 | `Hydration.CloneRoot` | string | `./cache/github/repos` | Root holding per-repo clones (`<owner>_<name>/clone`) |
 | `Hydration.OrchestratorAddress` | string | `http://localhost:5150` | Primary attribution upstream (cross-references + ticket details) |
 | `Hydration.JiraSourceAddress` | string | `http://localhost:5160` | Fallback attribution upstream when the orchestrator is unreachable |

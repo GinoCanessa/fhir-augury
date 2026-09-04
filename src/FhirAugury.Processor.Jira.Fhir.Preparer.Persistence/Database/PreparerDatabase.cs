@@ -1908,7 +1908,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// <c>Hl7WorkGroupNameCleaner.Clean</c> on insert) used by
     /// the grouping query. Rows are ordered by <c>TicketKey</c> ascending.
     /// Returns an empty list (never throws) when no rows match.
-    /// Consumed by the <c>index-prepared-db</c> skill.
+    /// Used by the reviewer-facing hydration API.
     /// </summary>
     public async Task<IReadOnlyList<PreparedJiraHydrationRow>> ListJiraHydrationDisplayForWorkGroupAsync(
         string workGroupClean,
