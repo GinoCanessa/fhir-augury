@@ -409,10 +409,12 @@ public class JiraSource(
         };
     }
 
-    /// <summary>Returns true when the auth mode uses the REST API (apitoken or basic).</summary>
+    /// <summary>Returns true when the auth mode uses the REST API (apitoken, basic, pat or bearer).</summary>
     private bool IsApiTokenAuth() =>
         options.AuthMode.Equals("apitoken", StringComparison.OrdinalIgnoreCase) ||
-        options.AuthMode.Equals("basic", StringComparison.OrdinalIgnoreCase);
+        options.AuthMode.Equals("basic", StringComparison.OrdinalIgnoreCase) ||
+        options.AuthMode.Equals("pat", StringComparison.OrdinalIgnoreCase) ||
+        options.AuthMode.Equals("bearer", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Collects all dates that have cached files for a specific project.</summary>
     internal HashSet<DateOnly> GetCachedDates(string project)

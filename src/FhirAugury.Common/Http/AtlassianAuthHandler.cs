@@ -4,7 +4,8 @@ using System.Text;
 namespace FhirAugury.Common.Http;
 
 /// <summary>
-/// Shared base delegating handler for Atlassian-style authentication (Basic with email/apitoken, or cookie).
+/// Shared base delegating handler for Atlassian-style authentication (Basic with email/apitoken,
+/// Bearer with a Data Center personal access token, or cookie).
 /// Used by Jira and Confluence auth handlers to avoid duplication.
 /// </summary>
 public abstract class AtlassianAuthHandler : DelegatingHandler
@@ -22,6 +23,14 @@ public abstract class AtlassianAuthHandler : DelegatingHandler
             case "cookie":
                 if (!string.IsNullOrEmpty(Cookie))
                     request.Headers.TryAddWithoutValidation("cookie", Cookie);
+                break;
+
+            // Jira/Confluence Data Center personal access tokens are bearer
+            // credentials -- they are rejected when sent as Basic.
+            case "pat":
+            case "bearer":
+                if (!string.IsNullOrEmpty(ApiToken))
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ApiToken);
                 break;
 
             case "basic":
