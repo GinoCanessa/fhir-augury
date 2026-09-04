@@ -13,6 +13,31 @@ public static class ConfluenceCatalog
             .. SharedSourceEndpoints.LifecycleEndpoints(),
             .. SharedSourceEndpoints.IngestionEndpoints(),
 
+            // Ingestion intervention
+            new ApiEndpointDescriptor(
+                "ingestion.block",
+                "Ingestion block",
+                "Ingestion",
+                HttpMethod.Get,
+                "api/v1/ingestion-block",
+                [],
+                Description: "Reports whether Confluence ingestion is blocked pending operator intervention."),
+            new ApiEndpointDescriptor(
+                "ingestion.block.clear",
+                "Clear ingestion block",
+                "Ingestion",
+                HttpMethod.Post,
+                "api/v1/ingestion-block/clear",
+                [
+                    new ApiParameter(
+                        "clearedBy",
+                        ApiParameterKind.Query,
+                        Required: false,
+                        Placeholder: "Optional operator name"),
+                ],
+                Destructive: true,
+                Description: "Clears the operator-intervention gate after the upstream challenge is resolved."),
+
             // Items
             new ApiEndpointDescriptor("items.list", "List items", "Items",
                 HttpMethod.Get, "api/v1/items",

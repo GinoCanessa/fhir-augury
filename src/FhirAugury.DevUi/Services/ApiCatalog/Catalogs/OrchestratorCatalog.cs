@@ -249,6 +249,75 @@ public static class OrchestratorCatalog
             PathTemplate: "api/v1/processing-services/{name}/health",
             Parameters: [ProcessingServiceName()]),
 
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.start",
+            DisplayName: "Start Authoring Run",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"ticketKeys\": [], \"databaseOnly\": false }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Starts a frozen processor-owned authoring run."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.status",
+            DisplayName: "Authoring Run Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.retry",
+            DisplayName: "Retry Authoring Item",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter("itemId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.snapshot",
+            DisplayName: "Authoring Snapshot Descriptor",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.snapshot-bytes",
+            DisplayName: "Authoring Snapshot Bytes",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
         // ── Services ──────────────────────────────────────────────────────────
         new ApiEndpointDescriptor(
             Id: "services.endpoints",
@@ -335,7 +404,7 @@ public static class OrchestratorCatalog
     /// </summary>
     private static ApiParameter ProcessingServiceName() =>
         new("name", ApiParameterKind.Path, Required: true,
-            Placeholder: "processor-jira-fhir-preparer");
+            Placeholder: "Preparer");
 
     /// <summary>
     /// Projects every endpoint from a per-source catalog into its
