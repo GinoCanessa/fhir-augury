@@ -106,9 +106,10 @@ public sealed class PreparedTicketAuthoringRunTests
         await fixture.AuthoringStore.MarkRunFinalizingAsync(run.Id);
         await fixture.AuthoringStore.CompleteRunAsync(run.Id, snapshotId: null);
         payload.RequestSummary = "Legacy overwrite";
-        await fixture.Database.SavePreparedTicketAsync(payload);
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => fixture.Database.SavePreparedTicketAsync(payload));
         Assert.Equal(
-            "legacy-unverified",
+            "receipt-backed",
             fixture.Scalar<string>(
                 "SELECT Classification FROM prepared_ticket_authoring_state WHERE TicketKey = 'FHIR-1'"));
     }
@@ -173,7 +174,7 @@ public sealed class PreparedTicketAuthoringRunTests
     }
 
     [Fact]
-    public async Task RunBackedModeRefusesLegacyGroupingWriter()
+    public async Task GroupingWriterRequiresRunStageCoordinates()
     {
         using Fixture fixture = new();
         await fixture.CreateClaimAsync();
@@ -192,7 +193,7 @@ public sealed class PreparedTicketAuthoringRunTests
 
         ConflictObjectResult conflict =
             Assert.IsType<ConflictObjectResult>(result.Result);
-        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
+        Assert.Contains("authoring-stage-required", conflict.Value!.ToString());
     }
 
     private static PreparedTicketPayload CreatePayload(string key)

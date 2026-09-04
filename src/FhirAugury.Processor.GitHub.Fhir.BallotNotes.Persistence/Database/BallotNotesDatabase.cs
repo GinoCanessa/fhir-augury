@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
@@ -22,7 +23,8 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 /// drafting skills via <see cref="UpdateNoteProse"/>); re-hydration never
 /// clobbers authored prose.
 /// </summary>
-public sealed class BallotNotesDatabase : SourceDatabase
+public sealed class BallotNotesDatabase : SourceDatabase,
+    IAuthoringCutoverParticipant
 {
     public const string AuthoringProcessorKind = "github-fhir-ballot-notes";
     private readonly string _databasePath;
@@ -598,87 +600,60 @@ public sealed class BallotNotesDatabase : SourceDatabase
         ArgumentNullException.ThrowIfNull(prose);
 
         using SqliteConnection connection = OpenConnection();
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText =
-            $"""
-            UPDATE "{NoteRecord.DefaultTableName}" SET
-                NeedsNote = $needsNote,
-                ProposedBallotNoteHtml = $proposed,
-                RollupSummaryMarkdown = $rollup,
-                NotesForReviewerMarkdown = $notes,
-                SourceFilesNote = $srcNote,
-                ProseHydrationExecutionId = CurrentHydrationExecutionId,
-                ProseEvidenceRevision = CurrentEvidenceRevision,
-                CurrentAuthoringOperationId = '',
-                ProseVerificationStatus = 'legacy-unverified',
-                AuthoredAt = $authoredAt,
-                GeneratedAt = $authoredAt,
-                SavedAt = $authoredAt
-            WHERE NoteId = $id
-            """;
-        cmd.Parameters.AddWithValue("$needsNote", string.IsNullOrEmpty(prose.NeedsNote) ? "unknown" : prose.NeedsNote);
-        cmd.Parameters.AddWithValue("$proposed", prose.ProposedBallotNoteHtml ?? string.Empty);
-        cmd.Parameters.AddWithValue("$rollup", prose.RollupSummaryMarkdown ?? string.Empty);
-        cmd.Parameters.AddWithValue("$notes", prose.NotesForReviewerMarkdown ?? string.Empty);
-        cmd.Parameters.AddWithValue("$srcNote", prose.SourceFilesNote ?? string.Empty);
-        cmd.Parameters.AddWithValue("$authoredAt", authoredAt);
-        cmd.Parameters.AddWithValue("$id", noteId);
-        bool updated = cmd.ExecuteNonQuery() > 0;
-        if (updated)
+        ExecuteRaw(connection, "BEGIN IMMEDIATE");
+        try
         {
-            NoteRecord current = ReadNote(connection, noteId)!;
-            UpsertAuthoringState(
-                connection,
-                noteId,
-                "legacy-unverified",
-                current.CurrentEvidenceHash,
-                current.CurrentEvidenceRevision,
-                ComputeProseHash(prose),
-                current.CurrentHydrationExecutionId,
-                runId: null,
-                runItemId: null,
-                operationId: null,
-                authoredAt);
+            EnsureLegacyAuthoringMode(connection);
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText =
+                $"""
+                UPDATE "{NoteRecord.DefaultTableName}" SET
+                    NeedsNote = $needsNote,
+                    ProposedBallotNoteHtml = $proposed,
+                    RollupSummaryMarkdown = $rollup,
+                    NotesForReviewerMarkdown = $notes,
+                    SourceFilesNote = $srcNote,
+                    ProseHydrationExecutionId = CurrentHydrationExecutionId,
+                    ProseEvidenceRevision = CurrentEvidenceRevision,
+                    CurrentAuthoringOperationId = '',
+                    ProseVerificationStatus = 'legacy-unverified',
+                    AuthoredAt = $authoredAt,
+                    GeneratedAt = $authoredAt,
+                    SavedAt = $authoredAt
+                WHERE NoteId = $id
+                """;
+            cmd.Parameters.AddWithValue("$needsNote", string.IsNullOrEmpty(prose.NeedsNote) ? "unknown" : prose.NeedsNote);
+            cmd.Parameters.AddWithValue("$proposed", prose.ProposedBallotNoteHtml ?? string.Empty);
+            cmd.Parameters.AddWithValue("$rollup", prose.RollupSummaryMarkdown ?? string.Empty);
+            cmd.Parameters.AddWithValue("$notes", prose.NotesForReviewerMarkdown ?? string.Empty);
+            cmd.Parameters.AddWithValue("$srcNote", prose.SourceFilesNote ?? string.Empty);
+            cmd.Parameters.AddWithValue("$authoredAt", authoredAt);
+            cmd.Parameters.AddWithValue("$id", noteId);
+            bool updated = cmd.ExecuteNonQuery() > 0;
+            if (updated)
+            {
+                NoteRecord current = ReadNote(connection, noteId)!;
+                UpsertAuthoringState(
+                    connection,
+                    noteId,
+                    "legacy-unverified",
+                    current.CurrentEvidenceHash,
+                    current.CurrentEvidenceRevision,
+                    ComputeProseHash(prose),
+                    current.CurrentHydrationExecutionId,
+                    runId: null,
+                    runItemId: null,
+                    operationId: null,
+                    authoredAt);
+            }
+            ExecuteRaw(connection, "COMMIT");
+            return updated;
         }
-        return updated;
-    }
-
-    /// <summary>
-    /// Re-stamps only the four owning-work-group columns
-    /// (<see cref="NoteRecord.WorkGroup"/>, <see cref="NoteRecord.WorkGroupCode"/>,
-    /// <see cref="NoteRecord.WorkGroupNames"/>, <see cref="NoteRecord.WorkGroupCodes"/>)
-    /// on an existing note, leaving every other field — including prose,
-    /// <c>NeedsNote</c>, and all timestamps — untouched. Used by the one-off
-    /// owning-WG re-stamp maintenance command; deliberately does <em>not</em> set
-    /// <c>SavedAt</c>/<c>GeneratedAt</c>/<c>AuthoredAt</c>/<c>HydratedAt</c>.
-    /// Returns <c>true</c> when a row was updated.
-    /// </summary>
-    public bool UpdateNoteWorkGroups(
-        string noteId,
-        string workGroup,
-        string workGroupCode,
-        string workGroupNames,
-        string workGroupCodes)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(noteId);
-        NoteDetail? detail = GetNote(noteId);
-        if (detail is null)
+        catch
         {
-            return false;
+            ExecuteRaw(connection, "ROLLBACK");
+            throw;
         }
-        ReallocateWorkGroupsLegacyAsync(
-            new BallotNotesWorkGroupReallocationRequest(
-                [
-                    new BallotNoteWorkGroupReallocation(
-                        noteId,
-                        detail.Note.CurrentEvidenceRevision,
-                        workGroup,
-                        workGroupCode,
-                        workGroupNames,
-                        workGroupCodes),
-                ]),
-            ct: CancellationToken.None).GetAwaiter().GetResult();
-        return true;
     }
 
     /// <summary>
@@ -1098,6 +1073,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         ArgumentNullException.ThrowIfNull(filter);
 
         using SqliteConnection connection = OpenConnection();
+        BallotNoteReceiptValidation.RegisterFunctions(connection);
         using SqliteCommand cmd = connection.CreateCommand();
 
         List<string> conditions = [];
@@ -1123,11 +1099,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
         }
         if (string.Equals(filter.Status, "authored", StringComparison.OrdinalIgnoreCase))
         {
-            conditions.Add(
-                "r.Id IS NOT NULL AND i.Status = 'complete' " +
-                "AND n.ProseVerificationStatus = 'receipt-backed' " +
-                "AND n.ProseHydrationExecutionId = n.CurrentHydrationExecutionId " +
-                "AND n.ProseEvidenceRevision = n.CurrentEvidenceRevision");
+            conditions.Add("n.IsCurrentProseReceiptBacked = 1");
         }
         else if (string.Equals(filter.Status, "awaiting-note", StringComparison.OrdinalIgnoreCase))
         {
@@ -1154,10 +1126,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
                 "OR n.ProposedBallotNoteHtml <> '' " +
                 "OR n.RollupSummaryMarkdown <> '' " +
                 "OR n.NotesForReviewerMarkdown <> '') " +
-                "AND NOT (r.Id IS NOT NULL AND i.Status = 'complete' " +
-                "AND n.ProseVerificationStatus = 'receipt-backed' " +
-                "AND n.ProseHydrationExecutionId = n.CurrentHydrationExecutionId " +
-                "AND n.ProseEvidenceRevision = n.CurrentEvidenceRevision)");
+                "AND n.IsCurrentProseReceiptBacked = 0");
         }
 
         string where = conditions.Count > 0 ? " WHERE " + string.Join(" AND ", conditions) : string.Empty;
@@ -1165,16 +1134,26 @@ public sealed class BallotNotesDatabase : SourceDatabase
         int offset = filter.Offset < 0 ? 0 : filter.Offset;
 
         cmd.CommandText =
-            "SELECT n.NoteId, n.Type, n.Name, n.RepoOwner, n.RepoName, n.WorkGroup, n.WorkGroupCode, n.NeedsNote, " +
-            "n.CommitsInWindow, n.TicketsAttributed, n.HydratedAt, n.AuthoredAt, n.GeneratedAt, " +
-            "n.CurrentHydrationExecutionId, n.CurrentEvidenceRevision, n.ProseVerificationStatus, " +
-            "n.ProseHydrationExecutionId, n.ProseEvidenceRevision, n.ProposedBallotNoteHtml, " +
-            "n.RollupSummaryMarkdown, n.NotesForReviewerMarkdown, " +
-            "CASE WHEN r.Id IS NOT NULL AND i.Status = 'complete' THEN 1 ELSE 0 END " +
-            $"FROM \"{NoteRecord.DefaultTableName}\" n " +
-            "LEFT JOIN authoring_result_receipts r ON r.OperationId = n.CurrentAuthoringOperationId " +
-            "LEFT JOIN authoring_run_items i ON i.Id = r.RunItemId AND i.AcceptedReceiptId = r.Id " +
-            $"{where} ORDER BY n.WorkGroupCode, n.Type, n.Name LIMIT $limit OFFSET $offset";
+            $"""
+            WITH note_rows AS (
+                SELECT n.*,
+                       CASE WHEN {BallotNoteReceiptValidation.CurrentReceiptBackedPredicate}
+                            THEN 1 ELSE 0 END AS IsCurrentProseReceiptBacked
+                FROM "{NoteRecord.DefaultTableName}" n
+            )
+            SELECT n.NoteId, n.Type, n.Name, n.RepoOwner, n.RepoName,
+                   n.WorkGroup, n.WorkGroupCode, n.NeedsNote,
+                   n.CommitsInWindow, n.TicketsAttributed, n.HydratedAt,
+                   n.AuthoredAt, n.GeneratedAt, n.CurrentHydrationExecutionId,
+                   n.CurrentEvidenceRevision, n.ProseVerificationStatus,
+                   n.ProseHydrationExecutionId, n.ProseEvidenceRevision,
+                   n.ProposedBallotNoteHtml, n.RollupSummaryMarkdown,
+                   n.NotesForReviewerMarkdown, n.IsCurrentProseReceiptBacked
+            FROM note_rows n
+            {where}
+            ORDER BY n.WorkGroupCode, n.Type, n.Name
+            LIMIT $limit OFFSET $offset
+            """;
         cmd.Parameters.AddWithValue("$limit", limit);
         cmd.Parameters.AddWithValue("$offset", offset);
 
@@ -1462,7 +1441,7 @@ public sealed class BallotNotesDatabase : SourceDatabase
             {
                 mode.CommandText =
                     """
-                    SELECT Mode, Epoch
+                    SELECT Mode, Epoch, RevalidationRequired, RevalidationRunId
                     FROM authoring_processor_modes
                     WHERE ProcessorKind = $processorKind
                     """;
@@ -1481,6 +1460,12 @@ public sealed class BallotNotesDatabase : SourceDatabase
                         "BallotNotes run-backed authoring is not active.");
                 }
                 epoch = reader.GetInt64(1);
+                if (reader.GetBoolean(2))
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.RevalidationRequired,
+                        $"Initial revalidation run '{(reader.IsDBNull(3) ? null : reader.GetString(3))}' must complete before ordinary BallotNotes runs can start.");
+                }
             }
 
             List<(string RunId, bool DatabaseOnly)> overlappingRuns = [];
@@ -1509,12 +1494,20 @@ public sealed class BallotNotesDatabase : SourceDatabase
                     FROM authoring_runs r
                     INNER JOIN authoring_run_items i ON i.RunId = r.Id
                     WHERE r.ProcessorKind = $processorKind
+                      AND r.Status <> $runSuperseded
+                      AND i.Status <> $itemSuperseded
                       AND ({string.Join(" OR ", predicates)})
                     ORDER BY r.RowId
                     """;
                 overlaps.Parameters.AddWithValue(
                     "$processorKind",
                     AuthoringProcessorKind);
+                overlaps.Parameters.AddWithValue(
+                    "$runSuperseded",
+                    AuthoringStatusValues.Runs.Superseded);
+                overlaps.Parameters.AddWithValue(
+                    "$itemSuperseded",
+                    AuthoringStatusValues.Items.Superseded);
                 using SqliteDataReader reader = overlaps.ExecuteReader();
                 while (reader.Read())
                 {
@@ -1730,64 +1723,9 @@ public sealed class BallotNotesDatabase : SourceDatabase
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            List<string> noteIds = [];
-            await using (SqliteCommand command = connection.CreateCommand())
-            {
-                command.CommandText = "SELECT NoteId FROM notes ORDER BY RowId";
-                await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
-                while (await reader.ReadAsync(ct))
-                {
-                    noteIds.Add(reader.GetString(0));
-                }
-            }
-
-            int classified = 0;
-            foreach (string noteId in noteIds)
-            {
-                NoteRecord note = ReadNote(connection, noteId)!;
-                bool currentReceipt = IsCurrentProseReceiptBacked(connection, note);
-                if (currentReceipt)
-                {
-                    continue;
-                }
-
-                string evidenceHash = string.IsNullOrWhiteSpace(note.CurrentEvidenceHash)
-                    ? ComputeStoredEvidenceHash(connection, noteId)
-                    : note.CurrentEvidenceHash;
-                string evidenceRevision = string.IsNullOrWhiteSpace(note.CurrentEvidenceRevision)
-                    ? evidenceHash
-                    : note.CurrentEvidenceRevision;
-                BallotNoteProse prose = ToProse(note);
-                await UpsertAuthoringStateAsync(
-                    connection,
-                    noteId,
-                    "legacy-unverified",
-                    evidenceHash,
-                    evidenceRevision,
-                    ComputeProseHash(prose),
-                    note.CurrentHydrationExecutionId,
-                    null,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow,
-                    ct);
-                await ExecuteAsync(
-                    connection,
-                    """
-                    UPDATE notes
-                    SET CurrentEvidenceHash = @evidenceHash,
-                        CurrentEvidenceRevision = @evidenceRevision,
-                        ProseVerificationStatus = 'legacy-unverified',
-                        CurrentAuthoringOperationId = ''
-                    WHERE NoteId = @noteId
-                    """,
-                    ct,
-                    ("@evidenceHash", evidenceHash),
-                    ("@evidenceRevision", evidenceRevision),
-                    ("@noteId", noteId));
-                classified++;
-            }
-
+            int classified = await ClassifyLegacyNotesCoreAsync(
+                connection,
+                ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
             return classified;
         }
@@ -1796,6 +1734,107 @@ public sealed class BallotNotesDatabase : SourceDatabase
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    public async Task<AuthoringCutoverPreparation> PrepareCutoverAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await ClassifyLegacyNotesCoreAsync(connection, ct);
+        NotesHydrationExecutionRecord baseline =
+            await BuildCutoverBaselineExecutionCoreAsync(
+                connection,
+                Guid.NewGuid().ToString("N"),
+                "cutover-baseline",
+                "cutover-baseline",
+                ct);
+        List<AuthoringRunItemDefinition> items = [];
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT h.NoteId, h.Type, h.EvidenceRevision
+            FROM notes_hydration_run_items h
+            INNER JOIN note_authoring_state s
+                ON s.NoteId = h.NoteId
+            WHERE h.ExecutionId = @executionId
+              AND h.Status = 'completed'
+              AND s.Classification = 'legacy-unverified'
+            ORDER BY h.ItemOrder
+            """;
+        command.Parameters.AddWithValue("@executionId", baseline.Id);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(new AuthoringRunItemDefinition(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+        return new AuthoringCutoverPreparation(items);
+    }
+
+    private async Task<int> ClassifyLegacyNotesCoreAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        List<string> noteIds = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT NoteId FROM notes ORDER BY RowId";
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                noteIds.Add(reader.GetString(0));
+            }
+        }
+
+        int classified = 0;
+        foreach (string noteId in noteIds)
+        {
+            NoteRecord note = ReadNote(connection, noteId)!;
+            if (IsCurrentProseReceiptBacked(connection, note))
+            {
+                continue;
+            }
+
+            string evidenceHash = string.IsNullOrWhiteSpace(note.CurrentEvidenceHash)
+                ? ComputeStoredEvidenceHash(connection, noteId)
+                : note.CurrentEvidenceHash;
+            string evidenceRevision =
+                string.IsNullOrWhiteSpace(note.CurrentEvidenceRevision)
+                    ? evidenceHash
+                    : note.CurrentEvidenceRevision;
+            BallotNoteProse prose = ToProse(note);
+            await UpsertAuthoringStateAsync(
+                connection,
+                noteId,
+                "legacy-unverified",
+                evidenceHash,
+                evidenceRevision,
+                ComputeProseHash(prose),
+                note.CurrentHydrationExecutionId,
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow,
+                ct);
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE notes
+                SET CurrentEvidenceHash = @evidenceHash,
+                    CurrentEvidenceRevision = @evidenceRevision,
+                    ProseVerificationStatus = 'legacy-unverified',
+                    CurrentAuthoringOperationId = ''
+                WHERE NoteId = @noteId
+                """,
+                ct,
+                ("@evidenceHash", evidenceHash),
+                ("@evidenceRevision", evidenceRevision),
+                ("@noteId", noteId));
+            classified++;
+        }
+        return classified;
     }
 
     public async Task<int> CountLegacyUnverifiedAsync(CancellationToken ct = default)
@@ -1822,84 +1861,13 @@ public sealed class BallotNotesDatabase : SourceDatabase
             try
             {
                 EnsureMutationLease(connection, lease);
-                DateTimeOffset now = DateTimeOffset.UtcNow;
-                string runKey = $"cutover-baseline@{now:O}";
-                NotesHydrationExecutionRecord execution = new()
-                {
-                    Id = executionId,
-                    RunKey = runKey,
-                    RepoOwner = "*",
-                    RepoName = "*",
-                    SinceSha = "cutover-baseline",
-                    SinceShortSha = "baseline",
-                    HeadSha = "cutover-baseline",
-                    HeadShortSha = "baseline",
-                    Status = "completed",
-                    MutationRunId = lease.RunId,
-                    MutationLeaseId = lease.LeaseId,
-                    IsCutoverBaseline = true,
-                    StartedAt = now,
-                    CompletedAt = now,
-                };
-
-                List<string> noteIds = [];
-                await using (SqliteCommand list = connection.CreateCommand())
-                {
-                    list.CommandText = "SELECT NoteId FROM notes ORDER BY RowId";
-                    await using SqliteDataReader reader = await list.ExecuteReaderAsync(ct);
-                    while (await reader.ReadAsync(ct))
-                    {
-                        noteIds.Add(reader.GetString(0));
-                    }
-                }
-                execution.UnitsTotal = noteIds.Count;
-                execution.UnitsHydrated = noteIds.Count;
-                InsertRecord(
-                    connection,
-                    NotesHydrationExecutionRecord.DefaultTableName,
-                    execution);
-
-                int order = 0;
-                foreach (string noteId in noteIds)
-                {
-                    NoteRecord note = ReadNote(connection, noteId)!;
-                    string evidenceHash = ComputeStoredEvidenceHash(connection, noteId);
-                    string evidenceRevision = AuthoringResultHasher.HashNormalizedUtf8(
-                        $"{executionId}\n{evidenceHash}");
-                    InsertRecord(
+                NotesHydrationExecutionRecord execution =
+                    await BuildCutoverBaselineExecutionCoreAsync(
                         connection,
-                        NotesHydrationRunItemRecord.DefaultTableName,
-                        new NotesHydrationRunItemRecord
-                    {
-                        Id = Guid.NewGuid().ToString("N"),
-                        ExecutionId = executionId,
-                        NoteId = note.NoteId,
-                        Type = note.Type,
-                        ItemOrder = order++,
-                        Status = "completed",
-                        EvidenceHash = evidenceHash,
-                        EvidenceRevision = evidenceRevision,
-                        HydratedAt = now,
-                    });
-                    await ExecuteAsync(
-                        connection,
-                        """
-                        UPDATE notes
-                        SET CurrentHydrationExecutionId = @executionId,
-                            CurrentEvidenceHash = @evidenceHash,
-                            CurrentEvidenceRevision = @evidenceRevision,
-                            ProseVerificationStatus = CASE
-                                WHEN AuthoredAt IS NULL THEN ProseVerificationStatus
-                                ELSE 'legacy-unverified'
-                            END
-                        WHERE NoteId = @noteId
-                        """,
-                        ct,
-                        ("@executionId", executionId),
-                        ("@evidenceHash", evidenceHash),
-                        ("@evidenceRevision", evidenceRevision),
-                        ("@noteId", noteId));
-                }
+                        executionId,
+                        lease.RunId,
+                        lease.LeaseId,
+                        ct);
 
                 await ExecuteRawAsync(connection, "COMMIT", ct);
                 return execution;
@@ -1910,33 +1878,109 @@ public sealed class BallotNotesDatabase : SourceDatabase
                 throw;
             }
         }
+
         finally
         {
             ReleaseMutationLease(lease);
         }
     }
 
+    private async Task<NotesHydrationExecutionRecord>
+        BuildCutoverBaselineExecutionCoreAsync(
+            SqliteConnection connection,
+            string executionId,
+            string mutationRunId,
+            string mutationLeaseId,
+            CancellationToken ct)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        NotesHydrationExecutionRecord execution = new()
+        {
+            Id = executionId,
+            RunKey = $"cutover-baseline@{now:O}",
+            RepoOwner = "*",
+            RepoName = "*",
+            SinceSha = "cutover-baseline",
+            SinceShortSha = "baseline",
+            HeadSha = "cutover-baseline",
+            HeadShortSha = "baseline",
+            Status = "completed",
+            MutationRunId = mutationRunId,
+            MutationLeaseId = mutationLeaseId,
+            IsCutoverBaseline = true,
+            StartedAt = now,
+            CompletedAt = now,
+        };
+
+        List<string> noteIds = [];
+        await using (SqliteCommand list = connection.CreateCommand())
+        {
+            list.CommandText = "SELECT NoteId FROM notes ORDER BY RowId";
+            await using SqliteDataReader reader = await list.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                noteIds.Add(reader.GetString(0));
+            }
+        }
+        execution.UnitsTotal = noteIds.Count;
+        execution.UnitsHydrated = noteIds.Count;
+        InsertRecord(
+            connection,
+            NotesHydrationExecutionRecord.DefaultTableName,
+            execution);
+
+        int order = 0;
+        foreach (string noteId in noteIds)
+        {
+            NoteRecord note = ReadNote(connection, noteId)!;
+            string evidenceHash = string.IsNullOrWhiteSpace(
+                note.CurrentEvidenceHash)
+                ? ComputeStoredEvidenceHash(connection, noteId)
+                : note.CurrentEvidenceHash;
+            string evidenceRevision = string.IsNullOrWhiteSpace(
+                note.CurrentEvidenceRevision)
+                ? evidenceHash
+                : note.CurrentEvidenceRevision;
+            InsertRecord(
+                connection,
+                NotesHydrationRunItemRecord.DefaultTableName,
+                new NotesHydrationRunItemRecord
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    ExecutionId = executionId,
+                    NoteId = note.NoteId,
+                    Type = note.Type,
+                    ItemOrder = order++,
+                    Status = "completed",
+                    EvidenceHash = evidenceHash,
+                    EvidenceRevision = evidenceRevision,
+                    HydratedAt = now,
+                });
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE notes
+                SET CurrentHydrationExecutionId = @executionId,
+                    CurrentEvidenceHash = @evidenceHash,
+                    CurrentEvidenceRevision = @evidenceRevision,
+                    ProseVerificationStatus = CASE
+                        WHEN AuthoredAt IS NULL THEN ProseVerificationStatus
+                        ELSE 'legacy-unverified'
+                    END
+                WHERE NoteId = @noteId
+                """,
+                ct,
+                ("@executionId", executionId),
+                ("@evidenceHash", evidenceHash),
+                ("@evidenceRevision", evidenceRevision),
+                ("@noteId", noteId));
+        }
+        return execution;
+    }
+
     public async Task<BallotNotesWorkGroupReallocationResult> ReallocateWorkGroupsAsync(
         BallotNotesWorkGroupReallocationRequest request,
         CancellationToken ct = default)
-        => await ReallocateWorkGroupsAsync(
-            request,
-            requireLegacyMode: false,
-            ct: ct);
-
-    public async Task<BallotNotesWorkGroupReallocationResult>
-        ReallocateWorkGroupsLegacyAsync(
-            BallotNotesWorkGroupReallocationRequest request,
-            CancellationToken ct = default)
-        => await ReallocateWorkGroupsAsync(
-            request,
-            requireLegacyMode: true,
-            ct: ct);
-
-    private async Task<BallotNotesWorkGroupReallocationResult> ReallocateWorkGroupsAsync(
-        BallotNotesWorkGroupReallocationRequest request,
-        bool requireLegacyMode,
-        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Changes.Count == 0)
@@ -1949,11 +1993,6 @@ public sealed class BallotNotesDatabase : SourceDatabase
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            if (requireLegacyMode)
-            {
-                await EnsureLegacyModeAsync(connection, ct);
-            }
-
             string runId =
                 $"maintenance:{_mutationOwnerGeneration}:workgroup-reallocation:{operationId}";
             string leaseId = Guid.NewGuid().ToString("N");
@@ -2028,37 +2067,6 @@ public sealed class BallotNotesDatabase : SourceDatabase
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
-    }
-
-    private static async Task EnsureLegacyModeAsync(
-        SqliteConnection connection,
-        CancellationToken ct)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT Mode
-            FROM authoring_processor_modes
-            WHERE ProcessorKind = @processorKind
-            """;
-        command.Parameters.AddWithValue(
-            "@processorKind",
-            AuthoringProcessorKind);
-        string? mode = Convert.ToString(await command.ExecuteScalarAsync(ct));
-        if (string.IsNullOrWhiteSpace(mode) ||
-            string.Equals(
-                mode,
-                AuthoringStatusValues.ProcessorModes.Legacy,
-                StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        throw new AuthoringConflictException(
-            mode == AuthoringStatusValues.ProcessorModes.CuttingOver
-                ? AuthoringConflictCode.CutoverInProgress
-                : AuthoringConflictCode.AuthoringNotActivated,
-            $"Direct workgroup reallocation is unavailable while processor mode is '{mode}'.");
     }
 
     public async Task<IReadOnlyList<string>> ListRunsReadyForFinalizationAsync(
@@ -2155,28 +2163,13 @@ public sealed class BallotNotesDatabase : SourceDatabase
         CancellationToken ct = default)
     {
         await using SqliteConnection connection = OpenConnection();
+        BallotNoteReceiptValidation.RegisterFunctions(connection);
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
-            """
+            $"""
             SELECT COUNT(*)
             FROM notes n
-            INNER JOIN notes_hydration_run_items h
-                ON h.ExecutionId = n.CurrentHydrationExecutionId
-               AND h.NoteId = n.NoteId
-               AND h.Type = n.Type
-               AND h.EvidenceRevision = n.CurrentEvidenceRevision
-               AND h.Status = 'completed'
-            INNER JOIN authoring_result_receipts r
-                ON r.OperationId = n.CurrentAuthoringOperationId
-               AND r.BusinessKey = n.NoteId
-               AND r.ExpectedSourceRevision = n.CurrentEvidenceRevision
-            INNER JOIN authoring_run_items i
-                ON i.Id = r.RunItemId
-               AND i.AcceptedReceiptId = r.Id
-               AND i.Status = 'complete'
-            WHERE n.ProseVerificationStatus = 'receipt-backed'
-              AND n.ProseHydrationExecutionId = n.CurrentHydrationExecutionId
-              AND n.ProseEvidenceRevision = n.CurrentEvidenceRevision
+            WHERE {BallotNoteReceiptValidation.CurrentReceiptBackedPredicate}
             """;
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(ct),
@@ -2647,6 +2640,32 @@ public sealed class BallotNotesDatabase : SourceDatabase
         }
     }
 
+    private static void EnsureLegacyAuthoringMode(
+        SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Mode
+            FROM authoring_processor_modes
+            WHERE ProcessorKind = $processorKind
+            """;
+        command.Parameters.AddWithValue(
+            "$processorKind",
+            AuthoringProcessorKind);
+        string? mode = Convert.ToString(command.ExecuteScalar());
+        if (string.IsNullOrWhiteSpace(mode) ||
+            mode == AuthoringStatusValues.ProcessorModes.Legacy)
+        {
+            return;
+        }
+        throw new AuthoringConflictException(
+            mode == AuthoringStatusValues.ProcessorModes.CuttingOver
+                ? AuthoringConflictCode.CutoverInProgress
+                : AuthoringConflictCode.AuthoringNotActivated,
+            $"Legacy ballot-note prose writes are unavailable while processor mode is '{mode}'.");
+    }
+
     private static void EnsureHydrationLease(
         SqliteConnection connection,
         string executionId,
@@ -2885,33 +2904,18 @@ public sealed class BallotNotesDatabase : SourceDatabase
         SqliteConnection connection,
         NoteRecord note)
     {
-        if (string.IsNullOrWhiteSpace(note.CurrentAuthoringOperationId))
-        {
-            return false;
-        }
+        BallotNoteReceiptValidation.RegisterFunctions(connection);
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
-            """
-            SELECT EXISTS(
-                SELECT 1
-                FROM authoring_result_receipts r
-                INNER JOIN authoring_run_items i
-                    ON i.Id = r.RunItemId AND i.AcceptedReceiptId = r.Id
-                WHERE r.OperationId = $operationId
-                  AND r.BusinessKey = $noteId COLLATE NOCASE
-                  AND r.ExpectedSourceRevision = $evidenceRevision
-                  AND i.Status = 'complete'
-            )
+            $"""
+            SELECT CASE WHEN {BallotNoteReceiptValidation.CurrentReceiptBackedPredicate}
+                        THEN 1 ELSE 0 END
+            FROM notes n
+            WHERE n.NoteId = $noteId COLLATE NOCASE
             """;
-        command.Parameters.AddWithValue(
-            "$operationId",
-            note.CurrentAuthoringOperationId);
         command.Parameters.AddWithValue("$noteId", note.NoteId);
-        command.Parameters.AddWithValue(
-            "$evidenceRevision",
-            note.CurrentEvidenceRevision);
         return Convert.ToInt32(
-            command.ExecuteScalar(),
+            command.ExecuteScalar() ?? 0,
             CultureInfo.InvariantCulture) != 0;
     }
 

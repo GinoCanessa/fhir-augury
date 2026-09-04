@@ -61,9 +61,9 @@ public static class Program
             ballotnotes-reallocate-wg — re-stamp owning Work Groups on existing ballot notes.
 
             Re-runs ONLY the deterministic owning-WG resolver over the rows already in
-            the notes DB and writes the corrected WorkGroup / WorkGroupCode /
-            WorkGroupNames / WorkGroupCodes back in place. No commit-window walk, no
-            structural diff, no AI/prose authoring; every other field is preserved.
+            the notes DB and submits corrected WorkGroup / WorkGroupCode /
+            WorkGroupNames / WorkGroupCodes through the processor-owned fenced batch
+            endpoint. No commit-window walk, structural diff, or AI/prose authoring.
 
             Usage:
               ballotnotes-reallocate-wg reallocate --clone <path> [options]
@@ -72,6 +72,7 @@ public static class Program
             reallocate options:
               --clone <path>        Local repo clone for repo-read + DataType HEAD listing (required).
               --db <path>           Notes SQLite DB to re-stamp (default: ./cache/ballot-notes.db).
+              --processor <url>     BallotNotes processor URL (required unless --dry-run).
               --repo <owner/name>   Restrict the run to one repository (required if the DB spans repos).
               --dry-run             Print intended per-note changes; write nothing (opens the DB read-only).
               --github-db <path>    Read-only GitHub source DB (default: ./cache/github.db).
@@ -81,7 +82,7 @@ public static class Program
               --allow-stale-clone   Skip the clone HEAD == note HeadSha guard.
               --allow-mixed-heads   Allow selected notes to span multiple HeadSha values.
 
-            After a write run, regenerate the notes-site SPA / index-notes so groupings reflect the new owners.
+            After a write run, regenerate the review site from the next trusted BallotNotes snapshot.
             """);
     }
 }

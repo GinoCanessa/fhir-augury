@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using FhirAugury.Common.IO;
 using FhirAugury.Processing.Contracts;
-using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.TicketSite;
 
@@ -13,8 +12,6 @@ public static class Program
 {
     private const string DefaultTitle = "Ticket Site";
     private const string DefaultOutSubpath = "cache/jira-ticket-site";
-    private const string DefaultPreparerDb = "./cache/jira-preparer.db";
-    private const string DefaultPlannerDb = "./cache/jira-planner.db";
 
     public static Task<int> Main(string[] args) => RunAsync(args);
 
@@ -36,68 +33,36 @@ public static class Program
         }
 
         int inputCount =
-            (options.PreparerDbSupplied ? 1 : 0) +
-            (options.PlannerDbSupplied ? 1 : 0) +
             (options.PreparerSnapshotSupplied ? 1 : 0) +
             (options.PlannerSnapshotSupplied ? 1 : 0);
-        if (options.PreparerDbSupplied && options.PlannerDbSupplied)
-        {
-            await Console.Error.WriteLineAsync(
-                "--preparer-db and --planner-db are mutually exclusive; build one sub-site per invocation.")
-                .ConfigureAwait(false);
-            return 2;
-        }
         if (inputCount != 1)
         {
             await Console.Error.WriteLineAsync(
-                "Specify either --preparer-db, --planner-db, --preparer-snapshot, or --planner-snapshot (exactly one).")
+                "Specify either --preparer-snapshot or --planner-snapshot (exactly one).")
                 .ConfigureAwait(false);
             return 2;
         }
-        if (options.SnapshotMode && string.IsNullOrWhiteSpace(options.SnapshotDescriptorPath))
+        if (string.IsNullOrWhiteSpace(options.SnapshotDescriptorPath))
         {
             await Console.Error.WriteLineAsync(
                 "Snapshot mode requires --snapshot-descriptor <path>.").ConfigureAwait(false);
-            return 2;
-        }
-        if (!options.SnapshotMode && options.SnapshotDescriptorPath is not null)
-        {
-            await Console.Error.WriteLineAsync(
-                "--snapshot-descriptor is valid only with --preparer-snapshot or --planner-snapshot.")
-                .ConfigureAwait(false);
-            return 2;
-        }
-        if (options.SnapshotMode &&
-            (options.JiraSourceUrl is not null || options.JiraSourceDbPath is not null))
-        {
-            await Console.Error.WriteLineAsync(
-                "Snapshot mode is self-contained and does not accept --jira-source or --jira-source-db.")
-                .ConfigureAwait(false);
             return 2;
         }
 
         string kind;
         string subSiteFolder;
         string dbPath;
-        if (options.PreparerDbSupplied || options.PreparerSnapshotSupplied)
+        if (options.PreparerSnapshotSupplied)
         {
             kind = PreparerSubSiteEmitter.Kind;
             subSiteFolder = PreparerSubSiteEmitter.SubSiteFolder;
-            dbPath = options.SnapshotMode
-                ? options.PreparerSnapshotPath!
-                : string.IsNullOrEmpty(options.PreparerDbPath)
-                    ? DefaultPreparerDb
-                    : options.PreparerDbPath;
+            dbPath = options.PreparerSnapshotPath!;
         }
         else
         {
             kind = PlannerSubSiteEmitter.Kind;
             subSiteFolder = PlannerSubSiteEmitter.SubSiteFolder;
-            dbPath = options.SnapshotMode
-                ? options.PlannerSnapshotPath!
-                : string.IsNullOrEmpty(options.PlannerDbPath)
-                    ? DefaultPlannerDb
-                    : options.PlannerDbPath;
+            dbPath = options.PlannerSnapshotPath!;
         }
 
         string resolvedDb = Path.GetFullPath(dbPath);
@@ -111,66 +76,17 @@ public static class Program
             return 1;
         }
 
-        if (options.SnapshotMode)
-        {
-            int exit = await EmitSnapshotSubSiteAsync(
-                options,
-                kind,
-                resolvedDb,
-                subSiteOut,
-                title).ConfigureAwait(false);
-            if (exit != 0) return exit;
-        }
-        else if (kind == PreparerSubSiteEmitter.Kind)
-        {
-            try
-            {
-                int exit = await EmitPreparerSubSiteAsync(
-                    options,
-                    resolvedDb,
-                    rootOut,
-                    subSiteOut,
-                    title);
-                if (exit != 0) return exit;
-            }
-            catch (Exception ex) when (
-                ex is IOException or UnauthorizedAccessException or
-                InvalidOperationException)
-            {
-                await Console.Error.WriteLineAsync(
-                    $"Ticket site publication failed: {ex.Message}").ConfigureAwait(false);
-                return 1;
-            }
-        }
-        else
-        {
-            try
-            {
-                int exit = await EmitPlannerSubSiteAsync(
-                    options,
-                    resolvedDb,
-                    rootOut,
-                    subSiteOut,
-                    title);
-                if (exit != 0) return exit;
-            }
-            catch (Exception ex) when (
-                ex is IOException or UnauthorizedAccessException or
-                InvalidOperationException)
-            {
-                await Console.Error.WriteLineAsync(
-                    $"Ticket site publication failed: {ex.Message}").ConfigureAwait(false);
-                return 1;
-            }
-        }
+        int exit = await EmitSnapshotSubSiteAsync(
+            options,
+            kind,
+            resolvedDb,
+            subSiteOut,
+            title).ConfigureAwait(false);
+        if (exit != 0) return exit;
 
         // Always regenerate the chooser after a sub-site emit. It scans the
         // root dir for which sub-sites exist; no marker file of its own.
         ChooserPageEmitter.Emit(rootOut);
-        if (!options.SnapshotMode)
-        {
-            Console.WriteLine($"Updated chooser at {Path.Combine(rootOut, "index.html")}.");
-        }
         return 0;
 
         async Task<int> EmitSnapshotSubSiteAsync(
@@ -365,194 +281,6 @@ public static class Program
             return 0;
         }
 
-        async Task<int> EmitPreparerSubSiteAsync(CliOptions opts, string db, string root, string subOut, string siteTitle)
-        {
-            bool hydrated = await HydrationAssertion.AssertHydratedAsync(db, Console.Error, CancellationToken.None).ConfigureAwait(false);
-            if (!hydrated) return 1;
-
-            long preparedCount;
-            try
-            {
-                preparedCount = await CountAsync(db, "SELECT count(*) FROM prepared_tickets").ConfigureAwait(false);
-            }
-            catch (SqliteException ex)
-            {
-                await Console.Error.WriteLineAsync($"Database schema error: cannot read 'prepared_tickets' from {db}: {ex.Message}").ConfigureAwait(false);
-                return 1;
-            }
-
-            ResolvedFilters? f = await FilterResolver.TryResolveAsync(
-                db,
-                opts,
-                PreparerSubSiteEmitter.Kind,
-                Console.Error,
-                CancellationToken.None).ConfigureAwait(false);
-            if (f is null) return 1;
-
-            EchoResolvedFilter("--spec", opts.FilterSpec, f.Specification);
-            EchoResolvedFilter("--project", opts.FilterProject, f.Project);
-            EchoResolvedFilter("--wg", opts.FilterWorkGroup, f.WorkGroup);
-
-            PreparerDbTrimmer.BuildResult built =
-                await PreparerDbTrimmer.BuildAsync(db, f, CancellationToken.None).ConfigureAwait(false);
-            byte[] dbBytes;
-            IReadOnlyDictionary<string, long> embeddedCounts;
-            try
-            {
-                await JiraContentBackfill.ApplyAsync(built.TempDbPath, "prepared_tickets",
-                    "prepared_ticket_jira_content", opts.JiraSourceDbPath,
-                    finalizeWithVacuum: false, Console.Error,
-                    CancellationToken.None).ConfigureAwait(false);
-                await RelatedFieldsBackfill.ApplyAsync(built.TempDbPath, opts.JiraSourceDbPath, Console.Error, CancellationToken.None).ConfigureAwait(false);
-                dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
-                embeddedCounts = await HydrationAssertion.ReadManifestCountsAsync(
-                    built.TempDbPath,
-                    PreparerSubSiteEmitter.Kind,
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            finally
-            {
-                try { File.Delete(built.TempDbPath); } catch { }
-            }
-
-            long? filteredCount = f.HasAnyFilter ? built.SurvivingTicketCount : null;
-            string embeddedSha256 = ComputeSha256(dbBytes);
-            string buildIdentity = SiteBuildManifest.ComputeBuildIdentity(
-                PreparerSubSiteEmitter.Kind,
-                f,
-                siteTitle,
-                PreparerSubSiteEmitter.RendererAssetsVersion,
-                "legacy",
-                embeddedSha256);
-            await StagedDirectoryPublisher.PublishAsync(
-                subOut,
-                StagedDirectoryVersion.Legacy(
-                    TicketSiteOwner(PreparerSubSiteEmitter.Kind),
-                    buildIdentity),
-                (staging, _) =>
-                {
-                    PreparerSubSiteEmitter.Emit(staging, siteTitle, f, dbBytes);
-                    OutputDirGuard.WriteMarker(
-                        staging,
-                        PreparerSubSiteEmitter.Kind,
-                        f,
-                        DateTimeOffset.UtcNow);
-                    return Task.CompletedTask;
-                },
-                (staging, ct) => OutputDirGuard.ValidateLegacyStageAsync(
-                    staging,
-                    PreparerSubSiteEmitter.Kind,
-                    f,
-                    embeddedSha256,
-                    dbBytes.LongLength,
-                    embeddedCounts,
-                    ct),
-                new StagedDirectoryPublishOptions(
-                    opts.Force,
-                    (target, force, ct) => OutputDirGuard.ValidateLegacyReplacementAsync(
-                        target,
-                        PreparerSubSiteEmitter.Kind,
-                        f,
-                        force,
-                        ct)),
-                CancellationToken.None).ConfigureAwait(false);
-
-            double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
-            if (filteredCount is { } fc)
-            {
-                if (fc == 0) Console.WriteLine("0 prepared tickets match this filter.");
-                Console.WriteLine($"Wrote {fc} prepared tickets (filtered from {preparedCount}) to {Path.Combine(subOut, "index.html")} (DB inlined: {inlinedMb:0.0} MB).");
-            }
-            else
-            {
-                Console.WriteLine($"Wrote {preparedCount} prepared tickets to {Path.Combine(subOut, "index.html")} (DB inlined: {inlinedMb:0.0} MB).");
-            }
-            return 0;
-        }
-
-        async Task<int> EmitPlannerSubSiteAsync(CliOptions opts, string db, string root, string subOut, string siteTitle)
-        {
-            ResolvedFilters f = new(opts.FilterSpec, opts.FilterProject, opts.FilterWorkGroup);
-            // Always go through the trim pipeline so older planner DBs self-migrate
-            // and so downstream emit sees a consistent (filter, VACUUM) DB shape.
-            PlannerDbTrimmer.BuildResult built;
-            try
-            {
-                built = await PlannerDbTrimmer.BuildAsync(db, f, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (SqliteException ex)
-            {
-                await Console.Error.WriteLineAsync($"Database schema error: cannot trim planner DB at {db}: {ex.Message}").ConfigureAwait(false);
-                return 1;
-            }
-
-            try
-            {
-                long plannedCount = built.SurvivingTicketCount;
-                await JiraContentBackfill.ApplyAsync(built.TempDbPath, "planned_tickets",
-                    "planned_ticket_jira_content", opts.JiraSourceDbPath,
-                    finalizeWithVacuum: true, Console.Error,
-                    CancellationToken.None).ConfigureAwait(false);
-                byte[] dbBytes = await ReadAllBytesWithTransientRetryAsync(built.TempDbPath).ConfigureAwait(false);
-                IReadOnlyDictionary<string, long> embeddedCounts =
-                    await HydrationAssertion.ReadManifestCountsAsync(
-                        built.TempDbPath,
-                        PlannerSubSiteEmitter.Kind,
-                        CancellationToken.None).ConfigureAwait(false);
-                string embeddedSha256 = ComputeSha256(dbBytes);
-                string buildIdentity = SiteBuildManifest.ComputeBuildIdentity(
-                    PlannerSubSiteEmitter.Kind,
-                    f,
-                    siteTitle,
-                    PlannerSubSiteEmitter.RendererAssetsVersion,
-                    "legacy",
-                    embeddedSha256);
-                await StagedDirectoryPublisher.PublishAsync(
-                    subOut,
-                    StagedDirectoryVersion.Legacy(
-                        TicketSiteOwner(PlannerSubSiteEmitter.Kind),
-                        buildIdentity),
-                    (staging, _) =>
-                    {
-                        PlannerSubSiteEmitter.Emit(staging, siteTitle, f, dbBytes);
-                        OutputDirGuard.WriteMarker(
-                            staging,
-                            PlannerSubSiteEmitter.Kind,
-                            f,
-                            DateTimeOffset.UtcNow);
-                        return Task.CompletedTask;
-                    },
-                    (staging, ct) => OutputDirGuard.ValidateLegacyStageAsync(
-                        staging,
-                        PlannerSubSiteEmitter.Kind,
-                        f,
-                        embeddedSha256,
-                        dbBytes.LongLength,
-                        embeddedCounts,
-                        ct),
-                    new StagedDirectoryPublishOptions(
-                        opts.Force,
-                        (target, force, ct) => OutputDirGuard.ValidateLegacyReplacementAsync(
-                            target,
-                            PlannerSubSiteEmitter.Kind,
-                            f,
-                            force,
-                            ct)),
-                    CancellationToken.None).ConfigureAwait(false);
-
-                double inlinedMb = dbBytes.Length / 1024.0 / 1024.0;
-                if (f.HasAnyFilter && plannedCount == 0)
-                {
-                    Console.WriteLine("0 planned tickets match this filter.");
-                }
-                Console.WriteLine($"Wrote {plannedCount} planned tickets to {Path.Combine(subOut, "index.html")} (DB inlined: {inlinedMb:0.0} MB).");
-                return 0;
-            }
-            finally
-            {
-                try { File.Delete(built.TempDbPath); } catch { }
-            }
-        }
     }
 
     private static void EchoResolvedFilter(string flag, string? raw, string? canonical)
@@ -564,20 +292,9 @@ public static class Program
         }
     }
 
-    private static async Task<long> CountAsync(string dbPath, string sql)
-    {
-        SqliteConnectionStringBuilder builder = new() { DataSource = dbPath, Mode = SqliteOpenMode.ReadOnly };
-        await using SqliteConnection connection = new(builder.ConnectionString);
-        await connection.OpenAsync().ConfigureAwait(false);
-        await using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = sql;
-        object? result = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
-        return result is long l ? l : Convert.ToInt64(result);
-    }
-
     // Read the just-trimmed temp DB tolerating a transient Windows sharing
     // violation. With Pooling=false on the temp-DB SqliteConnection (see
-    // PreparerDbTrimmer / PlannerDbTrimmer / RelatedFieldsBackfill), the
+    // PreparerDbTrimmer / PlannerDbTrimmer), the
     // native file handle is released synchronously on Dispose; AV scanners
     // and the OS file-cache flush can then briefly hold the freshly
     // released file in a way that races a vanilla File.ReadAllBytesAsync.
@@ -690,10 +407,6 @@ public static class Program
 
     private static bool TryParseArgs(string[] args, out CliOptions options, out string? error)
     {
-        string? preparerDb = null;
-        bool preparerSupplied = false;
-        string? plannerDb = null;
-        bool plannerSupplied = false;
         string? preparerSnapshot = null;
         bool preparerSnapshotSupplied = false;
         string? plannerSnapshot = null;
@@ -704,8 +417,6 @@ public static class Program
         string? filterSpec = null;
         string? filterProject = null;
         string? filterWg = null;
-        string? jiraSourceUrl = null;
-        string? jiraSourceDbPath = null;
         bool force = false;
         bool help = false;
 
@@ -714,14 +425,6 @@ public static class Program
             string arg = args[i];
             switch (arg)
             {
-                case "--preparer-db":
-                    preparerSupplied = true;
-                    if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal)) preparerDb = args[++i];
-                    break;
-                case "--planner-db":
-                    plannerSupplied = true;
-                    if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal)) plannerDb = args[++i];
-                    break;
                 case "--preparer-snapshot":
                     preparerSnapshotSupplied = true;
                     if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
@@ -771,14 +474,6 @@ public static class Program
                     if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
                     filterWg = args[++i];
                     break;
-                case "--jira-source":
-                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
-                    jiraSourceUrl = args[++i];
-                    break;
-                case "--jira-source-db":
-                    if (i + 1 >= args.Length) { options = Default(); error = $"Missing value for {arg}"; return false; }
-                    jiraSourceDbPath = args[++i];
-                    break;
                 case "--force":
                     force = true;
                     break;
@@ -794,10 +489,6 @@ public static class Program
         }
 
         options = new CliOptions(
-            PreparerDbPath: preparerDb,
-            PreparerDbSupplied: preparerSupplied,
-            PlannerDbPath: plannerDb,
-            PlannerDbSupplied: plannerSupplied,
             PreparerSnapshotPath: preparerSnapshot,
             PreparerSnapshotSupplied: preparerSnapshotSupplied,
             PlannerSnapshotPath: plannerSnapshot,
@@ -808,8 +499,6 @@ public static class Program
             FilterSpec: filterSpec,
             FilterProject: filterProject,
             FilterWorkGroup: filterWg,
-            JiraSourceUrl: jiraSourceUrl,
-            JiraSourceDbPath: jiraSourceDbPath,
             Force: force,
             Help: help);
         error = null;
@@ -821,14 +510,8 @@ public static class Program
             null,
             false,
             null,
-            false,
-            null,
-            false,
-            null,
             null,
             DefaultTitle,
-            null,
-            null,
             null,
             null,
             null,
@@ -840,12 +523,9 @@ public static class Program
     {
         w.WriteLine();
         w.WriteLine(
-            "Usage: ticket-site (--preparer-db <path> | --planner-db <path> | " +
-            "--preparer-snapshot <path> | --planner-snapshot <path>) [options]");
+            "Usage: ticket-site (--preparer-snapshot <path> | --planner-snapshot <path>) [options]");
         w.WriteLine();
-        w.WriteLine("  Exactly one database or snapshot input is required.");
-        w.WriteLine($"  --preparer-db <path>   Path to preparer SQLite DB (default: {DefaultPreparerDb}). Builds discussion/.");
-        w.WriteLine($"  --planner-db <path>    Path to planner SQLite DB (default: {DefaultPlannerDb}). Builds applying/.");
+        w.WriteLine("  Exactly one immutable processor snapshot input is required.");
         w.WriteLine("  --preparer-snapshot <path> Validated immutable Preparer snapshot. Builds discussion/.");
         w.WriteLine("  --planner-snapshot <path>  Validated immutable Planner snapshot. Builds applying/.");
         w.WriteLine("  --snapshot-descriptor <path> Trusted descriptor JSON required with a snapshot.");
@@ -854,8 +534,6 @@ public static class Program
         w.WriteLine("  --spec <name>          Filter tickets by hydrated specification.");
         w.WriteLine("  --project <key>        Filter by Jira project key.");
         w.WriteLine("  --wg <name|code>       Filter by workgroup (name, code, or clean name).");
-        w.WriteLine("  --jira-source <url>    Jira source service URL for --wg code resolution.");
-        w.WriteLine("  --jira-source-db <path> Jira source SQLite DB (fallback).");
         w.WriteLine("  --force                Overwrite a sub-site dir whose marker has a different filter set.");
         w.WriteLine("  --help                 Show this help.");
     }

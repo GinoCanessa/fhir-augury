@@ -67,7 +67,7 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
     }
 
     [Fact]
-    public async Task PutTopics_PersistsAndRoundTrips()
+    public async Task GetTopics_RoundTripsPersistedGrouping()
     {
         await _fixture.SeedAsync();
         HttpClient client = _fixture.Factory.CreateClient();
@@ -91,8 +91,7 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
                 },
             ],
         };
-        HttpResponseMessage putResponse = await client.PutAsJsonAsync("/api/v1/planned-ticket-topics", req);
-        Assert.Equal(HttpStatusCode.NoContent, putResponse.StatusCode);
+        await _fixture.Database.SaveTopicGroupingAsync(req.ToPayload());
 
         PlannedTicketTopicGroupingResponse? get = await client.GetFromJsonAsync<PlannedTicketTopicGroupingResponse>(
             "/api/v1/planned-ticket-topics/FHIRInfrastructure/FHIR/Change%20Request");
@@ -102,7 +101,7 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
     }
 
     [Fact]
-    public async Task PutTopics_RejectsMalformedRepo()
+    public async Task PutTopics_RequiresAuthoringStage()
     {
         HttpClient client = _fixture.Factory.CreateClient();
         PlannedTicketTopicGroupingRequest req = new()
@@ -122,7 +121,7 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
             ],
         };
         HttpResponseMessage response = await client.PutAsJsonAsync("/api/v1/planned-ticket-topics", req);
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
     }
 
     [Fact]
@@ -181,6 +180,7 @@ public sealed class PlannerControllerTests : IClassFixture<PlannerControllerTest
                         {
                             ["Processing:DatabasePath"] = DbPath,
                             ["Processing:Hydration:BackfillOnStartup"] = "false",
+                            ["Processing:ActivateRunBackedAuthoring"] = "false",
                             ["Processing:Jira:JiraSourceAddress"] = "http://localhost:0",
                             ["Processing:Jira:OrchestratorAddress"] = "http://localhost:0",
                             ["Processing:StartProcessingOnStartup"] = "false",

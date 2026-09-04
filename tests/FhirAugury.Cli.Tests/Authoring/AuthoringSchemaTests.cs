@@ -30,13 +30,14 @@ public sealed class AuthoringSchemaTests
                 Assert.Contains(command, CommandDispatcher.KnownCommands);
                 Assert.Contains(command, SchemaGenerator.AvailableCommands);
             });
-        Assert.Contains("prepared-ticket-write", CommandDispatcher.KnownCommands);
+        Assert.DoesNotContain("prepared-ticket-write", CommandDispatcher.KnownCommands);
+        Assert.DoesNotContain("prepared-ticket-write", SchemaGenerator.AvailableCommands);
         string authoringSchema = System.Text.Json.JsonSerializer.Serialize(
             SchemaGenerator.GenerateForCommand("prepared-ticket-authoring"));
         Assert.Contains("observedSourceRevision", authoringSchema);
-        string legacySchema = System.Text.Json.JsonSerializer.Serialize(
-            SchemaGenerator.GenerateForCommand("prepared-ticket-write"));
-        Assert.Contains("Transitional legacy-only", legacySchema);
+        Assert.DoesNotContain(
+            "commands/prepared-ticket-write",
+            SchemaGenerator.GenerateForCommand("prepared-ticket-write").Keys);
     }
 
     [Fact]

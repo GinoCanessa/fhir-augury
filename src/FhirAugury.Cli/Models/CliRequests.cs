@@ -517,15 +517,6 @@ public sealed class JiraSpecsRequest : CliRequest
     [JsonPropertyName("pageKey")] public string? PageKey { get; set; }
 }
 
-public sealed class PreparedTicketWriteRequest : CliRequest
-{
-    [JsonPropertyName("dbPath")]
-    public string DbPath { get; set; } = string.Empty;
-
-    [JsonPropertyName("payload")]
-    public PreparedTicketPayload? Payload { get; set; }
-}
-
 public abstract class AuthoringCommandRequest : CliRequest
 {
     [JsonPropertyName("action")]

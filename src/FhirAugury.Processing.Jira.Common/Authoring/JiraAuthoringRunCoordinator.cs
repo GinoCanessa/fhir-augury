@@ -159,11 +159,20 @@ public sealed class JiraAuthoringRunCoordinator(
         string runId,
         CancellationToken ct = default)
     {
-        IReadOnlyList<AuthoringRunItemRecord> items = await authoringStore.GetRunItemsAsync(runId, ct);
+        AuthoringProcessorModeRecord mode =
+            await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
+        bool initialRevalidation = mode.RevalidationRequired &&
+            string.Equals(
+                mode.RevalidationRunId,
+                runId,
+                StringComparison.Ordinal);
+        IReadOnlyList<AuthoringRunItemRecord> items = initialRevalidation
+            ? await authoringStore.GetRevalidationCorpusItemsAsync(runId, ct)
+            : await authoringStore.GetRunItemsAsync(runId, ct);
         List<string> staleItemIds = [];
         foreach (AuthoringRunItemRecord item in items.Where(item =>
-                     item.AcceptedReceiptId is null &&
-                     item.Status is not (AuthoringStatusValues.Items.Complete or AuthoringStatusValues.Items.Superseded)))
+                     item.Status != AuthoringStatusValues.Items.Superseded &&
+                     (initialRevalidation || item.AcceptedReceiptId is null)))
         {
             JiraProcessingSourceTicketRecord? source = await sourceStore.GetByKeyAsync(
                 item.BusinessKey,
@@ -178,12 +187,60 @@ public sealed class JiraAuthoringRunCoordinator(
                 staleItemIds.Add(item.Id);
             }
         }
-        return staleItemIds.Count > 0 &&
-            await authoringStore.SupersedeRunItemsAsync(
+        if (staleItemIds.Count == 0)
+        {
+            return false;
+        }
+
+        if (initialRevalidation)
+        {
+            HashSet<string> staleIds = staleItemIds.ToHashSet(
+                StringComparer.Ordinal);
+            bool hasUnfinishedAcceptedCurrentItem = items.Any(item =>
+                item.Status != AuthoringStatusValues.Items.Superseded &&
+                item.Status != AuthoringStatusValues.Items.Complete &&
+                item.AcceptedReceiptId is not null &&
+                !staleIds.Contains(item.Id));
+            if (hasUnfinishedAcceptedCurrentItem)
+            {
+                return false;
+            }
+
+            List<AuthoringRunItemDefinition> replacements = [];
+            foreach (AuthoringRunItemRecord item in items.Where(item =>
+                         item.Status != AuthoringStatusValues.Items.Superseded &&
+                         (item.AcceptedReceiptId is null ||
+                          staleIds.Contains(item.Id))))
+            {
+                JiraProcessingSourceTicketRecord? source =
+                    await sourceStore.GetByKeyAsync(
+                        item.BusinessKey,
+                        item.ItemKind,
+                        ct);
+                if (source is null)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.SourceRevisionMismatch,
+                        $"Jira source ticket '{item.BusinessKey}' disappeared during initial revalidation.");
+                }
+                replacements.Add(new AuthoringRunItemDefinition(
+                    source.Key,
+                    source.SourceTicketShape,
+                    JiraProcessingSourceTicketStore.GetSourceRevision(source)));
+            }
+            await authoringStore.ReplaceRevalidationRunAsync(
+                ProcessorKind,
                 runId,
-                staleItemIds,
-                "A newer Jira source revision replaced one or more frozen run items.",
+                replacements,
                 ct: ct);
+            return true;
+        }
+
+        return await authoringStore.SupersedeRunItemsAsync(
+            runId,
+            staleItemIds,
+            "A newer Jira source revision replaced one or more frozen run items.",
+            ct: ct);
     }
 
     private async Task<JiraAuthoringRunCreation?> ResolveExactReplayAsync(
@@ -208,11 +265,15 @@ public sealed class JiraAuthoringRunCoordinator(
             await using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT RunId, Id
-                FROM authoring_run_items
-                WHERE BusinessKey COLLATE NOCASE = @businessKey
-                  AND ItemKind COLLATE NOCASE = @itemKind
-                  AND ExpectedSourceRevision = @sourceRevision
+                SELECT i.RunId, i.Id
+                FROM authoring_run_items i
+                INNER JOIN authoring_runs r ON r.Id = i.RunId
+                WHERE i.BusinessKey COLLATE NOCASE = @businessKey
+                  AND i.ItemKind COLLATE NOCASE = @itemKind
+                  AND i.ExpectedSourceRevision = @sourceRevision
+                  AND i.Status <> @superseded
+                  AND r.Status <> @runSuperseded
+                ORDER BY r.RowId DESC
                 LIMIT 1
                 """;
             command.Parameters.AddWithValue("@businessKey", ticket.Key);
@@ -220,6 +281,12 @@ public sealed class JiraAuthoringRunCoordinator(
             command.Parameters.AddWithValue(
                 "@sourceRevision",
                 JiraProcessingSourceTicketStore.GetSourceRevision(ticket));
+            command.Parameters.AddWithValue(
+                "@superseded",
+                AuthoringStatusValues.Items.Superseded);
+            command.Parameters.AddWithValue(
+                "@runSuperseded",
+                AuthoringStatusValues.Runs.Superseded);
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))
             {
@@ -261,11 +328,15 @@ public sealed class JiraAuthoringRunCoordinator(
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT RunId
-            FROM authoring_run_items
-            WHERE BusinessKey COLLATE NOCASE = @businessKey
-              AND ItemKind COLLATE NOCASE = @itemKind
-              AND ExpectedSourceRevision = @sourceRevision
+            SELECT i.RunId
+            FROM authoring_run_items i
+            INNER JOIN authoring_runs r ON r.Id = i.RunId
+            WHERE i.BusinessKey COLLATE NOCASE = @businessKey
+              AND i.ItemKind COLLATE NOCASE = @itemKind
+              AND i.ExpectedSourceRevision = @sourceRevision
+              AND i.Status <> @superseded
+              AND r.Status <> @runSuperseded
+            ORDER BY r.RowId DESC
             LIMIT 1
             """;
         command.Parameters.AddWithValue("@businessKey", ticket.Key);
@@ -273,6 +344,12 @@ public sealed class JiraAuthoringRunCoordinator(
         command.Parameters.AddWithValue(
             "@sourceRevision",
             JiraProcessingSourceTicketStore.GetSourceRevision(ticket));
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        command.Parameters.AddWithValue(
+            "@runSuperseded",
+            AuthoringStatusValues.Runs.Superseded);
         string? runId = (string?)await command.ExecuteScalarAsync(ct);
         if (runId is null)
         {

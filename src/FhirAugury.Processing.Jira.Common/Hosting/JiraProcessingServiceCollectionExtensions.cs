@@ -117,7 +117,6 @@ public static class JiraProcessingServiceCollectionExtensions
 }
 
 internal sealed class JiraModeAwareProcessingHostedService(
-    ProcessingQueueRunner<JiraProcessingSourceTicketRecord> legacyRunner,
     AuthoringQueueRunner<JiraAuthoringWorkItem> authoringRunner,
     AuthoringRunStore authoringStore,
     JiraAuthoringRunCoordinator coordinator)
@@ -130,11 +129,6 @@ internal sealed class JiraModeAwareProcessingHostedService(
             string mode = (await authoringStore.EnsureProcessorModeAsync(
                 coordinator.ProcessorKind,
                 ct: stoppingToken)).Mode;
-            if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.Legacy, StringComparison.Ordinal))
-            {
-                await legacyRunner.RunAsync(stoppingToken);
-                return;
-            }
             if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.RunBacked, StringComparison.Ordinal))
             {
                 await authoringRunner.RunAsync(stoppingToken);

@@ -89,14 +89,21 @@ public sealed class BallotNotesAuthoringRunCoordinator(
         string runId,
         CancellationToken ct = default)
     {
-        IReadOnlyList<AuthoringRunItemRecord> items =
-            await authoringStore.GetRunItemsAsync(runId, ct);
+        AuthoringProcessorModeRecord mode =
+            await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
+        bool initialRevalidation = mode.RevalidationRequired &&
+            string.Equals(
+                mode.RevalidationRunId,
+                runId,
+                StringComparison.Ordinal);
+        IReadOnlyList<AuthoringRunItemRecord> items = initialRevalidation
+            ? await authoringStore.GetRevalidationCorpusItemsAsync(runId, ct)
+            : await authoringStore.GetRunItemsAsync(runId, ct);
         List<string> stale = [];
         foreach (AuthoringRunItemRecord item in items.Where(value =>
-                     value.AcceptedReceiptId is null &&
-                     value.Status is not (
-                         AuthoringStatusValues.Items.Complete or
-                         AuthoringStatusValues.Items.Superseded)))
+                     value.Status != AuthoringStatusValues.Items.Superseded &&
+                     (initialRevalidation ||
+                      value.AcceptedReceiptId is null)))
         {
             Persistence.Models.NoteDetail? current =
                 database.GetNote(item.BusinessKey);
@@ -113,12 +120,57 @@ public sealed class BallotNotesAuthoringRunCoordinator(
                 stale.Add(item.Id);
             }
         }
-        return stale.Count > 0 &&
-            await authoringStore.SupersedeRunItemsAsync(
+        if (stale.Count == 0)
+        {
+            return false;
+        }
+
+        if (initialRevalidation)
+        {
+            HashSet<string> staleIds = stale.ToHashSet(
+                StringComparer.Ordinal);
+            bool hasUnfinishedAcceptedCurrentItem = items.Any(item =>
+                item.Status != AuthoringStatusValues.Items.Superseded &&
+                item.Status != AuthoringStatusValues.Items.Complete &&
+                item.AcceptedReceiptId is not null &&
+                !staleIds.Contains(item.Id));
+            if (hasUnfinishedAcceptedCurrentItem)
+            {
+                return false;
+            }
+
+            List<AuthoringRunItemDefinition> replacements = [];
+            foreach (AuthoringRunItemRecord item in items.Where(value =>
+                         value.Status != AuthoringStatusValues.Items.Superseded &&
+                         (value.AcceptedReceiptId is null ||
+                          staleIds.Contains(value.Id))))
+            {
+                Persistence.Models.NoteDetail? current =
+                    database.GetNote(item.BusinessKey);
+                if (current is null)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.SourceRevisionMismatch,
+                        $"BallotNotes unit '{item.BusinessKey}' disappeared during initial revalidation.");
+                }
+                replacements.Add(new AuthoringRunItemDefinition(
+                    current.Note.NoteId,
+                    current.Note.Type,
+                    current.Note.CurrentEvidenceRevision));
+            }
+            await authoringStore.ReplaceRevalidationRunAsync(
+                ProcessorKind,
                 runId,
-                stale,
-                "A newer BallotNotes hydration execution replaced one or more frozen run items.",
+                replacements,
                 ct: ct);
+            return true;
+        }
+
+        return await authoringStore.SupersedeRunItemsAsync(
+            runId,
+            stale,
+            "A newer BallotNotes hydration execution replaced one or more frozen run items.",
+            ct: ct);
     }
 
     private async Task<string?> GetOldestQueuedRunIdAsync(

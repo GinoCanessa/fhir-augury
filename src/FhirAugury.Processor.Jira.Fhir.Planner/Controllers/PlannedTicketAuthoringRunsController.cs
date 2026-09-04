@@ -84,6 +84,7 @@ public sealed class PlannedTicketAuthoringRunsController(
                     await database.SavePlannedTicketForAuthoringAsync(
                         connection,
                         request.Payload,
+                        contentHash,
                         runId,
                         itemId,
                         request.Submission.OperationId,

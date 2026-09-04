@@ -54,21 +54,17 @@ public sealed class PlannedTicketTopicsController : ControllerBase
     {
         try
         {
-            IActionResult? modeFailure = await GetWriteModeFailureAsync(
-                request.Authoring is not null,
-                ct);
+            if (request.Authoring is null)
+            {
+                return Conflict(new { error = "authoring-stage-required" });
+            }
+            IActionResult? modeFailure = await GetWriteModeFailureAsync(ct);
             if (modeFailure is not null)
             {
                 return modeFailure;
             }
 
             PlannedTicketTopicGroupingPayload payload = request.ToPayload();
-            if (request.Authoring is null)
-            {
-                await _database.SaveTopicGroupingAsync(payload, ct);
-                return NoContent();
-            }
-
             await _database.SaveTopicGroupingForRunAsync(
                 payload,
                 request.Authoring.RunId,
@@ -97,7 +93,6 @@ public sealed class PlannedTicketTopicsController : ControllerBase
     }
 
     private async Task<IActionResult?> GetWriteModeFailureAsync(
-        bool runScoped,
         CancellationToken ct)
     {
         string mode = (await _authoringStore.GetProcessorModeAsync(
@@ -112,21 +107,12 @@ public sealed class PlannedTicketTopicsController : ControllerBase
                 StatusCodes.Status503ServiceUnavailable,
                 new { error = "cutover-in-progress" });
         }
-        if (runScoped &&
-            string.Equals(
+        if (string.Equals(
                 mode,
                 AuthoringStatusValues.ProcessorModes.Legacy,
                 StringComparison.Ordinal))
         {
             return Conflict(new { error = "authoring-not-activated" });
-        }
-        if (!runScoped &&
-            string.Equals(
-                mode,
-                AuthoringStatusValues.ProcessorModes.RunBacked,
-                StringComparison.Ordinal))
-        {
-            return Conflict(new { error = "run-backed-write-required" });
         }
         return null;
     }

@@ -72,6 +72,26 @@ public sealed class PlannedTicketReviewSnapshotTests
     }
 
     [Fact]
+    public async Task ReplacementRunPartitionsIncludeRetainedPredecessorTickets()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync();
+        fixture.MarkAsInitialRevalidation(run.Id);
+        AuthoringRunRecord replacement =
+            await fixture.AuthoringStore.ReplaceRevalidationRunAsync(
+                "jira-fhir",
+                run.Id,
+                [new("FHIR-2", "fhir", "revision-2")]);
+
+        PlannedTicketRunPartition partition = Assert.Single(
+            await fixture.Database.GetRunPartitionsAsync(replacement.Id));
+
+        Assert.Equal("FHIRInfrastructure", partition.WorkGroupClean);
+        Assert.Equal(["FHIR-1"], partition.TicketKeys);
+    }
+
+    [Fact]
     public async Task FinalizeRunRefusesGroupingWithoutDurableReceipt()
     {
         using Fixture fixture = new();
@@ -271,6 +291,7 @@ public sealed class PlannedTicketReviewSnapshotTests
                 (connection, ct) => Database.SavePlannedTicketForAuthoringAsync(
                     connection,
                     payload,
+                    hash,
                     creation.Run.Id,
                     item.Id,
                     claim.OperationId,
@@ -326,6 +347,21 @@ public sealed class PlannedTicketReviewSnapshotTests
                 CancellationToken.None);
             await AuthoringStore.MarkItemCompleteAsync(item.Id, receipt.Receipt.ReceiptId);
             return (creation.Run, item);
+        }
+
+        public void MarkAsInitialRevalidation(string runId)
+        {
+            using SqliteConnection connection = Database.OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE authoring_processor_modes
+                SET RevalidationRequired = 1,
+                    RevalidationRunId = @runId
+                WHERE ProcessorKind = 'jira-fhir'
+                """;
+            command.Parameters.AddWithValue("@runId", runId);
+            Assert.Equal(1, command.ExecuteNonQuery());
         }
 
         public PlannedTicketRunPostProcessor CreatePostProcessor(

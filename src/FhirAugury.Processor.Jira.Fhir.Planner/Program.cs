@@ -126,16 +126,53 @@ builder.Services.AddSingleton(sp =>
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     PlannerDatabase database = new(dbPath, sp.GetRequiredService<ILogger<PlannerDatabase>>());
-    database.Initialize();
-    return database;
+    database.AcquireStartupOwnership();
+    try
+    {
+        database.Initialize();
+        return database;
+    }
+    catch
+    {
+        database.Dispose();
+        throw;
+    }
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PlannerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, PreviewPlannedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<PlannedTicketRunPostProcessor>();
+builder.Services.AddSingleton<PlannedTicketGroupingMaintenanceService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannedTicketRunPostProcessor>());
 
 WebApplication app = builder.Build();
+
+PlannerDatabase plannerDatabase =
+    app.Services.GetRequiredService<PlannerDatabase>();
+PlannerServiceOptions plannerServiceOptions =
+    app.Services.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
+AuthoringRunStore plannerAuthoringStore =
+    app.Services.GetRequiredService<AuthoringRunStore>();
+JiraAuthoringRunCoordinator plannerRunCoordinator =
+    app.Services.GetRequiredService<JiraAuthoringRunCoordinator>();
+plannerDatabase.AcquireStartupOwnership();
+await plannerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
+if (plannerServiceOptions.ActivateRunBackedAuthoring)
+{
+    AuthoringCutoverCoordinator cutover =
+        new(plannerDatabase.OpenConnection);
+    await cutover.ActivateAsync(
+        new AuthoringCutoverRequest(
+            plannerRunCoordinator.ProcessorKind,
+            Path.GetFullPath(plannerServiceOptions.DatabasePath),
+            Path.GetFullPath(plannerServiceOptions.PreCutoverBackupPath!)),
+        plannerDatabase);
+}
+else
+{
+    await plannerAuthoringStore.EnsureProcessorModeAsync(
+        plannerRunCoordinator.ProcessorKind);
+}
 
 app.MapDefaultEndpoints();
 app.MapProcessingEndpoints<JiraProcessingSourceTicketRecord>();

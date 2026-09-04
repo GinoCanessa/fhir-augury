@@ -4,7 +4,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Planner.Configuration;
 
 public static class PlannerJiraProcessingDefaults
 {
-    public const string AgentCliCommand = "copilot run ticket-plan --ticket {ticketKey} --db {dbPath} --repos {repoFilters}";
+    public const string AgentCliCommand =
+        "copilot -p '/ticket-plan {ticketKey} --repos {repoFilters}' --allow-all";
     public const string AuthoringAgentCliCommand =
         "copilot -p '/ticket-plan {ticketKey} --repos {repoFilters}' --allow-all";
     public const string JiraSourceAddress = "http://localhost:5160";
@@ -40,11 +41,14 @@ public static class PlannerJiraProcessingDefaults
             yield return error;
         }
 
-        if (!options.AgentCliCommand.Contains(
+        if (options.AgentCliCommand.Contains(
                 "{dbPath}",
+                StringComparison.OrdinalIgnoreCase) ||
+            options.AgentCliCommand.Contains(
+                "{operationToken}",
                 StringComparison.OrdinalIgnoreCase))
         {
-            yield return "Processing:Jira:AgentCliCommand must include the {dbPath} token.";
+            yield return "Processing:Jira:AgentCliCommand must use callback context from the worker environment.";
         }
 
         if (!options.AgentCliCommand.Contains(

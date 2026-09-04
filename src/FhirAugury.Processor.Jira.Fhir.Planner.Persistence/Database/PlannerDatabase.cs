@@ -4,6 +4,7 @@ using FhirAugury.Common.Database;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -18,12 +19,43 @@ namespace FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 
 public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logger, bool readOnly = false)
     : FhirAugury.Processing.Common.Database.ProcessingDatabase(dbPath, logger, readOnly),
-      IHydrationTargetDatabase
+      IHydrationTargetDatabase,
+      IAuthoringCutoverParticipant
 {
     private const string AuthoringProcessorKind = "jira-fhir";
+    public const string CurrentSnapshotReceiptBackedTicketsTable =
+        "current_planned_receipt_backed_tickets";
     private static readonly string MaintenanceOwnerGeneration = Guid.NewGuid().ToString("N");
+    private FileStream? _startupOwnerLock;
 
     public string DatabasePath { get; } = dbPath;
+
+    public void AcquireStartupOwnership()
+    {
+        if (_startupOwnerLock is not null)
+        {
+            return;
+        }
+        string ownerPath = $"{Path.GetFullPath(DatabasePath)}.owner.lock";
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(ownerPath)
+            ?? throw new InvalidOperationException(
+                $"Database path '{DatabasePath}' has no parent directory."));
+        try
+        {
+            _startupOwnerLock = new FileStream(
+                ownerPath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException ex)
+        {
+            throw new InvalidOperationException(
+                $"Another Planner service generation owns database '{DatabasePath}'.",
+                ex);
+        }
+    }
 
     /// <summary>
     /// Idempotent. Creates every planner table via <c>CREATE TABLE IF NOT EXISTS</c>
@@ -129,6 +161,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 TicketKey TEXT PRIMARY KEY,
                 Classification TEXT NOT NULL,
                 GraphHash TEXT NOT NULL,
+                ReceiptContentHash TEXT NULL,
                 LegacyCompletionId TEXT NULL,
                 LegacyCompletedProcessingAt TEXT NULL,
                 RunId TEXT NULL,
@@ -167,6 +200,11 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 PreserveLegacy INTEGER NOT NULL
             );
             """);
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "planned_ticket_authoring_state",
+            "ReceiptContentHash",
+            "TEXT NULL");
     }
 
     private static void EnsureApplierProjectionTrigger(SqliteConnection connection)
@@ -219,6 +257,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
             await EnsureGeneralMutationAllowedAsync(connection, ct);
             DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
             await SavePlannedTicketCoreAsync(connection, payload, savedAt, ct);
@@ -228,6 +267,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 payload.Key,
                 "legacy-unverified",
                 graphHash,
+                receiptContentHash: null,
                 runId: null,
                 runItemId: null,
                 operationId: null,
@@ -245,6 +285,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     public async Task SavePlannedTicketForAuthoringAsync(
         SqliteConnection connection,
         PlannedTicketPayload payload,
+        string receiptContentHash,
         string runId,
         string runItemId,
         string operationId,
@@ -290,6 +331,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             payload.Key,
             "receipt-backed",
             graphHash,
+            receiptContentHash,
             runId,
             runItemId,
             operationId,
@@ -371,46 +413,238 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            List<string> keys = [];
-            await using (SqliteCommand command = connection.CreateCommand())
-            {
-                command.CommandText =
-                    """
-                    SELECT p.Key
-                    FROM planned_tickets p
-                    LEFT JOIN planned_ticket_authoring_state s ON s.TicketKey = p.Key
-                    WHERE s.TicketKey IS NULL OR s.Classification <> 'receipt-backed'
-                    ORDER BY p.Key
-                    """;
-                await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
-                while (await reader.ReadAsync(ct))
-                {
-                    keys.Add(reader.GetString(0));
-                }
-            }
-
-            foreach (string key in keys)
-            {
-                string graphHash = await ComputePlannedGraphHashAsync(connection, key, ct);
-                await UpsertAuthoringStateAsync(
-                    connection,
-                    key,
-                    "legacy-unverified",
-                    graphHash,
-                    runId: null,
-                    runItemId: null,
-                    operationId: null,
-                    DateTimeOffset.UtcNow,
-                    ct);
-            }
+            int count = await ClassifyLegacyPlannedTicketsCoreAsync(
+                connection,
+                ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
-            return keys.Count;
+            return count;
         }
         catch
         {
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    public async Task<AuthoringCutoverPreparation> PrepareCutoverAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await ClassifyLegacyPlannedTicketsCoreAsync(connection, ct);
+        List<AuthoringRunItemDefinition> items = [];
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT p.Key, s.SourceTicketShape, s.LastUpdated, s.Title,
+                   s.Status, s.WorkGroup, s.Type, s.Specification
+            FROM planned_tickets p
+            INNER JOIN planned_ticket_authoring_state a
+                ON a.TicketKey = p.Key
+            LEFT JOIN jira_processing_source_tickets s
+                ON s.Key = p.Key COLLATE NOCASE
+               AND s.SourceTicketShape = 'fhir' COLLATE NOCASE
+            WHERE a.Classification = 'legacy-unverified'
+            ORDER BY p.Key
+            """;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (reader.IsDBNull(1))
+            {
+                throw new InvalidOperationException(
+                    $"Planned ticket '{reader.GetString(0)}' has no current Jira source row for revalidation.");
+            }
+            string key = reader.GetString(0);
+            string revision = reader.IsDBNull(2)
+                ? AuthoringResultHasher.HashNormalizedUtf8(
+                    string.Join(
+                        "\n",
+                        key,
+                        reader.GetString(3),
+                        reader.GetString(4),
+                        reader.GetString(5),
+                        reader.GetString(6),
+                        reader.GetString(7)))
+                : ParseDate(reader.GetString(2)).ToString(
+                    "O",
+                    CultureInfo.InvariantCulture);
+            items.Add(new AuthoringRunItemDefinition(
+                key,
+                reader.GetString(1),
+                revision));
+        }
+        return new AuthoringCutoverPreparation(items);
+    }
+
+    private async Task<int> ClassifyLegacyPlannedTicketsCoreAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        List<string> keys = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT p.Key
+                FROM planned_tickets p
+                ORDER BY p.Key
+                """;
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                keys.Add(reader.GetString(0));
+            }
+        }
+
+        int classified = 0;
+        foreach (string key in keys)
+        {
+            string graphHash = await ComputePlannedGraphHashAsync(
+                connection,
+                key,
+                ct);
+            if (await IsCurrentPlannedReceiptBackedAsync(
+                    connection,
+                    key,
+                    graphHash,
+                    ct))
+            {
+                continue;
+            }
+            await UpsertAuthoringStateAsync(
+                connection,
+                key,
+                "legacy-unverified",
+                graphHash,
+                receiptContentHash: null,
+                runId: null,
+                runItemId: null,
+                operationId: null,
+                DateTimeOffset.UtcNow,
+                ct);
+            classified++;
+        }
+        return classified;
+    }
+
+    private static async Task<bool> IsCurrentPlannedReceiptBackedAsync(
+        SqliteConnection connection,
+        string ticketKey,
+        string graphHash,
+        CancellationToken ct)
+        => await ReadCurrentPlannedReceiptCoordinatesAsync(
+            connection,
+            ticketKey,
+            graphHash,
+            ct) is not null;
+
+    public static async Task CreateCurrentSnapshotReceiptBackedTicketsAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        await ExecuteAsync(
+            connection,
+            $"""
+            DROP TABLE IF EXISTS temp.{CurrentSnapshotReceiptBackedTicketsTable};
+            CREATE TEMP TABLE {CurrentSnapshotReceiptBackedTicketsTable}(
+                TicketKey TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                ReceiptId TEXT NOT NULL,
+                RunItemId TEXT NOT NULL,
+                RunId TEXT NOT NULL
+            );
+            """,
+            ct);
+
+        List<string> keys = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT Key FROM planned_tickets ORDER BY Key";
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                keys.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (string key in keys)
+        {
+            string graphHash = await ComputePlannedGraphHashAsync(
+                connection,
+                key,
+                ct);
+            (string ReceiptId, string RunItemId, string RunId)? coordinates =
+                await ReadCurrentPlannedReceiptCoordinatesAsync(
+                    connection,
+                    key,
+                    graphHash,
+                    ct);
+            if (coordinates is null)
+            {
+                continue;
+            }
+            await ExecuteAsync(
+                connection,
+                $"""
+                INSERT INTO {CurrentSnapshotReceiptBackedTicketsTable}(
+                    TicketKey, ReceiptId, RunItemId, RunId)
+                VALUES(@ticketKey, @receiptId, @runItemId, @runId)
+                """,
+                ct,
+                ("@ticketKey", key),
+                ("@receiptId", coordinates.Value.ReceiptId),
+                ("@runItemId", coordinates.Value.RunItemId),
+                ("@runId", coordinates.Value.RunId));
+        }
+
+    }
+
+    private static async Task<(string ReceiptId, string RunItemId, string RunId)?>
+        ReadCurrentPlannedReceiptCoordinatesAsync(
+            SqliteConnection connection,
+            string ticketKey,
+            string graphHash,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.Id, i.Id, i.RunId
+            FROM planned_ticket_authoring_state s
+            INNER JOIN authoring_result_receipts r
+                ON r.OperationId = s.OperationId
+               AND r.RunId = s.RunId
+               AND r.RunItemId = s.RunItemId
+               AND r.BusinessKey = s.TicketKey COLLATE NOCASE
+               AND r.ContentHash = s.ReceiptContentHash
+               AND r.ObservedSourceRevision = r.ExpectedSourceRevision
+            INNER JOIN authoring_run_items i
+                ON i.Id = s.RunItemId
+               AND i.RunId = s.RunId
+               AND i.BusinessKey = s.TicketKey COLLATE NOCASE
+               AND i.ItemKind = 'fhir' COLLATE NOCASE
+               AND i.AcceptedReceiptId = r.Id
+               AND i.ExpectedSourceRevision = r.ExpectedSourceRevision
+               AND i.Status IN (@itemComplete, @itemSuperseded)
+            INNER JOIN authoring_runs run
+                ON run.Id = s.RunId
+               AND run.ProcessorKind = @processorKind
+               AND run.AuthoringEpoch = r.AuthoringEpoch
+            WHERE s.TicketKey = @ticketKey COLLATE NOCASE
+              AND s.Classification = 'receipt-backed'
+              AND s.GraphHash = @graphHash
+            """;
+        command.Parameters.AddWithValue("@itemComplete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue(
+            "@itemSuperseded",
+            AuthoringStatusValues.Items.Superseded);
+        command.Parameters.AddWithValue("@processorKind", AuthoringProcessorKind);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        command.Parameters.AddWithValue("@graphHash", graphHash);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? (reader.GetString(0), reader.GetString(1), reader.GetString(2))
+            : null;
     }
 
     public async Task<int> CountLegacyUnverifiedAsync(CancellationToken ct = default)
@@ -420,6 +654,44 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         command.CommandText =
             "SELECT COUNT(*) FROM planned_ticket_authoring_state WHERE Classification = 'legacy-unverified'";
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
+    }
+
+    public async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
+        GetGroupingMaintenanceItemsAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        return await GetGroupingMaintenanceItemsAsync(connection, ct);
+    }
+
+    public async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
+        GetGroupingMaintenanceItemsAsync(
+            SqliteConnection connection,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT s.TicketKey, i.ItemKind, r.ExpectedSourceRevision, r.Id
+            FROM planned_ticket_authoring_state s
+            INNER JOIN authoring_result_receipts r
+                ON r.OperationId = s.OperationId
+            INNER JOIN authoring_run_items i
+                ON i.Id = s.RunItemId
+               AND i.AcceptedReceiptId = r.Id
+            WHERE s.Classification = 'receipt-backed'
+            ORDER BY s.TicketKey
+            """;
+        List<AuthoringMaintenanceRunItem> items = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(new AuthoringMaintenanceRunItem(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3)));
+        }
+        return items;
     }
 
     public async Task<bool> HasActiveAuthoringFenceAsync(CancellationToken ct = default)
@@ -440,17 +712,6 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            await ExecuteAsync(
-                connection,
-                """
-                DELETE FROM authoring_mutation_fences
-                WHERE ProcessorKind = @processorKind
-                  AND RunId LIKE 'maintenance:%'
-                  AND RunId NOT LIKE @ownerPrefix
-                """,
-                ct,
-                ("@processorKind", AuthoringProcessorKind),
-                ("@ownerPrefix", $"maintenance:{MaintenanceOwnerGeneration}:%"));
             int inserted = await ExecuteAsyncWithCount(
                 connection,
                 """
@@ -474,6 +735,11 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
 
     public async Task<int> RecoverInterruptedMaintenanceLeasesAsync(CancellationToken ct = default)
     {
+        if (_startupOwnerLock is null)
+        {
+            throw new InvalidOperationException(
+                "Planner startup ownership must be acquired before recovering maintenance leases.");
+        }
         await using SqliteConnection connection = OpenConnection();
         return await ExecuteAsyncWithCount(
             connection,
@@ -486,6 +752,16 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ct,
             ("@processorKind", AuthoringProcessorKind),
             ("@ownerPrefix", $"maintenance:{MaintenanceOwnerGeneration}:%"));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _startupOwnerLock?.Dispose();
+            _startupOwnerLock = null;
+        }
+        base.Dispose(disposing);
     }
 
     public async Task ReleaseMaintenanceLeaseAsync(
@@ -542,13 +818,24 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         CancellationToken ct = default)
     {
         await using SqliteConnection connection = OpenConnection();
+        await CreateCurrentSnapshotReceiptBackedTicketsAsync(connection, ct);
+        await EnsureRunCorpusReceiptProvenanceAsync(connection, runId, ct);
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """
-            WITH completed AS (
-                SELECT Id, BusinessKey
-                FROM authoring_run_items
-                WHERE RunId = @runId AND Status = @complete AND AcceptedReceiptId IS NOT NULL)
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            ),
+            completed AS (
+                SELECT i.Id, i.BusinessKey
+                FROM authoring_run_items i
+                INNER JOIN run_chain chain ON chain.Id = i.RunId
+                WHERE i.Status = @complete
+                  AND i.AcceptedReceiptId IS NOT NULL)
             SELECT j.WorkGroupClean, j.WorkGroup, IFNULL(j.Specification, 'Unspecified'), IFNULL(j.Type, '')
             FROM completed i
             INNER JOIN planned_jira_hydration j
@@ -559,6 +846,14 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             FROM completed i
             INNER JOIN planned_ticket_run_item_partitions p ON p.RunItemId = i.Id
             WHERE p.WorkGroupClean IS NOT NULL AND p.WorkGroupClean <> '' AND p.Type IS NOT NULL AND p.Type <> ''
+            UNION ALL
+            SELECT t.WorkGroupClean, t.WorkGroupDisplay, t.Specification, t.Type
+            FROM planned_ticket_topics t
+            WHERE EXISTS(
+                SELECT 1
+                FROM authoring_run_items i
+                WHERE i.RunId = @runId
+                  AND i.ItemKind LIKE 'maintenance:%')
             """;
         command.Parameters.AddWithValue("@runId", runId);
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
@@ -622,6 +917,46 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         return partitions;
     }
 
+    private static async Task EnsureRunCorpusReceiptProvenanceAsync(
+        SqliteConnection connection,
+        string runId,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT COUNT(*)
+            FROM authoring_run_items i
+            INNER JOIN run_chain chain ON chain.Id = i.RunId
+            WHERE i.Status = @complete
+              AND i.AcceptedReceiptId IS NOT NULL
+              AND i.ItemKind NOT LIKE 'maintenance:%'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {CurrentSnapshotReceiptBackedTicketsTable} valid
+                  WHERE valid.RunItemId = i.Id
+              )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        if (Convert.ToInt32(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture) != 0)
+        {
+            throw new InvalidOperationException(
+                "One or more planned tickets lack valid current receipt provenance.");
+        }
+    }
+
     public async Task<IReadOnlyDictionary<string, long>> GetSnapshotTableCountsAsync(
         CancellationToken ct = default)
     {
@@ -655,6 +990,31 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 CultureInfo.InvariantCulture);
         }
         return counts;
+    }
+
+    public async Task<int> GetSnapshotReceiptCountAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await CreateCurrentSnapshotReceiptBackedTicketsAsync(connection, ct);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT r.Id
+                FROM authoring_result_receipts r
+                WHERE r.RunId = @runId
+                UNION
+                SELECT ReceiptId
+                FROM {CurrentSnapshotReceiptBackedTicketsTable}
+            )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
     }
 
     private static readonly string[] DeleteOrder =
@@ -919,6 +1279,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
             await EnsureGeneralMutationAllowedAsync(connection, ct);
             await ReplaceWorkGroupCatalogAsync(connection, workGroups, ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
@@ -1205,6 +1566,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
             await EnsureGeneralMutationAllowedAsync(connection, ct);
             _ = await SaveTopicGroupingCoreAsync(connection, payload, savedAt, ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
@@ -1974,6 +2336,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         string ticketKey,
         string classification,
         string graphHash,
+        string? receiptContentHash,
         string? runId,
         string? runItemId,
         string? operationId,
@@ -1984,17 +2347,18 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             connection,
             """
             INSERT INTO planned_ticket_authoring_state(
-                TicketKey, Classification, GraphHash,
+                TicketKey, Classification, GraphHash, ReceiptContentHash,
                 LegacyCompletionId, LegacyCompletedProcessingAt,
                 RunId, RunItemId, OperationId, UpdatedAt)
             VALUES(
-                @ticketKey, @classification, @graphHash,
+                @ticketKey, @classification, @graphHash, @receiptContentHash,
                 (SELECT CompletionId FROM jira_processing_source_tickets WHERE Key = @ticketKey),
                 (SELECT CompletedProcessingAt FROM jira_processing_source_tickets WHERE Key = @ticketKey),
                 @runId, @runItemId, @operationId, @updatedAt)
             ON CONFLICT(TicketKey) DO UPDATE SET
                 Classification = excluded.Classification,
                 GraphHash = excluded.GraphHash,
+                ReceiptContentHash = excluded.ReceiptContentHash,
                 LegacyCompletionId = CASE
                     WHEN excluded.Classification = 'legacy-unverified'
                     THEN excluded.LegacyCompletionId
@@ -2014,6 +2378,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ("@ticketKey", ticketKey),
             ("@classification", classification),
             ("@graphHash", graphHash),
+            ("@receiptContentHash", receiptContentHash),
             ("@runId", runId),
             ("@runItemId", runItemId),
             ("@operationId", operationId),
@@ -2106,6 +2471,33 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         }
     }
 
+    private static async Task EnsureLegacyAuthoringModeAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Mode
+            FROM authoring_processor_modes
+            WHERE ProcessorKind = @processorKind
+            """;
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        string? mode = Convert.ToString(await command.ExecuteScalarAsync(ct));
+        if (string.IsNullOrWhiteSpace(mode) ||
+            mode == AuthoringStatusValues.ProcessorModes.Legacy)
+        {
+            return;
+        }
+        throw new AuthoringConflictException(
+            mode == AuthoringStatusValues.ProcessorModes.CuttingOver
+                ? AuthoringConflictCode.CutoverInProgress
+                : AuthoringConflictCode.AuthoringNotActivated,
+            $"Legacy planned-ticket writes are unavailable while processor mode is '{mode}'.");
+    }
+
     private static async Task EnsureGeneralMutationAllowedAsync(
         SqliteConnection connection,
         CancellationToken ct)
@@ -2177,7 +2569,9 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                     FROM planned_ticket_authoring_state s
                     INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
                     INNER JOIN authoring_run_items i
-                        ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id AND i.Status = @complete
+                        ON i.Id = s.RunItemId
+                       AND i.AcceptedReceiptId = r.Id
+                       AND i.Status IN (@complete, @superseded)
                     INNER JOIN planned_jira_hydration j
                         ON j.IssueKey = s.TicketKey AND j.JiraKey = s.TicketKey
                     WHERE s.Classification = 'receipt-backed'
@@ -2187,6 +2581,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                       AND IFNULL(j.Type, '') = @type)
                 """;
             command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+            command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
             command.Parameters.AddWithValue("@ticketKey", ticketKey);
             command.Parameters.AddWithValue("@workGroupClean", payload.WorkGroupClean);
             command.Parameters.AddWithValue("@specification", payload.Specification);
@@ -2213,21 +2608,16 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
-            """
-            SELECT s.TicketKey, r.Id
-            FROM planned_ticket_authoring_state s
-            INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-            INNER JOIN authoring_run_items i
-                ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id AND i.Status = @complete
+            $"""
+            SELECT v.TicketKey, v.ReceiptId
+            FROM {CurrentSnapshotReceiptBackedTicketsTable} v
             INNER JOIN planned_jira_hydration j
-                ON j.IssueKey = s.TicketKey AND j.JiraKey = s.TicketKey
-            WHERE s.Classification = 'receipt-backed'
-              AND j.WorkGroupClean = @workGroupClean
+                ON j.IssueKey = v.TicketKey AND j.JiraKey = v.TicketKey
+            WHERE j.WorkGroupClean = @workGroupClean
               AND IFNULL(j.Specification, 'Unspecified') = @specification
               AND IFNULL(j.Type, '') = @type
-            ORDER BY s.TicketKey
+            ORDER BY v.TicketKey
             """;
-        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
         command.Parameters.AddWithValue("@workGroupClean", workGroupClean);
         command.Parameters.AddWithValue("@specification", specification);
         command.Parameters.AddWithValue("@type", type);

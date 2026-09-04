@@ -59,18 +59,16 @@ public static class Program
         writer.WriteLine("""
             notes-site — self-contained ballot-note review SPA (read-only renderer).
 
-            Reads the notes database owned by the BallotNotes processor and emits a
-            static HTML review site. Persistence is owned by the processor; this
-            tool no longer writes notes.
+            Reads a verified immutable snapshot from the BallotNotes processor and
+            emits a static HTML review site.
 
             Usage:
-              notes-site report [options]   Emit the static HTML review site from the notes DB.
+              notes-site report [options]   Emit the static HTML review site from a snapshot.
               notes-site --help
 
             report options:
-              --db <path>     Notes SQLite DB to read (default: ./cache/ballot-notes.db).
-              --snapshot-db <path> Immutable BallotNotes snapshot SQLite file.
-              --snapshot-descriptor <path> Trusted descriptor JSON required with --snapshot-db.
+              --snapshot-db <path> Immutable BallotNotes snapshot SQLite file (required).
+              --snapshot-descriptor <path> Trusted snapshot descriptor JSON (required).
               --out <dir>     Output directory for the static site (default: ./cache/notes-site).
               --title <text>  Site title (default: "FHIR Ballot Notes").
               --force         Overwrite an existing output directory.

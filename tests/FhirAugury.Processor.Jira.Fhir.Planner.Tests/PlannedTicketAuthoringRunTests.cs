@@ -46,7 +46,7 @@ public sealed class PlannedTicketAuthoringRunTests
     }
 
     [Fact]
-    public async Task RunBackedModeRefusesLegacyGroupingWriter()
+    public async Task GroupingWriterRequiresRunStageCoordinates()
     {
         using Fixture fixture = new();
         PlannedTicketTopicsController controller =
@@ -64,7 +64,7 @@ public sealed class PlannedTicketAuthoringRunTests
 
         ConflictObjectResult conflict =
             Assert.IsType<ConflictObjectResult>(result);
-        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
+        Assert.Contains("authoring-stage-required", conflict.Value!.ToString());
     }
 
     [Fact]

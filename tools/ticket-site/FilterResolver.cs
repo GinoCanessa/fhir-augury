@@ -32,7 +32,7 @@ internal static class FilterResolver
             canonicalSpec = MatchCaseInsensitive(values, cli.FilterSpec);
             if (canonicalSpec is null)
             {
-                await WriteUnknownAsync(stderr, "--spec", cli.FilterSpec, values, appendWgHint: false).ConfigureAwait(false);
+                await WriteUnknownAsync(stderr, "--spec", cli.FilterSpec, values).ConfigureAwait(false);
                 return null;
             }
         }
@@ -42,16 +42,14 @@ internal static class FilterResolver
         {
             List<string> values = await GetDistinctAsync(
                 connection,
-                cli.SnapshotMode
-                    ? kind == PlannerSubSiteEmitter.Kind
-                        ? "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM planned_tickets WHERE instr(Key, '-') > 1"
-                        : "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM prepared_tickets WHERE instr(Key, '-') > 1"
-                    : "SELECT DISTINCT Project FROM jira_processing_source_tickets WHERE Project IS NOT NULL",
+                kind == PlannerSubSiteEmitter.Kind
+                    ? "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM planned_tickets WHERE instr(Key, '-') > 1"
+                    : "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM prepared_tickets WHERE instr(Key, '-') > 1",
                 ct).ConfigureAwait(false);
             canonicalProject = MatchCaseInsensitive(values, cli.FilterProject);
             if (canonicalProject is null)
             {
-                await WriteUnknownAsync(stderr, "--project", cli.FilterProject, values, appendWgHint: false).ConfigureAwait(false);
+                await WriteUnknownAsync(stderr, "--project", cli.FilterProject, values).ConfigureAwait(false);
                 return null;
             }
         }
@@ -61,11 +59,9 @@ internal static class FilterResolver
         {
             List<string> wgValues = await GetDistinctAsync(
                 connection,
-                cli.SnapshotMode
-                    ? kind == PlannerSubSiteEmitter.Kind
-                        ? "SELECT DISTINCT WorkGroup FROM planned_jira_hydration WHERE IssueKey = JiraKey AND WorkGroup IS NOT NULL"
-                        : "SELECT DISTINCT WorkGroup FROM prepared_jira_hydration WHERE TicketKey = JiraKey AND WorkGroup IS NOT NULL"
-                    : "SELECT DISTINCT WorkGroup FROM jira_processing_source_tickets WHERE WorkGroup IS NOT NULL",
+                kind == PlannerSubSiteEmitter.Kind
+                    ? "SELECT DISTINCT WorkGroup FROM planned_jira_hydration WHERE IssueKey = JiraKey AND WorkGroup IS NOT NULL"
+                    : "SELECT DISTINCT WorkGroup FROM prepared_jira_hydration WHERE TicketKey = JiraKey AND WorkGroup IS NOT NULL",
                 ct).ConfigureAwait(false);
 
             string? directMatch = MatchCaseInsensitive(wgValues, cli.FilterWorkGroup);
@@ -75,17 +71,10 @@ internal static class FilterResolver
             }
             else
             {
-                string? resolved = cli.SnapshotMode
-                    ? await WorkGroupResolver.TryResolveFromSnapshotAsync(
-                        cli.FilterWorkGroup,
-                        dbPath,
-                        ct).ConfigureAwait(false)
-                    : await WorkGroupResolver.TryResolveAsync(
-                        cli.FilterWorkGroup,
-                        cli.JiraSourceUrl,
-                        cli.JiraSourceDbPath,
-                        stderr,
-                        ct).ConfigureAwait(false);
+                string? resolved = await WorkGroupResolver.TryResolveAsync(
+                    cli.FilterWorkGroup,
+                    dbPath,
+                    ct).ConfigureAwait(false);
 
                 if (resolved is not null)
                 {
@@ -98,8 +87,7 @@ internal static class FilterResolver
                         stderr,
                         "--wg",
                         cli.FilterWorkGroup,
-                        wgValues,
-                        appendWgHint: !cli.SnapshotMode).ConfigureAwait(false);
+                        wgValues).ConfigureAwait(false);
                     return null;
                 }
             }
@@ -140,15 +128,13 @@ internal static class FilterResolver
         TextWriter stderr,
         string flag,
         string raw,
-        List<string> values,
-        bool appendWgHint)
+        List<string> values)
     {
         await stderr.WriteLineAsync($"Unknown value for {flag}: '{raw}'.").ConfigureAwait(false);
         if (values.Count == 0)
         {
             await stderr.WriteLineAsync(
-                $"No values are present for {flag} in the database. The DB may not be hydrated yet — " +
-                "run FhirAugury.Processor.Jira.Fhir.Preparer against it to populate hydration.")
+                $"No values are present for {flag} in this processor snapshot.")
                 .ConfigureAwait(false);
             return;
         }
@@ -158,12 +144,6 @@ internal static class FilterResolver
         foreach (string value in sorted)
         {
             await stderr.WriteLineAsync(value).ConfigureAwait(false);
-        }
-        if (appendWgHint)
-        {
-            await stderr.WriteLineAsync(
-                "To match by code, ensure the Jira source service is reachable or pass --jira-source-db <path>.")
-                .ConfigureAwait(false);
         }
     }
 }

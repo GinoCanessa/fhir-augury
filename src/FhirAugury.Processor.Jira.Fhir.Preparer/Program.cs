@@ -119,16 +119,53 @@ builder.Services.AddSingleton(sp =>
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     PreparerDatabase database = new(dbPath, sp.GetRequiredService<ILogger<PreparerDatabase>>());
-    database.Initialize();
-    return database;
+    database.AcquireStartupOwnership();
+    try
+    {
+        database.Initialize();
+        return database;
+    }
+    catch
+    {
+        database.Dispose();
+        throw;
+    }
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, PreviewPreparedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
+builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PreparedTicketRunPostProcessor>());
 
 WebApplication app = builder.Build();
+
+PreparerDatabase preparerDatabase =
+    app.Services.GetRequiredService<PreparerDatabase>();
+PreparerServiceOptions preparerOptions =
+    app.Services.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+AuthoringRunStore preparerAuthoringStore =
+    app.Services.GetRequiredService<AuthoringRunStore>();
+JiraAuthoringRunCoordinator preparerRunCoordinator =
+    app.Services.GetRequiredService<JiraAuthoringRunCoordinator>();
+preparerDatabase.AcquireStartupOwnership();
+await preparerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
+if (preparerOptions.ActivateRunBackedAuthoring)
+{
+    AuthoringCutoverCoordinator cutover =
+        new(preparerDatabase.OpenConnection);
+    await cutover.ActivateAsync(
+        new AuthoringCutoverRequest(
+            preparerRunCoordinator.ProcessorKind,
+            Path.GetFullPath(preparerOptions.DatabasePath),
+            Path.GetFullPath(preparerOptions.PreCutoverBackupPath!)),
+        preparerDatabase);
+}
+else
+{
+    await preparerAuthoringStore.EnsureProcessorModeAsync(
+        preparerRunCoordinator.ProcessorKind);
+}
 
 app.MapDefaultEndpoints();
 app.MapProcessingEndpoints<JiraProcessingSourceTicketRecord>();

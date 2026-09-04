@@ -56,16 +56,17 @@ builder.Services.AddSingleton(sp =>
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     BallotNotesDatabase database = new(dbPath, sp.GetRequiredService<ILogger<BallotNotesDatabase>>());
-    database.Initialize();
     database.AcquireStartupOwnership();
-    database.RecoverInterruptedHydrationAsync()
-        .GetAwaiter()
-        .GetResult();
-    new AuthoringRunStore(database.OpenConnection)
-        .EnsureProcessorModeAsync(BallotNotesDatabase.AuthoringProcessorKind)
-        .GetAwaiter()
-        .GetResult();
-    return database;
+    try
+    {
+        database.Initialize();
+        return database;
+    }
+    catch
+    {
+        database.Dispose();
+        throw;
+    }
 });
 
 // The attributor resolves orchestrator-first / Jira-source fallback per call
@@ -108,6 +109,30 @@ WebApplication app = builder.Build();
 // renderer even before the first hydrate request (the singleton is otherwise
 // created lazily on first controller resolution).
 _ = app.Services.GetRequiredService<BallotNotesDatabase>();
+BallotNotesDatabase ballotNotesDatabase =
+    app.Services.GetRequiredService<BallotNotesDatabase>();
+BallotNotesServiceOptions ballotNotesOptions =
+    app.Services.GetRequiredService<IOptions<BallotNotesServiceOptions>>().Value;
+AuthoringRunStore ballotNotesAuthoringStore =
+    app.Services.GetRequiredService<AuthoringRunStore>();
+ballotNotesDatabase.AcquireStartupOwnership();
+await ballotNotesDatabase.RecoverInterruptedHydrationAsync();
+if (ballotNotesOptions.ActivateRunBackedAuthoring)
+{
+    AuthoringCutoverCoordinator cutover =
+        new(ballotNotesDatabase.OpenConnection);
+    await cutover.ActivateAsync(
+        new AuthoringCutoverRequest(
+            BallotNotesDatabase.AuthoringProcessorKind,
+            Path.GetFullPath(ballotNotesOptions.DatabasePath),
+            Path.GetFullPath(ballotNotesOptions.PreCutoverBackupPath!)),
+        ballotNotesDatabase);
+}
+else
+{
+    await ballotNotesAuthoringStore.EnsureProcessorModeAsync(
+        BallotNotesDatabase.AuthoringProcessorKind);
+}
 
 app.MapDefaultEndpoints();
 app.MapControllers();

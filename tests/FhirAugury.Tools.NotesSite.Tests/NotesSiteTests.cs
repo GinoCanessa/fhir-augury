@@ -98,7 +98,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "site");
-        new NotesSpaEmitter(dbPath, "Test Notes").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "Test Notes");
 
         string indexPath = Path.Combine(outDir, "index.html");
         Assert.True(File.Exists(indexPath));
@@ -130,7 +130,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "snap-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
         byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
         Assert.Equal("SQLite format 3\0", System.Text.Encoding.ASCII.GetString(dbBytes, 0, 16));
 
@@ -143,36 +143,7 @@ public sealed class NotesSiteTests : IDisposable
     }
 
     [Fact]
-    public async Task ReportRunner_Overwrite_Guard()
-    {
-        string dbPath = Path.Combine(_tempDir, "guard.db");
-        using (BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance))
-        {
-            db.Initialize();
-            Seed(db);
-        }
-        string outDir = Path.Combine(_tempDir, "guarded");
-
-        int first = await ReportRunner.RunAsync(new ReportOptions(dbPath, outDir, "x", Force: false));
-        Assert.Equal(0, first);
-
-        int second = await ReportRunner.RunAsync(new ReportOptions(dbPath, outDir, "x", Force: false));
-        Assert.Equal(1, second); // guarded without --force
-
-        int forced = await ReportRunner.RunAsync(new ReportOptions(dbPath, outDir, "x", Force: true));
-        Assert.Equal(0, forced);
-    }
-
-    [Fact]
-    public async Task ReportRunner_Missing_Db_Fails()
-    {
-        int exit = await ReportRunner.RunAsync(
-            new ReportOptions(Path.Combine(_tempDir, "nope.db"), Path.Combine(_tempDir, "out"), "x", Force: false));
-        Assert.Equal(1, exit);
-    }
-
-    [Fact]
-    public void Cli_SnapshotModeRequiresBothFilesAndRejectsLegacyDbMix()
+    public void CliRequiresSnapshotFilesAndRejectsLegacyDbInput()
     {
         Assert.False(CliOptions.TryParseReport(
             ["--snapshot-db", "snapshot.db"],
@@ -181,14 +152,10 @@ public sealed class NotesSiteTests : IDisposable
         Assert.Contains("--snapshot-descriptor", missingDescriptor, StringComparison.Ordinal);
 
         Assert.False(CliOptions.TryParseReport(
-            [
-                "--db", "live.db",
-                "--snapshot-db", "snapshot.db",
-                "--snapshot-descriptor", "snapshot.json",
-            ],
+            ["--db", "live.db"],
             out _,
-            out string? mixed));
-        Assert.Contains("mutually exclusive", mixed, StringComparison.Ordinal);
+            out string? legacy));
+        Assert.Contains("Unknown option", legacy, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -200,12 +167,11 @@ public sealed class NotesSiteTests : IDisposable
         string outDir = Path.Combine(_tempDir, "snapshot-site");
 
         int exit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             outDir,
             "Snapshot Notes",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath));
+            Force: false));
         Assert.Equal(0, exit);
 
         string html = await File.ReadAllTextAsync(Path.Combine(outDir, "index.html"));
@@ -226,12 +192,11 @@ public sealed class NotesSiteTests : IDisposable
             SiteBuildManifest.FileName));
         await Task.Delay(50);
         int second = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             outDir,
             "Snapshot Notes",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath));
+            Force: false));
         Assert.Equal(0, second);
         Assert.Equal(firstWrite, File.GetLastWriteTimeUtc(Path.Combine(
             outDir,
@@ -247,23 +212,21 @@ public sealed class NotesSiteTests : IDisposable
         string outDir = Path.Combine(_tempDir, "notes-title-site");
 
         Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             outDir,
             "First title",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath)));
+            Force: false)));
         SiteBuildManifest first = SiteBuildManifest.Read(Path.Combine(
             outDir,
             SiteBuildManifest.FileName));
 
         Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             outDir,
             "Second title",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath)));
+            Force: false)));
         SiteBuildManifest second = SiteBuildManifest.Read(Path.Combine(
             outDir,
             SiteBuildManifest.FileName));
@@ -286,12 +249,11 @@ public sealed class NotesSiteTests : IDisposable
             checksum.DescriptorPath,
             checksum.Descriptor with { Sha256 = new string('0', 64) });
         int checksumExit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            checksum.DatabasePath,
+            checksum.DescriptorPath,
             Path.Combine(_tempDir, "bad-checksum"),
             "x",
-            Force: false,
-            SnapshotDbPath: checksum.DatabasePath,
-            SnapshotDescriptorPath: checksum.DescriptorPath));
+            Force: false));
         Assert.Equal(1, checksumExit);
 
         NotesSnapshotFixture count = await CreateNotesSnapshotAsync(
@@ -306,12 +268,11 @@ public sealed class NotesSiteTests : IDisposable
             count.DescriptorPath,
             count.Descriptor with { TableCounts = wrongCounts });
         int countExit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            count.DatabasePath,
+            count.DescriptorPath,
             Path.Combine(_tempDir, "bad-count"),
             "x",
-            Force: false,
-            SnapshotDbPath: count.DatabasePath,
-            SnapshotDescriptorPath: count.DescriptorPath));
+            Force: false));
         Assert.Equal(1, countExit);
     }
 
@@ -327,19 +288,17 @@ public sealed class NotesSiteTests : IDisposable
         string outDir = Path.Combine(_tempDir, "monotonic-site");
 
         Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            newer.DatabasePath,
+            newer.DescriptorPath,
             outDir,
             "x",
-            Force: false,
-            SnapshotDbPath: newer.DatabasePath,
-            SnapshotDescriptorPath: newer.DescriptorPath)));
+            Force: false)));
         Assert.Equal(1, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            older.DatabasePath,
+            older.DescriptorPath,
             outDir,
             "x",
-            Force: false,
-            SnapshotDbPath: older.DatabasePath,
-            SnapshotDescriptorPath: older.DescriptorPath)));
+            Force: false)));
 
         SiteBuildManifest manifest = SiteBuildManifest.Read(Path.Combine(
             outDir,
@@ -365,12 +324,11 @@ public sealed class NotesSiteTests : IDisposable
         {
             int exit = await ReportRunner.RunAsync(
                 new ReportOptions(
-                    CliOptions.DefaultDb,
+                    snapshot.DatabasePath,
+                    snapshot.DescriptorPath,
                     outDir,
                     "x",
-                    Force: false,
-                    SnapshotDbPath: snapshot.DatabasePath,
-                    SnapshotDescriptorPath: snapshot.DescriptorPath),
+                    Force: false),
                 new NotesSiteCleanupHooks(
                     async privateSnapshot =>
                     {
@@ -410,12 +368,11 @@ public sealed class NotesSiteTests : IDisposable
         File.Move(contained.DescriptorPath, containedDescriptor);
 
         int containedExit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            containedDatabase,
+            containedDescriptor,
             containedOut,
             "x",
-            Force: false,
-            SnapshotDbPath: containedDatabase,
-            SnapshotDescriptorPath: containedDescriptor));
+            Force: false));
 
         Assert.Equal(1, containedExit);
         Assert.True(File.Exists(containedDatabase));
@@ -431,12 +388,11 @@ public sealed class NotesSiteTests : IDisposable
         File.Move(control.DescriptorPath, controlDescriptor);
 
         int controlExit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            control.DatabasePath,
+            controlDescriptor,
             controlOut,
             "x",
-            Force: false,
-            SnapshotDbPath: control.DatabasePath,
-            SnapshotDescriptorPath: controlDescriptor));
+            Force: false));
 
         Assert.Equal(1, controlExit);
         Assert.True(File.Exists(control.DatabasePath));
@@ -469,12 +425,11 @@ public sealed class NotesSiteTests : IDisposable
         await WriteDescriptorAsync(snapshot.DescriptorPath, refreshed);
 
         int exit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             Path.Combine(_tempDir, "secret-site"),
             "x",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath));
+            Force: false));
         Assert.Equal(1, exit);
         Assert.False(Directory.Exists(Path.Combine(_tempDir, "secret-site")));
     }
@@ -501,12 +456,11 @@ public sealed class NotesSiteTests : IDisposable
         await WriteDescriptorAsync(snapshot.DescriptorPath, refreshed);
 
         int exit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             Path.Combine(_tempDir, "schema-drift-site"),
             "x",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath));
+            Force: false));
 
         Assert.Equal(1, exit);
         Assert.False(Directory.Exists(Path.Combine(_tempDir, "schema-drift-site")));
@@ -521,73 +475,13 @@ public sealed class NotesSiteTests : IDisposable
         await File.WriteAllTextAsync(snapshot.DatabasePath + "-shm", "sidecar");
 
         int exit = await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
+            snapshot.DatabasePath,
+            snapshot.DescriptorPath,
             Path.Combine(_tempDir, "sidecar-site"),
             "x",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath));
+            Force: false));
 
         Assert.Equal(1, exit);
-    }
-
-    [Fact]
-    public async Task LegacyAndSnapshotOwnershipRequiresForceAndPreservesSequence()
-    {
-        string legacyDb = Path.Combine(_tempDir, "ownership-legacy.db");
-        using (BallotNotesDatabase db = new(
-            legacyDb,
-            NullLogger<BallotNotesDatabase>.Instance))
-        {
-            db.Initialize();
-            Seed(db);
-        }
-
-        NotesSnapshotFixture snapshot = await CreateNotesSnapshotAsync(
-            sequence: 14,
-            snapshotId: "notes-ownership-14");
-        NotesSnapshotFixture older = await CreateNotesSnapshotAsync(
-            sequence: 13,
-            snapshotId: "notes-ownership-13");
-        string outDir = Path.Combine(_tempDir, "ownership-site");
-
-        Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            legacyDb,
-            outDir,
-            "Legacy",
-            Force: false)));
-        Assert.Equal(1, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
-            outDir,
-            "Snapshot",
-            Force: false,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath)));
-        Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
-            outDir,
-            "Snapshot",
-            Force: true,
-            SnapshotDbPath: snapshot.DatabasePath,
-            SnapshotDescriptorPath: snapshot.DescriptorPath)));
-        Assert.Equal(1, await ReportRunner.RunAsync(new ReportOptions(
-            legacyDb,
-            outDir,
-            "Legacy again",
-            Force: false)));
-        Assert.Equal(0, await ReportRunner.RunAsync(new ReportOptions(
-            legacyDb,
-            outDir,
-            "Legacy again",
-            Force: true)));
-        Assert.Equal(1, await ReportRunner.RunAsync(new ReportOptions(
-            CliOptions.DefaultDb,
-            outDir,
-            "Older snapshot",
-            Force: true,
-            SnapshotDbPath: older.DatabasePath,
-            SnapshotDescriptorPath: older.DescriptorPath)));
-        Assert.False(File.Exists(Path.Combine(outDir, SiteBuildManifest.FileName)));
     }
 
     [Fact]
@@ -601,7 +495,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "copy-ai-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
 
         string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
         Assert.Contains("Copy for AI", appJs);
@@ -630,7 +524,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "copy-html-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
 
         string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
         Assert.Contains("copyHtmlButton", appJs);
@@ -652,7 +546,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "grouping-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
 
         string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
         // Phase 2: change-impact grouping helper + the four bucket labels.
@@ -707,7 +601,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "multiwg-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
         byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
 
         string snapPath = Path.Combine(_tempDir, "multiwg-decoded.db");
@@ -739,7 +633,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "landing-wg-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
 
         string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
         // Phase 3: two landing columns (code + name), discrepancy badge, and the
@@ -788,7 +682,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "lineage-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
         byte[] dbBytes = Decompress(Convert.FromBase64String(ExtractDbBlob(File.ReadAllText(Path.Combine(outDir, "index.html")))));
 
         string snapPath = Path.Combine(_tempDir, "lineage-decoded.db");
@@ -818,7 +712,7 @@ public sealed class NotesSiteTests : IDisposable
         }
 
         string outDir = Path.Combine(_tempDir, "detail-wg-site");
-        new NotesSpaEmitter(dbPath, "x").Emit(outDir);
+        EmitDatabase(dbPath, outDir, "x");
 
         string appJs = File.ReadAllText(Path.Combine(outDir, "assets", "app.js"));
         // Phase 4: three detail-summary rows + the markdown export field rows.
@@ -836,6 +730,49 @@ public sealed class NotesSiteTests : IDisposable
         using SqliteCommand cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         return (long)cmd.ExecuteScalar()!;
+    }
+
+    private static void EmitDatabase(
+        string databasePath,
+        string outputPath,
+        string title)
+    {
+        string snapshotPath = Path.Combine(
+            Path.GetDirectoryName(databasePath)!,
+            $"emitter-snapshot-{Guid.NewGuid():N}.db");
+        try
+        {
+            using (SqliteConnection source = new(
+                $"Data Source={databasePath};Mode=ReadOnly;Pooling=False"))
+            using (SqliteConnection destination = new(
+                $"Data Source={snapshotPath};Pooling=False"))
+            {
+                source.Open();
+                destination.Open();
+                source.BackupDatabase(destination);
+            }
+
+            byte[] bytes = File.ReadAllBytes(snapshotPath);
+            AuthoringSnapshotDescriptor descriptor = new(
+                "github-fhir-ballot-notes",
+                "test-run",
+                "test-snapshot",
+                1,
+                1,
+                1,
+                Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+                bytes.LongLength,
+                0,
+                0,
+                new Dictionary<string, long>(StringComparer.Ordinal),
+                Path.GetFileName(snapshotPath),
+                DateTimeOffset.UtcNow);
+            new NotesSpaEmitter(bytes, descriptor, title).Emit(outputPath);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(snapshotPath);
+        }
     }
 
     private static byte[] Decompress(byte[] gz)

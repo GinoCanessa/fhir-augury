@@ -4,9 +4,11 @@ using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
+using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System.Diagnostics;
@@ -32,6 +34,22 @@ public sealed class PreparedTicketRunPostProcessor(
     {
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+        AuthoringProcessorModeRecord mode =
+            await authoringStore.GetProcessorModeAsync(
+                coordinator.ProcessorKind,
+                ct);
+        bool initialRevalidation = mode.RevalidationRequired &&
+            string.Equals(
+                mode.RevalidationRunId,
+                runId,
+                StringComparison.Ordinal);
+        if (initialRevalidation &&
+            await coordinator.SupersedeStaleItemsAsync(runId, ct))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.SourceRevisionMismatch,
+                $"Initial revalidation run '{runId}' was replaced because source revisions changed before finalization.");
+        }
         if (!run.DatabaseOnly && await database.CountLegacyUnverifiedAsync(ct) > 0)
         {
             await authoringStore.SupersedeRunAsync(
@@ -85,32 +103,61 @@ public sealed class PreparedTicketRunPostProcessor(
             })));
 
         AuthoringRunFinalizer finalizer = new(authoringStore);
-        return await finalizer.FinalizeAsync(
-            runId,
-            stages,
-            run.DatabaseOnly
-                ? null
-                : async cancellationToken =>
-                {
-                    IReadOnlyList<AuthoringRunItemRecord> items =
-                        await authoringStore.GetRunItemsAsync(runId, cancellationToken);
-                    IReadOnlyDictionary<string, long> counts =
-                        await database.GetSnapshotTableCountsAsync(cancellationToken);
-                    SqliteReviewSnapshotWriter writer = new(database.OpenConnection, authoringStore);
-                    return await writer.WriteAsync(
-                        new SqliteReviewSnapshotRequest(
-                            coordinator.ProcessorKind,
+        Func<SqliteConnection, CancellationToken, Task>? completionGuard =
+            initialRevalidation
+                ? (connection, cancellationToken) =>
+                    JiraProcessingSourceTicketStore
+                        .EnsureRunSourceRevisionsCurrentAsync(
+                            connection,
                             runId,
-                            Path.GetFullPath(_options.SnapshotDirectory),
-                            _options.SnapshotSchemaVersion,
-                            items.Count(item =>
-                                item.Status is AuthoringStatusValues.Items.Complete or AuthoringStatusValues.Items.Superseded),
-                            items.Count(item => item.AcceptedReceiptId is not null),
-                            counts,
-                            new PreparedTicketSnapshotSanitizer(runId)),
-                        cancellationToken);
-                },
-            ct);
+                            cancellationToken)
+                : null;
+        try
+        {
+            return await finalizer.FinalizeAsync(
+                runId,
+                stages,
+                run.DatabaseOnly
+                    ? null
+                    : async cancellationToken =>
+                    {
+                        IReadOnlyList<AuthoringRunItemRecord> items =
+                            await authoringStore.GetRunItemsAsync(runId, cancellationToken);
+                        IReadOnlyDictionary<string, long> counts =
+                            await database.GetSnapshotTableCountsAsync(cancellationToken);
+                        int receiptCount =
+                            await database.GetSnapshotReceiptCountAsync(
+                                runId,
+                                cancellationToken);
+                        SqliteReviewSnapshotWriter writer = new(database.OpenConnection, authoringStore);
+                        return await writer.WriteAsync(
+                            new SqliteReviewSnapshotRequest(
+                                coordinator.ProcessorKind,
+                                runId,
+                                Path.GetFullPath(_options.SnapshotDirectory),
+                                _options.SnapshotSchemaVersion,
+                                items.Count(item =>
+                                    item.Status is AuthoringStatusValues.Items.Complete or AuthoringStatusValues.Items.Superseded),
+                                receiptCount,
+                                counts,
+                                new PreparedTicketSnapshotSanitizer(runId)),
+                            cancellationToken);
+                    },
+                completionGuard,
+                ct);
+        }
+        catch (AuthoringConflictException ex)
+            when (initialRevalidation &&
+                  ex.Code == AuthoringConflictCode.SourceRevisionMismatch)
+        {
+            if (await coordinator.SupersedeStaleItemsAsync(runId, ct))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.SourceRevisionMismatch,
+                    $"Initial revalidation run '{runId}' was replaced because source revisions changed during finalization.");
+            }
+            throw;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

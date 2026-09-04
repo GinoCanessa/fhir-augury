@@ -2,6 +2,7 @@ using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -27,6 +28,7 @@ public sealed class AuthoringRunFinalizer(
         string runId,
         IReadOnlyCollection<AuthoringFinalizationStage> stages,
         Func<CancellationToken, Task<AuthoringSnapshotDescriptor>>? snapshotFactory = null,
+        Func<SqliteConnection, CancellationToken, Task>? completionGuard = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
@@ -107,7 +109,11 @@ public sealed class AuthoringRunFinalizer(
                 ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
             if (run.DatabaseOnly)
             {
-                await store.CompleteRunAsync(runId, snapshotId: null, ct: ct);
+                await store.CompleteRunAsync(
+                    runId,
+                    snapshotId: null,
+                    completionGuard: completionGuard,
+                    ct: ct);
                 return null;
             }
 
@@ -123,7 +129,11 @@ public sealed class AuthoringRunFinalizer(
                     $"Snapshot '{descriptor.SnapshotId}' belongs to run '{descriptor.RunId}', not '{runId}'.");
             }
 
-            await store.CompleteRunAsync(runId, descriptor.SnapshotId, ct: ct);
+            await store.CompleteRunAsync(
+                runId,
+                descriptor.SnapshotId,
+                completionGuard: completionGuard,
+                ct: ct);
             return descriptor;
         }
         catch (AuthoringConflictException ex)

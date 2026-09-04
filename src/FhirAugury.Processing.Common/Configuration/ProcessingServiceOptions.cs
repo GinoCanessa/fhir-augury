@@ -21,6 +21,8 @@ public class ProcessingServiceOptions
     public string SnapshotDirectory { get; set; } = "./data/snapshots";
     public int SnapshotSchemaVersion { get; set; } = 1;
     public bool ReconcileSnapshotsOnStartup { get; set; } = true;
+    public bool ActivateRunBackedAuthoring { get; set; }
+    public string? PreCutoverBackupPath { get; set; }
 
     /// <summary>
     /// Validates configuration. Returns human-readable errors; an empty sequence means valid.
@@ -65,6 +67,12 @@ public class ProcessingServiceOptions
         if (SnapshotSchemaVersion < 1)
         {
             yield return "SnapshotSchemaVersion must be greater than or equal to 1.";
+        }
+
+        if (ActivateRunBackedAuthoring &&
+            string.IsNullOrWhiteSpace(PreCutoverBackupPath))
+        {
+            yield return "PreCutoverBackupPath is required when ActivateRunBackedAuthoring is true.";
         }
 
         if (Ports.Http <= 0 || Ports.Http > 65535)

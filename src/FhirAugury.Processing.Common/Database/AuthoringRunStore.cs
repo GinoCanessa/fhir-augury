@@ -10,6 +10,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Processing.Common.Database;
 
+public sealed record AuthoringMaintenanceRunItem(
+    string BusinessKey,
+    string ItemKind,
+    string ExpectedSourceRevision,
+    string ReceiptId);
+
 public sealed class AuthoringRunStore
 {
     private readonly Func<SqliteConnection> _openConnection;
@@ -59,6 +65,17 @@ public sealed class AuthoringRunStore
         AuthoringMutationFenceRecord.CreateTable(connection);
         AuthoringProcessorModeRecord.CreateTable(connection);
         AuthoringReviewSnapshotRecord.CreateTable(connection);
+        using (SqliteCommand lineage = connection.CreateCommand())
+        {
+            lineage.CommandText =
+                """
+                CREATE TABLE IF NOT EXISTS authoring_revalidation_lineage(
+                    RunId TEXT NOT NULL PRIMARY KEY,
+                    PreviousRunId TEXT NOT NULL UNIQUE
+                );
+                """;
+            lineage.ExecuteNonQuery();
+        }
 
         using (SqliteCommand dropIdentityIndexes = connection.CreateCommand())
         {
@@ -73,7 +90,7 @@ public sealed class AuthoringRunStore
         string[] indexes =
         [
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_identity ON authoring_run_items(RunId, ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_revision ON authoring_run_items(ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE, ExpectedSourceRevision);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_revision ON authoring_run_items(ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE, ExpectedSourceRevision) WHERE Status <> 'superseded';",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_attempts_number ON authoring_run_attempts(RunItemId, AttemptNumber);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_stages_identity ON authoring_run_stages(RunId, StageName, PartitionKey);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_review_snapshots_sequence ON authoring_review_snapshots(ProcessorKind, Sequence);",
@@ -255,6 +272,12 @@ public sealed class AuthoringRunStore
                     AuthoringConflictCode.AuthoringNotActivated,
                     $"Authoring is not activated for processor '{processorKind}'.");
             EnsureRunBacked(mode);
+            if (mode.RevalidationRequired)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RevalidationRequired,
+                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before ordinary authoring runs can start.");
+            }
 
             await ExecuteAsync(
                 connection,
@@ -305,6 +328,360 @@ public sealed class AuthoringRunStore
         }
     }
 
+    public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
+        string processorKind,
+        IReadOnlyCollection<AuthoringMaintenanceRunItem> items,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+        => await CreateMaintenanceRunAsync(
+            processorKind,
+            (_, _) => Task.FromResult<IReadOnlyList<AuthoringMaintenanceRunItem>>(
+                items.ToArray()),
+            now,
+            ct);
+
+    public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
+        string processorKind,
+        Func<
+            SqliteConnection,
+            CancellationToken,
+            Task<IReadOnlyList<AuthoringMaintenanceRunItem>>> itemFactory,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        ArgumentNullException.ThrowIfNull(itemFactory);
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        string runId = Guid.NewGuid().ToString("N");
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringProcessorModeRecord mode =
+                await ReadProcessorModeAsync(connection, processorKind, ct)
+                ?? throw new AuthoringConflictException(
+                    AuthoringConflictCode.AuthoringNotActivated,
+                    $"Authoring is not activated for processor '{processorKind}'.");
+            EnsureRunBacked(mode);
+            if (mode.RevalidationRequired)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RevalidationRequired,
+                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before grouping maintenance.");
+            }
+            await using (SqliteCommand fence = connection.CreateCommand())
+            {
+                fence.CommandText =
+                    "SELECT RunId FROM authoring_mutation_fences WHERE ProcessorKind = @processorKind";
+                fence.Parameters.AddWithValue("@processorKind", processorKind);
+                string? activeRunId =
+                    (string?)await fence.ExecuteScalarAsync(ct);
+                if (activeRunId is not null)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.MutationFenceUnavailable,
+                        $"Mutating run '{activeRunId}' is already active.");
+                }
+            }
+            IReadOnlyList<AuthoringMaintenanceRunItem> items =
+                await itemFactory(connection, ct);
+            if (items.Count == 0)
+            {
+                throw new ArgumentException(
+                    "A grouping maintenance run requires at least one current receipt-backed item.",
+                    nameof(itemFactory));
+            }
+
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                    TotalItems, CreatedAt, StartedAt)
+                VALUES(
+                    @id, @processorKind, @epoch, @status, 1,
+                    @totalItems, @createdAt, @startedAt)
+                """,
+                ct,
+                ("@id", runId),
+                ("@processorKind", processorKind),
+                ("@epoch", mode.Epoch),
+                ("@status", AuthoringStatusValues.Runs.Running),
+                ("@totalItems", items.Count),
+                ("@createdAt", Format(timestamp)),
+                ("@startedAt", Format(timestamp)));
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_mutation_fences(
+                    ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(@processorKind, @runId, @leaseId, @acquiredAt)
+                """,
+                ct,
+                ("@processorKind", processorKind),
+                ("@runId", runId),
+                ("@leaseId", Guid.NewGuid().ToString("N")),
+                ("@acquiredAt", Format(timestamp)));
+            foreach (AuthoringMaintenanceRunItem item in items)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO authoring_run_items(
+                        Id, RunId, BusinessKey, ItemKind,
+                        ExpectedSourceRevision, Status, AcceptedReceiptId,
+                        AttemptCount, CreatedAt, CompletedAt)
+                    VALUES(
+                        @id, @runId, @businessKey, @itemKind,
+                        @expectedSourceRevision, @status, @receiptId,
+                        0, @createdAt, @completedAt)
+                    """,
+                    ct,
+                    ("@id", Guid.NewGuid().ToString("N")),
+                    ("@runId", runId),
+                    ("@businessKey", item.BusinessKey),
+                    ("@itemKind", $"maintenance:{runId}:{item.ItemKind}"),
+                    ("@expectedSourceRevision", item.ExpectedSourceRevision),
+                    ("@status", AuthoringStatusValues.Items.Complete),
+                    ("@receiptId", item.ReceiptId),
+                    ("@createdAt", Format(timestamp)),
+                    ("@completedAt", Format(timestamp)));
+            }
+
+            AuthoringRunRecord run = await ReadRunAsync(connection, runId, ct)
+                ?? throw new InvalidOperationException(
+                    $"Failed to create maintenance run '{runId}'.");
+            await CommitAsync(connection, ct);
+            return run;
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
+    public async Task<AuthoringRunRecord> ReplaceRevalidationRunAsync(
+        string processorKind,
+        string expectedRunId,
+        IReadOnlyCollection<AuthoringRunItemDefinition> items,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedRunId);
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Count == 0)
+        {
+            throw new ArgumentException(
+                "A replacement revalidation run requires at least one item.",
+                nameof(items));
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        string replacementRunId = Guid.NewGuid().ToString("N");
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringProcessorModeRecord mode =
+                await ReadProcessorModeAsync(connection, processorKind, ct)
+                ?? throw new AuthoringConflictException(
+                    AuthoringConflictCode.AuthoringNotActivated,
+                    $"Authoring is not activated for processor '{processorKind}'.");
+            EnsureRunBacked(mode);
+            if (!mode.RevalidationRequired ||
+                !string.Equals(
+                    mode.RevalidationRunId,
+                    expectedRunId,
+                    StringComparison.Ordinal))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Run '{expectedRunId}' is no longer the active initial revalidation run.");
+            }
+
+            AuthoringRunRecord current =
+                await ReadRunAsync(connection, expectedRunId, ct)
+                ?? throw new KeyNotFoundException(
+                    $"Revalidation run '{expectedRunId}' was not found.");
+            if (current.AuthoringEpoch != mode.Epoch)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Revalidation run '{expectedRunId}' is not in the active epoch.");
+            }
+
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_attempts
+                SET Status = @superseded,
+                    CompletedAt = @completedAt,
+                    Error = @error
+                WHERE RunId = @runId AND Status = @active
+                """,
+                ct,
+                ("@superseded", AuthoringStatusValues.Attempts.Superseded),
+                ("@completedAt", Format(timestamp)),
+                ("@error", "Initial revalidation source revisions changed."),
+                ("@runId", expectedRunId),
+                ("@active", AuthoringStatusValues.Attempts.Active));
+            foreach (AuthoringRunItemDefinition item in items
+                         .DistinctBy(
+                             item => (
+                                 item.BusinessKey.ToUpperInvariant(),
+                                 item.ItemKind.ToLowerInvariant())))
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    WITH RECURSIVE run_chain(Id) AS (
+                        SELECT @runId
+                        UNION
+                        SELECT lineage.PreviousRunId
+                        FROM authoring_revalidation_lineage lineage
+                        INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+                    )
+                    UPDATE authoring_run_items
+                    SET Status = @superseded,
+                        CompletedAt = @completedAt,
+                        Error = @error
+                    WHERE RunId IN (SELECT Id FROM run_chain)
+                      AND BusinessKey = @businessKey COLLATE NOCASE
+                      AND ItemKind = @itemKind COLLATE NOCASE
+                      AND Status <> @alreadySuperseded
+                    """,
+                    ct,
+                    ("@superseded", AuthoringStatusValues.Items.Superseded),
+                    ("@completedAt", Format(timestamp)),
+                    ("@error", "Initial revalidation source revisions changed."),
+                    ("@runId", expectedRunId),
+                    ("@businessKey", item.BusinessKey),
+                    ("@itemKind", item.ItemKind),
+                    ("@alreadySuperseded", AuthoringStatusValues.Items.Superseded));
+            }
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_runs
+                SET Status = @status,
+                    CompletedAt = @completedAt,
+                    Error = @error
+                WHERE Id = @runId
+                """,
+                ct,
+                ("@status", AuthoringStatusValues.Runs.Superseded),
+                ("@completedAt", Format(timestamp)),
+                ("@error", "Initial revalidation source revisions changed."),
+                ("@runId", expectedRunId));
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM authoring_mutation_fences
+                WHERE ProcessorKind = @processorKind AND RunId = @runId
+                """,
+                ct,
+                ("@processorKind", processorKind),
+                ("@runId", expectedRunId));
+
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                    TotalItems, CreatedAt, StartedAt)
+                VALUES(
+                    @id, @processorKind, @epoch, @status, 0,
+                    @totalItems, @createdAt, @startedAt)
+                """,
+                ct,
+                ("@id", replacementRunId),
+                ("@processorKind", processorKind),
+                ("@epoch", mode.Epoch),
+                ("@status", AuthoringStatusValues.Runs.Running),
+                ("@totalItems", items.Count),
+                ("@createdAt", Format(timestamp)),
+                ("@startedAt", Format(timestamp)));
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_revalidation_lineage(RunId, PreviousRunId)
+                VALUES(@runId, @previousRunId)
+                """,
+                ct,
+                ("@runId", replacementRunId),
+                ("@previousRunId", expectedRunId));
+            foreach (AuthoringRunItemDefinition item in items)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO authoring_run_items(
+                        Id, RunId, BusinessKey, ItemKind,
+                        ExpectedSourceRevision, Status, AttemptCount, CreatedAt)
+                    VALUES(
+                        @id, @runId, @businessKey, @itemKind,
+                        @expectedSourceRevision, @status, 0, @createdAt)
+                    """,
+                    ct,
+                    ("@id", Guid.NewGuid().ToString("N")),
+                    ("@runId", replacementRunId),
+                    ("@businessKey", item.BusinessKey),
+                    ("@itemKind", item.ItemKind),
+                    ("@expectedSourceRevision", item.ExpectedSourceRevision),
+                    ("@status", AuthoringStatusValues.Items.Pending),
+                    ("@createdAt", Format(timestamp)));
+            }
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_mutation_fences(
+                    ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(@processorKind, @runId, @leaseId, @acquiredAt)
+                """,
+                ct,
+                ("@processorKind", processorKind),
+                ("@runId", replacementRunId),
+                ("@leaseId", Guid.NewGuid().ToString("N")),
+                ("@acquiredAt", Format(timestamp)));
+            int modeUpdates = await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_processor_modes
+                SET RevalidationRunId = @replacementRunId,
+                    UpdatedAt = @updatedAt
+                WHERE ProcessorKind = @processorKind
+                  AND RevalidationRequired = 1
+                  AND RevalidationRunId = @expectedRunId
+                """,
+                ct,
+                ("@replacementRunId", replacementRunId),
+                ("@updatedAt", Format(timestamp)),
+                ("@processorKind", processorKind),
+                ("@expectedRunId", expectedRunId));
+            if (modeUpdates != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    "Initial revalidation ownership changed before replacement.");
+            }
+
+            AuthoringRunRecord replacement =
+                await ReadRunAsync(connection, replacementRunId, ct)
+                ?? throw new InvalidOperationException(
+                    "Failed to create replacement revalidation run.");
+            await CommitAsync(connection, ct);
+            return replacement;
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
     public async Task<AuthoringRunRecord?> GetRunAsync(string runId, CancellationToken ct = default)
     {
         await using SqliteConnection connection = _openConnection();
@@ -327,6 +704,57 @@ public sealed class AuthoringRunStore
             ORDER BY RowId
             """;
         command.Parameters.AddWithValue("@runId", runId);
+
+        List<AuthoringRunItemRecord> items = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(ReadRunItem(reader));
+        }
+        return items;
+    }
+
+    public async Task<IReadOnlyList<AuthoringRunItemRecord>>
+        GetRevalidationCorpusItemsAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = _openConnection();
+        return await ReadRevalidationCorpusItemsAsync(connection, runId, ct);
+    }
+
+    public static async Task<IReadOnlyList<AuthoringRunItemRecord>>
+        ReadRevalidationCorpusItemsAsync(
+            SqliteConnection connection,
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT i.RowId, i.Id, i.RunId, i.BusinessKey, i.ItemKind,
+                   i.ExpectedSourceRevision, i.Status, i.CurrentOperationId,
+                   i.AcceptedReceiptId, i.AttemptCount, i.CreatedAt, i.StartedAt,
+                   i.CompletedAt, i.Error, i.PostPersistenceLeaseId,
+                   i.PostPersistenceLeaseAcquiredAt
+            FROM authoring_run_items i
+            INNER JOIN run_chain chain ON chain.Id = i.RunId
+            WHERE i.Status <> @superseded
+            ORDER BY i.RowId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
 
         List<AuthoringRunItemRecord> items = [];
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
@@ -1547,6 +1975,7 @@ public sealed class AuthoringRunStore
         string runId,
         string? snapshotId,
         DateTimeOffset? now = null,
+        Func<SqliteConnection, CancellationToken, Task>? completionGuard = null,
         CancellationToken ct = default)
     {
         DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
@@ -1621,6 +2050,11 @@ public sealed class AuthoringRunStore
                 }
             }
 
+            if (completionGuard is not null)
+            {
+                await completionGuard(connection, ct);
+            }
+
             int updated = await ExecuteAsync(
                 connection,
                 """
@@ -1656,6 +2090,22 @@ public sealed class AuthoringRunStore
                     AuthoringConflictCode.MutationFenceUnavailable,
                     $"Run '{runId}' lost its mutation fence before completion.");
             }
+
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_processor_modes
+                SET RevalidationRequired = 0,
+                    RevalidationRunId = NULL,
+                    UpdatedAt = @updatedAt
+                WHERE ProcessorKind = @processorKind
+                  AND RevalidationRequired = 1
+                  AND RevalidationRunId = @runId
+                """,
+                ct,
+                ("@updatedAt", Format(timestamp)),
+                ("@processorKind", run.ProcessorKind),
+                ("@runId", runId));
 
             await CommitAsync(connection, ct);
         }

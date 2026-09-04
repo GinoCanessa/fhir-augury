@@ -209,6 +209,52 @@ public sealed class AuthoringRunStoreTests
     }
 
     [Fact]
+    public async Task MaintenanceRunReusesCurrentReceiptsWithoutAuthoringAttempts()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord sourceRun, AuthoringRunItemRecord sourceItem) =
+            await database.CreateRunningRunAsync(databaseOnly: true);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(sourceRun.Id, sourceItem.Id));
+        AuthoringReceiptAcceptance receipt =
+            await database.Store.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    sourceRun.Id,
+                    sourceItem.Id,
+                    claim.OperationId,
+                    sourceItem.ExpectedSourceRevision,
+                    AuthoringResultHasher.HashNormalizedUtf8("payload")),
+                claim.OperationToken);
+        await database.Store.MarkItemCompleteAsync(
+            sourceItem.Id,
+            receipt.Receipt.ReceiptId);
+        await database.Store.MarkRunFinalizingAsync(sourceRun.Id);
+        await database.Store.CompleteRunAsync(sourceRun.Id, snapshotId: null);
+
+        AuthoringRunRecord maintenance =
+            await database.Store.CreateMaintenanceRunAsync(
+                "test",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        sourceItem.BusinessKey,
+                        sourceItem.ItemKind,
+                        sourceItem.ExpectedSourceRevision,
+                        receipt.Receipt.ReceiptId),
+                ]);
+        AuthoringRunItemRecord item = Assert.Single(
+            await database.Store.GetRunItemsAsync(maintenance.Id));
+
+        Assert.True(maintenance.DatabaseOnly);
+        Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, item.AcceptedReceiptId);
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunId = @runId",
+                ("@runId", maintenance.Id)));
+    }
+
+    [Fact]
     public async Task RunStagesResumeAndRejectChangedFingerprint()
     {
         using AuthoringTestDatabase database = new();

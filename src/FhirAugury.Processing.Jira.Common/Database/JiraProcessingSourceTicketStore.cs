@@ -3,6 +3,8 @@ using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Configuration;
@@ -431,6 +433,30 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         }
     }
 
+    public static async Task EnsureRunSourceRevisionsCurrentAsync(
+        SqliteConnection connection,
+        string runId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        IReadOnlyList<AuthoringRunItemRecord> items =
+            await AuthoringRunStore.ReadRevalidationCorpusItemsAsync(
+                connection,
+                runId,
+                ct);
+        foreach (AuthoringRunItemRecord item in items)
+        {
+            await EnsureCurrentSourceRevisionAsync(
+                connection,
+                item.BusinessKey,
+                item.ItemKind,
+                item.ExpectedSourceRevision,
+                ct);
+        }
+    }
+
     private static void ClearProcessing(JiraProcessingSourceTicketRecord record)
     {
         record.StartedProcessingAt = null;
@@ -465,11 +491,15 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             WHERE BusinessKey = @businessKey
               AND ItemKind = @itemKind
               AND ExpectedSourceRevision = @sourceRevision
+              AND Status <> @superseded
             LIMIT 1
             """;
         command.Parameters.AddWithValue("@businessKey", ticket.Key);
         command.Parameters.AddWithValue("@itemKind", ticket.SourceTicketShape);
         command.Parameters.AddWithValue("@sourceRevision", GetSourceRevision(ticket));
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
         return await command.ExecuteScalarAsync(ct) is not null;
     }
 

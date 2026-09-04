@@ -168,49 +168,6 @@ internal static class HydrationAssertion
         AuthoringSnapshotDescriptor Descriptor,
         IReadOnlyDictionary<string, long> TableCounts);
 
-    public static async Task<bool> AssertHydratedAsync(string dbPath, TextWriter stderr, CancellationToken ct)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(dbPath);
-        ArgumentNullException.ThrowIfNull(stderr);
-
-        SqliteConnectionStringBuilder builder = new()
-        {
-            DataSource = dbPath,
-            Mode = SqliteOpenMode.ReadOnly,
-        };
-        await using SqliteConnection connection = new(builder.ConnectionString);
-        await connection.OpenAsync(ct).ConfigureAwait(false);
-
-        await using (SqliteCommand probe = connection.CreateCommand())
-        {
-            probe.CommandText =
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prepared_ticket_hydration'";
-            object? exists = await probe.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            if (exists is null)
-            {
-                await WriteActionableErrorAsync(stderr, dbPath).ConfigureAwait(false);
-                return false;
-            }
-        }
-
-        await using SqliteCommand count = connection.CreateCommand();
-        count.CommandText = "SELECT count(*) FROM prepared_ticket_hydration";
-        object? rowCount = await count.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        long n = rowCount is long l ? l : Convert.ToInt64(rowCount);
-        if (n > 0)
-        {
-            return true;
-        }
-
-        await WriteActionableErrorAsync(stderr, dbPath).ConfigureAwait(false);
-        return false;
-    }
-
-    private static Task WriteActionableErrorAsync(TextWriter stderr, string dbPath)
-        => stderr.WriteLineAsync(
-            $"Database '{dbPath}' is not hydrated. Run FhirAugury.Processor.Jira.Fhir.Preparer against it first "
-            + "(the service hydrates on startup, or POST /api/v1/admin/hydration/backfill on a running service).");
-
     public static async Task<SnapshotValidationResult?> ValidateSnapshotAsync(
         string dbPath,
         string descriptorPath,
@@ -266,8 +223,9 @@ internal static class HydrationAssertion
 
             long itemCount = await ScalarInt64Async(
                 connection,
-                "SELECT COUNT(*) FROM authoring_run_items",
-                ct).ConfigureAwait(false);
+                "SELECT COUNT(*) FROM authoring_run_items WHERE RunId = @runId",
+                ct,
+                ("@runId", descriptor.RunId)).ConfigureAwait(false);
             long receiptCount = await ScalarInt64Async(
                 connection,
                 "SELECT COUNT(*) FROM authoring_result_receipts",
@@ -356,8 +314,7 @@ internal static class HydrationAssertion
                 $"Unsupported snapshot schema version {descriptor.SchemaVersion}; " +
                 $"expected {SupportedSnapshotSchemaVersion}.");
         }
-        if (descriptor.ItemCount < 0 || descriptor.ReceiptCount < 0 ||
-            descriptor.ReceiptCount > descriptor.ItemCount)
+        if (descriptor.ItemCount < 0 || descriptor.ReceiptCount < 0)
         {
             throw new InvalidOperationException(
                 "Descriptor item and receipt counts are inconsistent.");
@@ -732,12 +689,27 @@ internal static class HydrationAssertion
             ct,
             ("@runId", descriptor.RunId),
             ("@processorKind", descriptor.ProcessorKind)).ConfigureAwait(false);
-        long foreignItems = await ScalarInt64Async(
+        long invalidForeignItems = await ScalarInt64Async(
             connection,
-            "SELECT COUNT(*) FROM authoring_run_items WHERE RunId <> @runId",
+            """
+            SELECT COUNT(*)
+            FROM authoring_run_items i
+            LEFT JOIN authoring_result_receipts r
+                ON r.RunItemId = i.Id
+               AND r.Id = i.AcceptedReceiptId
+               AND r.RunId = i.RunId
+            LEFT JOIN authoring_runs run ON run.Id = i.RunId
+            WHERE i.RunId <> @runId
+              AND (
+                  i.AcceptedReceiptId IS NULL
+                  OR r.Id IS NULL
+                  OR run.Id IS NULL
+                  OR i.Status NOT IN ('complete', 'superseded')
+              )
+            """,
             ct,
             ("@runId", descriptor.RunId)).ConfigureAwait(false);
-        if (matchingRun != 1 || foreignItems != 0)
+        if (matchingRun != 1 || invalidForeignItems != 0)
         {
             throw new InvalidOperationException(
                 "Snapshot run and item coordinates do not match the trusted descriptor.");

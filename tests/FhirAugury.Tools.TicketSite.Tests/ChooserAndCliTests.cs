@@ -1,226 +1,127 @@
-using Microsoft.Data.Sqlite;
-
 namespace FhirAugury.Tools.TicketSite.Tests;
 
+[Collection("ConsoleRedirect")]
 public sealed class ChooserAndCliTests
 {
-    private sealed class TempScope : IDisposable
+    [Fact]
+    public async Task CliRejectsMissingSnapshotInput()
     {
-        public string PreparerDbPath { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
-        public string PlannerDbPath { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-pl.db");
-        public string OutDir { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        (int exit, string error) = await RunAsync("--out", "unused");
 
-        public void Dispose()
-        {
-            TestFileCleanup.SafeDeleteFile(PreparerDbPath);
-            TestFileCleanup.SafeDeleteFile(PlannerDbPath);
-            TestFileCleanup.SafeDeleteDirectory(OutDir);
-        }
+        Assert.Equal(2, exit);
+        Assert.Contains("Specify either --preparer-snapshot or --planner-snapshot", error);
+    }
+
+    [Theory]
+    [InlineData("--preparer-db")]
+    [InlineData("--planner-db")]
+    [InlineData("--jira-source")]
+    [InlineData("--jira-source-db")]
+    public async Task CliRejectsRetiredLiveInputOptions(string option)
+    {
+        (int exit, string error) = await RunAsync(option, "retired");
+
+        Assert.Equal(2, exit);
+        Assert.Contains($"Unknown argument: {option}", error);
     }
 
     [Fact]
-    public async Task Cli_RejectsBothPreparerAndPlannerDbFlags_WithExit2()
+    public async Task CliSnapshotRequiresDescriptor()
     {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
-        try
-        {
-            int exit = await Program.Main(["--preparer-db", "a.db", "--planner-db", "b.db"]);
-            Assert.Equal(2, exit);
-            Assert.Contains("mutually exclusive", err.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetError(originalErr);
-        }
+        (int exit, string error) = await RunAsync(
+            "--preparer-snapshot",
+            "snapshot.db");
+
+        Assert.Equal(2, exit);
+        Assert.Contains("--snapshot-descriptor", error);
     }
 
     [Fact]
-    public async Task Cli_RejectsNeitherPreparerNorPlannerDbFlags_WithExit2()
+    public async Task PreparerSnapshotBuildsDiscussionAndChooser()
     {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-cli-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
         try
         {
-            int exit = await Program.Main(["--out", "tmp"]);
-            Assert.Equal(2, exit);
-            Assert.Contains("Specify either", err.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetError(originalErr);
-        }
-    }
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string output = Path.Combine(root, "site");
 
-    [Fact]
-    public async Task Cli_SnapshotRequiresDescriptor()
-    {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
-        try
-        {
-            int exit = await Program.Main(["--preparer-snapshot", "snapshot.db"]);
-            Assert.Equal(2, exit);
-            Assert.Contains("--snapshot-descriptor", err.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetError(originalErr);
-        }
-    }
-
-    [Fact]
-    public async Task Cli_SnapshotRejectsJiraInputs()
-    {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
-        try
-        {
             int exit = await Program.Main([
-                "--preparer-snapshot", "snapshot.db",
-                "--snapshot-descriptor", "snapshot.json",
-                "--jira-source-db", "jira.db",
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
             ]);
-            Assert.Equal(2, exit);
-            Assert.Contains("self-contained", err.ToString(), StringComparison.Ordinal);
+
+            Assert.Equal(0, exit);
+            Assert.True(File.Exists(Path.Combine(output, "discussion", "index.html")));
+            Assert.True(File.Exists(Path.Combine(output, "index.html")));
+            Assert.False(Directory.Exists(Path.Combine(output, "applying")));
         }
         finally
         {
-            Console.SetError(originalErr);
+            TestFileCleanup.SafeDeleteDirectory(root);
         }
     }
 
     [Fact]
-    public async Task PreparerOnly_BuildsDiscussionAndChooserShowsApplyingGreyed()
+    public async Task PlannerSnapshotBuildsApplyingAndChooser()
     {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-1001", Project: "FHIR")]);
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-cli-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePlannerAsync(root);
+            string output = Path.Combine(root, "site");
 
-        int exit = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit);
+            int exit = await Program.Main([
+                "--planner-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
+            ]);
 
-        // Discussion sub-site is emitted, chooser is at the root.
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
-        Assert.False(Directory.Exists(Path.Combine(scope.OutDir, "applying")));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion live", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying missing", chooserHtml, StringComparison.Ordinal);
+            Assert.Equal(0, exit);
+            Assert.True(File.Exists(Path.Combine(output, "applying", "index.html")));
+            Assert.True(File.Exists(Path.Combine(output, "index.html")));
+            Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
     }
 
     [Fact]
-    public async Task PlannerOnly_BuildsApplyingAndChooserShowsDiscussionGreyed()
-    {
-        using TempScope scope = new();
-        SeedMinimalPlannerDb(scope.PlannerDbPath);
-
-        int exit = await Program.Main(["--planner-db", scope.PlannerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit);
-
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
-        Assert.False(Directory.Exists(Path.Combine(scope.OutDir, "discussion")));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion missing", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying live", chooserHtml, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task TwoSubSites_SequentialIntoSameOutDir_PreservesBothAndShowsBothLive()
-    {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-2001", Project: "FHIR")]);
-        SeedMinimalPlannerDb(scope.PlannerDbPath);
-
-        int exit1 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit1);
-        int exit2 = await Program.Main(["--planner-db", scope.PlannerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit2);
-
-        // Both sub-site dirs survive.
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName)));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", OutputDirGuard.MarkerFileName)));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion live", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying live", chooserHtml, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ChooserPage_IsRegeneratedUnconditionally_EvenWithoutForce()
-    {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-3001", Project: "FHIR")]);
-
-        int exit1 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit1);
-        DateTime first = File.GetLastWriteTimeUtc(Path.Combine(scope.OutDir, "index.html"));
-        await Task.Delay(50);
-
-        // Re-running without --force: should still overwrite the chooser unconditionally.
-        int exit2 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit2);
-        DateTime second = File.GetLastWriteTimeUtc(Path.Combine(scope.OutDir, "index.html"));
-        Assert.True(second >= first, "Chooser should be regenerated on every run.");
-    }
-
-    [Fact]
-    public void OutputDirGuard_KindMatches_DetectsMismatch()
+    public void OutputDirGuardKindMatchesDetectsMismatch()
     {
         MetaFilterSet existing = new()
         {
             Kind = PreparerSubSiteEmitter.Kind,
             Filters = new MetaFilters(),
         };
+
         Assert.True(OutputDirGuard.KindMatches(existing, PreparerSubSiteEmitter.Kind));
         Assert.False(OutputDirGuard.KindMatches(existing, PlannerSubSiteEmitter.Kind));
     }
 
-    [Fact]
-    public void OutputDirGuard_WriteAndReadMarker_RoundTripsKindAndFilters()
+    private static async Task<(int Exit, string Error)> RunAsync(
+        params string[] args)
     {
-        string dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        TextWriter originalError = Console.Error;
+        StringWriter error = new();
+        Console.SetError(error);
         try
         {
-            ResolvedFilters f = new("FHIR", "FHIR", "FHIRInfrastructure");
-            OutputDirGuard.WriteMarker(dir, "preparer", f, DateTimeOffset.UtcNow);
-            MetaFilterSet? read = OutputDirGuard.TryReadExistingMarker(dir);
-            Assert.NotNull(read);
-            Assert.Equal("preparer", read!.Kind);
-            Assert.Equal("FHIR", read.Filters?.Spec);
-            Assert.Equal("FHIRInfrastructure", read.Filters?.Wg);
-            Assert.True(OutputDirGuard.FilterSetsMatch(read, f));
+            return (await Program.Main(args), error.ToString());
         }
         finally
         {
-            TestFileCleanup.SafeDeleteDirectory(dir);
+            Console.SetError(originalError);
         }
-    }
-
-    private static void SeedMinimalPlannerDb(string dbPath)
-    {
-        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
-        conn.Open();
-        FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.PlannerDatabase.EnsureSchema(conn);
-        using SqliteCommand cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO planned_tickets (Id, Key, Resolution, ResolutionSummary, FeatureProposal, DesignRationale, SavedAt)
-            VALUES (@id, @key, '', 'sum', 'prop', 'rat', @savedAt)
-            """;
-        cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
-        cmd.Parameters.AddWithValue("@key", "FHIR-9000");
-        cmd.Parameters.AddWithValue("@savedAt", DateTimeOffset.UtcNow.ToString("O"));
-        cmd.ExecuteNonQuery();
     }
 }

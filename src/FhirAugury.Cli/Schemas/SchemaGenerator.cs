@@ -639,28 +639,6 @@ public static class SchemaGenerator
                 },
             }
         ),
-        ["prepared-ticket-write"] = new(
-            "Transitional legacy-only write into a preparer SQLite database; refuses run-backed or cutting-over databases",
-            InputSchema(["command", "dbPath", "payload"], new()
-            {
-                ["command"] = Const("prepared-ticket-write"),
-                ["dbPath"] = Prop("string", "Path to the preparer SQLite database"),
-                ["payload"] = Prop("object", "PreparedTicketPayload with structured ticket-prep fields"),
-            }),
-            new
-            {
-                type = "object",
-                properties = new Dictionary<string, object>
-                {
-                    ["key"] = Prop("string", "Jira ticket key written"),
-                    ["preparedTicketRows"] = Prop("integer", "Parent rows written"),
-                    ["repoRows"] = Prop("integer", "Related repo rows written"),
-                    ["relatedJiraRows"] = Prop("integer", "Related Jira rows written"),
-                    ["relatedZulipRows"] = Prop("integer", "Related Zulip rows written"),
-                    ["relatedGitHubRows"] = Prop("integer", "Related GitHub rows written"),
-                },
-            }
-        ),
         ["prepared-ticket-authoring"] = AuthoringSchema(
             "prepared-ticket-authoring",
             "Typed Preparer run control, worker submission, retry, and snapshot download",

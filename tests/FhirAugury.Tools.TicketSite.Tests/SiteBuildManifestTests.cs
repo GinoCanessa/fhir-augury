@@ -251,55 +251,6 @@ public sealed class SiteBuildManifestTests : IDisposable
     }
 
     [Fact]
-    public async Task LegacyAndSnapshotModesRequireForceAndPreserveSequenceState()
-    {
-        TicketSnapshotFixture snapshot =
-            await TicketSnapshotFixture.CreatePreparerAsync(
-                _root,
-                sequence: 12,
-                snapshotId: "snapshot-12");
-        TicketSnapshotFixture older =
-            await TicketSnapshotFixture.CreatePreparerAsync(
-                _root,
-                sequence: 11,
-                snapshotId: "snapshot-11-ownership");
-        string legacyDatabase = Path.Combine(_root, "legacy-preparer.db");
-        await PreparerTestDb.SeedAsync(
-            legacyDatabase,
-            [new PreparerTestDb.SourceTicketSeed("FHIR-1001")]);
-        string output = Path.Combine(_root, "ownership");
-
-        Assert.Equal(0, (await RunAsync(
-            "--preparer-snapshot", snapshot.DatabasePath,
-            "--snapshot-descriptor", snapshot.DescriptorPath,
-            "--out", output)).Exit);
-
-        (int legacyExit, _, string legacyError) = await RunAsync(
-            "--preparer-db", legacyDatabase,
-            "--out", output);
-        Assert.Equal(1, legacyExit);
-        Assert.Contains("snapshot", legacyError, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("--force", legacyError, StringComparison.Ordinal);
-
-        Assert.Equal(0, (await RunAsync(
-            "--preparer-db", legacyDatabase,
-            "--out", output,
-            "--force")).Exit);
-
-        (int staleExit, _, string staleError) = await RunAsync(
-            "--preparer-snapshot", older.DatabasePath,
-            "--snapshot-descriptor", older.DescriptorPath,
-            "--out", output,
-            "--force");
-        Assert.Equal(1, staleExit);
-        Assert.Contains("preserved sequence 12", staleError, StringComparison.OrdinalIgnoreCase);
-        Assert.False(File.Exists(Path.Combine(
-            output,
-            "discussion",
-            SiteBuildManifest.FileName)));
-    }
-
-    [Fact]
     public async Task SnapshotCannotTakeOverUnownedOutputWithoutForce()
     {
         TicketSnapshotFixture snapshot =
@@ -434,6 +385,50 @@ internal sealed class TicketSnapshotFixture
     public string DatabasePath { get; }
     public string DescriptorPath { get; }
     public AuthoringSnapshotDescriptor Descriptor { get; private set; }
+
+    public async Task MoveSecondTicketToHistoricalLedgerAsync()
+    {
+        await using SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False");
+        await connection.OpenAsync();
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO authoring_runs(
+                Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                TotalItems, CreatedAt, StartedAt, CompletedAt)
+            VALUES(
+                'historical-run', 'jira-fhir', 1, 'superseded', 0, 1,
+                @createdAt, @createdAt, @createdAt);
+            UPDATE authoring_run_items
+            SET RunId = 'historical-run',
+                Status = 'superseded'
+            WHERE Id = 'item-2';
+            UPDATE authoring_result_receipts
+            SET RunId = 'historical-run'
+            WHERE Id = 'receipt-2';
+            UPDATE authoring_runs
+            SET TotalItems = 1
+            WHERE Id = @currentRunId;
+            UPDATE authoring_snapshot_provenance
+            SET ItemCount = 1,
+                ReceiptCount = 2;
+            """,
+            ("@createdAt", Descriptor.CreatedAt.ToString("O")),
+            ("@currentRunId", Descriptor.RunId));
+        await connection.CloseAsync();
+
+        Descriptor = await CreateDescriptorAsync(
+            DatabasePath,
+            Descriptor.RunId,
+            Descriptor.SnapshotId,
+            Descriptor.Sequence,
+            Descriptor.TableCounts,
+            Descriptor.CreatedAt,
+            itemCount: 1,
+            receiptCount: 2);
+        await WriteDescriptorAsync(DescriptorPath, Descriptor);
+    }
 
     public static async Task<TicketSnapshotFixture> CreatePreparerAsync(
         string root,

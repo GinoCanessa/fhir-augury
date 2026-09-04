@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Authoring;
@@ -10,29 +11,25 @@ public sealed class BallotNotesSnapshotSanitizer(string runId)
         SqliteConnection connection,
         CancellationToken ct = default)
     {
+        BallotNoteReceiptValidation.RegisterFunctions(connection);
         await ExecuteAsync(
             connection,
-            """
+            $"""
             CREATE TEMP TABLE current_snapshot_notes AS
             SELECT n.NoteId, r.Id AS ReceiptId, r.RunItemId, r.RunId
             FROM notes n
-            INNER JOIN notes_hydration_run_items h
-                ON h.ExecutionId = n.CurrentHydrationExecutionId
-               AND h.NoteId = n.NoteId
-               AND h.Type = n.Type
-               AND h.EvidenceRevision = n.CurrentEvidenceRevision
-               AND h.Status = 'completed'
+            INNER JOIN note_authoring_state s
+                ON s.NoteId = n.NoteId
             INNER JOIN authoring_result_receipts r
-                ON r.OperationId = n.CurrentAuthoringOperationId
-               AND r.BusinessKey = n.NoteId
-               AND r.ExpectedSourceRevision = n.CurrentEvidenceRevision
-            INNER JOIN authoring_run_items i
-                ON i.Id = r.RunItemId
-                AND i.AcceptedReceiptId = r.Id
-                AND i.Status = 'complete'
-            WHERE n.ProseVerificationStatus = 'receipt-backed'
-              AND n.ProseHydrationExecutionId = n.CurrentHydrationExecutionId
-              AND n.ProseEvidenceRevision = n.CurrentEvidenceRevision;
+                ON r.Id = (
+                    SELECT accepted.Id
+                    FROM authoring_result_receipts accepted
+                    WHERE accepted.OperationId = s.OperationId
+                      AND accepted.RunId = s.RunId
+                      AND accepted.RunItemId = s.RunItemId
+                    LIMIT 1
+                )
+            WHERE {BallotNoteReceiptValidation.CurrentReceiptBackedPredicate};
 
             DELETE FROM note_source_files
             WHERE NoteId NOT IN (SELECT NoteId FROM current_snapshot_notes);

@@ -96,27 +96,6 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
-    public async Task RunBackedModeRefusesBareProsePut()
-    {
-        using Fixture fixture = new();
-        await fixture.ActivateAsync();
-        BallotNotesController controller =
-            new(fixture.Database, fixture.AuthoringStore);
-
-        IActionResult result = await controller.PutNote(
-            "note-a",
-            new BallotNoteProsePutRequest
-            {
-                NeedsNote = "yes",
-            },
-            CancellationToken.None);
-
-        ConflictObjectResult conflict =
-            Assert.IsType<ConflictObjectResult>(result);
-        Assert.Contains("run-backed-write-required", conflict.Value!.ToString());
-    }
-
-    [Fact]
     public async Task CreateEndpointExactlyReplaysAndRejectsPartialOverlap()
     {
         using Fixture fixture = new();
@@ -638,7 +617,7 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
-    public async Task SnapshotIncludesCurrentReceiptBackedNotesFromPriorRuns()
+    public async Task SnapshotIncludesCurrentReceiptBackedNotesFromSupersededPriorRuns()
     {
         using Fixture fixture = new();
         await fixture.ActivateAsync();
@@ -657,6 +636,25 @@ public sealed class BallotNotesAuthoringRunTests
             firstItem.Id,
             firstReceipt.Receipt.ReceiptId);
         await fixture.CreatePostProcessor().FinalizeRunAsync(firstRun.Id);
+        fixture.Execute(
+            """
+            UPDATE authoring_run_items
+            SET Status = 'superseded'
+            WHERE Id = @itemId;
+            UPDATE authoring_runs
+            SET Status = 'superseded'
+            WHERE Id = @runId;
+            """,
+            ("@itemId", firstItem.Id),
+            ("@runId", firstRun.Id));
+        Assert.True(fixture.Database.GetNote("note-a")!.IsCurrentProseReceiptBacked);
+        Assert.Single(
+            fixture.Database.ListNotes(
+                new NoteQueryFilter
+                {
+                    Status = "authored",
+                }),
+            note => note.NoteId == "note-a");
 
         NotesHydrationExecutionRecord secondExecution =
             fixture.CreateCompletedExecution("note-b", "Page");
@@ -744,6 +742,81 @@ public sealed class BallotNotesAuthoringRunTests
 
         Assert.Equal(2, descriptor.ItemCount);
         Assert.Equal(1, descriptor.ReceiptCount);
+    }
+
+    [Fact]
+    public async Task InitialReplacementWaitsForAcceptedPostPersistenceWork()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution(
+                ("note-a", "Artifact"),
+                ("note-b", "Page"));
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: false));
+        AuthoringRunItemRecord persisted =
+            creation.Items.Single(item => item.BusinessKey == "note-b");
+        AuthoringOperationClaim claim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    persisted.Id));
+        AuthoringReceiptAcceptance receipt =
+            await fixture.AcceptAsync(
+                creation.Run,
+                persisted,
+                claim,
+                SampleProse("persisted"));
+        fixture.Execute(
+            """
+            UPDATE authoring_processor_modes
+            SET RevalidationRequired = 1,
+                RevalidationRunId = @runId
+            WHERE ProcessorKind = @processorKind;
+            UPDATE notes
+            SET CurrentEvidenceRevision = 'new-revision'
+            WHERE NoteId = 'note-a';
+            """,
+            ("@runId", creation.Run.Id),
+            ("@processorKind", fixture.Coordinator.ProcessorKind));
+
+        Assert.False(
+            await fixture.Coordinator.SupersedeStaleItemsAsync(
+                creation.Run.Id));
+        BallotNotesAuthoringWorkItemStore workItems = new(
+            fixture.Database,
+            fixture.AuthoringStore,
+            fixture.Coordinator);
+        BallotNotesAuthoringWorkItem pending = Assert.Single(
+            await workItems.GetPendingAsync(10, CancellationToken.None));
+        Assert.Equal("note-b", pending.RunItem.BusinessKey);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Persisted,
+            pending.RunItem.Status);
+
+        await fixture.AuthoringStore.MarkItemCompleteAsync(
+            persisted.Id,
+            receipt.Receipt.ReceiptId);
+        Assert.True(
+            await fixture.Coordinator.SupersedeStaleItemsAsync(
+                creation.Run.Id));
+        AuthoringProcessorModeRecord mode =
+            await fixture.AuthoringStore.GetProcessorModeAsync(
+                fixture.Coordinator.ProcessorKind);
+        Assert.Equal(
+            "note-a",
+            Assert.Single(
+                await fixture.AuthoringStore.GetRunItemsAsync(
+                    mode.RevalidationRunId!)).BusinessKey);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Complete,
+            (await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id))
+            .Single(item => item.BusinessKey == "note-b")
+            .Status);
     }
 
     [Fact]
@@ -947,11 +1020,17 @@ public sealed class BallotNotesAuthoringRunTests
             return Database.GetHydrationExecution(id)!;
         }
 
-        public void Execute(string sql)
+        public void Execute(
+            string sql,
+            params (string Name, object Value)[] parameters)
         {
             using SqliteConnection connection = Database.OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText = sql;
+            foreach ((string name, object value) in parameters)
+            {
+                command.Parameters.AddWithValue(name, value);
+            }
             command.ExecuteNonQuery();
         }
 

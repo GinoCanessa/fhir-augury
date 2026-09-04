@@ -73,9 +73,10 @@ public sealed class PreparedTicketReviewSnapshotTests
     [Fact]
     public async Task FinalizeRun_BlocksSnapshotUntilLegacyRowsAreRevalidated()
     {
-        using Fixture fixture = new();
+        using Fixture fixture = new(activate: false);
         await fixture.Database.SavePreparedTicketAsync(CreatePayload("FHIR-999"));
         await fixture.Database.ClassifyLegacyPreparedTicketsAsync();
+        await fixture.ActivateAsync();
         (AuthoringRunRecord run, _) = await fixture.CreateCompletedRunAsync(databaseOnly: false);
 
         InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -102,6 +103,89 @@ public sealed class PreparedTicketReviewSnapshotTests
         Assert.Equal(
             AuthoringStatusValues.Runs.CompletedDatabaseOnly,
             (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task FinalizeRun_ReplacesInitialRevalidationChangedDuringStages()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync(databaseOnly: false);
+        fixture.MarkAsInitialRevalidation(run.Id);
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(() =>
+                fixture.CreatePostProcessor(
+                    new SourceChangingGroupingDispatcher(
+                        fixture.Database,
+                        fixture.AdvanceSourceRevisionAsync))
+                    .FinalizeRunAsync(run.Id));
+
+        Assert.Equal(AuthoringConflictCode.SourceRevisionMismatch, conflict.Code);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Superseded,
+            (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+        AuthoringProcessorModeRecord mode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        Assert.True(mode.RevalidationRequired);
+        Assert.NotEqual(run.Id, mode.RevalidationRunId);
+        AuthoringRunItemRecord replacement = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(mode.RevalidationRunId!));
+        Assert.Equal(
+            new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero).ToString("O"),
+            replacement.ExpectedSourceRevision);
+    }
+
+    [Fact]
+    public async Task FinalizeRun_RejectsTamperedReceiptProvenance()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync(databaseOnly: false);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE authoring_result_receipts
+                SET ObservedSourceRevision = 'forged'
+                WHERE RunId = @runId
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.CreatePostProcessor().FinalizeRunAsync(run.Id));
+
+        Assert.Contains(
+            "valid current receipt provenance",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Running,
+            (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task ReplacementRunPartitionsIncludeRetainedPredecessorTickets()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateCompletedRunAsync(databaseOnly: false);
+        fixture.MarkAsInitialRevalidation(run.Id);
+        AuthoringRunRecord replacement =
+            await fixture.AuthoringStore.ReplaceRevalidationRunAsync(
+                "jira-fhir",
+                run.Id,
+                [new("FHIR-2", "fhir", "revision-2")]);
+
+        PreparedTicketRunPartition partition = Assert.Single(
+            await fixture.Database.GetRunPartitionsAsync(replacement.Id));
+
+        Assert.Equal("FHIRInfrastructure", partition.WorkGroupClean);
+        Assert.Equal(["FHIR-1"], partition.TicketKeys);
     }
 
     [Fact]
@@ -206,7 +290,7 @@ public sealed class PreparedTicketReviewSnapshotTests
     [Fact]
     public async Task SnapshotFiltering_ReclassifiesSurvivorFromInvalidLinkedGroup()
     {
-        using Fixture fixture = new();
+        using Fixture fixture = new(activate: false);
         await fixture.Database.SavePreparedTicketAsync(CreatePayload("FHIR-2"));
         using (SqliteConnection cleanup = fixture.Database.OpenConnection())
         using (SqliteCommand clearState = cleanup.CreateCommand())
@@ -215,6 +299,7 @@ public sealed class PreparedTicketReviewSnapshotTests
                 "DELETE FROM prepared_ticket_authoring_state WHERE TicketKey = 'FHIR-2'";
             clearState.ExecuteNonQuery();
         }
+        await fixture.ActivateAsync();
         (AuthoringRunRecord run, _) =
             await fixture.CreateCompletedRunAsync(databaseOnly: false);
         using (SqliteConnection connection = fixture.Database.OpenConnection())
@@ -297,7 +382,7 @@ public sealed class PreparedTicketReviewSnapshotTests
         private readonly JiraProcessingSourceTicketStore _sourceStore;
         private readonly JiraAuthoringRunCoordinator _coordinator;
 
-        public Fixture()
+        public Fixture(bool activate = true)
         {
             _directory = Path.Combine(
                 Path.GetTempPath(),
@@ -323,20 +408,35 @@ public sealed class PreparedTicketReviewSnapshotTests
                 _sourceStore,
                 new JiraProcessingFilterResolver(),
                 jiraOptions);
-            AuthoringStore.EnsureProcessorModeAsync(_coordinator.ProcessorKind).GetAwaiter().GetResult();
-            AuthoringStore.TransitionProcessorModeAsync(
-                _coordinator.ProcessorKind,
-                AuthoringStatusValues.ProcessorModes.Legacy,
-                AuthoringStatusValues.ProcessorModes.CuttingOver).GetAwaiter().GetResult();
-            AuthoringStore.TransitionProcessorModeAsync(
-                _coordinator.ProcessorKind,
-                AuthoringStatusValues.ProcessorModes.CuttingOver,
-                AuthoringStatusValues.ProcessorModes.RunBacked).GetAwaiter().GetResult();
+            if (activate)
+            {
+                ActivateAsync().GetAwaiter().GetResult();
+            }
         }
 
         public PreparerDatabase Database { get; }
         public AuthoringRunStore AuthoringStore { get; }
         public string SnapshotDirectory { get; }
+
+        public async Task ActivateAsync()
+        {
+            await AuthoringStore.EnsureProcessorModeAsync(
+                _coordinator.ProcessorKind);
+            AuthoringProcessorModeRecord mode =
+                await AuthoringStore.GetProcessorModeAsync(
+                    _coordinator.ProcessorKind);
+            if (mode.Mode == AuthoringStatusValues.ProcessorModes.Legacy)
+            {
+                await AuthoringStore.TransitionProcessorModeAsync(
+                    _coordinator.ProcessorKind,
+                    AuthoringStatusValues.ProcessorModes.Legacy,
+                    AuthoringStatusValues.ProcessorModes.CuttingOver);
+                await AuthoringStore.TransitionProcessorModeAsync(
+                    _coordinator.ProcessorKind,
+                    AuthoringStatusValues.ProcessorModes.CuttingOver,
+                    AuthoringStatusValues.ProcessorModes.RunBacked);
+            }
+        }
 
         public async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> CreateCompletedRunAsync(
             bool databaseOnly)
@@ -433,6 +533,47 @@ public sealed class PreparedTicketReviewSnapshotTests
             return (creation.Run, item);
         }
 
+        public void MarkAsInitialRevalidation(string runId)
+        {
+            using SqliteConnection connection = Database.OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE authoring_processor_modes
+                SET RevalidationRequired = 1,
+                    RevalidationRunId = @runId
+                WHERE ProcessorKind = 'jira-fhir'
+                """;
+            command.Parameters.AddWithValue("@runId", runId);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+
+        public async Task AdvanceSourceRevisionAsync(CancellationToken ct)
+        {
+            await _sourceStore.UpsertAsync(
+                new JiraIssueSummaryEntry
+                {
+                    Key = "FHIR-1",
+                    ProjectKey = "FHIR",
+                    Title = "Updated title",
+                    Type = "Change Request",
+                    Status = "Triaged",
+                    WorkGroup = "FHIR-I",
+                    Specification = "FHIR",
+                    UpdatedAt = new DateTimeOffset(
+                        2026,
+                        9,
+                        2,
+                        0,
+                        0,
+                        0,
+                        TimeSpan.Zero),
+                },
+                "fhir",
+                false,
+                ct);
+        }
+
         public PreparedTicketRunPostProcessor CreatePostProcessor(
             IPreparedTicketGroupingDispatcher? groupingDispatcher = null)
         {
@@ -490,6 +631,29 @@ public sealed class PreparedTicketReviewSnapshotTests
                     lease.LeaseId,
                     partition.InputFingerprint,
                     ct);
+        }
+    }
+
+    private sealed class SourceChangingGroupingDispatcher(
+        PreparerDatabase database,
+        Func<CancellationToken, Task> changeSourceRevision)
+        : IPreparedTicketGroupingDispatcher
+    {
+        private readonly EmptyGroupingDispatcher _inner = new(database);
+        private bool _changed;
+
+        public async Task ReplaceGroupingAsync(
+            string runId,
+            PreparedTicketRunPartition partition,
+            AuthoringRunStageLease lease,
+            CancellationToken ct)
+        {
+            if (!_changed)
+            {
+                await changeSourceRevision(ct);
+                _changed = true;
+            }
+            await _inner.ReplaceGroupingAsync(runId, partition, lease, ct);
         }
     }
 

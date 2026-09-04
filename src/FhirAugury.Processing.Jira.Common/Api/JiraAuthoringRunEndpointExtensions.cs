@@ -207,16 +207,26 @@ public static class JiraAuthoringRunEndpointExtensions
         JiraAuthoringRunCoordinator coordinator,
         CancellationToken ct)
     {
-        string mode = (await store.EnsureProcessorModeAsync(coordinator.ProcessorKind, ct: ct)).Mode;
-        if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.Legacy, StringComparison.Ordinal))
+        AuthoringProcessorModeRecord mode = await store.EnsureProcessorModeAsync(
+            coordinator.ProcessorKind,
+            ct: ct);
+        if (string.Equals(mode.Mode, AuthoringStatusValues.ProcessorModes.Legacy, StringComparison.Ordinal))
         {
             return Results.Conflict(new { error = "authoring-not-activated" });
         }
-        if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.CuttingOver, StringComparison.Ordinal))
+        if (string.Equals(mode.Mode, AuthoringStatusValues.ProcessorModes.CuttingOver, StringComparison.Ordinal))
         {
             return Results.Json(
                 new { error = "cutover-in-progress" },
                 statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        if (mode.RevalidationRequired)
+        {
+            return Results.Conflict(new
+            {
+                error = "revalidation-required",
+                runId = mode.RevalidationRunId,
+            });
         }
         return null;
     }

@@ -31,11 +31,8 @@ internal static class PreparerDbTrimmer
     /// Copies the source preparer DB to a temp file and runs the filter-aware
     /// trim (which is a no-op when all <paramref name="filters"/> are
     /// inactive — the WHERE predicates collapse to TRUE). Returns the path
-    /// to the temp DB and the surviving ticket count. The temp DB is left
-    /// in place so downstream passes (related-fields backfill) can append
-    /// to it; the caller owns the temp file and must delete it.
-    /// VACUUM is NOT run here — see <c>RelatedFieldsBackfill.ApplyAsync</c>,
-    /// which runs as the final pass before bytes are read.
+    /// to the temp DB and the surviving ticket count. The caller owns the
+    /// temp file and must delete it.
     /// As part of the same transaction, orphan rows in
     /// <c>prepared_ticket_topic_groups</c> and <c>prepared_ticket_topics</c>
     /// (i.e., rows whose every member ticket was trimmed) are removed

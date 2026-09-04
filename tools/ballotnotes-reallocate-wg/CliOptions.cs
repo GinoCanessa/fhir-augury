@@ -83,6 +83,12 @@ internal static class CliOptions
                         error = "--processor must be an absolute HTTP or HTTPS URL.";
                         return false;
                     }
+                    if (processorBaseUrl.Scheme is not ("http" or "https"))
+                    {
+                        options = Default();
+                        error = "--processor must be an absolute HTTP or HTTPS URL.";
+                        return false;
+                    }
                     break;
                 default:
                     options = Default();
@@ -95,6 +101,12 @@ internal static class CliOptions
         {
             options = Default();
             error = "Missing required option --clone <repo-clone-path>.";
+            return false;
+        }
+        if (!dryRun && processorBaseUrl is null)
+        {
+            options = Default();
+            error = "Non-dry-run reallocation requires --processor <url>.";
             return false;
         }
 

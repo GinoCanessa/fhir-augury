@@ -79,6 +79,12 @@ public sealed class PreparerDatabaseTests
             command.Parameters.AddWithValue("@at", DateTimeOffset.UtcNow.ToString("O"));
             command.ExecuteNonQuery();
         }
+        Assert.Null(
+            await database.Database.TryAcquireMaintenanceLeaseAsync("before-recovery"));
+        database.Database.AcquireStartupOwnership();
+        Assert.Equal(
+            1,
+            await database.Database.RecoverInterruptedMaintenanceLeasesAsync());
         PreparerMaintenanceLease lease =
             Assert.IsType<PreparerMaintenanceLease>(
                 await database.Database.TryAcquireMaintenanceLeaseAsync("test"));

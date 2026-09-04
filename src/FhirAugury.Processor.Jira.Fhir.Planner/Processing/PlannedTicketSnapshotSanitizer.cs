@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Planner.Processing;
@@ -10,6 +11,9 @@ public sealed class PlannedTicketSnapshotSanitizer(string runId)
         SqliteConnection connection,
         CancellationToken ct = default)
     {
+        await PlannerDatabase.CreateCurrentSnapshotReceiptBackedTicketsAsync(
+            connection,
+            ct);
         string[] issueKeyTables =
         [
             "planned_ticket_repos",
@@ -35,34 +39,22 @@ public sealed class PlannedTicketSnapshotSanitizer(string runId)
                 $"""
                 DELETE FROM {table}
                 WHERE IssueKey NOT IN (
-                    SELECT s.TicketKey
-                    FROM planned_ticket_authoring_state s
-                    INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-                    INNER JOIN authoring_run_items i
-                        ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id
-                    WHERE s.Classification = 'receipt-backed' AND i.Status = 'complete')
+                    SELECT TicketKey
+                    FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable})
                 """,
                 ct);
         }
         await ExecuteAsync(
             connection,
-            """
+            $"""
             DELETE FROM planned_ticket_jira_content
             WHERE TicketKey NOT IN (
-                SELECT s.TicketKey
-                FROM planned_ticket_authoring_state s
-                INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-                INNER JOIN authoring_run_items i
-                    ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id
-                WHERE s.Classification = 'receipt-backed' AND i.Status = 'complete');
+                SELECT TicketKey
+                FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable});
             DELETE FROM planned_ticket_topic_members
             WHERE TicketKey NOT IN (
-                SELECT s.TicketKey
-                FROM planned_ticket_authoring_state s
-                INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-                INNER JOIN authoring_run_items i
-                    ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id
-                WHERE s.Classification = 'receipt-backed' AND i.Status = 'complete');
+                SELECT TicketKey
+                FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable});
             CREATE TEMP TABLE invalid_planned_snapshot_groups AS
             SELECT g.RowId
             FROM planned_ticket_topic_groups g
@@ -71,12 +63,8 @@ public sealed class PlannedTicketSnapshotSanitizer(string runId)
             HAVING COUNT(m.RowId) < 2
                 OR SUM(CASE WHEN m.TicketKey = g.FirstTicketKey THEN 1 ELSE 0 END) = 0
                 OR g.FirstTicketKey NOT IN (
-                    SELECT s.TicketKey
-                    FROM planned_ticket_authoring_state s
-                    INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-                    INNER JOIN authoring_run_items i
-                        ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id
-                    WHERE s.Classification = 'receipt-backed' AND i.Status = 'complete');
+                    SELECT TicketKey
+                    FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable});
             UPDATE planned_ticket_topic_members
             SET TopicGroupRowId = NULL
             WHERE TopicGroupRowId IN (SELECT RowId FROM invalid_planned_snapshot_groups);
@@ -104,18 +92,41 @@ public sealed class PlannedTicketSnapshotSanitizer(string runId)
                OR RowId NOT IN (SELECT DISTINCT TopicRowId FROM planned_ticket_topic_members);
             DELETE FROM planned_tickets
             WHERE Key NOT IN (
-                SELECT s.TicketKey
-                FROM planned_ticket_authoring_state s
-                INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
-                INNER JOIN authoring_run_items i
-                    ON i.Id = s.RunItemId AND i.AcceptedReceiptId = r.Id
-                WHERE s.Classification = 'receipt-backed' AND i.Status = 'complete');
+                SELECT TicketKey
+                FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable});
             """,
             ct);
         await ExecuteAsync(connection, "DELETE FROM planned_ticket_partition_receipts WHERE RunId <> @runId", ct, ("@runId", runId));
-        await ExecuteAsync(connection, "DELETE FROM authoring_result_receipts WHERE RunId <> @runId", ct, ("@runId", runId));
-        await ExecuteAsync(connection, "DELETE FROM authoring_run_items WHERE RunId <> @runId", ct, ("@runId", runId));
-        await ExecuteAsync(connection, "DELETE FROM authoring_runs WHERE Id <> @runId", ct, ("@runId", runId));
+        await ExecuteAsync(
+            connection,
+            $"""
+            CREATE TEMP TABLE retained_snapshot_receipts AS
+            SELECT DISTINCT ReceiptId AS Id
+            FROM {PlannerDatabase.CurrentSnapshotReceiptBackedTicketsTable}
+            UNION
+            SELECT Id
+            FROM authoring_result_receipts
+            WHERE RunId = @runId;
+            CREATE TEMP TABLE retained_snapshot_items AS
+            SELECT DISTINCT RunItemId
+            FROM authoring_result_receipts
+            WHERE Id IN (SELECT Id FROM retained_snapshot_receipts);
+            INSERT INTO retained_snapshot_items(RunItemId)
+            SELECT Id FROM authoring_run_items WHERE RunId = @runId;
+            CREATE TEMP TABLE retained_snapshot_runs AS
+            SELECT DISTINCT RunId
+            FROM authoring_result_receipts
+            WHERE Id IN (SELECT Id FROM retained_snapshot_receipts);
+            INSERT OR IGNORE INTO retained_snapshot_runs(RunId) VALUES(@runId);
+            DELETE FROM authoring_result_receipts
+            WHERE Id NOT IN (SELECT Id FROM retained_snapshot_receipts);
+            DELETE FROM authoring_run_items
+            WHERE Id NOT IN (SELECT RunItemId FROM retained_snapshot_items);
+            DELETE FROM authoring_runs
+            WHERE Id NOT IN (SELECT RunId FROM retained_snapshot_runs);
+            """,
+            ct,
+            ("@runId", runId));
         await base.SanitizeAsync(connection, ct);
     }
 

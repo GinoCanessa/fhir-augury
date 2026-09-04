@@ -26,11 +26,11 @@ public sealed class BallotNotesServiceOptions : ProcessingServiceOptions
 
     public BallotNotesHydrationOptions Hydration { get; set; } = new();
     public string ArtifactAuthoringCommand { get; set; } =
-        "copilot --allow-all-tools -p \"/notes-artifact {noteId}\"";
+        "copilot -p \"/notes-artifact {noteId}\" --allow-all";
     public string PageAuthoringCommand { get; set; } =
-        "copilot --allow-all-tools -p \"/notes-page {noteId}\"";
+        "copilot -p \"/notes-page {noteId}\" --allow-all";
     public string DataTypeAuthoringCommand { get; set; } =
-        "copilot --allow-all-tools -p \"/notes-datatype {noteId}\"";
+        "copilot -p \"/notes-datatype {noteId}\" --allow-all";
     public string? AuthoringCallbackAddress { get; set; }
 
     /// <summary>Validates configuration. Returns human-readable errors; empty means valid.</summary>
@@ -48,9 +48,20 @@ public sealed class BallotNotesServiceOptions : ProcessingServiceOptions
         })
         {
             if (string.IsNullOrWhiteSpace(command) ||
-                !command.Contains("{noteId}", StringComparison.Ordinal))
+                !command.Contains(
+                    "{noteId}",
+                    StringComparison.OrdinalIgnoreCase))
             {
                 yield return $"{name} must be non-empty and contain the {{noteId}} token.";
+            }
+            if (command.Contains(
+                    "{dbPath}",
+                    StringComparison.OrdinalIgnoreCase) ||
+                command.Contains(
+                    "{operationToken}",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                yield return $"{name} must use callback context from the worker environment.";
             }
         }
 

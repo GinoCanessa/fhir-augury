@@ -94,10 +94,12 @@ public sealed class PreparerServiceSmokeTests
         {
             ["Processing:DatabasePath"] = dbPath,
             ["Processing:StartProcessingOnStartup"] = "false",
+            ["Processing:ActivateRunBackedAuthoring"] = "false",
             ["Processing:Hydration:BackfillOnStartup"] = "true",
             ["Processing:OrchestratorAddress"] = $"http://127.0.0.1:{FindFreePort()}",
             ["Processing:Jira:JiraSourceAddress"] = $"http://127.0.0.1:{FindFreePort()}",
-            ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
+            ["Processing:Jira:AgentCliCommand"] = "fake {ticketKey}",
+            ["Processing:Jira:AuthoringAgentCliCommand"] = "fake {ticketKey}",
         };
 
         using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -164,9 +166,11 @@ public sealed class PreparerServiceSmokeTests
             {
                 ["Processing:DatabasePath"] = DatabasePath,
                 ["Processing:StartProcessingOnStartup"] = "false",
+                ["Processing:ActivateRunBackedAuthoring"] = "false",
                 ["Processing:Hydration:BackfillOnStartup"] = "false",
                 ["Processing:Jira:JiraSourceAddress"] = "http://localhost:5160",
-                ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
+                ["Processing:Jira:AgentCliCommand"] = "fake {ticketKey}",
+                ["Processing:Jira:AuthoringAgentCliCommand"] = "fake {ticketKey}",
             };
             Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {

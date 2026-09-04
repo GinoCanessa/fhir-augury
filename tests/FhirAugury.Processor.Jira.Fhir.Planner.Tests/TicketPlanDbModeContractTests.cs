@@ -3,22 +3,22 @@ namespace FhirAugury.Processor.Jira.Fhir.Planner.Tests;
 public sealed class TicketPlanDbModeContractTests
 {
     [Fact]
-    public void SkillDocumentsDbModeAndCanonicalReposFlag()
+    public void SkillRequiresRunBackedSubmissionAndCanonicalReposFlag()
     {
         string skill = File.ReadAllText(FindSkillPath());
 
-        Assert.Contains("--db <path>", skill, StringComparison.Ordinal);
         Assert.Contains("--repos <json-array>", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_tickets", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_repos", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_repo_changes", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_repo_impacts", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_change_validations", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_testing_considerations", skill, StringComparison.Ordinal);
-        Assert.Contains("planned_ticket_open_questions", skill, StringComparison.Ordinal);
-        Assert.Contains("Resolution Summary", skill, StringComparison.Ordinal);
-        Assert.Contains("ReplacementLines", skill, StringComparison.Ordinal);
-        Assert.Contains("RepoRevision", skill, StringComparison.Ordinal);
+        Assert.Contains("PlannedTicketPayload", skill, StringComparison.Ordinal);
+        Assert.Contains("observedSourceRevision", skill, StringComparison.Ordinal);
+        Assert.Contains("Exact receipt gate", skill, StringComparison.Ordinal);
+        Assert.Contains("Outer-control mode", skill, StringComparison.Ordinal);
+        Assert.Contains("Worker mode", skill, StringComparison.Ordinal);
+        Assert.DoesNotContain("--db", skill, StringComparison.Ordinal);
+        Assert.DoesNotContain("planned_tickets", skill, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "direct SQLite",
+            skill,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

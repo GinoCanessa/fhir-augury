@@ -101,9 +101,11 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
 
         try
         {
-            ActionResult? modeFailure = await GetWriteModeFailureAsync(
-                request.Authoring is not null,
-                ct);
+            if (request.Authoring is null)
+            {
+                return Conflict(new { error = "authoring-stage-required" });
+            }
+            ActionResult? modeFailure = await GetWriteModeFailureAsync(ct);
             if (modeFailure is not null)
             {
                 return modeFailure;
@@ -112,13 +114,6 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
             string canonical = Canonicalise(workGroupClean);
             PreparedTicketGroupingPayload payload =
                 PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request);
-            if (request.Authoring is null)
-            {
-                PreparedTicketGroupingSaveResult legacyResult =
-                    await _database.SaveGroupingAsync(payload, ct);
-                return Ok(PreparedTicketGroupingDtoMapper.ToDto(legacyResult));
-            }
-
             PreparedTicketGroupingSaveResult result =
                 await _database.SaveGroupingForRunAsync(
                     payload,
@@ -150,38 +145,6 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Deletes a partition's grouping rows. Idempotent — deleting an
-    /// already-empty partition returns <c>204</c>.
-    /// </summary>
-    [HttpDelete("{workGroupClean}/{specification}/{type}")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public async Task<IActionResult> DeletePartition(string workGroupClean, string specification, string type, CancellationToken ct)
-    {
-        ActionResult? modeFailure = await GetWriteModeFailureAsync(
-            runScoped: false,
-            ct);
-        if (modeFailure is not null)
-        {
-            return modeFailure;
-        }
-
-        string canonical = Canonicalise(workGroupClean);
-        try
-        {
-            await _database.DeleteGroupingAsync(canonical, specification, type, ct);
-            return NoContent();
-        }
-        catch (AuthoringConflictException ex)
-        {
-            return Conflict(new ProblemDetails
-            {
-                Title = "Authoring run active",
-                Detail = ex.Message,
-            });
-        }
-    }
-
     private static string Canonicalise(string raw)
     {
         string cleaned = Hl7WorkGroupNameCleaner.Clean(raw);
@@ -189,7 +152,6 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
     }
 
     private async Task<ActionResult?> GetWriteModeFailureAsync(
-        bool runScoped,
         CancellationToken ct)
     {
         string mode = (await _authoringStore.GetProcessorModeAsync(
@@ -204,21 +166,12 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
                 StatusCodes.Status503ServiceUnavailable,
                 new { error = "cutover-in-progress" });
         }
-        if (runScoped &&
-            string.Equals(
+        if (string.Equals(
                 mode,
                 AuthoringStatusValues.ProcessorModes.Legacy,
                 StringComparison.Ordinal))
         {
             return Conflict(new { error = "authoring-not-activated" });
-        }
-        if (!runScoped &&
-            string.Equals(
-                mode,
-                AuthoringStatusValues.ProcessorModes.RunBacked,
-                StringComparison.Ordinal))
-        {
-            return Conflict(new { error = "run-backed-write-required" });
         }
         return null;
     }

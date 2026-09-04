@@ -31,7 +31,14 @@ public sealed class JiraAuthoringWorkItemStore(
             bool wholeRunSuperseded = await coordinator.SupersedeStaleItemsAsync(runId, ct);
             if (wholeRunSuperseded)
             {
-                await coordinator.CreateScheduledRunAsync(ct: ct);
+                AuthoringProcessorModeRecord mode =
+                    await authoringStore.GetProcessorModeAsync(
+                        coordinator.ProcessorKind,
+                        ct);
+                if (!mode.RevalidationRequired)
+                {
+                    await coordinator.CreateScheduledRunAsync(ct: ct);
+                }
                 continue;
             }
 
@@ -60,7 +67,7 @@ public sealed class JiraAuthoringWorkItemStore(
                         runItem.ExpectedSourceRevision,
                         StringComparison.Ordinal)))
                 {
-                    break;
+                    continue;
                 }
 
                 items.Add(new JiraAuthoringWorkItem(runItem, source));

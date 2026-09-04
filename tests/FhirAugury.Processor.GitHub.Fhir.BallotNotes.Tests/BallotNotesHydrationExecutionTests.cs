@@ -144,8 +144,8 @@ public sealed class BallotNotesHydrationExecutionTests : IDisposable
             path,
             NullLogger<BallotNotesDatabase>.Instance,
             mutationOwnerGeneration: "generation-a");
-        first.Initialize();
         first.AcquireStartupOwnership();
+        first.Initialize();
         string id = Guid.NewGuid().ToString("N");
         HydrationMutationLease staleLease =
             first.TryAcquireHydrationLease(id)!;

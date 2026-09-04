@@ -5,7 +5,7 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests;
 public sealed class BallotNotesServiceOptionsTests
 {
     [Fact]
-    public void DefaultsStageAuthoringWithoutActivationSwitch()
+    public void DefaultsUseCallbackOnlyCommands()
     {
         BallotNotesServiceOptions options = new();
 
@@ -17,11 +17,8 @@ public sealed class BallotNotesServiceOptionsTests
         Assert.Contains("{noteId}", options.ArtifactAuthoringCommand);
         Assert.Contains("{noteId}", options.PageAuthoringCommand);
         Assert.Contains("{noteId}", options.DataTypeAuthoringCommand);
-        Assert.DoesNotContain(
-            options.GetType().GetProperties(),
-            property => property.Name.Contains(
-                "Activate",
-                StringComparison.OrdinalIgnoreCase));
+        Assert.False(options.ActivateRunBackedAuthoring);
+        Assert.Null(options.PreCutoverBackupPath);
         Assert.Empty(options.Validate());
     }
 

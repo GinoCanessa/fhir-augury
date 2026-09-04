@@ -46,9 +46,21 @@ public sealed class BallotNotesAuthoringWorkItemStore(
                     item.BusinessKey,
                     item.ItemKind,
                     item.ExpectedSourceRevision);
-            if (hydration is null)
+            Persistence.Models.NoteDetail? current =
+                database.GetNote(item.BusinessKey);
+            bool staleUnaccepted = item.AcceptedReceiptId is null &&
+                (current is null ||
+                 !string.Equals(
+                     current.Note.Type,
+                     item.ItemKind,
+                     StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(
+                     current.Note.CurrentEvidenceRevision,
+                     item.ExpectedSourceRevision,
+                     StringComparison.Ordinal));
+            if (hydration is null || staleUnaccepted)
             {
-                break;
+                continue;
             }
             pending.Add(new BallotNotesAuthoringWorkItem(item, hydration));
             if (pending.Count >= maxItems)

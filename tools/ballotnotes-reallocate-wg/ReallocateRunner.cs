@@ -3,7 +3,6 @@ using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Git;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Grouping;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
-using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
@@ -38,6 +37,13 @@ internal static class ReallocateRunner
         HttpMessageHandler? processorHandler = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (!options.DryRun && options.ProcessorBaseUrl is null)
+        {
+            await Console.Error.WriteLineAsync(
+                "Non-dry-run reallocation requires --processor <url>.")
+                .ConfigureAwait(false);
+            return 2;
+        }
 
         string notesDb = Path.GetFullPath(options.DbPath);
         if (!File.Exists(notesDb))
@@ -78,28 +84,10 @@ internal static class ReallocateRunner
             FhirSpecDbPath = options.FhirSpecDbPath,
         };
 
-        bool processorBatch = options.ProcessorBaseUrl is not null;
-        if (!options.DryRun &&
-            !processorBatch &&
-            !await DirectWriteModeAllowedAsync(notesDb, ct))
-        {
-            return 1;
-        }
-
         using BallotNotesDatabase db = new(
             notesDb,
             ConsoleLogger.Instance,
-            readOnly: options.DryRun || processorBatch);
-
-        // Migrate legacy notes DBs (additive columns added since the DB was first
-        // created) before reading: ReadNote selects every current column, so a
-        // pre-migration DB would otherwise fail with "no such column". EnsureSchema
-        // requires write access, so it is skipped for the read-only --dry-run path
-        // (a stale DB there must first be migrated by a real hydrate/reallocate run).
-        if (!options.DryRun && !processorBatch)
-        {
-            db.Initialize();
-        }
+            readOnly: true);
 
         IReadOnlyList<string> noteIds = db.ListNoteIds(options.Repo);
         if (noteIds.Count == 0)
@@ -236,39 +224,16 @@ internal static class ReallocateRunner
         {
             BallotNotesWorkGroupReallocationRequest request =
                 CreateBatchRequest(changes);
-            if (processorBatch)
+            int submitted = await SubmitProcessorBatchAsync(
+                options.ProcessorBaseUrl!,
+                request,
+                processorHandler,
+                ct);
+            if (submitted != changes.Count)
             {
-                int submitted = await SubmitProcessorBatchAsync(
-                    options.ProcessorBaseUrl!,
-                    request,
-                    processorHandler,
-                    ct);
-                if (submitted != changes.Count)
-                {
-                    await Console.Error.WriteLineAsync(
-                        $"Processor reported {submitted} updates for a {changes.Count}-change batch.");
-                    return 1;
-                }
-            }
-            else
-            {
-                try
-                {
-                    BallotNotesWorkGroupReallocationResult result =
-                        await db.ReallocateWorkGroupsLegacyAsync(request, ct);
-                    if (result.UpdatedCount != changes.Count)
-                    {
-                        await Console.Error.WriteLineAsync(
-                            $"Direct reallocation reported {result.UpdatedCount} updates for a {changes.Count}-change batch.");
-                        return 1;
-                    }
-                }
-                catch (AuthoringConflictException ex)
-                {
-                    await Console.Error.WriteLineAsync(
-                        $"Direct reallocation batch was rejected: {ex.Message}");
-                    return 1;
-                }
+                await Console.Error.WriteLineAsync(
+                    $"Processor reported {submitted} updates for a {changes.Count}-change batch.");
+                return 1;
             }
         }
 
@@ -324,45 +289,6 @@ internal static class ReallocateRunner
                 change.ToPrimaryCode,
                 change.ToNames == "(none)" ? string.Empty : change.ToNames,
                 change.ToCodes)).ToArray());
-
-    private static async Task<bool> DirectWriteModeAllowedAsync(
-        string dbPath,
-        CancellationToken ct)
-    {
-        string connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = dbPath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false,
-        }.ConnectionString;
-        await using SqliteConnection connection = new(connectionString);
-        await connection.OpenAsync(ct);
-        await using SqliteCommand table = connection.CreateCommand();
-        table.CommandText =
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'authoring_processor_modes'";
-        if (await table.ExecuteScalarAsync(ct) is null)
-        {
-            return true;
-        }
-
-        await using SqliteCommand mode = connection.CreateCommand();
-        mode.CommandText =
-            """
-            SELECT Mode
-            FROM authoring_processor_modes
-            WHERE Mode IN ('run-backed', 'cutting-over')
-            LIMIT 1
-            """;
-        string? blockedMode = Convert.ToString(await mode.ExecuteScalarAsync(ct));
-        if (string.IsNullOrWhiteSpace(blockedMode))
-        {
-            return true;
-        }
-
-        await Console.Error.WriteLineAsync(
-            $"Direct reallocation writes are unavailable while processor mode is '{blockedMode}'; use --processor.");
-        return false;
-    }
 
     private static string Display(string value) => string.IsNullOrEmpty(value) ? "(none)" : value;
 

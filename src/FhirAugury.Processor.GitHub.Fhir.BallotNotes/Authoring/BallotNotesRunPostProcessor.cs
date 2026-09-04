@@ -29,6 +29,21 @@ public sealed class BallotNotesRunPostProcessor(
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException(
                 $"Authoring run '{runId}' was not found.");
+        AuthoringProcessorModeRecord mode =
+            await authoringStore.GetProcessorModeAsync(
+                coordinator.ProcessorKind,
+                ct: ct);
+        if (mode.RevalidationRequired &&
+            string.Equals(
+                mode.RevalidationRunId,
+                runId,
+                StringComparison.Ordinal) &&
+            await coordinator.SupersedeStaleItemsAsync(runId, ct))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.SourceRevisionMismatch,
+                $"Initial revalidation run '{runId}' was replaced because evidence revisions changed before finalization.");
+        }
         if (!run.DatabaseOnly &&
             await database.CountLegacyUnverifiedAsync(ct) > 0)
         {
@@ -73,10 +88,10 @@ public sealed class BallotNotesRunPostProcessor(
                                     await database.CountCurrentReceiptBackedNotesAsync(
                                         cancellationToken),
                                     counts,
-                                new BallotNotesSnapshotSanitizer(runId)),
+                                    new BallotNotesSnapshotSanitizer(runId)),
                             cancellationToken);
                     },
-                ct);
+                ct: ct);
         await coordinator.TryActivateNextQueuedRunAsync(ct);
         return descriptor;
     }

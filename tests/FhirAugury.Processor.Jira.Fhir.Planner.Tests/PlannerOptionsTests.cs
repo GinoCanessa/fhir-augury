@@ -69,7 +69,7 @@ public sealed class PlannerOptionsTests
         Assert.Equal(
             PlannerJiraProcessingDefaults.AuthoringAgentCliCommand,
             jira.AuthoringAgentCliCommand);
-        Assert.Contains("{dbPath}", PlannerJiraProcessingDefaults.AgentCliCommand);
+        Assert.DoesNotContain("{dbPath}", PlannerJiraProcessingDefaults.AgentCliCommand);
         Assert.DoesNotContain("{dbPath}", PlannerJiraProcessingDefaults.AuthoringAgentCliCommand);
     }
 }

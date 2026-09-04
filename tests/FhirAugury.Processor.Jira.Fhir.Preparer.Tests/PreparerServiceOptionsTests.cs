@@ -68,17 +68,24 @@ public sealed class PreparerServiceOptionsTests
     }
 
     [Fact]
-    public void Validate_RejectsAgentCommandMissingDbPathToken()
+    public void Validate_RejectsDatabaseTokenInCanonicalCommand()
     {
         JiraProcessingOptions options = new()
         {
-            AgentCliCommand = "copilot run ticket-prep --ticket {ticketKey}",
+            AgentCliCommand =
+                "copilot -p '/ticket-prep {ticketKey} --db {dbPath}' --allow-all",
+            AuthoringAgentCliCommand =
+                PreparerJiraProcessingDefaults.AuthoringAgentCliCommand,
             JiraSourceAddress = PreparerJiraProcessingDefaults.JiraSourceAddress,
         };
 
         List<string> errors = PreparerJiraProcessingDefaults.Validate(options).ToList();
 
-        Assert.Contains(errors, error => error.Contains("{dbPath}", StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "worker environment",
+                StringComparison.Ordinal));
     }
 
     [Fact]

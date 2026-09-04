@@ -20,6 +20,8 @@ public class ProcessingServiceOptionsTests
         Assert.Equal("./data/snapshots", options.SnapshotDirectory);
         Assert.Equal(1, options.SnapshotSchemaVersion);
         Assert.True(options.ReconcileSnapshotsOnStartup);
+        Assert.False(options.ActivateRunBackedAuthoring);
+        Assert.Null(options.PreCutoverBackupPath);
         Assert.Empty(options.Validate());
     }
 
@@ -86,5 +88,20 @@ public class ProcessingServiceOptionsTests
         Assert.Contains(errors, error => error.Contains("AuthoringMaxAttempts", StringComparison.Ordinal));
         Assert.Contains(errors, error => error.Contains("SnapshotDirectory", StringComparison.Ordinal));
         Assert.Contains(errors, error => error.Contains("SnapshotSchemaVersion", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateRequiresBackupPathForActivation()
+    {
+        ProcessingServiceOptions options = new()
+        {
+            ActivateRunBackedAuthoring = true,
+        };
+
+        Assert.Contains(
+            options.Validate(),
+            error => error.Contains(
+                nameof(options.PreCutoverBackupPath),
+                StringComparison.Ordinal));
     }
 }

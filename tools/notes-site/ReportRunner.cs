@@ -98,96 +98,12 @@ internal static class ReportRunner
         ReportOptions options,
         NotesSiteCleanupHooks? cleanupHooks = null)
     {
-        if (options.SnapshotMode)
-        {
-            return await RunSnapshotAsync(options, cleanupHooks).ConfigureAwait(false);
-        }
-
-        string notesDb = Path.GetFullPath(options.DbPath);
-        if (!File.Exists(notesDb))
-        {
-            await Console.Error.WriteLineAsync(
-                $"Notes DB not found: {notesDb}. Run the BallotNotes processor 'hydrate' first.").ConfigureAwait(false);
-            return 1;
-        }
-
-        int noteCount;
-        try
-        {
-            using BallotNotesDatabase db = new(notesDb, ConsoleLogger.Instance, readOnly: true);
-            noteCount = db.CountNotes();
-        }
-        catch (Microsoft.Data.Sqlite.SqliteException ex)
-        {
-            await Console.Error.WriteLineAsync(
-                $"Notes DB schema error reading {notesDb}: {ex.Message}. Re-hydrate it with the BallotNotes processor.").ConfigureAwait(false);
-            return 1;
-        }
-
-        string outDir = Path.GetFullPath(options.OutPath);
-        byte[] databaseBytes;
-        try
-        {
-            databaseBytes = NotesSpaEmitter.SnapshotDbBytes(notesDb);
-        }
-        catch (Exception ex) when (
-            ex is IOException or UnauthorizedAccessException or SqliteException)
-        {
-            await Console.Error.WriteLineAsync(
-                $"Notes DB snapshot failed for {notesDb}: {ex.Message}").ConfigureAwait(false);
-            return 1;
-        }
-
-        string databaseSha256 = ComputeSha256(databaseBytes);
-        IReadOnlyDictionary<string, long> counts =
-            await ReadCountsFromBytesAsync(databaseBytes).ConfigureAwait(false);
-        string buildIdentity = SiteBuildManifest.ComputeBuildIdentity(
-            "notes",
-            options.Title,
-            NotesSpaEmitter.RendererAssetsVersion,
-            "legacy",
-            databaseSha256);
-        try
-        {
-            await StagedDirectoryPublisher.PublishAsync(
-                outDir,
-                StagedDirectoryVersion.Legacy("notes-site", buildIdentity),
-                (staging, _) =>
-                {
-                    new NotesSpaEmitter(databaseBytes, notesDb, options.Title).Emit(staging);
-                    return Task.CompletedTask;
-                },
-                (staging, ct) => ValidateLegacyStageAsync(
-                    staging,
-                    databaseSha256,
-                    databaseBytes.LongLength,
-                    counts,
-                    ct),
-                new StagedDirectoryPublishOptions(Force: options.Force),
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (
-            ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            await Console.Error.WriteLineAsync(
-                $"Notes site publication failed: {ex.Message}").ConfigureAwait(false);
-            return 1;
-        }
-
-        Console.WriteLine($"Wrote {noteCount} note(s) to {Path.Combine(outDir, "index.html")}.");
-        return 0;
-    }
-
-    private static async Task<int> RunSnapshotAsync(
-        ReportOptions options,
-        NotesSiteCleanupHooks? cleanupHooks)
-    {
         ImmutableFileSnapshot? privateSnapshot = null;
         SiteBuildManifest? successSummary = null;
         try
         {
-            string sourcePath = Path.GetFullPath(options.SnapshotDbPath!);
-            string descriptorPath = Path.GetFullPath(options.SnapshotDescriptorPath!);
+            string sourcePath = Path.GetFullPath(options.SnapshotDbPath);
+            string descriptorPath = Path.GetFullPath(options.SnapshotDescriptorPath);
             string outDir = Path.GetFullPath(options.OutPath);
             StagedDirectoryPublisher.RejectSourcePathsWithinPublication(
                 outDir,
@@ -743,42 +659,6 @@ internal static class ReportRunner
         actual.TableCounts.All(pair =>
             expected.TableCounts.TryGetValue(pair.Key, out long value) &&
             pair.Value == value);
-
-    private static async Task ValidateLegacyStageAsync(
-        string staging,
-        string expectedSha256,
-        long expectedSizeBytes,
-        IReadOnlyDictionary<string, long> expectedCounts,
-        CancellationToken ct)
-    {
-        string[] required =
-        [
-            "index.html",
-            StagedDirectoryPublisher.VersionFileName,
-            Path.Combine("assets", "app.js"),
-            Path.Combine("assets", "app.css"),
-            Path.Combine("assets", "sql-wasm.js"),
-            Path.Combine("assets", "sql-wasm.wasm"),
-            Path.Combine("assets", "marked.min.js"),
-            Path.Combine("assets", "purify.min.js"),
-        ];
-        foreach (string relative in required)
-        {
-            if (!File.Exists(Path.Combine(staging, relative)))
-            {
-                throw new InvalidOperationException(
-                    $"Staged notes site is missing required file '{relative}'.");
-            }
-        }
-        await ValidateEmbeddedDatabaseAsync(
-            staging,
-            expectedSha256,
-            expectedSizeBytes,
-            expectedCounts,
-            expectedNoteCount: null,
-            expectedReceiptCount: null,
-            ct: ct).ConfigureAwait(false);
-    }
 
     private static async Task ValidateEmbeddedDatabaseAsync(
         string staging,

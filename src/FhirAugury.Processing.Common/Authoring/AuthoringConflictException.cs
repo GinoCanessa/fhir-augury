@@ -15,6 +15,7 @@ public enum AuthoringConflictCode
     StageAlreadyInProgress,
     StageLeaseLost,
     RevisionAlreadyScheduled,
+    RevalidationRequired,
 }
 
 public sealed class AuthoringConflictException(

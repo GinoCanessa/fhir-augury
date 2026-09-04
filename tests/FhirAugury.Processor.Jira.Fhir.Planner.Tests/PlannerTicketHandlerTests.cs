@@ -212,6 +212,7 @@ public sealed class PlannerTicketHandlerTests
                 (connection, ct) => database.SavePlannedTicketForAuthoringAsync(
                     connection,
                     payload,
+                    hash,
                     run.Id,
                     item.Id,
                     operation.OperationId,

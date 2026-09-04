@@ -171,6 +171,7 @@ public sealed class PlannedTicketGroupingPersistenceTests
                 (connection, ct) => Database.SavePlannedTicketForAuthoringAsync(
                     connection,
                     payload,
+                    hash,
                     creation.Run.Id,
                     item.Id,
                     claim.OperationId,

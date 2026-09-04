@@ -26,6 +26,9 @@ public sealed class BallotNotesControllerTests : IDisposable
         _cloneRoot = Path.Combine(_tempDir, "repos");
 
         SetEnv("DatabasePath", Path.Combine(_tempDir, "notes.db"));
+        SetEnv(
+            "PreCutoverBackupPath",
+            Path.Combine(_tempDir, "notes.pre-cutover.db"));
         SetEnv("Hydration__CloneRoot", _cloneRoot);
         // Closed ports: attribution is best-effort and must fail fast (no upstream).
         // Use literal IPv4 127.0.0.1 to get an instant RST and avoid the dual-stack
@@ -41,7 +44,7 @@ public sealed class BallotNotesControllerTests : IDisposable
     public void Dispose()
     {
         _factory.Dispose();
-        foreach (string key in new[] { "DatabasePath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress", "Hydration__AttributionConnectTimeout" })
+        foreach (string key in new[] { "DatabasePath", "PreCutoverBackupPath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress", "Hydration__AttributionConnectTimeout" })
         {
             Environment.SetEnvironmentVariable(EnvPrefix + key, null);
         }
@@ -71,7 +74,7 @@ public sealed class BallotNotesControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task List_get_put_round_trip_marks_authored()
+    public async Task List_and_get_return_hydrated_note()
     {
         SeedNote("hl7-fhir-artifact-observation", "Observation");
         HttpClient client = _factory.CreateClient();
@@ -85,57 +88,25 @@ public sealed class BallotNotesControllerTests : IDisposable
         Assert.Equal("Observation", detail.RootElement.GetProperty("name").GetString());
         Assert.Equal("awaiting-note", detail.RootElement.GetProperty("status").GetString());
 
-        // Write prose back
-        HttpResponseMessage put = await client.PutAsJsonAsync(
-            "/api/v1/ballot-notes/hl7-fhir-artifact-observation/note",
-            new
-            {
-                needsNote = "yes",
-                proposedBallotNoteHtml = "<blockquote class=\"ballot-note\">drafted</blockquote>",
-                rollupSummaryMarkdown = "## Roll-up",
-                notesForReviewerMarkdown = "note",
-                sourceFilesNote = "",
-            });
-        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
-
-        // Bare transition writes are retained but never certified as authored.
-        using JsonDocument after = await GetJson(client, "/api/v1/ballot-notes/hl7-fhir-artifact-observation");
-        Assert.Equal("legacy-unverified", after.RootElement.GetProperty("status").GetString());
-        Assert.Equal("yes", after.RootElement.GetProperty("needsNote").GetString());
     }
 
     [Fact]
-    public async Task Put_unknown_slug_returns_404()
-    {
-        HttpClient client = _factory.CreateClient();
-        HttpResponseMessage put = await client.PutAsJsonAsync(
-            "/api/v1/ballot-notes/never-hydrated/note",
-            new { needsNote = "no" });
-
-        Assert.Equal(HttpStatusCode.NotFound, put.StatusCode);
-    }
-
-    [Fact]
-    public async Task BarePut_rejects_run_backed_mode()
+    public async Task BarePutRouteIsUnavailable()
     {
         SeedNote("hl7-fhir-artifact-observation", "Observation");
-        AuthoringRunStore store =
-            _factory.Services.GetRequiredService<AuthoringRunStore>();
-        await store.TransitionProcessorModeAsync(
-            BallotNotesDatabase.AuthoringProcessorKind,
-            AuthoringStatusValues.ProcessorModes.Legacy,
-            AuthoringStatusValues.ProcessorModes.CuttingOver);
-        await store.TransitionProcessorModeAsync(
-            BallotNotesDatabase.AuthoringProcessorKind,
-            AuthoringStatusValues.ProcessorModes.CuttingOver,
-            AuthoringStatusValues.ProcessorModes.RunBacked);
         HttpClient client = _factory.CreateClient();
 
         HttpResponseMessage put = await client.PutAsJsonAsync(
             "/api/v1/ballot-notes/hl7-fhir-artifact-observation/note",
             new { needsNote = "yes" });
 
-        Assert.Equal(HttpStatusCode.Conflict, put.StatusCode);
+        Assert.Contains(
+            put.StatusCode,
+            new[]
+            {
+                HttpStatusCode.NotFound,
+                HttpStatusCode.MethodNotAllowed,
+            });
     }
 
     [Fact]

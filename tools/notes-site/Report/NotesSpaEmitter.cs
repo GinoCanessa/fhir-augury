@@ -4,8 +4,6 @@ using System.Reflection;
 using System.Text.Json;
 using FhirAugury.Common.IO;
 using FhirAugury.Processing.Contracts;
-using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
-using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Tools.NotesSite.Report;
 
@@ -24,20 +22,13 @@ internal sealed class NotesSpaEmitter
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string ProvenanceMarker = "<!-- __PROVENANCE__ -->";
 
-    private readonly string _notesDbPath;
-    private readonly byte[]? _snapshotBytes;
-    private readonly AuthoringSnapshotDescriptor? _snapshotDescriptor;
+    private readonly byte[] _snapshotBytes;
+    private readonly AuthoringSnapshotDescriptor _snapshotDescriptor;
     private readonly string _title;
 
     public static string RendererAssetsVersion =>
         StagedDirectoryPublisher.GetRendererAssetsVersion(
             typeof(NotesSpaEmitter).Assembly);
-
-    public NotesSpaEmitter(string notesDbPath, string title)
-    {
-        _notesDbPath = notesDbPath;
-        _title = title;
-    }
 
     public NotesSpaEmitter(
         byte[] snapshotBytes,
@@ -46,21 +37,8 @@ internal sealed class NotesSpaEmitter
     {
         ArgumentNullException.ThrowIfNull(snapshotBytes);
         ArgumentNullException.ThrowIfNull(descriptor);
-        _notesDbPath = string.Empty;
         _snapshotBytes = snapshotBytes;
         _snapshotDescriptor = descriptor;
-        _title = title;
-    }
-
-    public NotesSpaEmitter(
-        byte[] databaseBytes,
-        string notesDbPath,
-        string title)
-    {
-        ArgumentNullException.ThrowIfNull(databaseBytes);
-        ArgumentException.ThrowIfNullOrWhiteSpace(notesDbPath);
-        _notesDbPath = notesDbPath;
-        _snapshotBytes = databaseBytes;
         _title = title;
     }
 
@@ -76,12 +54,9 @@ internal sealed class NotesSpaEmitter
         string assetsDir = Path.Combine(outDir, "assets");
         Directory.CreateDirectory(assetsDir);
 
-        byte[] dbBytes = _snapshotBytes ?? SnapshotDbBytes(_notesDbPath);
-        string base64 = Convert.ToBase64String(GzipBytes(dbBytes));
+        string base64 = Convert.ToBase64String(GzipBytes(_snapshotBytes));
         string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
-        string provenanceScript = _snapshotDescriptor is null
-            ? BuildProvenanceScript(_notesDbPath)
-            : BuildSnapshotProvenanceScript(_snapshotDescriptor);
+        string provenanceScript = BuildSnapshotProvenanceScript(_snapshotDescriptor);
         string encodedTitle = WebUtility.HtmlEncode(_title);
 
         Assembly asm = typeof(NotesSpaEmitter).Assembly;
@@ -113,12 +88,6 @@ internal sealed class NotesSpaEmitter
         }
     }
 
-    /// <summary>
-    /// Produces a coherent single-file snapshot of the (WAL-mode) notes DB via
-    /// the SQLite Online Backup API, then VACUUMs and reads the bytes. Reading
-    /// the bare <c>.db</c> file could miss uncheckpointed <c>-wal</c> data; the
-    /// backup copies the source connection's full logical view.
-    /// </summary>
     private static byte[] GzipBytes(byte[] raw)
     {
         using MemoryStream output = new();
@@ -127,122 +96,6 @@ internal sealed class NotesSpaEmitter
             gzip.Write(raw, 0, raw.Length);
         }
         return output.ToArray();
-    }
-
-    public static byte[] SnapshotDbBytes(string notesDbPath)
-    {
-        string tempPath = Path.Combine(
-            Path.GetTempPath(), "notes-site-snap-" + Guid.NewGuid().ToString("N")[..8] + ".db");
-        try
-        {
-            string sourceConnStr = new SqliteConnectionStringBuilder
-            {
-                DataSource = notesDbPath,
-                Mode = SqliteOpenMode.ReadOnly,
-                Pooling = false,
-            }.ConnectionString;
-            string destConnStr = new SqliteConnectionStringBuilder
-            {
-                DataSource = tempPath,
-                Mode = SqliteOpenMode.ReadWriteCreate,
-                Pooling = false,
-            }.ConnectionString;
-
-            using (SqliteConnection source = new(sourceConnStr))
-            using (SqliteConnection dest = new(destConnStr))
-            {
-                source.Open();
-                dest.Open();
-                source.BackupDatabase(dest);
-
-                // Migrate the throwaway snapshot so the embedded DB always has
-                // the current schema (e.g. note_tickets.IssueType) even when the
-                // source DB predates a column the SPA's SELECTs reference.
-                BallotNotesDatabase.EnsureSchema(dest);
-
-                using SqliteCommand vacuum = dest.CreateCommand();
-                vacuum.CommandText = "VACUUM;";
-                vacuum.ExecuteNonQuery();
-            }
-
-            return File.ReadAllBytes(tempPath);
-        }
-        finally
-        {
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); }
-            catch (IOException) { /* best effort temp cleanup */ }
-        }
-    }
-
-    /// <summary>
-    /// Reads the latest <c>notes_runs</c> row plus a note count and emits a
-    /// <c>window.__RUN__</c> JSON object for the SPA provenance header.
-    /// </summary>
-    private static string BuildProvenanceScript(string notesDbPath)
-    {
-        string connStr = new SqliteConnectionStringBuilder
-        {
-            DataSource = notesDbPath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false,
-        }.ConnectionString;
-
-        string? repoOwner = null, repoName = null, repoCategory = null;
-        string? sinceShortSha = null, headShortSha = null, runAt = null, windowLabel = null;
-        int noteCount = 0;
-
-        using (SqliteConnection conn = new(connStr))
-        {
-            conn.Open();
-
-            using (SqliteCommand cmd = conn.CreateCommand())
-            {
-                cmd.CommandText =
-                    "SELECT RepoOwner, RepoName, RepoCategory, SinceShortSha, HeadShortSha, RunAt, WindowLabel " +
-                    "FROM notes_runs ORDER BY RunAt DESC, RowId DESC LIMIT 1";
-                using SqliteDataReader reader = cmd.ExecuteReader();
-                if (reader.Read())
-                {
-                    repoOwner = reader.IsDBNull(0) ? null : reader.GetString(0);
-                    repoName = reader.IsDBNull(1) ? null : reader.GetString(1);
-                    repoCategory = reader.IsDBNull(2) ? null : reader.GetString(2);
-                    sinceShortSha = reader.IsDBNull(3) ? null : reader.GetString(3);
-                    headShortSha = reader.IsDBNull(4) ? null : reader.GetString(4);
-                    runAt = reader.IsDBNull(5) ? null : reader.GetString(5);
-                    windowLabel = reader.IsDBNull(6) ? null : reader.GetString(6);
-                }
-            }
-
-            using (SqliteCommand cmd = conn.CreateCommand())
-            {
-                cmd.CommandText = "SELECT COUNT(*) FROM notes";
-                noteCount = Convert.ToInt32(cmd.ExecuteScalar());
-            }
-        }
-
-        using MemoryStream ms = new();
-        using (Utf8JsonWriter writer = new(ms))
-        {
-            writer.WriteStartObject();
-            WriteNullableString(writer, "repoOwner", repoOwner);
-            WriteNullableString(writer, "repoName", repoName);
-            WriteNullableString(writer, "repoCategory", repoCategory);
-            WriteNullableString(writer, "sinceShortSha", sinceShortSha);
-            WriteNullableString(writer, "headShortSha", headShortSha);
-            WriteNullableString(writer, "runAt", runAt);
-            WriteNullableString(writer, "windowLabel", windowLabel);
-            writer.WriteNumber("noteCount", noteCount);
-            writer.WriteEndObject();
-        }
-
-        string json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
-        return $"<script>window.__RUN__={json};</script>";
-    }
-
-    private static void WriteNullableString(Utf8JsonWriter writer, string name, string? value)
-    {
-        if (value is null) writer.WriteNull(name);
-        else writer.WriteString(name, value);
     }
 
     private static string BuildSnapshotProvenanceScript(
