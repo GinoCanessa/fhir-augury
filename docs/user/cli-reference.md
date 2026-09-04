@@ -265,6 +265,70 @@ object on stdin and emits a single JSON envelope on stdout. Use
 The `--jira-project <key>` option is also accepted by the renamed
 `reingest` verb on the `ingest` command (see above).
 
+### Run-backed authoring
+
+Three typed command families control processor-owned authoring runs:
+
+| Command | Processor | Workflow guide |
+|---------|-----------|----------------|
+| `prepared-ticket-authoring` | Preparer | [Generating Discussion Tickets](generating-discussion-tickets.md) |
+| `planned-ticket-authoring` | Planner | [Generating Application Tickets](generating-application-tickets.md) |
+| `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
+
+Each family registers the same five actions, with command-specific start and
+worker-submission fields:
+
+| Action | Required coordinates and fields | Purpose and boundaries |
+|--------|---------------------------------|------------------------|
+| `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. |
+| `status` | `runId` | Inspect the frozen run and its items, including any durable `acceptedReceiptId`. |
+| `retry` | `runId`, `itemId` | Retry one eligible item currently reported as failed; it is not a whole-run retry. |
+| `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
+| `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
+
+Start selectors are not interchangeable:
+
+| Commands | Selector | Meaning |
+|----------|----------|---------|
+| `prepared-ticket-authoring`, `planned-ticket-authoring` | `ticketKeys` | Optional Jira ticket keys. Omit or pass an empty array to let the processor discover the run's items. |
+| `ballot-note-authoring` | `hydrationExecutionId` | Required hydration execution that bounds the ballot-note run. |
+| `ballot-note-authoring` | `noteIds` | Optional subset of notes from that hydration execution; omission keeps the run scoped to all eligible notes in it. |
+
+Authoring responses use several identifiers for distinct purposes:
+
+- `runId` is the frozen run coordinate used by `status`, `retry`, and
+  `snapshot`.
+- `itemId` identifies one item inside a run and is the outer retry coordinate.
+- `operationId` correlates a processor-launched worker operation and its
+  receipt; it is not an outer CLI selector.
+- `acceptedReceiptId` is durable evidence already persisted for an item. It is
+  returned by status, not supplied to select an action.
+- The descriptor's `snapshotId` is the immutable snapshot identity. The CLI
+  still selects the download by `runId` and returns the verified local
+  snapshot and descriptor paths.
+
+Minimal outer-control examples:
+
+```jsonc
+// Start a Preparer run using processor discovery
+{ "command": "prepared-ticket-authoring", "action": "start", "ticketKeys": [], "databaseOnly": false }
+
+// Inspect the run and item receipts
+{ "command": "prepared-ticket-authoring", "action": "status", "runId": "<runId>" }
+
+// Retry one eligible failed item
+{ "command": "prepared-ticket-authoring", "action": "retry", "runId": "<runId>", "itemId": "<itemId>" }
+
+// Download the verified snapshot pair
+{ "command": "prepared-ticket-authoring", "action": "snapshot", "runId": "<runId>", "snapshotPath": "cache\\authoring-snapshots\\preparer\\<runId>\\" }
+```
+
+Do not copy `submit` into an outer control script. For exhaustive request and
+response shapes, run `fhir-augury --help <command>` or export them with
+[`save-schemas`](#save-schemas--save-schemas-to-disk). Workflow and
+finalization details remain in the three guides above and the
+[processor runbook](../technical/processors.md).
+
 ### `version` — Show version
 
 ```jsonc
