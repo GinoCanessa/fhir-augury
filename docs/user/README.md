@@ -20,15 +20,17 @@ The documentation is organized in three tiers:
 
 ## Generating outputs
 
-End-to-end guides for the three output pipelines. Each makes the easy-to-skip
-middle step explicit and leads its troubleshooting with the symptom you'd
-actually see.
+Each output pipeline freezes a processor-owned authoring run. Accepted
+receipts remain durable if later finalization fails; after processor-owned
+finalization completes, download the canonical snapshot and descriptor, then
+render or publish only from that verified pair. The guides cover polling,
+retries, recovery, and publication in detail.
 
 | Guide | What it produces |
 |-------|------------------|
-| [Generating Ballot Notes](generating-ballot-notes.md) | A `notes-site` static site of **proposed** ballot notes (start → hydrate → **author** → render). |
-| [Generating Discussion Tickets](generating-discussion-tickets.md) | The `ticket-site` **Tickets for Discussion** sub-site (prepare → **topic groupings** → render). |
-| [Generating Application Tickets](generating-application-tickets.md) | The `ticket-site` **Tickets for Applying** sub-site, plus the Applier apply-and-push flow. |
+| [Generating Ballot Notes](generating-ballot-notes.md) | Run hydration, author **proposed** ballot notes in a BallotNotes run, download its verified snapshot pair, then render the `notes-site` site. |
+| [Generating Discussion Tickets](generating-discussion-tickets.md) | Author prepared tickets in a Preparer run; fenced finalization owns hydration and topic grouping before the verified snapshot is rendered by `ticket-site`. |
+| [Generating Application Tickets](generating-application-tickets.md) | Author plans in a Planner run; processor-owned hydration and grouping produce the verified snapshot rendered by `ticket-site`. The separate Applier flow applies and pushes plans. |
 
 ## Reference
 
