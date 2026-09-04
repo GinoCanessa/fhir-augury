@@ -1,8 +1,9 @@
 # API Reference
 
 FHIR Augury v2 uses a microservices architecture with HTTP/REST APIs for all
-communication. The CLI and MCP tools connect to the orchestrator via HTTP. Each
-service exposes an HTTP API for health checks, search, and management operations.
+communication. The CLI and MCP tools connect to the orchestrator via HTTP.
+Source services expose search and ingestion APIs; processor services expose
+health, lifecycle, authoring, and maintenance APIs according to their role.
 
 ## Architecture
 
@@ -14,6 +15,10 @@ service exposes an HTTP API for health checks, search, and management operations
 | Confluence | 5180 | Indexes confluence.hl7.org |
 | GitHub | 5190 | Indexes HL7 GitHub repos |
 | FHIR | 5195 | Serves FHIR spec reference data (read-only) |
+| Preparer | 5171 | Authors prepared discussion-ticket output |
+| Planner | 5172 | Authors implementation plans |
+| Applier | 5173 | Applies queued plans locally and pushes on demand |
+| BallotNotes | 5174 | Hydrates evidence and authors ballot notes |
 | MCP HTTP | 5200 | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 
 > **Note:** The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on
@@ -231,6 +236,35 @@ Examples:
 The full set of typed proxy routes is enumerated in
 [Source Endpoint Reference](../technical/source-endpoint-reference.md)
 and surfaced in the merged orchestrator OpenAPI document.
+
+### Processing-service proxies
+
+The Orchestrator exposes configured processors under
+`/api/v1/processing-services`:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/v1/processing-services` | List enabled processing services and their configured metadata and cached health |
+| `GET` | `/api/v1/processing-services/{name}/health` | Proxy the named service's health |
+| `GET` | `/api/v1/processing-services/{name}/status` | Proxy processing status |
+| `GET` | `/api/v1/processing-services/{name}/queue` | Proxy queue statistics |
+| `POST` | `/api/v1/processing-services/{name}/start` | Start queue processing |
+| `POST` | `/api/v1/processing-services/{name}/stop` | Stop queue processing |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot` | Get the trusted snapshot descriptor |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+
+Shipped configuration enables the names `Preparer`, `Planner`, and
+`BallotNotes`. Applier is directly addressable on port 5173 but is not
+registered with the Orchestrator by default. A generic proxy route does not
+mean every configured service implements the underlying capability:
+Preparer and Planner provide the common lifecycle plus authoring APIs,
+BallotNotes provides authoring but not the Jira processors' lifecycle/queue
+surface, and Applier provides lifecycle/queue but no authoring-run API.
+Receipt lookup and authenticated worker result submission are direct
+processor endpoints; the Orchestrator does not proxy them.
 
 > **Note.** There is no generic reverse proxy at
 > `/api/v1/source/{name}/...`; per-source operations are exposed through
@@ -465,6 +499,76 @@ Returns `404` if the stream is not found.
 
 ---
 
+## Processor Service HTTP APIs
+
+Processors own their databases and expose HTTP control surfaces; clients must
+not open those databases directly. Full request and response schemas are
+available through [OpenAPI](openapi.md). Operational sequencing and failure
+recovery remain in the [processor runbook](../technical/processors.md), and
+service registration is described in
+[Processing Services configuration](../configuration.md#processing-services).
+
+### Jira processor lifecycle
+
+Preparer (`http://localhost:5171`), Planner (`http://localhost:5172`), and
+Applier (`http://localhost:5173`) expose the versioned
+Processing.Common surface:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/v1/health` | Processor and database health |
+| `GET` | `/api/v1/status` | Lifecycle state and processing counters |
+| `GET` | `/api/v1/processing/queue` | Queue statistics |
+| `POST` | `/api/v1/processing/start` | Admit and process queued work |
+| `POST` | `/api/v1/processing/stop` | Stop admitting queued work |
+
+### Preparer and Planner authoring runs
+
+Preparer and Planner expose the same direct control family under
+`/api/v1/processing/authoring/runs`:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/v1/processing/authoring/runs` | Create a frozen run |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+
+Processor-launched workers submit authenticated results directly to the
+unversioned callback
+`POST /processing/authoring/runs/{runId}/items/{itemId}/result`. This callback
+is not an outer operator endpoint and is not exposed through the Orchestrator.
+
+### BallotNotes APIs
+
+BallotNotes (`http://localhost:5174`) has a distinct surface: default
+`GET /health`, hydration under `/api/v1/ballot-notes/hydrate`, authoring runs
+under `/api/v1/ballot-notes/authoring/runs`, and maintenance under
+`/api/v1/ballot-notes/maintenance`. Do not assume the Jira processors'
+versioned status, queue, start, or stop routes apply to it.
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/v1/ballot-notes/authoring/runs` | Create a run scoped to a hydration execution |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/{type}/{slug}/result` | Submit an authenticated worker result |
+
+### Applier API
+
+Applier consumes queued plan output through the common lifecycle/queue
+surface. It is intentionally outside the run-backed authoring route tables.
+After local application, push one ticket's configured repositories on demand:
+
+#### `POST /api/v1/applied-tickets/{ticketKey}/push`
+
+---
+
 ## Service Ports Reference
 
 | Service | Health Check URL | Purpose |
@@ -474,13 +578,17 @@ Returns `404` if the stream is not found.
 | Zulip | `http://localhost:5170/health` | Zulip message indexing |
 | Confluence | `http://localhost:5180/health` | Confluence page indexing |
 | GitHub | `http://localhost:5190/health` | GitHub issue/PR indexing |
+| Preparer | `http://localhost:5171/health` | Prepared discussion-ticket authoring |
+| Planner | `http://localhost:5172/health` | Implementation-plan authoring |
+| Applier | `http://localhost:5173/health` | Queue-driven local application and on-demand push |
+| BallotNotes | `http://localhost:5174/health` | Hydration and ballot-note authoring |
 | MCP HTTP | `http://localhost:5200/health` | MCP HTTP/SSE server |
 
 ---
 
 ## Health Check Format
 
-All services return health checks in the same format:
+Core source services return health checks in this common format:
 
 ```json
 {
@@ -491,6 +599,8 @@ All services return health checks in the same format:
 ```
 
 The `status` field will be `"healthy"` when the service is operating normally.
+Processor health payloads reflect their distinct lifecycle and database state;
+use each processor's [OpenAPI document](openapi.md) for its exact shape.
 
 ---
 
