@@ -13,7 +13,7 @@ public sealed record AuthoringQueueClaim(
 
 public interface IAuthoringQueueStore<TItem>
 {
-    Task<IReadOnlyList<TItem>> GetPendingAsync(int maxItems, CancellationToken ct);
+    Task<IReadOnlyList<TItem>> GetPendingAsync(string runId, int maxItems, CancellationToken ct);
     Task<AuthoringQueueClaim?> TryClaimAsync(TItem item, DateTimeOffset startedAt, CancellationToken ct);
     Task ApplyResultAsync(
         TItem item,
@@ -21,7 +21,11 @@ public interface IAuthoringQueueStore<TItem>
         AuthoringWorkResult result,
         DateTimeOffset completedAt,
         CancellationToken ct);
-    Task<int> ResetOrphanedItemsAsync(TimeSpan olderThan, DateTimeOffset now, CancellationToken ct);
+    Task<int> ResetOrphanedItemsAsync(
+        string runId,
+        TimeSpan olderThan,
+        DateTimeOffset now,
+        CancellationToken ct);
 }
 
 public interface IAuthoringWorkItemHandler<TItem>
@@ -40,65 +44,100 @@ public class AuthoringQueueRunner<TItem>(
     ILogger<AuthoringQueueRunner<TItem>> logger)
 {
     private const int MaxErrorLength = 4096;
-    private readonly ProcessingServiceOptions _options = optionsAccessor.Value;
+    private readonly List<Task> _inFlight = [];
+    private readonly int _maxConcurrency =
+        Math.Max(1, optionsAccessor.Value.MaxConcurrentProcessingThreads);
+    private readonly TimeSpan _orphanedThreshold = ParsePositiveTimeSpan(
+        optionsAccessor.Value.OrphanedInProgressThreshold,
+        TimeSpan.FromMinutes(10),
+        nameof(ProcessingServiceOptions.OrphanedInProgressThreshold),
+        logger);
 
     protected virtual DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 
-    public async Task RunAsync(CancellationToken ct)
+    public int InFlightCount
     {
-        TimeSpan interval = ParsePositiveTimeSpan(_options.SyncSchedule, TimeSpan.FromMinutes(5), "SyncSchedule");
-        TimeSpan orphanedThreshold = ParsePositiveTimeSpan(
-            _options.OrphanedInProgressThreshold,
-            TimeSpan.FromMinutes(10),
-            "OrphanedInProgressThreshold");
-        int maxConcurrency = Math.Max(1, _options.MaxConcurrentProcessingThreads);
-
-        int resetCount = await store.ResetOrphanedItemsAsync(orphanedThreshold, UtcNow, ct);
-        logger.LogInformation("Reset {ResetCount} orphaned authoring work items", resetCount);
-
-        using SemaphoreSlim semaphore = new(maxConcurrency, maxConcurrency);
-        List<Task> inFlight = [];
-        while (!ct.IsCancellationRequested)
+        get
         {
-            inFlight.RemoveAll(task => task.IsCompleted);
-
-            if (!lifecycle.IsRunning)
-            {
-                await SafeDelayAsync(interval, ct);
-                continue;
-            }
-
-            int capacity = maxConcurrency - inFlight.Count;
-            if (capacity <= 0)
-            {
-                await WaitForCapacityOrDelayAsync(inFlight, interval, ct);
-                continue;
-            }
-
-            lifecycle.RecordPoll(UtcNow);
-            IReadOnlyList<TItem> pending = await store.GetPendingAsync(capacity, ct);
-            if (pending.Count == 0)
-            {
-                await SafeDelayAsync(interval, ct);
-                continue;
-            }
-
-            foreach (TItem item in pending)
-            {
-                if (!lifecycle.IsRunning || ct.IsCancellationRequested)
-                {
-                    break;
-                }
-
-                await semaphore.WaitAsync(ct);
-                inFlight.Add(ProcessOneAsync(item, semaphore, ct));
-            }
+            RemoveCompleted();
+            return _inFlight.Count;
         }
-
-        await DrainAsync(inFlight);
     }
 
-    private async Task ProcessOneAsync(TItem item, SemaphoreSlim semaphore, CancellationToken ct)
+    public async Task<int> ResetOrphanedItemsAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        int resetCount = await store.ResetOrphanedItemsAsync(
+            runId,
+            _orphanedThreshold,
+            UtcNow,
+            ct);
+        logger.LogInformation(
+            "Reset {ResetCount} orphaned authoring work items for run {RunId}",
+            resetCount,
+            runId);
+        return resetCount;
+    }
+
+    public async Task<int> FillCapacityAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        RemoveCompleted();
+        if (!lifecycle.IsRunning)
+        {
+            return 0;
+        }
+
+        int capacity = _maxConcurrency - _inFlight.Count;
+        if (capacity <= 0)
+        {
+            return 0;
+        }
+
+        IReadOnlyList<TItem> pending =
+            await store.GetPendingAsync(runId, capacity, ct);
+        int started = 0;
+        foreach (TItem item in pending.Take(capacity))
+        {
+            if (!lifecycle.IsRunning || ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            _inFlight.Add(ProcessOneAsync(item, ct));
+            started++;
+        }
+        return started;
+    }
+
+    public Task? GetInFlightCompletionTask()
+    {
+        RemoveCompleted();
+        return _inFlight.Count == 0
+            ? null
+            : Task.WhenAny(_inFlight.ToArray());
+    }
+
+    public async Task DrainAsync()
+    {
+        Task[] tasks = _inFlight.ToArray();
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            RemoveCompleted();
+        }
+    }
+
+    private async Task ProcessOneAsync(TItem item, CancellationToken ct)
     {
         try
         {
@@ -133,13 +172,16 @@ public class AuthoringQueueRunner<TItem>(
             lifecycle.RecordError(Truncate(ex.Message));
             logger.LogError(ex, "Failed to process authoring work item");
         }
-        finally
-        {
-            semaphore.Release();
-        }
     }
 
-    private TimeSpan ParsePositiveTimeSpan(string value, TimeSpan fallback, string optionName)
+    private void RemoveCompleted()
+        => _inFlight.RemoveAll(task => task.IsCompleted);
+
+    private static TimeSpan ParsePositiveTimeSpan(
+        string value,
+        TimeSpan fallback,
+        string optionName,
+        ILogger logger)
     {
         if (TimeSpan.TryParse(value, out TimeSpan parsed) && parsed > TimeSpan.Zero)
         {
@@ -148,43 +190,6 @@ public class AuthoringQueueRunner<TItem>(
 
         logger.LogWarning("Invalid {OptionName} '{Value}'; using {Fallback}", optionName, value, fallback);
         return fallback;
-    }
-
-    private static async Task DrainAsync(List<Task> inFlight)
-    {
-        try
-        {
-            await Task.WhenAll(inFlight);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-    }
-
-    private async Task WaitForCapacityOrDelayAsync(
-        List<Task> inFlight,
-        TimeSpan interval,
-        CancellationToken ct)
-    {
-        if (inFlight.Count == 0)
-        {
-            await SafeDelayAsync(interval, ct);
-            return;
-        }
-
-        Task delay = Task.Delay(interval, ct);
-        await Task.WhenAny(Task.WhenAny(inFlight), delay);
-    }
-
-    private static async Task SafeDelayAsync(TimeSpan interval, CancellationToken ct)
-    {
-        try
-        {
-            await Task.Delay(interval, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
     }
 
     private static string Truncate(string value)

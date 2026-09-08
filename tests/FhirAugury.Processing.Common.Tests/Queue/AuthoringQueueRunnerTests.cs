@@ -10,37 +10,32 @@ namespace FhirAugury.Processing.Common.Tests.Queue;
 public sealed class AuthoringQueueRunnerTests
 {
     [Fact]
-    public async Task RunAsync_AppliesExactlyOneTerminalTransition()
+    public async Task FillCapacityAsync_AppliesExactlyOneTerminalTransition()
     {
         TestItem item = new("one");
         InMemoryStore store = new([item]);
         TestHandler handler = new(_ => Task.FromResult(AuthoringWorkResult.Complete("receipt-1")));
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
         AuthoringQueueRunner<TestItem> runner = CreateRunner(store, handler);
 
-        Task run = runner.RunAsync(cts.Token);
-        await WaitUntilAsync(() => store.ApplyCount == 1, cts.Token);
-        await cts.CancelAsync();
-        await run;
+        Assert.Equal(1, await runner.FillCapacityAsync("run-1"));
+        await runner.DrainAsync();
 
         Assert.Equal(1, store.ClaimCount);
         Assert.Equal(1, store.ApplyCount);
         Assert.Equal(AuthoringWorkDisposition.Complete, store.LastResult!.Disposition);
+        Assert.Equal("run-1", store.LastRunId);
     }
 
     [Fact]
-    public async Task RunAsync_HandlerFailureBecomesOneRetryableResult()
+    public async Task FillCapacityAsync_HandlerFailureBecomesOneRetryableResult()
     {
         TestItem item = new("one");
         InMemoryStore store = new([item]);
         TestHandler handler = new(_ => throw new InvalidOperationException("agent failed"));
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
         AuthoringQueueRunner<TestItem> runner = CreateRunner(store, handler);
 
-        Task run = runner.RunAsync(cts.Token);
-        await WaitUntilAsync(() => store.ApplyCount == 1, cts.Token);
-        await cts.CancelAsync();
-        await run;
+        await runner.FillCapacityAsync("run-1");
+        await runner.DrainAsync();
 
         Assert.Equal(1, store.ApplyCount);
         Assert.Equal(AuthoringWorkDisposition.RetryableError, store.LastResult!.Disposition);
@@ -48,7 +43,7 @@ public sealed class AuthoringQueueRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_RespectsConfiguredConcurrency()
+    public async Task FillCapacityAsync_PreservesRollingConcurrency()
     {
         InMemoryStore store = new([new("one"), new("two"), new("three")]);
         int active = 0;
@@ -61,15 +56,28 @@ public sealed class AuthoringQueueRunnerTests
             Interlocked.Decrement(ref active);
             return AuthoringWorkResult.Complete(Guid.NewGuid().ToString("N"));
         });
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
         AuthoringQueueRunner<TestItem> runner = CreateRunner(store, handler, maxConcurrency: 2);
 
-        Task run = runner.RunAsync(cts.Token);
-        await WaitUntilAsync(() => store.ApplyCount == 3, cts.Token);
-        await cts.CancelAsync();
-        await run;
+        Assert.Equal(2, await runner.FillCapacityAsync("run-1"));
+        await Assert.IsAssignableFrom<Task>(runner.GetInFlightCompletionTask()!);
+        Assert.Equal(1, await runner.FillCapacityAsync("run-1"));
+        await runner.DrainAsync();
 
         Assert.Equal(2, maximum);
+        Assert.Equal(3, store.ApplyCount);
+    }
+
+    [Fact]
+    public async Task ResetOrphanedItemsAsync_IsScopedToSelectedRun()
+    {
+        InMemoryStore store = new([]);
+        AuthoringQueueRunner<TestItem> runner = CreateRunner(
+            store,
+            new TestHandler(_ => Task.FromResult(AuthoringWorkResult.Retry("unused"))));
+
+        await runner.ResetOrphanedItemsAsync("run-2");
+
+        Assert.Equal("run-2", store.LastResetRunId);
     }
 
     private static AuthoringQueueRunner<TestItem> CreateRunner(
@@ -92,15 +100,6 @@ public sealed class AuthoringQueueRunnerTests
             NullLogger<AuthoringQueueRunner<TestItem>>.Instance);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken ct)
-    {
-        while (!predicate())
-        {
-            ct.ThrowIfCancellationRequested();
-            await Task.Delay(10, ct);
-        }
-    }
-
     private sealed record TestItem(string Id);
 
     private sealed class InMemoryStore(List<TestItem> items) : IAuthoringQueueStore<TestItem>
@@ -111,11 +110,17 @@ public sealed class AuthoringQueueRunnerTests
         public int ClaimCount { get; private set; }
         public int ApplyCount { get; private set; }
         public AuthoringWorkResult? LastResult { get; private set; }
+        public string? LastRunId { get; private set; }
+        public string? LastResetRunId { get; private set; }
 
-        public Task<IReadOnlyList<TestItem>> GetPendingAsync(int maxItems, CancellationToken ct)
+        public Task<IReadOnlyList<TestItem>> GetPendingAsync(
+            string runId,
+            int maxItems,
+            CancellationToken ct)
         {
             lock (_lock)
             {
+                LastRunId = runId;
                 return Task.FromResult<IReadOnlyList<TestItem>>(
                     items.Where(item => !_claimed.Contains(item.Id)).Take(maxItems).ToList());
             }
@@ -154,10 +159,14 @@ public sealed class AuthoringQueueRunnerTests
         }
 
         public Task<int> ResetOrphanedItemsAsync(
+            string runId,
             TimeSpan olderThan,
             DateTimeOffset now,
             CancellationToken ct)
-            => Task.FromResult(0);
+        {
+            LastResetRunId = runId;
+            return Task.FromResult(0);
+        }
     }
 
     private sealed class TestHandler(
