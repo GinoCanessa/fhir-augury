@@ -84,11 +84,17 @@ builder.Services.AddHttpClient<TicketAttributor>()
         };
     });
 builder.Services.AddSingleton<BallotNotesHydrator>();
+builder.Services.AddSingleton<AuthoringRetryPolicy>();
 builder.Services.AddSingleton<AuthoringRunStore>(sp => new AuthoringRunStore(
     sp.GetRequiredService<BallotNotesDatabase>().OpenConnection,
-    sp.GetRequiredService<ILogger<AuthoringRunStore>>()));
+    sp.GetRequiredService<ILogger<AuthoringRunStore>>(),
+    sp.GetRequiredService<AuthoringRetryPolicy>()));
+builder.Services.AddSingleton<AuthoringRunControlService>();
+builder.Services.AddSingleton<AuthoringRunFinalizer>();
 builder.Services.AddSingleton<ProcessingLifecycleService>();
 builder.Services.AddSingleton<BallotNotesAuthoringRunCoordinator>();
+builder.Services.AddSingleton<IAuthoringRunLifecycleAdapter>(sp =>
+    sp.GetRequiredService<BallotNotesAuthoringRunCoordinator>());
 builder.Services.AddSingleton<BallotNotesAuthoringWorkItemStore>();
 builder.Services.AddSingleton<IAuthoringQueueStore<BallotNotesAuthoringWorkItem>>(sp =>
     sp.GetRequiredService<BallotNotesAuthoringWorkItemStore>());
@@ -97,11 +103,13 @@ builder.Services.AddSingleton<BallotNotesAuthoringHandler>();
 builder.Services.AddSingleton<IAuthoringWorkItemHandler<BallotNotesAuthoringWorkItem>>(sp =>
     sp.GetRequiredService<BallotNotesAuthoringHandler>());
 builder.Services.AddSingleton<AuthoringQueueRunner<BallotNotesAuthoringWorkItem>>();
-builder.Services.AddHostedService<BallotNotesAuthoringHostedService>();
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<BallotNotesRunPostProcessor>();
-builder.Services.AddHostedService(sp =>
+builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
     sp.GetRequiredService<BallotNotesRunPostProcessor>());
+builder.Services.AddSingleton<AuthoringRunScheduler<BallotNotesAuthoringWorkItem>>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<AuthoringRunScheduler<BallotNotesAuthoringWorkItem>>());
 
 WebApplication app = builder.Build();
 
@@ -140,29 +148,3 @@ app.MapAuguryOpenApi();
 app.Run();
 
 public partial class Program;
-
-internal sealed class BallotNotesAuthoringHostedService(
-    AuthoringQueueRunner<BallotNotesAuthoringWorkItem> runner,
-    AuthoringRunStore store,
-    BallotNotesAuthoringRunCoordinator coordinator)
-    : BackgroundService
-{
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            string mode = (await store.EnsureProcessorModeAsync(
-                coordinator.ProcessorKind,
-                ct: stoppingToken)).Mode;
-            if (string.Equals(
-                mode,
-                AuthoringStatusValues.ProcessorModes.RunBacked,
-                StringComparison.Ordinal))
-            {
-                await runner.RunAsync(stoppingToken);
-                return;
-            }
-            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
-        }
-    }
-}

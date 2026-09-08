@@ -1,11 +1,9 @@
-using System.Globalization;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
-using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Authoring;
 
@@ -15,25 +13,14 @@ public sealed record BallotNotesAuthoringWorkItem(
 
 public sealed class BallotNotesAuthoringWorkItemStore(
     BallotNotesDatabase database,
-    AuthoringRunStore authoringStore,
-    BallotNotesAuthoringRunCoordinator coordinator)
+    AuthoringRunStore authoringStore)
     : IAuthoringQueueStore<BallotNotesAuthoringWorkItem>
 {
     public async Task<IReadOnlyList<BallotNotesAuthoringWorkItem>> GetPendingAsync(
+        string runId,
         int maxItems,
         CancellationToken ct)
     {
-        await coordinator.TryActivateNextQueuedRunAsync(ct);
-        string? runId = await GetActiveRunIdAsync(ct);
-        if (runId is null)
-        {
-            return [];
-        }
-        if (await coordinator.SupersedeStaleItemsAsync(runId, ct))
-        {
-            return [];
-        }
-
         IReadOnlyList<AuthoringRunItemRecord> items =
             await authoringStore.GetRunItemsAsync(runId, ct);
         List<BallotNotesAuthoringWorkItem> pending = [];
@@ -148,15 +135,11 @@ public sealed class BallotNotesAuthoringWorkItemStore(
     }
 
     public async Task<int> ResetOrphanedItemsAsync(
+        string runId,
         TimeSpan olderThan,
         DateTimeOffset now,
         CancellationToken ct)
     {
-        string? runId = await GetActiveRunIdAsync(ct);
-        if (runId is null)
-        {
-            return 0;
-        }
         IReadOnlyList<AuthoringRunItemRecord> items =
             await authoringStore.GetRunItemsAsync(runId, ct);
         int recovered = 0;
@@ -187,27 +170,5 @@ public sealed class BallotNotesAuthoringWorkItemStore(
             }
         }
         return recovered;
-    }
-
-    private async Task<string?> GetActiveRunIdAsync(CancellationToken ct)
-    {
-        await using SqliteConnection connection = database.OpenConnection();
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT f.RunId
-            FROM authoring_mutation_fences f
-            INNER JOIN authoring_runs r ON r.Id = f.RunId
-            WHERE f.ProcessorKind = @processorKind AND r.Status = @status
-            LIMIT 1
-            """;
-        command.Parameters.AddWithValue(
-            "@processorKind",
-            coordinator.ProcessorKind);
-        command.Parameters.AddWithValue(
-            "@status",
-            AuthoringStatusValues.Runs.Running);
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToString(value, CultureInfo.InvariantCulture);
     }
 }

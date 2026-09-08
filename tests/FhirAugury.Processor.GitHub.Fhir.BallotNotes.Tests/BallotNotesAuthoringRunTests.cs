@@ -1,4 +1,5 @@
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
@@ -363,9 +364,12 @@ public sealed class BallotNotesAuthoringRunTests
             await fixture.AcceptAsync(run, item, claim, SampleProse("draft"));
 
         BallotNotesAuthoringWorkItemStore store =
-            new(fixture.Database, fixture.AuthoringStore, fixture.Coordinator);
+            new(fixture.Database, fixture.AuthoringStore);
         BallotNotesAuthoringWorkItem pending =
-            Assert.Single(await store.GetPendingAsync(1, CancellationToken.None));
+            Assert.Single(await store.GetPendingAsync(
+                run.Id,
+                1,
+                CancellationToken.None));
         AuthoringQueueClaim firstLease = (await store.TryClaimAsync(
             pending,
             DateTimeOffset.UtcNow,
@@ -378,11 +382,17 @@ public sealed class BallotNotesAuthoringRunTests
             CancellationToken.None);
 
         AuthoringRetryResult retry =
-            await fixture.AuthoringStore.RetryItemAsync(item.Id);
+            await fixture.ControlService.RetryItemAsync(
+                fixture.Coordinator.ProcessorKind,
+                run.Id,
+                item.Id);
         Assert.False(retry.RequiresAuthoring);
 
         pending = Assert.Single(
-            await store.GetPendingAsync(1, CancellationToken.None));
+            await store.GetPendingAsync(
+                run.Id,
+                1,
+                CancellationToken.None));
         AuthoringQueueClaim secondLease = (await store.TryClaimAsync(
             pending,
             DateTimeOffset.UtcNow,
@@ -427,7 +437,10 @@ public sealed class BallotNotesAuthoringRunTests
             first.OperationId,
             "worker failed");
         AuthoringRetryResult retry =
-            await fixture.AuthoringStore.RetryItemAsync(item.Id);
+            await fixture.ControlService.RetryItemAsync(
+                fixture.Coordinator.ProcessorKind,
+                run.Id,
+                item.Id);
         AuthoringOperationClaim second =
             (await fixture.AuthoringStore.ClaimItemAsync(run.Id, item.Id))!;
 
@@ -450,6 +463,252 @@ public sealed class BallotNotesAuthoringRunTests
         Assert.Contains(
             nameof(AuthoringConflictCode.StaleOperation),
             stale.Value!.ToString());
+    }
+
+    [Fact]
+    public async Task ExhaustedError_FinalizesAndActivatesOldestQueuedRun()
+    {
+        using Fixture fixture = new(authoringMaxAttempts: 1);
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord firstExecution =
+            fixture.CreateCompletedExecution("note-a", "Artifact");
+        NotesHydrationExecutionRecord secondExecution =
+            fixture.CreateCompletedExecution("note-b", "Page");
+        BallotNotesAuthoringRunCreation first =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    firstExecution.Id,
+                    DatabaseOnly: true));
+        BallotNotesAuthoringRunCreation second =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    secondExecution.Id,
+                    DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            first.Run.Id));
+        AuthoringRunItemRecord firstItem = Assert.Single(first.Items);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await fixture.AuthoringStore.ClaimItemAsync(
+                first.Run.Id,
+                firstItem.Id));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            firstItem.Id,
+            claim.OperationId,
+            "terminal failure");
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.Single(
+                await fixture.AuthoringStore.GetRunItemsAsync(first.Run.Id))
+                .Status);
+
+        AuthoringRunScheduler<BallotNotesAuthoringWorkItem> scheduler =
+            fixture.CreateScheduler();
+        await scheduler.RunCycleAsync();
+
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.AuthoringStore.GetRunAsync(first.Run.Id))!.Status);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Queued,
+            (await fixture.AuthoringStore.GetRunAsync(second.Run.Id))!.Status);
+
+        await scheduler.RunCycleAsync();
+
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Running,
+            (await fixture.AuthoringStore.GetRunAsync(second.Run.Id))!.Status);
+        Assert.Equal(
+            second.Run.Id,
+            (await fixture.AuthoringStore.GetFencedRunAsync(
+                fixture.Coordinator.ProcessorKind))!.Id);
+    }
+
+    [Fact]
+    public async Task SupersedeEndpoint_RequiresReasonAndRejectsReceiptBackedItem()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution(
+                ("note-a", "Artifact"),
+                ("note-b", "Page"));
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
+        AuthoringRunItemRecord unpersisted =
+            creation.Items.Single(item => item.BusinessKey == "note-a");
+        AuthoringOperationClaim unpersistedClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    unpersisted.Id));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            unpersisted.Id,
+            unpersistedClaim.OperationId,
+            "worker failure");
+
+        AuthoringRunItemRecord receiptBacked =
+            creation.Items.Single(item => item.BusinessKey == "note-b");
+        AuthoringOperationClaim receiptClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    receiptBacked.Id));
+        _ = await fixture.AcceptAsync(
+            creation.Run,
+            receiptBacked,
+            receiptClaim,
+            SampleProse("accepted"));
+        BallotNotesAuthoringWorkItemStore store =
+            new(fixture.Database, fixture.AuthoringStore);
+        BallotNotesAuthoringWorkItem persisted = Assert.Single(
+            await store.GetPendingAsync(
+                creation.Run.Id,
+                10,
+                CancellationToken.None));
+        AuthoringQueueClaim persistenceLease =
+            Assert.IsType<AuthoringQueueClaim>(
+                await store.TryClaimAsync(
+                    persisted,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None));
+        await store.ApplyResultAsync(
+            persisted,
+            persistenceLease,
+            AuthoringWorkResult.Retry("post-receipt failure"),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        BallotNotesAuthoringRunsController controller =
+            fixture.CreateController();
+        Assert.IsType<BadRequestObjectResult>(
+            await controller.SupersedeItem(
+                creation.Run.Id,
+                unpersisted.Id,
+                new AuthoringItemSupersedeRequest(" "),
+                CancellationToken.None));
+        OkObjectResult superseded = Assert.IsType<OkObjectResult>(
+            await controller.SupersedeItem(
+                creation.Run.Id,
+                unpersisted.Id,
+                new AuthoringItemSupersedeRequest("not actionable"),
+                CancellationToken.None));
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.IsType<AuthoringItemSupersedeResult>(superseded.Value).Status);
+        Assert.IsType<ConflictObjectResult>(
+            await controller.SupersedeItem(
+                creation.Run.Id,
+                receiptBacked.Id,
+                new AuthoringItemSupersedeRequest("discard"),
+                CancellationToken.None));
+
+        OkObjectResult statusResult = Assert.IsType<OkObjectResult>(
+            await controller.GetRun(
+                creation.Run.Id,
+                CancellationToken.None));
+        BallotNotesAuthoringRunResponse status =
+            Assert.IsType<BallotNotesAuthoringRunResponse>(statusResult.Value);
+        Assert.Equal(2, status.Run.FailedItems);
+        Assert.Equal(1, status.Run.RetryableErrorItems);
+        Assert.Equal(1, status.Run.SupersededItems);
+        Assert.Null(status.Items.Single(
+            item => item.ItemId == receiptBacked.Id).AttemptsRemaining);
+    }
+
+    [Fact]
+    public async Task InitialRevalidation_RetiresSupersededLegacyNoteBeforeCompletion()
+    {
+        using Fixture fixture = new();
+        fixture.SeedLegacyNote("legacy-note");
+        fixture.Database.UpdateNoteProse(
+            "legacy-note",
+            SampleProse("legacy"),
+            DateTimeOffset.UtcNow);
+        Assert.Equal(1, await fixture.Database.ClassifyLegacyNotesAsync());
+        NotesHydrationExecutionRecord baseline =
+            await fixture.Database.BuildCutoverBaselineExecutionAsync();
+        await fixture.ActivateAsync();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item,
+            AuthoringOperationClaim claim) =
+            await fixture.CreateClaimAsync(
+                baseline.Id,
+                databaseOnly: true,
+                noteIds: ["legacy-note"]);
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "not actionable");
+        await fixture.AuthoringStore.SupersedeErroredItemAsync(
+            run.Id,
+            item.Id,
+            "not actionable");
+        fixture.MarkAsInitialRevalidation(run.Id);
+
+        Assert.Equal(1, await fixture.Database.CountLegacyUnverifiedAsync());
+        Assert.Null(await fixture.CreatePostProcessor().FinalizeRunAsync(run.Id));
+
+        Assert.Equal(0, await fixture.Database.CountLegacyUnverifiedAsync());
+        Assert.Equal(
+            "superseded",
+            fixture.Scalar<string>(
+                "SELECT Classification FROM note_authoring_state WHERE NoteId = 'legacy-note'"));
+        Assert.Equal(
+            "superseded",
+            fixture.Scalar<string>(
+                "SELECT ProseVerificationStatus FROM notes WHERE NoteId = 'legacy-note'"));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+        Assert.False((await fixture.AuthoringStore.GetProcessorModeAsync(
+            fixture.Coordinator.ProcessorKind)).RevalidationRequired);
+    }
+
+    [Fact]
+    public async Task CompletedReceipt_IsNeverReauthoredOrSuperseded()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution("note-a", "Artifact");
+        (AuthoringRunRecord run, AuthoringRunItemRecord item,
+            AuthoringOperationClaim claim) =
+            await fixture.CreateClaimAsync(execution.Id);
+        AuthoringReceiptAcceptance receipt =
+            await fixture.AcceptAsync(
+                run,
+                item,
+                claim,
+                SampleProse("complete"));
+        await fixture.AuthoringStore.MarkItemCompleteAsync(
+            item.Id,
+            receipt.Receipt.ReceiptId);
+
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => fixture.ControlService.SupersedeItemAsync(
+                fixture.Coordinator.ProcessorKind,
+                run.Id,
+                item.Id,
+                new AuthoringItemSupersedeRequest("discard")));
+        await fixture.AuthoringStore.ReconcileErroredItemsAsync(run.Id);
+        BallotNotesAuthoringWorkItemStore store =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        Assert.Empty(await store.GetPendingAsync(
+            run.Id,
+            10,
+            CancellationToken.None));
+        AuthoringRunItemRecord current = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Complete, current.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, current.AcceptedReceiptId);
+        Assert.Equal(1, current.AttemptCount);
     }
 
     [Fact]
@@ -486,8 +745,12 @@ public sealed class BallotNotesAuthoringRunTests
         NotesHydrationExecutionRecord execution =
             fixture.CreateCompletedExecution("note-a", "Artifact");
 
-        await fixture.Coordinator.CreateRunAsync(
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
             new BallotNotesAuthoringRunRequest(execution.Id, DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
 
         Assert.Null(fixture.Database.TryAcquireHydrationLease("concurrent"));
     }
@@ -712,6 +975,9 @@ public sealed class BallotNotesAuthoringRunTests
                 new BallotNotesAuthoringRunRequest(
                     execution.Id,
                     DatabaseOnly: false));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         AuthoringRunItemRecord completeItem =
             creation.Items.Single(item => item.BusinessKey == "note-a");
         AuthoringOperationClaim claim =
@@ -758,6 +1024,9 @@ public sealed class BallotNotesAuthoringRunTests
                 new BallotNotesAuthoringRunRequest(
                     execution.Id,
                     DatabaseOnly: false));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         AuthoringRunItemRecord persisted =
             creation.Items.Single(item => item.BusinessKey == "note-b");
         AuthoringOperationClaim claim =
@@ -789,10 +1058,12 @@ public sealed class BallotNotesAuthoringRunTests
                 creation.Run.Id));
         BallotNotesAuthoringWorkItemStore workItems = new(
             fixture.Database,
-            fixture.AuthoringStore,
-            fixture.Coordinator);
+            fixture.AuthoringStore);
         BallotNotesAuthoringWorkItem pending = Assert.Single(
-            await workItems.GetPendingAsync(10, CancellationToken.None));
+            await workItems.GetPendingAsync(
+                creation.Run.Id,
+                10,
+                CancellationToken.None));
         Assert.Equal("note-b", pending.RunItem.BusinessKey);
         Assert.Equal(
             AuthoringStatusValues.Items.Persisted,
@@ -911,8 +1182,9 @@ public sealed class BallotNotesAuthoringRunTests
     private sealed class Fixture : IDisposable
     {
         private readonly string _directory;
+        private readonly IOptions<ProcessingServiceOptions> _processingOptions;
 
-        public Fixture()
+        public Fixture(int authoringMaxAttempts = 3)
         {
             _directory = Path.Combine(
                 Path.GetTempPath(),
@@ -923,21 +1195,32 @@ public sealed class BallotNotesAuthoringRunTests
                 DatabasePath,
                 NullLogger<BallotNotesDatabase>.Instance);
             Database.Initialize();
-            AuthoringStore = new AuthoringRunStore(Database.OpenConnection);
-            Coordinator = new BallotNotesAuthoringRunCoordinator(
-                Database,
-                AuthoringStore);
             Options = new BallotNotesServiceOptions
             {
                 DatabasePath = DatabasePath,
                 SnapshotDirectory = Path.Combine(_directory, "snapshots"),
                 StartProcessingOnStartup = true,
+                AuthoringMaxAttempts = authoringMaxAttempts,
             };
+            _processingOptions =
+                Microsoft.Extensions.Options.Options.Create<ProcessingServiceOptions>(
+                    Options);
+            RetryPolicy = new AuthoringRetryPolicy(_processingOptions);
+            AuthoringStore = new AuthoringRunStore(
+                Database.OpenConnection,
+                retryPolicy: RetryPolicy);
+            ControlService =
+                new AuthoringRunControlService(AuthoringStore, RetryPolicy);
+            Coordinator = new BallotNotesAuthoringRunCoordinator(
+                Database,
+                AuthoringStore);
         }
 
         public string DatabasePath { get; }
         public BallotNotesDatabase Database { get; }
         public AuthoringRunStore AuthoringStore { get; }
+        public AuthoringRetryPolicy RetryPolicy { get; }
+        public AuthoringRunControlService ControlService { get; }
         public BallotNotesAuthoringRunCoordinator Coordinator { get; }
         public BallotNotesServiceOptions Options { get; }
 
@@ -1076,6 +1359,9 @@ public sealed class BallotNotesAuthoringRunTests
                         executionId,
                         noteIds,
                         DatabaseOnly: databaseOnly));
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                Coordinator.ProcessorKind,
+                creation.Run.Id));
             AuthoringRunItemRecord item = Assert.Single(creation.Items);
             AuthoringOperationClaim claim =
                 (await AuthoringStore.ClaimItemAsync(
@@ -1127,16 +1413,57 @@ public sealed class BallotNotesAuthoringRunTests
         }
 
         public BallotNotesAuthoringRunsController CreateController()
-            => new(AuthoringStore, Coordinator, Database);
+            => new(
+                AuthoringStore,
+                ControlService,
+                Coordinator,
+                Database);
 
         public BallotNotesRunPostProcessor CreatePostProcessor()
             => new(
                 Database,
                 AuthoringStore,
+                new AuthoringRunFinalizer(AuthoringStore),
                 new SqliteReviewSnapshotReconciler(AuthoringStore),
                 Coordinator,
-                Microsoft.Extensions.Options.Options.Create(Options),
-                NullLogger<BallotNotesRunPostProcessor>.Instance);
+                Microsoft.Extensions.Options.Options.Create(Options));
+
+        public AuthoringRunScheduler<BallotNotesAuthoringWorkItem> CreateScheduler()
+        {
+            ProcessingLifecycleService lifecycle =
+                new(_processingOptions);
+            BallotNotesAuthoringWorkItemStore store =
+                new(Database, AuthoringStore);
+            BallotNotesAuthoringHandler handler = new(
+                AuthoringStore,
+                new FakeCommandRunner(),
+                Microsoft.Extensions.Options.Options.Create(Options));
+            AuthoringQueueRunner<BallotNotesAuthoringWorkItem> runner = new(
+                store,
+                handler,
+                lifecycle,
+                _processingOptions,
+                NullLogger<AuthoringQueueRunner<BallotNotesAuthoringWorkItem>>.Instance);
+            return new AuthoringRunScheduler<BallotNotesAuthoringWorkItem>(
+                AuthoringStore,
+                Coordinator,
+                CreatePostProcessor(),
+                runner,
+                lifecycle,
+                _processingOptions,
+                NullLogger<AuthoringRunScheduler<BallotNotesAuthoringWorkItem>>.Instance);
+        }
+
+        public void MarkAsInitialRevalidation(string runId)
+            => Execute(
+                """
+                UPDATE authoring_processor_modes
+                SET RevalidationRequired = 1,
+                    RevalidationRunId = @runId
+                WHERE ProcessorKind = @processorKind
+                """,
+                ("@runId", runId),
+                ("@processorKind", Coordinator.ProcessorKind));
 
         public T Scalar<T>(string sql)
         {

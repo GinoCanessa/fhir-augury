@@ -77,10 +77,14 @@ public sealed class BallotNotesMaintenanceControllerTests : IDisposable
     public async Task ActiveAuthoringFenceRejectsMaintenanceBatch()
     {
         await ActivateAsync();
-        await _coordinator.CreateRunAsync(
+        BallotNotesAuthoringRunCreation creation =
+            await _coordinator.CreateRunAsync(
             new BallotNotesAuthoringRunRequest(
                 _execution.Id,
                 DatabaseOnly: true));
+        Assert.True(await _store.TryAcquireMutationFenceAsync(
+            _coordinator.ProcessorKind,
+            creation.Run.Id));
         BallotNotesMaintenanceController controller = new(_database);
 
         ConflictObjectResult result = Assert.IsType<ConflictObjectResult>(

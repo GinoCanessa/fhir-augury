@@ -1846,6 +1846,169 @@ public sealed class BallotNotesDatabase : SourceDatabase,
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
     }
 
+    public async Task<int> CountLegacyUnverifiedNotSupersededByRunAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM note_authoring_state s
+            WHERE s.Classification = 'legacy-unverified'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM authoring_run_items i
+                  WHERE i.RunId = @runId
+                    AND i.BusinessKey = s.NoteId COLLATE NOCASE
+                    AND i.ExpectedSourceRevision = s.EvidenceRevision
+                    AND i.Status = @superseded
+                    AND i.AcceptedReceiptId IS NULL
+              )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
+    }
+
+    public async Task RetireSupersededLegacyNotesAsync(
+        string runId,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureStageLeaseAsync(
+                connection,
+                runId,
+                lease.StageId,
+                lease.LeaseId,
+                inputFingerprint,
+                "revalidation-retirement",
+                "",
+                ct);
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE note_authoring_state
+                SET Classification = 'superseded',
+                    RunId = @runId,
+                    RunItemId = (
+                        SELECT i.Id
+                        FROM authoring_run_items i
+                        WHERE i.RunId = @runId
+                          AND i.BusinessKey =
+                              note_authoring_state.NoteId COLLATE NOCASE
+                          AND i.ExpectedSourceRevision =
+                              note_authoring_state.EvidenceRevision
+                          AND i.Status = @superseded
+                          AND i.AcceptedReceiptId IS NULL
+                        LIMIT 1
+                    ),
+                    OperationId = NULL,
+                    UpdatedAt = @updatedAt
+                WHERE Classification = 'legacy-unverified'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM authoring_run_items i
+                      WHERE i.RunId = @runId
+                        AND i.BusinessKey =
+                            note_authoring_state.NoteId COLLATE NOCASE
+                        AND i.ExpectedSourceRevision =
+                            note_authoring_state.EvidenceRevision
+                        AND i.Status = @superseded
+                        AND i.AcceptedReceiptId IS NULL
+                  )
+                """,
+                ct,
+                ("@runId", runId),
+                ("@superseded", AuthoringStatusValues.Items.Superseded),
+                ("@updatedAt", Format(DateTimeOffset.UtcNow)));
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE notes
+                SET ProseVerificationStatus = 'superseded',
+                    CurrentAuthoringOperationId = ''
+                WHERE ProseVerificationStatus = 'legacy-unverified'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM note_authoring_state s
+                      WHERE s.NoteId = notes.NoteId COLLATE NOCASE
+                        AND s.Classification = 'superseded'
+                        AND s.RunId = @runId
+                  )
+                """,
+                ct,
+                ("@runId", runId));
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public static async Task EnsureRunEvidenceRevisionsCurrentAsync(
+        SqliteConnection connection,
+        string runId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        IReadOnlyList<AuthoringRunItemRecord> items =
+            await AuthoringRunStore.ReadRevalidationCorpusItemsAsync(
+                connection,
+                runId,
+                ct);
+        foreach (AuthoringRunItemRecord item in items)
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT Type, CurrentEvidenceRevision
+                FROM notes
+                WHERE NoteId = @noteId COLLATE NOCASE
+                LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@noteId", item.BusinessKey);
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.SourceRevisionMismatch,
+                    $"BallotNotes unit '{item.BusinessKey}' is no longer available.");
+            }
+
+            string currentType = reader.GetString(0);
+            string currentRevision = reader.GetString(1);
+            if (!string.Equals(
+                    currentType,
+                    item.ItemKind,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    currentRevision,
+                    item.ExpectedSourceRevision,
+                    StringComparison.Ordinal))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.SourceRevisionMismatch,
+                    $"BallotNotes unit '{item.BusinessKey}' no longer matches expected type '{item.ItemKind}' and evidence revision '{item.ExpectedSourceRevision}'.");
+            }
+        }
+    }
+
     public async Task<NotesHydrationExecutionRecord> BuildCutoverBaselineExecutionAsync(
         CancellationToken ct = default)
     {
@@ -2067,40 +2230,6 @@ public sealed class BallotNotesDatabase : SourceDatabase,
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
-    }
-
-    public async Task<IReadOnlyList<string>> ListRunsReadyForFinalizationAsync(
-        CancellationToken ct = default)
-    {
-        await using SqliteConnection connection = OpenConnection();
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT r.Id
-            FROM authoring_runs r
-            WHERE r.ProcessorKind = @processorKind
-              AND r.Status IN (@running, @finalizing, @error)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM authoring_run_items i
-                  WHERE i.RunId = r.Id
-                    AND i.Status NOT IN (@complete, @superseded)
-              )
-            ORDER BY r.CreatedAt, r.RowId
-            """;
-        command.Parameters.AddWithValue("@processorKind", AuthoringProcessorKind);
-        command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
-        command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
-        command.Parameters.AddWithValue("@error", AuthoringStatusValues.Runs.Error);
-        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
-        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
-        List<string> runIds = [];
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            runIds.Add(reader.GetString(0));
-        }
-        return runIds;
     }
 
     public async Task<string> GetHydrationExecutionIdForRunAsync(
@@ -3229,6 +3358,53 @@ public sealed class BallotNotesDatabase : SourceDatabase,
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
         return await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task EnsureStageLeaseAsync(
+        SqliteConnection connection,
+        string runId,
+        string stageId,
+        string stageLeaseId,
+        string inputFingerprint,
+        string stageName,
+        string partitionKey,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM authoring_run_stages
+            WHERE Id = @stageId
+              AND RunId = @runId
+              AND LeaseId = @leaseId
+              AND InputFingerprint = @inputFingerprint
+              AND StageName = @stageName
+              AND PartitionKey = @partitionKey
+              AND Status = @status
+              AND EXISTS (
+                  SELECT 1 FROM authoring_mutation_fences f
+                  WHERE f.ProcessorKind = @processorKind AND f.RunId = @runId
+              )
+            """;
+        command.Parameters.AddWithValue("@stageId", stageId);
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@leaseId", stageLeaseId);
+        command.Parameters.AddWithValue("@inputFingerprint", inputFingerprint);
+        command.Parameters.AddWithValue("@stageName", stageName);
+        command.Parameters.AddWithValue("@partitionKey", partitionKey);
+        command.Parameters.AddWithValue(
+            "@status",
+            AuthoringStatusValues.Stages.InProgress);
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        if (await command.ExecuteScalarAsync(ct) is null)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageLeaseLost,
+                $"Authoring stage '{stageId}' no longer owns input '{inputFingerprint}'.");
+        }
     }
 
     private static void InsertRecord(

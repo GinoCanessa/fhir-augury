@@ -5,7 +5,7 @@ using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
-using Microsoft.Extensions.Hosting;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Authoring;
@@ -13,11 +13,11 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Authoring;
 public sealed class BallotNotesRunPostProcessor(
     BallotNotesDatabase database,
     AuthoringRunStore authoringStore,
+    AuthoringRunFinalizer finalizer,
     SqliteReviewSnapshotReconciler snapshotReconciler,
     BallotNotesAuthoringRunCoordinator coordinator,
-    IOptions<BallotNotesServiceOptions> optionsAccessor,
-    ILogger<BallotNotesRunPostProcessor> logger)
-    : BackgroundService
+    IOptions<BallotNotesServiceOptions> optionsAccessor)
+    : IAuthoringRunFinalizationStrategy
 {
     private readonly BallotNotesServiceOptions _options =
         optionsAccessor.Value;
@@ -33,19 +33,21 @@ public sealed class BallotNotesRunPostProcessor(
             await authoringStore.GetProcessorModeAsync(
                 coordinator.ProcessorKind,
                 ct: ct);
-        if (mode.RevalidationRequired &&
-            string.Equals(
-                mode.RevalidationRunId,
-                runId,
-                StringComparison.Ordinal) &&
+        bool initialRevalidation = mode.RevalidationRequired &&
+            string.Equals(mode.RevalidationRunId, runId, StringComparison.Ordinal);
+        if (initialRevalidation &&
             await coordinator.SupersedeStaleItemsAsync(runId, ct))
         {
             throw new AuthoringConflictException(
                 AuthoringConflictCode.SourceRevisionMismatch,
                 $"Initial revalidation run '{runId}' was replaced because evidence revisions changed before finalization.");
         }
-        if (!run.DatabaseOnly &&
-            await database.CountLegacyUnverifiedAsync(ct) > 0)
+        int blockingLegacyRows = initialRevalidation
+            ? await database.CountLegacyUnverifiedNotSupersededByRunAsync(
+                runId,
+                ct)
+            : await database.CountLegacyUnverifiedAsync(ct);
+        if (!run.DatabaseOnly && blockingLegacyRows > 0)
         {
             await authoringStore.SupersedeRunAsync(
                 runId,
@@ -55,11 +57,44 @@ public sealed class BallotNotesRunPostProcessor(
                 "A complete BallotNotes legacy revalidation run is required before the first canonical snapshot.");
         }
 
-        AuthoringRunFinalizer finalizer = new(authoringStore);
-        AuthoringSnapshotDescriptor? descriptor =
-            await finalizer.FinalizeAsync(
+        IReadOnlyList<AuthoringRunItemRecord> runItems =
+            await authoringStore.GetRunItemsAsync(runId, ct);
+        List<AuthoringFinalizationStage> stages = [];
+        if (initialRevalidation)
+        {
+            string retirementFingerprint = AuthoringResultHasher.HashNormalizedUtf8(
+                string.Join(
+                    "\n",
+                    runItems
+                        .Where(item =>
+                            item.Status == AuthoringStatusValues.Items.Superseded)
+                        .OrderBy(item => item.RowId)
+                        .Select(item => $"{item.Id}:{item.BusinessKey}")));
+            stages.Add(new AuthoringFinalizationStage(
+                "revalidation-retirement",
+                "",
+                retirementFingerprint,
+                (lease, cancellationToken) =>
+                    database.RetireSupersededLegacyNotesAsync(
+                        runId,
+                        lease,
+                        retirementFingerprint,
+                        cancellationToken)));
+        }
+
+        Func<SqliteConnection, CancellationToken, Task>? completionGuard =
+            initialRevalidation
+                ? (connection, cancellationToken) =>
+                    BallotNotesDatabase.EnsureRunEvidenceRevisionsCurrentAsync(
+                        connection,
+                        runId,
+                        cancellationToken)
+                : null;
+        try
+        {
+            return await finalizer.FinalizeAsync(
                 runId,
-                [],
+                stages,
                 run.DatabaseOnly
                     ? null
                     : async cancellationToken =>
@@ -91,54 +126,28 @@ public sealed class BallotNotesRunPostProcessor(
                                     new BallotNotesSnapshotSanitizer(runId)),
                             cancellationToken);
                     },
-                ct: ct);
-        await coordinator.TryActivateNextQueuedRunAsync(ct);
-        return descriptor;
-    }
-
-    protected override async Task ExecuteAsync(
-        CancellationToken stoppingToken)
-    {
-        if (_options.ReconcileSnapshotsOnStartup)
-        {
-            await snapshotReconciler.ReconcileAsync(stoppingToken);
+                completionGuard,
+                ct);
         }
-
-        while (!stoppingToken.IsCancellationRequested)
+        catch (AuthoringConflictException ex)
+            when (initialRevalidation &&
+                  ex.Code == AuthoringConflictCode.SourceRevisionMismatch)
         {
-            try
+            if (await coordinator.SupersedeStaleItemsAsync(runId, ct))
             {
-                string mode = (await authoringStore.EnsureProcessorModeAsync(
-                    coordinator.ProcessorKind,
-                    ct: stoppingToken)).Mode;
-                if (string.Equals(
-                    mode,
-                    AuthoringStatusValues.ProcessorModes.RunBacked,
-                    StringComparison.Ordinal))
-                {
-                    foreach (string runId in
-                        await database.ListRunsReadyForFinalizationAsync(
-                            stoppingToken))
-                    {
-                        await FinalizeRunAsync(runId, stoppingToken);
-                    }
-                    await coordinator.TryActivateNextQueuedRunAsync(
-                        stoppingToken);
-                }
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.SourceRevisionMismatch,
+                    $"Initial revalidation run '{runId}' was replaced because evidence revisions changed during finalization.");
             }
-            catch (OperationCanceledException)
-                when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(
-                    ex,
-                    "BallotNotes run finalization pass failed.");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+            throw;
         }
     }
+
+    public Task ReconcileSnapshotsOnStartupAsync(CancellationToken ct)
+        => snapshotReconciler.ReconcileAsync(ct);
+
+    async Task IAuthoringRunFinalizationStrategy.FinalizeRunAsync(
+        string runId,
+        CancellationToken ct)
+        => _ = await FinalizeRunAsync(runId, ct);
 }

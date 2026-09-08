@@ -15,6 +15,7 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Controllers;
 [Produces("application/json")]
 public sealed class BallotNotesAuthoringRunsController(
     AuthoringRunStore authoringStore,
+    AuthoringRunControlService controlService,
     BallotNotesAuthoringRunCoordinator coordinator,
     BallotNotesDatabase database) : ControllerBase
 {
@@ -35,9 +36,14 @@ public sealed class BallotNotesAuthoringRunsController(
         {
             BallotNotesAuthoringRunCreation creation =
                 await coordinator.CreateRunAsync(request, ct);
+            AuthoringRunControlStatus status =
+                await controlService.GetStatusAsync(
+                    coordinator.ProcessorKind,
+                    creation.Run.Id,
+                    ct);
             return Accepted(
                 $"/api/v1/ballot-notes/authoring/runs/{creation.Run.Id}",
-                ToResponse(creation.Run, creation.Items));
+                ToResponse(status));
         }
         catch (KeyNotFoundException ex)
         {
@@ -62,12 +68,17 @@ public sealed class BallotNotesAuthoringRunsController(
         string runId,
         CancellationToken ct)
     {
-        AuthoringRunRecord? run = await authoringStore.GetRunAsync(runId, ct);
-        return run is null
-            ? NotFound(new { error = $"Authoring run '{runId}' was not found." })
-            : Ok(ToResponse(
-                run,
-                await authoringStore.GetRunItemsAsync(runId, ct)));
+        try
+        {
+            return Ok(ToResponse(await controlService.GetStatusAsync(
+                coordinator.ProcessorKind,
+                runId,
+                ct)));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
     }
 
     [HttpPost("{runId}/items/{itemId}/retry")]
@@ -76,18 +87,48 @@ public sealed class BallotNotesAuthoringRunsController(
         string itemId,
         CancellationToken ct)
     {
-        AuthoringRunItemRecord? item =
-            (await authoringStore.GetRunItemsAsync(runId, ct))
-            .SingleOrDefault(value => value.Id == itemId);
-        if (item is null)
-        {
-            return NotFound(new { error = "authoring-item-not-found" });
-        }
         try
         {
-            AuthoringRetryResult result =
-                await authoringStore.RetryItemAsync(itemId, ct: ct);
-            return Ok(result);
+            return Ok(await controlService.RetryItemAsync(
+                coordinator.ProcessorKind,
+                runId,
+                itemId,
+                ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (AuthoringConflictException ex)
+        {
+            return Conflict(new { error = ex.Code.ToString(), detail = ex.Message });
+        }
+    }
+
+    [HttpPost("{runId}/items/{itemId}/supersede")]
+    public async Task<IActionResult> SupersedeItem(
+        string runId,
+        string itemId,
+        [FromBody] AuthoringItemSupersedeRequest? request,
+        CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return BadRequest(new { error = "A non-empty supersede reason is required." });
+        }
+
+        try
+        {
+            return Ok(await controlService.SupersedeItemAsync(
+                coordinator.ProcessorKind,
+                runId,
+                itemId,
+                request,
+                ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
         }
         catch (AuthoringConflictException ex)
         {
@@ -270,36 +311,6 @@ public sealed class BallotNotesAuthoringRunsController(
     }
 
     private static BallotNotesAuthoringRunResponse ToResponse(
-        AuthoringRunRecord run,
-        IReadOnlyList<AuthoringRunItemRecord> items)
-        => new(
-            new AuthoringRunStatus(
-                run.Id,
-                run.ProcessorKind,
-                run.AuthoringEpoch,
-                run.Status,
-                run.DatabaseOnly,
-                run.TotalItems,
-                items.Count(value =>
-                    value.Status == AuthoringStatusValues.Items.Complete),
-                items.Count(value =>
-                    value.Status == AuthoringStatusValues.Items.Error),
-                run.CreatedAt,
-                run.StartedAt,
-                run.CompletedAt,
-                run.Error),
-            items.Select(value => new AuthoringRunItemStatus(
-                value.Id,
-                value.RunId,
-                value.BusinessKey,
-                value.ItemKind,
-                value.ExpectedSourceRevision,
-                value.Status,
-                value.CurrentOperationId,
-                value.AcceptedReceiptId,
-                value.AttemptCount,
-                value.CreatedAt,
-                value.StartedAt,
-                value.CompletedAt,
-                value.Error)).ToArray());
+        AuthoringRunControlStatus status)
+        => new(status.Run, status.Items);
 }
