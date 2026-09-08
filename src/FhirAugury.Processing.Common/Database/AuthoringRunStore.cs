@@ -16,23 +16,36 @@ public sealed record AuthoringMaintenanceRunItem(
     string ExpectedSourceRevision,
     string ReceiptId);
 
+public sealed record AuthoringErrorReconciliationResult(
+    int RetriedItems,
+    int ResumedReceiptItems,
+    int SupersededItems,
+    DateTimeOffset? NextRetryAt);
+
 public sealed class AuthoringRunStore
 {
     private readonly Func<SqliteConnection> _openConnection;
     private readonly ILogger<AuthoringRunStore> _logger;
+    private readonly AuthoringRetryPolicy _retryPolicy;
 
     public AuthoringRunStore(
         Func<SqliteConnection> openConnection,
-        ILogger<AuthoringRunStore>? logger = null)
+        ILogger<AuthoringRunStore>? logger = null,
+        AuthoringRetryPolicy? retryPolicy = null)
     {
         _openConnection = openConnection ?? throw new ArgumentNullException(nameof(openConnection));
         _logger = logger ?? NullLogger<AuthoringRunStore>.Instance;
+        _retryPolicy = retryPolicy ?? AuthoringRetryPolicy.CreateDefault();
     }
 
     public AuthoringRunStore(
         ProcessingDatabase database,
-        ILogger<AuthoringRunStore>? logger = null)
-        : this((database ?? throw new ArgumentNullException(nameof(database))).OpenConnection, logger)
+        ILogger<AuthoringRunStore>? logger = null,
+        AuthoringRetryPolicy? retryPolicy = null)
+        : this(
+            (database ?? throw new ArgumentNullException(nameof(database))).OpenConnection,
+            logger,
+            retryPolicy)
     {
     }
 
@@ -91,6 +104,7 @@ public sealed class AuthoringRunStore
         [
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_identity ON authoring_run_items(RunId, ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_revision ON authoring_run_items(ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE, ExpectedSourceRevision) WHERE Status <> 'superseded';",
+            "CREATE INDEX IF NOT EXISTS idx_authoring_run_items_lifecycle ON authoring_run_items(RunId, Status, CompletedAt, RowId);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_attempts_number ON authoring_run_attempts(RunItemId, AttemptNumber);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_stages_identity ON authoring_run_stages(RunId, StageName, PartitionKey);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_review_snapshots_sequence ON authoring_review_snapshots(ProcessorKind, Sequence);",
@@ -688,6 +702,106 @@ public sealed class AuthoringRunStore
         return await ReadRunAsync(connection, runId, ct);
     }
 
+    public async Task<AuthoringRunRecord?> GetFencedRunAsync(
+        string processorKind,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
+                   r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
+                   r.CompletedAt, r.Error, r.SnapshotId
+            FROM authoring_mutation_fences f
+            INNER JOIN authoring_runs r ON r.Id = f.RunId
+            WHERE f.ProcessorKind = @processorKind
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("@processorKind", processorKind);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRun(reader) : null;
+    }
+
+    public async Task<AuthoringRunRecord?> GetOldestQueuedRunAsync(
+        string processorKind,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                   TotalItems, CreatedAt, StartedAt, CompletedAt, Error, SnapshotId
+            FROM authoring_runs
+            WHERE ProcessorKind = @processorKind AND Status = @status
+            ORDER BY CreatedAt, RowId
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("@processorKind", processorKind);
+        command.Parameters.AddWithValue("@status", AuthoringStatusValues.Runs.Queued);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRun(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<AuthoringRunRecord>> GetRunsReadyForFinalizationAsync(
+        string processorKind,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
+                   r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
+                   r.CompletedAt, r.Error, r.SnapshotId
+            FROM authoring_runs r
+            WHERE r.ProcessorKind = @processorKind
+              AND r.Status IN (@running, @finalizing, @error)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM authoring_run_items i
+                  WHERE i.RunId = r.Id
+                    AND i.Status NOT IN (@complete, @superseded)
+              )
+            ORDER BY r.CreatedAt, r.RowId
+            """;
+        command.Parameters.AddWithValue("@processorKind", processorKind);
+        command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue("@error", AuthoringStatusValues.Runs.Error);
+        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
+
+        List<AuthoringRunRecord> runs = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            runs.Add(ReadRun(reader));
+        }
+        return runs;
+    }
+
+    public async Task<DateTimeOffset?> GetEarliestAutomaticRetryAtAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<AuthoringRunItemRecord> items = await GetRunItemsAsync(runId, ct);
+        return items
+            .Where(item =>
+                string.Equals(
+                    item.Status,
+                    AuthoringStatusValues.Items.Error,
+                    StringComparison.Ordinal) &&
+                item.CompletedAt is not null)
+            .Select(item => _retryPolicy.GetNextAutomaticRetryAt(item.CompletedAt!.Value))
+            .Cast<DateTimeOffset?>()
+            .Min();
+    }
+
     public async Task<IReadOnlyList<AuthoringRunItemRecord>> GetRunItemsAsync(
         string runId,
         CancellationToken ct = default)
@@ -1094,6 +1208,14 @@ public sealed class AuthoringRunStore
             }
 
             bool requiresAuthoring = string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
+            if (requiresAuthoring &&
+                !_retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.AttemptLimitReached,
+                    $"Item '{itemId}' has exhausted its {_retryPolicy.MaxAttempts} authoring attempts.");
+            }
+
             string nextStatus = requiresAuthoring
                 ? AuthoringStatusValues.Items.Pending
                 : AuthoringStatusValues.Items.Persisted;
@@ -1106,12 +1228,14 @@ public sealed class AuthoringRunStore
                     """
                     UPDATE authoring_run_attempts
                     SET Status = @status,
-                        CompletedAt = COALESCE(CompletedAt, @completedAt)
+                        CompletedAt = COALESCE(CompletedAt, @completedAt),
+                        Error = COALESCE(Error, @error)
                     WHERE OperationId = @operationId AND Status = @activeStatus
                     """,
                     ct,
-                    ("@status", AuthoringStatusValues.Attempts.Superseded),
+                    ("@status", AuthoringStatusValues.Attempts.Error),
                     ("@completedAt", Format(timestamp)),
+                    ("@error", item.Error),
                     ("@operationId", item.CurrentOperationId),
                     ("@activeStatus", AuthoringStatusValues.Attempts.Active));
             }
@@ -1307,34 +1431,256 @@ public sealed class AuthoringRunStore
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
         DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
         await using SqliteConnection connection = _openConnection();
-        int updated = await ExecuteAsync(
-            connection,
-            """
-            UPDATE authoring_run_items
-            SET Status = @status,
-                CompletedAt = @completedAt,
-                PostPersistenceLeaseId = NULL,
-                PostPersistenceLeaseAcquiredAt = NULL,
-                Error = @error
-            WHERE Id = @itemId
-              AND (
-                  (PostPersistenceLeaseId IS NULL AND CurrentOperationId = @claimId)
-                  OR PostPersistenceLeaseId = @claimId
-              )
-              AND Status = @expectedStatus
-            """,
-            ct,
-            ("@status", AuthoringStatusValues.Items.Error),
-            ("@completedAt", Format(timestamp)),
-            ("@error", TruncateError(error)),
-            ("@itemId", itemId),
-            ("@claimId", operationId),
-            ("@expectedStatus", AuthoringStatusValues.Items.InProgress));
-        if (updated != 1)
+        await BeginImmediateAsync(connection, ct);
+        try
         {
-            throw new AuthoringConflictException(
-                AuthoringConflictCode.StaleOperation,
-                $"Operation '{operationId}' no longer owns item '{itemId}'.");
+            AuthoringRunItemRecord item = await ReadRunItemAsync(connection, itemId, ct)
+                ?? throw new KeyNotFoundException($"Authoring item '{itemId}' was not found.");
+            AuthoringRunRecord run = await ReadRunAsync(connection, item.RunId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{item.RunId}' was not found.");
+            await EnsureFenceOwnedAsync(connection, run.ProcessorKind, run.Id, ct);
+            bool ownsItem =
+                string.Equals(
+                    item.Status,
+                    AuthoringStatusValues.Items.InProgress,
+                    StringComparison.Ordinal) &&
+                (string.Equals(item.PostPersistenceLeaseId, operationId, StringComparison.Ordinal) ||
+                 (item.PostPersistenceLeaseId is null &&
+                  string.Equals(item.CurrentOperationId, operationId, StringComparison.Ordinal)));
+            if (!ownsItem)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StaleOperation,
+                    $"Operation '{operationId}' no longer owns item '{itemId}'.");
+            }
+
+            bool requiresAuthoring = string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
+            string nextStatus = requiresAuthoring &&
+                !_retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount)
+                    ? AuthoringStatusValues.Items.Superseded
+                    : AuthoringStatusValues.Items.Error;
+            AuthoringStatusValues.EnsureItemTransition(item.Status, nextStatus);
+
+            if (requiresAuthoring)
+            {
+                int attemptUpdates = await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_run_attempts
+                    SET Status = @status,
+                        CompletedAt = @completedAt,
+                        Error = @error
+                    WHERE OperationId = @operationId
+                      AND RunItemId = @itemId
+                      AND Status = @activeStatus
+                    """,
+                    ct,
+                    ("@status", AuthoringStatusValues.Attempts.Error),
+                    ("@completedAt", Format(timestamp)),
+                    ("@error", TruncateError(error)),
+                    ("@operationId", operationId),
+                    ("@itemId", itemId),
+                    ("@activeStatus", AuthoringStatusValues.Attempts.Active));
+                if (attemptUpdates != 1)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StaleOperation,
+                        $"Operation '{operationId}' no longer owns an active attempt for item '{itemId}'.");
+                }
+            }
+
+            int updated = await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_items
+                SET Status = @status,
+                    CompletedAt = @completedAt,
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
+                    Error = @error
+                WHERE Id = @itemId
+                  AND (
+                      (PostPersistenceLeaseId IS NULL AND CurrentOperationId = @claimId)
+                      OR PostPersistenceLeaseId = @claimId
+                  )
+                  AND Status = @expectedStatus
+                """,
+                ct,
+                ("@status", nextStatus),
+                ("@completedAt", Format(timestamp)),
+                ("@error", TruncateError(error)),
+                ("@itemId", itemId),
+                ("@claimId", operationId),
+                ("@expectedStatus", AuthoringStatusValues.Items.InProgress));
+            if (updated != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StaleOperation,
+                    $"Operation '{operationId}' lost item '{itemId}' during failure recording.");
+            }
+
+            await CommitAsync(connection, ct);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
+    public async Task<AuthoringErrorReconciliationResult> ReconcileErroredItemsAsync(
+        string runId,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringRunRecord run = await ReadRunAsync(connection, runId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+            await EnsureFenceOwnedAsync(connection, run.ProcessorKind, run.Id, ct);
+
+            List<AuthoringRunItemRecord> items = [];
+            await using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT RowId, Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision,
+                           Status, CurrentOperationId, AcceptedReceiptId, AttemptCount,
+                           CreatedAt, StartedAt, CompletedAt, Error,
+                           PostPersistenceLeaseId, PostPersistenceLeaseAcquiredAt
+                    FROM authoring_run_items
+                    WHERE RunId = @runId AND Status = @status
+                    ORDER BY RowId
+                    """;
+                command.Parameters.AddWithValue("@runId", runId);
+                command.Parameters.AddWithValue("@status", AuthoringStatusValues.Items.Error);
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    items.Add(ReadRunItem(reader));
+                }
+            }
+
+            int retriedItems = 0;
+            int resumedReceiptItems = 0;
+            int supersededItems = 0;
+            DateTimeOffset? nextRetryAt = null;
+            foreach (AuthoringRunItemRecord item in items)
+            {
+                DateTimeOffset completedAt = item.CompletedAt ?? timestamp;
+                if (item.CompletedAt is null)
+                {
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_items
+                        SET CompletedAt = @completedAt
+                        WHERE Id = @itemId AND Status = @status AND CompletedAt IS NULL
+                        """,
+                        ct,
+                        ("@completedAt", Format(completedAt)),
+                        ("@itemId", item.Id),
+                        ("@status", AuthoringStatusValues.Items.Error));
+                }
+
+                if (item.CurrentOperationId is not null)
+                {
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_attempts
+                        SET Status = @status,
+                            CompletedAt = COALESCE(CompletedAt, @completedAt),
+                            Error = COALESCE(Error, @error)
+                        WHERE OperationId = @operationId AND Status = @activeStatus
+                        """,
+                        ct,
+                        ("@status", AuthoringStatusValues.Attempts.Error),
+                        ("@completedAt", Format(completedAt)),
+                        ("@error", item.Error),
+                        ("@operationId", item.CurrentOperationId),
+                        ("@activeStatus", AuthoringStatusValues.Attempts.Active));
+                }
+
+                bool requiresAuthoring = string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
+                if (requiresAuthoring &&
+                    !_retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount))
+                {
+                    int updated = await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_items
+                        SET Status = @status,
+                            CompletedAt = @completedAt,
+                            PostPersistenceLeaseId = NULL,
+                            PostPersistenceLeaseAcquiredAt = NULL
+                        WHERE Id = @itemId AND Status = @expectedStatus
+                        """,
+                        ct,
+                        ("@status", AuthoringStatusValues.Items.Superseded),
+                        ("@completedAt", Format(completedAt)),
+                        ("@itemId", item.Id),
+                        ("@expectedStatus", AuthoringStatusValues.Items.Error));
+                    supersededItems += updated;
+                    continue;
+                }
+
+                DateTimeOffset dueAt = _retryPolicy.GetNextAutomaticRetryAt(completedAt);
+                if (dueAt > timestamp)
+                {
+                    nextRetryAt = nextRetryAt is null || dueAt < nextRetryAt
+                        ? dueAt
+                        : nextRetryAt;
+                    continue;
+                }
+
+                string nextStatus = requiresAuthoring
+                    ? AuthoringStatusValues.Items.Pending
+                    : AuthoringStatusValues.Items.Persisted;
+                int transitioned = await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_run_items
+                    SET Status = @status,
+                        CurrentOperationId =
+                            CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE CurrentOperationId END,
+                        PostPersistenceLeaseId = NULL,
+                        PostPersistenceLeaseAcquiredAt = NULL,
+                        StartedAt = CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE StartedAt END,
+                        CompletedAt = NULL,
+                        Error = NULL
+                    WHERE Id = @itemId AND Status = @expectedStatus
+                    """,
+                    ct,
+                    ("@status", nextStatus),
+                    ("@requiresAuthoring", requiresAuthoring),
+                    ("@itemId", item.Id),
+                    ("@expectedStatus", AuthoringStatusValues.Items.Error));
+                if (requiresAuthoring)
+                {
+                    retriedItems += transitioned;
+                }
+                else
+                {
+                    resumedReceiptItems += transitioned;
+                }
+            }
+
+            await CommitAsync(connection, ct);
+            return new AuthoringErrorReconciliationResult(
+                retriedItems,
+                resumedReceiptItems,
+                supersededItems,
+                nextRetryAt);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
         }
     }
 
@@ -1367,35 +1713,47 @@ public sealed class AuthoringRunStore
             bool requiresAuthoring = string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
             if (requiresAuthoring)
             {
-                await ExecuteAsync(
+                int attemptUpdates = await ExecuteAsync(
                     connection,
                     """
                     UPDATE authoring_run_attempts
                     SET Status = @status,
-                        CompletedAt = COALESCE(CompletedAt, @completedAt)
+                        CompletedAt = COALESCE(CompletedAt, @completedAt),
+                        Error = COALESCE(Error, @error)
                     WHERE OperationId = @operationId AND Status = @activeStatus
                     """,
                     ct,
-                    ("@status", AuthoringStatusValues.Attempts.Superseded),
+                    ("@status", AuthoringStatusValues.Attempts.Error),
                     ("@completedAt", Format(timestamp)),
+                    ("@error", "Authoring claim was abandoned before a receipt was accepted."),
                     ("@operationId", operationId),
                     ("@activeStatus", AuthoringStatusValues.Attempts.Active));
+                if (attemptUpdates != 1)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StaleOperation,
+                        $"Operation '{operationId}' no longer owns an active attempt for item '{itemId}'.");
+                }
             }
 
-            string nextStatus = requiresAuthoring
-                ? AuthoringStatusValues.Items.Pending
-                : AuthoringStatusValues.Items.Persisted;
+            string nextStatus = !requiresAuthoring
+                ? AuthoringStatusValues.Items.Persisted
+                : _retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount)
+                    ? AuthoringStatusValues.Items.Error
+                    : AuthoringStatusValues.Items.Superseded;
+            string? error = requiresAuthoring
+                ? "Authoring claim was abandoned before a receipt was accepted."
+                : null;
             int updated = await ExecuteAsync(
                 connection,
                 """
                 UPDATE authoring_run_items
                 SET Status = @status,
-                    CurrentOperationId = CASE WHEN @requiresAuthoring = 1 THEN NULL ELSE CurrentOperationId END,
                     PostPersistenceLeaseId = NULL,
                     PostPersistenceLeaseAcquiredAt = NULL,
-                    StartedAt = NULL,
-                    CompletedAt = NULL,
-                    Error = NULL
+                    StartedAt = CASE WHEN @requiresAuthoring = 1 THEN StartedAt ELSE NULL END,
+                    CompletedAt = CASE WHEN @requiresAuthoring = 1 THEN @completedAt ELSE NULL END,
+                    Error = @error
                 WHERE Id = @itemId
                   AND (
                       PostPersistenceLeaseId = @claimId
@@ -1406,6 +1764,8 @@ public sealed class AuthoringRunStore
                 ct,
                 ("@status", nextStatus),
                 ("@requiresAuthoring", requiresAuthoring),
+                ("@completedAt", Format(timestamp)),
+                ("@error", error),
                 ("@itemId", itemId),
                 ("@claimId", operationId),
                 ("@expectedStatus", AuthoringStatusValues.Items.InProgress));
@@ -1843,6 +2203,109 @@ public sealed class AuthoringRunStore
                 ("@processorKind", run.ProcessorKind),
                 ("@runId", runId));
             await CommitAsync(connection, ct);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
+    }
+
+    public async Task<AuthoringItemSupersedeResult> SupersedeErroredItemAsync(
+        string runId,
+        string itemId,
+        string reason,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        string normalizedReason = reason.Trim();
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = _openConnection();
+        await BeginImmediateAsync(connection, ct);
+        try
+        {
+            AuthoringRunRecord run = await ReadRunAsync(connection, runId, ct)
+                ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+            await EnsureFenceOwnedAsync(connection, run.ProcessorKind, run.Id, ct);
+            AuthoringRunItemRecord item = await ReadRunItemAsync(connection, itemId, ct)
+                ?? throw new KeyNotFoundException($"Authoring item '{itemId}' was not found.");
+            if (!string.Equals(item.RunId, runId, StringComparison.Ordinal))
+            {
+                throw new KeyNotFoundException(
+                    $"Authoring item '{itemId}' was not found in run '{runId}'.");
+            }
+            if (!string.Equals(
+                    item.Status,
+                    AuthoringStatusValues.Items.Error,
+                    StringComparison.Ordinal))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.ItemNotClaimable,
+                    $"Item '{itemId}' cannot be superseded from status '{item.Status}'.");
+            }
+            if (!string.IsNullOrWhiteSpace(item.AcceptedReceiptId))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.ItemNotClaimable,
+                    $"Item '{itemId}' has an accepted receipt and cannot be superseded.");
+            }
+
+            if (item.CurrentOperationId is not null)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_run_attempts
+                    SET Status = @status,
+                        CompletedAt = COALESCE(CompletedAt, @completedAt),
+                        Error = COALESCE(Error, @error)
+                    WHERE OperationId = @operationId AND Status = @activeStatus
+                    """,
+                    ct,
+                    ("@status", AuthoringStatusValues.Attempts.Error),
+                    ("@completedAt", Format(item.CompletedAt ?? timestamp)),
+                    ("@error", item.Error),
+                    ("@operationId", item.CurrentOperationId),
+                    ("@activeStatus", AuthoringStatusValues.Attempts.Active));
+            }
+
+            int updated = await ExecuteAsync(
+                connection,
+                """
+                UPDATE authoring_run_items
+                SET Status = @status,
+                    CompletedAt = @completedAt,
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
+                    Error = @reason
+                WHERE Id = @itemId
+                  AND RunId = @runId
+                  AND Status = @expectedStatus
+                  AND AcceptedReceiptId IS NULL
+                """,
+                ct,
+                ("@status", AuthoringStatusValues.Items.Superseded),
+                ("@completedAt", Format(timestamp)),
+                ("@reason", TruncateError(normalizedReason)),
+                ("@itemId", itemId),
+                ("@runId", runId),
+                ("@expectedStatus", AuthoringStatusValues.Items.Error));
+            if (updated != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.ItemNotClaimable,
+                    $"Item '{itemId}' changed before it could be superseded.");
+            }
+
+            await CommitAsync(connection, ct);
+            return new AuthoringItemSupersedeResult(
+                runId,
+                itemId,
+                AuthoringStatusValues.Items.Superseded,
+                normalizedReason);
         }
         catch
         {
@@ -2442,6 +2905,27 @@ public sealed class AuthoringRunStore
                 return null;
             }
 
+            if (!_retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount))
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE authoring_run_items
+                    SET Status = @status,
+                        CompletedAt = @completedAt,
+                        Error = COALESCE(Error, @error)
+                    WHERE Id = @itemId AND Status = @expectedStatus
+                    """,
+                    ct,
+                    ("@status", AuthoringStatusValues.Items.Superseded),
+                    ("@completedAt", Format(timestamp)),
+                    ("@error", $"Authoring attempt limit of {_retryPolicy.MaxAttempts} was reached."),
+                    ("@itemId", item.Id),
+                    ("@expectedStatus", AuthoringStatusValues.Items.Pending));
+                await CommitAsync(connection, ct);
+                return null;
+            }
+
             IssuedAuthoringOperationToken issued = AuthoringOperationTokenVerifier.Issue();
             string operationId = Guid.NewGuid().ToString("N");
             int attemptNumber = checked(item.AttemptCount + 1);
@@ -2662,7 +3146,11 @@ public sealed class AuthoringRunStore
         {
             return null;
         }
-        return new AuthoringRunRecord
+        return ReadRun(reader);
+    }
+
+    private static AuthoringRunRecord ReadRun(SqliteDataReader reader)
+        => new()
         {
             RowId = reader.GetInt32(0),
             Id = reader.GetString(1),
@@ -2677,7 +3165,6 @@ public sealed class AuthoringRunStore
             Error = ReadNullableString(reader, 10),
             SnapshotId = ReadNullableString(reader, 11),
         };
-    }
 
     private static async Task<AuthoringRunItemRecord?> ReadRunItemAsync(
         SqliteConnection connection,

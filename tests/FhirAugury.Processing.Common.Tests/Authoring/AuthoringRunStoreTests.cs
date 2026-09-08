@@ -1,8 +1,10 @@
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Common.Tests.Authoring;
 
@@ -369,6 +371,309 @@ public sealed class AuthoringRunStoreTests
             () => database.Store.RetryItemAsync(item.Id));
         Assert.Equal(AuthoringConflictCode.MutationFenceUnavailable, conflict.Code);
     }
+
+    [Fact]
+    public async Task RecordClaimFailure_ClosesAttemptAndSupersedesAtExactLimit()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 3,
+            AuthoringRetryDelay = "00:01:00",
+        });
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        DateTimeOffset now = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(run.Id, item.Id, now));
+            Assert.Equal(attempt, claim.AttemptNumber);
+            await database.Store.MarkClaimErrorAsync(
+                item.Id,
+                claim.OperationId,
+                $"failure {attempt}",
+                now.AddSeconds(1));
+
+            AuthoringRunItemRecord failed = Assert.Single(
+                await database.Store.GetRunItemsAsync(run.Id));
+            Assert.Equal(
+                attempt == 3
+                    ? AuthoringStatusValues.Items.Superseded
+                    : AuthoringStatusValues.Items.Error,
+                failed.Status);
+            Assert.Equal(
+                AuthoringStatusValues.Attempts.Error,
+                database.Scalar<string>(
+                    "SELECT Status FROM authoring_run_attempts WHERE OperationId = @operationId",
+                    ("@operationId", claim.OperationId)));
+
+            if (attempt < 3)
+            {
+                now = now.AddMinutes(2);
+                AuthoringErrorReconciliationResult reconciliation =
+                    await database.Store.ReconcileErroredItemsAsync(run.Id, now);
+                Assert.Equal(1, reconciliation.RetriedItems);
+            }
+        }
+
+        Assert.Equal(
+            3,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunItemId = @itemId",
+                ("@itemId", item.Id)));
+    }
+
+    [Fact]
+    public async Task ReconcileErroredItems_RepairsLegacyActiveAttemptAndPromotesWhenDue()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringRetryDelay = "00:01:00",
+            AuthoringMaxAttempts = 3,
+        });
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        DateTimeOffset failedAt = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id, failedAt.AddMinutes(-1)));
+        database.Execute(
+            """
+            UPDATE authoring_run_items
+            SET Status = 'error', CompletedAt = @completedAt, Error = @error
+            WHERE Id = @itemId
+            """,
+            ("@completedAt", failedAt.ToString("O")),
+            ("@error", "legacy failure"),
+            ("@itemId", item.Id));
+
+        AuthoringErrorReconciliationResult result =
+            await database.Store.ReconcileErroredItemsAsync(
+                run.Id,
+                failedAt.AddMinutes(1));
+
+        Assert.Equal(1, result.RetriedItems);
+        AuthoringRunItemRecord reconciled = Assert.Single(
+            await database.Store.GetRunItemsAsync(run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Pending, reconciled.Status);
+        Assert.Null(reconciled.CurrentOperationId);
+        Assert.Equal(
+            AuthoringStatusValues.Attempts.Error,
+            database.Scalar<string>(
+                "SELECT Status FROM authoring_run_attempts WHERE OperationId = @operationId",
+                ("@operationId", claim.OperationId)));
+        Assert.Equal(
+            "legacy failure",
+            database.Scalar<string>(
+                "SELECT Error FROM authoring_run_attempts WHERE OperationId = @operationId",
+                ("@operationId", claim.OperationId)));
+    }
+
+    [Fact]
+    public async Task RetryItem_AtAttemptLimitCannotCreateFourthClaim()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 3,
+        });
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id));
+        database.Execute(
+            """
+            UPDATE authoring_run_items
+            SET Status = 'error', AttemptCount = 3, CompletedAt = @completedAt, Error = 'legacy failure'
+            WHERE Id = @itemId
+            """,
+            ("@completedAt", DateTimeOffset.UtcNow.ToString("O")),
+            ("@itemId", item.Id));
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Store.RetryItemAsync(item.Id));
+
+        Assert.Equal(AuthoringConflictCode.AttemptLimitReached, conflict.Code);
+        Assert.Null(await database.Store.ClaimItemAsync(run.Id, item.Id));
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunItemId = @itemId AND AttemptNumber > 3",
+                ("@itemId", item.Id)));
+        Assert.Equal(claim.OperationId, (await database.Store.GetRunItemsAsync(run.Id))[0].CurrentOperationId);
+    }
+
+    [Fact]
+    public async Task ManualRetryAndExhaustionRace_NeverCreatesAttemptFour()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 3,
+            AuthoringRetryDelay = "00:00:01",
+        });
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        await database.Store.ClaimItemAsync(run.Id, item.Id);
+        DateTimeOffset failedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        database.Execute(
+            """
+            UPDATE authoring_run_items
+            SET Status = 'error', AttemptCount = 3, CompletedAt = @completedAt, Error = 'legacy failure'
+            WHERE Id = @itemId
+            """,
+            ("@completedAt", failedAt.ToString("O")),
+            ("@itemId", item.Id));
+
+        Task<Exception?> retry = Record.ExceptionAsync(
+            () => database.Store.RetryItemAsync(item.Id));
+        Task<Exception?> reconcile = Record.ExceptionAsync(
+            () => database.Store.ReconcileErroredItemsAsync(run.Id, DateTimeOffset.UtcNow));
+        await Task.WhenAll(retry, reconcile);
+        Exception? retryException = await retry;
+        Exception? reconcileException = await reconcile;
+
+        Assert.Null(reconcileException);
+        AuthoringConflictException conflict =
+            Assert.IsType<AuthoringConflictException>(retryException);
+        Assert.Contains(
+            conflict.Code,
+            new[]
+            {
+                AuthoringConflictCode.AttemptLimitReached,
+                AuthoringConflictCode.ItemNotClaimable,
+            });
+        Assert.Null(await database.Store.ClaimItemAsync(run.Id, item.Id));
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.Single(await database.Store.GetRunItemsAsync(run.Id)).Status);
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunItemId = @itemId AND AttemptNumber > 3",
+                ("@itemId", item.Id)));
+    }
+
+    [Fact]
+    public async Task ReconcileErroredItems_ResumesAcceptedReceiptWithoutNewAttempt()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringRetryDelay = "00:01:00",
+        });
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        DateTimeOffset now = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id, now));
+        AuthoringReceiptAcceptance receipt = await database.Store.AcceptResultAsync(
+            new AuthoringResultSubmission(
+                run.Id,
+                item.Id,
+                claim.OperationId,
+                item.ExpectedSourceRevision,
+                AuthoringResultHasher.HashNormalizedUtf8("payload")),
+            claim.OperationToken,
+            now: now.AddSeconds(1));
+        string lease = Assert.IsType<string>(
+            await database.Store.ClaimPersistedItemAsync(
+                item.Id,
+                receipt.Receipt.ReceiptId,
+                claim.OperationId,
+                now.AddSeconds(2)));
+        await database.Store.MarkClaimErrorAsync(
+            item.Id,
+            lease,
+            "post-receipt failure",
+            now.AddSeconds(3));
+
+        AuthoringErrorReconciliationResult result =
+            await database.Store.ReconcileErroredItemsAsync(
+                run.Id,
+                now.AddMinutes(2));
+
+        Assert.Equal(1, result.ResumedReceiptItems);
+        AuthoringRunItemRecord resumed = Assert.Single(
+            await database.Store.GetRunItemsAsync(run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Persisted, resumed.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, resumed.AcceptedReceiptId);
+        Assert.Equal(1, resumed.AttemptCount);
+        Assert.Equal(
+            1,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunItemId = @itemId",
+                ("@itemId", item.Id)));
+    }
+
+    [Fact]
+    public async Task SupersedeErroredItem_LeavesRunFencedAndFinalizable()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync(databaseOnly: true);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id));
+        await database.Store.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "worker failure");
+
+        AuthoringItemSupersedeResult result =
+            await database.Store.SupersedeErroredItemAsync(
+                run.Id,
+                item.Id,
+                "not actionable");
+
+        Assert.Equal(AuthoringStatusValues.Items.Superseded, result.Status);
+        Assert.Equal(run.Id, (await database.Store.GetFencedRunAsync("test"))!.Id);
+        Assert.True(await database.Store.AllItemsCompleteAsync(run.Id));
+        Assert.Equal(
+            "worker failure",
+            database.Scalar<string>(
+                "SELECT Error FROM authoring_run_attempts WHERE OperationId = @operationId",
+                ("@operationId", claim.OperationId)));
+        Assert.Equal(
+            "not actionable",
+            Assert.Single(await database.Store.GetRunItemsAsync(run.Id)).Error);
+    }
+
+    [Fact]
+    public async Task SupersedeErroredItem_RejectsAcceptedReceipt()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id));
+        AuthoringReceiptAcceptance receipt = await database.Store.AcceptResultAsync(
+            new AuthoringResultSubmission(
+                run.Id,
+                item.Id,
+                claim.OperationId,
+                item.ExpectedSourceRevision,
+                AuthoringResultHasher.HashNormalizedUtf8("payload")),
+            claim.OperationToken);
+        string lease = Assert.IsType<string>(
+            await database.Store.ClaimPersistedItemAsync(
+                item.Id,
+                receipt.Receipt.ReceiptId,
+                claim.OperationId));
+        await database.Store.MarkClaimErrorAsync(
+            item.Id,
+            lease,
+            "post-receipt failure");
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Store.SupersedeErroredItemAsync(
+                    run.Id,
+                    item.Id,
+                    "discard"));
+
+        Assert.Equal(AuthoringConflictCode.ItemNotClaimable, conflict.Code);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Error,
+            Assert.Single(await database.Store.GetRunItemsAsync(run.Id)).Status);
+    }
 }
 
 internal sealed class AuthoringTestDatabase : IDisposable
@@ -376,7 +681,7 @@ internal sealed class AuthoringTestDatabase : IDisposable
     private readonly string _directory;
     private readonly string _connectionString;
 
-    public AuthoringTestDatabase()
+    public AuthoringTestDatabase(ProcessingServiceOptions? options = null)
     {
         _directory = Path.Combine(Path.GetTempPath(), $"fhir-augury-authoring-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_directory);
@@ -387,11 +692,14 @@ internal sealed class AuthoringTestDatabase : IDisposable
             Mode = SqliteOpenMode.ReadWriteCreate,
             Pooling = false,
         }.ToString();
-        Store = new AuthoringRunStore(OpenConnection);
+        RetryPolicy = new AuthoringRetryPolicy(
+            Options.Create(options ?? new ProcessingServiceOptions()));
+        Store = new AuthoringRunStore(OpenConnection, retryPolicy: RetryPolicy);
         Store.Initialize();
     }
 
     public string DatabasePath { get; }
+    public AuthoringRetryPolicy RetryPolicy { get; }
     public AuthoringRunStore Store { get; }
 
     public SqliteConnection OpenConnection()
@@ -444,6 +752,18 @@ internal sealed class AuthoringTestDatabase : IDisposable
             command.Parameters.AddWithValue(name, value);
         }
         return (T)Convert.ChangeType(command.ExecuteScalar()!, typeof(T));
+    }
+
+    public int Execute(string sql, params (string Name, object? Value)[] parameters)
+    {
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        return command.ExecuteNonQuery();
     }
 
     public void Dispose()

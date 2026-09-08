@@ -49,7 +49,9 @@ public sealed record AuthoringRunStatus(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    string? Error);
+    string? Error,
+    int RetryableErrorItems = 0,
+    int SupersededItems = 0);
 
 public sealed record AuthoringRunItemStatus(
     string ItemId,
@@ -64,7 +66,17 @@ public sealed record AuthoringRunItemStatus(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
-    string? Error);
+    string? Error,
+    int? AttemptsRemaining = null,
+    DateTimeOffset? NextAutomaticRetryAt = null);
+
+public sealed record AuthoringItemSupersedeRequest(string Reason);
+
+public sealed record AuthoringItemSupersedeResult(
+    string RunId,
+    string ItemId,
+    string Status,
+    string Reason);
 
 public sealed record AuthoringResultSubmission(
     string RunId,

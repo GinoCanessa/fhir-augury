@@ -213,6 +213,38 @@ public sealed class AuthoringRunFinalizerTests
         Assert.Equal(result.SnapshotId, completed.SnapshotId);
     }
 
+    [Fact]
+    public async Task FinalizeAsync_AllSupersededItemsCompletesAndReleasesFence()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync(databaseOnly: true);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id));
+        await database.Store.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "worker failure");
+        await database.Store.SupersedeErroredItemAsync(
+            run.Id,
+            item.Id,
+            "not actionable");
+
+        AuthoringRunFinalizer finalizer = new(database.Store);
+        AuthoringSnapshotDescriptor? descriptor =
+            await finalizer.FinalizeAsync(run.Id, []);
+
+        Assert.Null(descriptor);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await database.Store.GetRunAsync(run.Id))!.Status);
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+        AuthoringRunRecord next = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-2", "ticket", "revision-2")]);
+        Assert.True(await database.Store.TryAcquireMutationFenceAsync("test", next.Id));
+    }
+
     private static async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> PrepareCompletedItemAsync(
         AuthoringTestDatabase database,
         bool databaseOnly)
