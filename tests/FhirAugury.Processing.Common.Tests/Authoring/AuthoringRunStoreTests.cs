@@ -674,6 +674,195 @@ public sealed class AuthoringRunStoreTests
             AuthoringStatusValues.Items.Error,
             Assert.Single(await database.Store.GetRunItemsAsync(run.Id)).Status);
     }
+
+    [Fact]
+    public async Task ReplaceRevalidationRun_UnchangedRevisionSeedsLineageAttemptCount()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 3,
+            AuthoringRetryDelay = "00:01:00",
+        });
+        (AuthoringRunRecord firstRun, AuthoringRunItemRecord firstItem) =
+            await database.CreateRunningRunAsync();
+        MarkAsInitialRevalidation(database, firstRun.Id);
+        DateTimeOffset now =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim firstClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    firstRun.Id,
+                    firstItem.Id,
+                    now));
+        await database.Store.MarkClaimErrorAsync(
+            firstItem.Id,
+            firstClaim.OperationId,
+            "first failure",
+            now.AddSeconds(1));
+
+        AuthoringRunRecord secondRun =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                firstRun.Id,
+                [new("FHIR-1", "ticket", "revision-1")],
+                now.AddMinutes(1));
+        AuthoringRunItemRecord secondItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(secondRun.Id));
+        Assert.Equal(1, secondItem.AttemptCount);
+        AuthoringOperationClaim secondClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    secondRun.Id,
+                    secondItem.Id,
+                    now.AddMinutes(2)));
+        Assert.Equal(2, secondClaim.AttemptNumber);
+        await database.Store.MarkClaimErrorAsync(
+            secondItem.Id,
+            secondClaim.OperationId,
+            "second failure",
+            now.AddMinutes(2).AddSeconds(1));
+
+        AuthoringRunRecord thirdRun =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                secondRun.Id,
+                [new("FHIR-1", "ticket", "revision-1")],
+                now.AddMinutes(3));
+        AuthoringRunItemRecord thirdItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(thirdRun.Id));
+
+        Assert.Equal(2, thirdItem.AttemptCount);
+        Assert.Equal(AuthoringStatusValues.Items.Pending, thirdItem.Status);
+        Assert.Equal(
+            [secondItem.Id, firstItem.Id],
+            (await database.Store.GetRevalidationSupersededItemsAsync(
+                thirdRun.Id))
+            .Select(item => item.Id)
+            .ToArray());
+    }
+
+    [Fact]
+    public async Task ReplaceRevalidationRun_AtLineageLimitCreatesSupersededItem()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 2,
+            AuthoringRetryDelay = "00:01:00",
+        });
+        (AuthoringRunRecord firstRun, AuthoringRunItemRecord firstItem) =
+            await database.CreateRunningRunAsync();
+        MarkAsInitialRevalidation(database, firstRun.Id);
+        DateTimeOffset now =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim firstClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    firstRun.Id,
+                    firstItem.Id,
+                    now));
+        await database.Store.MarkClaimErrorAsync(
+            firstItem.Id,
+            firstClaim.OperationId,
+            "first failure",
+            now.AddSeconds(1));
+        AuthoringRunRecord secondRun =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                firstRun.Id,
+                [new("FHIR-1", "ticket", "revision-1")],
+                now.AddMinutes(1));
+        AuthoringRunItemRecord secondItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(secondRun.Id));
+        AuthoringOperationClaim secondClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    secondRun.Id,
+                    secondItem.Id,
+                    now.AddMinutes(2)));
+        await database.Store.MarkClaimErrorAsync(
+            secondItem.Id,
+            secondClaim.OperationId,
+            "second failure",
+            now.AddMinutes(2).AddSeconds(1));
+
+        AuthoringRunRecord thirdRun =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                secondRun.Id,
+                [new("FHIR-1", "ticket", "revision-1")],
+                now.AddMinutes(3));
+        AuthoringRunItemRecord thirdItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(thirdRun.Id));
+
+        Assert.Equal(2, thirdItem.AttemptCount);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            thirdItem.Status);
+        Assert.Equal(now.AddMinutes(3), thirdItem.CompletedAt);
+        Assert.Equal(
+            "Authoring attempt limit of 2 was reached.",
+            thirdItem.Error);
+        Assert.Null(await database.Store.ClaimItemAsync(
+            thirdRun.Id,
+            thirdItem.Id,
+            now.AddMinutes(4)));
+        Assert.Equal(
+            [thirdItem.Id, secondItem.Id, firstItem.Id],
+            (await database.Store.GetRevalidationSupersededItemsAsync(
+                thirdRun.Id))
+            .Select(item => item.Id)
+            .ToArray());
+    }
+
+    [Fact]
+    public async Task ReplaceRevalidationRun_ChangedRevisionStartsNewBudget()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringMaxAttempts = 3,
+            AuthoringRetryDelay = "00:01:00",
+        });
+        (AuthoringRunRecord firstRun, AuthoringRunItemRecord firstItem) =
+            await database.CreateRunningRunAsync();
+        MarkAsInitialRevalidation(database, firstRun.Id);
+        AuthoringOperationClaim firstClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    firstRun.Id,
+                    firstItem.Id));
+        await database.Store.MarkClaimErrorAsync(
+            firstItem.Id,
+            firstClaim.OperationId,
+            "first failure");
+
+        AuthoringRunRecord replacement =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                firstRun.Id,
+                [new("FHIR-1", "ticket", "revision-2")]);
+        AuthoringRunItemRecord replacementItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(replacement.Id));
+        AuthoringOperationClaim replacementClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(
+                    replacement.Id,
+                    replacementItem.Id));
+
+        Assert.Equal(0, replacementItem.AttemptCount);
+        Assert.Equal(1, replacementClaim.AttemptNumber);
+    }
+
+    private static void MarkAsInitialRevalidation(
+        AuthoringTestDatabase database,
+        string runId)
+        => database.Execute(
+            """
+            UPDATE authoring_processor_modes
+            SET RevalidationRequired = 1,
+                RevalidationRunId = @runId
+            WHERE ProcessorKind = 'test'
+            """,
+            ("@runId", runId));
 }
 
 internal sealed class AuthoringTestDatabase : IDisposable

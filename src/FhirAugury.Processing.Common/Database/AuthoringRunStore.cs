@@ -629,15 +629,26 @@ public sealed class AuthoringRunStore
                 ("@previousRunId", expectedRunId));
             foreach (AuthoringRunItemDefinition item in items)
             {
+                int attemptCount =
+                    await CountRevalidationAuthoringAttemptsAsync(
+                        connection,
+                        expectedRunId,
+                        item,
+                        ct);
+                bool attemptLimitReached =
+                    !_retryPolicy.CanStartAnotherAuthoringAttempt(
+                        attemptCount);
                 await ExecuteAsync(
                     connection,
                     """
                     INSERT INTO authoring_run_items(
                         Id, RunId, BusinessKey, ItemKind,
-                        ExpectedSourceRevision, Status, AttemptCount, CreatedAt)
+                        ExpectedSourceRevision, Status, AttemptCount, CreatedAt,
+                        CompletedAt, Error)
                     VALUES(
                         @id, @runId, @businessKey, @itemKind,
-                        @expectedSourceRevision, @status, 0, @createdAt)
+                        @expectedSourceRevision, @status, @attemptCount, @createdAt,
+                        @completedAt, @error)
                     """,
                     ct,
                     ("@id", Guid.NewGuid().ToString("N")),
@@ -645,8 +656,17 @@ public sealed class AuthoringRunStore
                     ("@businessKey", item.BusinessKey),
                     ("@itemKind", item.ItemKind),
                     ("@expectedSourceRevision", item.ExpectedSourceRevision),
-                    ("@status", AuthoringStatusValues.Items.Pending),
-                    ("@createdAt", Format(timestamp)));
+                    ("@status", attemptLimitReached
+                        ? AuthoringStatusValues.Items.Superseded
+                        : AuthoringStatusValues.Items.Pending),
+                    ("@attemptCount", attemptCount),
+                    ("@createdAt", Format(timestamp)),
+                    ("@completedAt", attemptLimitReached
+                        ? Format(timestamp)
+                        : null),
+                    ("@error", attemptLimitReached
+                        ? $"Authoring attempt limit of {_retryPolicy.MaxAttempts} was reached."
+                        : null));
             }
             await ExecuteAsync(
                 connection,
@@ -872,6 +892,49 @@ public sealed class AuthoringRunStore
 
         List<AuthoringRunItemRecord> items = [];
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(ReadRunItem(reader));
+        }
+        return items;
+    }
+
+    public async Task<IReadOnlyList<AuthoringRunItemRecord>>
+        GetRevalidationSupersededItemsAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH RECURSIVE run_chain(Id, Depth) AS (
+                SELECT @runId, 0
+                UNION ALL
+                SELECT lineage.PreviousRunId, chain.Depth + 1
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT i.RowId, i.Id, i.RunId, i.BusinessKey, i.ItemKind,
+                   i.ExpectedSourceRevision, i.Status, i.CurrentOperationId,
+                   i.AcceptedReceiptId, i.AttemptCount, i.CreatedAt, i.StartedAt,
+                   i.CompletedAt, i.Error, i.PostPersistenceLeaseId,
+                   i.PostPersistenceLeaseAcquiredAt
+            FROM authoring_run_items i
+            INNER JOIN run_chain chain ON chain.Id = i.RunId
+            WHERE i.Status = @superseded
+              AND i.AcceptedReceiptId IS NULL
+            ORDER BY chain.Depth, i.RowId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+
+        List<AuthoringRunItemRecord> items = [];
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
             items.Add(ReadRunItem(reader));
@@ -3078,6 +3141,45 @@ public sealed class AuthoringRunStore
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
         command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<int> CountRevalidationAuthoringAttemptsAsync(
+        SqliteConnection connection,
+        string runId,
+        AuthoringRunItemDefinition item,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION ALL
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT COUNT(*)
+            FROM authoring_run_attempts attempt
+            INNER JOIN authoring_run_items item
+                ON item.Id = attempt.RunItemId
+            INNER JOIN run_chain chain
+                ON chain.Id = item.RunId
+            WHERE item.BusinessKey = @businessKey COLLATE NOCASE
+              AND item.ItemKind = @itemKind COLLATE NOCASE
+              AND item.ExpectedSourceRevision = @expectedSourceRevision
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@businessKey",
+            item.BusinessKey);
+        command.Parameters.AddWithValue("@itemKind", item.ItemKind);
+        command.Parameters.AddWithValue(
+            "@expectedSourceRevision",
+            item.ExpectedSourceRevision);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
     }
 
     private static async Task<int> CountIncompleteStagesAsync(

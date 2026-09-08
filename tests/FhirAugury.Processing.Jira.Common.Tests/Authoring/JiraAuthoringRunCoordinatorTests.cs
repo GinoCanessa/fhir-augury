@@ -293,6 +293,115 @@ public sealed class JiraAuthoringRunCoordinatorTests
     }
 
     [Fact]
+    public async Task InitialRevalidation_UnchangedRevisionPreservesAttemptBudgetAcrossReplacement()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        DateTimeOffset firstRevision =
+            new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        await fixture.SeedAsync("FHIR-1", firstRevision);
+        await fixture.SeedAsync("FHIR-2", firstRevision);
+        AuthoringProcessorModeRecord active =
+            await new AuthoringCutoverCoordinator(
+                fixture.SourceStoreConnection).ActivateAsync(
+                new AuthoringCutoverRequest(
+                    "jira-fhir",
+                    fixture.DatabasePath,
+                    $"{fixture.DatabasePath}.pre-cutover"),
+                new StaticCutoverParticipant(
+                [
+                    new("FHIR-1", "fhir", firstRevision.ToString("O")),
+                    new("FHIR-2", "fhir", firstRevision.ToString("O")),
+                ]));
+        AuthoringRunItemRecord firstItem =
+            (await fixture.AuthoringStore.GetRunItemsAsync(
+                active.RevalidationRunId!))
+            .Single(item => item.BusinessKey == "FHIR-1");
+        DateTimeOffset now =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim firstClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    active.RevalidationRunId!,
+                    firstItem.Id,
+                    now));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            firstItem.Id,
+            firstClaim.OperationId,
+            "first failure",
+            now.AddSeconds(1));
+        await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            active.RevalidationRunId!,
+            now.AddMinutes(2));
+        AuthoringOperationClaim secondClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    active.RevalidationRunId!,
+                    firstItem.Id,
+                    now.AddMinutes(2)));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            firstItem.Id,
+            secondClaim.OperationId,
+            "second failure",
+            now.AddMinutes(2).AddSeconds(1));
+
+        await fixture.SeedAsync(
+            "FHIR-2",
+            firstRevision.AddDays(1),
+            title: "Updated B");
+        Assert.True(await fixture.Coordinator.SupersedeStaleItemsAsync(
+            active.RevalidationRunId!));
+        AuthoringProcessorModeRecord firstReplacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        AuthoringRunItemRecord unchangedReplacement =
+            (await fixture.AuthoringStore.GetRunItemsAsync(
+                firstReplacementMode.RevalidationRunId!))
+            .Single(item => item.BusinessKey == "FHIR-1");
+
+        Assert.Equal(2, unchangedReplacement.AttemptCount);
+        AuthoringOperationClaim thirdClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    unchangedReplacement.RunId,
+                    unchangedReplacement.Id,
+                    now.AddMinutes(3)));
+        Assert.Equal(3, thirdClaim.AttemptNumber);
+
+        DateTimeOffset newRevision = firstRevision.AddDays(2);
+        await fixture.SeedAsync(
+            "FHIR-1",
+            newRevision,
+            title: "Updated A");
+        Assert.True(await fixture.Coordinator.SupersedeStaleItemsAsync(
+            unchangedReplacement.RunId));
+        AuthoringConflictException exhaustedCoordinate =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => fixture.AuthoringStore.ClaimItemAsync(
+                    unchangedReplacement.RunId,
+                    unchangedReplacement.Id,
+                    now.AddMinutes(4)));
+        Assert.Equal(
+            AuthoringConflictCode.RunNotActive,
+            exhaustedCoordinate.Code);
+
+        AuthoringProcessorModeRecord secondReplacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        AuthoringRunItemRecord changedRevision =
+            (await fixture.AuthoringStore.GetRunItemsAsync(
+                secondReplacementMode.RevalidationRunId!))
+            .Single(item => item.BusinessKey == "FHIR-1");
+        AuthoringOperationClaim changedRevisionClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    changedRevision.RunId,
+                    changedRevision.Id,
+                    now.AddMinutes(5)));
+
+        Assert.Equal(newRevision.ToString("O"), changedRevision.ExpectedSourceRevision);
+        Assert.Equal(0, changedRevision.AttemptCount);
+        Assert.Equal(1, changedRevisionClaim.AttemptNumber);
+    }
+
+    [Fact]
     public async Task StaleInitialRevalidationWaitsForAcceptedPostPersistenceWork()
     {
         using JiraAuthoringTestFixture fixture = new();

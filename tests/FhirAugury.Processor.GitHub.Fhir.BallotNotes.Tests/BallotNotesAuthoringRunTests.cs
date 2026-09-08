@@ -803,6 +803,116 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
+    public async Task InitialRevalidation_UnchangedRevisionPreservesAttemptBudgetAcrossReplacement()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution(
+                ("note-a", "Artifact"),
+                ("note-b", "Page"));
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: false));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
+        fixture.MarkAsInitialRevalidation(creation.Run.Id);
+        AuthoringRunItemRecord firstItem =
+            creation.Items.Single(item => item.BusinessKey == "note-a");
+        DateTimeOffset now =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim firstClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    firstItem.Id,
+                    now));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            firstItem.Id,
+            firstClaim.OperationId,
+            "first failure",
+            now.AddSeconds(1));
+        await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            creation.Run.Id,
+            now.AddMinutes(2));
+        AuthoringOperationClaim secondClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    firstItem.Id,
+                    now.AddMinutes(2)));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            firstItem.Id,
+            secondClaim.OperationId,
+            "second failure",
+            now.AddMinutes(2).AddSeconds(1));
+
+        fixture.Execute(
+            """
+            UPDATE notes
+            SET CurrentEvidenceRevision = 'note-b-revision-2'
+            WHERE NoteId = 'note-b'
+            """);
+        Assert.True(await fixture.Coordinator.SupersedeStaleItemsAsync(
+            creation.Run.Id));
+        AuthoringProcessorModeRecord firstReplacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync(
+                fixture.Coordinator.ProcessorKind);
+        AuthoringRunItemRecord unchangedReplacement =
+            (await fixture.AuthoringStore.GetRunItemsAsync(
+                firstReplacementMode.RevalidationRunId!))
+            .Single(item => item.BusinessKey == "note-a");
+
+        Assert.Equal(2, unchangedReplacement.AttemptCount);
+        AuthoringOperationClaim thirdClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    unchangedReplacement.RunId,
+                    unchangedReplacement.Id,
+                    now.AddMinutes(3)));
+        Assert.Equal(3, thirdClaim.AttemptNumber);
+
+        fixture.Execute(
+            """
+            UPDATE notes
+            SET CurrentEvidenceRevision = 'note-a-revision-2'
+            WHERE NoteId = 'note-a'
+            """);
+        Assert.True(await fixture.Coordinator.SupersedeStaleItemsAsync(
+            unchangedReplacement.RunId));
+        AuthoringConflictException exhaustedCoordinate =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => fixture.AuthoringStore.ClaimItemAsync(
+                    unchangedReplacement.RunId,
+                    unchangedReplacement.Id,
+                    now.AddMinutes(4)));
+        Assert.Equal(
+            AuthoringConflictCode.RunNotActive,
+            exhaustedCoordinate.Code);
+
+        AuthoringProcessorModeRecord secondReplacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync(
+                fixture.Coordinator.ProcessorKind);
+        AuthoringRunItemRecord changedRevision =
+            (await fixture.AuthoringStore.GetRunItemsAsync(
+                secondReplacementMode.RevalidationRunId!))
+            .Single(item => item.BusinessKey == "note-a");
+        AuthoringOperationClaim changedRevisionClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    changedRevision.RunId,
+                    changedRevision.Id,
+                    now.AddMinutes(5)));
+
+        Assert.Equal("note-a-revision-2", changedRevision.ExpectedSourceRevision);
+        Assert.Equal(0, changedRevision.AttemptCount);
+        Assert.Equal(1, changedRevisionClaim.AttemptNumber);
+    }
+
+    [Fact]
     public async Task CompletedReceipt_IsNeverReauthoredOrSuperseded()
     {
         using Fixture fixture = new();
