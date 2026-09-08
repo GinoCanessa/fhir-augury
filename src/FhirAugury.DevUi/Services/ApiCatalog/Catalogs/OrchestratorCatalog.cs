@@ -295,6 +295,27 @@ public static class OrchestratorCatalog
             Destructive: true),
 
         new ApiEndpointDescriptor(
+            Id: "processing.authoring.supersede",
+            DisplayName: "Supersede Authoring Item",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter("itemId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"not actionable\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Supersedes one current non-receipt-backed authoring error."),
+
+        new ApiEndpointDescriptor(
             Id: "processing.authoring.snapshot",
             DisplayName: "Authoring Snapshot Descriptor",
             Group: "Processing",
