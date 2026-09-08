@@ -55,6 +55,14 @@ public class ProcessingControllerTests
                 "run-1",
                 "item-1",
                 CancellationToken.None));
+        ContentResult supersede = Assert.IsType<ContentResult>(
+            await controller.SupersedeAuthoringItem(
+                "Planner",
+                "run-1",
+                "item-1",
+                JsonDocument.Parse(
+                    """{"reason":"not actionable"}""").RootElement.Clone(),
+                CancellationToken.None));
         ContentResult descriptor = Assert.IsType<ContentResult>(
             await controller.GetAuthoringSnapshot(
                 "Planner",
@@ -69,8 +77,11 @@ public class ProcessingControllerTests
         Assert.Equal(StatusCodes.Status202Accepted, created.StatusCode);
         Assert.Contains("run-1", status.Content);
         Assert.Contains("item-1", retry.Content);
+        Assert.Equal(StatusCodes.Status409Conflict, supersede.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", supersede.ContentType);
+        Assert.Contains("receipt-backed", supersede.Content);
         Assert.Equal(
-            "7",
+            "11",
             controller.Response.Headers.RetryAfter.ToString());
         Assert.Contains("snapshot-1", descriptor.Content);
         Assert.Equal([1, 2, 3, 4], bytes.FileContents);
@@ -157,6 +168,8 @@ public class ProcessingControllerTests
                 "/processing/authoring/runs/run-1" => RunEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
+                "/processing/authoring/runs/run-1/items/item-1/supersede" =>
+                    """{"error":"InvalidState","detail":"receipt-backed items cannot be superseded"}""",
                 "/processing/authoring/runs/run-1/snapshot" =>
                     """{"processorKind":"jira-fhir","runId":"run-1","snapshotId":"snapshot-1","authoringEpoch":1,"sequence":1,"schemaVersion":1,"sha256":"x","sizeBytes":4,"itemCount":1,"receiptCount":1,"tableCounts":{},"fileName":"snapshot.db","createdAt":"2026-09-04T00:00:00Z"}""",
                 _ => "{}",
@@ -164,6 +177,8 @@ public class ProcessingControllerTests
             HttpStatusCode status = path == "/processing/authoring/runs" &&
                 request.Method == HttpMethod.Post
                 ? HttpStatusCode.Accepted
+                : path.EndsWith("/supersede", StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
                 : HttpStatusCode.OK;
             HttpResponseMessage response = new(status)
             {
@@ -181,6 +196,12 @@ public class ProcessingControllerTests
                 response.Headers.RetryAfter =
                     new System.Net.Http.Headers.RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(7));
+            }
+            if (path.EndsWith("/supersede", StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new System.Net.Http.Headers.RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(11));
             }
             return Task.FromResult(response);
         }

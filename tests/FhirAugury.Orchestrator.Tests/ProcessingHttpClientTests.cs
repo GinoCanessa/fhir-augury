@@ -63,6 +63,14 @@ public class ProcessingHttpClientTests
                 "run-1",
                 "item-1",
                 CancellationToken.None);
+        ProcessingProxyResponse supersede =
+            await client.SupersedeAuthoringItemAsync(
+                "Planner",
+                "run-1",
+                "item-1",
+                JsonDocument.Parse(
+                    """{"reason":"not actionable"}""").RootElement.Clone(),
+                CancellationToken.None);
         ProcessingProxyResponse descriptor =
             await client.GetAuthoringSnapshotAsync(
                 "Planner",
@@ -80,13 +88,31 @@ public class ProcessingHttpClientTests
         Assert.Equal(HttpStatusCode.OK, status.StatusCode);
         Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
         Assert.Equal("7", retry.RetryAfter);
+        Assert.Equal(HttpStatusCode.OK, supersede.StatusCode);
+        Assert.Equal("11", supersede.RetryAfter);
+        Assert.Equal(
+            "application/json; charset=utf-8",
+            supersede.ContentType);
+        Assert.Contains(
+            "not actionable",
+            Encoding.UTF8.GetString(supersede.Content));
         Assert.Equal("application/json; charset=utf-8", descriptor.ContentType);
         Assert.Equal([1, 2, 3, 4], bytes.Content);
         Assert.Contains("/processing/authoring/runs", handler.Paths);
         Assert.Contains(
             "/processing/authoring/runs/run-1/snapshot/bytes",
             handler.Paths);
-        Assert.Contains("FHIR-1", handler.Bodies.Single());
+        Assert.Contains(
+            "/processing/authoring/runs/run-1/items/item-1/supersede",
+            handler.Paths);
+        Assert.Contains(
+            handler.Bodies,
+            body => body.Contains("FHIR-1", StringComparison.Ordinal));
+        Assert.Contains(
+            handler.Bodies,
+            body => JsonDocument.Parse(body).RootElement
+                .TryGetProperty("reason", out JsonElement reason) &&
+                reason.GetString() == "not actionable");
     }
 
     [Fact]
@@ -149,6 +175,8 @@ public class ProcessingHttpClientTests
                 "/processing/authoring/runs/run-1" => RunEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
+                "/processing/authoring/runs/run-1/items/item-1/supersede" =>
+                    """{"runId":"run-1","itemId":"item-1","status":"superseded","reason":"not actionable"}""",
                 "/processing/authoring/runs/run-1/snapshot" =>
                     """{"processorKind":"jira-fhir","runId":"run-1","snapshotId":"snapshot-1","authoringEpoch":1,"sequence":1,"schemaVersion":1,"sha256":"x","sizeBytes":4,"itemCount":1,"receiptCount":1,"tableCounts":{},"fileName":"snapshot.db","createdAt":"2026-09-04T00:00:00Z"}""",
                 _ => "{}",
@@ -179,6 +207,12 @@ public class ProcessingHttpClientTests
                 response.Headers.RetryAfter =
                     new System.Net.Http.Headers.RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(7));
+            }
+            if (path.EndsWith("/supersede", StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new System.Net.Http.Headers.RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(11));
             }
             return response;
         }

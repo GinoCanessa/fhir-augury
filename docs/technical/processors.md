@@ -46,15 +46,37 @@ A run freezes its item membership and expected source/evidence revisions.
 Typical run states are `queued`, `running`, `finalizing`, `completed`,
 `completed-database-only`, `error`, and `superseded`.
 
+`AuthoringRunScheduler<TItem>` is the sole run-backed lifecycle loop. It
+reconciles durable errors and source revisions, acquires the mutation fence for
+the oldest eligible queued run, dispatches work while processing is running,
+invokes processor-specific finalization, and activates the next queued run only
+after successful completion releases the prior fence. Pausing processing stops
+new activation and dispatch, but it does not strand reconciliation or
+finalization for the already fenced run.
+
 Each item receives an operation ID plus a secret token. The token is supplied
 only to the processor-launched worker through environment variables. Result
 submission validates the operation, token, run/item coordinates, authoring
 epoch, content hash, and observed source revision in the same transaction that
 persists the domain result and immutable receipt.
 
+`AuthoringMaxAttempts` is a total ceiling on unpersisted authoring attempts,
+including the first claim and an abandoned pre-receipt claim.
+`AuthoringRetryDelay` is the minimum interval from the failed attempt's durable
+`CompletedAt` before the scheduler retries it automatically. An explicit
+item-level `retry` may bypass that wait, but it cannot increase the attempt
+budget. Reaching the limit atomically closes the last attempt and marks the item
+`superseded`.
+
 Only an unpersisted retry gets a new operation ID and token. Once a receipt is
-accepted, retries resume post-persistence work without dispatching the author
-again.
+accepted, a later error returns to persisted post-processing after the delay
+without dispatching the author again; receipt-backed items cannot be
+operator-superseded.
+
+Status keeps `failedItems` as the aggregate of current retryable errors and
+terminal non-authored outcomes. `retryableErrorItems` reports the former and
+`supersededItems` reports the latter. An error item also reports
+`attemptsRemaining` and `nextAutomaticRetryAt` when applicable.
 
 ### Finalization and snapshots
 
@@ -77,22 +99,47 @@ Normal runs produce:
 `databaseOnly:true` is the sole explicit snapshot/site opt-out and completes as
 `completed-database-only`.
 
+Item-level supersession does not supersede the run. When every item is either
+`complete` or `superseded`, normal fenced finalization still runs—even if every
+item is superseded. A final run status of `completed` or
+`completed-database-only` is lifecycle success; any included `superseded`
+items make it an explicit partial-authoring result. Snapshot and site
+publication may continue from accepted results, but every superseded item and
+reason must remain visible.
+
 The CLI downloads and verifies the descriptor/byte pair, then promotes both
 files atomically. `ticket-site` and `notes-site` reject live processor
 databases.
 
 ### Failure boundaries
 
-- **Before receipt acceptance:** retry the failed item within the configured
-  finite limit. A new operation credential may be issued.
+- **Before receipt acceptance:** the scheduler automatically retries after the
+  configured minimum delay while attempts remain. An operator may request an
+  immediate retry without expanding the total limit, or explicitly supersede a
+  known non-actionable current error with a non-empty reason.
 - **After receipt acceptance:** hydration, grouping, or snapshot failure does
-  not invalidate the receipt. Finalization resumes from durable stages.
+  not invalidate the receipt. Post-persistence work resumes from durable state
+  without re-authoring or supersession.
 - **Snapshot download failure:** retry the download; do not re-author.
 - **Site publication failure:** preserve the verified pair and rerun only the
   site tool. Processor state is unchanged.
 - **Source revision change:** stale work is superseded or the initial
   revalidation run is atomically replaced. The gate is not cleared by stale
   work.
+
+### Recovery and Jira rediscovery
+
+After an upgraded processor starts, legacy `error` items with an open attempt
+are reconciled from their durable timestamps and messages. Due items below the
+limit return to automatic retry; a final unpersisted failure becomes an
+item-level `superseded` result. The run then follows normal finalization,
+releases its fence, and only afterward can the oldest queued run acquire it.
+
+Scheduled Preparer and Planner discovery does not immediately select an
+exhausted unchanged Jira source revision into a fresh batch. A genuinely newer
+revision is eligible normally. Deliberately retrying the unchanged revision
+requires an explicit new run, so scheduled discovery cannot invisibly reset
+the attempt budget.
 
 ## Preparer (`processor-jira-fhir-preparer`, :5171)
 
@@ -109,6 +156,7 @@ Manual CLI control:
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
 ```
 
@@ -147,6 +195,7 @@ Manual CLI control:
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"status","runId":"<runId>"}'
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\planner\\<runId>\\"}'
 ```
 
@@ -214,6 +263,8 @@ Author and download:
 ```powershell
 fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"start","hydrationExecutionId":"<executionId>","noteIds":[],"databaseOnly":false}'
 fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
 fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\ballot-notes\\<runId>\\"}'
 ```
 

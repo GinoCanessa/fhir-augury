@@ -275,14 +275,15 @@ Three typed command families control processor-owned authoring runs:
 | `planned-ticket-authoring` | Planner | [Generating Application Tickets](generating-application-tickets.md) |
 | `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
 
-Each family registers the same five actions, with command-specific start and
+Each family registers the same six actions, with command-specific start and
 worker-submission fields:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
 |--------|---------------------------------|------------------------|
 | `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. |
-| `status` | `runId` | Inspect the frozen run and its items, including any durable `acceptedReceiptId`. |
-| `retry` | `runId`, `itemId` | Retry one eligible item currently reported as failed; it is not a whole-run retry. |
+| `status` | `runId` | Inspect the frozen run and its items, including durable receipt evidence, retry timing, remaining attempts, and superseded outcomes. |
+| `retry` | `runId`, `itemId` | Request an immediate retry of one eligible current error. This may bypass the automatic delay but cannot expand the processor's total attempt budget. |
+| `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one currently fenced `error` item without a receipt as terminal and non-authored. Never infer the reason or use this for a receipt-backed item. |
 | `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
 | `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
 
@@ -296,9 +297,10 @@ Start selectors are not interchangeable:
 
 Authoring responses use several identifiers for distinct purposes:
 
-- `runId` is the frozen run coordinate used by `status`, `retry`, and
-  `snapshot`.
-- `itemId` identifies one item inside a run and is the outer retry coordinate.
+- `runId` is the frozen run coordinate used by `status`, `retry`,
+  `supersede`, and `snapshot`.
+- `itemId` identifies one item inside a run and is the outer retry/supersede
+  coordinate.
 - `operationId` correlates a processor-launched worker operation and its
   receipt; it is not an outer CLI selector.
 - `acceptedReceiptId` is durable evidence already persisted for an item. It is
@@ -319,9 +321,25 @@ Minimal outer-control examples:
 // Retry one eligible failed item
 { "command": "prepared-ticket-authoring", "action": "retry", "runId": "<runId>", "itemId": "<itemId>" }
 
+// Explicitly close one known non-actionable current error
+{ "command": "prepared-ticket-authoring", "action": "supersede", "runId": "<runId>", "itemId": "<itemId>", "reason": "duplicate request" }
+
 // Download the verified snapshot pair
 { "command": "prepared-ticket-authoring", "action": "snapshot", "runId": "<runId>", "snapshotPath": "cache\\authoring-snapshots\\preparer\\<runId>\\" }
 ```
+
+Automatic retry is processor-owned. Outer automation should normally keep
+polling instead of issuing `retry`; use immediate retry only as an explicit
+operator choice, and do not replay either mutating action after an ambiguous
+transport failure.
+
+In status responses, `failedItems` remains the aggregate,
+`retryableErrorItems` counts errors still under automatic retry, and
+`supersededItems` counts terminal non-authored items. Item errors may include
+`attemptsRemaining` and `nextAutomaticRetryAt`. Exact run status `completed` or
+`completed-database-only` remains lifecycle success even when superseded items
+make the result partial; continue snapshot/site publication from accepted
+results while surfacing each superseded item and reason.
 
 Do not copy `submit` into an outer control script. For exhaustive request and
 response shapes, run `fhir-augury --help <command>` or export them with

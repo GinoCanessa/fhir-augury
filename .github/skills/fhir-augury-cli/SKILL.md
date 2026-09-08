@@ -79,9 +79,9 @@ Commands map 1:1 to handlers in `src/FhirAugury.Cli/Dispatch/Handlers/`.
 | `call` | Invoke an arbitrary source operation by `(source, operation)` |
 | `save-schemas` | Dump every source's full schema set to a directory |
 | `jira-items`, `jira-dimension`, `jira-workgroup`, `jira-project`, `jira-local-processing`, `jira-specs` | Jira source-scoped families (added in the 2026-04 sync). Mirror the typed orchestrator proxies under `/api/v1/jira/...` and the GitHub-side `jira-specs` resolver. |
-| `prepared-ticket-authoring` | Preparer authoring-run start, status, retry, worker submit, and verified snapshot download |
-| `planned-ticket-authoring` | Planner authoring-run start, status, retry, worker submit, and verified snapshot download |
-| `ballot-note-authoring` | BallotNotes authoring-run start, status, retry, worker submit, and verified snapshot download |
+| `prepared-ticket-authoring` | Preparer authoring-run start, status, bounded immediate retry, explicit supersession, worker submit, and verified snapshot download |
+| `planned-ticket-authoring` | Planner authoring-run start, status, bounded immediate retry, explicit supersession, worker submit, and verified snapshot download |
+| `ballot-note-authoring` | BallotNotes authoring-run start, status, bounded immediate retry, explicit supersession, worker submit, and verified snapshot download |
 | `zulip-items`, `zulip-messages`, `zulip-streams`, `zulip-threads` | Zulip source-scoped families. |
 | `confluence-items`, `confluence-pages` | Confluence source-scoped families. |
 | `github-items`, `github-repos` | GitHub source-scoped families (action-first item layout — `items/{action}/{**key}` — preserved by design). |
@@ -177,9 +177,11 @@ internals.
 
 ### Run-backed authoring
 
-Outer automation may start a frozen run, inspect its status, retry an eligible
-failed item, and download its verified snapshot pair. The `submit` action is
-reserved for processor-launched callback workers with the complete
+Outer automation may start a frozen run, inspect its status, request an
+immediate bounded retry, explicitly supersede a known non-actionable error, and
+download its verified snapshot pair. Automatic retry is processor-owned, so
+polling—not manual retry—is the default. The `submit` action is reserved for
+processor-launched callback workers with the complete
 `FHIR_AUGURY_AUTHORING_*` environment; never construct callback tokens or
 context in an outer skill.
 
@@ -189,12 +191,13 @@ context in an outer skill.
 | `planned-ticket-authoring` | Optional `ticketKeys`; omitted or `[]` uses Planner discovery | [Application tickets](../../../docs/user/generating-application-tickets.md) |
 | `ballot-note-authoring` | Required `hydrationExecutionId`; optional `noteIds` stays within that execution | [Ballot notes](../../../docs/user/generating-ballot-notes.md) |
 
-All three commands accept actions `start`, `status`, `retry`, `submit`, and
-`snapshot`. `databaseOnly: true` on `start` is the explicit no-snapshot mode.
-Use `runId` for status, retry, and snapshot; add `itemId` to retry one failed
-item. `operationId` is worker/receipt correlation, `acceptedReceiptId` is
-durable item evidence returned by status, and descriptor `snapshotId` is the
-immutable output identity rather than a CLI selector.
+All three commands accept actions `start`, `status`, `retry`, `supersede`,
+`submit`, and `snapshot`. `databaseOnly: true` on `start` is the explicit
+no-snapshot mode. Use `runId` for status, retry, supersede, and snapshot; add
+`itemId` for retry or supersede, and a non-blank `reason` for supersede.
+`operationId` is worker/receipt correlation, `acceptedReceiptId` is durable
+item evidence returned by status, and descriptor `snapshotId` is the immutable
+output identity rather than a CLI selector.
 
 ```bash
 # Start and retain data.runId from the output envelope
@@ -203,12 +206,26 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start",
 # Inspect items and retain acceptedReceiptId evidence
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
 
-# Retry only an eligible failed item
+# Request an immediate retry only when explicitly directed
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+
+# Explicitly close a known non-actionable, non-receipt-backed error
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"duplicate request"}'
 
 # Download the verified pair; trust the returned paths and descriptor filename
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
 ```
+
+Status keeps `failedItems` as the aggregate:
+`retryableErrorItems` identifies errors still governed by automatic retry and
+`supersededItems` identifies terminal non-authored outcomes. Item errors may
+include `attemptsRemaining` and `nextAutomaticRetryAt`. Exact run status
+`completed` or `completed-database-only` is lifecycle success even with
+superseded items; treat that as partial authoring, continue publication from
+accepted results, and surface every superseded item and reason.
+
+Never infer a supersede reason, never supersede a receipt-backed item, and
+never replay `retry` or `supersede` after an ambiguous transport failure.
 
 Render or publish only from the `snapshot` action's verified
 `snapshotPath` / `descriptorPath` pair. For human-facing action and identifier

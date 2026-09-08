@@ -641,17 +641,17 @@ public static class SchemaGenerator
         ),
         ["prepared-ticket-authoring"] = AuthoringSchema(
             "prepared-ticket-authoring",
-            "Typed Preparer run control, worker submission, retry, and snapshot download",
+            "Typed Preparer run control, worker submission, retry, supersession, and snapshot download",
             "ticketKeys",
             "PreparedTicketPayload"),
         ["planned-ticket-authoring"] = AuthoringSchema(
             "planned-ticket-authoring",
-            "Typed Planner run control, worker submission, retry, and snapshot download",
+            "Typed Planner run control, worker submission, retry, supersession, and snapshot download",
             "ticketKeys",
             "PlannedTicketPayload"),
         ["ballot-note-authoring"] = AuthoringSchema(
             "ballot-note-authoring",
-            "Typed BallotNotes run control, worker submission, retry, and snapshot download",
+            "Typed BallotNotes run control, worker submission, retry, supersession, and snapshot download",
             "noteIds",
             "BallotNoteProsePutRequest"),
     };
@@ -688,7 +688,7 @@ public static class SchemaGenerator
                 ["action"] = new
                 {
                     type = "string",
-                    enumValues = new[] { "start", "status", "retry", "submit", "snapshot" },
+                    enumValues = new[] { "start", "status", "retry", "supersede", "submit", "snapshot" },
                     description = "Authoring action",
                 },
                 [selectionProperty] = ArrayProp(
@@ -702,10 +702,13 @@ public static class SchemaGenerator
                     false),
                 ["runId"] = Prop(
                     "string",
-                    "Run identifier for status, retry, or snapshot"),
+                    "Run identifier for status, retry, supersede, or snapshot"),
                 ["itemId"] = Prop(
                     "string",
-                    "Run item identifier for retry"),
+                    "Run item identifier for retry or supersede"),
+                ["reason"] = Prop(
+                    "string",
+                    "Required non-blank reason when action is supersede"),
                 ["payload"] = Prop(
                     "object",
                     $"{submissionType} used by prepared/planned worker submit"),
@@ -725,7 +728,7 @@ public static class SchemaGenerator
             new
             {
                 type = "object",
-                description = "Typed run, retry, receipt, or snapshot result for the selected action",
+                description = "Typed run, retry, supersede, receipt, or snapshot result for the selected action",
             });
 
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);

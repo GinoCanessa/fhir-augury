@@ -35,8 +35,9 @@ curl http://localhost:5171/health
 Invoke the [`orchestrate-prep`](../../.github/skills/orchestrate-prep/SKILL.md)
 skill. With no ticket list it requests the processor's configured scheduled
 selection; with ticket keys it requests an explicit frozen run. The skill
-polls processor state, retries eligible failed items within a finite limit,
-downloads the trusted snapshot pair, and publishes the site.
+polls processor state while the shared scheduler applies bounded automatic
+retry, downloads the trusted snapshot pair, and publishes the site. Immediate
+retry or early item supersession occurs only when explicitly requested.
 
 Set `databaseOnly` only when the caller explicitly wants structured processor
 state without a snapshot or site.
@@ -68,14 +69,28 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status"
 
 Continue while the run is `queued`, `running`, or `finalizing`. An authored
 item is successful only when it is `complete` and has an
-`acceptedReceiptId`. Retry a current `error` item, not the whole run:
+`acceptedReceiptId`. For an `error`, inspect `attemptsRemaining` and
+`nextAutomaticRetryAt`; the processor retries automatically after the
+configured minimum delay. Do not issue manual retries by default. An explicit
+immediate retry may bypass that delay, but cannot increase the total attempt
+budget:
 
 ```powershell
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 ```
 
+Only when an operator has determined that a current, non-receipt-backed error
+is non-actionable may it be closed with an explicit reason:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"duplicate request"}'
+```
+
 Normal success is `completed`. `completed-database-only` is valid only for a
-run that was explicitly started with `databaseOnly:true`.
+run that was explicitly started with `databaseOnly:true`. Either status is
+lifecycle success even when item-level `superseded` outcomes make the result
+partial. Continue snapshot and site publication from accepted results, and
+surface every superseded item and reason.
 
 Topic grouping is part of fenced finalization. Do not run a separate direct
 database grouping pass. The grouping maintenance endpoint exists only for an
@@ -105,10 +120,13 @@ Open `cache\jira-ticket-site\index.html` and choose **Tickets for Discussion**.
 
 ## Failure boundaries
 
-- An unpersisted authoring failure may be retried at the item level with a new
-  operation token.
+- Unpersisted authoring failures are retried automatically after
+  `AuthoringRetryDelay` until the total `AuthoringMaxAttempts` budget is
+  exhausted; exhaustion produces an item-level `superseded` outcome and does
+  not supersede the run.
 - Once a receipt is accepted, later hydration, grouping, snapshot, or site
-  failure does not invalidate it.
+  failure does not invalidate it, trigger re-authoring, or permit item
+  supersession.
 - A snapshot failure is retried by processor finalization; do not re-author
   accepted items.
 - A site publication failure is client-side. Keep the snapshot pair and rerun
@@ -116,6 +134,13 @@ Open `cache\jira-ticket-site\index.html` and choose **Tickets for Discussion**.
 - Existing pre-cutover rows remain `legacy-unverified` until the processor's
   initial revalidation run accepts real receipts. Ordinary runs and the first
   canonical snapshot remain blocked until that gate clears.
+- On startup after an upgrade, a stalled legacy `error` with an open attempt is
+  reconciled, retried when due if budget remains, or terminalized at the item
+  level after its final failure. Normal finalization releases the fence before
+  the oldest queued run starts.
+- Scheduled discovery does not automatically reselect an exhausted unchanged
+  Jira revision. A newer revision is eligible normally; deliberately retrying
+  the unchanged revision requires an explicit new run.
 
 ## Reference
 

@@ -1,6 +1,6 @@
 ---
 name: orchestrate-prep
-description: "Controls processor-owned bulk ticket preparation runs. USE FOR: scheduled or explicit multi-ticket preparation, retrying failed run items, immutable Preparer snapshot download, and discussion-site publication. It never dispatches authoring agents itself or tracks completion in Jira or files. The processor owns selection, worker execution, receipts, fenced finalization, grouping, and snapshot creation; this skill starts the run, polls authoritative state, downloads the verified snapshot pair, and publishes only from that pair."
+description: "Controls processor-owned bulk ticket preparation runs. USE FOR: scheduled or explicit multi-ticket preparation, observing finite automatic retry, applying explicit item dispositions, immutable Preparer snapshot download, and discussion-site publication. It never dispatches authoring agents itself or tracks completion in Jira or files. The processor owns selection, worker execution, receipts, retry timing, fenced finalization, grouping, and snapshot creation; this skill starts the run, polls authoritative state, downloads the verified snapshot pair, and publishes only from that pair."
 ---
 
 # Orchestrate Prep Skill
@@ -17,8 +17,11 @@ present. The processor owns candidate scheduling and worker dispatch.
   list to let the Preparer create its configured scheduled run.
 - **Database only** *(optional, default `false`)* — suppress snapshot and site
   publication only when explicitly true.
-- **Retry failed items** *(optional, default `true`)* — retry each current
-  `error` item at most once unless the caller sets a different finite limit.
+- **Immediate-retry item IDs** *(optional, default none)* — explicit current
+  `error` items whose automatic delay should be bypassed. This cannot expand
+  the processor's total attempt budget.
+- **Supersede reasons** *(optional, default none)* — explicit map from item ID
+  to a non-blank operator reason for a known non-actionable current error.
 - **Snapshot directory** *(optional, default
   `cache\authoring-snapshots\preparer\<runId>\`)*.
 - **Site output** *(optional, default `cache\jira-ticket-site`)*.
@@ -58,15 +61,33 @@ Continue while the run is `queued`, `running`, or `finalizing`.
 - An authored item is accepted only when it is `complete` with a non-empty
   `acceptedReceiptId`.
 - A `superseded` item is terminal but not authored; surface it explicitly.
-- If enabled, call action `retry` only for an item currently in `error`, and
-  only within the configured finite retry limit.
+- A current `error` is processor-owned automatic retry state. Use
+  `attemptsRemaining` and `nextAutomaticRetryAt`, and keep polling by default.
+- Call action `retry` only for an explicitly listed immediate-retry item that
+  is still in `error`. It may bypass the delay but cannot expand the budget.
+- Call action `supersede` only for an item present in the explicit reason map
+  that is still `error` and has no `acceptedReceiptId`:
+
+  ```powershell
+  fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
+  ```
+
+- Never infer non-actionability, invent a reason, supersede a receipt-backed
+  item, or treat item-level supersession as run-level supersession.
 - Never restart the whole run to retry one item.
 - Run `error` or `superseded` is failure. Return the run ID, failed or
   superseded item IDs, current operation IDs, accepted receipt IDs, and the
   processor error.
 
 Normal success is exact run status `completed`. Explicit storage-only success
-is exact run status `completed-database-only`.
+is exact run status `completed-database-only`. Either is lifecycle success
+when individual items are `superseded`: classify the result as partial
+authoring, surface every item and reason, and continue snapshot/site
+publication from accepted results.
+
+For scheduled selection, an exhausted unchanged Jira revision is not selected
+again automatically. A newer revision remains eligible; deliberately retrying
+the unchanged revision requires an explicit new run.
 
 ### 3. Download the canonical snapshot
 
@@ -101,6 +122,6 @@ Do not retry authoring or delete the snapshot because publication failed.
 ## Completion result
 
 Return a concise structured result containing the run ID, terminal status,
-authoring epoch, item totals, accepted receipt IDs, superseded item IDs,
-snapshot ID and sequence when present, snapshot pair paths, and published
-site path. Processor state is the only completion authority.
+authoring epoch, item totals, accepted receipt IDs, superseded item IDs and
+reasons, snapshot ID and sequence when present, snapshot pair paths, and
+published site path. Processor state is the only completion authority.

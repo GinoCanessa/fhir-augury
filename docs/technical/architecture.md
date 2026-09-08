@@ -229,9 +229,10 @@ The `RelatedItemFinder` combines four signals to rank related items:
 Processing services are layered separately from source ingestion.
 `FhirAugury.Processing.Common` owns the durable authoring state machine:
 frozen runs and items, public operation IDs plus secret token verifiers,
-immutable persistence receipts, item retry, processor mutation fences,
-resumable finalization stages, one-way legacy cutover/revalidation, and
-monotonic snapshot descriptors.
+immutable persistence receipts, finite retry policy, the shared lifecycle
+scheduler, typed run controls, processor mutation fences, resumable
+finalization stages, one-way legacy cutover/revalidation, and monotonic
+snapshot descriptors.
 
 `FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed
 processors. It discovers candidates through Source.Jira or the Orchestrator,
@@ -245,15 +246,20 @@ The run-backed data flow is:
 
 1. A client starts a scheduled or explicit run through the typed CLI or
    Orchestrator proxy.
-2. The processor freezes item membership/revisions and acquires its mutation
-   fence.
-3. Workers submit typed results through operation-scoped callbacks.
-4. The processor atomically persists the domain result and receipt, then
+2. The processor freezes item membership/revisions and leaves the run queued.
+   The shared scheduler reconciles source state and acquires the mutation fence
+   for the oldest eligible run.
+3. The scheduler dispatches workers, automatically retries unpersisted errors
+   after the configured minimum delay, and marks the item superseded when its
+   total attempt budget is exhausted.
+4. Workers submit typed results through operation-scoped callbacks.
+5. The processor atomically persists the domain result and receipt, then
    completes required post-persistence work such as ticket hydration.
-5. After every item is complete or superseded, fenced finalization refreshes
+6. After every item is complete or superseded, fenced finalization refreshes
    shared catalogs, performs grouping, and creates a sanitized immutable
-   snapshot.
-6. The client downloads the verified descriptor/byte pair and invokes the
+   snapshot. Completion releases the fence before the oldest queued successor
+   can activate.
+7. The client downloads the verified descriptor/byte pair and invokes the
    static site tool. Publication is outside processor state.
 
 There are four concrete processors:
@@ -302,9 +308,11 @@ contract classes in `FhirAugury.Common/Api/` define the request/response types:
 
 Services use `IHttpClientFactory` with named clients for HTTP communication.
 The Orchestrator communicates with source services via HTTP and exposes typed,
-thin authoring proxies for the processors. MCP/CLI clients connect to the
-Orchestrator via HTTP. The Orchestrator does not aggregate processor databases
-or perform authoring persistence.
+thin authoring proxies for processor run creation, status, retry, explicit
+item supersession, and snapshot transfer. MCP/CLI clients connect to the
+Orchestrator via HTTP. The Orchestrator validates only service availability and
+preserves processor responses; it does not interpret retry budgets, receipts,
+supersession reasons, or processor database state.
 
 ### Source-Generated CRUD over ORM
 
@@ -341,11 +349,13 @@ API responses without hitting the remote API.
 
 Both MCP servers and the CLI are thin HTTP clients to the Orchestrator. They
 contain no live service-database access. Typed CLI authoring commands start,
-inspect, retry, submit worker callbacks, and download snapshots through the
-Orchestrator proxies. The CLI verifies snapshot identity, size, and SHA-256
-before atomically promoting the descriptor/byte pair. McpHttp is also an
-ASP.NET Core web application (port 5200, `/mcp` endpoint) that participates in
-Aspire orchestration via ServiceDefaults.
+inspect, request an immediate bounded retry, explicitly supersede a current
+non-receipt-backed error with a reason, submit worker callbacks, and download
+snapshots through the Orchestrator proxies. Mutating outer requests are not
+replayed after ambiguous transport failure. The CLI verifies snapshot identity,
+size, and SHA-256 before atomically promoting the descriptor/byte pair. McpHttp
+is also an ASP.NET Core web application (port 5200, `/mcp` endpoint) that
+participates in Aspire orchestration via ServiceDefaults.
 
 ## Concurrency Model
 

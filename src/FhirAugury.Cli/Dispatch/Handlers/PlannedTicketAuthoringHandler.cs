@@ -31,6 +31,12 @@ public static class PlannedTicketAuthoringHandler
                 Required(request.RunId, "runId"),
                 Required(request.ItemId, "itemId"),
                 ct),
+            "supersede" => await client.SupersedeAsync(
+                "Planner",
+                Required(request.RunId, "runId"),
+                Required(request.ItemId, "itemId"),
+                Required(request.Reason, "reason"),
+                ct),
             "submit" => await SubmitAsync(request, client, ct),
             "snapshot" => await client.DownloadSnapshotAsync(
                 "Planner",
@@ -39,7 +45,7 @@ public static class PlannedTicketAuthoringHandler
                 request.DescriptorPath,
                 ct),
             _ => throw new ArgumentException(
-                "Action must be start, status, retry, submit, or snapshot."),
+                "Action must be start, status, retry, supersede, submit, or snapshot."),
         };
     }
 

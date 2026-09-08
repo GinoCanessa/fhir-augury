@@ -10,6 +10,68 @@ namespace FhirAugury.Cli.Tests.Authoring;
 public sealed class BallotNoteAuthoringHandlerTests
 {
     [Fact]
+    public async Task SupersedeUsesTypedOrchestratorRequest()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new(async (request, _, ct) =>
+        {
+            Assert.Equal(
+                "/api/v1/processing-services/BallotNotes/authoring/runs/run-1/items/item-1/supersede",
+                request.RequestUri!.AbsolutePath);
+            System.Text.Json.JsonElement body =
+                System.Text.Json.JsonDocument.Parse(
+                    await request.Content!.ReadAsStringAsync(ct)).RootElement;
+            Assert.Equal(
+                "duplicate",
+                body.GetProperty("reason").GetString());
+            return DelegateHttpHandler.Json(
+                new AuthoringItemSupersedeResult(
+                    "run-1",
+                    "item-1",
+                    "superseded",
+                    "duplicate"));
+        });
+
+        object result = await BallotNoteAuthoringHandler.HandleAsync(
+            new BallotNoteAuthoringRequest
+            {
+                Action = "supersede",
+                RunId = "run-1",
+                ItemId = "item-1",
+                Reason = "duplicate",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        Assert.Equal(
+            "superseded",
+            Assert.IsType<AuthoringItemSupersedeResult>(result).Status);
+    }
+
+    [Fact]
+    public async Task SupersedeRequiresReason()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            throw new InvalidOperationException("HTTP should not be called."));
+
+        ArgumentException error = await Assert.ThrowsAsync<ArgumentException>(
+            () => BallotNoteAuthoringHandler.HandleAsync(
+                new BallotNoteAuthoringRequest
+                {
+                    Action = "supersede",
+                    RunId = "run-1",
+                    ItemId = "item-1",
+                },
+                "http://orchestrator",
+                CancellationToken.None,
+                handler));
+
+        Assert.Contains("reason", error.Message);
+        Assert.Equal(0, handler.Calls);
+    }
+
+    [Fact]
     public async Task SnapshotDownloadsVerifiedBytesAndDescriptorTogether()
     {
         AuthoringHttpClient.EnsureOuterMode();

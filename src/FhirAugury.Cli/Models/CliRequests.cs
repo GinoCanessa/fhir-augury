@@ -528,6 +528,9 @@ public abstract class AuthoringCommandRequest : CliRequest
     [JsonPropertyName("itemId")]
     public string? ItemId { get; set; }
 
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
+
     [JsonPropertyName("databaseOnly")]
     public bool DatabaseOnly { get; set; }
 

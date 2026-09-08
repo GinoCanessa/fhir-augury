@@ -38,6 +38,15 @@ public sealed class AuthoringSchemaTests
         Assert.DoesNotContain(
             "commands/prepared-ticket-write",
             SchemaGenerator.GenerateForCommand("prepared-ticket-write").Keys);
+
+        foreach (string command in expected)
+        {
+            string schema = System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(command));
+            Assert.Contains("\"supersede\"", schema);
+            Assert.Contains("\"reason\"", schema);
+            Assert.Contains("Required non-blank reason", schema);
+        }
     }
 
     [Fact]

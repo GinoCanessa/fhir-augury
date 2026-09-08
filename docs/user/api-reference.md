@@ -253,6 +253,7 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot` | Get the trusted snapshot descriptor |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
 
@@ -265,6 +266,11 @@ BallotNotes provides authoring but not the Jira processors' lifecycle/queue
 surface, and Applier provides lifecycle/queue but no authoring-run API.
 Receipt lookup and authenticated worker result submission are direct
 processor endpoints; the Orchestrator does not proxy them.
+
+The supersede request body is `{"reason":"<non-empty operator reason>"}`.
+The Orchestrator forwards the request and preserves the processor's response
+body, content type, status code, and `Retry-After`; it does not interpret the
+reason, attempt count, receipt state, or processor-owned lifecycle.
 
 > **Note.** There is no generic reverse proxy at
 > `/api/v1/source/{name}/...`; per-source operations are exposed through
@@ -532,6 +538,7 @@ Preparer and Planner expose the same direct control family under
 | `POST` | `/api/v1/processing/authoring/runs` | Create a frozen run |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
@@ -540,6 +547,13 @@ Processor-launched workers submit authenticated results directly to the
 unversioned callback
 `POST /processing/authoring/runs/{runId}/items/{itemId}/result`. This callback
 is not an outer operator endpoint and is not exposed through the Orchestrator.
+
+`retry` requests an immediate retry and may bypass the configured delay, but
+cannot expand the total attempt limit. `supersede` requires
+`{"reason":"..."}` and is accepted only for an `error` item without an
+accepted receipt in the currently fenced run. Missing or blank reasons return
+400, unknown or mismatched coordinates return 404, and invalid lifecycle,
+fence, attempt-limit, completed, or receipt-backed states return 409.
 
 ### BallotNotes APIs
 
@@ -554,10 +568,22 @@ versioned status, queue, start, or stop routes apply to it.
 | `POST` | `/api/v1/ballot-notes/authoring/runs` | Create a run scoped to a hydration execution |
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
 | `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/{type}/{slug}/result` | Submit an authenticated worker result |
+
+All three run-status envelopes use the same additive failure fields:
+`failedItems` is the aggregate of retryable errors plus terminal
+non-authored outcomes, `retryableErrorItems` counts the errors still governed
+by processor-owned automatic retry, and `supersededItems` counts terminal
+item-level outcomes. Error items include `attemptsRemaining` and
+`nextAutomaticRetryAt` where applicable. A run that finishes as `completed` or
+`completed-database-only` while containing superseded items is lifecycle
+success with an explicit partial-authoring result; consumers may continue
+snapshot publication from accepted results but must surface every superseded
+item and reason.
 
 ### Applier API
 

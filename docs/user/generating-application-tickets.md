@@ -26,9 +26,10 @@ snapshot pair.
 ## Recommended flow
 
 Invoke the [`orchestrate-plan`](../../.github/skills/orchestrate-plan/SKILL.md)
-skill. It requests a frozen Planner run, polls authoritative state, retries
-eligible failed items, downloads the verified snapshot pair, and publishes the
-applying site. An empty ticket list delegates selection to the processor's
+skill. It requests a frozen Planner run, polls authoritative state while the
+processor applies its finite retry policy, downloads the verified snapshot
+pair, and publishes the applying site. It does not issue manual retries by
+default. An empty ticket list delegates selection to the processor's
 configured filters.
 
 ## Manual equivalent
@@ -42,11 +43,26 @@ fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"status",
 
 For explicit tickets, populate `ticketKeys`. Continue polling while the run is
 `queued`, `running`, or `finalizing`. Successful items are `complete` and carry
-an `acceptedReceiptId`. Retry only an item currently in `error`:
+an `acceptedReceiptId`. Current errors report `attemptsRemaining` and
+`nextAutomaticRetryAt`; the scheduler retries them automatically after the
+minimum delay. Use `retry` only for an explicit immediate-retry decision. It may
+bypass the delay but cannot expand the configured total-attempt budget:
 
 ```powershell
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 ```
+
+An operator may explicitly supersede a known non-actionable current error only
+when it has no accepted receipt:
+
+```powershell
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"ticket no longer requires implementation"}'
+```
+
+Exact run status `completed` or `completed-database-only` is lifecycle success.
+If items are `superseded`, the outcome is partial rather than a run failure:
+surface every item and reason, then continue snapshot/site publication from the
+accepted plans.
 
 Grouping is a required fenced finalization stage. A completed snapshot run has
 current grouping receipts for every affected partition; there is no separate
@@ -97,14 +113,21 @@ record exists, and `409` when no repository has a successful local commit.
 ## Failure boundaries
 
 - Planner authoring retries rotate credentials only before a receipt is
-  accepted.
+  accepted. They occur automatically until the total attempt limit; the final
+  unpersisted failure becomes an item-level `superseded` outcome.
 - Accepted plan receipts survive hydration, grouping, snapshot, and site
-  failures.
+  failures and are never re-authored or superseded.
 - Snapshot creation is processor-owned and resumable; site publication is a
   separate client-side step.
 - The initial cutover revalidation preserves the Planner completion
   coordinates used by the Applier when content is unchanged. Changed accepted
   plans receive new completion coordinates and become eligible for applying.
+- On upgraded startup, legacy stalled errors are reconciled and allowed to
+  retry or exhaust; the active run finalizes and releases its fence before the
+  oldest queued run activates.
+- Scheduled Planner discovery does not reselect an exhausted unchanged Jira
+  revision. A newer revision remains eligible; an intentional retry of the same
+  revision requires an explicit new run.
 
 ## Reference
 

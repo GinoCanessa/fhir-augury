@@ -113,6 +113,19 @@ public class ProcessingHttpClient
             body: null,
             ct);
 
+    public Task<ProcessingProxyResponse> SupersedeAuthoringItemAsync(
+        string name,
+        string runId,
+        string itemId,
+        JsonElement request,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/items/{Uri.EscapeDataString(itemId)}/supersede",
+            request,
+            ct);
+
     public Task<ProcessingProxyResponse> GetAuthoringSnapshotAsync(
         string name,
         string runId,

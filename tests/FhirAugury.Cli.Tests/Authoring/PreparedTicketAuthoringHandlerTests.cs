@@ -77,6 +77,66 @@ public sealed class PreparedTicketAuthoringHandlerTests
     }
 
     [Fact]
+    public async Task SupersedeUsesTypedOrchestratorRouteAndReason()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new(async (request, _, ct) =>
+        {
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs/run-1/items/item-1/supersede",
+                request.RequestUri!.AbsolutePath);
+            JsonElement body = JsonDocument.Parse(
+                await request.Content!.ReadAsStringAsync(ct)).RootElement;
+            Assert.Equal("not actionable", body.GetProperty("reason").GetString());
+            return DelegateHttpHandler.Json(
+                new AuthoringItemSupersedeResult(
+                    "run-1",
+                    "item-1",
+                    "superseded",
+                    "not actionable"));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "supersede",
+                RunId = "run-1",
+                ItemId = "item-1",
+                Reason = "not actionable",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        Assert.Equal(
+            "superseded",
+            Assert.IsType<AuthoringItemSupersedeResult>(result).Status);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task SupersedeDoesNotReplayAfterTransportFailure()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            throw new HttpRequestException("response lost"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            PreparedTicketAuthoringHandler.HandleAsync(
+                new PreparedTicketAuthoringRequest
+                {
+                    Action = "supersede",
+                    RunId = "run-1",
+                    ItemId = "item-1",
+                    Reason = "not actionable",
+                },
+                "http://orchestrator",
+                CancellationToken.None,
+                handler));
+
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
     public async Task WorkerSubmitRetriesSamePayloadAndKeepsTokenOutOfBodyAndUrl()
     {
         const string token = "secret-token-value";

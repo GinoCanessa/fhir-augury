@@ -153,6 +153,28 @@ public class ProcessingController(
                 ct));
     }
 
+    [HttpPost("{name}/authoring/runs/{runId}/items/{itemId}/supersede")]
+    public async Task<IActionResult> SupersedeAuthoringItem(
+        string name,
+        string runId,
+        string itemId,
+        [FromBody] JsonElement request,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.SupersedeAuthoringItemAsync(
+                name,
+                runId,
+                itemId,
+                request,
+                ct));
+    }
+
     [HttpGet("{name}/authoring/runs/{runId}/snapshot")]
     public async Task<IActionResult> GetAuthoringSnapshot(
         string name,

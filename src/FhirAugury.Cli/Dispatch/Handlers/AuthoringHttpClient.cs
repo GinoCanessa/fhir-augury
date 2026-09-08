@@ -128,6 +128,34 @@ internal sealed class AuthoringHttpClient : IDisposable
         return response;
     }
 
+    public async Task<AuthoringItemSupersedeResult> SupersedeAsync(
+        string serviceName,
+        string runId,
+        string itemId,
+        string reason,
+        CancellationToken ct)
+    {
+        EnsureOuterMode();
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        AuthoringItemSupersedeResult response =
+            await SendJsonAsync<AuthoringItemSupersedeResult>(
+                HttpMethod.Post,
+                $"{ControlPath(serviceName)}/{Uri.EscapeDataString(runId)}/items/{Uri.EscapeDataString(itemId)}/supersede",
+                new AuthoringItemSupersedeRequest(reason),
+                token: null,
+                retryTransient: false,
+                ct);
+        if (!string.Equals(response.RunId, runId, StringComparison.Ordinal) ||
+            !string.Equals(response.ItemId, itemId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Supersede response coordinates '{response.RunId}/{response.ItemId}' do not match requested item '{runId}/{itemId}'.");
+        }
+        return response;
+    }
+
     public async Task<AuthoringSubmitResponse> SubmitAsync<TRequest>(
         TRequest request,
         string contentHash,

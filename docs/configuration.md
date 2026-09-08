@@ -584,6 +584,12 @@ sanitized review snapshots. Their database paths are private service state, not
 client inputs. The Applier retains its existing work queue over the Planner
 compatibility projection.
 
+For run-backed authoring, `AuthoringMaxAttempts` counts the total number of
+unpersisted authoring claims, including the first attempt and abandoned
+pre-receipt claims. `AuthoringRetryDelay` is a minimum wait measured from the
+failed attempt's durable completion time before automatic retry. An explicit
+manual retry may bypass that wait but never expands the total attempt budget.
+
 ### appsettings.json (Planner shown; Preparer omits the `Planner` block)
 
 ```json
@@ -642,8 +648,8 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.MaxConcurrentProcessingThreads` | int | `3`–`8` | Max tickets processed concurrently (per-processor default) |
 | `Processing.StartProcessingOnStartup` | bool | `true` | Begin processing the queue on boot |
 | `Processing.OrphanedInProgressThreshold` | TimeSpan | `00:10:00` | Age after which an abandoned in-progress claim is recoverable |
-| `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Delay before retrying an eligible authoring item |
-| `Processing.AuthoringMaxAttempts` | int | `3` | Maximum unpersisted authoring attempts |
+| `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
+| `Processing.AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
 | `Processing.SnapshotDirectory` | string | per-processor | Directory owned by the processor for immutable review snapshots |
 | `Processing.SnapshotSchemaVersion` | int | `1` | Public snapshot schema version |
 | `Processing.ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot creation/promotion/recording |
@@ -679,6 +685,10 @@ then runs processor-owned artifact/page/datatype authoring with callback-only
 workers and accepted receipts. Normal runs emit trusted snapshots consumed by
 `notes-site`; the live database is not a renderer input. The AppHost resource
 uses `WithExplicitStart()`.
+
+Its retry settings use the same total-attempt and minimum-delay semantics as
+Preparer and Planner. Automatic retry is scheduler-owned; an explicit retry can
+bypass the wait but cannot reset or increase the configured budget.
 
 > To run a hydration (and for the Preparer/Planner/Applier operational flow),
 > see the [processors runbook](technical/processors.md).
@@ -719,8 +729,8 @@ uses `WithExplicitStart()`.
 |-----|------|---------|-------------|
 | `DatabasePath` | string | `./cache/ballot-notes.db` | Private processor-owned SQLite state |
 | `Ports.Http` | int | `5174` | HTTP listen port |
-| `AuthoringRetryDelay` | TimeSpan | `00:01:00` | Delay before retrying eligible authoring work |
-| `AuthoringMaxAttempts` | int | `3` | Maximum unpersisted authoring attempts |
+| `AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
+| `AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
 | `SnapshotDirectory` | string | `./cache/snapshots/ballot-notes` | Processor-owned immutable snapshot directory |
 | `SnapshotSchemaVersion` | int | `1` | Public snapshot schema version |
 | `ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot publication |

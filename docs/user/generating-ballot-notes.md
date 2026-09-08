@@ -27,8 +27,9 @@ site publication never writes to the processor database.
 Invoke the [`orchestrate-notes`](../../.github/skills/orchestrate-notes/SKILL.md)
 skill with `owner/name` and `sinceSha`. It creates exactly one hydration
 execution, selects units from that execution, starts processor-owned
-authoring, retries eligible failed items, downloads the snapshot pair, and
-publishes the site.
+authoring, observes processor-owned finite automatic retry, downloads the
+snapshot pair, and publishes the site. It issues an immediate retry or early
+supersession only when explicitly directed.
 
 ## Manual equivalent
 
@@ -70,11 +71,26 @@ fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"status","ru
 
 Continue through `queued`, `running`, and `finalizing`. Success requires
 `completed`; each authored item must be `complete` with an
-`acceptedReceiptId`. Retry only a current `error` item:
+`acceptedReceiptId`. An `error` reports `attemptsRemaining` and
+`nextAutomaticRetryAt`, and the scheduler retries it automatically after the
+minimum delay. Use `retry` only for an explicit immediate retry; it cannot
+increase the configured total attempt budget:
 
 ```powershell
 fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 ```
+
+Only an explicitly identified non-actionable current error without a receipt
+may be superseded:
+
+```powershell
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"duplicate note unit"}'
+```
+
+`completed` or explicit storage-only `completed-database-only` is lifecycle
+success even when superseded items make the authoring result partial. Surface
+their IDs and reasons, then continue snapshot/site publication from accepted
+receipts.
 
 ### 4. Download the canonical snapshot
 
@@ -102,8 +118,13 @@ Open `cache\notes-site\index.html`.
   authoring snapshot before republishing the site.
 - A missing clone or invalid `sinceSha` fails hydration before authoring.
 - An accepted receipt remains valid if later finalization or publication
-  fails. Do not repeat hydration or authoring solely because `notes-site`
-  failed.
+  fails and can never be re-authored or superseded. Do not repeat hydration or
+  authoring solely because `notes-site` failed.
+- Automatic retries stop at the total attempt limit. The final unpersisted
+  failure becomes item-level `superseded`, after which the run finalizes
+  normally and releases its fence before the oldest queued run starts.
+- On upgraded startup, legacy `error` rows with open attempts are reconciled
+  into this same retry/exhaustion path without touching accepted receipts.
 - The first run-backed startup classifies pre-cutover prose as
   `legacy-unverified` and creates one baseline hydration execution for
   revalidation. No canonical snapshot is available until real receipts clear
