@@ -122,6 +122,154 @@ public sealed class PlannedTicketReviewSnapshotTests
     }
 
     [Fact]
+    public async Task InitialRevalidation_SupersededPredecessorAndLaterReplacement_CompletesCutover()
+    {
+        using Fixture fixture = new(activate: false);
+        await fixture.Database.SavePlannedTicketAsync(CreatePayload("FHIR-1"));
+        await fixture.Database.SavePlannedTicketAsync(CreatePayload("FHIR-2"));
+        await fixture.Database.SavePlannedTicketAsync(CreatePayload("FHIR-3"));
+        Assert.Equal(
+            3,
+            await fixture.Database.ClassifyLegacyPlannedTicketsAsync());
+        await fixture.ActivateAsync();
+        DateTimeOffset firstRevision =
+            new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord sourceA =
+            await fixture.SeedSourceAsync("FHIR-1", firstRevision);
+        JiraProcessingSourceTicketRecord sourceB =
+            await fixture.SeedSourceAsync("FHIR-2", firstRevision);
+        JiraProcessingSourceTicketRecord sourceC =
+            await fixture.SeedSourceAsync("FHIR-3", firstRevision);
+        JiraAuthoringRunCreation initial =
+            await fixture.CreateRunAsync(
+                [sourceA, sourceB, sourceC],
+                databaseOnly: true);
+        fixture.MarkAsInitialRevalidation(initial.Run.Id);
+        AuthoringRunItemRecord itemA =
+            initial.Items.Single(item => item.BusinessKey == "FHIR-1");
+        AuthoringRunItemRecord itemC =
+            initial.Items.Single(item => item.BusinessKey == "FHIR-3");
+        AuthoringOperationClaim claimA =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    initial.Run.Id,
+                    itemA.Id));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            itemA.Id,
+            claimA.OperationId,
+            "not actionable");
+        await fixture.AuthoringStore.SupersedeErroredItemAsync(
+            initial.Run.Id,
+            itemA.Id,
+            "not actionable");
+        await fixture.CompleteItemAsync(
+            initial.Run,
+            itemC,
+            CreatePayload("FHIR-3"));
+
+        string predecessorReceiptHash;
+        string predecessorOperationId;
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            predecessorReceiptHash = Scalar<string>(
+                connection,
+                "SELECT ReceiptContentHash FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-3'");
+            predecessorOperationId = Scalar<string>(
+                connection,
+                "SELECT OperationId FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-3'");
+        }
+
+        await fixture.SeedSourceAsync(
+            "FHIR-2",
+            firstRevision.AddDays(1),
+            title: "Updated B");
+        Assert.True(await fixture.ReplaceStaleInitialRunAsync(initial.Run.Id));
+        AuthoringProcessorModeRecord replacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        AuthoringRunRecord replacement = Assert.IsType<AuthoringRunRecord>(
+            await fixture.AuthoringStore.GetRunAsync(
+                replacementMode.RevalidationRunId!));
+        AuthoringRunItemRecord replacementB = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(replacement.Id));
+        Assert.Equal("FHIR-2", replacementB.BusinessKey);
+        AuthoringOperationClaim replacementClaim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    replacement.Id,
+                    replacementB.Id));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            replacementB.Id,
+            replacementClaim.OperationId,
+            "not actionable");
+        await fixture.AuthoringStore.SupersedeErroredItemAsync(
+            replacement.Id,
+            replacementB.Id,
+            "not actionable");
+        IReadOnlyList<AuthoringRunItemRecord> terminalLineage =
+            await fixture.AuthoringStore.GetRevalidationSupersededItemsAsync(
+                replacement.Id);
+        string fingerprintInput = string.Join(
+            "\n",
+            terminalLineage.Select(item =>
+                $"{item.RunId}:{item.Id}:{item.BusinessKey}:{item.ItemKind}:{item.ExpectedSourceRevision}"));
+        string expectedFingerprint =
+            AuthoringResultHasher.HashNormalizedUtf8(fingerprintInput);
+
+        AuthoringSnapshotDescriptor? descriptor =
+            await fixture.CreatePostProcessor().FinalizeRunAsync(
+                replacement.Id);
+
+        Assert.NotNull(descriptor);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Completed,
+            (await fixture.AuthoringStore.GetRunAsync(replacement.Id))!.Status);
+        Assert.Null(
+            await fixture.AuthoringStore.GetFencedRunAsync("jira-fhir"));
+        AuthoringProcessorModeRecord completedMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        Assert.False(completedMode.RevalidationRequired);
+        Assert.Null(completedMode.RevalidationRunId);
+        AuthoringRunStageRecord retirementStage = Assert.Single(
+            await fixture.AuthoringStore.GetRunStagesAsync(replacement.Id),
+            stage => stage.StageName == "revalidation-retirement");
+        Assert.Equal(expectedFingerprint, retirementStage.InputFingerprint);
+        Assert.Contains(itemA.Id, fingerprintInput, StringComparison.Ordinal);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            Assert.Equal(
+                "superseded",
+                Scalar<string>(
+                    connection,
+                    "SELECT Classification FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-1'"));
+            Assert.Equal(
+                initial.Run.Id,
+                Scalar<string>(
+                    connection,
+                    "SELECT RunId FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-1'"));
+            Assert.Equal(
+                itemA.Id,
+                Scalar<string>(
+                    connection,
+                    "SELECT RunItemId FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-1'"));
+            Assert.Equal(
+                "receipt-backed",
+                Scalar<string>(
+                    connection,
+                    "SELECT Classification FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-3'"));
+            Assert.Equal(
+                predecessorReceiptHash,
+                Scalar<string>(
+                    connection,
+                    "SELECT ReceiptContentHash FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-3'"));
+            Assert.Equal(
+                predecessorOperationId,
+                Scalar<string>(
+                    connection,
+                    "SELECT OperationId FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-3'"));
+        }
+    }
+
+    [Fact]
     public async Task ReplacementRunPartitionsIncludeRetainedPredecessorTickets()
     {
         using Fixture fixture = new();
@@ -255,6 +403,16 @@ public sealed class PlannedTicketReviewSnapshotTests
         return (T)Convert.ChangeType(command.ExecuteScalar()!, typeof(T));
     }
 
+    private static PlannedTicketPayload CreatePayload(string key)
+        => new()
+        {
+            Key = key,
+            Resolution = "Persuasive",
+            ResolutionSummary = "summary",
+            FeatureProposal = "proposal",
+            DesignRationale = "rationale",
+        };
+
     private sealed class Fixture : IDisposable
     {
         private readonly string _directory;
@@ -310,6 +468,78 @@ public sealed class PlannedTicketReviewSnapshotTests
                     AuthoringStatusValues.ProcessorModes.CuttingOver,
                     AuthoringStatusValues.ProcessorModes.RunBacked);
             }
+        }
+
+        public Task<JiraProcessingSourceTicketRecord> SeedSourceAsync(
+            string key,
+            DateTimeOffset revision,
+            string title = "Title")
+            => _sourceStore.UpsertAsync(
+                new JiraIssueSummaryEntry
+                {
+                    Key = key,
+                    ProjectKey = "FHIR",
+                    Title = title,
+                    Type = "Change Request",
+                    Status = "Resolved - change required",
+                    WorkGroup = "FHIR Infrastructure",
+                    Specification = "FHIR",
+                    UpdatedAt = revision,
+                },
+                "fhir",
+                false,
+                CancellationToken.None);
+
+        public async Task<JiraAuthoringRunCreation> CreateRunAsync(
+            IReadOnlyCollection<JiraProcessingSourceTicketRecord> sources,
+            bool databaseOnly)
+        {
+            JiraAuthoringRunCreation creation =
+                await _coordinator.CreateExplicitRunAsync(
+                    sources,
+                    databaseOnly);
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                _coordinator.ProcessorKind,
+                creation.Run.Id));
+            return creation;
+        }
+
+        public Task<bool> ReplaceStaleInitialRunAsync(string runId)
+            => _coordinator.SupersedeStaleItemsAsync(runId);
+
+        public async Task CompleteItemAsync(
+            AuthoringRunRecord run,
+            AuthoringRunItemRecord item,
+            PlannedTicketPayload payload)
+        {
+            AuthoringOperationClaim claim =
+                Assert.IsType<AuthoringOperationClaim>(
+                    await AuthoringStore.ClaimItemAsync(
+                        run.Id,
+                        item.Id));
+            string hash = PlannedTicketAuthoringDtos.ComputeContentHash(
+                payload);
+            AuthoringReceiptAcceptance receipt =
+                await AuthoringStore.AcceptResultAsync(
+                    new AuthoringResultSubmission(
+                        run.Id,
+                        item.Id,
+                        claim.OperationId,
+                        item.ExpectedSourceRevision,
+                        hash),
+                    claim.OperationToken,
+                    (connection, ct) =>
+                        Database.SavePlannedTicketForAuthoringAsync(
+                            connection,
+                            payload,
+                            hash,
+                            run.Id,
+                            item.Id,
+                            claim.OperationId,
+                            ct));
+            await AuthoringStore.MarkItemCompleteAsync(
+                item.Id,
+                receipt.Receipt.ReceiptId);
         }
 
         public async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> CreateCompletedRunAsync()

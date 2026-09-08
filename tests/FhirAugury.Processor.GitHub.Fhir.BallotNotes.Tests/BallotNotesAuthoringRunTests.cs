@@ -803,6 +803,163 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
+    public async Task InitialRevalidation_SupersededPredecessorAndLaterReplacement_CompletesCutover()
+    {
+        using Fixture fixture = new();
+        NotesHydrationExecutionRecord initialExecution =
+            fixture.CreateCompletedExecution(
+                ("note-a", "Artifact"),
+                ("note-b", "Artifact"),
+                ("note-c", "Artifact"));
+        Assert.Equal(3, await fixture.Database.ClassifyLegacyNotesAsync());
+        await fixture.ActivateAsync();
+        BallotNotesAuthoringRunCreation initial =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    initialExecution.Id,
+                    DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            initial.Run.Id));
+        fixture.MarkAsInitialRevalidation(initial.Run.Id);
+        AuthoringRunItemRecord itemA =
+            initial.Items.Single(item => item.BusinessKey == "note-a");
+        AuthoringRunItemRecord itemC =
+            initial.Items.Single(item => item.BusinessKey == "note-c");
+        AuthoringOperationClaim claimA =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    initial.Run.Id,
+                    itemA.Id));
+        await fixture.AuthoringStore.MarkClaimErrorAsync(
+            itemA.Id,
+            claimA.OperationId,
+            "not actionable");
+        await fixture.AuthoringStore.SupersedeErroredItemAsync(
+            initial.Run.Id,
+            itemA.Id,
+            "not actionable");
+        AuthoringOperationClaim claimC =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    initial.Run.Id,
+                    itemC.Id));
+        AuthoringReceiptAcceptance receiptC = await fixture.AcceptAsync(
+            initial.Run,
+            itemC,
+            claimC,
+            SampleProse("predecessor c"));
+        await fixture.AuthoringStore.MarkItemCompleteAsync(
+            itemC.Id,
+            receiptC.Receipt.ReceiptId);
+        string predecessorProseHash = fixture.Scalar<string>(
+            "SELECT ProseHash FROM note_authoring_state WHERE NoteId = 'note-c'");
+        string predecessorOperationId = fixture.Scalar<string>(
+            "SELECT OperationId FROM note_authoring_state WHERE NoteId = 'note-c'");
+        string predecessorProse = fixture.Scalar<string>(
+            "SELECT ProposedBallotNoteHtml FROM notes WHERE NoteId = 'note-c'");
+
+        await fixture.AuthoringStore.ReleaseMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            initial.Run.Id);
+        fixture.CreateCompletedExecution(
+            "note-b",
+            "Artifact",
+            "updated-head");
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            initial.Run.Id));
+        Assert.True(
+            await fixture.Coordinator.SupersedeStaleItemsAsync(
+                initial.Run.Id));
+        AuthoringProcessorModeRecord replacementMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync(
+                fixture.Coordinator.ProcessorKind);
+        AuthoringRunRecord replacement = Assert.IsType<AuthoringRunRecord>(
+            await fixture.AuthoringStore.GetRunAsync(
+                replacementMode.RevalidationRunId!));
+        AuthoringRunItemRecord replacementB = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(replacement.Id));
+        Assert.Equal("note-b", replacementB.BusinessKey);
+        AuthoringOperationClaim claimB =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    replacement.Id,
+                    replacementB.Id));
+        AuthoringReceiptAcceptance receiptB = await fixture.AcceptAsync(
+            replacement,
+            replacementB,
+            claimB,
+            SampleProse("replacement b"));
+        await fixture.AuthoringStore.MarkItemCompleteAsync(
+            replacementB.Id,
+            receiptB.Receipt.ReceiptId);
+        IReadOnlyList<AuthoringRunItemRecord> terminalLineage =
+            await fixture.AuthoringStore.GetRevalidationSupersededItemsAsync(
+                replacement.Id);
+        string fingerprintInput = string.Join(
+            "\n",
+            terminalLineage.Select(item =>
+                $"{item.RunId}:{item.Id}:{item.BusinessKey}:{item.ItemKind}:{item.ExpectedSourceRevision}"));
+        string expectedFingerprint =
+            AuthoringResultHasher.HashNormalizedUtf8(fingerprintInput);
+
+        AuthoringSnapshotDescriptor? descriptor =
+            await fixture.CreatePostProcessor().FinalizeRunAsync(
+                replacement.Id);
+
+        Assert.NotNull(descriptor);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Completed,
+            (await fixture.AuthoringStore.GetRunAsync(replacement.Id))!.Status);
+        Assert.Null(
+            await fixture.AuthoringStore.GetFencedRunAsync(
+                fixture.Coordinator.ProcessorKind));
+        AuthoringProcessorModeRecord completedMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync(
+                fixture.Coordinator.ProcessorKind);
+        Assert.False(completedMode.RevalidationRequired);
+        Assert.Null(completedMode.RevalidationRunId);
+        AuthoringRunStageRecord retirementStage = Assert.Single(
+            await fixture.AuthoringStore.GetRunStagesAsync(replacement.Id),
+            stage => stage.StageName == "revalidation-retirement");
+        Assert.Equal(expectedFingerprint, retirementStage.InputFingerprint);
+        Assert.Contains(itemA.Id, fingerprintInput, StringComparison.Ordinal);
+        Assert.Equal(
+            "superseded",
+            fixture.Scalar<string>(
+                "SELECT Classification FROM note_authoring_state WHERE NoteId = 'note-a'"));
+        Assert.Equal(
+            initial.Run.Id,
+            fixture.Scalar<string>(
+                "SELECT RunId FROM note_authoring_state WHERE NoteId = 'note-a'"));
+        Assert.Equal(
+            itemA.Id,
+            fixture.Scalar<string>(
+                "SELECT RunItemId FROM note_authoring_state WHERE NoteId = 'note-a'"));
+        Assert.Equal(
+            "superseded",
+            fixture.Scalar<string>(
+                "SELECT ProseVerificationStatus FROM notes WHERE NoteId = 'note-a'"));
+        Assert.Equal(
+            "receipt-backed",
+            fixture.Scalar<string>(
+                "SELECT Classification FROM note_authoring_state WHERE NoteId = 'note-c'"));
+        Assert.Equal(
+            predecessorProseHash,
+            fixture.Scalar<string>(
+                "SELECT ProseHash FROM note_authoring_state WHERE NoteId = 'note-c'"));
+        Assert.Equal(
+            predecessorOperationId,
+            fixture.Scalar<string>(
+                "SELECT OperationId FROM note_authoring_state WHERE NoteId = 'note-c'"));
+        Assert.Equal(
+            predecessorProse,
+            fixture.Scalar<string>(
+                "SELECT ProposedBallotNoteHtml FROM notes WHERE NoteId = 'note-c'"));
+    }
+
+    [Fact]
     public async Task InitialRevalidation_UnchangedRevisionPreservesAttemptBudgetAcrossReplacement()
     {
         using Fixture fixture = new();
@@ -1487,11 +1644,27 @@ public sealed class BallotNotesAuthoringRunTests
 
         public NotesHydrationExecutionRecord CreateCompletedExecution(
             params (string NoteId, string Type)[] notes)
+            => CreateCompletedExecutionCore(
+                notes.Select(note =>
+                    (note.NoteId, note.Type, HeadSha: "head"))
+                .ToArray());
+
+        public NotesHydrationExecutionRecord CreateCompletedExecution(
+            string noteId,
+            string type,
+            string headSha)
+            => CreateCompletedExecutionCore([(noteId, type, headSha)]);
+
+        private NotesHydrationExecutionRecord CreateCompletedExecutionCore(
+            params (string NoteId, string Type, string HeadSha)[] notes)
         {
             string id = Guid.NewGuid().ToString("N");
             HydrationMutationLease lease =
                 Database.TryAcquireHydrationLease(id)!;
             DateTimeOffset now = DateTimeOffset.UtcNow;
+            string headSha = notes.Select(note => note.HeadSha)
+                .Distinct(StringComparer.Ordinal)
+                .Single();
             NotesHydrationExecutionRecord execution = new()
             {
                 Id = id,
@@ -1500,8 +1673,8 @@ public sealed class BallotNotesAuthoringRunTests
                 RepoName = "fhir",
                 SinceSha = "since",
                 SinceShortSha = "since",
-                HeadSha = "head",
-                HeadShortSha = "head",
+                HeadSha = headSha,
+                HeadShortSha = headSha,
                 Status = "running",
                 StartedAt = now,
             };
@@ -1514,16 +1687,18 @@ public sealed class BallotNotesAuthoringRunTests
                         note.NoteId,
                         note.Type))
                     .ToArray());
-            foreach ((string noteId, string type) in notes)
+            foreach ((string noteId, string type, string _) in notes)
             {
                 Database.UpsertUnitEvidence(
                     id,
                     lease,
-                    Evidence(noteId, type),
+                    Evidence(noteId, type, headSha),
                     [new NoteSourceFileRecord
                     {
                         NoteId = noteId,
-                        Path = $"source/{noteId}.xml",
+                        Path = headSha == "head"
+                            ? $"source/{noteId}.xml"
+                            : $"source/{noteId}-{headSha}.xml",
                         Role = "source",
                         TouchedInWindow = true,
                     }],
@@ -1721,7 +1896,10 @@ public sealed class BallotNotesAuthoringRunTests
             TestFileCleanup.SafeDeleteDirectory(_directory);
         }
 
-        private static NoteRecord Evidence(string noteId, string type)
+        private static NoteRecord Evidence(
+            string noteId,
+            string type,
+            string headSha = "head")
         {
             DateTimeOffset now = DateTimeOffset.UtcNow;
             return new NoteRecord
@@ -1733,8 +1911,8 @@ public sealed class BallotNotesAuthoringRunTests
                 RepoName = "fhir",
                 SinceSha = "since",
                 SinceShortSha = "since",
-                HeadSha = "head",
-                HeadShortSha = "head",
+                HeadSha = headSha,
+                HeadShortSha = headSha,
                 WorkGroup = "FHIR Infrastructure",
                 WorkGroupCode = "fhir",
                 GeneratedAt = now,

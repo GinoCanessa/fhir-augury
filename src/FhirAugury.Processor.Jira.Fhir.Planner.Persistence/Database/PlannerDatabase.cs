@@ -664,14 +664,21 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION ALL
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
             SELECT COUNT(*)
             FROM planned_ticket_authoring_state s
             WHERE s.Classification = 'legacy-unverified'
               AND NOT EXISTS (
                   SELECT 1
                   FROM authoring_run_items i
-                  WHERE i.RunId = @runId
-                    AND i.BusinessKey = s.TicketKey COLLATE NOCASE
+                  INNER JOIN run_chain chain ON chain.Id = i.RunId
+                  WHERE i.BusinessKey = s.TicketKey COLLATE NOCASE
                     AND i.Status = @superseded
                     AND i.AcceptedReceiptId IS NULL
               )
@@ -707,18 +714,36 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             await ExecuteAsync(
                 connection,
                 """
+                WITH RECURSIVE run_chain(Id, Depth) AS (
+                    SELECT @runId, 0
+                    UNION ALL
+                    SELECT lineage.PreviousRunId, chain.Depth + 1
+                    FROM authoring_revalidation_lineage lineage
+                    INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+                )
                 UPDATE planned_ticket_authoring_state
                 SET Classification = 'superseded',
                     ReceiptContentHash = NULL,
-                    RunId = @runId,
-                    RunItemId = (
-                        SELECT i.Id
+                    RunId = (
+                        SELECT i.RunId
                         FROM authoring_run_items i
-                        WHERE i.RunId = @runId
-                          AND i.BusinessKey =
+                        INNER JOIN run_chain chain ON chain.Id = i.RunId
+                        WHERE i.BusinessKey =
                               planned_ticket_authoring_state.TicketKey COLLATE NOCASE
                           AND i.Status = @superseded
                           AND i.AcceptedReceiptId IS NULL
+                        ORDER BY chain.Depth, i.RowId
+                        LIMIT 1
+                    ),
+                    RunItemId = (
+                        SELECT i.Id
+                        FROM authoring_run_items i
+                        INNER JOIN run_chain chain ON chain.Id = i.RunId
+                        WHERE i.BusinessKey =
+                              planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                          AND i.Status = @superseded
+                          AND i.AcceptedReceiptId IS NULL
+                        ORDER BY chain.Depth, i.RowId
                         LIMIT 1
                     ),
                     OperationId = NULL,
@@ -727,8 +752,8 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                   AND EXISTS (
                       SELECT 1
                       FROM authoring_run_items i
-                      WHERE i.RunId = @runId
-                        AND i.BusinessKey =
+                      INNER JOIN run_chain chain ON chain.Id = i.RunId
+                      WHERE i.BusinessKey =
                             planned_ticket_authoring_state.TicketKey COLLATE NOCASE
                         AND i.Status = @superseded
                         AND i.AcceptedReceiptId IS NULL

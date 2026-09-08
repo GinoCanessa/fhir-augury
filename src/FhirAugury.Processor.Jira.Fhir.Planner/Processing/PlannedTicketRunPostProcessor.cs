@@ -65,21 +65,20 @@ public sealed class PlannedTicketRunPostProcessor(
                 "A complete legacy revalidation run is required before the first canonical snapshot.");
         }
 
-        IReadOnlyList<AuthoringRunItemRecord> runItems =
-            await authoringStore.GetRunItemsAsync(runId, ct);
         IReadOnlyList<PlannedTicketRunPartition> partitions =
             await database.GetRunPartitionsAsync(runId, ct);
         List<AuthoringFinalizationStage> stages = [];
         if (initialRevalidation)
         {
+            IReadOnlyList<AuthoringRunItemRecord> supersededItems =
+                await authoringStore.GetRevalidationSupersededItemsAsync(
+                    runId,
+                    ct);
             string retirementFingerprint = AuthoringResultHasher.HashNormalizedUtf8(
                 string.Join(
                     "\n",
-                    runItems
-                        .Where(item =>
-                            item.Status == AuthoringStatusValues.Items.Superseded)
-                        .OrderBy(item => item.RowId)
-                        .Select(item => $"{item.Id}:{item.BusinessKey}")));
+                    supersededItems.Select(item =>
+                        $"{item.RunId}:{item.Id}:{item.BusinessKey}:{item.ItemKind}:{item.ExpectedSourceRevision}")));
             stages.Add(new AuthoringFinalizationStage(
                 "revalidation-retirement",
                 "",
