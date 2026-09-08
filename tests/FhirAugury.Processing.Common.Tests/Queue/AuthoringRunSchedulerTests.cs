@@ -51,6 +51,162 @@ public sealed class AuthoringRunSchedulerTests
     }
 
     [Fact]
+    public async Task RestartBeforeOrphanThreshold_RecoversWhenThresholdElapses()
+    {
+        ProcessingServiceOptions options = CreateOptions();
+        using SchedulerFixture fixture = new(options);
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await fixture.Database.CreateRunningRunAsync(databaseOnly: true);
+        DateTimeOffset startedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        _ = Assert.IsType<AuthoringOperationClaim>(
+            await fixture.Database.Store.ClaimItemAsync(
+                run.Id,
+                item.Id,
+                startedAt));
+        fixture.Lifecycle.Stop();
+        fixture.Now = startedAt.AddMinutes(5);
+
+        TimeSpan wait = await fixture.Scheduler.RunCycleAsync();
+
+        Assert.Equal(TimeSpan.FromMinutes(5), wait);
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(run.Id)).Status);
+
+        fixture.Now = startedAt.AddMinutes(10);
+        wait = await fixture.Scheduler.RunCycleAsync();
+
+        AuthoringRunItemRecord recovered = Assert.Single(
+            await fixture.Database.Store.GetRunItemsAsync(run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Error, recovered.Status);
+        Assert.Equal(startedAt.AddMinutes(10), recovered.CompletedAt);
+        Assert.Equal(TimeSpan.FromMinutes(1), wait);
+        Assert.Equal(0, fixture.Handler.InvocationCount);
+    }
+
+    [Fact]
+    public async Task ApplyResultFailure_AfterClaim_RecoversSameRun()
+    {
+        ProcessingServiceOptions options = CreateOptions();
+        using SchedulerFixture fixture = new(options);
+        (AuthoringRunRecord run, _) =
+            await fixture.Database.CreateRunningRunAsync(databaseOnly: true);
+        fixture.QueueStore.ApplyException =
+            new InvalidOperationException("result transition failed");
+
+        await fixture.Scheduler.RunCycleAsync();
+        await fixture.Runner.DrainAsync();
+
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(run.Id)).Status);
+        Assert.Equal(1, fixture.Handler.InvocationCount);
+
+        fixture.QueueStore.ApplyException = null;
+        fixture.Lifecycle.Stop();
+        fixture.Now = fixture.Now.AddMinutes(5);
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            await fixture.Scheduler.RunCycleAsync());
+
+        fixture.Now = fixture.Now.AddMinutes(5);
+        await fixture.Scheduler.RunCycleAsync();
+
+        Assert.Equal(
+            AuthoringStatusValues.Items.Error,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(run.Id)).Status);
+        Assert.Equal(1, fixture.Handler.InvocationCount);
+    }
+
+    [Fact]
+    public async Task OrphanedFinalAttempt_SupersedesAndFinalizes()
+    {
+        ProcessingServiceOptions options = CreateOptions();
+        options.AuthoringMaxAttempts = 1;
+        using SchedulerFixture fixture = new(options);
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await fixture.Database.CreateRunningRunAsync(databaseOnly: true);
+        DateTimeOffset startedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        _ = Assert.IsType<AuthoringOperationClaim>(
+            await fixture.Database.Store.ClaimItemAsync(
+                run.Id,
+                item.Id,
+                startedAt));
+        fixture.Now = startedAt.AddMinutes(10);
+
+        Assert.Equal(TimeSpan.Zero, await fixture.Scheduler.RunCycleAsync());
+
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(run.Id)).Status);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.Database.Store.GetRunAsync(run.Id))!.Status);
+        Assert.Null(await fixture.Database.Store.GetFencedRunAsync("test"));
+        Assert.Equal(1, fixture.Finalization.FinalizeCount);
+        Assert.Equal(0, fixture.Handler.InvocationCount);
+    }
+
+    [Fact]
+    public async Task PostReceiptLease_RecoversToPersistedWithoutNewAuthoringAttempt()
+    {
+        ProcessingServiceOptions options = CreateOptions();
+        using SchedulerFixture fixture = new(options);
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await fixture.Database.CreateRunningRunAsync(databaseOnly: true);
+        DateTimeOffset authoringStartedAt =
+            new(2026, 9, 8, 11, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await fixture.Database.Store.ClaimItemAsync(
+                run.Id,
+                item.Id,
+                authoringStartedAt));
+        AuthoringReceiptAcceptance receipt =
+            await fixture.Database.Store.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    item.ExpectedSourceRevision,
+                    AuthoringResultHasher.HashNormalizedUtf8("payload")),
+                claim.OperationToken,
+                now: authoringStartedAt.AddMinutes(1));
+        DateTimeOffset leaseStartedAt = authoringStartedAt.AddHours(1);
+        _ = Assert.IsType<string>(
+            await fixture.Database.Store.ClaimPersistedItemAsync(
+                item.Id,
+                receipt.Receipt.ReceiptId,
+                claim.OperationId,
+                leaseStartedAt));
+        fixture.Lifecycle.Stop();
+        fixture.Now = leaseStartedAt.AddMinutes(5);
+
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            await fixture.Scheduler.RunCycleAsync());
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(run.Id)).Status);
+
+        fixture.Now = leaseStartedAt.AddMinutes(10);
+        await fixture.Scheduler.RunCycleAsync();
+
+        AuthoringRunItemRecord recovered = Assert.Single(
+            await fixture.Database.Store.GetRunItemsAsync(run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Persisted, recovered.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, recovered.AcceptedReceiptId);
+        Assert.Equal(1, recovered.AttemptCount);
+        Assert.Equal(0, fixture.Handler.InvocationCount);
+    }
+
+    [Fact]
     public async Task ExhaustedFailureFinalizesBeforeActivatingOldestQueuedRun()
     {
         ProcessingServiceOptions options = CreateOptions();
@@ -326,6 +482,7 @@ public sealed class AuthoringRunSchedulerTests
         : IAuthoringQueueStore<TestItem>
     {
         public int ApplyCount { get; private set; }
+        public Exception? ApplyException { get; set; }
 
         public async Task<IReadOnlyList<TestItem>> GetPendingAsync(
             string runId,
@@ -381,6 +538,11 @@ public sealed class AuthoringRunSchedulerTests
             DateTimeOffset completedAt,
             CancellationToken ct)
         {
+            if (ApplyException is not null)
+            {
+                throw ApplyException;
+            }
+
             ApplyCount++;
             if (result.Disposition == AuthoringWorkDisposition.Complete)
             {
@@ -405,12 +567,61 @@ public sealed class AuthoringRunSchedulerTests
             }
         }
 
-        public Task<int> ResetOrphanedItemsAsync(
+        public async Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
             string runId,
             TimeSpan olderThan,
             DateTimeOffset now,
             CancellationToken ct)
-            => Task.FromResult(0);
+        {
+            IReadOnlyList<AuthoringRunItemRecord> items =
+                await store.GetRunItemsAsync(runId, ct);
+            int recovered = 0;
+            DateTimeOffset? nextRecoveryAt = null;
+            foreach (AuthoringRunItemRecord item in items.Where(value =>
+                         string.Equals(
+                             value.Status,
+                             AuthoringStatusValues.Items.InProgress,
+                             StringComparison.Ordinal)))
+            {
+                DateTimeOffset claimStartedAt =
+                    item.PostPersistenceLeaseAcquiredAt ??
+                    item.StartedAt ??
+                    throw new InvalidOperationException(
+                        $"In-progress item '{item.Id}' has no claim timestamp.");
+                DateTimeOffset recoveryAt = claimStartedAt + olderThan;
+                if (recoveryAt > now)
+                {
+                    nextRecoveryAt = nextRecoveryAt is null ||
+                        recoveryAt < nextRecoveryAt
+                        ? recoveryAt
+                        : nextRecoveryAt;
+                    continue;
+                }
+
+                string claimId = item.PostPersistenceLeaseId ??
+                    item.CurrentOperationId ??
+                    throw new InvalidOperationException(
+                        $"In-progress item '{item.Id}' has no current claim.");
+                try
+                {
+                    await store.RecoverOrphanedClaimAsync(
+                        item.Id,
+                        claimId,
+                        now,
+                        ct);
+                    recovered++;
+                }
+                catch (AuthoringConflictException ex)
+                    when (ex.Code is
+                        AuthoringConflictCode.StaleOperation or
+                        AuthoringConflictCode.MutationFenceUnavailable)
+                {
+                }
+            }
+            return new AuthoringOrphanRecoveryResult(
+                recovered,
+                nextRecoveryAt);
+        }
     }
 
     private sealed class TestHandler(

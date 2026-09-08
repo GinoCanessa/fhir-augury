@@ -123,7 +123,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
         AuthoringQueueClaim first = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(item, startedAt, CancellationToken.None));
 
-        int reset = await store.ResetOrphanedItemsAsync(
+        AuthoringOrphanRecoveryResult reset =
+            await store.ResetOrphanedItemsAsync(
             creation.Run.Id,
             TimeSpan.FromMinutes(10),
             startedAt.AddMinutes(11),
@@ -136,9 +137,92 @@ public sealed class JiraAuthoringWorkItemStoreTests
         AuthoringQueueClaim second = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(retried, startedAt.AddMinutes(12), CancellationToken.None));
 
-        Assert.Equal(1, reset);
+        Assert.Equal(1, reset.RecoveredItems);
+        Assert.Null(reset.NextRecoveryAt);
         Assert.NotEqual(first.OperationId, second.OperationId);
         Assert.Equal(2, second.AttemptNumber);
+    }
+
+    [Fact]
+    public async Task ResetOrphanedItems_UsesPostPersistenceLeaseAcquiredAt()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        await fixture.SeedAsync(
+            "FHIR-1",
+            new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        JiraAuthoringRunCreation creation =
+            (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
+        JiraAuthoringWorkItemStore store = new(
+            fixture.AuthoringStore,
+            fixture.SourceStore);
+        JiraAuthoringWorkItem authoringItem = Assert.Single(
+            await store.GetPendingAsync(
+                creation.Run.Id,
+                10,
+                CancellationToken.None));
+        DateTimeOffset authoringStartedAt =
+            new(2026, 9, 3, 11, 0, 0, TimeSpan.Zero);
+        AuthoringQueueClaim authoringClaim =
+            Assert.IsType<AuthoringQueueClaim>(
+                await store.TryClaimAsync(
+                    authoringItem,
+                    authoringStartedAt,
+                    CancellationToken.None));
+        AuthoringReceiptAcceptance receipt =
+            await fixture.AuthoringStore.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    creation.Run.Id,
+                    authoringItem.RunItem.Id,
+                    authoringClaim.OperationId,
+                    authoringItem.RunItem.ExpectedSourceRevision,
+                    AuthoringResultHasher.HashNormalizedUtf8("payload")),
+                authoringClaim.OperationToken,
+                now: authoringStartedAt.AddMinutes(1));
+        JiraAuthoringWorkItem persistedItem = Assert.Single(
+            await store.GetPendingAsync(
+                creation.Run.Id,
+                10,
+                CancellationToken.None));
+        DateTimeOffset leaseStartedAt = authoringStartedAt.AddHours(1);
+        _ = Assert.IsType<AuthoringQueueClaim>(
+            await store.TryClaimAsync(
+                persistedItem,
+                leaseStartedAt,
+                CancellationToken.None));
+
+        AuthoringOrphanRecoveryResult early =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                leaseStartedAt.AddMinutes(5),
+                CancellationToken.None);
+
+        Assert.Equal(0, early.RecoveredItems);
+        Assert.Equal(leaseStartedAt.AddMinutes(10), early.NextRecoveryAt);
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.AuthoringStore.GetRunItemsAsync(
+                    creation.Run.Id)).Status);
+
+        AuthoringOrphanRecoveryResult due =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                leaseStartedAt.AddMinutes(10),
+                CancellationToken.None);
+        AuthoringRunItemRecord recovered = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
+
+        Assert.Equal(1, due.RecoveredItems);
+        Assert.Null(due.NextRecoveryAt);
+        Assert.Equal(AuthoringStatusValues.Items.Persisted, recovered.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, recovered.AcceptedReceiptId);
+        Assert.Equal(1, recovered.AttemptCount);
     }
 
     [Fact]

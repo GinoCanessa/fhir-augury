@@ -466,6 +466,138 @@ public sealed class BallotNotesAuthoringRunTests
     }
 
     [Fact]
+    public async Task OrphanRecovery_ReevaluatesPreReceiptClaimUntilDue()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution("note-a", "Artifact");
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
+        AuthoringRunItemRecord item = Assert.Single(creation.Items);
+        DateTimeOffset startedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        _ = Assert.IsType<AuthoringOperationClaim>(
+            await fixture.AuthoringStore.ClaimItemAsync(
+                creation.Run.Id,
+                item.Id,
+                startedAt));
+        BallotNotesAuthoringWorkItemStore store =
+            new(fixture.Database, fixture.AuthoringStore);
+
+        AuthoringOrphanRecoveryResult early =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                startedAt.AddMinutes(5),
+                CancellationToken.None);
+
+        Assert.Equal(0, early.RecoveredItems);
+        Assert.Equal(startedAt.AddMinutes(10), early.NextRecoveryAt);
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.AuthoringStore.GetRunItemsAsync(
+                    creation.Run.Id)).Status);
+
+        AuthoringOrphanRecoveryResult due =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                startedAt.AddMinutes(10),
+                CancellationToken.None);
+        AuthoringRunItemRecord recovered = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
+
+        Assert.Equal(1, due.RecoveredItems);
+        Assert.Null(due.NextRecoveryAt);
+        Assert.Equal(AuthoringStatusValues.Items.Error, recovered.Status);
+        Assert.Equal(startedAt.AddMinutes(10), recovered.CompletedAt);
+        Assert.Equal(1, recovered.AttemptCount);
+    }
+
+    [Fact]
+    public async Task OrphanRecovery_UsesPostReceiptLeaseAcquiredAt()
+    {
+        using Fixture fixture = new();
+        await fixture.ActivateAsync();
+        NotesHydrationExecutionRecord execution =
+            fixture.CreateCompletedExecution("note-a", "Artifact");
+        BallotNotesAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateRunAsync(
+                new BallotNotesAuthoringRunRequest(
+                    execution.Id,
+                    DatabaseOnly: true));
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
+        AuthoringRunItemRecord item = Assert.Single(creation.Items);
+        DateTimeOffset authoringStartedAt =
+            new(2026, 9, 8, 11, 0, 0, TimeSpan.Zero);
+        AuthoringOperationClaim claim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(
+                    creation.Run.Id,
+                    item.Id,
+                    authoringStartedAt));
+        AuthoringReceiptAcceptance receipt =
+            await fixture.AcceptAsync(
+                creation.Run,
+                item,
+                claim,
+                SampleProse("accepted"));
+        BallotNotesAuthoringWorkItemStore store =
+            new(fixture.Database, fixture.AuthoringStore);
+        BallotNotesAuthoringWorkItem persisted = Assert.Single(
+            await store.GetPendingAsync(
+                creation.Run.Id,
+                1,
+                CancellationToken.None));
+        DateTimeOffset leaseStartedAt = authoringStartedAt.AddHours(1);
+        _ = Assert.IsType<AuthoringQueueClaim>(
+            await store.TryClaimAsync(
+                persisted,
+                leaseStartedAt,
+                CancellationToken.None));
+
+        AuthoringOrphanRecoveryResult early =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                leaseStartedAt.AddMinutes(5),
+                CancellationToken.None);
+
+        Assert.Equal(0, early.RecoveredItems);
+        Assert.Equal(leaseStartedAt.AddMinutes(10), early.NextRecoveryAt);
+        Assert.Equal(
+            AuthoringStatusValues.Items.InProgress,
+            Assert.Single(
+                await fixture.AuthoringStore.GetRunItemsAsync(
+                    creation.Run.Id)).Status);
+
+        AuthoringOrphanRecoveryResult due =
+            await store.ResetOrphanedItemsAsync(
+                creation.Run.Id,
+                TimeSpan.FromMinutes(10),
+                leaseStartedAt.AddMinutes(10),
+                CancellationToken.None);
+        AuthoringRunItemRecord recovered = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
+
+        Assert.Equal(1, due.RecoveredItems);
+        Assert.Null(due.NextRecoveryAt);
+        Assert.Equal(AuthoringStatusValues.Items.Persisted, recovered.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, recovered.AcceptedReceiptId);
+        Assert.Equal(1, recovered.AttemptCount);
+    }
+
+    [Fact]
     public async Task ExhaustedError_FinalizesAndActivatesOldestQueuedRun()
     {
         using Fixture fixture = new(authoringMaxAttempts: 1);

@@ -11,6 +11,10 @@ public sealed record AuthoringQueueClaim(
     string OperationToken,
     int AttemptNumber);
 
+public sealed record AuthoringOrphanRecoveryResult(
+    int RecoveredItems,
+    DateTimeOffset? NextRecoveryAt);
+
 public interface IAuthoringQueueStore<TItem>
 {
     Task<IReadOnlyList<TItem>> GetPendingAsync(string runId, int maxItems, CancellationToken ct);
@@ -21,7 +25,7 @@ public interface IAuthoringQueueStore<TItem>
         AuthoringWorkResult result,
         DateTimeOffset completedAt,
         CancellationToken ct);
-    Task<int> ResetOrphanedItemsAsync(
+    Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
         string runId,
         TimeSpan olderThan,
         DateTimeOffset now,
@@ -64,20 +68,20 @@ public class AuthoringQueueRunner<TItem>(
         }
     }
 
-    public async Task<int> ResetOrphanedItemsAsync(
+    public async Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
         string runId,
         CancellationToken ct = default)
     {
-        int resetCount = await store.ResetOrphanedItemsAsync(
+        AuthoringOrphanRecoveryResult result = await store.ResetOrphanedItemsAsync(
             runId,
             _orphanedThreshold,
             UtcNow,
             ct);
         logger.LogInformation(
             "Reset {ResetCount} orphaned authoring work items for run {RunId}",
-            resetCount,
+            result.RecoveredItems,
             runId);
-        return resetCount;
+        return result;
     }
 
     public async Task<int> FillCapacityAsync(

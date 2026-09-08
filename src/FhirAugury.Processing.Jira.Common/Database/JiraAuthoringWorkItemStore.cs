@@ -124,21 +124,35 @@ public sealed class JiraAuthoringWorkItemStore(
         }
     }
 
-    public async Task<int> ResetOrphanedItemsAsync(
+    public async Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
         string runId,
         TimeSpan olderThan,
         DateTimeOffset now,
         CancellationToken ct)
     {
         IReadOnlyList<AuthoringRunItemRecord> items = await authoringStore.GetRunItemsAsync(runId, ct);
-        AuthoringRunItemRecord[] orphaned = items
-            .Where(item =>
-                string.Equals(item.Status, AuthoringStatusValues.Items.InProgress, StringComparison.Ordinal) &&
-                item.StartedAt <= now - olderThan)
-            .ToArray();
         int recovered = 0;
-        foreach (AuthoringRunItemRecord item in orphaned)
+        DateTimeOffset? nextRecoveryAt = null;
+        foreach (AuthoringRunItemRecord item in items.Where(item =>
+                     string.Equals(
+                         item.Status,
+                         AuthoringStatusValues.Items.InProgress,
+                         StringComparison.Ordinal)))
         {
+            DateTimeOffset claimStartedAt = item.PostPersistenceLeaseAcquiredAt ??
+                item.StartedAt ??
+                throw new InvalidOperationException(
+                    $"In-progress item '{item.Id}' has no claim timestamp.");
+            DateTimeOffset recoveryAt = claimStartedAt + olderThan;
+            if (recoveryAt > now)
+            {
+                nextRecoveryAt = nextRecoveryAt is null ||
+                    recoveryAt < nextRecoveryAt
+                    ? recoveryAt
+                    : nextRecoveryAt;
+                continue;
+            }
+
             string claimId = item.PostPersistenceLeaseId ??
                 item.CurrentOperationId ??
                 throw new InvalidOperationException($"Orphaned item '{item.Id}' has no current claim.");
@@ -152,6 +166,6 @@ public sealed class JiraAuthoringWorkItemStore(
             {
             }
         }
-        return recovered;
+        return new AuthoringOrphanRecoveryResult(recovered, nextRecoveryAt);
     }
 }

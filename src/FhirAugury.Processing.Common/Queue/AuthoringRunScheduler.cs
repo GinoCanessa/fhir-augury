@@ -23,7 +23,6 @@ public class AuthoringRunScheduler<TItem>(
     private readonly TimeSpan _syncSchedule = ParsePositiveTimeSpan(
         optionsAccessor.Value.SyncSchedule,
         nameof(ProcessingServiceOptions.SyncSchedule));
-    private string? _orphanRecoveryRunId;
 
     protected virtual DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 
@@ -46,7 +45,6 @@ public class AuthoringRunScheduler<TItem>(
             await store.GetFencedRunAsync(adapter.ProcessorKind, ct);
         if (run is null)
         {
-            _orphanRecoveryRunId = null;
             if (lifecycle.IsRunning)
             {
                 AuthoringRunRecord? queued =
@@ -69,15 +67,11 @@ public class AuthoringRunScheduler<TItem>(
         if (sourceReconciliation.Outcome !=
             AuthoringRunReconciliationOutcome.Current)
         {
-            _orphanRecoveryRunId = null;
             return TimeSpan.Zero;
         }
 
-        if (!string.Equals(_orphanRecoveryRunId, run.Id, StringComparison.Ordinal))
-        {
+        AuthoringOrphanRecoveryResult orphanRecovery =
             await runner.ResetOrphanedItemsAsync(run.Id, ct);
-            _orphanRecoveryRunId = run.Id;
-        }
 
         AuthoringErrorReconciliationResult retryReconciliation =
             await store.ReconcileErroredItemsAsync(run.Id, UtcNow, ct);
@@ -88,7 +82,6 @@ public class AuthoringRunScheduler<TItem>(
         if (await store.AllItemsCompleteAsync(run.Id, ct))
         {
             await finalizationStrategy.FinalizeRunAsync(run.Id, ct);
-            _orphanRecoveryRunId = null;
             return TimeSpan.Zero;
         }
 
@@ -104,17 +97,20 @@ public class AuthoringRunScheduler<TItem>(
 
         DateTimeOffset? nextRetryAt = retryReconciliation.NextRetryAt ??
             await store.GetEarliestAutomaticRetryAtAsync(run.Id, ct);
-        if (nextRetryAt is null)
+        DateTimeOffset? nextWakeAt = Minimum(
+            nextRetryAt,
+            orphanRecovery.NextRecoveryAt);
+        if (nextWakeAt is null)
         {
             return _syncSchedule;
         }
 
-        TimeSpan retryWait = nextRetryAt.Value - UtcNow;
-        if (retryWait <= TimeSpan.Zero)
+        TimeSpan deadlineWait = nextWakeAt.Value - UtcNow;
+        if (deadlineWait <= TimeSpan.Zero)
         {
             return TimeSpan.Zero;
         }
-        return retryWait < _syncSchedule ? retryWait : _syncSchedule;
+        return deadlineWait < _syncSchedule ? deadlineWait : _syncSchedule;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -222,4 +218,13 @@ public class AuthoringRunScheduler<TItem>(
 
     private static string Truncate(string value)
         => value.Length <= 4096 ? value : value[..4096];
+
+    private static DateTimeOffset? Minimum(
+        DateTimeOffset? first,
+        DateTimeOffset? second)
+        => first is null
+            ? second
+            : second is null || first <= second
+                ? first
+                : second;
 }

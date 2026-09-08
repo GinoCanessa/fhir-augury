@@ -68,16 +68,24 @@ public sealed class AuthoringQueueRunnerTests
     }
 
     [Fact]
-    public async Task ResetOrphanedItemsAsync_IsScopedToSelectedRun()
+    public async Task ResetOrphanedItemsAsync_PropagatesRecoveryResultForSelectedRun()
     {
         InMemoryStore store = new([]);
+        DateTimeOffset nextRecoveryAt =
+            new(2026, 9, 8, 12, 0, 1, TimeSpan.Zero);
+        store.RecoveryResult = new AuthoringOrphanRecoveryResult(
+            2,
+            nextRecoveryAt);
         AuthoringQueueRunner<TestItem> runner = CreateRunner(
             store,
             new TestHandler(_ => Task.FromResult(AuthoringWorkResult.Retry("unused"))));
 
-        await runner.ResetOrphanedItemsAsync("run-2");
+        AuthoringOrphanRecoveryResult result =
+            await runner.ResetOrphanedItemsAsync("run-2");
 
         Assert.Equal("run-2", store.LastResetRunId);
+        Assert.Equal(2, result.RecoveredItems);
+        Assert.Equal(nextRecoveryAt, result.NextRecoveryAt);
     }
 
     private static AuthoringQueueRunner<TestItem> CreateRunner(
@@ -112,6 +120,8 @@ public sealed class AuthoringQueueRunnerTests
         public AuthoringWorkResult? LastResult { get; private set; }
         public string? LastRunId { get; private set; }
         public string? LastResetRunId { get; private set; }
+        public AuthoringOrphanRecoveryResult RecoveryResult { get; set; } =
+            new(0, null);
 
         public Task<IReadOnlyList<TestItem>> GetPendingAsync(
             string runId,
@@ -158,14 +168,14 @@ public sealed class AuthoringQueueRunnerTests
             }
         }
 
-        public Task<int> ResetOrphanedItemsAsync(
+        public Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
             string runId,
             TimeSpan olderThan,
             DateTimeOffset now,
             CancellationToken ct)
         {
             LastResetRunId = runId;
-            return Task.FromResult(0);
+            return Task.FromResult(RecoveryResult);
         }
     }
 

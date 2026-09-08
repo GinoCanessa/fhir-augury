@@ -134,7 +134,7 @@ public sealed class BallotNotesAuthoringWorkItemStore(
         }
     }
 
-    public async Task<int> ResetOrphanedItemsAsync(
+    public async Task<AuthoringOrphanRecoveryResult> ResetOrphanedItemsAsync(
         string runId,
         TimeSpan olderThan,
         DateTimeOffset now,
@@ -143,13 +143,27 @@ public sealed class BallotNotesAuthoringWorkItemStore(
         IReadOnlyList<AuthoringRunItemRecord> items =
             await authoringStore.GetRunItemsAsync(runId, ct);
         int recovered = 0;
+        DateTimeOffset? nextRecoveryAt = null;
         foreach (AuthoringRunItemRecord item in items.Where(value =>
                      string.Equals(
                          value.Status,
                          AuthoringStatusValues.Items.InProgress,
-                         StringComparison.Ordinal) &&
-                     value.StartedAt <= now - olderThan))
+                         StringComparison.Ordinal)))
         {
+            DateTimeOffset claimStartedAt = item.PostPersistenceLeaseAcquiredAt ??
+                item.StartedAt ??
+                throw new InvalidOperationException(
+                    $"In-progress BallotNotes item '{item.Id}' has no claim timestamp.");
+            DateTimeOffset recoveryAt = claimStartedAt + olderThan;
+            if (recoveryAt > now)
+            {
+                nextRecoveryAt = nextRecoveryAt is null ||
+                    recoveryAt < nextRecoveryAt
+                    ? recoveryAt
+                    : nextRecoveryAt;
+                continue;
+            }
+
             string claimId = item.PostPersistenceLeaseId ??
                 item.CurrentOperationId ??
                 throw new InvalidOperationException(
@@ -169,6 +183,6 @@ public sealed class BallotNotesAuthoringWorkItemStore(
             {
             }
         }
-        return recovered;
+        return new AuthoringOrphanRecoveryResult(recovered, nextRecoveryAt);
     }
 }
