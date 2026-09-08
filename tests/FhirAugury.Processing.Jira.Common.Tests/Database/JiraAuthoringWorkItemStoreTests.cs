@@ -69,12 +69,14 @@ public sealed class JiraAuthoringWorkItemStoreTests
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         JiraAuthoringRunCreation creation =
             (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         JiraAuthoringWorkItemStore store = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem item = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
 
         AuthoringQueueClaim claim = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(item, DateTimeOffset.UtcNow, CancellationToken.None));
@@ -107,25 +109,32 @@ public sealed class JiraAuthoringWorkItemStoreTests
         await fixture.SeedAsync(
             "FHIR-1",
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
-        await fixture.Coordinator.CreateScheduledRunAsync();
+        JiraAuthoringRunCreation creation =
+            (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         JiraAuthoringWorkItemStore store = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem item = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         DateTimeOffset startedAt = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
         AuthoringQueueClaim first = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(item, startedAt, CancellationToken.None));
 
         int reset = await store.ResetOrphanedItemsAsync(
+            creation.Run.Id,
             TimeSpan.FromMinutes(10),
             startedAt.AddMinutes(11),
             CancellationToken.None);
+        await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            creation.Run.Id,
+            startedAt.AddMinutes(12));
         JiraAuthoringWorkItem retried = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim second = Assert.IsType<AuthoringQueueClaim>(
-            await store.TryClaimAsync(retried, startedAt.AddMinutes(11), CancellationToken.None));
+            await store.TryClaimAsync(retried, startedAt.AddMinutes(12), CancellationToken.None));
 
         Assert.Equal(1, reset);
         Assert.NotEqual(first.OperationId, second.OperationId);
@@ -142,12 +151,14 @@ public sealed class JiraAuthoringWorkItemStoreTests
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         JiraAuthoringRunCreation creation =
             (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         JiraAuthoringWorkItemStore store = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem authoringItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim authoringClaim = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(authoringItem, DateTimeOffset.UtcNow, CancellationToken.None));
         AuthoringReceiptAcceptance accepted = await fixture.AuthoringStore.AcceptResultAsync(
@@ -160,7 +171,7 @@ public sealed class JiraAuthoringWorkItemStoreTests
             authoringClaim.OperationToken);
 
         JiraAuthoringWorkItem persistedItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim postReceiptClaim = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(persistedItem, DateTimeOffset.UtcNow, CancellationToken.None));
         Assert.NotEqual(authoringClaim.OperationId, postReceiptClaim.OperationId);
@@ -187,25 +198,31 @@ public sealed class JiraAuthoringWorkItemStoreTests
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         JiraAuthoringRunCreation creation =
             (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         JiraAuthoringWorkItemStore store = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem item = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         DateTimeOffset startedAt = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
         AuthoringQueueClaim first = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(item, startedAt, CancellationToken.None));
         await store.ResetOrphanedItemsAsync(
+            creation.Run.Id,
             TimeSpan.FromMinutes(10),
             startedAt.AddMinutes(11),
             CancellationToken.None);
+        await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            creation.Run.Id,
+            startedAt.AddMinutes(12));
         JiraAuthoringWorkItem replacementItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim replacement = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(
                 replacementItem,
-                startedAt.AddMinutes(11),
+                startedAt.AddMinutes(12),
                 CancellationToken.None));
 
         AuthoringConflictException conflict = await Assert.ThrowsAsync<AuthoringConflictException>(
@@ -213,7 +230,7 @@ public sealed class JiraAuthoringWorkItemStoreTests
                 item,
                 first,
                 AuthoringWorkResult.Retry("late failure"),
-                startedAt.AddMinutes(12),
+                startedAt.AddMinutes(13),
                 CancellationToken.None));
         AuthoringRunItemRecord current = Assert.Single(
             await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
@@ -233,12 +250,14 @@ public sealed class JiraAuthoringWorkItemStoreTests
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
         JiraAuthoringRunCreation creation =
             (await fixture.Coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         JiraAuthoringWorkItemStore store = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem authoringItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim authoringClaim = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(authoringItem, DateTimeOffset.UtcNow, CancellationToken.None));
         AuthoringReceiptAcceptance accepted = await fixture.AuthoringStore.AcceptResultAsync(
@@ -251,15 +270,16 @@ public sealed class JiraAuthoringWorkItemStoreTests
             authoringClaim.OperationToken);
         DateTimeOffset startedAt = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
         JiraAuthoringWorkItem firstPostItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim firstPostLease = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(firstPostItem, startedAt, CancellationToken.None));
         await store.ResetOrphanedItemsAsync(
+            creation.Run.Id,
             TimeSpan.FromMinutes(10),
             startedAt.AddMinutes(11),
             CancellationToken.None);
         JiraAuthoringWorkItem replacementItem = Assert.Single(
-            await store.GetPendingAsync(10, CancellationToken.None));
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
         AuthoringQueueClaim replacementLease = Assert.IsType<AuthoringQueueClaim>(
             await store.TryClaimAsync(
                 replacementItem,

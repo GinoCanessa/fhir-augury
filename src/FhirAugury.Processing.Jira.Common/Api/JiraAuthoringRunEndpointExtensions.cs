@@ -27,6 +27,9 @@ public static class JiraAuthoringRunEndpointExtensions
         endpoints.MapPost(
             $"{prefix}/processing/authoring/runs/{{runId}}/items/{{itemId}}/retry",
             RetryItemAsync);
+        endpoints.MapPost(
+            $"{prefix}/processing/authoring/runs/{{runId}}/items/{{itemId}}/supersede",
+            SupersedeItemAsync);
         endpoints.MapGet(
             $"{prefix}/processing/authoring/runs/{{runId}}/operations/{{operationId}}/receipt",
             GetReceiptAsync);
@@ -44,6 +47,7 @@ public static class JiraAuthoringRunEndpointExtensions
         JiraProcessingSourceTicketStore sourceStore,
         IJiraTicketDiscoveryClient discoveryClient,
         AuthoringRunStore authoringStore,
+        AuthoringRunControlService controlService,
         IOptions<JiraProcessingOptions> optionsAccessor,
         CancellationToken ct)
     {
@@ -110,38 +114,84 @@ public static class JiraAuthoringRunEndpointExtensions
             }
         }
 
+        AuthoringRunControlStatus status = await controlService.GetStatusAsync(
+            coordinator.ProcessorKind,
+            creation.Run.Id,
+            ct);
         return Results.Accepted(
             $"/processing/authoring/runs/{Uri.EscapeDataString(creation.Run.Id)}",
-            ToResponse(creation.Run, creation.Items));
+            ToResponse(status));
     }
 
     private static async Task<IResult> GetRunAsync(
         string runId,
-        AuthoringRunStore store,
+        JiraAuthoringRunCoordinator coordinator,
+        AuthoringRunControlService controlService,
         CancellationToken ct)
     {
-        AuthoringRunRecord? run = await store.GetRunAsync(runId, ct);
-        return run is null
-            ? Results.NotFound(new { error = $"Authoring run '{runId}' was not found." })
-            : Results.Ok(ToResponse(run, await store.GetRunItemsAsync(runId, ct)));
+        try
+        {
+            return Results.Ok(ToResponse(await controlService.GetStatusAsync(
+                coordinator.ProcessorKind,
+                runId,
+                ct)));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return Results.NotFound(new { error = ex.Message });
+        }
     }
 
     private static async Task<IResult> RetryItemAsync(
         string runId,
         string itemId,
-        AuthoringRunStore store,
+        JiraAuthoringRunCoordinator coordinator,
+        AuthoringRunControlService controlService,
         CancellationToken ct)
     {
-        AuthoringRunItemRecord? item = (await store.GetRunItemsAsync(runId, ct))
-            .SingleOrDefault(value => value.Id == itemId);
-        if (item is null)
+        try
         {
-            return Results.NotFound(new { error = $"Authoring item '{itemId}' was not found in run '{runId}'." });
+            return Results.Ok(await controlService.RetryItemAsync(
+                coordinator.ProcessorKind,
+                runId,
+                itemId,
+                ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return Results.NotFound(new { error = ex.Message });
+        }
+        catch (AuthoringConflictException ex)
+        {
+            return Results.Conflict(new { error = ex.Code.ToString(), detail = ex.Message });
+        }
+    }
+
+    private static async Task<IResult> SupersedeItemAsync(
+        string runId,
+        string itemId,
+        AuthoringItemSupersedeRequest? request,
+        JiraAuthoringRunCoordinator coordinator,
+        AuthoringRunControlService controlService,
+        CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return Results.BadRequest(new { error = "A non-empty supersede reason is required." });
         }
 
         try
         {
-            return Results.Ok(await store.RetryItemAsync(itemId, ct: ct));
+            return Results.Ok(await controlService.SupersedeItemAsync(
+                coordinator.ProcessorKind,
+                runId,
+                itemId,
+                request,
+                ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return Results.NotFound(new { error = ex.Message });
         }
         catch (AuthoringConflictException ex)
         {
@@ -232,36 +282,8 @@ public static class JiraAuthoringRunEndpointExtensions
     }
 
     private static JiraAuthoringRunResponse ToResponse(
-        AuthoringRunRecord run,
-        IReadOnlyList<AuthoringRunItemRecord> items)
-        => new(
-            new AuthoringRunStatus(
-                run.Id,
-                run.ProcessorKind,
-                run.AuthoringEpoch,
-                run.Status,
-                run.DatabaseOnly,
-                run.TotalItems,
-                items.Count(item => item.Status == AuthoringStatusValues.Items.Complete),
-                items.Count(item => item.Status == AuthoringStatusValues.Items.Error),
-                run.CreatedAt,
-                run.StartedAt,
-                run.CompletedAt,
-                run.Error),
-            items.Select(item => new AuthoringRunItemStatus(
-                item.Id,
-                item.RunId,
-                item.BusinessKey,
-                item.ItemKind,
-                item.ExpectedSourceRevision,
-                item.Status,
-                item.CurrentOperationId,
-                item.AcceptedReceiptId,
-                item.AttemptCount,
-                item.CreatedAt,
-                item.StartedAt,
-                item.CompletedAt,
-                item.Error)).ToArray());
+        AuthoringRunControlStatus status)
+        => new(status.Run, status.Items);
 }
 
 public sealed record JiraAuthoringRunResponse(

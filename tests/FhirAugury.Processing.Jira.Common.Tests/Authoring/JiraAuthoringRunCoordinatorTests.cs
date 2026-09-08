@@ -40,7 +40,7 @@ public sealed class JiraAuthoringRunCoordinatorTests
 
         JiraAuthoringRunCreation first =
             (await fixture.Coordinator.CreateScheduledRunAsync())!;
-        Assert.Equal(AuthoringStatusValues.Runs.Running, first.Run.Status);
+        Assert.Equal(AuthoringStatusValues.Runs.Queued, first.Run.Status);
         Assert.Equal(firstRevision.ToString("O"), Assert.Single(first.Items).ExpectedSourceRevision);
         Assert.Null(await fixture.Coordinator.CreateScheduledRunAsync());
 
@@ -111,21 +111,34 @@ public sealed class JiraAuthoringRunCoordinatorTests
         await CompleteDatabaseOnlyRunAsync(fixture, first);
 
         await fixture.SeedAsync("FHIR-1", revision.AddDays(2), title: "Third");
-        JiraAuthoringRunCreation third =
-            (await fixture.Coordinator.CreateScheduledRunAsync(databaseOnly: true))!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            second.Run.Id));
+        AuthoringRunReconciliationResult reconciliation =
+            await fixture.Coordinator.ReconcileRunAsync(
+                (await fixture.AuthoringStore.GetRunAsync(second.Run.Id))!,
+                CancellationToken.None);
+        AuthoringRunRecord third =
+            (await fixture.AuthoringStore.GetOldestQueuedRunAsync(
+                fixture.Coordinator.ProcessorKind))!;
 
+        Assert.Equal(
+            AuthoringRunReconciliationOutcome.Superseded,
+            reconciliation.Outcome);
         Assert.Equal(
             AuthoringStatusValues.Runs.Superseded,
             (await fixture.AuthoringStore.GetRunAsync(second.Run.Id))!.Status);
         Assert.Equal(
-            AuthoringStatusValues.Runs.Running,
-            (await fixture.AuthoringStore.GetRunAsync(third.Run.Id))!.Status);
+            AuthoringStatusValues.Runs.Queued,
+            third.Status);
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            third.Id));
         JiraAuthoringWorkItemStore queue = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem current = Assert.Single(
-            await queue.GetPendingAsync(10, CancellationToken.None));
+            await queue.GetPendingAsync(third.Id, 10, CancellationToken.None));
         Assert.Equal(revision.AddDays(2).ToString("O"), current.RunItem.ExpectedSourceRevision);
     }
 
@@ -139,14 +152,19 @@ public sealed class JiraAuthoringRunCoordinatorTests
         await fixture.SeedAsync("FHIR-2", revision);
         JiraAuthoringRunCreation batch =
             (await fixture.Coordinator.CreateScheduledRunAsync(databaseOnly: true))!;
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            batch.Run.Id));
 
         await fixture.SeedAsync("FHIR-1", revision.AddDays(1), title: "Updated");
+        await fixture.Coordinator.ReconcileRunAsync(
+            (await fixture.AuthoringStore.GetRunAsync(batch.Run.Id))!,
+            CancellationToken.None);
         JiraAuthoringWorkItemStore queue = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem current = Assert.Single(
-            await queue.GetPendingAsync(10, CancellationToken.None));
+            await queue.GetPendingAsync(batch.Run.Id, 10, CancellationToken.None));
         AuthoringRunItemRecord[] batchItems =
             (await fixture.AuthoringStore.GetRunItemsAsync(batch.Run.Id)).ToArray();
 
@@ -322,10 +340,12 @@ public sealed class JiraAuthoringRunCoordinatorTests
             active.RevalidationRunId!));
         JiraAuthoringWorkItemStore workItems = new(
             fixture.AuthoringStore,
-            fixture.SourceStore,
-            fixture.Coordinator);
+            fixture.SourceStore);
         JiraAuthoringWorkItem pending = Assert.Single(
-            await workItems.GetPendingAsync(10, CancellationToken.None));
+            await workItems.GetPendingAsync(
+                active.RevalidationRunId!,
+                10,
+                CancellationToken.None));
         Assert.Equal("FHIR-2", pending.RunItem.BusinessKey);
         Assert.Equal(
             AuthoringStatusValues.Items.Persisted,
@@ -355,6 +375,9 @@ public sealed class JiraAuthoringRunCoordinatorTests
         JiraAuthoringTestFixture fixture,
         JiraAuthoringRunCreation creation)
     {
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind,
+            creation.Run.Id));
         AuthoringRunItemRecord item = Assert.Single(creation.Items);
         AuthoringOperationClaim claim = (await fixture.AuthoringStore.ClaimItemAsync(
             creation.Run.Id,

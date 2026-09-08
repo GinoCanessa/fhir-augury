@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Api;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -11,6 +13,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -48,6 +51,20 @@ public sealed class PreparerServiceSmokeTests
         HttpResponseMessage response = await client.PostAsync("/api/v1/admin/hydration/backfill", null);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public void Host_UsesSharedAuthoringRunScheduler()
+    {
+        using TestApp app = new();
+        _ = app.Factory.CreateClient();
+
+        AuthoringRunScheduler<JiraAuthoringWorkItem> scheduler =
+            app.Factory.Services.GetRequiredService<
+                AuthoringRunScheduler<JiraAuthoringWorkItem>>();
+        Assert.Contains(
+            app.Factory.Services.GetServices<IHostedService>(),
+            service => ReferenceEquals(service, scheduler));
     }
 
     [Fact]

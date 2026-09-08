@@ -1,4 +1,6 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
 using FhirAugury.Processing.Jira.Common.Authoring;
@@ -38,6 +40,12 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IAuthoringQueueStore<JiraAuthoringWorkItem>>());
         Assert.NotNull(provider.GetRequiredService<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>());
         Assert.NotNull(provider.GetRequiredService<AuthoringQueueRunner<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRetryPolicy>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunControlService>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunFinalizer>());
+        Assert.Same(
+            provider.GetRequiredService<JiraAuthoringRunCoordinator>(),
+            provider.GetRequiredService<IAuthoringRunLifecycleAdapter>());
     }
 
     [Fact]
@@ -49,7 +57,7 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(worker);
         Assert.Same(worker, provider.GetRequiredService<JiraTicketSyncWorker>());
         Assert.Contains(provider.GetServices<IHostedService>(), s => ReferenceEquals(s, worker));
-        Assert.Contains(
+        Assert.DoesNotContain(
             provider.GetServices<IHostedService>(),
             service => service.GetType().Name == "JiraModeAwareProcessingHostedService");
     }

@@ -197,6 +197,9 @@ public sealed class PlannerTicketHandlerTests
             JiraAuthoringRunCreation creation =
                 await coordinator.CreateOneItemRunAsync(source);
             AuthoringRunRecord run = creation.Run;
+            Assert.True(await authoringStore.TryAcquireMutationFenceAsync(
+                coordinator.ProcessorKind,
+                run.Id));
             AuthoringRunItemRecord item = Assert.Single(creation.Items);
             AuthoringOperationClaim operation = (await authoringStore.ClaimItemAsync(run.Id, item.Id))!;
             PlannedTicketPayload payload = new() { Key = source.Key, ResolutionSummary = "summary" };

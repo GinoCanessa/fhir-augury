@@ -9,7 +9,6 @@ using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
@@ -18,13 +17,13 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 public sealed class PreparedTicketRunPostProcessor(
     PreparerDatabase database,
     AuthoringRunStore authoringStore,
+    AuthoringRunFinalizer finalizer,
     SqliteReviewSnapshotReconciler snapshotReconciler,
     JiraAuthoringRunCoordinator coordinator,
     OrchestratorWorkGroupCatalogFetcher workGroupFetcher,
     IPreparedTicketGroupingDispatcher groupingDispatcher,
-    IOptions<PreparerServiceOptions> optionsAccessor,
-    ILogger<PreparedTicketRunPostProcessor> logger)
-    : BackgroundService
+    IOptions<PreparerServiceOptions> optionsAccessor)
+    : IAuthoringRunFinalizationStrategy
 {
     private readonly PreparerServiceOptions _options = optionsAccessor.Value;
 
@@ -50,7 +49,12 @@ public sealed class PreparedTicketRunPostProcessor(
                 AuthoringConflictCode.SourceRevisionMismatch,
                 $"Initial revalidation run '{runId}' was replaced because source revisions changed before finalization.");
         }
-        if (!run.DatabaseOnly && await database.CountLegacyUnverifiedAsync(ct) > 0)
+        int blockingLegacyRows = initialRevalidation
+            ? await database.CountLegacyUnverifiedNotSupersededByRunAsync(
+                runId,
+                ct)
+            : await database.CountLegacyUnverifiedAsync(ct);
+        if (!run.DatabaseOnly && blockingLegacyRows > 0)
         {
             await authoringStore.SupersedeRunAsync(
                 runId,
@@ -60,10 +64,33 @@ public sealed class PreparedTicketRunPostProcessor(
                 "A complete legacy revalidation run is required before the first canonical snapshot.");
         }
 
+        IReadOnlyList<AuthoringRunItemRecord> runItems =
+            await authoringStore.GetRunItemsAsync(runId, ct);
         IReadOnlyList<PreparedTicketRunPartition> partitions =
             await database.GetRunPartitionsAsync(runId, ct);
-        List<AuthoringFinalizationStage> stages =
-        [
+        List<AuthoringFinalizationStage> stages = [];
+        if (initialRevalidation)
+        {
+            string retirementFingerprint = AuthoringResultHasher.HashNormalizedUtf8(
+                string.Join(
+                    "\n",
+                    runItems
+                        .Where(item =>
+                            item.Status == AuthoringStatusValues.Items.Superseded)
+                        .OrderBy(item => item.RowId)
+                        .Select(item => $"{item.Id}:{item.BusinessKey}")));
+            stages.Add(new AuthoringFinalizationStage(
+                "revalidation-retirement",
+                "",
+                retirementFingerprint,
+                (lease, cancellationToken) =>
+                    database.RetireSupersededLegacyRowsAsync(
+                        runId,
+                        lease,
+                        retirementFingerprint,
+                        cancellationToken)));
+        }
+        stages.Add(
             new(
                 "workgroup-catalog",
                 "",
@@ -79,8 +106,7 @@ public sealed class PreparedTicketRunPostProcessor(
                         lease.LeaseId,
                         AuthoringResultHasher.HashNormalizedUtf8("workgroup-catalog-v1"),
                         cancellationToken);
-                }),
-        ];
+                }));
         stages.AddRange(partitions.Select(partition => new AuthoringFinalizationStage(
             "grouping",
             partition.PartitionKey,
@@ -102,7 +128,6 @@ public sealed class PreparedTicketRunPostProcessor(
                         $"Grouping partition '{partition.PartitionKey}' completed without a durable receipt.");
             })));
 
-        AuthoringRunFinalizer finalizer = new(authoringStore);
         Func<SqliteConnection, CancellationToken, Task>? completionGuard =
             initialRevalidation
                 ? (connection, cancellationToken) =>
@@ -160,45 +185,13 @@ public sealed class PreparedTicketRunPostProcessor(
         }
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        if (_options.ReconcileSnapshotsOnStartup)
-        {
-            await snapshotReconciler.ReconcileAsync(stoppingToken);
-        }
+    public Task ReconcileSnapshotsOnStartupAsync(CancellationToken ct)
+        => snapshotReconciler.ReconcileAsync(ct);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                string mode = (await authoringStore.EnsureProcessorModeAsync(
-                    coordinator.ProcessorKind,
-                    ct: stoppingToken)).Mode;
-                if (mode == AuthoringStatusValues.ProcessorModes.RunBacked)
-                {
-                    IReadOnlyList<string> runs =
-                        await database.ListRunsReadyForFinalizationAsync(
-                            coordinator.ProcessorKind,
-                            stoppingToken);
-                    foreach (string runId in runs)
-                    {
-                        await FinalizeRunAsync(runId, stoppingToken);
-                    }
-                }
-
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Prepared-ticket run finalization pass failed.");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
-        }
-    }
+    async Task IAuthoringRunFinalizationStrategy.FinalizeRunAsync(
+        string runId,
+        CancellationToken ct)
+        => _ = await FinalizeRunAsync(runId, ct);
 }
 
 public interface IPreparedTicketGroupingDispatcher

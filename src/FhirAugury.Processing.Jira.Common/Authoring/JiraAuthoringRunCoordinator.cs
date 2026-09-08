@@ -1,6 +1,7 @@
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
@@ -20,6 +21,7 @@ public sealed class JiraAuthoringRunCoordinator(
     JiraProcessingSourceTicketStore sourceStore,
     JiraProcessingFilterResolver filterResolver,
     IOptions<JiraProcessingOptions> optionsAccessor)
+    : IAuthoringRunLifecycleAdapter
 {
     private readonly JiraProcessingOptions _options = optionsAccessor.Value;
 
@@ -121,38 +123,43 @@ public sealed class JiraAuthoringRunCoordinator(
             definitions,
             databaseOnly,
             ct: ct);
-        await TryActivateNextQueuedRunAsync(ct);
         return new JiraAuthoringRunCreation(
-            (await authoringStore.GetRunAsync(run.Id, ct))!,
+            run,
             await authoringStore.GetRunItemsAsync(run.Id, ct));
     }
 
-    public async Task<bool> TryActivateNextQueuedRunAsync(CancellationToken ct = default)
+    public async Task<AuthoringRunReconciliationResult> ReconcileRunAsync(
+        AuthoringRunRecord run,
+        CancellationToken ct)
     {
-        AuthoringProcessorModeRecord mode = await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
-        if (!string.Equals(mode.Mode, AuthoringStatusValues.ProcessorModes.RunBacked, StringComparison.Ordinal))
+        ArgumentNullException.ThrowIfNull(run);
+        if (!string.Equals(run.ProcessorKind, ProcessorKind, StringComparison.Ordinal))
         {
-            return false;
+            throw new InvalidOperationException(
+                $"Run '{run.Id}' belongs to processor '{run.ProcessorKind}', not '{ProcessorKind}'.");
         }
 
-        while (true)
+        AuthoringProcessorModeRecord mode =
+            await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
+        bool initialRevalidation = mode.RevalidationRequired &&
+            string.Equals(mode.RevalidationRunId, run.Id, StringComparison.Ordinal);
+        if (!await SupersedeStaleItemsAsync(run.Id, ct))
         {
-            string? runId = await GetOldestQueuedRunIdAsync(ct);
-            if (runId is null)
-            {
-                return false;
-            }
-            bool wholeRunSuperseded = await SupersedeStaleItemsAsync(runId, ct);
-            if (wholeRunSuperseded)
-            {
-                continue;
-            }
-
-            return await authoringStore.TryAcquireMutationFenceAsync(
-                ProcessorKind,
-                runId,
-                ct: ct);
+            return AuthoringRunReconciliationResult.Current;
         }
+
+        if (initialRevalidation)
+        {
+            AuthoringProcessorModeRecord refreshed =
+                await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
+            return new AuthoringRunReconciliationResult(
+                AuthoringRunReconciliationOutcome.Replaced,
+                refreshed.RevalidationRunId);
+        }
+
+        await CreateScheduledRunAsync(ct: ct);
+        return new AuthoringRunReconciliationResult(
+            AuthoringRunReconciliationOutcome.Superseded);
     }
 
     public async Task<bool> SupersedeStaleItemsAsync(
@@ -364,26 +371,4 @@ public sealed class JiraAuthoringRunCoordinator(
                 await authoringStore.GetRunItemsAsync(runId, ct));
     }
 
-    private async Task<string?> GetOldestQueuedRunIdAsync(CancellationToken ct)
-    {
-        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
-        {
-            DataSource = sourceStore.DatabasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = false,
-        }.ToString());
-        await connection.OpenAsync(ct);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT Id
-            FROM authoring_runs
-            WHERE ProcessorKind = @processorKind AND Status = @status
-            ORDER BY CreatedAt, RowId
-            LIMIT 1
-            """;
-        command.Parameters.AddWithValue("@processorKind", ProcessorKind);
-        command.Parameters.AddWithValue("@status", AuthoringStatusValues.Runs.Queued);
-        return (string?)await command.ExecuteScalarAsync(ct);
-    }
 }

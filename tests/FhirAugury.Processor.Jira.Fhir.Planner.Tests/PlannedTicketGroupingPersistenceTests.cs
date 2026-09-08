@@ -151,6 +151,9 @@ public sealed class PlannedTicketGroupingPersistenceTests
                 false,
                 CancellationToken.None);
             JiraAuthoringRunCreation creation = await _coordinator.CreateOneItemRunAsync(source);
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                _coordinator.ProcessorKind,
+                creation.Run.Id));
             AuthoringRunItemRecord item = Assert.Single(creation.Items);
             AuthoringOperationClaim claim =
                 (await AuthoringStore.ClaimItemAsync(creation.Run.Id, item.Id))!;

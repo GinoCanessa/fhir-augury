@@ -4,6 +4,7 @@ using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
@@ -69,6 +70,55 @@ public sealed class PlannedTicketReviewSnapshotTests
 
         Assert.Equal(1, Scalar<int>(snapshot, "SELECT COUNT(*) FROM planned_ticket_topics"));
         Assert.Equal(1, Scalar<int>(snapshot, "SELECT COUNT(*) FROM planned_ticket_topic_members"));
+    }
+
+    [Fact]
+    public async Task FinalizeRun_AllSupersededItemsCompletesNormally()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateSupersededRunAsync(databaseOnly: true);
+
+        AuthoringSnapshotDescriptor? descriptor =
+            await fixture.CreatePostProcessor().FinalizeRunAsync(run.Id);
+
+        Assert.Null(descriptor);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.AuthoringStore.GetRunAsync(run.Id))!.Status);
+        Assert.Null(await fixture.AuthoringStore.GetFencedRunAsync("jira-fhir"));
+    }
+
+    [Fact]
+    public async Task FinalizeRun_InitialRevalidationRetiresSupersededLegacyRows()
+    {
+        using Fixture fixture = new(activate: false);
+        await fixture.Database.SavePlannedTicketAsync(new PlannedTicketPayload
+        {
+            Key = "FHIR-1",
+            Resolution = "Persuasive",
+            ResolutionSummary = "summary",
+            FeatureProposal = "proposal",
+            DesignRationale = "rationale",
+        });
+        await fixture.Database.ClassifyLegacyPlannedTicketsAsync();
+        await fixture.ActivateAsync();
+        (AuthoringRunRecord run, _) =
+            await fixture.CreateSupersededRunAsync(databaseOnly: true);
+        fixture.MarkAsInitialRevalidation(run.Id);
+
+        await fixture.CreatePostProcessor().FinalizeRunAsync(run.Id);
+
+        Assert.Equal(0, await fixture.Database.CountLegacyUnverifiedAsync());
+        AuthoringProcessorModeRecord mode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        Assert.False(mode.RevalidationRequired);
+        using SqliteConnection connection = fixture.Database.OpenConnection();
+        Assert.Equal(
+            "superseded",
+            Scalar<string>(
+                connection,
+                "SELECT Classification FROM planned_ticket_authoring_state WHERE TicketKey = 'FHIR-1'"));
     }
 
     [Fact]
@@ -211,7 +261,7 @@ public sealed class PlannedTicketReviewSnapshotTests
         private readonly JiraProcessingSourceTicketStore _sourceStore;
         private readonly JiraAuthoringRunCoordinator _coordinator;
 
-        public Fixture()
+        public Fixture(bool activate = true)
         {
             _directory = Path.Combine(
                 Path.GetTempPath(),
@@ -234,20 +284,33 @@ public sealed class PlannedTicketReviewSnapshotTests
                     SourceTicketShape = "fhir",
                     TicketStatusesToProcess = ["Resolved - change required"],
                 }));
-            AuthoringStore.EnsureProcessorModeAsync(_coordinator.ProcessorKind).GetAwaiter().GetResult();
-            AuthoringStore.TransitionProcessorModeAsync(
-                _coordinator.ProcessorKind,
-                AuthoringStatusValues.ProcessorModes.Legacy,
-                AuthoringStatusValues.ProcessorModes.CuttingOver).GetAwaiter().GetResult();
-            AuthoringStore.TransitionProcessorModeAsync(
-                _coordinator.ProcessorKind,
-                AuthoringStatusValues.ProcessorModes.CuttingOver,
-                AuthoringStatusValues.ProcessorModes.RunBacked).GetAwaiter().GetResult();
+            if (activate)
+            {
+                ActivateAsync().GetAwaiter().GetResult();
+            }
         }
 
         public PlannerDatabase Database { get; }
         public AuthoringRunStore AuthoringStore { get; }
         public string SnapshotDirectory { get; }
+
+        public async Task ActivateAsync()
+        {
+            await AuthoringStore.EnsureProcessorModeAsync(_coordinator.ProcessorKind);
+            AuthoringProcessorModeRecord mode =
+                await AuthoringStore.GetProcessorModeAsync(_coordinator.ProcessorKind);
+            if (mode.Mode == AuthoringStatusValues.ProcessorModes.Legacy)
+            {
+                await AuthoringStore.TransitionProcessorModeAsync(
+                    _coordinator.ProcessorKind,
+                    AuthoringStatusValues.ProcessorModes.Legacy,
+                    AuthoringStatusValues.ProcessorModes.CuttingOver);
+                await AuthoringStore.TransitionProcessorModeAsync(
+                    _coordinator.ProcessorKind,
+                    AuthoringStatusValues.ProcessorModes.CuttingOver,
+                    AuthoringStatusValues.ProcessorModes.RunBacked);
+            }
+        }
 
         public async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> CreateCompletedRunAsync()
         {
@@ -268,6 +331,9 @@ public sealed class PlannedTicketReviewSnapshotTests
                 CancellationToken.None);
             JiraAuthoringRunCreation creation =
                 await _coordinator.CreateOneItemRunAsync(source, databaseOnly: false);
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                _coordinator.ProcessorKind,
+                creation.Run.Id));
             AuthoringRunItemRecord item = Assert.Single(creation.Items);
             AuthoringOperationClaim claim =
                 (await AuthoringStore.ClaimItemAsync(creation.Run.Id, item.Id))!;
@@ -349,6 +415,50 @@ public sealed class PlannedTicketReviewSnapshotTests
             return (creation.Run, item);
         }
 
+        public async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> CreateSupersededRunAsync(
+            bool databaseOnly)
+        {
+            JiraProcessingSourceTicketRecord source = await _sourceStore.UpsertAsync(
+                new JiraIssueSummaryEntry
+                {
+                    Key = "FHIR-1",
+                    ProjectKey = "FHIR",
+                    Title = "Title",
+                    Type = "Change Request",
+                    Status = "Resolved - change required",
+                    WorkGroup = "FHIR Infrastructure",
+                    Specification = "FHIR",
+                    UpdatedAt = new DateTimeOffset(
+                        2026,
+                        9,
+                        1,
+                        0,
+                        0,
+                        0,
+                        TimeSpan.Zero),
+                },
+                "fhir",
+                false,
+                CancellationToken.None);
+            JiraAuthoringRunCreation creation =
+                await _coordinator.CreateOneItemRunAsync(source, databaseOnly);
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                _coordinator.ProcessorKind,
+                creation.Run.Id));
+            AuthoringRunItemRecord item = Assert.Single(creation.Items);
+            AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+                await AuthoringStore.ClaimItemAsync(creation.Run.Id, item.Id));
+            await AuthoringStore.MarkClaimErrorAsync(
+                item.Id,
+                claim.OperationId,
+                "worker failure");
+            await AuthoringStore.SupersedeErroredItemAsync(
+                creation.Run.Id,
+                item.Id,
+                "not actionable");
+            return (creation.Run, item);
+        }
+
         public void MarkAsInitialRevalidation(string runId)
         {
             using SqliteConnection connection = Database.OpenConnection();
@@ -374,6 +484,7 @@ public sealed class PlannedTicketReviewSnapshotTests
             return new PlannedTicketRunPostProcessor(
                 Database,
                 AuthoringStore,
+                new AuthoringRunFinalizer(AuthoringStore),
                 new SqliteReviewSnapshotReconciler(AuthoringStore),
                 _coordinator,
                 new OrchestratorWorkGroupCatalogFetcher(client),
@@ -383,8 +494,7 @@ public sealed class PlannedTicketReviewSnapshotTests
                     SnapshotDirectory = SnapshotDirectory,
                     SnapshotSchemaVersion = 1,
                     ReconcileSnapshotsOnStartup = true,
-                }),
-                NullLogger<PlannedTicketRunPostProcessor>.Instance);
+                }));
         }
 
         public void Dispose()

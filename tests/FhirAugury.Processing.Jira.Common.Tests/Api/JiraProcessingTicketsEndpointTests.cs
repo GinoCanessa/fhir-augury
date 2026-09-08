@@ -222,6 +222,61 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task AuthoringControl_ReportsRetryMetadataAndRequiresSupersedeReason()
+    {
+        using HttpClient client = CreateClientForMode(
+            new FakeDiscovery(CreateTicket("FHIR-1", "Triaged")),
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore sourceStore,
+            out AuthoringRunStore authoringStore,
+            out JiraAuthoringRunCoordinator coordinator);
+        await sourceStore.UpsertAsync(
+            CreateTicket("FHIR-1", "Triaged"),
+            "fhir",
+            false,
+            CancellationToken.None);
+        JiraAuthoringRunCreation creation =
+            (await coordinator.CreateScheduledRunAsync())!;
+        Assert.True(await authoringStore.TryAcquireMutationFenceAsync(
+            coordinator.ProcessorKind,
+            creation.Run.Id));
+        AuthoringRunItemRecord item = Assert.Single(creation.Items);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await authoringStore.ClaimItemAsync(creation.Run.Id, item.Id));
+        await authoringStore.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "worker failure");
+
+        JiraAuthoringRunResponse before =
+            (await client.GetFromJsonAsync<JiraAuthoringRunResponse>(
+                $"/processing/authoring/runs/{creation.Run.Id}"))!;
+        Assert.Equal(1, before.Run.FailedItems);
+        Assert.Equal(1, before.Run.RetryableErrorItems);
+        Assert.Equal(2, Assert.Single(before.Items).AttemptsRemaining);
+
+        HttpResponseMessage missingReason = await client.PostAsJsonAsync(
+            $"/processing/authoring/runs/{creation.Run.Id}/items/{item.Id}/supersede",
+            new AuthoringItemSupersedeRequest(" "));
+        Assert.Equal(HttpStatusCode.BadRequest, missingReason.StatusCode);
+
+        HttpResponseMessage superseded = await client.PostAsJsonAsync(
+            $"/processing/authoring/runs/{creation.Run.Id}/items/{item.Id}/supersede",
+            new AuthoringItemSupersedeRequest("not actionable"));
+        Assert.Equal(HttpStatusCode.OK, superseded.StatusCode);
+        AuthoringItemSupersedeResult result =
+            (await superseded.Content.ReadFromJsonAsync<AuthoringItemSupersedeResult>())!;
+        Assert.Equal(AuthoringStatusValues.Items.Superseded, result.Status);
+
+        JiraAuthoringRunResponse after =
+            (await client.GetFromJsonAsync<JiraAuthoringRunResponse>(
+                $"/api/v1/processing/authoring/runs/{creation.Run.Id}"))!;
+        Assert.Equal(1, after.Run.FailedItems);
+        Assert.Equal(0, after.Run.RetryableErrorItems);
+        Assert.Equal(1, after.Run.SupersededItems);
+    }
+
+    [Fact]
     public async Task ReadySnapshotBytesAreStreamedFromProcessorOwnedRecord()
     {
         using HttpClient client = CreateClientForMode(
@@ -322,7 +377,13 @@ public class JiraProcessingTicketsEndpointTests
             dbPath,
             NullLogger<JiraProcessingDatabase>.Instance);
         processingDatabase.Initialize();
-        authoringStore = new AuthoringRunStore(processingDatabase);
+        AuthoringRetryPolicy retryPolicy = new(Options.Create(
+            new FhirAugury.Processing.Common.Configuration.ProcessingServiceOptions()));
+        authoringStore = new AuthoringRunStore(
+            processingDatabase,
+            retryPolicy: retryPolicy);
+        AuthoringRunControlService controlService =
+            new(authoringStore, retryPolicy);
         IOptions<JiraProcessingOptions> options = Options.Create(new JiraProcessingOptions
         {
             AgentCliCommand = "agent {ticketKey}",
@@ -355,6 +416,8 @@ public class JiraProcessingTicketsEndpointTests
         }
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(authoringStore);
+        builder.Services.AddSingleton(retryPolicy);
+        builder.Services.AddSingleton(controlService);
         builder.Services.AddSingleton(coordinator);
         builder.Services.AddSingleton<IJiraTicketDiscoveryClient>(discovery);
         builder.Services.AddSingleton(options);

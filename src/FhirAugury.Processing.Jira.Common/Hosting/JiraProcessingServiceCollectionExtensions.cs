@@ -72,12 +72,18 @@ public static class JiraProcessingServiceCollectionExtensions
             database.Initialize();
             return database;
         });
+        services.AddSingleton<AuthoringRetryPolicy>();
         services.AddSingleton<AuthoringRunStore>(sp => new AuthoringRunStore(
             sp.GetRequiredService<JiraProcessingDatabase>(),
-            sp.GetRequiredService<ILogger<AuthoringRunStore>>()));
+            sp.GetRequiredService<ILogger<AuthoringRunStore>>(),
+            sp.GetRequiredService<AuthoringRetryPolicy>()));
+        services.AddSingleton<AuthoringRunControlService>();
+        services.AddSingleton<AuthoringRunFinalizer>();
         services.AddSingleton<JiraProcessingSourceTicketStore>();
         services.AddSingleton<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>(sp => sp.GetRequiredService<JiraProcessingSourceTicketStore>());
         services.AddSingleton<JiraAuthoringRunCoordinator>();
+        services.AddSingleton<IAuthoringRunLifecycleAdapter>(sp =>
+            sp.GetRequiredService<JiraAuthoringRunCoordinator>());
         services.AddSingleton<JiraAuthoringWorkItemStore>();
         services.AddSingleton<IAuthoringQueueStore<JiraAuthoringWorkItem>>(sp =>
             sp.GetRequiredService<JiraAuthoringWorkItemStore>());
@@ -88,7 +94,6 @@ public static class JiraProcessingServiceCollectionExtensions
         services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>, JiraAuthoringWorkItemHandler>();
         services.AddSingleton<ProcessingQueueRunner<JiraProcessingSourceTicketRecord>>();
         services.AddSingleton<AuthoringQueueRunner<JiraAuthoringWorkItem>>();
-        services.AddHostedService<JiraModeAwareProcessingHostedService>();
         services.AddHttpClient<DirectJiraTicketDiscoveryClient>((sp, client) =>
         {
             JiraProcessingOptions options = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
@@ -114,28 +119,4 @@ public static class JiraProcessingServiceCollectionExtensions
     }
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
-}
-
-internal sealed class JiraModeAwareProcessingHostedService(
-    AuthoringQueueRunner<JiraAuthoringWorkItem> authoringRunner,
-    AuthoringRunStore authoringStore,
-    JiraAuthoringRunCoordinator coordinator)
-    : BackgroundService
-{
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            string mode = (await authoringStore.EnsureProcessorModeAsync(
-                coordinator.ProcessorKind,
-                ct: stoppingToken)).Mode;
-            if (string.Equals(mode, AuthoringStatusValues.ProcessorModes.RunBacked, StringComparison.Ordinal))
-            {
-                await authoringRunner.RunAsync(stoppingToken);
-                return;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
-        }
-    }
 }

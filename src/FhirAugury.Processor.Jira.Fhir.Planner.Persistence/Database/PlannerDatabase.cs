@@ -656,6 +656,97 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
     }
 
+    public async Task<int> CountLegacyUnverifiedNotSupersededByRunAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM planned_ticket_authoring_state s
+            WHERE s.Classification = 'legacy-unverified'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM authoring_run_items i
+                  WHERE i.RunId = @runId
+                    AND i.BusinessKey = s.TicketKey COLLATE NOCASE
+                    AND i.Status = @superseded
+                    AND i.AcceptedReceiptId IS NULL
+              )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
+    }
+
+    public async Task RetireSupersededLegacyRowsAsync(
+        string runId,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureStageLeaseAsync(
+                connection,
+                runId,
+                lease.StageId,
+                lease.LeaseId,
+                inputFingerprint,
+                "revalidation-retirement",
+                "",
+                ct);
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE planned_ticket_authoring_state
+                SET Classification = 'superseded',
+                    ReceiptContentHash = NULL,
+                    RunId = @runId,
+                    RunItemId = (
+                        SELECT i.Id
+                        FROM authoring_run_items i
+                        WHERE i.RunId = @runId
+                          AND i.BusinessKey =
+                              planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                          AND i.Status = @superseded
+                          AND i.AcceptedReceiptId IS NULL
+                        LIMIT 1
+                    ),
+                    OperationId = NULL,
+                    UpdatedAt = @updatedAt
+                WHERE Classification = 'legacy-unverified'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM authoring_run_items i
+                      WHERE i.RunId = @runId
+                        AND i.BusinessKey =
+                            planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                        AND i.Status = @superseded
+                        AND i.AcceptedReceiptId IS NULL
+                  )
+                """,
+                ct,
+                ("@runId", runId),
+                ("@superseded", AuthoringStatusValues.Items.Superseded),
+                ("@updatedAt", Format(DateTimeOffset.UtcNow)));
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
     public async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
         GetGroupingMaintenanceItemsAsync(CancellationToken ct = default)
     {
@@ -779,38 +870,6 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ("@processorKind", AuthoringProcessorKind),
             ("@runId", lease.RunId),
             ("@leaseId", lease.LeaseId));
-    }
-
-    public async Task<IReadOnlyList<string>> ListRunsReadyForFinalizationAsync(
-        string processorKind,
-        CancellationToken ct = default)
-    {
-        await using SqliteConnection connection = OpenConnection();
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT r.Id
-            FROM authoring_runs r
-            WHERE r.ProcessorKind = @processorKind
-              AND r.Status IN (@running, @finalizing, @error)
-              AND NOT EXISTS (
-                  SELECT 1 FROM authoring_run_items i
-                  WHERE i.RunId = r.Id AND i.Status NOT IN (@complete, @superseded))
-            ORDER BY r.CreatedAt, r.RowId
-            """;
-        command.Parameters.AddWithValue("@processorKind", processorKind);
-        command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
-        command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
-        command.Parameters.AddWithValue("@error", AuthoringStatusValues.Runs.Error);
-        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
-        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
-        List<string> runIds = [];
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            runIds.Add(reader.GetString(0));
-        }
-        return runIds;
     }
 
     public async Task<IReadOnlyList<PlannedTicketRunPartition>> GetRunPartitionsAsync(

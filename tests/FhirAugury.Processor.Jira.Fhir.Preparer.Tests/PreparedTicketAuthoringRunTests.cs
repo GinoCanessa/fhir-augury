@@ -267,6 +267,9 @@ public sealed class PreparedTicketAuthoringRunTests
                 await ActivateAsync();
             }
             JiraAuthoringRunCreation creation = await Coordinator.CreateOneItemRunAsync(source);
+            Assert.True(await AuthoringStore.TryAcquireMutationFenceAsync(
+                Coordinator.ProcessorKind,
+                creation.Run.Id));
             AuthoringRunItemRecord item = Assert.Single(creation.Items);
             AuthoringOperationClaim claim = (await AuthoringStore.ClaimItemAsync(
                 creation.Run.Id,

@@ -143,7 +143,11 @@ builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, PreviewPlannedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<PlannedTicketRunPostProcessor>();
 builder.Services.AddSingleton<PlannedTicketGroupingMaintenanceService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<PlannedTicketRunPostProcessor>());
+builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
+    sp.GetRequiredService<PlannedTicketRunPostProcessor>());
+builder.Services.AddSingleton<AuthoringRunScheduler<JiraAuthoringWorkItem>>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<AuthoringRunScheduler<JiraAuthoringWorkItem>>());
 
 WebApplication app = builder.Build();
 

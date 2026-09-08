@@ -1,9 +1,16 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Jira.Common.Tests.Database;
 
@@ -403,6 +410,82 @@ public class JiraProcessingSourceTicketStoreTests
                 Directory.Delete(directory, true);
             }
         }
+    }
+
+    [Fact]
+    public async Task AuthoringCandidates_DoNotReselectSupersededUnchangedRevision()
+    {
+        ResolvedJiraProcessingFilters filters = new()
+        {
+            TicketStatuses = ["Triaged"],
+            SourceTicketShape = "fhir",
+        };
+        JiraProcessingSourceTicketStore store = CreateStore(filters);
+        DateTimeOffset firstRevision =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        JiraIssueSummaryEntry firstTicket = CreateTicket("FHIR-1") with
+        {
+            UpdatedAt = firstRevision,
+        };
+        JiraProcessingSourceTicketRecord source = await store.UpsertAsync(
+            firstTicket,
+            "fhir",
+            false,
+            CancellationToken.None);
+        JiraProcessingDatabase database = new(
+            store.DatabasePath,
+            NullLogger<JiraProcessingDatabase>.Instance);
+        database.Initialize();
+        AuthoringRetryPolicy policy = new(Options.Create(
+            new ProcessingServiceOptions { AuthoringMaxAttempts = 1 }));
+        AuthoringRunStore authoringStore = new(
+            database,
+            retryPolicy: policy);
+        await authoringStore.EnsureProcessorModeAsync("jira-fhir");
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        AuthoringRunRecord run = await authoringStore.CreateRunAsync(
+            "jira-fhir",
+            [
+                new AuthoringRunItemDefinition(
+                    source.Key,
+                    source.SourceTicketShape,
+                    JiraProcessingSourceTicketStore.GetSourceRevision(source)),
+            ]);
+        Assert.True(await authoringStore.TryAcquireMutationFenceAsync(
+            "jira-fhir",
+            run.Id));
+        AuthoringRunItemRecord item = Assert.Single(
+            await authoringStore.GetRunItemsAsync(run.Id));
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await authoringStore.ClaimItemAsync(run.Id, item.Id));
+        await authoringStore.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "terminal failure");
+
+        Assert.Empty(await store.GetAuthoringCandidatesAsync(filters, 10, CancellationToken.None));
+
+        JiraIssueSummaryEntry updatedTicket =
+            CreateTicket("FHIR-1", title: "Updated") with
+            {
+                UpdatedAt = firstRevision.AddMinutes(1),
+            };
+        await store.UpsertAsync(
+            updatedTicket,
+            "fhir",
+            false,
+            CancellationToken.None);
+        Assert.Single(await store.GetAuthoringCandidatesAsync(
+            filters,
+            10,
+            CancellationToken.None));
     }
 
     private static Dictionary<string, (int Pk, string Type)> ReadTableInfo(SqliteConnection connection, string table)

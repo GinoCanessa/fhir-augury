@@ -491,15 +491,11 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             WHERE BusinessKey = @businessKey
               AND ItemKind = @itemKind
               AND ExpectedSourceRevision = @sourceRevision
-              AND Status <> @superseded
             LIMIT 1
             """;
         command.Parameters.AddWithValue("@businessKey", ticket.Key);
         command.Parameters.AddWithValue("@itemKind", ticket.SourceTicketShape);
         command.Parameters.AddWithValue("@sourceRevision", GetSourceRevision(ticket));
-        command.Parameters.AddWithValue(
-            "@superseded",
-            AuthoringStatusValues.Items.Superseded);
         return await command.ExecuteScalarAsync(ct) is not null;
     }
 

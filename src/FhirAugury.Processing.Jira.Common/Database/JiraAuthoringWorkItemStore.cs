@@ -1,84 +1,58 @@
-using System.Globalization;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database.Records;
-using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processing.Jira.Common.Database;
 
 public sealed class JiraAuthoringWorkItemStore(
     AuthoringRunStore authoringStore,
-    JiraProcessingSourceTicketStore sourceStore,
-    JiraAuthoringRunCoordinator coordinator)
+    JiraProcessingSourceTicketStore sourceStore)
     : IAuthoringQueueStore<JiraAuthoringWorkItem>
 {
     public async Task<IReadOnlyList<JiraAuthoringWorkItem>> GetPendingAsync(
+        string runId,
         int maxItems,
         CancellationToken ct)
     {
-        for (int pass = 0; pass < 3; pass++)
+        IReadOnlyList<AuthoringRunItemRecord> runItems =
+            await authoringStore.GetRunItemsAsync(runId, ct);
+        List<JiraAuthoringWorkItem> items = [];
+        foreach (AuthoringRunItemRecord runItem in runItems.Where(
+                     item => item.Status is AuthoringStatusValues.Items.Pending or
+                         AuthoringStatusValues.Items.Persisted))
         {
-            await coordinator.TryActivateNextQueuedRunAsync(ct);
-            string? runId = await GetActiveRunIdAsync(ct);
-            if (runId is null)
+            JiraProcessingSourceTicketRecord? source = await sourceStore.GetByKeyAsync(
+                runItem.BusinessKey,
+                runItem.ItemKind,
+                ct);
+            if (source is null && runItem.AcceptedReceiptId is not null)
             {
-                return [];
-            }
-
-            bool wholeRunSuperseded = await coordinator.SupersedeStaleItemsAsync(runId, ct);
-            if (wholeRunSuperseded)
-            {
-                AuthoringProcessorModeRecord mode =
-                    await authoringStore.GetProcessorModeAsync(
-                        coordinator.ProcessorKind,
-                        ct);
-                if (!mode.RevalidationRequired)
+                source = new JiraProcessingSourceTicketRecord
                 {
-                    await coordinator.CreateScheduledRunAsync(ct: ct);
-                }
+                    Key = runItem.BusinessKey,
+                    SourceTicketShape = runItem.ItemKind,
+                    LastSyncedAt = runItem.CreatedAt,
+                };
+            }
+            if (source is null ||
+                (runItem.AcceptedReceiptId is null && !string.Equals(
+                    JiraProcessingSourceTicketStore.GetSourceRevision(source),
+                    runItem.ExpectedSourceRevision,
+                    StringComparison.Ordinal)))
+            {
                 continue;
             }
 
-            IReadOnlyList<AuthoringRunItemRecord> runItems =
-                await authoringStore.GetRunItemsAsync(runId, ct);
-            List<JiraAuthoringWorkItem> items = [];
-            foreach (AuthoringRunItemRecord runItem in runItems.Where(
-                         item => item.Status is AuthoringStatusValues.Items.Pending or AuthoringStatusValues.Items.Persisted))
+            items.Add(new JiraAuthoringWorkItem(runItem, source));
+            if (items.Count >= maxItems)
             {
-                JiraProcessingSourceTicketRecord? source = await sourceStore.GetByKeyAsync(
-                    runItem.BusinessKey,
-                    runItem.ItemKind,
-                    ct);
-                if (source is null && runItem.AcceptedReceiptId is not null)
-                {
-                    source = new JiraProcessingSourceTicketRecord
-                    {
-                        Key = runItem.BusinessKey,
-                        SourceTicketShape = runItem.ItemKind,
-                        LastSyncedAt = runItem.CreatedAt,
-                    };
-                }
-                if (source is null ||
-                    (runItem.AcceptedReceiptId is null && !string.Equals(
-                        JiraProcessingSourceTicketStore.GetSourceRevision(source),
-                        runItem.ExpectedSourceRevision,
-                        StringComparison.Ordinal)))
-                {
-                    continue;
-                }
-
-                items.Add(new JiraAuthoringWorkItem(runItem, source));
-                if (items.Count >= maxItems)
-                {
-                    break;
-                }
+                break;
             }
-            return items;
         }
-        return [];
+        return items;
     }
 
     public async Task<AuthoringQueueClaim?> TryClaimAsync(
@@ -151,16 +125,11 @@ public sealed class JiraAuthoringWorkItemStore(
     }
 
     public async Task<int> ResetOrphanedItemsAsync(
+        string runId,
         TimeSpan olderThan,
         DateTimeOffset now,
         CancellationToken ct)
     {
-        string? runId = await GetActiveRunIdAsync(ct);
-        if (runId is null)
-        {
-            return 0;
-        }
-
         IReadOnlyList<AuthoringRunItemRecord> items = await authoringStore.GetRunItemsAsync(runId, ct);
         AuthoringRunItemRecord[] orphaned = items
             .Where(item =>
@@ -184,29 +153,5 @@ public sealed class JiraAuthoringWorkItemStore(
             }
         }
         return recovered;
-    }
-
-    private async Task<string?> GetActiveRunIdAsync(CancellationToken ct)
-    {
-        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
-        {
-            DataSource = sourceStore.DatabasePath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = false,
-        }.ToString());
-        await connection.OpenAsync(ct);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT f.RunId
-            FROM authoring_mutation_fences f
-            INNER JOIN authoring_runs r ON r.Id = f.RunId
-            WHERE f.ProcessorKind = @processorKind AND r.Status = @status
-            LIMIT 1
-            """;
-        command.Parameters.AddWithValue("@processorKind", coordinator.ProcessorKind);
-        command.Parameters.AddWithValue("@status", AuthoringStatusValues.Runs.Running);
-        object? value = await command.ExecuteScalarAsync(ct);
-        return Convert.ToString(value, CultureInfo.InvariantCulture);
     }
 }
