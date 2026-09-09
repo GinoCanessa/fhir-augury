@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
@@ -42,21 +43,23 @@ internal sealed class AuthoringHttpClient : IDisposable
             PropertyNameCaseInsensitive = true,
         };
 
-    private readonly HttpClient _client;
+    private readonly HttpClient _httpClient;
+    private readonly AuthoringControlClient _controlClient;
 
     public AuthoringHttpClient(
         string orchestratorAddress,
         HttpMessageHandler? handler = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(orchestratorAddress);
-        _client = handler is null
+        _httpClient = handler is null
             ? new HttpClient()
             : new HttpClient(handler, disposeHandler: false);
-        _client.BaseAddress = new Uri(
+        _httpClient.BaseAddress = new Uri(
             orchestratorAddress.EndsWith("/", StringComparison.Ordinal)
                 ? orchestratorAddress
                 : $"{orchestratorAddress}/",
             UriKind.Absolute);
+        _controlClient = new AuthoringControlClient(_httpClient);
     }
 
     public async Task<object> StartAsync<TRequest>(
@@ -65,24 +68,14 @@ internal sealed class AuthoringHttpClient : IDisposable
         CancellationToken ct)
     {
         EnsureOuterMode();
-        AuthoringHttpResponse raw = await SendAsync(
-            HttpMethod.Post,
-            ControlPath(serviceName),
-            request,
-            token: null,
-            retryTransient: false,
-            ct);
-        if (raw.StatusCode == HttpStatusCode.NoContent)
-        {
-            return new AuthoringNoCandidatesResponse();
-        }
-
-        AuthoringRunEnvelope response =
-            Deserialize<AuthoringRunEnvelope>(
-                raw.Content,
-                ControlPath(serviceName));
-        ValidateRunEnvelope(response);
-        return response;
+        AuthoringStartResult result =
+            await _controlClient.StartAsync(
+                serviceName,
+                request,
+                ct);
+        return result.Run is null
+            ? new AuthoringNoCandidatesResponse()
+            : ToEnvelope(result.Run);
     }
 
     public async Task<AuthoringRunEnvelope> GetStatusAsync(
@@ -91,16 +84,11 @@ internal sealed class AuthoringHttpClient : IDisposable
         CancellationToken ct)
     {
         EnsureOuterMode();
-        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        AuthoringRunEnvelope response = await SendJsonAsync<AuthoringRunEnvelope>(
-            HttpMethod.Get,
-            $"{ControlPath(serviceName)}/{Uri.EscapeDataString(runId)}",
-            body: null,
-            token: null,
-            retryTransient: true,
-            ct);
-        ValidateRunEnvelope(response, runId);
-        return response;
+        return ToEnvelope(
+            await _controlClient.GetAsync(
+                serviceName,
+                runId,
+                ct));
     }
 
     public async Task<AuthoringRetryResponse> RetryAsync(
@@ -110,25 +98,18 @@ internal sealed class AuthoringHttpClient : IDisposable
         CancellationToken ct)
     {
         EnsureOuterMode();
-        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
-        AuthoringRetryResponse response =
-            await SendJsonAsync<AuthoringRetryResponse>(
-                HttpMethod.Post,
-                $"{ControlPath(serviceName)}/{Uri.EscapeDataString(runId)}/items/{Uri.EscapeDataString(itemId)}/retry",
-                body: null,
-                token: null,
-                retryTransient: false,
+        FhirAugury.Processing.Client.AuthoringRetryResponse result =
+            await _controlClient.RetryAsync(
+                serviceName,
+                runId,
+                itemId,
                 ct);
-        if (!string.Equals(response.ItemId, itemId, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Retry response item '{response.ItemId}' does not match requested item '{itemId}'.");
-        }
-        return response;
+        return new AuthoringRetryResponse(
+            result.ItemId,
+            result.RequiresAuthoring);
     }
 
-    public async Task<AuthoringItemSupersedeResult> SupersedeAsync(
+    public Task<AuthoringItemSupersedeResult> SupersedeAsync(
         string serviceName,
         string runId,
         string itemId,
@@ -136,24 +117,12 @@ internal sealed class AuthoringHttpClient : IDisposable
         CancellationToken ct)
     {
         EnsureOuterMode();
-        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        AuthoringItemSupersedeResult response =
-            await SendJsonAsync<AuthoringItemSupersedeResult>(
-                HttpMethod.Post,
-                $"{ControlPath(serviceName)}/{Uri.EscapeDataString(runId)}/items/{Uri.EscapeDataString(itemId)}/supersede",
-                new AuthoringItemSupersedeRequest(reason),
-                token: null,
-                retryTransient: false,
-                ct);
-        if (!string.Equals(response.RunId, runId, StringComparison.Ordinal) ||
-            !string.Equals(response.ItemId, itemId, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Supersede response coordinates '{response.RunId}/{response.ItemId}' do not match requested item '{runId}/{itemId}'.");
-        }
-        return response;
+        return _controlClient.SupersedeAsync(
+            serviceName,
+            runId,
+            itemId,
+            reason,
+            ct);
     }
 
     public async Task<AuthoringSubmitResponse> SubmitAsync<TRequest>(
@@ -172,10 +141,22 @@ internal sealed class AuthoringHttpClient : IDisposable
                 retryTransient: true,
                 ct);
         AuthoringResultReceipt receipt = response.Receipt;
-        if (!string.Equals(receipt.RunId, context.RunId, StringComparison.Ordinal) ||
-            !string.Equals(receipt.ItemId, context.ItemId, StringComparison.Ordinal) ||
-            !string.Equals(receipt.OperationId, context.OperationId, StringComparison.Ordinal) ||
-            !string.Equals(receipt.ContentHash, contentHash, StringComparison.Ordinal) ||
+        if (!string.Equals(
+                receipt.RunId,
+                context.RunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.ItemId,
+                context.ItemId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.OperationId,
+                context.OperationId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                receipt.ContentHash,
+                contentHash,
+                StringComparison.Ordinal) ||
             !string.Equals(
                 receipt.ObservedSourceRevision,
                 observedSourceRevision,
@@ -201,95 +182,78 @@ internal sealed class AuthoringHttpClient : IDisposable
         EnsureOuterMode();
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentException.ThrowIfNullOrWhiteSpace(snapshotPath);
+
         string requestedSnapshotPath = Path.GetFullPath(snapshotPath);
-
-        string basePath =
-            $"{ControlPath(serviceName)}/{Uri.EscapeDataString(runId)}/snapshot";
-        byte[] descriptorBytes = await SendBytesAsync(
-            HttpMethod.Get,
-            basePath,
-            body: null,
-            token: null,
-            retryTransient: true,
-            ct);
-        AuthoringSnapshotDescriptor descriptor =
-            JsonSerializer.Deserialize<AuthoringSnapshotDescriptor>(
-                descriptorBytes,
-                JsonOptions)
-            ?? throw new InvalidOperationException(
-                "Snapshot descriptor response was empty.");
-        if (!string.Equals(descriptor.RunId, runId, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"Snapshot descriptor belongs to run '{descriptor.RunId}', not '{runId}'.");
-        }
-        if (string.IsNullOrWhiteSpace(descriptor.FileName) ||
-            Path.IsPathRooted(descriptor.FileName) ||
-            !string.Equals(
-                Path.GetFileName(descriptor.FileName),
-                descriptor.FileName,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "Snapshot descriptor contains an unsafe file name.");
-        }
-
         bool directoryRequest =
             Directory.Exists(requestedSnapshotPath) ||
             Path.EndsInDirectorySeparator(snapshotPath);
-        string outputDirectory = directoryRequest
-            ? requestedSnapshotPath
-            : Path.GetDirectoryName(requestedSnapshotPath)
+        if (directoryRequest)
+        {
+            VerifiedAuthoringSnapshotPair pair =
+                await _controlClient.DownloadSnapshotPairAsync(
+                    serviceName,
+                    runId,
+                    requestedSnapshotPath,
+                    ct);
+            string outputDescriptorPath =
+                string.IsNullOrWhiteSpace(descriptorPath)
+                    ? pair.DescriptorPath
+                    : Path.GetFullPath(descriptorPath);
+            if (!AuthoringPathsEqual(
+                    outputDescriptorPath,
+                    pair.DescriptorPath))
+            {
+                AuthoringSnapshotPairMaterialization materialized =
+                    await AuthoringSnapshotPairMaterializer.MaterializeAsync(
+                        pair,
+                        pair.DatabasePath,
+                        outputDescriptorPath,
+                        ct);
+                return ToSnapshotResult(materialized);
+            }
+
+            return new
+            {
+                descriptor = pair.Descriptor,
+                snapshotPath = pair.DatabasePath,
+                descriptorPath = pair.DescriptorPath,
+            };
+        }
+
+        string privateRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"fhir-augury-authoring-pair-{Guid.NewGuid():N}");
+        try
+        {
+            VerifiedAuthoringSnapshotPair pair =
+                await _controlClient.DownloadSnapshotPairAsync(
+                    serviceName,
+                    runId,
+                    Path.Combine(privateRoot, "pair"),
+                    ct);
+            string outputDirectory =
+                Path.GetDirectoryName(requestedSnapshotPath)
                 ?? Environment.CurrentDirectory;
-        string fullSnapshotPath = Path.GetFullPath(
-            Path.Combine(outputDirectory, descriptor.FileName));
-        string fullDescriptorPath = Path.GetFullPath(
-            string.IsNullOrWhiteSpace(descriptorPath)
-                ? $"{fullSnapshotPath}.descriptor.json"
-                : descriptorPath);
-        StringComparison pathComparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        if (string.Equals(
-            fullSnapshotPath,
-            fullDescriptorPath,
-            pathComparison))
-        {
-            throw new ArgumentException(
-                "Snapshot and descriptor paths must be different.");
+            string outputSnapshotPath = Path.GetFullPath(
+                Path.Combine(
+                    outputDirectory,
+                    pair.Descriptor.FileName));
+            string outputDescriptorPath = Path.GetFullPath(
+                string.IsNullOrWhiteSpace(descriptorPath)
+                    ? $"{outputSnapshotPath}.descriptor.json"
+                    : descriptorPath);
+            AuthoringSnapshotPairMaterialization materialized =
+                await AuthoringSnapshotPairMaterializer.MaterializeAsync(
+                    pair,
+                    outputSnapshotPath,
+                    outputDescriptorPath,
+                    ct);
+            return ToSnapshotResult(materialized);
         }
-
-        byte[] snapshotBytes = await SendBytesAsync(
-            HttpMethod.Get,
-            $"{basePath}/bytes",
-            body: null,
-            token: null,
-            retryTransient: true,
-            ct);
-        string checksum = Convert.ToHexString(
-            SHA256.HashData(snapshotBytes)).ToLowerInvariant();
-        if (snapshotBytes.LongLength != descriptor.SizeBytes ||
-            !string.Equals(
-                checksum,
-                descriptor.Sha256,
-                StringComparison.OrdinalIgnoreCase))
+        finally
         {
-            throw new InvalidOperationException(
-                "Downloaded snapshot bytes do not match the trusted descriptor.");
+            TryDeletePrivateDirectory(privateRoot);
         }
-
-        await WritePairAtomicallyAsync(
-            fullSnapshotPath,
-            snapshotBytes,
-            fullDescriptorPath,
-            descriptorBytes,
-            ct);
-        return new
-        {
-            descriptor,
-            snapshotPath = fullSnapshotPath,
-            descriptorPath = fullDescriptorPath,
-        };
     }
 
     public static AuthoringWorkerContext ReadWorkerContext()
@@ -333,12 +297,18 @@ internal sealed class AuthoringHttpClient : IDisposable
             "FHIR_AUGURY_AUTHORING_WORKER");
         string?[] workerValues =
         [
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_RUN_ID"),
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_ITEM_ID"),
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_CALLBACK_URL"),
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_OPERATION_ID"),
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_OPERATION_TOKEN"),
-            Environment.GetEnvironmentVariable("FHIR_AUGURY_AUTHORING_SOURCE_REVISION"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_RUN_ID"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_ITEM_ID"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_CALLBACK_URL"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_OPERATION_ID"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_OPERATION_TOKEN"),
+            Environment.GetEnvironmentVariable(
+                "FHIR_AUGURY_AUTHORING_SOURCE_REVISION"),
         ];
         if (!string.IsNullOrWhiteSpace(sentinel) ||
             workerValues.Any(value => !string.IsNullOrWhiteSpace(value)))
@@ -351,18 +321,21 @@ internal sealed class AuthoringHttpClient : IDisposable
     public static string HashWebJson<T>(T value)
         => Convert.ToHexString(
             SHA256.HashData(
-                JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions)))
+                JsonSerializer.SerializeToUtf8Bytes(
+                    value,
+                    JsonOptions)))
             .ToLowerInvariant();
 
     public static string HashBallotNoteProse(
         FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.BallotNoteProsePutRequest prose)
     {
-        string normalizedNeedsNote = prose.NeedsNote?.Trim().ToLowerInvariant() switch
-        {
-            "yes" or "true" => "yes",
-            "no" or "false" => "no",
-            _ => "unknown",
-        };
+        string normalizedNeedsNote =
+            prose.NeedsNote?.Trim().ToLowerInvariant() switch
+            {
+                "yes" or "true" => "yes",
+                "no" or "false" => "no",
+                _ => "unknown",
+            };
         string json = JsonSerializer.Serialize(new
         {
             NeedsNote = normalizedNeedsNote,
@@ -379,11 +352,12 @@ internal sealed class AuthoringHttpClient : IDisposable
             .Replace('\r', '\n')
             .Normalize(NormalizationForm.FormC);
         return Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))
+                SHA256.HashData(
+                    Encoding.UTF8.GetBytes(normalized)))
             .ToLowerInvariant();
     }
 
-    public void Dispose() => _client.Dispose();
+    public void Dispose() => _httpClient.Dispose();
 
     private async Task<T> SendJsonAsync<T>(
         HttpMethod method,
@@ -393,30 +367,15 @@ internal sealed class AuthoringHttpClient : IDisposable
         bool retryTransient,
         CancellationToken ct)
     {
-        byte[] bytes = await SendBytesAsync(
-            method,
-            path,
-            body,
-            token,
-            retryTransient,
-            ct);
-        return Deserialize<T>(bytes, path);
-    }
-
-    private async Task<byte[]> SendBytesAsync(
-        HttpMethod method,
-        string path,
-        object? body,
-        string? token,
-        bool retryTransient,
-        CancellationToken ct)
-        => (await SendAsync(
+        byte[] bytes = (await SendAsync(
             method,
             path,
             body,
             token,
             retryTransient,
             ct)).Content;
+        return Deserialize<T>(bytes, path);
+    }
 
     private async Task<AuthoringHttpResponse> SendAsync(
         HttpMethod method,
@@ -452,7 +411,7 @@ internal sealed class AuthoringHttpClient : IDisposable
             HttpResponseMessage response;
             try
             {
-                response = await _client.SendAsync(
+                response = await _httpClient.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     ct);
@@ -461,7 +420,8 @@ internal sealed class AuthoringHttpClient : IDisposable
             {
                 if (retryTransient &&
                     attempt < MaxAttempts &&
-                    (ex.StatusCode is null || IsTransient(ex.StatusCode.Value)))
+                    (ex.StatusCode is null ||
+                     IsTransient(ex.StatusCode.Value)))
                 {
                     await Task.Delay(
                         TimeSpan.FromMilliseconds(100 * attempt),
@@ -490,7 +450,9 @@ internal sealed class AuthoringHttpClient : IDisposable
                     attempt < MaxAttempts &&
                     IsTransient(response.StatusCode))
                 {
-                    await Task.Delay(GetRetryDelay(response, attempt), ct);
+                    await Task.Delay(
+                        GetRetryDelay(response, attempt),
+                        ct);
                     continue;
                 }
 
@@ -505,7 +467,9 @@ internal sealed class AuthoringHttpClient : IDisposable
         }
     }
 
-    private static T Deserialize<T>(byte[] bytes, string path)
+    private static T Deserialize<T>(
+        byte[] bytes,
+        string path)
         => JsonSerializer.Deserialize<T>(bytes, JsonOptions)
             ?? throw new InvalidOperationException(
                 $"Authoring endpoint '{path}' returned an empty response.");
@@ -518,7 +482,8 @@ internal sealed class AuthoringHttpClient : IDisposable
         HttpResponseMessage response,
         int attempt)
     {
-        RetryConditionHeaderValue? retryAfter = response.Headers.RetryAfter;
+        RetryConditionHeaderValue? retryAfter =
+            response.Headers.RetryAfter;
         if (retryAfter?.Delta is TimeSpan delta)
         {
             return delta;
@@ -526,242 +491,60 @@ internal sealed class AuthoringHttpClient : IDisposable
         if (retryAfter?.Date is DateTimeOffset date)
         {
             TimeSpan delay = date - DateTimeOffset.UtcNow;
-            return delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+            return delay > TimeSpan.Zero
+                ? delay
+                : TimeSpan.Zero;
         }
         return TimeSpan.FromMilliseconds(100 * attempt);
     }
 
-    private static string Redact(string value, string? token)
+    private static string Redact(
+        string value,
+        string? token)
         => string.IsNullOrEmpty(token)
             ? value
-            : value.Replace(token, "[REDACTED]", StringComparison.Ordinal);
+            : value.Replace(
+                token,
+                "[REDACTED]",
+                StringComparison.Ordinal);
 
-    private static string ControlPath(string serviceName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
-        return $"api/v1/processing-services/{Uri.EscapeDataString(serviceName)}/authoring/runs";
-    }
+    private static AuthoringRunEnvelope ToEnvelope(
+        AuthoringRunResponse response)
+        => new(response.Run, response.Items);
 
-    private static void ValidateRunEnvelope(
-        AuthoringRunEnvelope response,
-        string? expectedRunId = null)
-    {
-        if (string.IsNullOrWhiteSpace(response.Run.RunId) ||
-            expectedRunId is not null &&
-            !string.Equals(
-                response.Run.RunId,
-                expectedRunId,
-                StringComparison.Ordinal) ||
-            response.Items.Any(item =>
-                !string.Equals(
-                    item.RunId,
-                    response.Run.RunId,
-                    StringComparison.Ordinal)))
+    private static object ToSnapshotResult(
+        AuthoringSnapshotPairMaterialization materialized)
+        => new
         {
-            throw new InvalidOperationException(
-                "Authoring run response contains inconsistent coordinates.");
-        }
-    }
+            descriptor = materialized.Descriptor,
+            snapshotPath = materialized.SnapshotPath,
+            descriptorPath = materialized.DescriptorPath,
+        };
 
-    private static async Task WritePairAtomicallyAsync(
-        string snapshotPath,
-        byte[] snapshotContent,
-        string descriptorPath,
-        byte[] descriptorContent,
-        CancellationToken ct)
-    {
-        EnsureParentDirectory(snapshotPath);
-        EnsureParentDirectory(descriptorPath);
-        IReadOnlyList<FileStream> publicationLocks =
-            await AcquirePublicationLocksAsync(
-                [snapshotPath, descriptorPath],
-                ct);
-        try
-        {
-            await WritePairUnderLockAsync(
-                snapshotPath,
-                snapshotContent,
-                descriptorPath,
-                descriptorContent,
-                ct);
-        }
-        finally
-        {
-            for (int index = publicationLocks.Count - 1; index >= 0; index--)
-            {
-                publicationLocks[index].Dispose();
-            }
-        }
-    }
+    private static bool AuthoringPathsEqual(
+        string left,
+        string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 
-    private static async Task WritePairUnderLockAsync(
-        string snapshotPath,
-        byte[] snapshotContent,
-        string descriptorPath,
-        byte[] descriptorContent,
-        CancellationToken ct)
-    {
-        string snapshotTemp = $"{snapshotPath}.{Guid.NewGuid():N}.tmp";
-        string descriptorTemp = $"{descriptorPath}.{Guid.NewGuid():N}.tmp";
-        string snapshotBackup = $"{snapshotPath}.{Guid.NewGuid():N}.bak";
-        string descriptorBackup = $"{descriptorPath}.{Guid.NewGuid():N}.bak";
-        bool snapshotBackedUp = false;
-        bool descriptorBackedUp = false;
-        bool snapshotPublished = false;
-        bool descriptorPublished = false;
-        try
-        {
-            await File.WriteAllBytesAsync(snapshotTemp, snapshotContent, ct);
-            await File.WriteAllBytesAsync(descriptorTemp, descriptorContent, ct);
-            ct.ThrowIfCancellationRequested();
-
-            if (File.Exists(snapshotPath))
-            {
-                File.Move(snapshotPath, snapshotBackup, overwrite: false);
-                snapshotBackedUp = true;
-            }
-            if (File.Exists(descriptorPath))
-            {
-                File.Move(descriptorPath, descriptorBackup, overwrite: false);
-                descriptorBackedUp = true;
-            }
-
-            File.Move(snapshotTemp, snapshotPath, overwrite: false);
-            snapshotPublished = true;
-            File.Move(descriptorTemp, descriptorPath, overwrite: false);
-            descriptorPublished = true;
-        }
-        catch (Exception original)
-        {
-            List<Exception> rollbackErrors = [];
-            TryRollback(
-                () =>
-                {
-                    if (descriptorPublished && File.Exists(descriptorPath))
-                    {
-                        File.Delete(descriptorPath);
-                    }
-                    if (descriptorBackedUp)
-                    {
-                        File.Move(
-                            descriptorBackup,
-                            descriptorPath,
-                            overwrite: false);
-                    }
-                },
-                rollbackErrors);
-            TryRollback(
-                () =>
-                {
-                    if (snapshotPublished && File.Exists(snapshotPath))
-                    {
-                        File.Delete(snapshotPath);
-                    }
-                    if (snapshotBackedUp)
-                    {
-                        File.Move(
-                            snapshotBackup,
-                            snapshotPath,
-                            overwrite: false);
-                    }
-                },
-                rollbackErrors);
-            if (rollbackErrors.Count > 0)
-            {
-                throw new IOException(
-                    "Snapshot publication failed and the previous output pair could not be fully restored.",
-                    new AggregateException([original, .. rollbackErrors]));
-            }
-            throw;
-        }
-        finally
-        {
-            DeleteIfExists(snapshotTemp);
-            DeleteIfExists(descriptorTemp);
-        }
-
-        DeleteIfExists(snapshotBackup);
-        DeleteIfExists(descriptorBackup);
-    }
-
-    private static async Task<IReadOnlyList<FileStream>>
-        AcquirePublicationLocksAsync(
-            IReadOnlyCollection<string> outputPaths,
-            CancellationToken ct)
-    {
-        StringComparer comparer = OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
-        string[] lockPaths = outputPaths
-            .Select(path => $"{path}.fhir-augury.publish.lock")
-            .Distinct(comparer)
-            .OrderBy(path => path, comparer)
-            .ToArray();
-        List<FileStream> streams = [];
-        try
-        {
-            foreach (string lockPath in lockPaths)
-            {
-                while (true)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    try
-                    {
-                        streams.Add(new FileStream(
-                            lockPath,
-                            FileMode.OpenOrCreate,
-                            FileAccess.ReadWrite,
-                            FileShare.None,
-                            bufferSize: 1,
-                            FileOptions.Asynchronous));
-                        break;
-                    }
-                    catch (IOException) when (!ct.IsCancellationRequested)
-                    {
-                        await Task.Delay(TimeSpan.FromMilliseconds(100), ct);
-                    }
-                }
-            }
-            return streams;
-        }
-        catch
-        {
-            for (int index = streams.Count - 1; index >= 0; index--)
-            {
-                streams[index].Dispose();
-            }
-            throw;
-        }
-    }
-
-    private static void EnsureParentDirectory(string path)
-    {
-        string? directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-    }
-
-    private static void TryRollback(
-        Action action,
-        ICollection<Exception> errors)
+    private static void TryDeletePrivateDirectory(string path)
     {
         try
         {
-            action();
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
         }
-        catch (Exception ex)
+        catch (IOException)
         {
-            errors.Add(ex);
         }
-    }
-
-    private static void DeleteIfExists(string path)
-    {
-        if (File.Exists(path))
+        catch (UnauthorizedAccessException)
         {
-            File.Delete(path);
         }
     }
 

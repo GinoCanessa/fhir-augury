@@ -1,7 +1,9 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
+using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
@@ -62,7 +64,9 @@ public sealed class PreparedTicketAuthoringHandlerTests
         DelegateHttpHandler handler = new((_, _, _) =>
             throw new HttpRequestException("response lost"));
 
-        await Assert.ThrowsAsync<HttpRequestException>(() =>
+        AuthoringMutationOutcomeUnknownException error =
+            await Assert.ThrowsAsync<
+                AuthoringMutationOutcomeUnknownException>(() =>
             PreparedTicketAuthoringHandler.HandleAsync(
                 new PreparedTicketAuthoringRequest
                 {
@@ -73,6 +77,7 @@ public sealed class PreparedTicketAuthoringHandlerTests
                 CancellationToken.None,
                 handler));
 
+        Assert.Equal("start", error.Operation);
         Assert.Equal(1, handler.Calls);
     }
 
@@ -120,7 +125,9 @@ public sealed class PreparedTicketAuthoringHandlerTests
         DelegateHttpHandler handler = new((_, _, _) =>
             throw new HttpRequestException("response lost"));
 
-        await Assert.ThrowsAsync<HttpRequestException>(() =>
+        AuthoringMutationOutcomeUnknownException error =
+            await Assert.ThrowsAsync<
+                AuthoringMutationOutcomeUnknownException>(() =>
             PreparedTicketAuthoringHandler.HandleAsync(
                 new PreparedTicketAuthoringRequest
                 {
@@ -133,7 +140,80 @@ public sealed class PreparedTicketAuthoringHandlerTests
                 CancellationToken.None,
                 handler));
 
+        Assert.Equal("supersede", error.Operation);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task SnapshotMaterializesTrustedPreparerPair()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"fhir-augury-preparer-snapshot-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            byte[] bytes = [1, 2, 3, 4];
+            string snapshotPath = Path.Combine(
+                directory,
+                "prepared-tickets.db");
+            string descriptorPath = Path.Combine(
+                directory,
+                "prepared-tickets.json");
+            string hash = Convert.ToHexString(
+                    SHA256.HashData(bytes))
+                .ToLowerInvariant();
+            DelegateHttpHandler handler = new((request, _, _) =>
+                Task.FromResult(
+                    request.RequestUri!.AbsolutePath.EndsWith(
+                        "/bytes",
+                        StringComparison.Ordinal)
+                        ? new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new ByteArrayContent(bytes),
+                        }
+                        : DelegateHttpHandler.Json(
+                            new AuthoringSnapshotDescriptor(
+                                "jira-fhir",
+                                "run-1",
+                                "snapshot-1",
+                                1,
+                                1,
+                                1,
+                                hash,
+                                bytes.Length,
+                                1,
+                                1,
+                                new Dictionary<string, long>(),
+                                "prepared-tickets.db",
+                                DateTimeOffset.Parse(
+                                    "2026-09-04T00:00:00Z")))));
+
+            object result =
+                await PreparedTicketAuthoringHandler.HandleAsync(
+                    new PreparedTicketAuthoringRequest
+                    {
+                        Action = "snapshot",
+                        RunId = "run-1",
+                        SnapshotPath = snapshotPath,
+                        DescriptorPath = descriptorPath,
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler);
+
+            JsonElement json = JsonSerializer.SerializeToElement(result);
+            Assert.Equal(
+                snapshotPath,
+                json.GetProperty("snapshotPath").GetString());
+            Assert.Equal(bytes, await File.ReadAllBytesAsync(snapshotPath));
+            Assert.Equal(2, handler.Calls);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]

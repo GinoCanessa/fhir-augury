@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
+using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 
@@ -101,7 +102,7 @@ public sealed class BallotNoteAuthoringHandlerTests
             }
             return Task.FromResult(DelegateHttpHandler.Json(
                 new AuthoringSnapshotDescriptor(
-                    "ballot-notes",
+                    "github-fhir-ballot-notes",
                     "run-1",
                     "snapshot-1",
                     1,
@@ -144,6 +145,79 @@ public sealed class BallotNoteAuthoringHandlerTests
     }
 
     [Fact]
+    public async Task SnapshotCannotOverwritePairControlManifestPath()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"fhir-augury-cli-snapshot-control-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string snapshotPath = Path.Combine(directory, "notes.db");
+            string descriptorPath = Path.Combine(
+                directory,
+                AuthoringSnapshotPairManifest.ReadyFileName);
+            await File.WriteAllTextAsync(
+                descriptorPath,
+                "operator-owned");
+            byte[] bytes = [1, 2, 3];
+            string hash = Convert.ToHexString(
+                    SHA256.HashData(bytes))
+                .ToLowerInvariant();
+            DelegateHttpHandler handler = new((request, _, _) =>
+                Task.FromResult(
+                    request.RequestUri!.AbsolutePath.EndsWith(
+                        "/bytes",
+                        StringComparison.Ordinal)
+                        ? new HttpResponseMessage(
+                            System.Net.HttpStatusCode.OK)
+                        {
+                            Content = new ByteArrayContent(bytes),
+                        }
+                        : DelegateHttpHandler.Json(
+                            new AuthoringSnapshotDescriptor(
+                                "github-fhir-ballot-notes",
+                                "run-1",
+                                "snapshot-1",
+                                1,
+                                4,
+                                1,
+                                hash,
+                                bytes.Length,
+                                1,
+                                1,
+                                new Dictionary<string, long>(),
+                                "notes.db",
+                                DateTimeOffset.Parse(
+                                    "2026-09-04T00:00:00Z")))));
+
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                BallotNoteAuthoringHandler.HandleAsync(
+                    new BallotNoteAuthoringRequest
+                    {
+                        Action = "snapshot",
+                        RunId = "run-1",
+                        SnapshotPath = snapshotPath,
+                        DescriptorPath = descriptorPath,
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler));
+
+            Assert.Equal(
+                "operator-owned",
+                await File.ReadAllTextAsync(descriptorPath));
+            Assert.False(File.Exists(snapshotPath));
+            Assert.Equal(2, handler.Calls);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SnapshotPublicationRestoresPriorSnapshotWhenPairCannotComplete()
     {
         AuthoringHttpClient.EnsureOuterMode();
@@ -170,7 +244,7 @@ public sealed class BallotNoteAuthoringHandlerTests
                     }
                     : DelegateHttpHandler.Json(
                         new AuthoringSnapshotDescriptor(
-                            "ballot-notes",
+                            "github-fhir-ballot-notes",
                             "run-1",
                             "snapshot-1",
                             1,
@@ -226,7 +300,7 @@ public sealed class BallotNoteAuthoringHandlerTests
                     }
                     : DelegateHttpHandler.Json(
                         new AuthoringSnapshotDescriptor(
-                            "ballot-notes",
+                            "github-fhir-ballot-notes",
                             "run-1",
                             "snapshot-1",
                             1,

@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
     <ProjectReference Include="..\FhirAugury.Common.OpenApi\FhirAugury.Common.OpenApi.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Client\FhirAugury.Processing.Client.csproj" />
     <ProjectReference Include="..\FhirAugury.Processing.Contracts\FhirAugury.Processing.Contracts.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj" />
     <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner.Contracts\FhirAugury.Processor.Jira.Fhir.Planner.Contracts.csproj" />
