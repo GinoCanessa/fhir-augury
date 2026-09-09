@@ -125,9 +125,12 @@ public sealed class JiraAuthoringRunCoordinator(
             {
                 return existing;
             }
+            IReadOnlyList<string> conflictingRunIds =
+                await GetConflictingRunIdsAsync(tickets, ct);
             throw new AuthoringConflictException(
                 AuthoringConflictCode.RevisionAlreadyScheduled,
-                "One or more Jira source revisions are already scheduled in a different authoring run.");
+                "One or more Jira source revisions are already scheduled in a different authoring run.",
+                conflictingRunIds);
         }
     }
 
@@ -286,6 +289,62 @@ public sealed class JiraAuthoringRunCoordinator(
             staleItemIds,
             "A newer Jira source revision replaced one or more frozen run items.",
             ct: ct);
+    }
+
+    private async Task<IReadOnlyList<string>> GetConflictingRunIdsAsync(
+        IReadOnlyCollection<JiraProcessingSourceTicketRecord> tickets,
+        CancellationToken ct)
+    {
+        JiraProcessingSourceTicketRecord[] distinct = tickets
+            .GroupBy(ticket => ticket.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+        List<string> runIds = [];
+        HashSet<string> seenRunIds = new(StringComparer.Ordinal);
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = sourceStore.DatabasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString());
+        await connection.OpenAsync(ct);
+        foreach (JiraProcessingSourceTicketRecord ticket in distinct)
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT i.RunId
+                FROM authoring_run_items i
+                INNER JOIN authoring_runs r ON r.Id = i.RunId
+                WHERE i.BusinessKey COLLATE NOCASE = @businessKey
+                  AND i.ItemKind COLLATE NOCASE = @itemKind
+                  AND i.ExpectedSourceRevision = @sourceRevision
+                  AND i.Status <> @superseded
+                  AND r.Status <> @runSuperseded
+                ORDER BY r.CreatedAt DESC, r.RowId DESC
+                """;
+            command.Parameters.AddWithValue("@businessKey", ticket.Key);
+            command.Parameters.AddWithValue("@itemKind", ticket.SourceTicketShape);
+            command.Parameters.AddWithValue(
+                "@sourceRevision",
+                JiraProcessingSourceTicketStore.GetSourceRevision(ticket));
+            command.Parameters.AddWithValue(
+                "@superseded",
+                AuthoringStatusValues.Items.Superseded);
+            command.Parameters.AddWithValue(
+                "@runSuperseded",
+                AuthoringStatusValues.Runs.Superseded);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string runId = reader.GetString(0);
+                if (seenRunIds.Add(runId))
+                {
+                    runIds.Add(runId);
+                }
+            }
+        }
+        return runIds;
     }
 
     private async Task<JiraAuthoringRunCreation?> ResolveExactReplayAsync(

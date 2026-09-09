@@ -37,6 +37,15 @@ public sealed record AuthoringRunCreateRequest(
     IReadOnlyList<AuthoringRunItemDefinition> Items,
     bool DatabaseOnly = false);
 
+public sealed record AuthoringAllowedActions(
+    bool CanRetryNow,
+    bool CanSupersede);
+
+public sealed record AuthoringRunStateInfo(
+    bool IsTerminal,
+    bool IsRecoverable,
+    DateTimeOffset? NextAutomaticRecoveryAt = null);
+
 public sealed record AuthoringRunStatus(
     string RunId,
     string ProcessorKind,
@@ -51,7 +60,8 @@ public sealed record AuthoringRunStatus(
     DateTimeOffset? CompletedAt,
     string? Error,
     int RetryableErrorItems = 0,
-    int SupersededItems = 0);
+    int SupersededItems = 0,
+    AuthoringRunStateInfo? State = null);
 
 public sealed record AuthoringRunItemStatus(
     string ItemId,
@@ -68,7 +78,24 @@ public sealed record AuthoringRunItemStatus(
     DateTimeOffset? CompletedAt,
     string? Error,
     int? AttemptsRemaining = null,
-    DateTimeOffset? NextAutomaticRetryAt = null);
+    DateTimeOffset? NextAutomaticRetryAt = null,
+    string? CurrentError = null,
+    string? SupersessionReason = null,
+    AuthoringAllowedActions? AllowedActions = null);
+
+public sealed record AuthoringRunResponse(
+    AuthoringRunStatus Run,
+    IReadOnlyList<AuthoringRunItemStatus> Items);
+
+public sealed record AuthoringRunListResponse(
+    IReadOnlyList<AuthoringRunStatus> Runs,
+    bool Truncated);
+
+public sealed record AuthoringConflictResponse(
+    string Error,
+    string? Detail = null,
+    IReadOnlyList<string>? ConflictingRunIds = null,
+    string? RunId = null);
 
 public sealed record AuthoringItemSupersedeRequest(string Reason);
 

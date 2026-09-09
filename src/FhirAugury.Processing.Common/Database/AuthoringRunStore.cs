@@ -22,8 +22,22 @@ public sealed record AuthoringErrorReconciliationResult(
     int SupersededItems,
     DateTimeOffset? NextRetryAt);
 
+public sealed record AuthoringOperatorRunSummary(
+    AuthoringRunRecord Run,
+    int CompletedItems,
+    int RetryableErrorItems,
+    int SupersededItems,
+    DateTimeOffset? NextAutomaticRetryAt);
+
+public sealed record AuthoringOperatorRunList(
+    IReadOnlyList<AuthoringOperatorRunSummary> Runs,
+    bool Truncated);
+
 public sealed class AuthoringRunStore
 {
+    public const int DefaultOperatorRunLimit = 20;
+    public const int MaximumOperatorRunLimit = 100;
+
     private readonly Func<SqliteConnection> _openConnection;
     private readonly ILogger<AuthoringRunStore> _logger;
     private readonly AuthoringRetryPolicy _retryPolicy;
@@ -303,7 +317,10 @@ public sealed class AuthoringRunStore
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.RevalidationRequired,
-                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before ordinary authoring runs can start.");
+                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before ordinary authoring runs can start.",
+                    mode.RevalidationRunId is null
+                        ? null
+                        : [mode.RevalidationRunId]);
             }
 
             await EnsureActiveRunCapacityAvailableAsync(
@@ -404,7 +421,10 @@ public sealed class AuthoringRunStore
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.RevalidationRequired,
-                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before grouping maintenance.");
+                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before grouping maintenance.",
+                    mode.RevalidationRunId is null
+                        ? null
+                        : [mode.RevalidationRunId]);
             }
             await using (SqliteCommand fence = connection.CreateCommand())
             {
@@ -742,6 +762,97 @@ public sealed class AuthoringRunStore
     {
         await using SqliteConnection connection = _openConnection();
         return await ReadRunAsync(connection, runId, ct);
+    }
+
+    public async Task<AuthoringOperatorRunList> ListOperatorRunsAsync(
+        string processorKind,
+        int limit = DefaultOperatorRunLimit,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        if (limit is < 1 or > MaximumOperatorRunLimit)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(limit),
+                limit,
+                $"Operator authoring run limit must be between 1 and {MaximumOperatorRunLimit}.");
+        }
+
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH candidate_runs AS (
+                SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status,
+                       DatabaseOnly, TotalItems, CreatedAt, StartedAt,
+                       CompletedAt, Error, SnapshotId, RequestJson,
+                       CASE
+                           WHEN Status IN (@queued, @running, @finalizing, @runError)
+                               THEN 0
+                           ELSE 1
+                       END AS Priority
+                FROM authoring_runs
+                WHERE ProcessorKind = @processorKind
+                  AND RequestJson IS NOT NULL
+                ORDER BY Priority, CreatedAt DESC, RowId DESC
+                LIMIT @candidateLimit
+            )
+            SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
+                   r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
+                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                   SUM(CASE WHEN i.Status = @complete THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN i.Status = @itemError THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN i.Status = @superseded THEN 1 ELSE 0 END),
+                   MIN(CASE
+                       WHEN i.Status = @itemError
+                        AND i.CompletedAt IS NOT NULL
+                        AND (
+                            i.AcceptedReceiptId IS NOT NULL
+                            OR i.AttemptCount < @maxAttempts)
+                           THEN i.CompletedAt
+                       ELSE NULL
+                   END)
+            FROM candidate_runs r
+            LEFT JOIN authoring_run_items i ON i.RunId = r.Id
+            GROUP BY r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
+                     r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
+                     r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                     r.Priority
+            ORDER BY r.Priority, r.CreatedAt DESC, r.RowId DESC
+            """;
+        command.Parameters.AddWithValue("@processorKind", processorKind);
+        command.Parameters.AddWithValue("@queued", AuthoringStatusValues.Runs.Queued);
+        command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue("@runError", AuthoringStatusValues.Runs.Error);
+        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue("@itemError", AuthoringStatusValues.Items.Error);
+        command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
+        command.Parameters.AddWithValue("@maxAttempts", _retryPolicy.MaxAttempts);
+        command.Parameters.AddWithValue("@candidateLimit", limit + 1);
+
+        List<AuthoringOperatorRunSummary> runs = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            DateTimeOffset? errorCompletedAt = ReadNullableDate(reader, 16);
+            runs.Add(new AuthoringOperatorRunSummary(
+                ReadRun(reader),
+                reader.GetInt32(13),
+                reader.GetInt32(14),
+                reader.GetInt32(15),
+                errorCompletedAt is null
+                    ? null
+                    : _retryPolicy.GetNextAutomaticRetryAt(
+                        errorCompletedAt.Value)));
+        }
+
+        bool truncated = runs.Count > limit;
+        if (truncated)
+        {
+            runs.RemoveAt(runs.Count - 1);
+        }
+        return new AuthoringOperatorRunList(runs, truncated);
     }
 
     public async Task EnsureActiveRunCapacityAvailableAsync(
@@ -3329,7 +3440,8 @@ public sealed class AuthoringRunStore
         {
             throw new AuthoringConflictException(
                 AuthoringConflictCode.ActiveRunCapacityReached,
-                $"Processor '{processorKind}' has reached its active authoring run capacity of {maxActiveRuns}. Active run IDs: {string.Join(", ", activeRunIds)}.");
+                $"Processor '{processorKind}' has reached its active authoring run capacity of {maxActiveRuns}. Active run IDs: {string.Join(", ", activeRunIds)}.",
+                activeRunIds);
         }
     }
 

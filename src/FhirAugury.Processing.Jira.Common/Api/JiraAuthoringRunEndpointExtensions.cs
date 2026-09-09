@@ -22,6 +22,7 @@ public static class JiraAuthoringRunEndpointExtensions
 {
     internal static void MapAuthoringCore(IEndpointRouteBuilder endpoints, string prefix)
     {
+        endpoints.MapGet($"{prefix}/processing/authoring/runs", ListRunsAsync);
         endpoints.MapPost($"{prefix}/processing/authoring/runs", CreateRunAsync);
         endpoints.MapGet($"{prefix}/processing/authoring/runs/{{runId}}", GetRunAsync);
         endpoints.MapPost(
@@ -69,11 +70,9 @@ public static class JiraAuthoringRunEndpointExtensions
             catch (AuthoringConflictException ex)
                 when (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
             {
-                return Results.Conflict(new
-                {
-                    error = "active-run-capacity-reached",
-                    detail = ex.Message,
-                });
+                return Results.Conflict(ToConflictResponse(
+                    "active-run-capacity-reached",
+                    ex));
             }
             if (creation is null)
             {
@@ -120,17 +119,13 @@ public static class JiraAuthoringRunEndpointExtensions
             {
                 if (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
                 {
-                    return Results.Conflict(new
-                    {
-                        error = "active-run-capacity-reached",
-                        detail = ex.Message,
-                    });
+                    return Results.Conflict(ToConflictResponse(
+                        "active-run-capacity-reached",
+                        ex));
                 }
-                return Results.Conflict(new
-                {
-                    error = "revision-already-scheduled",
-                    detail = ex.Message,
-                });
+                return Results.Conflict(ToConflictResponse(
+                    "revision-already-scheduled",
+                    ex));
             }
         }
 
@@ -141,6 +136,25 @@ public static class JiraAuthoringRunEndpointExtensions
         return Results.Accepted(
             $"/processing/authoring/runs/{Uri.EscapeDataString(creation.Run.Id)}",
             ToResponse(status));
+    }
+
+    private static async Task<IResult> ListRunsAsync(
+        int? limit,
+        JiraAuthoringRunCoordinator coordinator,
+        AuthoringRunControlService controlService,
+        CancellationToken ct)
+    {
+        try
+        {
+            return Results.Ok(await controlService.ListAsync(
+                coordinator.ProcessorKind,
+                limit ?? AuthoringRunStore.DefaultOperatorRunLimit,
+                ct));
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
     }
 
     private static async Task<IResult> GetRunAsync(
@@ -183,7 +197,7 @@ public static class JiraAuthoringRunEndpointExtensions
         }
         catch (AuthoringConflictException ex)
         {
-            return Results.Conflict(new { error = ex.Code.ToString(), detail = ex.Message });
+            return Results.Conflict(ToConflictResponse(ex.Code.ToString(), ex));
         }
     }
 
@@ -215,7 +229,7 @@ public static class JiraAuthoringRunEndpointExtensions
         }
         catch (AuthoringConflictException ex)
         {
-            return Results.Conflict(new { error = ex.Code.ToString(), detail = ex.Message });
+            return Results.Conflict(ToConflictResponse(ex.Code.ToString(), ex));
         }
     }
 
@@ -282,28 +296,57 @@ public static class JiraAuthoringRunEndpointExtensions
             ct: ct);
         if (string.Equals(mode.Mode, AuthoringStatusValues.ProcessorModes.Legacy, StringComparison.Ordinal))
         {
-            return Results.Conflict(new { error = "authoring-not-activated" });
+            return Results.Conflict(ToConflictResponse("authoring-not-activated"));
         }
         if (string.Equals(mode.Mode, AuthoringStatusValues.ProcessorModes.CuttingOver, StringComparison.Ordinal))
         {
             return Results.Json(
-                new { error = "cutover-in-progress" },
+                ToConflictResponse("cutover-in-progress"),
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
         if (mode.RevalidationRequired)
         {
-            return Results.Conflict(new
-            {
-                error = "revalidation-required",
-                runId = mode.RevalidationRunId,
-            });
+            string[] conflictingRunIds = mode.RevalidationRunId is null
+                ? []
+                : [mode.RevalidationRunId];
+            return Results.Conflict(ToConflictResponse(
+                "revalidation-required",
+                relatedRunIds: conflictingRunIds,
+                runId: mode.RevalidationRunId));
         }
         return null;
     }
 
-    private static JiraAuthoringRunResponse ToResponse(
+    private static AuthoringRunResponse ToResponse(
         AuthoringRunControlStatus status)
         => new(status.Run, status.Items);
+
+    private static AuthoringConflictResponse ToConflictResponse(
+        string error,
+        AuthoringConflictException exception)
+        => ToConflictResponse(
+            error,
+            exception.Message,
+            exception.RelatedRunIds);
+
+    private static AuthoringConflictResponse ToConflictResponse(
+        string error,
+        string? detail = null,
+        IEnumerable<string>? relatedRunIds = null,
+        string? runId = null)
+    {
+        string[] conflictingRunIds = (relatedRunIds ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return new AuthoringConflictResponse(
+            error,
+            detail,
+            conflictingRunIds,
+            runId ?? (conflictingRunIds.Length == 1
+                ? conflictingRunIds[0]
+                : null));
+    }
 }
 
 public sealed record JiraAuthoringRunResponse(

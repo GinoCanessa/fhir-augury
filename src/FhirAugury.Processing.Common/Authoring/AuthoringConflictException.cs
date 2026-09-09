@@ -22,8 +22,15 @@ public enum AuthoringConflictCode
 
 public sealed class AuthoringConflictException(
     AuthoringConflictCode code,
-    string message)
+    string message,
+    IEnumerable<string>? relatedRunIds = null)
     : InvalidOperationException(message)
 {
     public AuthoringConflictCode Code { get; } = code;
+
+    public IReadOnlyList<string> RelatedRunIds { get; } = Array.AsReadOnly(
+        (relatedRunIds ?? [])
+        .Where(runId => !string.IsNullOrWhiteSpace(runId))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray());
 }

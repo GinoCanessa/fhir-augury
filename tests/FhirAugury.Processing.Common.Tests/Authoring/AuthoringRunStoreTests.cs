@@ -34,6 +34,207 @@ public sealed class AuthoringRunStoreTests
     }
 
     [Fact]
+    public async Task ListOperatorRunsAsync_ExcludesNonOperatorRunsAndPrioritizesActive()
+    {
+        using AuthoringTestDatabase database = new(new ProcessingServiceOptions
+        {
+            AuthoringRetryDelay = "00:02:00",
+            AuthoringMaxAttempts = 3,
+        });
+        await database.ActivateAsync();
+        DateTimeOffset createdAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringRunRecord active = await database.Store.CreateRunAsync(
+            "test",
+            [
+                new("FHIR-1", "ticket", "revision-1"),
+                new("FHIR-2", "ticket", "revision-2"),
+                new("FHIR-3", "ticket", "revision-3"),
+                new("FHIR-4", "ticket", "revision-4"),
+            ],
+            runId: "operator-active",
+            now: createdAt,
+            requestJson: "{}");
+        AuthoringRunItemRecord[] activeItems =
+            (await database.Store.GetRunItemsAsync(active.Id)).ToArray();
+        database.Execute(
+            """
+            UPDATE authoring_run_items
+            SET Status = @complete, CompletedAt = @completedAt
+            WHERE Id = @completeId;
+            UPDATE authoring_run_items
+            SET Status = @error, AttemptCount = 1, CompletedAt = @completedAt,
+                Error = 'retryable'
+            WHERE Id = @errorId;
+            UPDATE authoring_run_items
+            SET Status = @superseded, CompletedAt = @completedAt,
+                Error = 'operator skipped'
+            WHERE Id = @supersededId;
+            """,
+            ("@complete", AuthoringStatusValues.Items.Complete),
+            ("@error", AuthoringStatusValues.Items.Error),
+            ("@superseded", AuthoringStatusValues.Items.Superseded),
+            ("@completedAt", createdAt.AddMinutes(1).ToString("O")),
+            ("@completeId", activeItems[0].Id),
+            ("@errorId", activeItems[1].Id),
+            ("@supersededId", activeItems[2].Id));
+
+        AuthoringRunRecord terminal = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-5", "ticket", "revision-5")],
+            runId: "operator-terminal",
+            now: createdAt.AddHours(1),
+            requestJson: "{}");
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Status = @status, CompletedAt = @completedAt
+            WHERE Id = @runId
+            """,
+            ("@status", AuthoringStatusValues.Runs.Completed),
+            ("@completedAt", createdAt.AddHours(1).ToString("O")),
+            ("@runId", terminal.Id));
+
+        AuthoringRunRecord legacy = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-6", "ticket", "revision-6")],
+            runId: "legacy-null-marker",
+            now: createdAt.AddHours(2));
+        AuthoringRunRecord revalidation = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-7", "ticket", "revision-7")],
+            runId: "initial-revalidation",
+            now: createdAt.AddHours(3));
+        AuthoringRunRecord maintenance =
+            await database.Store.CreateMaintenanceRunAsync(
+                "test",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        "FHIR-8",
+                        "ticket",
+                        "revision-8",
+                        "receipt-8"),
+                ],
+                createdAt.AddHours(4));
+
+        AuthoringOperatorRunList result =
+            await database.Store.ListOperatorRunsAsync("test");
+
+        Assert.False(result.Truncated);
+        Assert.Equal([active.Id, terminal.Id], result.Runs.Select(run => run.Run.Id));
+        AuthoringOperatorRunSummary summary = result.Runs[0];
+        Assert.Equal(1, summary.CompletedItems);
+        Assert.Equal(1, summary.RetryableErrorItems);
+        Assert.Equal(1, summary.SupersededItems);
+        Assert.Equal(
+            createdAt.AddMinutes(3),
+            summary.NextAutomaticRetryAt);
+        Assert.DoesNotContain(
+            result.Runs,
+            run => run.Run.Id is "legacy-null-marker" or "initial-revalidation");
+        Assert.DoesNotContain(result.Runs, run => run.Run.Id == maintenance.Id);
+        Assert.Null(legacy.RequestJson);
+        Assert.Null(revalidation.RequestJson);
+    }
+
+    [Fact]
+    public async Task ListOperatorRunsAsync_BoundsAndMarksTruncation()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        DateTimeOffset createdAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        for (int index = 0; index < 21; index++)
+        {
+            await database.Store.CreateRunAsync(
+                "test",
+                [new($"FHIR-{index}", "ticket", $"revision-{index}")],
+                runId: $"run-{index:00}",
+                now: createdAt.AddMinutes(index),
+                requestJson: "{}");
+        }
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Status = @status, CompletedAt = CreatedAt
+            WHERE RequestJson IS NOT NULL
+            """,
+            ("@status", AuthoringStatusValues.Runs.Completed));
+
+        AuthoringOperatorRunList defaultPage =
+            await database.Store.ListOperatorRunsAsync("test");
+        AuthoringOperatorRunList maximumPage =
+            await database.Store.ListOperatorRunsAsync(
+                "test",
+                AuthoringRunStore.MaximumOperatorRunLimit);
+
+        Assert.Equal(AuthoringRunStore.DefaultOperatorRunLimit, defaultPage.Runs.Count);
+        Assert.True(defaultPage.Truncated);
+        Assert.Equal("run-20", defaultPage.Runs[0].Run.Id);
+        Assert.Equal(21, maximumPage.Runs.Count);
+        Assert.False(maximumPage.Truncated);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => database.Store.ListOperatorRunsAsync("test", 0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => database.Store.ListOperatorRunsAsync(
+                "test",
+                AuthoringRunStore.MaximumOperatorRunLimit + 1));
+    }
+
+    [Fact]
+    public async Task ActiveRunCapacityConflict_ReportsActiveRunIds()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        AuthoringRunRecord active = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-1", "ticket", "revision-1")],
+            requestJson: "{}");
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Store.EnsureActiveRunCapacityAvailableAsync(
+                    "test",
+                    1));
+
+        Assert.Equal(
+            AuthoringConflictCode.ActiveRunCapacityReached,
+            conflict.Code);
+        Assert.Equal([active.Id], conflict.RelatedRunIds);
+    }
+
+    [Fact]
+    public async Task RevalidationConflict_ReportsModeRunId()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        AuthoringRunRecord revalidation =
+            await database.Store.CreateRunAsync(
+                "test",
+                [new("FHIR-1", "ticket", "revision-1")],
+                runId: "revalidation-run");
+        database.Execute(
+            """
+            UPDATE authoring_processor_modes
+            SET RevalidationRequired = 1, RevalidationRunId = @runId
+            WHERE ProcessorKind = 'test'
+            """,
+            ("@runId", revalidation.Id));
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Store.CreateRunAsync(
+                    "test",
+                    [new("FHIR-2", "ticket", "revision-2")],
+                    requestJson: "{}"));
+
+        Assert.Equal(
+            AuthoringConflictCode.RevalidationRequired,
+            conflict.Code);
+        Assert.Equal([revalidation.Id], conflict.RelatedRunIds);
+    }
+
+    [Fact]
     public async Task AcceptResult_IsAtomicAndReplaysTheOriginalReceipt()
     {
         using AuthoringTestDatabase database = new();

@@ -12,6 +12,31 @@ public sealed class AuthoringRunControlService(
     AuthoringRunStore store,
     AuthoringRetryPolicy retryPolicy)
 {
+    public async Task<AuthoringRunListResponse> ListAsync(
+        string processorKind,
+        int limit = AuthoringRunStore.DefaultOperatorRunLimit,
+        CancellationToken ct = default)
+    {
+        AuthoringOperatorRunList result =
+            await store.ListOperatorRunsAsync(processorKind, limit, ct);
+        AuthoringRunRecord? fencedRun =
+            await store.GetFencedRunAsync(processorKind, ct);
+
+        return new AuthoringRunListResponse(
+            result.Runs.Select(summary =>
+            {
+                bool isFenced = IsFencedRun(summary.Run, fencedRun);
+                return ToStatus(
+                    summary.Run,
+                    summary.CompletedItems,
+                    summary.RetryableErrorItems + summary.SupersededItems,
+                    summary.RetryableErrorItems,
+                    summary.SupersededItems,
+                    isFenced ? summary.NextAutomaticRetryAt : null);
+            }).ToArray(),
+            result.Truncated);
+    }
+
     public async Task<AuthoringRunControlStatus> GetStatusAsync(
         string processorKind,
         string runId,
@@ -20,6 +45,9 @@ public sealed class AuthoringRunControlService(
         AuthoringRunRecord run = await GetOwnedRunAsync(processorKind, runId, ct);
         IReadOnlyList<AuthoringRunItemRecord> items =
             await store.GetRunItemsAsync(runId, ct);
+        AuthoringRunRecord? fencedRun =
+            await store.GetFencedRunAsync(processorKind, ct);
+        bool isFenced = IsFencedRun(run, fencedRun);
         int retryableErrorItems = items.Count(item =>
             string.Equals(
                 item.Status,
@@ -30,28 +58,26 @@ public sealed class AuthoringRunControlService(
                 item.Status,
                 AuthoringStatusValues.Items.Superseded,
                 StringComparison.Ordinal));
+        AuthoringRunItemStatus[] itemStatuses = items
+            .Select(item => ToStatus(item, isFenced))
+            .ToArray();
 
         return new AuthoringRunControlStatus(
-            new AuthoringRunStatus(
-                run.Id,
-                run.ProcessorKind,
-                run.AuthoringEpoch,
-                run.Status,
-                run.DatabaseOnly,
-                run.TotalItems,
+            ToStatus(
+                run,
                 items.Count(item =>
                     string.Equals(
                         item.Status,
                         AuthoringStatusValues.Items.Complete,
                         StringComparison.Ordinal)),
                 retryableErrorItems + supersededItems,
-                run.CreatedAt,
-                run.StartedAt,
-                run.CompletedAt,
-                run.Error,
                 retryableErrorItems,
-                supersededItems),
-            items.Select(ToStatus).ToArray());
+                supersededItems,
+                itemStatuses
+                    .Select(item => item.NextAutomaticRetryAt)
+                    .Where(value => value is not null)
+                    .Min()),
+            itemStatuses);
     }
 
     public async Task<AuthoringRetryResult> RetryItemAsync(
@@ -81,7 +107,33 @@ public sealed class AuthoringRunControlService(
             ct: ct);
     }
 
-    private AuthoringRunItemStatus ToStatus(AuthoringRunItemRecord item)
+    private AuthoringRunStatus ToStatus(
+        AuthoringRunRecord run,
+        int completedItems,
+        int failedItems,
+        int retryableErrorItems,
+        int supersededItems,
+        DateTimeOffset? nextAutomaticRecoveryAt)
+        => new(
+            run.Id,
+            run.ProcessorKind,
+            run.AuthoringEpoch,
+            run.Status,
+            run.DatabaseOnly,
+            run.TotalItems,
+            completedItems,
+            failedItems,
+            run.CreatedAt,
+            run.StartedAt,
+            run.CompletedAt,
+            run.Error,
+            retryableErrorItems,
+            supersededItems,
+            ToState(run.Status, nextAutomaticRecoveryAt));
+
+    private AuthoringRunItemStatus ToStatus(
+        AuthoringRunItemRecord item,
+        bool isFenced)
     {
         bool isError = string.Equals(
             item.Status,
@@ -91,12 +143,24 @@ public sealed class AuthoringRunControlService(
             item.Status,
             AuthoringStatusValues.Items.Superseded,
             StringComparison.Ordinal);
+        bool hasAcceptedReceipt =
+            !string.IsNullOrWhiteSpace(item.AcceptedReceiptId);
+        bool hasAttemptsRemaining = isError &&
+            !hasAcceptedReceipt &&
+            retryPolicy.CanStartAnotherAuthoringAttempt(item.AttemptCount);
         int? attemptsRemaining = isSuperseded
             ? 0
-            : isError && item.AcceptedReceiptId is null
+            : isError && !hasAcceptedReceipt
                 ? Math.Max(0, retryPolicy.MaxAttempts - item.AttemptCount)
                 : null;
-        DateTimeOffset? nextAutomaticRetryAt = isError && item.CompletedAt is not null
+        bool canRetryNow = isFenced &&
+            isError &&
+            (hasAcceptedReceipt || hasAttemptsRemaining);
+        bool canSupersede = isFenced &&
+            isError &&
+            !hasAcceptedReceipt;
+        DateTimeOffset? nextAutomaticRetryAt =
+            canRetryNow && item.CompletedAt is not null
             ? retryPolicy.GetNextAutomaticRetryAt(item.CompletedAt.Value)
             : null;
 
@@ -115,8 +179,42 @@ public sealed class AuthoringRunControlService(
             item.CompletedAt,
             item.Error,
             attemptsRemaining,
-            nextAutomaticRetryAt);
+            nextAutomaticRetryAt,
+            isError ? item.Error : null,
+            isSuperseded ? item.Error : null,
+            new AuthoringAllowedActions(canRetryNow, canSupersede));
     }
+
+    private static AuthoringRunStateInfo ToState(
+        string status,
+        DateTimeOffset? nextAutomaticRecoveryAt)
+    {
+        bool isTerminal = status switch
+        {
+            AuthoringStatusValues.Runs.Queued => false,
+            AuthoringStatusValues.Runs.Running => false,
+            AuthoringStatusValues.Runs.Finalizing => false,
+            AuthoringStatusValues.Runs.Error => false,
+            AuthoringStatusValues.Runs.Completed => true,
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly => true,
+            AuthoringStatusValues.Runs.Superseded => true,
+            _ => throw new InvalidOperationException(
+                $"Unknown authoring run status '{status}'."),
+        };
+        return new AuthoringRunStateInfo(
+            isTerminal,
+            string.Equals(
+                status,
+                AuthoringStatusValues.Runs.Error,
+                StringComparison.Ordinal),
+            isTerminal ? null : nextAutomaticRecoveryAt);
+    }
+
+    private static bool IsFencedRun(
+        AuthoringRunRecord run,
+        AuthoringRunRecord? fencedRun)
+        => fencedRun is not null &&
+            string.Equals(run.Id, fencedRun.Id, StringComparison.Ordinal);
 
     private async Task<AuthoringRunRecord> GetOwnedRunAsync(
         string processorKind,

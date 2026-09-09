@@ -95,10 +95,41 @@ public sealed class JiraAuthoringRunCoordinatorTests
 
         Assert.Equal(AuthoringConflictCode.ActiveRunCapacityReached, conflict.Code);
         Assert.Contains(active.Run.Id, conflict.Message, StringComparison.Ordinal);
+        Assert.Equal([active.Run.Id], conflict.RelatedRunIds);
         Assert.Equal(
             active.Run.Id,
             (await fixture.AuthoringStore.GetOldestQueuedRunAsync(
                 fixture.Coordinator.ProcessorKind))!.Id);
+    }
+
+    [Fact]
+    public async Task CreateExplicitRun_RevisionConflictReportsRunIds()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        DateTimeOffset revision =
+            new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord first =
+            await fixture.SeedAsync("FHIR-1", revision);
+        JiraProcessingSourceTicketRecord second =
+            await fixture.SeedAsync("FHIR-2", revision);
+        JiraProcessingSourceTicketRecord third =
+            await fixture.SeedAsync("FHIR-3", revision);
+        JiraAuthoringRunCreation existing =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [first, second],
+                databaseOnly: false);
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => fixture.Coordinator.CreateExplicitRunAsync(
+                    [first, third],
+                    databaseOnly: false));
+
+        Assert.Equal(
+            AuthoringConflictCode.RevisionAlreadyScheduled,
+            conflict.Code);
+        Assert.Equal([existing.Run.Id], conflict.RelatedRunIds);
     }
 
     [Fact]
