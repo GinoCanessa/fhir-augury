@@ -58,6 +58,34 @@ public class ZulipProxyControllerTests
     }
 
     [Fact]
+    public async Task ContentRefersTo_PreservesSourceSpecificQuery()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?value=FHIR-1&sourceType=jira&limit=10");
+
+        IActionResult result = await c.ContentRefersTo("FHIR-1", "jira", 10, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("/api/v1/content/refers-to", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?value=FHIR-1&sourceType=jira&limit=10", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ContentRelatedByKeyword_PreservesCatchAllId()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult result = await c.ContentRelatedByKeyword(
+            "zulip", "1234/topic name", null, null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(
+            "/api/v1/content/related-by-keyword/zulip/1234/topic%20name",
+            h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
     public async Task UpdateStream_PutForwardsBody()
     {
         ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h,
@@ -141,5 +169,26 @@ public class ZulipProxyControllerTests
 
         Assert.Equal("/api/v1/threads", h.Requests[0].RequestUri!.AbsolutePath);
         Assert.Equal("?streamName=fhir%2Finfrastructure-wg&topic=Message%20forbids", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData("trigger", "/api/v1/ingest/trigger")]
+    [InlineData("rebuild-index", "/api/v1/rebuild-index")]
+    public async Task MissingIngestionRoutes_ForwardPost(string action, string expectedPath)
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=full");
+
+        IActionResult result = action switch
+        {
+            "trigger" => await c.IngestTrigger("full", default),
+            "rebuild-index" => await c.RebuildIndex("full", default),
+            _ => throw new InvalidOperationException(),
+        };
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?type=full", h.Requests[0].RequestUri!.Query);
     }
 }

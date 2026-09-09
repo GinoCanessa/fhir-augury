@@ -28,6 +28,50 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
 
     private static string EncodeKey(string key) => key.Replace("#", "%23");
 
+    // ── Source-specific content queries ──────────────────────────────────
+
+    [HttpGet("content/refers-to")]
+    public Task<IActionResult> ContentRefersTo(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/refers-to", Request, ct);
+
+    [HttpGet("content/referred-by")]
+    public Task<IActionResult> ContentReferredBy(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/referred-by", Request, ct);
+
+    [HttpGet("content/cross-referenced")]
+    public Task<IActionResult> ContentCrossReferenced(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/cross-referenced", Request, ct);
+
+    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    public Task<IActionResult> ContentRelatedByKeyword(
+        string source,
+        string id,
+        [FromQuery] double? minScore,
+        [FromQuery] string? keywordType,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(
+            Source,
+            HttpMethod.Get,
+            $"content/related-by-keyword/{Uri.EscapeDataString(source)}/{EncodeKey(id)}",
+            Request,
+            ct);
+
     // ── Items (action-first) ─────────────────────────────────────────────
 
     /// <summary>List GitHub items (paged).</summary>
@@ -87,6 +131,25 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
     [HttpGet("items/pr/{**key}")]
     public Task<IActionResult> GetPullRequest(string key, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, $"items/pr/{EncodeKey(key)}", Request, ct);
+
+    /// <summary>Get Jira tickets linked to a GitHub pull request.</summary>
+    /// <param name="key">GitHub pull-request key.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("items/pr-tickets/{**key}")]
+    public Task<IActionResult> GetTicketsForPullRequest(string key, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, $"items/pr-tickets/{EncodeKey(key)}", Request, ct);
+
+    /// <summary>Get GitHub pull requests linked to a Jira ticket.</summary>
+    /// <param name="jiraKey">Jira ticket key.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("items/ticket-prs/{jiraKey}")]
+    public Task<IActionResult> GetPullRequestsForTicket(string jiraKey, CancellationToken ct)
+        => httpClient.ProxyAsync(
+            Source,
+            HttpMethod.Get,
+            $"items/ticket-prs/{Uri.EscapeDataString(jiraKey)}",
+            Request,
+            ct);
 
     /// <summary>Get a single GitHub item by key.</summary>
     /// <param name="key">GitHub item key (e.g. <c>HL7/fhir-core#1234</c>).</param>
@@ -293,6 +356,13 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest", Request, ct);
 
+    /// <summary>Queue an asynchronous ingestion run on the GitHub source.</summary>
+    /// <param name="type">Sync type.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("ingest/trigger")]
+    public Task<IActionResult> IngestTrigger([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest/trigger", Request, ct);
+
     /// <summary>
     /// Rebuild the GitHub source database from the file-system cache. The CLI
     /// surface exposes this operation as the <c>reingest</c> verb (renamed
@@ -303,6 +373,13 @@ public class GitHubProxyController(SourceHttpClient httpClient) : ControllerBase
     [HttpPost("rebuild")]
     public Task<IActionResult> Rebuild(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild", Request, ct);
+
+    /// <summary>Queue a GitHub index rebuild of the requested type.</summary>
+    /// <param name="type">Index family to rebuild.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("rebuild-index")]
+    public Task<IActionResult> RebuildIndex([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild-index", Request, ct);
 
     /// <summary>
     /// Receive a peer-ingestion notification from the orchestrator's

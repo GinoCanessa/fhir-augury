@@ -25,6 +25,7 @@ public class GitHubProxyControllerTests
         ["GetComments", "/api/v1/items/comments/owner/name%23123"],
         ["GetCommits", "/api/v1/items/commits/owner/name%23123"],
         ["GetPullRequest", "/api/v1/items/pr/owner/name%23123"],
+        ["GetTicketsForPullRequest", "/api/v1/items/pr-tickets/owner/name%23123"],
     ];
 
     [Theory]
@@ -44,12 +45,53 @@ public class GitHubProxyControllerTests
             "GetComments" => await c.GetComments(key, default),
             "GetCommits" => await c.GetCommits(key, default),
             "GetPullRequest" => await c.GetPullRequest(key, default),
+            "GetTicketsForPullRequest" => await c.GetTicketsForPullRequest(key, default),
             _ => throw new InvalidOperationException(),
         };
         await ProxyTestSupport.ExecuteAsync(c, r);
 
         Assert.Single(h.Requests);
         Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task GetPullRequestsForTicket_ForwardsJiraKey()
+    {
+        GitHubProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult result = await c.GetPullRequestsForTicket("FHIR-123", default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("/api/v1/items/ticket-prs/FHIR-123", h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ContentReferredBy_PreservesSourceSpecificQuery()
+    {
+        GitHubProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?value=FHIR-123&sourceType=jira");
+
+        IActionResult result = await c.ContentReferredBy("FHIR-123", "jira", null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("/api/v1/content/referred-by", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?value=FHIR-123&sourceType=jira", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ContentRelatedByKeyword_PreservesGitHubKey()
+    {
+        GitHubProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult result = await c.ContentRelatedByKeyword(
+            "github", "owner/name#123", null, null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(
+            "/api/v1/content/related-by-keyword/github/owner/name%23123",
+            h.Requests[0].RequestUri!.AbsolutePath);
     }
 
     public static IEnumerable<object[]> JiraSpecsCases =>
@@ -108,5 +150,26 @@ public class GitHubProxyControllerTests
         IActionResult r = await c.SearchRepoTags("HL7", "fhir-core", default);
         await ProxyTestSupport.ExecuteAsync(c, r);
         Assert.Equal("?tag=v5.0.0", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData("trigger", "/api/v1/ingest/trigger")]
+    [InlineData("rebuild-index", "/api/v1/rebuild-index")]
+    public async Task MissingIngestionRoutes_ForwardPost(string action, string expectedPath)
+    {
+        GitHubProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=full");
+
+        IActionResult result = action switch
+        {
+            "trigger" => await c.IngestTrigger("full", default),
+            "rebuild-index" => await c.RebuildIndex("full", default),
+            _ => throw new InvalidOperationException(),
+        };
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?type=full", h.Requests[0].RequestUri!.Query);
     }
 }

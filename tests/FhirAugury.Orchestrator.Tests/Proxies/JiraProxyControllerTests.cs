@@ -82,6 +82,49 @@ public class JiraProxyControllerTests
         Assert.Contains("FHIR-1", body);
     }
 
+    public static IEnumerable<object[]> ContentQueryCases =>
+    [
+        ["refers-to", "/api/v1/content/refers-to"],
+        ["referred-by", "/api/v1/content/referred-by"],
+        ["cross-referenced", "/api/v1/content/cross-referenced"],
+    ];
+
+    [Theory]
+    [MemberData(nameof(ContentQueryCases))]
+    public async Task ContentQueries_ForwardPathAndQuery(string action, string expectedPath)
+    {
+        JiraProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?value=FHIR-1&sourceType=github&limit=5");
+
+        IActionResult result = action switch
+        {
+            "refers-to" => await c.ContentRefersTo("FHIR-1", "github", 5, null, default),
+            "referred-by" => await c.ContentReferredBy("FHIR-1", "github", 5, null, default),
+            "cross-referenced" => await c.ContentCrossReferenced("FHIR-1", "github", 5, null, default),
+            _ => throw new InvalidOperationException(),
+        };
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?value=FHIR-1&sourceType=github&limit=5", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ContentRelatedByKeyword_ForwardsFixedSourceAndCatchAllId()
+    {
+        JiraProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?minScore=0.2");
+
+        IActionResult result = await c.ContentRelatedByKeyword(
+            "jira", "FHIR-1/child", 0.2, null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(
+            "/api/v1/content/related-by-keyword/jira/FHIR-1/child",
+            h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?minScore=0.2", h.Requests[0].RequestUri!.Query);
+    }
+
     public static IEnumerable<object[]> ByKeyCases =>
     [
         ["baldef", "BALDEF-1", "/api/v1/baldef/BALDEF-1"],
@@ -184,6 +227,32 @@ public class JiraProxyControllerTests
         string q = h.Requests[0].RequestUri!.Query;
         Assert.Contains("type=incremental", q);
         Assert.DoesNotContain("project", q);
+    }
+
+    [Fact]
+    public async Task Ingest_AcceptsSourceLocalProjectQueryName()
+    {
+        JiraProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=full&project=FHIR");
+
+        IActionResult result = await c.Ingest("full", null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("?type=full&project=FHIR", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task RebuildIndex_ForwardsPostAndQuery()
+    {
+        JiraProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=cross-refs");
+
+        IActionResult result = await c.RebuildIndex("cross-refs", default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal("/api/v1/rebuild-index", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?type=cross-refs", h.Requests[0].RequestUri!.Query);
     }
 
     [Fact]

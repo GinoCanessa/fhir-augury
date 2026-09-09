@@ -23,6 +23,19 @@ public sealed class OrchestratorClient(IHttpClientFactory httpClientFactory, ICo
         return result?.Services ?? [];
     }
 
+    public async Task<IReadOnlyList<string>> GetEnabledSourceNamesAsync(CancellationToken ct = default)
+    {
+        List<ServiceHealthInfo> services = await GetServicesAsync(ct);
+        return services
+            .Where(service =>
+                service.Enabled
+                && string.Equals(service.ServiceKind, "source", StringComparison.OrdinalIgnoreCase))
+            .Select(service => service.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     public async Task RebuildIndexAsync(string source, string indexType = "all", CancellationToken ct = default)
     {
         HttpClient client = httpClientFactory.CreateClient("orchestrator");

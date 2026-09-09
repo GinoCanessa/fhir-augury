@@ -73,20 +73,34 @@ public class OpenApiDocumentValidationTests
         OpenApiDocument orchestratorDoc = BuildOpenApiDocument([
             ("/api/v1/health", HttpMethod.Get, "health"),
             ("/api/v1/search", HttpMethod.Get, "search"),
+            ("/api/v1/content/search", HttpMethod.Get, "content-search"),
+            ("/api/v1/content/item/{source}/{id}", HttpMethod.Get, "content-item"),
+            ("/api/v1/content/keywords/{source}/{id}", HttpMethod.Get, "content-keywords"),
+            ("/api/v1/services", HttpMethod.Get, "services"),
+            ("/api/v1/stats", HttpMethod.Get, "stats"),
             ("/api/v1/source/orchestrator/list-sources", HttpMethod.Get, "list-sources"),
         ]);
         string jiraJson = BuildDoc("Source.Jira", [
             ("/api/v1/query", "post", "query"),
             ("/api/v1/items/{id}", "get", "get-item"),
+            ("/api/v1/content/refers-to", "get", "content-refers-to"),
+            ("/api/v1/content/related-by-keyword/{source}/{id}", "get", "content-related"),
+            ("/api/v1/ingest/trigger", "post", "ingest-trigger"),
+            ("/api/v1/rebuild-index", "post", "rebuild-index"),
         ]);
         string zulipJson = BuildDoc("Source.Zulip", [
             ("/api/v1/query", "post", "query"),
+        ]);
+        string githubJson = BuildDoc("Source.GitHub", [
+            ("/api/v1/items/pr-tickets/{key}", "get", "pr-tickets"),
+            ("/api/v1/items/ticket-prs/{jiraKey}", "get", "ticket-prs"),
         ]);
 
         OpenApiMergeService service = BuildMergeService(orchestratorDoc, new()
         {
             ["jira"] = jiraJson,
             ["zulip"] = zulipJson,
+            ["github"] = githubJson,
         });
 
         MergedDocument merged = await service.GetMergedAsync(includeInternal: false, CancellationToken.None);
@@ -106,6 +120,11 @@ public class OpenApiDocumentValidationTests
         {
             "/api/v1/health",
             "/api/v1/search",
+            "/api/v1/content/search",
+            "/api/v1/content/item/{source}/{id}",
+            "/api/v1/content/keywords/{source}/{id}",
+            "/api/v1/services",
+            "/api/v1/stats",
             "/api/v1/source/orchestrator/list-sources",
         };
 
@@ -122,7 +141,13 @@ public class OpenApiDocumentValidationTests
 
         Assert.True(paths.ContainsKey("/api/v1/jira/query"));
         Assert.True(paths.ContainsKey("/api/v1/jira/items/{id}"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/content/refers-to"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/content/related-by-keyword/{source}/{id}"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/ingest/trigger"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/rebuild-index"));
         Assert.True(paths.ContainsKey("/api/v1/zulip/query"));
+        Assert.True(paths.ContainsKey("/api/v1/github/items/pr-tickets/{key}"));
+        Assert.True(paths.ContainsKey("/api/v1/github/items/ticket-prs/{jiraKey}"));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────

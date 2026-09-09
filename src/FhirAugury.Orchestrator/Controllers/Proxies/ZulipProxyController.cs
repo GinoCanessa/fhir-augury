@@ -22,6 +22,50 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
 {
     private const string Source = "zulip";
 
+    // ── Source-specific content queries ──────────────────────────────────
+
+    [HttpGet("content/refers-to")]
+    public Task<IActionResult> ContentRefersTo(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/refers-to", Request, ct);
+
+    [HttpGet("content/referred-by")]
+    public Task<IActionResult> ContentReferredBy(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/referred-by", Request, ct);
+
+    [HttpGet("content/cross-referenced")]
+    public Task<IActionResult> ContentCrossReferenced(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/cross-referenced", Request, ct);
+
+    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    public Task<IActionResult> ContentRelatedByKeyword(
+        string source,
+        string id,
+        [FromQuery] double? minScore,
+        [FromQuery] string? keywordType,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(
+            Source,
+            HttpMethod.Get,
+            $"content/related-by-keyword/{Uri.EscapeDataString(source)}/{EncodeCatchAll(id)}",
+            Request,
+            ct);
+
     // ── Items ────────────────────────────────────────────────────────────
 
     /// <summary>List Zulip items (paged).</summary>
@@ -189,6 +233,13 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest", Request, ct);
 
+    /// <summary>Queue an asynchronous ingestion run on the Zulip source.</summary>
+    /// <param name="type">Sync type.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("ingest/trigger")]
+    public Task<IActionResult> IngestTrigger([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest/trigger", Request, ct);
+
     /// <summary>
     /// Rebuild the Zulip source database from the file-system cache. The CLI
     /// surface exposes this operation as the <c>reingest</c> verb (renamed
@@ -200,6 +251,13 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> Rebuild(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild", Request, ct);
 
+    /// <summary>Queue a Zulip index rebuild of the requested type.</summary>
+    /// <param name="type">Index family to rebuild.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("rebuild-index")]
+    public Task<IActionResult> RebuildIndex([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild-index", Request, ct);
+
     /// <summary>
     /// Receive a peer-ingestion notification from the orchestrator's
     /// <c>POST /api/v1/notify-ingestion</c> fan-out. Tagged
@@ -209,4 +267,7 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
     [HttpPost("notify-peer")]
     public Task<IActionResult> NotifyPeer(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "notify-peer", Request, ct);
+
+    private static string EncodeCatchAll(string value) =>
+        string.Join('/', value.Split('/').Select(Uri.EscapeDataString));
 }

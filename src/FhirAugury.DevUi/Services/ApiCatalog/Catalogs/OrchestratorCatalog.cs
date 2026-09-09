@@ -11,11 +11,8 @@ public static class OrchestratorCatalog
         List<ApiEndpointDescriptor> list =
         [
             .. OrchestratorOwnEndpoints(),
-            .. ProjectSourceCatalog("jira", "Jira", JiraCatalog.Build()),
-            .. ProjectSourceCatalog("zulip", "Zulip", ZulipCatalog.Build()),
-            .. ProjectSourceCatalog("confluence", "Confluence", ConfluenceCatalog.Build()),
-            .. ProjectSourceCatalog("github", "GitHub", GitHubCatalog.Build()),
-            .. ProjectSourceCatalog("fhir", "FHIR", FhirCatalog.Build(), skipOrchestratorNative: false),
+            .. ProjectMatrixProxyRoutes(),
+            .. ProjectLegacyFhirLifecycleRoutes(),
         ];
         return list;
     }
@@ -147,6 +144,15 @@ public static class OrchestratorCatalog
             Parameters: []),
 
         new ApiEndpointDescriptor(
+            Id: "services.refresh",
+            DisplayName: "Refresh Services Status",
+            Group: "Services",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/services/refresh",
+            Parameters: [],
+            Description: "Runs a full Orchestrator health recheck without starting or stopping services."),
+
+        new ApiEndpointDescriptor(
             Id: "stats.aggregate",
             DisplayName: "Aggregate Stats",
             Group: "Services",
@@ -248,6 +254,20 @@ public static class OrchestratorCatalog
             Method: HttpMethod.Get,
             PathTemplate: "api/v1/processing-services/{name}/health",
             Parameters: [ProcessingServiceName()]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.list",
+            DisplayName: "List Authoring Runs",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "20",
+                    ValueType: ApiParameterValueType.Int),
+            ],
+            Description: "Lists active and recent processor-owned authoring runs."),
 
         new ApiEndpointDescriptor(
             Id: "processing.authoring.start",
@@ -427,67 +447,72 @@ public static class OrchestratorCatalog
         new("name", ApiParameterKind.Path, Required: true,
             Placeholder: "Preparer");
 
-    /// <summary>
-    /// Projects every endpoint from a per-source catalog into its
-    /// orchestrator typed-proxy URL. The source catalog uses URLs of the
-    /// form <c>api/v1/items</c>; the typed proxy exposes them at
-    /// <c>api/v1/{sourceName}/items</c>. Endpoints that the orchestrator
-    /// already exposes natively (search, content fan-out, lifecycle health,
-    /// aggregate stats, services list) are filtered out so the orchestrator
-    /// catalog does not double-list them.
-    /// </summary>
-    /// <param name="skipOrchestratorNative">
-    /// When <c>true</c> (the default), the proxied <c>health</c>/<c>status</c>/
-    /// <c>stats</c> lifecycle routes are dropped because the orchestrator
-    /// surfaces its own copies. The FHIR proxy uniquely re-exposes
-    /// <c>api/v1/fhir/health|status|stats</c>, so it passes <c>false</c> to keep
-    /// those projected entries. The <c>content/*</c> fan-out subtree is always
-    /// dropped regardless of this flag.
-    /// </param>
-    private static IEnumerable<ApiEndpointDescriptor> ProjectSourceCatalog(
-        string sourceName, string displayPrefix, IReadOnlyList<ApiEndpointDescriptor> sourceEntries,
-        bool skipOrchestratorNative = true)
+    private static IEnumerable<ApiEndpointDescriptor> ProjectMatrixProxyRoutes()
+    {
+        foreach (OrchestratorProxyRoute route in OrchestratorProxyRouteMatrix.Routes)
+        {
+            if (route.Disposition != OrchestratorProxyRouteDisposition.TypedSourceProxy)
+                continue;
+
+            yield return ForOrchestratorCatalog(
+                route.SourceName,
+                PrefixSourceDescriptor(route.SourceName, route.SourceDescriptor));
+        }
+    }
+
+    private static IEnumerable<ApiEndpointDescriptor> ProjectLegacyFhirLifecycleRoutes()
+    {
+        foreach (OrchestratorProxyRoute route in OrchestratorProxyRouteMatrix.GetRoutes("fhir"))
+        {
+            if (route.Disposition !=
+                OrchestratorProxyRouteDisposition.OrchestratorReadinessOrMetaReplacement)
+            {
+                continue;
+            }
+
+            yield return ForOrchestratorCatalog(
+                route.SourceName,
+                PrefixSourceDescriptor(route.SourceName, route.SourceDescriptor));
+        }
+    }
+
+    private static ApiEndpointDescriptor PrefixSourceDescriptor(
+        string sourceName,
+        ApiEndpointDescriptor sourceDescriptor)
     {
         const string ApiV1 = "api/v1";
-        string typedPrefix = $"api/v1/{sourceName}";
+        string remainder = sourceDescriptor.PathTemplate.StartsWith(ApiV1, System.StringComparison.Ordinal)
+            ? sourceDescriptor.PathTemplate[ApiV1.Length..]
+            : "/" + sourceDescriptor.PathTemplate.TrimStart('/');
+        if (!remainder.StartsWith("/", System.StringComparison.Ordinal))
+            remainder = "/" + remainder;
 
-        foreach (ApiEndpointDescriptor entry in sourceEntries)
+        return sourceDescriptor with
         {
-            // The content fan-out subtree is always orchestrator-native and is
-            // never projected under a source tab.
-            if (entry.PathTemplate.StartsWith("api/v1/content/", System.StringComparison.Ordinal))
-            {
-                continue;
-            }
+            PathTemplate = $"api/v1/{sourceName}{remainder}",
+            Parameters = sourceDescriptor.Parameters.ToList(),
+        };
+    }
 
-            // The orchestrator's own lifecycle probes and aggregate stats are
-            // normally surfaced once (under the orchestrator's own groups), so
-            // the proxied copies are skipped — unless the proxy genuinely
-            // re-exposes them (FHIR), in which case skipOrchestratorNative is
-            // false. Each source still re-exports its own copies under its
-            // DevUI tab.
-            if (skipOrchestratorNative
-                && (string.Equals(entry.PathTemplate, "api/v1/health", System.StringComparison.Ordinal)
-                    || string.Equals(entry.PathTemplate, "api/v1/status", System.StringComparison.Ordinal)
-                    || string.Equals(entry.PathTemplate, "api/v1/stats", System.StringComparison.Ordinal)))
-            {
-                continue;
-            }
+    private static ApiEndpointDescriptor ForOrchestratorCatalog(
+        string sourceName,
+        ApiEndpointDescriptor descriptor)
+    {
+        string displayPrefix = sourceName switch
+        {
+            "jira" => "Jira",
+            "zulip" => "Zulip",
+            "confluence" => "Confluence",
+            "github" => "GitHub",
+            "fhir" => "FHIR",
+            _ => sourceName,
+        };
 
-            string remainder = entry.PathTemplate.StartsWith(ApiV1, System.StringComparison.Ordinal)
-                ? entry.PathTemplate.Substring(ApiV1.Length)
-                : entry.PathTemplate;
-            if (!remainder.StartsWith("/", System.StringComparison.Ordinal))
-                remainder = "/" + remainder;
-            string newPath = typedPrefix + remainder;
-
-            yield return entry with
-            {
-                Id = $"{sourceName}.{entry.Id}",
-                Group = $"{displayPrefix} / {entry.Group}",
-                PathTemplate = newPath,
-                Parameters = entry.Parameters.ToList(),
-            };
-        }
+        return descriptor with
+        {
+            Id = $"{sourceName}.{descriptor.Id}",
+            Group = $"{displayPrefix} / {descriptor.Group}",
+            Parameters = descriptor.Parameters.ToList(),
+        };
     }
 }

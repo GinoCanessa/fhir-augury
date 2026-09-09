@@ -37,4 +37,20 @@ public class GitHubProxyControllerTests
         Assert.Equal(typeof(string), parameters[1].ParameterType);
         Assert.Equal(typeof(CancellationToken), parameters[2].ParameterType);
     }
+
+    [Theory]
+    [InlineData(nameof(GitHubProxyController.GetTicketsForPullRequest), "items/pr-tickets/{**key}")]
+    [InlineData(nameof(GitHubProxyController.GetPullRequestsForTicket), "items/ticket-prs/{jiraKey}")]
+    public void PullRequestTicketRelations_PreserveActionFirstRouteShape(
+        string methodName,
+        string expectedTemplate)
+    {
+        MethodInfo method = typeof(GitHubProxyController).GetMethod(methodName)
+            ?? throw new InvalidOperationException($"{methodName} method not found");
+
+        HttpGetAttribute? attribute = method.GetCustomAttribute<HttpGetAttribute>();
+
+        Assert.NotNull(attribute);
+        Assert.Equal(expectedTemplate, attribute!.Template);
+    }
 }

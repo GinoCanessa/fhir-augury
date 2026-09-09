@@ -77,6 +77,35 @@ public class ConfluenceProxyControllerTests
     }
 
     [Fact]
+    public async Task ContentCrossReferenced_PreservesSourceSpecificQuery()
+    {
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?value=page%3A123&sourceType=jira");
+
+        IActionResult result = await c.ContentCrossReferenced(
+            "page:123", "jira", null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("/api/v1/content/cross-referenced", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?value=page%3A123&sourceType=jira", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ContentRelatedByKeyword_ForwardsCatchAllId()
+    {
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult result = await c.ContentRelatedByKeyword(
+            "confluence", "page/123", null, null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(
+            "/api/v1/content/related-by-keyword/confluence/page/123",
+            h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
     public async Task Ingest_PostForwards()
     {
         ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
@@ -132,6 +161,27 @@ public class ConfluenceProxyControllerTests
         Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
         Assert.Equal("/api/v1/ingestion-block/clear", h.Requests[0].RequestUri!.AbsolutePath);
         Assert.Equal("?clearedBy=gino", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData("trigger", "/api/v1/ingest/trigger")]
+    [InlineData("rebuild-index", "/api/v1/rebuild-index")]
+    public async Task MissingIngestionRoutes_ForwardPost(string action, string expectedPath)
+    {
+        ConfluenceProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=full");
+
+        IActionResult result = action switch
+        {
+            "trigger" => await c.IngestTrigger("full", default),
+            "rebuild-index" => await c.RebuildIndex("full", default),
+            _ => throw new InvalidOperationException(),
+        };
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?type=full", h.Requests[0].RequestUri!.Query);
     }
 
     [Fact]
