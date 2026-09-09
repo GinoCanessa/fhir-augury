@@ -59,6 +59,29 @@ public sealed class ChooserAndCliTests
             Assert.True(File.Exists(Path.Combine(output, "discussion", "index.html")));
             Assert.True(File.Exists(Path.Combine(output, "index.html")));
             Assert.False(Directory.Exists(Path.Combine(output, "applying")));
+
+            string assetVersion = PreparerSubSiteEmitter.RendererAssetsVersion;
+            string discussionHtml = await File.ReadAllTextAsync(
+                Path.Combine(output, "discussion", "index.html"));
+            Assert.Contains(
+                $"assets/app.css?v={assetVersion}",
+                discussionHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/sql-wasm.js?v={assetVersion}",
+                discussionHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/app.js?v={assetVersion}",
+                discussionHtml,
+                StringComparison.Ordinal);
+
+            string chooserHtml = await File.ReadAllTextAsync(
+                Path.Combine(output, "index.html"));
+            Assert.Contains(
+                $"assets/chooser.css?v={assetVersion}",
+                chooserHtml,
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -93,6 +116,10 @@ public sealed class ChooserAndCliTests
                 "pushInList('t.WorkGroupClean', wgValues)",
                 script,
                 StringComparison.Ordinal);
+            Assert.Contains(
+                "'?v=' + encodeURIComponent(assetVersion)",
+                script,
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -123,6 +150,37 @@ public sealed class ChooserAndCliTests
             Assert.True(File.Exists(Path.Combine(output, "applying", "index.html")));
             Assert.True(File.Exists(Path.Combine(output, "index.html")));
             Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
+
+            string assetVersion = PlannerSubSiteEmitter.RendererAssetsVersion;
+            string applyingHtml = await File.ReadAllTextAsync(
+                Path.Combine(output, "applying", "index.html"));
+            Assert.Contains(
+                $"assets/app.css?v={assetVersion}",
+                applyingHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/sql-wasm.js?v={assetVersion}",
+                applyingHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/marked.min.js?v={assetVersion}",
+                applyingHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/purify.min.js?v={assetVersion}",
+                applyingHtml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"assets/app.js?v={assetVersion}",
+                applyingHtml,
+                StringComparison.Ordinal);
+
+            string script = await File.ReadAllTextAsync(
+                Path.Combine(output, "applying", "assets", "app.js"));
+            Assert.Contains(
+                "'?v=' + encodeURIComponent(assetVersion)",
+                script,
+                StringComparison.Ordinal);
         }
         finally
         {

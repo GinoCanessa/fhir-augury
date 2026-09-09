@@ -45,3 +45,15 @@ cannot replace a valid newer site.
 The output contains the selected sub-site, an embedded filtered SQLite
 snapshot, `site-build-manifest.json`, ownership metadata, and a chooser page
 when both discussion and applying sites exist.
+
+## Static hosting
+
+Upload the complete generated output directory, including every `assets`
+folder. Generated HTML adds the renderer version to asset URLs so a CDN or
+browser cannot combine a newly generated embedded database with stale
+JavaScript or WebAssembly.
+
+For a deployment created before asset versioning was added, purge the CDN
+cache once after replacing the complete output. A stale discussion `app.js`
+does not inflate the current gzipped database and reports
+`Failed to load database: file is not a database`.

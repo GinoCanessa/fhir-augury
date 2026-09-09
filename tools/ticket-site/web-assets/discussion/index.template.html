@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title><!-- __TITLE__ --></title>
-  <link rel="stylesheet" href="assets/app.css">
+  <link rel="stylesheet" href="assets/app.css?v=__ASSET_VERSION__">
 </head>
 <body>
   <header>
@@ -14,11 +14,11 @@
   <main id="app">
     <p class="loading">Loading…</p>
   </main>
-  <script src="assets/sql-wasm.js"></script>
-  <script src="assets/purify.min.js"></script>
+  <script>window.__ASSET_VERSION__='__ASSET_VERSION__';</script>
+  <script src="assets/sql-wasm.js?v=__ASSET_VERSION__"></script>
+  <script src="assets/purify.min.js?v=__ASSET_VERSION__"></script>
   <!-- __FILTERS__ -->
   <!-- __DB_BLOB__ -->
-  <script defer src="assets/app.js"></script>
+  <script defer src="assets/app.js?v=__ASSET_VERSION__"></script>
 </body>
 </html>
-

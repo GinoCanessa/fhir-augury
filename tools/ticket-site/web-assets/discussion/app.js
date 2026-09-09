@@ -52,7 +52,17 @@
       try {
         // initSqlJs is global, set by sql-wasm.js.
         // eslint-disable-next-line no-undef
-        const SQL = await initSqlJs({ locateFile: function (f) { return 'assets/' + f; } });
+        const assetVersion = (typeof window.__ASSET_VERSION__ === 'string')
+          ? window.__ASSET_VERSION__
+          : '';
+        const SQL = await initSqlJs({
+          locateFile: function (f) {
+            const versionSuffix = assetVersion
+              ? '?v=' + encodeURIComponent(assetVersion)
+              : '';
+            return 'assets/' + f + versionSuffix;
+          }
+        });
         const blob = (typeof window.__DB__ === 'string') ? window.__DB__ : '';
         if (!blob) {
           throw new Error('window.__DB__ missing — emitter did not inline the database.');

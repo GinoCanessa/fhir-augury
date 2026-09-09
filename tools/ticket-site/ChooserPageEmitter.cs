@@ -16,6 +16,7 @@ internal static class ChooserPageEmitter
 
     private const string DiscussionStateMarker = "<!-- __DISCUSSION_STATE__ -->";
     private const string ApplyingStateMarker = "<!-- __APPLYING_STATE__ -->";
+    private const string AssetVersionMarker = "__ASSET_VERSION__";
 
     public static void Emit(string rootOut)
     {
@@ -31,7 +32,11 @@ internal static class ChooserPageEmitter
 
         string html = template
             .Replace(DiscussionStateMarker, discussionLive ? "live" : "missing", StringComparison.Ordinal)
-            .Replace(ApplyingStateMarker, applyingLive ? "live" : "missing", StringComparison.Ordinal);
+            .Replace(ApplyingStateMarker, applyingLive ? "live" : "missing", StringComparison.Ordinal)
+            .Replace(
+                AssetVersionMarker,
+                PreparerSubSiteEmitter.RendererAssetsVersion,
+                StringComparison.Ordinal);
         File.WriteAllText(Path.Combine(rootOut, "index.html"), html);
         File.WriteAllText(Path.Combine(rootOut, "assets", "chooser.css"), css);
     }

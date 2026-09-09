@@ -24,6 +24,7 @@ internal static class PreparerSubSiteEmitter
     private const string TitleMarker = "<!-- __TITLE__ -->";
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string FiltersMarker = "<!-- __FILTERS__ -->";
+    private const string AssetVersionMarker = "__ASSET_VERSION__";
 
     public static string RendererAssetsVersion =>
         StagedDirectoryPublisher.GetRendererAssetsVersion(
@@ -69,7 +70,11 @@ internal static class PreparerSubSiteEmitter
                 string html = template
                     .Replace(TitleMarker, encodedTitle, StringComparison.Ordinal)
                     .Replace(FiltersMarker, filtersScript, StringComparison.Ordinal)
-                    .Replace(DbBlobMarker, blobScript, StringComparison.Ordinal);
+                    .Replace(DbBlobMarker, blobScript, StringComparison.Ordinal)
+                    .Replace(
+                        AssetVersionMarker,
+                        RendererAssetsVersion,
+                        StringComparison.Ordinal);
                 File.WriteAllText(Path.Combine(subSiteOut, "index.html"), html);
             }
             else

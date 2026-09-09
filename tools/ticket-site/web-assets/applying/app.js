@@ -23,7 +23,13 @@
     document.title = subject ? subject + ' — ' + SITE_NAME : STATIC_TITLE;
   }
   try {
-    const SQL = await initSqlJs({ locateFile: f => 'assets/' + f });
+    const assetVersion = typeof window.__ASSET_VERSION__ === 'string'
+      ? window.__ASSET_VERSION__
+      : '';
+    const SQL = await initSqlJs({
+      locateFile: f => 'assets/' + f +
+        (assetVersion ? '?v=' + encodeURIComponent(assetVersion) : '')
+    });
     const b64 = window.__DB__ || '';
     if (!b64) { app.textContent = 'No database inlined.'; return; }
     let bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
