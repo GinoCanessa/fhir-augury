@@ -709,7 +709,7 @@
     }
 
     const wgValues = ActiveChips['wg'];
-    if (wgValues && wgValues.length > 0) pushInList('t.WorkGroupClean', wgValues);
+    if (wgValues && wgValues.length > 0) pushInList('t.WorkGroupDisplay', wgValues);
     const specValues = ActiveChips['spec'];
     if (specValues && specValues.length > 0) pushInList('t.Specification', specValues);
     const typeValues = ActiveChips['type'];

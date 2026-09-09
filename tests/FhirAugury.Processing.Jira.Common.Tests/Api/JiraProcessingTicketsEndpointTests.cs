@@ -176,6 +176,35 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task PostTicket_RunBackedAtActiveCapacityReturnsConflict()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-2", "Triaged"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out _,
+            out JiraAuthoringRunCoordinator coordinator,
+            maxActiveAuthoringRuns: 1);
+        JiraProcessingSourceTicketRecord activeTicket = await store.UpsertAsync(
+            CreateTicket("FHIR-1", "Triaged"),
+            "fhir",
+            false,
+            CancellationToken.None);
+        await coordinator.CreateOneItemRunAsync(activeTicket);
+
+        HttpResponseMessage response =
+            await client.PostAsync("/processing/tickets/FHIR-2", null);
+        Dictionary<string, object> payload =
+            (await response.Content.ReadFromJsonAsync<Dictionary<string, object>>())!;
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(
+            "active-run-capacity-reached",
+            payload["error"].ToString());
+    }
+
+    [Fact]
     public async Task PostAuthoringRun_ReplaysExactBatchAndConflictsOnOverlapOrModeChange()
     {
         FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
@@ -184,7 +213,8 @@ public class JiraProcessingTicketsEndpointTests
             AuthoringStatusValues.ProcessorModes.RunBacked,
             out JiraProcessingSourceTicketStore store,
             out _,
-            out _);
+            out _,
+            maxActiveAuthoringRuns: 1);
         foreach (string key in new[] { "FHIR-1", "FHIR-2", "FHIR-3" })
         {
             await store.UpsertAsync(
@@ -219,6 +249,43 @@ public class JiraProcessingTicketsEndpointTests
 
         Assert.Equal(HttpStatusCode.Conflict, overlap.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, modeChange.StatusCode);
+    }
+
+    [Fact]
+    public async Task PostAuthoringRun_AtActiveCapacityReturnsConflictBeforeDiscovery()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-2", "Triaged"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out _,
+            out _,
+            maxActiveAuthoringRuns: 1);
+        foreach (string key in new[] { "FHIR-1", "FHIR-2" })
+        {
+            await store.UpsertAsync(
+                CreateTicket(key, "Triaged"),
+                "fhir",
+                false,
+                CancellationToken.None);
+        }
+
+        HttpResponseMessage first = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1"]));
+        HttpResponseMessage second = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-2"]));
+        Dictionary<string, object> response =
+            (await second.Content.ReadFromJsonAsync<Dictionary<string, object>>())!;
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Equal(
+            "active-run-capacity-reached",
+            response["error"].ToString());
+        Assert.Empty(discovery.RequestedShapes);
     }
 
     [Fact]
@@ -352,14 +419,16 @@ public class JiraProcessingTicketsEndpointTests
         string mode,
         out JiraProcessingSourceTicketStore store,
         out AuthoringRunStore authoringStore,
-        out JiraAuthoringRunCoordinator coordinator)
+        out JiraAuthoringRunCoordinator coordinator,
+        int maxActiveAuthoringRuns = int.MaxValue)
         => CreateClientForMode(
             discovery,
             mode,
             out store,
             out authoringStore,
             out coordinator,
-            out _);
+            out _,
+            maxActiveAuthoringRuns);
 
     private static HttpClient CreateClientForMode(
         FakeDiscovery discovery,
@@ -367,7 +436,8 @@ public class JiraProcessingTicketsEndpointTests
         out JiraProcessingSourceTicketStore store,
         out AuthoringRunStore authoringStore,
         out JiraAuthoringRunCoordinator coordinator,
-        out string dbPath)
+        out string dbPath,
+        int maxActiveAuthoringRuns = int.MaxValue)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -377,8 +447,13 @@ public class JiraProcessingTicketsEndpointTests
             dbPath,
             NullLogger<JiraProcessingDatabase>.Instance);
         processingDatabase.Initialize();
-        AuthoringRetryPolicy retryPolicy = new(Options.Create(
-            new FhirAugury.Processing.Common.Configuration.ProcessingServiceOptions()));
+        IOptions<FhirAugury.Processing.Common.Configuration.ProcessingServiceOptions>
+            processingOptions = Options.Create(
+                new FhirAugury.Processing.Common.Configuration.ProcessingServiceOptions
+                {
+                    MaxActiveAuthoringRuns = maxActiveAuthoringRuns,
+                });
+        AuthoringRetryPolicy retryPolicy = new(processingOptions);
         authoringStore = new AuthoringRunStore(
             processingDatabase,
             retryPolicy: retryPolicy);
@@ -394,7 +469,8 @@ public class JiraProcessingTicketsEndpointTests
             authoringStore,
             store,
             new JiraProcessingFilterResolver(),
-            options);
+            options,
+            processingOptions);
         authoringStore.EnsureProcessorModeAsync(coordinator.ProcessorKind).GetAwaiter().GetResult();
         if (mode == AuthoringStatusValues.ProcessorModes.CuttingOver)
         {

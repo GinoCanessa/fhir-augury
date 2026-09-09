@@ -67,6 +67,40 @@ public sealed class ChooserAndCliTests
     }
 
     [Fact]
+    public async Task PreparerTopicWorkGroupFilterUsesDisplayName()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-topic-filter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            string output = Path.Combine(root, "discussion");
+            PreparerSubSiteEmitter.Emit(
+                output,
+                "Tickets",
+                ResolvedFilters.None,
+                [1]);
+
+            string script = await File.ReadAllTextAsync(
+                Path.Combine(output, "assets", "app.js"));
+
+            Assert.Contains(
+                "pushInList('t.WorkGroupDisplay', wgValues)",
+                script,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "pushInList('t.WorkGroupClean', wgValues)",
+                script,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
     public async Task PlannerSnapshotBuildsApplyingAndChooser()
     {
         string root = Path.Combine(

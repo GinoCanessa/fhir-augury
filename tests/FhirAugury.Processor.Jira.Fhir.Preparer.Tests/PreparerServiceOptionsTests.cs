@@ -14,6 +14,7 @@ public sealed class PreparerServiceOptionsTests
 
         Assert.Equal(5171, processing.Ports.Http);
         Assert.Equal(4, processing.MaxConcurrentProcessingThreads);
+        Assert.Equal(1, processing.MaxActiveAuthoringRuns);
         Assert.Equal(["Triaged"], jira.TicketStatusesToProcess);
         Assert.Equal(PreparerJiraProcessingDefaults.AgentCliCommand, jira.AgentCliCommand);
         Assert.Equal(

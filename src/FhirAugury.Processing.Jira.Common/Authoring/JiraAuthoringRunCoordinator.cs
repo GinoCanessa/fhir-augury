@@ -1,4 +1,6 @@
+using System.Text.Json;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
@@ -16,22 +18,36 @@ public sealed record JiraAuthoringRunCreation(
     AuthoringRunRecord Run,
     IReadOnlyList<AuthoringRunItemRecord> Items);
 
+public sealed record JiraAuthoringRunRequestSnapshot(
+    IReadOnlyList<string> TicketKeys,
+    bool DatabaseOnly);
+
 public sealed class JiraAuthoringRunCoordinator(
     AuthoringRunStore authoringStore,
     JiraProcessingSourceTicketStore sourceStore,
     JiraProcessingFilterResolver filterResolver,
-    IOptions<JiraProcessingOptions> optionsAccessor)
+    IOptions<JiraProcessingOptions> optionsAccessor,
+    IOptions<ProcessingServiceOptions>? processingOptionsAccessor = null)
     : IAuthoringRunLifecycleAdapter
 {
     private readonly JiraProcessingOptions _options = optionsAccessor.Value;
+    private readonly int _maxActiveRuns =
+        processingOptionsAccessor?.Value.MaxActiveAuthoringRuns ?? int.MaxValue;
 
     public string ProcessorKind => $"jira-{_options.SourceTicketShape.ToLowerInvariant()}";
+
+    public Task EnsureActiveRunCapacityAvailableAsync(CancellationToken ct = default)
+        => authoringStore.EnsureActiveRunCapacityAvailableAsync(
+            ProcessorKind,
+            _maxActiveRuns,
+            ct);
 
     public async Task<JiraAuthoringRunCreation?> CreateScheduledRunAsync(
         int maxItems = 1000,
         bool databaseOnly = false,
         CancellationToken ct = default)
     {
+        await EnsureActiveRunCapacityAvailableAsync(ct);
         ResolvedJiraProcessingFilters filters = filterResolver.Resolve(_options);
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -59,13 +75,20 @@ public sealed class JiraAuthoringRunCoordinator(
         bool databaseOnly = true,
         CancellationToken ct = default)
     {
+        JiraAuthoringRunCreation? existing =
+            await GetExistingRunForTicketAsync(ticket, ct);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
         try
         {
             return await CreateRunAsync([ticket], databaseOnly, ct);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
-            JiraAuthoringRunCreation? existing = await GetExistingRunForTicketAsync(ticket, ct);
+            existing = await GetExistingRunForTicketAsync(ticket, ct);
             if (existing is not null)
             {
                 return existing;
@@ -79,13 +102,22 @@ public sealed class JiraAuthoringRunCoordinator(
         bool databaseOnly,
         CancellationToken ct = default)
     {
+        JiraAuthoringRunCreation? existing = await ResolveExactReplayAsync(
+            tickets,
+            databaseOnly,
+            ct);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
         try
         {
             return await CreateRunAsync(tickets, databaseOnly, ct);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
-            JiraAuthoringRunCreation? existing = await ResolveExactReplayAsync(
+            existing = await ResolveExactReplayAsync(
                 tickets,
                 databaseOnly,
                 ct);
@@ -122,7 +154,13 @@ public sealed class JiraAuthoringRunCoordinator(
             ProcessorKind,
             definitions,
             databaseOnly,
-            ct: ct);
+            ct: ct,
+            requestJson: JsonSerializer.Serialize(
+                new JiraAuthoringRunRequestSnapshot(
+                    definitions.Select(definition => definition.BusinessKey).ToArray(),
+                    databaseOnly),
+                JsonSerializerOptions.Web),
+            maxActiveRuns: _maxActiveRuns);
         return new JiraAuthoringRunCreation(
             run,
             await authoringStore.GetRunItemsAsync(run.Id, ct));

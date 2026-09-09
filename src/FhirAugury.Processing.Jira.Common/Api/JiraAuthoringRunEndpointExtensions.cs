@@ -60,9 +60,21 @@ public static class JiraAuthoringRunEndpointExtensions
         JiraAuthoringRunCreation? creation;
         if (request.TicketKeys is null || request.TicketKeys.Count == 0)
         {
-            creation = await coordinator.CreateScheduledRunAsync(
-                databaseOnly: request.DatabaseOnly,
-                ct: ct);
+            try
+            {
+                creation = await coordinator.CreateScheduledRunAsync(
+                    databaseOnly: request.DatabaseOnly,
+                    ct: ct);
+            }
+            catch (AuthoringConflictException ex)
+                when (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
+            {
+                return Results.Conflict(new
+                {
+                    error = "active-run-capacity-reached",
+                    detail = ex.Message,
+                });
+            }
             if (creation is null)
             {
                 return Results.NoContent();
@@ -106,6 +118,14 @@ public static class JiraAuthoringRunEndpointExtensions
             }
             catch (AuthoringConflictException ex)
             {
+                if (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
+                {
+                    return Results.Conflict(new
+                    {
+                        error = "active-run-capacity-reached",
+                        detail = ex.Message,
+                    });
+                }
                 return Results.Conflict(new
                 {
                     error = "revision-already-scheduled",

@@ -23,4 +23,5 @@ public partial record class AuthoringRunRecord
     public DateTimeOffset? CompletedAt { get; set; }
     public string? Error { get; set; }
     public string? SnapshotId { get; set; }
+    public string? RequestJson { get; set; }
 }

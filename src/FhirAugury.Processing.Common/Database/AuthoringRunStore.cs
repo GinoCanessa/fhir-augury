@@ -71,6 +71,11 @@ public sealed class AuthoringRunStore
             "TEXT NULL");
 
         AuthoringRunRecord.CreateTable(connection);
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_runs",
+            "RequestJson",
+            "TEXT NULL");
         AuthoringRunItemRecord.CreateTable(connection);
         AuthoringRunAttemptRecord.CreateTable(connection);
         AuthoringRunStageRecord.CreateTable(connection);
@@ -258,13 +263,21 @@ public sealed class AuthoringRunStore
         bool databaseOnly = false,
         string? runId = null,
         DateTimeOffset? now = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? requestJson = null,
+        int maxActiveRuns = int.MaxValue)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
         ArgumentNullException.ThrowIfNull(items);
         if (items.Count == 0)
         {
             throw new ArgumentException("An authoring run must contain at least one item.", nameof(items));
+        }
+        if (maxActiveRuns < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxActiveRuns),
+                "Active authoring run capacity must be greater than or equal to 1.");
         }
 
         foreach (AuthoringRunItemDefinition item in items)
@@ -293,13 +306,21 @@ public sealed class AuthoringRunStore
                     $"Initial revalidation run '{mode.RevalidationRunId}' must complete before ordinary authoring runs can start.");
             }
 
+            await EnsureActiveRunCapacityAvailableAsync(
+                connection,
+                processorKind,
+                maxActiveRuns,
+                ct);
+
             await ExecuteAsync(
                 connection,
                 """
                 INSERT INTO authoring_runs
-                    (Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly, TotalItems, CreatedAt)
+                    (Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                     TotalItems, CreatedAt, RequestJson)
                 VALUES
-                    (@id, @processorKind, @epoch, @status, @databaseOnly, @totalItems, @createdAt)
+                    (@id, @processorKind, @epoch, @status, @databaseOnly,
+                     @totalItems, @createdAt, @requestJson)
                 """,
                 ct,
                 ("@id", id),
@@ -308,7 +329,8 @@ public sealed class AuthoringRunStore
                 ("@status", AuthoringStatusValues.Runs.Queued),
                 ("@databaseOnly", databaseOnly),
                 ("@totalItems", items.Count),
-                ("@createdAt", Format(timestamp)));
+                ("@createdAt", Format(timestamp)),
+                ("@requestJson", requestJson));
 
             foreach (AuthoringRunItemDefinition item in items)
             {
@@ -722,6 +744,27 @@ public sealed class AuthoringRunStore
         return await ReadRunAsync(connection, runId, ct);
     }
 
+    public async Task EnsureActiveRunCapacityAvailableAsync(
+        string processorKind,
+        int maxActiveRuns,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        if (maxActiveRuns < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxActiveRuns),
+                "Active authoring run capacity must be greater than or equal to 1.");
+        }
+
+        await using SqliteConnection connection = _openConnection();
+        await EnsureActiveRunCapacityAvailableAsync(
+            connection,
+            processorKind,
+            maxActiveRuns,
+            ct);
+    }
+
     public async Task<AuthoringRunRecord?> GetFencedRunAsync(
         string processorKind,
         CancellationToken ct = default)
@@ -733,7 +776,7 @@ public sealed class AuthoringRunStore
             """
             SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                    r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
-                   r.CompletedAt, r.Error, r.SnapshotId
+                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson
             FROM authoring_mutation_fences f
             INNER JOIN authoring_runs r ON r.Id = f.RunId
             WHERE f.ProcessorKind = @processorKind
@@ -754,7 +797,8 @@ public sealed class AuthoringRunStore
         command.CommandText =
             """
             SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                   TotalItems, CreatedAt, StartedAt, CompletedAt, Error, SnapshotId
+                   TotalItems, CreatedAt, StartedAt, CompletedAt, Error, SnapshotId,
+                   RequestJson
             FROM authoring_runs
             WHERE ProcessorKind = @processorKind AND Status = @status
             ORDER BY CreatedAt, RowId
@@ -777,7 +821,7 @@ public sealed class AuthoringRunStore
             """
             SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                    r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
-                   r.CompletedAt, r.Error, r.SnapshotId
+                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson
             FROM authoring_runs r
             WHERE r.ProcessorKind = @processorKind
               AND r.Status IN (@running, @finalizing, @error)
@@ -3238,7 +3282,7 @@ public sealed class AuthoringRunStore
         command.CommandText =
             """
             SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly, TotalItems,
-                   CreatedAt, StartedAt, CompletedAt, Error, SnapshotId
+                   CreatedAt, StartedAt, CompletedAt, Error, SnapshotId, RequestJson
             FROM authoring_runs
             WHERE Id = @runId
             """;
@@ -3249,6 +3293,44 @@ public sealed class AuthoringRunStore
             return null;
         }
         return ReadRun(reader);
+    }
+
+    private static async Task EnsureActiveRunCapacityAvailableAsync(
+        SqliteConnection connection,
+        string processorKind,
+        int maxActiveRuns,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Id
+            FROM authoring_runs
+            WHERE ProcessorKind = @processorKind
+              AND Status IN (@queued, @running, @finalizing, @error)
+            ORDER BY CreatedAt, RowId
+            LIMIT @maxActiveRuns
+            """;
+        command.Parameters.AddWithValue("@processorKind", processorKind);
+        command.Parameters.AddWithValue("@queued", AuthoringStatusValues.Runs.Queued);
+        command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue("@error", AuthoringStatusValues.Runs.Error);
+        command.Parameters.AddWithValue("@maxActiveRuns", maxActiveRuns);
+
+        List<string> activeRunIds = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            activeRunIds.Add(reader.GetString(0));
+        }
+
+        if (activeRunIds.Count >= maxActiveRuns)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.ActiveRunCapacityReached,
+                $"Processor '{processorKind}' has reached its active authoring run capacity of {maxActiveRuns}. Active run IDs: {string.Join(", ", activeRunIds)}.");
+        }
     }
 
     private static AuthoringRunRecord ReadRun(SqliteDataReader reader)
@@ -3266,6 +3348,7 @@ public sealed class AuthoringRunStore
             CompletedAt = ReadNullableDate(reader, 9),
             Error = ReadNullableString(reader, 10),
             SnapshotId = ReadNullableString(reader, 11),
+            RequestJson = ReadNullableString(reader, 12),
         };
 
     private static async Task<AuthoringRunItemRecord?> ReadRunItemAsync(

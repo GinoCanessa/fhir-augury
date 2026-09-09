@@ -61,6 +61,18 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start",
 `no-candidates` is a successful no-op. Otherwise retain `runId`,
 `authoringEpoch`, and every item ID.
 
+The shipped Preparer admits one active authoring run at a time. A run in
+`queued`, `running`, `finalizing`, or recoverable `error` state consumes that
+capacity. A second start returns HTTP `409` with
+`active-run-capacity-reached` and identifies the existing run instead of
+silently queuing another. Start the next run only after the current run reaches
+`completed`, `completed-database-only`, or `superseded`.
+
+The processor stores the normalized start request (the effective ticket keys
+and `databaseOnly` value) with the frozen run. After a service restart it
+continues that same run ID and request; operators should poll the existing run
+rather than submit a replacement start.
+
 ### 2. Poll authoritative state
 
 ```powershell

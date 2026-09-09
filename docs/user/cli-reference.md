@@ -280,7 +280,7 @@ worker-submission fields:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
 |--------|---------------------------------|------------------------|
-| `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. |
+| `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. The Preparer returns HTTP `409` with `active-run-capacity-reached` while another Preparer run is live. |
 | `status` | `runId` | Inspect the frozen run and its items, including durable receipt evidence, retry timing, remaining attempts, and superseded outcomes. |
 | `retry` | `runId`, `itemId` | Request an immediate retry of one eligible current error. This may bypass the automatic delay but cannot expand the processor's total attempt budget. |
 | `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one currently fenced `error` item without a receipt as terminal and non-authored. Never infer the reason or use this for a receipt-backed item. |
@@ -332,6 +332,12 @@ Automatic retry is processor-owned. Outer automation should normally keep
 polling instead of issuing `retry`; use immediate retry only as an explicit
 operator choice, and do not replay either mutating action after an ambiguous
 transport failure.
+
+The Preparer has an active-run capacity of one. `queued`, `running`,
+`finalizing`, and recoverable `error` runs are live; only a terminal
+`completed`, `completed-database-only`, or `superseded` run releases capacity.
+Its normalized start request is stored with the run so a restart resumes the
+same run rather than reconstructing a second one.
 
 In status responses, `failedItems` remains the aggregate,
 `retryableErrorItems` counts errors still under automatic retry, and

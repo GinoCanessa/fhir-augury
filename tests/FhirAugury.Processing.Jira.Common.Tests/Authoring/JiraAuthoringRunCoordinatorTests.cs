@@ -1,5 +1,7 @@
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
@@ -70,6 +72,76 @@ public sealed class JiraAuthoringRunCoordinatorTests
             databaseOnly: true);
 
         Assert.Single(creation.Items);
+    }
+
+    [Fact]
+    public async Task CreateExplicitRun_RejectsSecondActiveRunAtCapacity()
+    {
+        using JiraAuthoringTestFixture fixture = new(maxActiveAuthoringRuns: 1);
+        await fixture.ActivateAsync();
+        DateTimeOffset revision = new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord first =
+            await fixture.SeedAsync("FHIR-1", revision);
+        JiraProcessingSourceTicketRecord second =
+            await fixture.SeedAsync("FHIR-2", revision);
+        JiraAuthoringRunCreation active =
+            await fixture.Coordinator.CreateExplicitRunAsync([first], databaseOnly: false);
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => fixture.Coordinator.CreateExplicitRunAsync(
+                    [second],
+                    databaseOnly: false));
+
+        Assert.Equal(AuthoringConflictCode.ActiveRunCapacityReached, conflict.Code);
+        Assert.Contains(active.Run.Id, conflict.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            active.Run.Id,
+            (await fixture.AuthoringStore.GetOldestQueuedRunAsync(
+                fixture.Coordinator.ProcessorKind))!.Id);
+    }
+
+    [Fact]
+    public async Task CreateExplicitRun_AfterTerminalRun_PersistsRequestForRestart()
+    {
+        using JiraAuthoringTestFixture fixture = new(maxActiveAuthoringRuns: 1);
+        await fixture.ActivateAsync();
+        DateTimeOffset revision = new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord completedTicket =
+            await fixture.SeedAsync("FHIR-1", revision);
+        JiraAuthoringRunCreation completed =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [completedTicket],
+                databaseOnly: true);
+        await CompleteDatabaseOnlyRunAsync(fixture, completed);
+
+        JiraProcessingSourceTicketRecord supersededTicket =
+            await fixture.SeedAsync("FHIR-2", revision);
+        JiraAuthoringRunCreation superseded =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [supersededTicket],
+                databaseOnly: false);
+        await fixture.AuthoringStore.SupersedeRunAsync(
+            superseded.Run.Id,
+            "Test terminal transition.");
+
+        JiraProcessingSourceTicketRecord restartedTicket =
+            await fixture.SeedAsync("FHIR-3", revision);
+        JiraAuthoringRunCreation accepted =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [restartedTicket],
+                databaseOnly: false);
+        AuthoringRunStore restartedStore = new(fixture.SourceStoreConnection);
+        AuthoringRunRecord restored =
+            (await restartedStore.GetRunAsync(accepted.Run.Id))!;
+        JiraAuthoringRunRequestSnapshot request =
+            JsonSerializer.Deserialize<JiraAuthoringRunRequestSnapshot>(
+                restored.RequestJson!,
+                JsonSerializerOptions.Web)!;
+
+        Assert.Equal(accepted.Run.Id, restored.Id);
+        Assert.Equal(["FHIR-3"], request.TicketKeys);
+        Assert.False(request.DatabaseOnly);
     }
 
     [Fact]
@@ -519,7 +591,7 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
 {
     private readonly string _directory;
 
-    public JiraAuthoringTestFixture()
+    public JiraAuthoringTestFixture(int maxActiveAuthoringRuns = int.MaxValue)
     {
         _directory = Path.Combine(Path.GetTempPath(), $"fhir-augury-jira-authoring-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_directory);
@@ -548,7 +620,12 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
             AuthoringStore,
             SourceStore,
             new JiraProcessingFilterResolver(),
-            Options);
+            Options,
+            Microsoft.Extensions.Options.Options.Create(
+                new ProcessingServiceOptions
+                {
+                    MaxActiveAuthoringRuns = maxActiveAuthoringRuns,
+                }));
     }
 
     public string DatabasePath { get; }

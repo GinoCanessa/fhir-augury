@@ -17,6 +17,7 @@ public enum AuthoringConflictCode
     RevisionAlreadyScheduled,
     RevalidationRequired,
     AttemptLimitReached,
+    ActiveRunCapacityReached,
 }
 
 public sealed class AuthoringConflictException(

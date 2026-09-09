@@ -598,6 +598,7 @@ manual retry may bypass that wait but never expands the total attempt budget.
     "DatabasePath": "./data/processor.jira.fhir.planner.db",
     "SyncSchedule": "00:01:00",
     "MaxConcurrentProcessingThreads": 3,
+    "MaxActiveAuthoringRuns": 2147483647,
     "StartProcessingOnStartup": true,
     "OrphanedInProgressThreshold": "00:10:00",
     "AuthoringRetryDelay": "00:01:00",
@@ -646,6 +647,7 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.DatabasePath` | string | per-processor | Private processor-owned SQLite state |
 | `Processing.SyncSchedule` | TimeSpan | `00:01:00` | Queue poll / discovery interval |
 | `Processing.MaxConcurrentProcessingThreads` | int | `3`–`8` | Max tickets processed concurrently (per-processor default) |
+| `Processing.MaxActiveAuthoringRuns` | int | `2147483647`; Preparer overrides to `1` | Maximum live authoring runs admitted for a processor. Live means `queued`, `running`, `finalizing`, or recoverable `error`; terminal runs release capacity. |
 | `Processing.StartProcessingOnStartup` | bool | `true` | Begin processing the queue on boot |
 | `Processing.OrphanedInProgressThreshold` | TimeSpan | `00:10:00` | Age after which an abandoned in-progress claim is recoverable |
 | `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |

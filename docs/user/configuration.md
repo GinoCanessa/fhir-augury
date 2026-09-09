@@ -232,11 +232,18 @@ Key authoring options:
 
 | Key | Purpose |
 |-----|---------|
+| `MaxActiveAuthoringRuns` | Bound live run admission; the shipped Preparer sets this to `1` |
 | `AuthoringRetryDelay` / `AuthoringMaxAttempts` | Bound retries before a receipt is accepted |
 | `SnapshotDirectory` / `SnapshotSchemaVersion` | Processor-owned immutable review snapshots |
 | `ReconcileSnapshotsOnStartup` | Recover interrupted snapshot creation and recording |
 | `ActivateRunBackedAuthoring` | Enable the one-way cutover and initial revalidation |
 | `PreCutoverBackupPath` | Required verified rollback backup for activation |
+
+The Preparer returns `409 active-run-capacity-reached` if a start is requested
+while its existing run is `queued`, `running`, `finalizing`, or in recoverable
+`error`. Completed and superseded runs release the slot. Each accepted Jira
+authoring run stores its normalized request with the frozen items so the same
+run can resume after restart.
 
 ### Jira FHIR Planner (`:5172`)
 

@@ -12,6 +12,7 @@ public class ProcessingServiceOptionsTests
         Assert.Equal("./data/processing.db", options.DatabasePath);
         Assert.Equal("00:05:00", options.SyncSchedule);
         Assert.Equal(1, options.MaxConcurrentProcessingThreads);
+        Assert.Equal(int.MaxValue, options.MaxActiveAuthoringRuns);
         Assert.True(options.StartProcessingOnStartup);
         Assert.Equal(5170, options.Ports.Http);
         Assert.Equal("00:10:00", options.OrphanedInProgressThreshold);
@@ -28,9 +29,14 @@ public class ProcessingServiceOptionsTests
     [Fact]
     public void Validate_RejectsInvalidConcurrency()
     {
-        ProcessingServiceOptions options = new() { MaxConcurrentProcessingThreads = 0 };
+        ProcessingServiceOptions options = new()
+        {
+            MaxConcurrentProcessingThreads = 0,
+            MaxActiveAuthoringRuns = 0,
+        };
 
         Assert.Contains(options.Validate(), e => e.Contains("MaxConcurrentProcessingThreads", StringComparison.Ordinal));
+        Assert.Contains(options.Validate(), e => e.Contains("MaxActiveAuthoringRuns", StringComparison.Ordinal));
     }
 
     [Theory]

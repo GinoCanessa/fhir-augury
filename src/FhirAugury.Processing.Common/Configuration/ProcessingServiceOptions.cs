@@ -12,6 +12,7 @@ public class ProcessingServiceOptions
     public string DatabasePath { get; set; } = "./data/processing.db";
     public string SyncSchedule { get; set; } = "00:05:00";
     public int MaxConcurrentProcessingThreads { get; set; } = 1;
+    public int MaxActiveAuthoringRuns { get; set; } = int.MaxValue;
     public bool StartProcessingOnStartup { get; set; } = true;
     public string? OrchestratorAddress { get; set; }
     public PortConfiguration Ports { get; set; } = new() { Http = 5170 };
@@ -32,6 +33,11 @@ public class ProcessingServiceOptions
         if (MaxConcurrentProcessingThreads < 1)
         {
             yield return "MaxConcurrentProcessingThreads must be greater than or equal to 1.";
+        }
+
+        if (MaxActiveAuthoringRuns < 1)
+        {
+            yield return "MaxActiveAuthoringRuns must be greater than or equal to 1.";
         }
 
         if (string.IsNullOrWhiteSpace(DatabasePath))

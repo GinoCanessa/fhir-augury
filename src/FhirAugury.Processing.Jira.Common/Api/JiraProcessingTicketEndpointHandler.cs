@@ -62,10 +62,23 @@ public static partial class JiraProcessingTicketEndpointHandler
             ct);
         if (runBacked)
         {
-            JiraAuthoringRunCreation creation = await runCoordinator.CreateOneItemRunAsync(
-                row,
-                databaseOnly: true,
-                ct);
+            JiraAuthoringRunCreation creation;
+            try
+            {
+                creation = await runCoordinator.CreateOneItemRunAsync(
+                    row,
+                    databaseOnly: true,
+                    ct);
+            }
+            catch (AuthoringConflictException ex)
+                when (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
+            {
+                return Results.Conflict(new
+                {
+                    error = "active-run-capacity-reached",
+                    detail = ex.Message,
+                });
+            }
             string sourceRevision = JiraProcessingSourceTicketStore.GetSourceRevision(row);
             AuthoringRunItemRecord item = creation.Items.Single(value =>
                 string.Equals(value.BusinessKey, row.Key, StringComparison.OrdinalIgnoreCase) &&

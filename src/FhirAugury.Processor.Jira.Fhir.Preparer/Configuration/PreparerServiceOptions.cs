@@ -15,6 +15,7 @@ public sealed class PreparerServiceOptions : ProcessingServiceOptions
         DatabasePath = "./data/processor.jira.fhir.preparer.db";
         SyncSchedule = "00:05:00";
         MaxConcurrentProcessingThreads = 4;
+        MaxActiveAuthoringRuns = 1;
         StartProcessingOnStartup = true;
         Ports.Http = 5171;
         OrchestratorAddress = "http://localhost:5150";
