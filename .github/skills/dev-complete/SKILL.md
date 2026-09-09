@@ -184,6 +184,13 @@ because a fresh sub-agent re-reads the `SKILL.md` from disk — a
 re-dispatch *is* the instruction reload that `dev-do`'s
 self-modification yield asks for.
 
+Use the **`dev-stage-runner`** agent, which carries the read-the-skill
+-file-first contract and the full toolset a stage may need. Fall back to
+`general-purpose` where it is not loaded. Naming the role also makes a
+run's cost legible per stage rather than collapsing every stage into one
+anonymous bucket, which matters here more than anywhere else in the loop:
+this skill is the single largest source of sub-agents in it.
+
 Hand each stage sub-agent exactly five things:
 
 1. **The absolute skill file path**, with an instruction to read it and
@@ -219,17 +226,32 @@ Hand each stage sub-agent exactly five things:
    fixes. The execution stage in particular runs with **no
    checkpointing**, because this run never pauses between phases.
 
-A stage sub-agent runs with the **same model configuration as you**, per
-`AGENTS.md` § *Agent guardrails*.
+A stage sub-agent runs at the **reasoning** tier — see
+§ *Sub-Agent Model Tier*. A stage is the whole skill it names, judgment
+included, and is never cheapened.
 
-**Record a baseline immediately before every dispatch.** Read the
-artifact that dispatch operates on and record its **content hash** — or
-record that the artifact is **absent**. On return, re-read it and
-compare. Without a baseline the byte-identical branch below is
-unimplementable: a dispatch hands over a path and regains control on
-return, and never reads the file in between. **Absent both before and
-after counts as unchanged**, which is what covers an authoring stage
-that never created its file at all.
+**Record a baseline immediately before every dispatch.** Hash the
+artifact that dispatch operates on — or record that the artifact is
+**absent**. On return, hash it again and compare. Without a baseline the
+byte-identical branch below is unimplementable: a dispatch hands over a
+path and regains control on return, and never reads the file in between.
+**Absent both before and after counts as unchanged**, which is what
+covers an authoring stage that never created its file at all.
+
+**Hash the file; do not read it into context to compare.**
+
+```powershell
+(Get-FileHash <artifact> -Algorithm SHA256).Hash
+```
+
+A 64-character digest settles the comparison exactly. Reading the
+artifact instead costs its full length twice per dispatch, against a
+`plan.md` that grows with every phase and a run that dispatches at least
+seven times — which is how an orchestrator whose whole design is to keep
+its own context small ends up carrying every artifact in it anyway. Read
+an artifact when you need its **content** — the `Status` row, the
+`- HANDBACK |` line, the ledger — and hash it when you only need to know
+whether it moved.
 
 **Classify every stage's outcome from the artifact on disk, never from
 the sub-agent's narrative.** A sub-agent that simply stopped is
@@ -247,9 +269,9 @@ these branches in order, **first match wins**:
    new `COMMIT` entries — and marks nothing `Blocked`, so branch 5 would
    read it as a stage that yielded early and re-dispatch it to yield
    identically.
-2. **The artifact is byte-identical to the baseline** → **blocker**.
-   Hand back and name it. Scope this to *unchanged from what this
-   dispatch was handed*, never to "the stage had nothing to do":
+2. **The artifact is byte-identical to the baseline** → **one
+   diagnose-then-retry, then blocker**. Scope this to *unchanged from what
+   this dispatch was handed*, never to "the stage had nothing to do":
    § *Resume* skips a complete stage by its status marker, so a stage
    with nothing to do is never dispatched at all. The likeliest instance
    is the most damning — `dev-do`'s pre-flight gate refuses a non-empty
@@ -257,6 +279,40 @@ these branches in order, **first match wins**:
    `Ready-to-execute` with every phase `Pending`, and without this
    branch the rule to classify from disk makes a blocker this skill
    already lists structurally undetectable.
+
+   **The first unchanged return earns one re-dispatch, not a hand-back.**
+   This is the least diagnosable outcome in the run: the stage wrote
+   nothing, so it also wrote no `- HANDBACK |` line, and disk therefore
+   records neither what it attempted nor why it stopped. That is
+   indistinguishable from a stage whose sub-agent never started, or one
+   that could not reach a tool its skill needs — both recoverable, and
+   both otherwise spending none of the three dispatches § *Retry and
+   Hand-Back* grants every stage.
+
+   **The retry is a diagnose-then-retry dispatch, never a bare one**, on
+   the reasoning that section already gives for a `Blocked` phase.
+   Alongside the five standard inputs, a retry dispatch hands the stage
+   sub-agent:
+
+   - **the fact that its previous dispatch left the artifact
+     byte-identical**, named as such, with that artifact's absolute path;
+   - **an instruction to diagnose the cause first** — a safety gate it
+     refused, an input that was absent, a tool it could not reach — and
+     only then to proceed;
+   - **an instruction to state what it found explicitly in what it
+     returns**, even when it still cannot write. A stage that refuses
+     again for a reason it *names* converts the least diagnosable outcome
+     in the run into the most.
+
+   **A second consecutive unchanged return is the blocker.** Hand back,
+   name both dispatches, and quote whatever the retry reported — that
+   text is the only account of the failure that exists, because nothing
+   reached disk.
+
+   This costs `dev-do`'s pre-flight refusal one extra dispatch, and buys
+   a refusal that *says* the index was dirty in place of a silent return
+   that looks like every other unchanged one. That is the better trade,
+   not a reluctant one.
 3. **An authoring stage** is judged by re-reading the artifact's `Status`
    row.
 4. **The plan stage** is judged by re-reading `plan.md`'s `Status` row.
@@ -272,6 +328,28 @@ named in § *The Standing Directive*, and both are why that line's
 absence never proves success. Branch 2 is what catches them.
 
 Never edit an artifact to fix a stage's work. Re-dispatch the stage.
+
+## Sub-Agent Model Tier
+
+Resolve each role against the **subagent model policy** in the
+repository's `AGENTS.md` (`## Agent guardrails`). An absent or
+unreadable policy means `uniform`, and every role below runs the
+spawning agent's model.
+
+| Role | Tier | Agent |
+|-|-|-|
+| Running a stage | reasoning | `dev-stage-runner` |
+| Reading an artifact's status or ledger on resume | mechanical | do it yourself |
+
+**A stage is never cheapened.** It is an entire skill — authoring,
+planning, executing, or reviewing — and the run's whole output is what
+those stages produce. The saving this policy is after happens *inside*
+each stage, where `max_subagents` and that skill's own tier table apply;
+you pass the cap through and let the stage spend it.
+
+**You fan out nowhere else.** Resume reads, ledger rebuilds, and baseline
+hashes are small and sequential; delegating them would cost a sub-agent's
+startup to save a file read. Do them in-process.
 
 ## The Standing Directive
 
@@ -295,10 +373,48 @@ artifact as settled content. It does not ask. This covers:
 - **`dev-plan`'s open decisions** — the ones its workflow would
   otherwise put to the user because the choice materially changes the
   work.
-- **`dev-approach`'s triviality proposal.** Default: **decline** it and
-  run all three authors. A triviality call made before any design work
-  is itself a claim about the solution's shape, and nobody is gating
-  this run.
+- **`dev-approach`'s triviality decision.** Apply that skill's own
+  four-part test, and **fan out on any doubt**. The source is trivial
+  only when **all four** hold: it is confined to a single file, it adds
+  no new component, it changes no public interface, and it implies no
+  choice a reasonable engineer would argue about. All four → collapse to
+  one approach. Any one of them false, or any one you cannot establish
+  from the source → run all three authors.
+
+  **The conjunction is the safety mechanism, and "cannot establish"
+  counts as false.** A source that does not say what it touches has not
+  passed the first clause; it has failed to answer it, and an unattended
+  run has nobody to ask. Treating silence as a pass is how this
+  degenerates into collapsing everything.
+
+  Do not read this as licence to reason your way to trivial. The four
+  clauses are facts about the source, not a judgment about the work's
+  size: a one-line change that alters a public interface is **not**
+  trivial, and neither is a small change that picks between two designs.
+  If you find yourself arguing for why a clause "basically" holds, it
+  does not, and that argument is itself the choice a reasonable engineer
+  would argue about.
+
+  **Record the decision and which clause decided it** as an assumption
+  like any other — the ledger line goes in `approach.md`'s `## Notes`,
+  in the form *The durable record* prescribes below, written by the
+  approach stage itself, and it is reported at the close per § *The
+  Assumption Ledger*. That record is what replaces the user's opt-out:
+  the skill's
+  attended form states the call and lets the user redirect, and an
+  unattended run cannot be redirected, so the call has to be auditable
+  after the fact instead.
+
+  This is deliberately narrower than the blanket fan-out this directive
+  used to require. That rule was written when the triviality call was a
+  held view, which nobody can audit after the fact; against a
+  conjunctive test over facts on the page, an unattended run evaluates
+  the clauses as reliably as an attended one, and the record makes a
+  wrong call visible in the slot. The asymmetry that motivated the old
+  rule still governs the tie-break — an unnecessary fan-out costs three
+  sub-agents, a wrongly collapsed one costs the decision the stage
+  exists to make — which is why doubt resolves to fanning out and never
+  to collapsing.
 - **`dev-approach` § *Re-Invocation Modes*,** which stops and asks
   whenever the slot already holds any `approach*.md`. That fires on
   **every resume into a partly-finished approach stage**, so it must be
@@ -529,6 +645,16 @@ the cases a re-dispatch loop is made of. Count dispatches per stage,
 across resumes, using the `attempt <k>` on that stage's `- HANDBACK |`
 line; a stage that exhausts three is a blocker.
 
+**An unchanged-artifact retry spends one of those three dispatches.** It
+opens no fourth counter: § *Stage Dispatch* bounds it at one retry, and
+that retry is a dispatch like any other. The count has one honest limit
+— an unchanged return writes no `- HANDBACK |` line, so nothing records
+it on disk and the tally is **in-session only**. A run resumed tomorrow
+starts that stage's unchanged count at zero and may therefore repeat the
+one retry. Bounded, cheap, and undurable: report it as undurable, in the
+register the second carve-out in § *The Standing Directive* already
+uses, rather than implying a count that survived the session.
+
 **A retry is a diagnose-then-resume dispatch, never a bare
 re-dispatch.** `dev-do` § *Iteration Mode (Recovery Path)* resumes a
 `Blocked` phase only when the blocker is demonstrably resolved, and
@@ -568,7 +694,9 @@ blockers:
 - a repository state it cannot safely act on, including anything
   `dev-do`'s pre-flight gate refuses;
 - a stage that returns with its artifact byte-identical to the baseline
-  recorded before the dispatch;
+  recorded before the dispatch, on **two consecutive dispatches** — the
+  first such return earns the diagnose-then-retry in § *Stage Dispatch*
+  instead;
 - a `dev-do` **scope-exceeded yield** — non-overridable, marking nothing
   `Blocked` and requiring no `NOTE`, so nothing else in this list would
   catch it;

@@ -13,30 +13,17 @@ public static class ConfluenceCatalog
             .. SharedSourceEndpoints.LifecycleEndpoints(),
             .. SharedSourceEndpoints.IngestionEndpoints(),
 
-            // Ingestion intervention
-            new ApiEndpointDescriptor(
-                "ingestion.block",
-                "Ingestion block",
-                "Ingestion",
-                HttpMethod.Get,
-                "api/v1/ingestion-block",
-                [],
-                Description: "Reports whether Confluence ingestion is blocked pending operator intervention."),
-            new ApiEndpointDescriptor(
-                "ingestion.block.clear",
-                "Clear ingestion block",
-                "Ingestion",
-                HttpMethod.Post,
-                "api/v1/ingestion-block/clear",
+            // Ingestion block (Confluence-only)
+            new ApiEndpointDescriptor("ingestion.block", "Ingestion Block", "Ingestion",
+                HttpMethod.Get, "api/v1/ingestion-block", [],
+                Description: "Reports whether Confluence ingestion is parked on a browser challenge."),
+            new ApiEndpointDescriptor("ingestion.block-clear", "Ingestion Block (clear)", "Ingestion",
+                HttpMethod.Post, "api/v1/ingestion-block/clear",
                 [
-                    new ApiParameter(
-                        "clearedBy",
-                        ApiParameterKind.Query,
-                        Required: false,
-                        Placeholder: "Optional operator name"),
+                    new ApiParameter("clearedBy", ApiParameterKind.Query, Required: false,
+                        Placeholder: "operator name"),
                 ],
-                Destructive: true,
-                Description: "Clears the operator-intervention gate after the upstream challenge is resolved."),
+                Description: "Reopens the ingestion gate after the browser challenge has been solved."),
 
             // Items
             new ApiEndpointDescriptor("items.list", "List items", "Items",

@@ -43,6 +43,7 @@ this component talk to that database directly?" is almost always answered
 | `dictionary/` | cspell word lists and their licenses. |
 | `mcp-config-examples/` | Sample MCP client configurations. |
 | `.github/skills/` | Copilot skills, including the `dev-*` inner-loop skills. |
+| `.github/agents/` | Named sub-agent roles used by the `dev-*` inner-loop skills. |
 
 **Ignored paths** (per `.gitignore`) — never place committed assets here:
 `/scratch`, `/temp`, `/cache`, `/local`, `/secrets`, `nupkg/`, `bin/`,
@@ -358,7 +359,7 @@ scratch/<MMDD>-<##>/
 - Read this file before proposing any build, test, or lint command. **Never
   invent a command.** If something you need is not documented here, say so
   rather than guessing.
-- Subagents must use the same model configuration as the spawning agent.
+- Subagents follow the **subagent model policy** recorded below.
 - Do not add new linting, building, or testing tooling without being asked.
 - Prefer the smallest targeted verification that covers the change; escalate
   to the full suite only when the targeted run indicates it is needed.
@@ -377,3 +378,29 @@ scratch/<MMDD>-<##>/
   `orchestrate-*`, `ticket-*`, and `notes-*` families) document this
   project's operational workflows. Consult them before hand-rolling a
   workflow they already cover.
+
+### Subagent model policy
+
+Every `dev-*` skill that fans out reads this table before it spawns
+anything, and each skill classifies its own roles as **reasoning** or
+**mechanical**. **An absent or unreadable table means `uniform`** — the
+conservative default, and the behavior this repository used before this
+table existed.
+
+| Setting | Value |
+|-|-|
+| Policy | uniform |
+| Mechanical-tier model | n/a |
+
+- **`uniform`** — every sub-agent runs the spawning agent's model
+  configuration, whatever its role.
+- **`tiered`** — a sub-agent in a **reasoning** role runs the spawning
+  agent's configuration; a sub-agent in a **mechanical** role runs the
+  recorded mechanical-tier model.
+
+The role classification lives in the skills, not here: it is a property
+of the loop and does not vary between repositories. Only the policy and
+the model id do, which is why they are the two rows recorded.
+
+A recorded value here is a **resolved answer**. `dev-setup` asks once and
+never re-prompts, exactly as it treats the GitHub integration block.
