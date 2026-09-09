@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Routing;
@@ -61,12 +62,12 @@ public class SourceReconnectionWorkerTests
             CreateOptions(),
             NullLogger<SourceReconnectionWorker>.Instance);
 
-        // No health status cached yet = no offline sources to reconnect
+        // The configured source is present but has not been observed.
         await worker.TryReconnectOfflineSourcesAsync(CancellationToken.None);
 
-        // Verify no status was set (nothing to reconnect)
         Dictionary<string, ServiceHealthInfo> status = monitor.GetCurrentStatus();
-        Assert.Empty(status);
+        ServiceHealthInfo unobserved = Assert.Single(status).Value;
+        Assert.Equal("unobserved", unobserved.Status);
     }
 
     [Fact]
@@ -108,8 +109,9 @@ public class SourceReconnectionWorkerTests
         });
         (ServiceHealthMonitor monitor, SourceHttpClient _) = CreateMonitorAndHttpClient(options);
 
-        // Initially no cached status
-        Assert.Null(monitor.GetServiceStatus("TestSvc"));
+        Assert.Equal(
+            "unobserved",
+            monitor.GetServiceStatus("TestSvc")?.Status);
 
         // CheckAndUpdateServiceAsync should populate the cache
         ServiceHealthInfo info = await monitor.CheckAndUpdateServiceAsync("TestSvc", CancellationToken.None);
@@ -179,6 +181,53 @@ public class SourceReconnectionWorkerTests
 
         // Should not throw, just exit gracefully
         await worker.TryReconnectOfflineSourcesAsync(cts.Token);
+    }
+
+    [Fact]
+    public async Task UnavailableProcessors_AreNeverReconnectedAsSources()
+    {
+        OrchestratorOptions optionsValue = new()
+        {
+            ProcessingServices =
+                new Dictionary<string, ProcessingServiceConfig>(
+                    StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Planner"] = new()
+                    {
+                        HttpAddress = "http://localhost:9999",
+                        Enabled = true,
+                        RequiredServices = ["Jira", "GitHub"],
+                    },
+                },
+        };
+        IOptions<OrchestratorOptions> options = Options.Create(optionsValue);
+        IHttpClientFactory factory = new TestHttpClientFactory();
+        SourceHttpClient sourceClient = new(
+            factory,
+            options,
+            NullLogger<SourceHttpClient>.Instance);
+        ProcessingHttpClient processingClient = new(
+            factory,
+            options,
+            NullLogger<ProcessingHttpClient>.Instance);
+        ServiceHealthMonitor monitor = new(
+            sourceClient,
+            options,
+            NullLogger<ServiceHealthMonitor>.Instance,
+            processingClient);
+        await monitor.CheckAllAsync(CancellationToken.None);
+        Assert.Equal("unavailable", monitor.GetServiceStatus("Planner")?.Status);
+
+        SourceReconnectionWorker worker = new(
+            monitor,
+            options,
+            NullLogger<SourceReconnectionWorker>.Instance);
+        await worker.TryReconnectOfflineSourcesAsync(CancellationToken.None);
+
+        ServiceHealthInfo? status = monitor.GetServiceStatus("Planner");
+        Assert.NotNull(status);
+        Assert.Equal("processing", status.ServiceKind);
+        Assert.Equal("unavailable", status.Status);
     }
 
     [Fact]

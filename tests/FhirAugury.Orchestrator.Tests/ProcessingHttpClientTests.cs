@@ -1,10 +1,13 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Routing;
 using FhirAugury.Processing.Common.Api;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -39,7 +42,7 @@ public class ProcessingHttpClientTests
     }
 
     [Fact]
-    public async Task AuthoringControlAndSnapshot_ForwardWithoutRewritingPayloads()
+    public async Task AuthoringControlAndList_ForwardStatusBodiesAndHeaders()
     {
         RecordingHandler handler = new();
         ProcessingHttpClient client = CreateClient(handler);
@@ -56,6 +59,11 @@ public class ProcessingHttpClientTests
             await client.GetAuthoringRunAsync(
                 "Planner",
                 "run-1",
+                CancellationToken.None);
+        ProcessingProxyResponse list =
+            await client.ListAuthoringRunsAsync(
+                "Planner",
+                37,
                 CancellationToken.None);
         ProcessingProxyResponse retry =
             await client.RetryAuthoringItemAsync(
@@ -75,33 +83,30 @@ public class ProcessingHttpClientTests
             await client.GetAuthoringSnapshotAsync(
                 "Planner",
                 "run-1",
-                bytes: false,
-                CancellationToken.None);
-        ProcessingProxyResponse bytes =
-            await client.GetAuthoringSnapshotAsync(
-                "Planner",
-                "run-1",
-                bytes: true,
                 CancellationToken.None);
 
         Assert.Equal(HttpStatusCode.Accepted, created.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Planner/authoring/runs/run-1",
+            created.Location);
         Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        Assert.Contains("run-1", Encoding.UTF8.GetString(list.Content));
+        Assert.Contains(
+            handler.RequestTargets,
+            target => target.EndsWith("?limit=37", StringComparison.Ordinal));
         Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
         Assert.Equal("7", retry.RetryAfter);
-        Assert.Equal(HttpStatusCode.OK, supersede.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, supersede.StatusCode);
         Assert.Equal("11", supersede.RetryAfter);
         Assert.Equal(
             "application/json; charset=utf-8",
             supersede.ContentType);
         Assert.Contains(
-            "not actionable",
+            "receipt-backed",
             Encoding.UTF8.GetString(supersede.Content));
         Assert.Equal("application/json; charset=utf-8", descriptor.ContentType);
-        Assert.Equal([1, 2, 3, 4], bytes.Content);
         Assert.Contains("/processing/authoring/runs", handler.Paths);
-        Assert.Contains(
-            "/processing/authoring/runs/run-1/snapshot/bytes",
-            handler.Paths);
         Assert.Contains(
             "/processing/authoring/runs/run-1/items/item-1/supersede",
             handler.Paths);
@@ -113,6 +118,107 @@ public class ProcessingHttpClientTests
             body => JsonDocument.Parse(body).RootElement
                 .TryGetProperty("reason", out JsonElement reason) &&
                 reason.GetString() == "not actionable");
+    }
+
+    [Fact]
+    public async Task SnapshotBytes_AreStreamedWithConditionalHeadersAndDisposed()
+    {
+        RecordingHandler handler = new();
+        ProcessingHttpClient client = CreateClient(handler);
+        DefaultHttpContext httpContext = new();
+        httpContext.Request.Headers.Range = "bytes=1-2";
+        httpContext.Request.Headers.IfRange = "\"old\"";
+        httpContext.Request.Headers.IfNoneMatch = "\"cached\"";
+        httpContext.Request.Headers.IfModifiedSince =
+            "Wed, 09 Sep 2026 12:00:00 GMT";
+        httpContext.Request.Headers.Connection = "keep-alive";
+        MemoryStream outgoing = new();
+        httpContext.Response.Body = outgoing;
+
+        ProcessingProxyActionResult result =
+            await client.GetAuthoringSnapshotBytesAsync(
+                "Planner",
+                "run-1",
+                httpContext.Request,
+                CancellationToken.None);
+
+        Assert.NotNull(handler.SnapshotStream);
+        Assert.Equal(0, handler.SnapshotStream.ReadCount);
+        Assert.False(handler.SnapshotStream.Disposed);
+
+        await result.ExecuteResultAsync(new ActionContext
+        {
+            HttpContext = httpContext,
+        });
+
+        Assert.Equal(StatusCodes.Status206PartialContent, httpContext.Response.StatusCode);
+        Assert.Equal("application/vnd.sqlite3", httpContext.Response.ContentType);
+        Assert.Equal(4, httpContext.Response.ContentLength);
+        Assert.Equal("bytes", httpContext.Response.Headers.AcceptRanges.ToString());
+        Assert.Equal("bytes 0-3/4", httpContext.Response.Headers.ContentRange.ToString());
+        Assert.Equal("\"snapshot\"", httpContext.Response.Headers.ETag.ToString());
+        Assert.Equal(
+            "Wed, 09 Sep 2026 12:00:00 GMT",
+            httpContext.Response.Headers.LastModified.ToString());
+        Assert.Equal("9", httpContext.Response.Headers.RetryAfter.ToString());
+        Assert.Equal(
+            "attachment; filename=snapshot.db",
+            httpContext.Response.Headers.ContentDisposition.ToString());
+        Assert.Equal([1, 2, 3, 4], outgoing.ToArray());
+        Assert.True(handler.SnapshotStream.ReadCount > 0);
+        Assert.True(handler.SnapshotStream.Disposed);
+        Assert.Equal("bytes=1-2", handler.SnapshotRequestHeaders["Range"]);
+        Assert.Equal("\"old\"", handler.SnapshotRequestHeaders["If-Range"]);
+        Assert.Equal("\"cached\"", handler.SnapshotRequestHeaders["If-None-Match"]);
+        Assert.Equal(
+            "Wed, 09 Sep 2026 12:00:00 GMT",
+            handler.SnapshotRequestHeaders["If-Modified-Since"]);
+        Assert.DoesNotContain("Connection", handler.SnapshotRequestHeaders.Keys);
+    }
+
+    [Fact]
+    public async Task ProcessingProxyActionResult_DisposesUpstreamWhenStreamBreaks()
+    {
+        ThrowingReadStream stream = new();
+        HttpResponseMessage upstream = new(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(stream),
+        };
+        ProcessingProxyActionResult result = new(upstream);
+        DefaultHttpContext httpContext = new();
+        httpContext.Response.Body = new MemoryStream();
+
+        await Assert.ThrowsAsync<IOException>(
+            () => result.ExecuteResultAsync(new ActionContext
+            {
+                HttpContext = httpContext,
+            }));
+
+        Assert.True(stream.Disposed);
+    }
+
+    [Fact]
+    public async Task ProcessingProxyActionResult_DisposesUpstreamOnCallerCancellation()
+    {
+        BlockingReadStream stream = new();
+        HttpResponseMessage upstream = new(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(stream),
+        };
+        ProcessingProxyActionResult result = new(upstream);
+        using CancellationTokenSource cts =
+            new(TimeSpan.FromMilliseconds(25));
+        DefaultHttpContext httpContext = new();
+        httpContext.RequestAborted = cts.Token;
+        httpContext.Response.Body = new MemoryStream();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => result.ExecuteResultAsync(new ActionContext
+            {
+                HttpContext = httpContext,
+            }));
+
+        Assert.True(stream.Disposed);
     }
 
     [Fact]
@@ -150,12 +256,17 @@ public class ProcessingHttpClientTests
     {
         public List<string> ClientNames { get; } = [];
         public List<string> Paths { get; } = [];
+        public List<string> RequestTargets { get; } = [];
         public List<string> Bodies { get; } = [];
+        public Dictionary<string, string> SnapshotRequestHeaders { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public TrackingStream? SnapshotStream { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             string path = request.RequestUri?.AbsolutePath ?? "";
             Paths.Add(path);
+            RequestTargets.Add(request.RequestUri?.PathAndQuery ?? "");
             if (request.Content is not null)
             {
                 Bodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
@@ -176,7 +287,7 @@ public class ProcessingHttpClientTests
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
-                    """{"runId":"run-1","itemId":"item-1","status":"superseded","reason":"not actionable"}""",
+                    """{"error":"InvalidState","detail":"receipt-backed items cannot be superseded","conflictingRunIds":[],"runId":"run-1"}""",
                 "/processing/authoring/runs/run-1/snapshot" =>
                     """{"processorKind":"jira-fhir","runId":"run-1","snapshotId":"snapshot-1","authoringEpoch":1,"sequence":1,"schemaVersion":1,"sha256":"x","sizeBytes":4,"itemCount":1,"receiptCount":1,"tableCounts":{},"fileName":"snapshot.db","createdAt":"2026-09-04T00:00:00Z"}""",
                 _ => "{}",
@@ -184,23 +295,60 @@ public class ProcessingHttpClientTests
             HttpStatusCode status = path == "/processing/authoring/runs" &&
                 request.Method == HttpMethod.Post
                 ? HttpStatusCode.Accepted
+                : path.EndsWith("/supersede", StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
+                : path.EndsWith("/snapshot/bytes", StringComparison.Ordinal)
+                    ? HttpStatusCode.PartialContent
                 : HttpStatusCode.OK;
+            bool snapshotBytes = path.EndsWith(
+                "/snapshot/bytes",
+                StringComparison.Ordinal);
+            if (snapshotBytes)
+            {
+                foreach (KeyValuePair<string, IEnumerable<string>> header in
+                    request.Headers)
+                {
+                    SnapshotRequestHeaders[header.Key] =
+                        string.Join(", ", header.Value);
+                }
+                SnapshotStream = new TrackingStream([1, 2, 3, 4]);
+            }
             HttpResponseMessage response = new(status)
             {
-                Content = path.EndsWith(
-                    "/snapshot/bytes",
-                    StringComparison.Ordinal)
-                    ? new ByteArrayContent([1, 2, 3, 4])
+                Content = snapshotBytes
+                    ? new StreamContent(SnapshotStream!)
                     : new StringContent(
                         json,
                         Encoding.UTF8,
                         "application/json"),
             };
-            if (path.EndsWith("/snapshot/bytes", StringComparison.Ordinal))
+            if (snapshotBytes)
             {
-                response.Content.Headers.ContentType =
-                    new System.Net.Http.Headers.MediaTypeHeaderValue(
-                        "application/vnd.sqlite3");
+                response.Content.Headers.ContentType = new MediaTypeHeaderValue(
+                    "application/vnd.sqlite3");
+                response.Content.Headers.ContentLength = 4;
+                response.Content.Headers.ContentDisposition =
+                    new ContentDispositionHeaderValue("attachment")
+                    {
+                        FileName = "snapshot.db",
+                    };
+                response.Content.Headers.ContentRange =
+                    new ContentRangeHeaderValue(0, 3, 4);
+                response.Content.Headers.LastModified =
+                    new DateTimeOffset(2026, 9, 9, 12, 0, 0, TimeSpan.Zero);
+                response.Headers.AcceptRanges.Add("bytes");
+                response.Headers.ETag =
+                    new EntityTagHeaderValue("\"snapshot\"");
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(9));
+            }
+            if (path == "/processing/authoring/runs" &&
+                request.Method == HttpMethod.Post)
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/run-1",
+                    UriKind.Relative);
             }
             if (path.EndsWith("/retry", StringComparison.Ordinal))
             {
@@ -219,5 +367,119 @@ public class ProcessingHttpClientTests
 
         private const string RunEnvelope =
             """{"run":{"runId":"run-1","processorKind":"jira-fhir","authoringEpoch":1,"status":"running","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null},"items":[{"itemId":"item-1","runId":"run-1","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"pending","currentOperationId":null,"acceptedReceiptId":null,"attemptCount":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null}]}""";
+    }
+
+    private sealed class TrackingStream(byte[] buffer) : MemoryStream(buffer)
+    {
+        public bool Disposed { get; private set; }
+        public int ReadCount { get; private set; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ReadCount++;
+            return base.Read(buffer, offset, count);
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            ReadCount++;
+            return base.ReadAsync(buffer, cancellationToken);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class ThrowingReadStream : Stream
+    {
+        public bool Disposed { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("broken stream");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(
+                new IOException("broken stream"));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class BlockingReadStream : Stream
+    {
+        public bool Disposed { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
     }
 }

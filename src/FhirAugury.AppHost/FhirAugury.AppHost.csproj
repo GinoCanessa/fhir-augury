@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj"
+                      IsAspireProjectResource="false" />
     <ProjectReference Include="..\FhirAugury.Orchestrator\FhirAugury.Orchestrator.csproj" />
     <ProjectReference Include="..\FhirAugury.Source.Jira\FhirAugury.Source.Jira.csproj" />
     <ProjectReference Include="..\FhirAugury.Source.Zulip\FhirAugury.Source.Zulip.csproj" />

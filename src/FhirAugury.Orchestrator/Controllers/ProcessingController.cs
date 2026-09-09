@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Health;
 using FhirAugury.Orchestrator.Routing;
@@ -35,6 +36,7 @@ public class ProcessingController(
                         health.UptimeSeconds,
                         health.LastError,
                         health.CheckedAt,
+                        health.RequiredServices,
                     },
                 };
             })
@@ -133,6 +135,24 @@ public class ProcessingController(
             await processingHttpClient.GetAuthoringRunAsync(name, runId, ct));
     }
 
+    [HttpGet("{name}/authoring/runs")]
+    public async Task<IActionResult> ListAuthoringRuns(
+        string name,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.ListAuthoringRunsAsync(
+                name,
+                limit,
+                ct));
+    }
+
     [HttpPost("{name}/authoring/runs/{runId}/items/{itemId}/retry")]
     public async Task<IActionResult> RetryAuthoringItem(
         string name,
@@ -190,7 +210,6 @@ public class ProcessingController(
             await processingHttpClient.GetAuthoringSnapshotAsync(
                 name,
                 runId,
-                bytes: false,
                 ct));
     }
 
@@ -205,21 +224,11 @@ public class ProcessingController(
             return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
         }
 
-        ProcessingProxyResponse response =
-            await processingHttpClient.GetAuthoringSnapshotAsync(
-                name,
-                runId,
-                bytes: true,
-                ct);
-        if ((int)response.StatusCode is >= 200 and < 300)
-        {
-            CopyProxyHeaders(response);
-            return File(
-                response.Content,
-                response.ContentType ?? "application/vnd.sqlite3");
-        }
-
-        return ToActionResult(response);
+        return await processingHttpClient.GetAuthoringSnapshotBytesAsync(
+            name,
+            runId,
+            Request,
+            ct);
     }
 
     private ContentResult ToActionResult(ProcessingProxyResponse response)
@@ -238,6 +247,10 @@ public class ProcessingController(
         if (!string.IsNullOrWhiteSpace(response.RetryAfter))
         {
             Response.Headers.RetryAfter = response.RetryAfter;
+        }
+        if (!string.IsNullOrWhiteSpace(response.Location))
+        {
+            Response.Headers.Location = response.Location;
         }
     }
 }

@@ -1,3 +1,5 @@
+using FhirAugury.Common.Api;
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 // ── Source services (pinned ports matching existing convention) ───
@@ -46,6 +48,16 @@ var fhir = builder.AddProject<Projects.FhirAugury_Source_Fhir>("source-fhir")
         e.IsProxied = false;
     });
 
+IReadOnlyDictionary<string, IResourceBuilder<ProjectResource>> sourceResources =
+    new Dictionary<string, IResourceBuilder<ProjectResource>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Jira"] = jira,
+        ["Zulip"] = zulip,
+        ["Confluence"] = confluence,
+        ["GitHub"] = github,
+        ["Fhir"] = fhir,
+    };
+
 // ── Orchestrator ─────────────────────────────────────────────────
 var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     .WithEndpoint("http", e =>
@@ -67,9 +79,12 @@ IResourceBuilder<ProjectResource> preparer = builder.AddProject<Projects.FhirAug
         e.TargetPort = 5171;
         e.IsProxied = false;
     })
-    .WaitFor(jira)
-    .WaitFor(orchestrator)
-    .WithExplicitStart();
+    .WaitFor(orchestrator);
+ApplyTicketWorkflowDependencies(
+    preparer,
+    TicketWorkflowDependencyCatalog.PreparerServiceName,
+    sourceResources);
+preparer.WithExplicitStart();
 
 IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Planner>("processor-jira-fhir-planner")
     .WithEndpoint("http", e =>
@@ -78,10 +93,12 @@ IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugu
         e.TargetPort = 5172;
         e.IsProxied = false;
     })
-    .WaitFor(jira)
-    .WaitFor(github)
-    .WaitFor(orchestrator)
-    .WithExplicitStart();
+    .WaitFor(orchestrator);
+ApplyTicketWorkflowDependencies(
+    planner,
+    TicketWorkflowDependencyCatalog.PlannerServiceName,
+    sourceResources);
+planner.WithExplicitStart();
 // Planner authoring, grouping, and snapshot writes are processor-owned.
 // Outer clients use the Orchestrator/CLI run proxies; grouping maintenance
 // remains an explicit fenced processor operation.
@@ -216,3 +233,15 @@ foreach ((string? type, string displayName, string description) in indexCommands
 }
 
 builder.Build().Run();
+
+static void ApplyTicketWorkflowDependencies(
+    IResourceBuilder<ProjectResource> processor,
+    string processingServiceName,
+    IReadOnlyDictionary<string, IResourceBuilder<ProjectResource>> sourceResources)
+{
+    foreach (string requiredService in
+        TicketWorkflowDependencyCatalog.GetRequiredServices(processingServiceName))
+    {
+        processor.WaitFor(sourceResources[requiredService]);
+    }
+}

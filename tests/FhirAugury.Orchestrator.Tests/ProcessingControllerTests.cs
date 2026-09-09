@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using FhirAugury.Orchestrator.Configuration;
@@ -44,6 +45,12 @@ public class ProcessingControllerTests
                 "Planner",
                 request,
                 CancellationToken.None));
+        string location = controller.Response.Headers.Location.ToString();
+        ContentResult list = Assert.IsType<ContentResult>(
+            await controller.ListAuthoringRuns(
+                "Planner",
+                25,
+                CancellationToken.None));
         ContentResult status = Assert.IsType<ContentResult>(
             await controller.GetAuthoringRun(
                 "Planner",
@@ -68,13 +75,21 @@ public class ProcessingControllerTests
                 "Planner",
                 "run-1",
                 CancellationToken.None));
-        FileContentResult bytes = Assert.IsType<FileContentResult>(
+        ProcessingProxyActionResult bytes =
+            Assert.IsType<ProcessingProxyActionResult>(
             await controller.GetAuthoringSnapshotBytes(
                 "Planner",
                 "run-1",
                 CancellationToken.None));
+        MemoryStream streamedBytes = new();
+        controller.Response.Body = streamedBytes;
+        await bytes.ExecuteResultAsync(controller.ControllerContext);
 
         Assert.Equal(StatusCodes.Status202Accepted, created.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Planner/authoring/runs/run-1",
+            location);
+        Assert.Contains("run-1", list.Content);
         Assert.Contains("run-1", status.Content);
         Assert.Contains("item-1", retry.Content);
         Assert.Equal(StatusCodes.Status409Conflict, supersede.StatusCode);
@@ -84,7 +99,32 @@ public class ProcessingControllerTests
             "11",
             controller.Response.Headers.RetryAfter.ToString());
         Assert.Contains("snapshot-1", descriptor.Content);
-        Assert.Equal([1, 2, 3, 4], bytes.FileContents);
+        Assert.Equal(StatusCodes.Status206PartialContent, controller.Response.StatusCode);
+        Assert.Equal("bytes 0-3/4", controller.Response.Headers.ContentRange.ToString());
+        Assert.Equal([1, 2, 3, 4], streamedBytes.ToArray());
+    }
+
+    [Fact]
+    public async Task SnapshotBytes_PreservesNotModifiedWithoutWritingBody()
+    {
+        ProcessingController controller = CreateController(
+            enabled: true,
+            snapshotStatus: HttpStatusCode.NotModified);
+        controller.Request.Headers.IfNoneMatch = "\"snapshot\"";
+        MemoryStream body = new();
+        controller.Response.Body = body;
+
+        ProcessingProxyActionResult result =
+            Assert.IsType<ProcessingProxyActionResult>(
+                await controller.GetAuthoringSnapshotBytes(
+                    "Planner",
+                    "run-1",
+                    CancellationToken.None));
+        await result.ExecuteResultAsync(controller.ControllerContext);
+
+        Assert.Equal(StatusCodes.Status304NotModified, controller.Response.StatusCode);
+        Assert.Equal("\"snapshot\"", controller.Response.Headers.ETag.ToString());
+        Assert.Empty(body.ToArray());
     }
 
     [Fact]
@@ -112,7 +152,9 @@ public class ProcessingControllerTests
         Assert.IsType<NotFoundObjectResult>(result);
     }
 
-    private static ProcessingController CreateController(bool enabled)
+    private static ProcessingController CreateController(
+        bool enabled,
+        HttpStatusCode snapshotStatus = HttpStatusCode.PartialContent)
     {
         OrchestratorOptions options = new()
         {
@@ -127,7 +169,7 @@ public class ProcessingControllerTests
             },
         };
         IOptions<OrchestratorOptions> optionsAccessor = Options.Create(options);
-        ProxyHandler handler = new();
+        ProxyHandler handler = new(snapshotStatus);
         TestHttpClientFactory factory = new(handler);
         SourceHttpClient sourceClient = new(factory, optionsAccessor, NullLogger<SourceHttpClient>.Instance);
         ProcessingHttpClient processingClient = new(factory, optionsAccessor, NullLogger<ProcessingHttpClient>.Instance);
@@ -152,7 +194,8 @@ public class ProcessingControllerTests
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost") };
     }
 
-    private sealed class ProxyHandler : HttpMessageHandler
+    private sealed class ProxyHandler(HttpStatusCode snapshotStatus)
+        : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -179,6 +222,8 @@ public class ProcessingControllerTests
                 ? HttpStatusCode.Accepted
                 : path.EndsWith("/supersede", StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
+                : path.EndsWith("/snapshot/bytes", StringComparison.Ordinal)
+                    ? snapshotStatus
                 : HttpStatusCode.OK;
             HttpResponseMessage response = new(status)
             {
@@ -202,6 +247,24 @@ public class ProcessingControllerTests
                 response.Headers.RetryAfter =
                     new System.Net.Http.Headers.RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(11));
+            }
+            if (path == "/processing/authoring/runs" &&
+                request.Method == HttpMethod.Post)
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/run-1",
+                    UriKind.Relative);
+            }
+            if (path.EndsWith("/snapshot/bytes", StringComparison.Ordinal))
+            {
+                response.Content.Headers.ContentType =
+                    new MediaTypeHeaderValue("application/vnd.sqlite3");
+                response.Content.Headers.ContentLength = 4;
+                response.Content.Headers.ContentRange =
+                    new ContentRangeHeaderValue(0, 3, 4);
+                response.Headers.AcceptRanges.Add("bytes");
+                response.Headers.ETag =
+                    new EntityTagHeaderValue("\"snapshot\"");
             }
             return Task.FromResult(response);
         }
