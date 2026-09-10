@@ -164,6 +164,16 @@ IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.Fhir
     .WithExplicitStart();
 
 // ── Dev UI ───────────────────────────────────────────────────────
+string repositoryRoot = Path.GetFullPath(
+    Path.Combine(builder.AppHostDirectory, "..", ".."));
+string devUiCacheRoot = Path.Combine(repositoryRoot, "cache");
+string devUiSnapshotRoot = Path.Combine(
+    devUiCacheRoot,
+    "devui-authoring-snapshots");
+string devUiReviewSitesRoot = Path.Combine(
+    devUiCacheRoot,
+    "devui-review-sites");
+
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>
     {
@@ -171,6 +181,19 @@ builder.AddProject<Projects.FhirAugury_DevUi>("devui")
         e.TargetPort = 5210;
         e.IsProxied = false;
     })
+    .WithReference(orchestrator)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__OrchestratorAddress",
+        orchestrator.GetEndpoint("http"))
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__CacheRoot",
+        devUiCacheRoot)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__SnapshotCacheRoot",
+        devUiSnapshotRoot)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__ReviewSitesRoot",
+        devUiReviewSitesRoot)
     .WaitFor(orchestrator)
     .WithExplicitStart();
 
