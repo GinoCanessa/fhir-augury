@@ -35,6 +35,8 @@ public partial record class JiraProcessingSourceTicketRecord : IProcessingWorkIt
     public string SourceTicketShape { get; set; } = "fhir";
     public DateTimeOffset LastSyncedAt { get; set; }
     public DateTimeOffset? LastUpdated { get; set; }
+    public DateTimeOffset? SourceProjectLastSuccessfulRefreshAt { get; set; }
+    public long? SourceContentRevision { get; set; }
     public DateTimeOffset? StartedProcessingAt { get; set; }
     public DateTimeOffset? CompletedProcessingAt { get; set; }
     public DateTimeOffset? LastProcessingAttemptAt { get; set; }

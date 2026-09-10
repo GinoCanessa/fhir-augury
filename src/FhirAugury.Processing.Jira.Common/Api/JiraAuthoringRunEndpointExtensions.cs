@@ -90,8 +90,8 @@ public static class JiraAuthoringRunEndpointExtensions
                     ct);
                 if (row is null)
                 {
-                    FhirAugury.Common.Api.JiraIssueSummaryEntry? discovered =
-                        await discoveryClient.GetTicketAsync(
+                    JiraTicketDiscoveryItem? discovered =
+                        await discoveryClient.GetTicketWithProvenanceAsync(
                             key,
                             optionsAccessor.Value.SourceTicketShape,
                             ct);
@@ -100,10 +100,11 @@ public static class JiraAuthoringRunEndpointExtensions
                         return Results.NotFound(new { error = $"Ticket {key} was not found." });
                     }
                     row = await sourceStore.UpsertAsync(
-                        discovered,
+                        discovered.Ticket,
                         optionsAccessor.Value.SourceTicketShape,
                         resetProcessingStatus: false,
-                        ct);
+                        provenance: discovered.Provenance,
+                        ct: ct);
                 }
                 tickets.Add(row);
             }

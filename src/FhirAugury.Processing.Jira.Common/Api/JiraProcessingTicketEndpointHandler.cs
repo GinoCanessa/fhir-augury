@@ -45,8 +45,12 @@ public static partial class JiraProcessingTicketEndpointHandler
                 statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
-        JiraIssueSummaryEntry? ticket = await discoveryClient.GetTicketAsync(key, sourceTicketShape, ct);
-        if (ticket is null)
+        JiraTicketDiscoveryItem? discovery =
+            await discoveryClient.GetTicketWithProvenanceAsync(
+                key,
+                sourceTicketShape,
+                ct);
+        if (discovery is null)
         {
             return Results.NotFound(new { error = $"Ticket {key} was not found." });
         }
@@ -56,10 +60,11 @@ public static partial class JiraProcessingTicketEndpointHandler
             AuthoringStatusValues.ProcessorModes.RunBacked,
             StringComparison.Ordinal);
         JiraProcessingSourceTicketRecord row = await store.UpsertAsync(
-            ticket,
+            discovery.Ticket,
             sourceTicketShape,
             resetProcessingStatus: !runBacked,
-            ct);
+            provenance: discovery.Provenance,
+            ct: ct);
         if (runBacked)
         {
             JiraAuthoringRunCreation creation;

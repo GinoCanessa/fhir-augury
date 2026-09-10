@@ -90,6 +90,7 @@ public sealed class AuthoringRunStore
             "authoring_runs",
             "RequestJson",
             "TEXT NULL");
+        AuthoringRunInputProvenanceRecord.CreateTable(connection);
         AuthoringRunItemRecord.CreateTable(connection);
         AuthoringRunAttemptRecord.CreateTable(connection);
         AuthoringRunStageRecord.CreateTable(connection);
@@ -124,6 +125,7 @@ public sealed class AuthoringRunStore
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_identity ON authoring_run_items(RunId, ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_items_revision ON authoring_run_items(ItemKind COLLATE NOCASE, BusinessKey COLLATE NOCASE, ExpectedSourceRevision) WHERE Status <> 'superseded';",
             "CREATE INDEX IF NOT EXISTS idx_authoring_run_items_lifecycle ON authoring_run_items(RunId, Status, CompletedAt, RowId);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_input_provenance_identity ON authoring_run_input_provenance(RunId, Source COLLATE NOCASE);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_attempts_number ON authoring_run_attempts(RunItemId, AttemptNumber);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_run_stages_identity ON authoring_run_stages(RunId, StageName, PartitionKey);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_review_snapshots_sequence ON authoring_review_snapshots(ProcessorKind, Sequence);",
@@ -279,7 +281,8 @@ public sealed class AuthoringRunStore
         DateTimeOffset? now = null,
         CancellationToken ct = default,
         string? requestJson = null,
-        int maxActiveRuns = int.MaxValue)
+        int maxActiveRuns = int.MaxValue,
+        IReadOnlyCollection<AuthoringRunInputProvenanceDefinition>? inputProvenance = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
         ArgumentNullException.ThrowIfNull(items);
@@ -368,6 +371,12 @@ public sealed class AuthoringRunStore
                     ("@status", AuthoringStatusValues.Items.Pending),
                     ("@createdAt", Format(timestamp)));
             }
+            await InsertRunInputProvenanceAsync(
+                connection,
+                id,
+                inputProvenance,
+                timestamp,
+                ct);
 
             AuthoringRunRecord run = await ReadRunAsync(connection, id, ct)
                 ?? throw new InvalidOperationException($"Failed to create authoring run '{id}'.");
@@ -523,7 +532,8 @@ public sealed class AuthoringRunStore
         string expectedRunId,
         IReadOnlyCollection<AuthoringRunItemDefinition> items,
         DateTimeOffset? now = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IReadOnlyCollection<AuthoringRunInputProvenanceDefinition>? inputProvenance = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedRunId);
@@ -710,6 +720,12 @@ public sealed class AuthoringRunStore
                         ? $"Authoring attempt limit of {_retryPolicy.MaxAttempts} was reached."
                         : null));
             }
+            await InsertRunInputProvenanceAsync(
+                connection,
+                replacementRunId,
+                inputProvenance,
+                timestamp,
+                ct);
             await ExecuteAsync(
                 connection,
                 """
@@ -762,6 +778,54 @@ public sealed class AuthoringRunStore
     {
         await using SqliteConnection connection = _openConnection();
         return await ReadRunAsync(connection, runId, ct);
+    }
+
+    public async Task<IReadOnlyList<AuthoringRunInputProvenanceRecord>>
+        GetRunInputProvenanceAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = _openConnection();
+        return await ReadRunInputProvenanceAsync(connection, runId, ct);
+    }
+
+    public static async Task<IReadOnlyList<AuthoringRunInputProvenanceRecord>>
+        ReadRunInputProvenanceAsync(
+            SqliteConnection connection,
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT RowId, RunId, Source, LatestSuccessfulRefreshAt,
+                   ContentRevision, CapturedAt
+            FROM authoring_run_input_provenance
+            WHERE RunId = @runId
+            ORDER BY Source COLLATE NOCASE, RowId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+
+        List<AuthoringRunInputProvenanceRecord> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(new AuthoringRunInputProvenanceRecord
+            {
+                RowId = reader.GetInt32(0),
+                RunId = reader.GetString(1),
+                Source = reader.GetString(2),
+                LatestSuccessfulRefreshAt = ReadNullableDate(reader, 3),
+                ContentRevision = reader.IsDBNull(4)
+                    ? null
+                    : reader.GetInt64(4),
+                CapturedAt = ParseDate(reader.GetString(5)),
+            });
+        }
+        return rows;
     }
 
     public async Task<AuthoringOperatorRunList> ListOperatorRunsAsync(
@@ -3687,6 +3751,55 @@ public sealed class AuthoringRunStore
                 ?? new Dictionary<string, long>(StringComparer.Ordinal),
             System.IO.Path.GetFileName(record.Path),
             record.CreatedAt);
+
+    internal static async Task InsertRunInputProvenanceAsync(
+        SqliteConnection connection,
+        string runId,
+        IReadOnlyCollection<AuthoringRunInputProvenanceDefinition>? inputProvenance,
+        DateTimeOffset capturedAt,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        if (inputProvenance is null || inputProvenance.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<string> sources = new(StringComparer.OrdinalIgnoreCase);
+        foreach (AuthoringRunInputProvenanceDefinition definition in inputProvenance)
+        {
+            ArgumentNullException.ThrowIfNull(definition);
+            ArgumentException.ThrowIfNullOrWhiteSpace(definition.Source);
+            string source = definition.Source.Trim();
+            if (!sources.Add(source))
+            {
+                throw new ArgumentException(
+                    $"Input provenance contains more than one definition for source '{source}'.",
+                    nameof(inputProvenance));
+            }
+
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_run_input_provenance(
+                    RunId, Source, LatestSuccessfulRefreshAt,
+                    ContentRevision, CapturedAt)
+                VALUES(
+                    @runId, @source, @latestSuccessfulRefreshAt,
+                    @contentRevision, @capturedAt)
+                """,
+                ct,
+                ("@runId", runId),
+                ("@source", source),
+                ("@latestSuccessfulRefreshAt",
+                    definition.LatestSuccessfulRefreshAt is null
+                        ? null
+                        : Format(definition.LatestSuccessfulRefreshAt.Value)),
+                ("@contentRevision", definition.ContentRevision),
+                ("@capturedAt", Format(capturedAt)));
+        }
+    }
 
     private static async Task<int> ExecuteAsync(
         SqliteConnection connection,

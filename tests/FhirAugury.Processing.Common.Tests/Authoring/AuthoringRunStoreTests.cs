@@ -34,6 +34,59 @@ public sealed class AuthoringRunStoreTests
     }
 
     [Fact]
+    public async Task CreateRun_PersistsInputProvenanceInRunTransaction()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        DateTimeOffset createdAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset refreshedAt = createdAt.AddHours(-3);
+
+        AuthoringRunRecord run = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-1", "ticket", "revision-1")],
+            runId: "provenance-run",
+            now: createdAt,
+            inputProvenance:
+            [
+                new("jira", refreshedAt, 42),
+            ]);
+
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await database.Store.GetRunInputProvenanceAsync(run.Id));
+        Assert.Equal(run.Id, provenance.RunId);
+        Assert.Equal("jira", provenance.Source);
+        Assert.Equal(refreshedAt, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(42, provenance.ContentRevision);
+        Assert.Equal(run.CreatedAt, provenance.CapturedAt);
+    }
+
+    [Fact]
+    public async Task CreateRun_InvalidProvenanceRollsBackRunAndItems()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.CreateRunAsync(
+                "test",
+                [new("FHIR-1", "ticket", "revision-1")],
+                runId: "invalid-provenance-run",
+                inputProvenance:
+                [
+                    new("jira", null, null),
+                    new("JIRA", null, null),
+                ]));
+
+        Assert.Null(await database.Store.GetRunAsync(
+            "invalid-provenance-run"));
+        Assert.Empty(await database.Store.GetRunItemsAsync(
+            "invalid-provenance-run"));
+        Assert.Empty(await database.Store.GetRunInputProvenanceAsync(
+            "invalid-provenance-run"));
+    }
+
+    [Fact]
     public async Task ListOperatorRunsAsync_ExcludesNonOperatorRunsAndPrioritizesActive()
     {
         using AuthoringTestDatabase database = new(new ProcessingServiceOptions
@@ -1051,6 +1104,94 @@ public sealed class AuthoringRunStoreTests
 
         Assert.Equal(0, replacementItem.AttemptCount);
         Assert.Equal(1, replacementClaim.AttemptNumber);
+    }
+
+    [Fact]
+    public async Task ReplaceRevalidationRun_FreezesNewProvenanceWithoutChangingPredecessor()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        DateTimeOffset firstCapturedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset secondCapturedAt = firstCapturedAt.AddHours(1);
+        AuthoringRunRecord first = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-1", "ticket", "revision-1")],
+            runId: "first-revalidation",
+            now: firstCapturedAt,
+            inputProvenance:
+            [
+                new("jira", firstCapturedAt.AddDays(-1), 10),
+            ]);
+        MarkAsInitialRevalidation(database, first.Id);
+
+        AuthoringRunRecord replacement =
+            await database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                first.Id,
+                [new("FHIR-1", "ticket", "revision-2")],
+                now: secondCapturedAt,
+                inputProvenance:
+                [
+                    new("jira", secondCapturedAt.AddDays(-1), 11),
+                ]);
+
+        AuthoringRunInputProvenanceRecord firstProvenance = Assert.Single(
+            await database.Store.GetRunInputProvenanceAsync(first.Id));
+        AuthoringRunInputProvenanceRecord replacementProvenance =
+            Assert.Single(
+                await database.Store.GetRunInputProvenanceAsync(
+                    replacement.Id));
+        Assert.Equal(10, firstProvenance.ContentRevision);
+        Assert.Equal(firstCapturedAt, firstProvenance.CapturedAt);
+        Assert.Equal(11, replacementProvenance.ContentRevision);
+        Assert.Equal(secondCapturedAt, replacementProvenance.CapturedAt);
+    }
+
+    [Fact]
+    public async Task ReplaceRevalidationRun_InvalidProvenanceRollsBackReplacement()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        AuthoringRunRecord first = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-1", "ticket", "revision-1")],
+            runId: "rollback-revalidation",
+            inputProvenance:
+            [
+                new("jira", null, 10),
+            ]);
+        MarkAsInitialRevalidation(database, first.Id);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.ReplaceRevalidationRunAsync(
+                "test",
+                first.Id,
+                [new("FHIR-1", "ticket", "revision-2")],
+                inputProvenance:
+                [
+                    new("jira", null, 11),
+                    new("JIRA", null, 11),
+                ]));
+
+        AuthoringProcessorModeRecord mode =
+            await database.Store.GetProcessorModeAsync("test");
+        Assert.Equal(first.Id, mode.RevalidationRunId);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Queued,
+            (await database.Store.GetRunAsync(first.Id))!.Status);
+        Assert.Equal(
+            1,
+            database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_revalidation_lineage"));
+        Assert.Equal(
+            10,
+            Assert.Single(
+                await database.Store.GetRunInputProvenanceAsync(first.Id))
+                .ContentRevision);
     }
 
     private static void MarkAsInitialRevalidation(

@@ -5,6 +5,7 @@ using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,10 +15,14 @@ namespace FhirAugury.Processing.Jira.Common.Tests.Discovery;
 
 public class JiraTicketDiscoveryClientTests
 {
+    private static readonly DateTimeOffset SourceRefreshAt =
+        new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+
     [Fact]
     public async Task DirectClient_ListTickets_PostsLocalProcessingRequestWithShape()
     {
-        CapturingHandler handler = new(new JiraLocalProcessingListResponse([CreateTicket("FHIR-1")], 500, 0, 1));
+        CapturingHandler handler = new(
+            CreatePage([CreateTicket("FHIR-1")], 0, 1));
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
         IReadOnlyList<JiraIssueSummaryEntry> tickets = await client.ListTicketsAsync(new ResolvedJiraProcessingFilters { SourceTicketShape = "fhir" }, CancellationToken.None);
@@ -31,7 +36,7 @@ public class JiraTicketDiscoveryClientTests
     public async Task DirectClient_RunBackedListOmitsProcessedLocallyFilter()
     {
         CapturingHandler handler = new(
-            new JiraLocalProcessingListResponse([CreateTicket("FHIR-1")], 500, 0, 1));
+            CreatePage([CreateTicket("FHIR-1")], 0, 1));
         DirectJiraTicketDiscoveryClient client = new(
             CreateHttpClient(handler),
             Options(false),
@@ -49,7 +54,7 @@ public class JiraTicketDiscoveryClientTests
     [Fact]
     public async Task OrchestratorClient_ListTickets_UsesJiraProxyRoute()
     {
-        CapturingHandler handler = new(new JiraLocalProcessingListResponse([], 500, 0, 0));
+        CapturingHandler handler = new(CreatePage([], 0, 0));
         OrchestratorJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
         await client.ListTicketsAsync(new ResolvedJiraProcessingFilters { SourceTicketShape = "fhir" }, CancellationToken.None);
@@ -109,8 +114,8 @@ public class JiraTicketDiscoveryClientTests
         JiraIssueSummaryEntry[] page2 = CreateTickets(501, 2);
         CapturingHandler handler = new(
         [
-            new JiraLocalProcessingListResponse(page1, 500, 0, 502),
-            new JiraLocalProcessingListResponse(page2, 500, 500, 502),
+            CreatePage(page1, 0, 502),
+            CreatePage(page2, 500, 502),
         ]);
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
         string path = Path.Combine(AppContext.BaseDirectory, $"jira-sync-{Guid.NewGuid():N}.db");
@@ -142,7 +147,14 @@ public class JiraTicketDiscoveryClientTests
         Assert.NotNull(await store.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None));
         Assert.NotNull(await store.GetByKeyAsync("FHIR-500", "fhir", CancellationToken.None));
         Assert.NotNull(await store.GetByKeyAsync("FHIR-501", "fhir", CancellationToken.None));
-        Assert.NotNull(await store.GetByKeyAsync("FHIR-502", "fhir", CancellationToken.None));
+        JiraProcessingSourceTicketRecord? last =
+            await store.GetByKeyAsync(
+                "FHIR-502",
+                "fhir",
+                CancellationToken.None);
+        Assert.NotNull(last);
+        Assert.Equal(SourceRefreshAt, last.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Equal(7, last.SourceContentRevision);
     }
 
     [Fact]
@@ -153,9 +165,9 @@ public class JiraTicketDiscoveryClientTests
         JiraIssueSummaryEntry[] page3 = CreateTickets(1001, 213);
         CapturingHandler handler = new(
         [
-            new JiraLocalProcessingListResponse(page1, 500, 0, 1213),
-            new JiraLocalProcessingListResponse(page2, 500, 500, 1213),
-            new JiraLocalProcessingListResponse(page3, 500, 1000, 1213),
+            CreatePage(page1, 0, 1213),
+            CreatePage(page2, 500, 1213),
+            CreatePage(page3, 1000, 1213),
         ]);
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
@@ -181,8 +193,8 @@ public class JiraTicketDiscoveryClientTests
         JiraIssueSummaryEntry[] page1 = CreateTickets(1, 500);
         CapturingHandler handler = new(
         [
-            new JiraLocalProcessingListResponse(page1, 500, 0, 500),
-            new JiraLocalProcessingListResponse([], 500, 500, 500),
+            CreatePage(page1, 0, 500),
+            CreatePage([], 500, 500),
         ]);
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
@@ -200,7 +212,7 @@ public class JiraTicketDiscoveryClientTests
         JiraIssueSummaryEntry[] page1 = CreateTickets(1, 7);
         CapturingHandler handler = new(
         [
-            new JiraLocalProcessingListResponse(page1, 500, 0, 7),
+            CreatePage(page1, 0, 7),
         ]);
         DirectJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
@@ -220,9 +232,9 @@ public class JiraTicketDiscoveryClientTests
         JiraIssueSummaryEntry[] page3 = CreateTickets(1001, 213);
         CapturingHandler handler = new(
         [
-            new JiraLocalProcessingListResponse(page1, 500, 0, 1213),
-            new JiraLocalProcessingListResponse(page2, 500, 500, 1213),
-            new JiraLocalProcessingListResponse(page3, 500, 1000, 1213),
+            CreatePage(page1, 0, 1213),
+            CreatePage(page2, 500, 1213),
+            CreatePage(page3, 1000, 1213),
         ]);
         OrchestratorJiraTicketDiscoveryClient client = new(CreateHttpClient(handler), Options(false), new JiraLocalProcessingRequestFactory());
 
@@ -234,6 +246,201 @@ public class JiraTicketDiscoveryClientTests
         Assert.Equal(500, handler.RequestBodies[1]!.Offset);
         Assert.Equal(1000, handler.RequestBodies[2]!.Offset);
         Assert.All(handler.Requests, r => Assert.Equal("api/v1/jira/local-processing/tickets?type=fhir", r.RequestUri!.PathAndQuery.TrimStart('/')));
+    }
+
+    [Fact]
+    public async Task ListTicketsWithProvenance_RestartsOnRevisionChange()
+    {
+        JiraIssueSummaryEntry[] firstPage = CreateTickets(1, 500);
+        JiraIssueSummaryEntry[] changedPage = CreateTickets(501, 1);
+        JiraIssueSummaryEntry[] retryFirstPage = CreateTickets(1001, 500);
+        JiraIssueSummaryEntry[] retryLastPage = CreateTickets(1501, 1);
+        CapturingHandler handler = new(
+        [
+            CreatePage(firstPage, 0, 501, revision: 7),
+            CreatePage(changedPage, 500, 501, revision: 8),
+            CreatePage(retryFirstPage, 0, 501, revision: 9),
+            CreatePage(retryLastPage, 500, 501, revision: 9),
+        ]);
+        DirectJiraTicketDiscoveryClient client = new(
+            CreateHttpClient(handler),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+
+        JiraTicketDiscoveryBatch batch =
+            await client.ListTicketsWithProvenanceAsync(
+                new ResolvedJiraProcessingFilters
+                {
+                    SourceTicketShape = "fhir",
+                },
+                CancellationToken.None);
+
+        Assert.Equal(501, batch.Tickets.Count);
+        Assert.Equal("FHIR-1001", batch.Tickets[0].Key);
+        Assert.Equal("FHIR-1501", batch.Tickets[^1].Key);
+        Assert.Equal(9, batch.Provenance!.ContentRevision);
+        Assert.Equal(
+            [0, 500, 0, 500],
+            handler.RequestBodies.Select(request => request!.Offset).ToArray());
+    }
+
+    [Fact]
+    public async Task ListTicketsWithProvenance_ThirdUnstablePassFinishesWithoutCoordinate()
+    {
+        JiraIssueSummaryEntry[] discarded = CreateTickets(1, 500);
+        JiraIssueSummaryEntry[] retained = CreateTickets(1001, 500);
+        JiraIssueSummaryEntry[] retainedTail = CreateTickets(1501, 1);
+        CapturingHandler handler = new(
+        [
+            CreatePage(discarded, 0, 500, isStable: false),
+            CreatePage(discarded, 0, 500, isStable: false),
+            CreatePage(retained, 0, 501, isStable: false),
+            CreatePage(retainedTail, 500, 501, isStable: false),
+        ]);
+        DirectJiraTicketDiscoveryClient client = new(
+            CreateHttpClient(handler),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+
+        JiraTicketDiscoveryBatch batch =
+            await client.ListTicketsWithProvenanceAsync(
+                new ResolvedJiraProcessingFilters
+                {
+                    SourceTicketShape = "fhir",
+                },
+                CancellationToken.None);
+
+        Assert.Equal(501, batch.Tickets.Count);
+        Assert.Equal("FHIR-1001", batch.Tickets[0].Key);
+        Assert.Equal("FHIR-1501", batch.Tickets[^1].Key);
+        Assert.Null(batch.Provenance);
+        Assert.Equal(
+            [0, 0, 0, 500],
+            handler.RequestBodies.Select(request => request!.Offset).ToArray());
+    }
+
+    [Fact]
+    public async Task StableBatchProvenanceRetainsOnlyRepresentedProjects()
+    {
+        DateTimeOffset pssRefresh = SourceRefreshAt.AddHours(1);
+        JiraIssueSummaryEntry pss = CreateTicket("PSS-1") with
+        {
+            ProjectKey = "PSS",
+        };
+        CapturingHandler handler = new(
+            CreatePage(
+                [CreateTicket("FHIR-1"), pss],
+                0,
+                2,
+                watermarks: new Dictionary<string, DateTimeOffset?>
+                {
+                    ["FHIR"] = SourceRefreshAt,
+                    ["PSS"] = pssRefresh,
+                    ["OTHER"] = SourceRefreshAt.AddHours(2),
+                }));
+        OrchestratorJiraTicketDiscoveryClient client = new(
+            CreateHttpClient(handler),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+
+        JiraTicketDiscoveryBatch batch =
+            await client.ListTicketsWithProvenanceAsync(
+                new ResolvedJiraProcessingFilters
+                {
+                    SourceTicketShape = "fhir",
+                },
+                CancellationToken.None);
+
+        Assert.NotNull(batch.Provenance);
+        Assert.Equal(2, batch.Provenance.ProjectLastSuccessfulRefreshAt.Count);
+        Assert.Equal(
+            SourceRefreshAt,
+            batch.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        Assert.Equal(
+            pssRefresh,
+            batch.Provenance.ProjectLastSuccessfulRefreshAt["PSS"]);
+        Assert.DoesNotContain(
+            "OTHER",
+            batch.Provenance.ProjectLastSuccessfulRefreshAt.Keys);
+        Assert.Equal(
+            "api/v1/jira/local-processing/tickets?type=fhir",
+            handler.Requests[0].RequestUri!.PathAndQuery.TrimStart('/'));
+    }
+
+    [Fact]
+    public async Task GetTicketWithProvenance_UsesOnlyStableMatchingProject()
+    {
+        ItemResponse item = new()
+        {
+            Source = "jira",
+            Id = "FHIR-1",
+            Title = "Title",
+            Provenance = new SourceReadProvenance
+            {
+                Source = "jira",
+                ContentRevision = 17,
+                IsStable = true,
+                ProjectLastSuccessfulRefreshAt =
+                    new Dictionary<string, DateTimeOffset?>
+                    {
+                        ["FHIR"] = SourceRefreshAt,
+                        ["PSS"] = SourceRefreshAt.AddHours(1),
+                    },
+            },
+        };
+        DirectJiraTicketDiscoveryClient client = new(
+            CreateHttpClient(new CapturingHandler(item)),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+
+        JiraTicketDiscoveryItem discovery =
+            (await client.GetTicketWithProvenanceAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+
+        Assert.Equal("FHIR-1", discovery.Ticket.Key);
+        Assert.Equal(17, discovery.Provenance!.ContentRevision);
+        KeyValuePair<string, DateTimeOffset?> project = Assert.Single(
+            discovery.Provenance.ProjectLastSuccessfulRefreshAt);
+        Assert.Equal("FHIR", project.Key);
+        Assert.Equal(SourceRefreshAt, project.Value);
+
+        DirectJiraTicketDiscoveryClient unstableClient = new(
+            CreateHttpClient(new CapturingHandler(
+                item with
+                {
+                    Provenance = item.Provenance with { IsStable = false },
+                })),
+            Options(false),
+            new JiraLocalProcessingRequestFactory());
+        JiraTicketDiscoveryItem unstable =
+            (await unstableClient.GetTicketWithProvenanceAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+        Assert.Null(unstable.Provenance);
+    }
+
+    [Fact]
+    public async Task LegacyDiscoveryImplementationReceivesNullProvenanceAdapter()
+    {
+        IJiraTicketDiscoveryClient client =
+            new LegacyDiscoveryClient(CreateTicket("FHIR-1"));
+
+        JiraTicketDiscoveryBatch batch =
+            await client.ListTicketsWithProvenanceAsync(
+                new ResolvedJiraProcessingFilters(),
+                CancellationToken.None);
+        JiraTicketDiscoveryItem item =
+            (await client.GetTicketWithProvenanceAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+
+        Assert.Single(batch.Tickets);
+        Assert.Null(batch.Provenance);
+        Assert.Null(item.Provenance);
     }
 
     private static JiraIssueSummaryEntry CreateTicket(string key) => new()
@@ -256,6 +463,28 @@ public class JiraTicketDiscoveryClientTests
         }
         return tickets;
     }
+
+    private static JiraLocalProcessingListResponse CreatePage(
+        IReadOnlyList<JiraIssueSummaryEntry> tickets,
+        int offset,
+        int total,
+        long revision = 7,
+        bool isStable = true,
+        IReadOnlyDictionary<string, DateTimeOffset?>? watermarks = null)
+        => new(tickets, 500, offset, total)
+        {
+            Provenance = new SourceReadProvenance
+            {
+                Source = "jira",
+                ContentRevision = revision,
+                IsStable = isStable,
+                ProjectLastSuccessfulRefreshAt = watermarks ??
+                    new Dictionary<string, DateTimeOffset?>
+                    {
+                        ["FHIR"] = SourceRefreshAt,
+                    },
+            },
+        };
 
     private static IOptions<JiraProcessingOptions> Options(bool markProcessed) => Microsoft.Extensions.Options.Options.Create(new JiraProcessingOptions
     {
@@ -317,5 +546,29 @@ public class JiraTicketDiscoveryClientTests
             HttpResponseMessage response = new(_statusCode) { Content = JsonContent.Create(payload) };
             return response;
         }
+    }
+
+    private sealed class LegacyDiscoveryClient(JiraIssueSummaryEntry ticket)
+        : IJiraTicketDiscoveryClient
+    {
+        public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(
+            ResolvedJiraProcessingFilters filters,
+            CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>([ticket]);
+
+        public Task<JiraIssueSummaryEntry?> GetTicketAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+            => Task.FromResult<JiraIssueSummaryEntry?>(
+                string.Equals(key, ticket.Key, StringComparison.OrdinalIgnoreCase)
+                    ? ticket
+                    : null);
+
+        public Task MarkProcessedAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+            => Task.CompletedTask;
     }
 }

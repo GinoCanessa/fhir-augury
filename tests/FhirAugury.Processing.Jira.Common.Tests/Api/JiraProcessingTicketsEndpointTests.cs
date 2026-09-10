@@ -148,6 +148,60 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task PostTicket_RunBackedFreezesDiscoveryProvenanceAndPreservesItOnReplay()
+    {
+        DateTimeOffset firstRefresh =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        FakeDiscovery discovery = new(
+            CreateTicket("FHIR-1", "Triaged"),
+            CreateProvenance(firstRefresh, 41));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out AuthoringRunStore authoringStore,
+            out _);
+
+        HttpResponseMessage firstResponse =
+            await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse first =
+            (await firstResponse.Content
+                .ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>())!;
+        JiraProcessingSourceTicketRecord firstRow =
+            (await store.GetByKeyAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+        AuthoringRunInputProvenanceRecord frozen = Assert.Single(
+            await authoringStore.GetRunInputProvenanceAsync(first.RunId!));
+
+        Assert.Equal(firstRefresh, firstRow.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Equal(41, firstRow.SourceContentRevision);
+        Assert.Equal(firstRefresh, frozen.LatestSuccessfulRefreshAt);
+        Assert.Equal(41, frozen.ContentRevision);
+
+        discovery.Provenance =
+            CreateProvenance(firstRefresh.AddHours(1), 42);
+        HttpResponseMessage replayResponse =
+            await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse replay =
+            (await replayResponse.Content
+                .ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>())!;
+        JiraProcessingSourceTicketRecord refreshedRow =
+            (await store.GetByKeyAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+        AuthoringRunInputProvenanceRecord replayFrozen = Assert.Single(
+            await authoringStore.GetRunInputProvenanceAsync(replay.RunId!));
+
+        Assert.Equal(first.RunId, replay.RunId);
+        Assert.Equal(42, refreshedRow.SourceContentRevision);
+        Assert.Equal(firstRefresh, replayFrozen.LatestSuccessfulRefreshAt);
+        Assert.Equal(41, replayFrozen.ContentRevision);
+    }
+
+    [Fact]
     public async Task PostTicket_ExistingBatchRunReturnsMatchedItem()
     {
         FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
@@ -513,14 +567,43 @@ public class JiraProcessingTicketsEndpointTests
         WorkGroup = "FHIR-I",
     };
 
-    private sealed class FakeDiscovery(JiraIssueSummaryEntry? ticket) : IJiraTicketDiscoveryClient
+    private static SourceReadProvenance CreateProvenance(
+        DateTimeOffset refreshedAt,
+        long contentRevision)
+        => new()
+        {
+            Source = "jira",
+            ContentRevision = contentRevision,
+            IsStable = true,
+            ProjectLastSuccessfulRefreshAt =
+                new Dictionary<string, DateTimeOffset?>
+                {
+                    ["FHIR"] = refreshedAt,
+                },
+        };
+
+    private sealed class FakeDiscovery(
+        JiraIssueSummaryEntry? ticket,
+        SourceReadProvenance? provenance = null) : IJiraTicketDiscoveryClient
     {
+        public SourceReadProvenance? Provenance { get; set; } = provenance;
         public List<string> RequestedShapes { get; } = [];
         public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct) => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>([]);
         public Task<JiraIssueSummaryEntry?> GetTicketAsync(string key, string sourceTicketShape, CancellationToken ct)
         {
             RequestedShapes.Add(sourceTicketShape);
             return Task.FromResult(ticket?.Key == key ? ticket : null);
+        }
+        public Task<JiraTicketDiscoveryItem?> GetTicketWithProvenanceAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+        {
+            RequestedShapes.Add(sourceTicketShape);
+            return Task.FromResult(
+                ticket?.Key == key
+                    ? new JiraTicketDiscoveryItem(ticket, Provenance)
+                    : null);
         }
         public Task MarkProcessedAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.CompletedTask;
     }

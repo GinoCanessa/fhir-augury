@@ -34,12 +34,20 @@ public sealed class JiraTicketSyncService(
             mode,
             AuthoringStatusValues.ProcessorModes.RunBacked,
             StringComparison.Ordinal);
-        IReadOnlyList<JiraIssueSummaryEntry> tickets =
-            await discoveryClient.ListTicketsForModeAsync(filters, runBacked, ct);
+        JiraTicketDiscoveryBatch discovery =
+            await discoveryClient.ListTicketsForModeWithProvenanceAsync(
+                filters,
+                runBacked,
+                ct);
         int upserted = 0;
-        foreach (JiraIssueSummaryEntry ticket in tickets)
+        foreach (JiraIssueSummaryEntry ticket in discovery.Tickets)
         {
-            await store.UpsertAsync(ticket, filters.SourceTicketShape, false, ct);
+            await store.UpsertAsync(
+                ticket,
+                filters.SourceTicketShape,
+                false,
+                discovery.Provenance,
+                ct);
             upserted++;
         }
 

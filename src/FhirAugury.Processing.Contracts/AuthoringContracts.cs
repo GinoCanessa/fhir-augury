@@ -32,6 +32,11 @@ public sealed record AuthoringRunItemDefinition(
     string ItemKind,
     string ExpectedSourceRevision);
 
+public sealed record AuthoringRunInputProvenanceDefinition(
+    string Source,
+    DateTimeOffset? LatestSuccessfulRefreshAt,
+    long? ContentRevision);
+
 public sealed record AuthoringRunCreateRequest(
     string ProcessorKind,
     IReadOnlyList<AuthoringRunItemDefinition> Items,

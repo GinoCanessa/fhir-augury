@@ -42,6 +42,84 @@ public class JiraProcessingSourceTicketStoreTests
     }
 
     [Fact]
+    public async Task Upsert_OverwritesAndClearsProjectSpecificProvenance()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        DateTimeOffset fhirRefresh =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        SourceReadProvenance provenance = new()
+        {
+            Source = "jira",
+            ContentRevision = 42,
+            IsStable = true,
+            ProjectLastSuccessfulRefreshAt =
+                new Dictionary<string, DateTimeOffset?>
+                {
+                    ["PSS"] = fhirRefresh.AddHours(1),
+                    ["FHIR"] = fhirRefresh,
+                },
+        };
+
+        JiraProcessingSourceTicketRecord inserted = await store.UpsertAsync(
+            CreateTicket("FHIR-1"),
+            "fhir",
+            false,
+            provenance,
+            CancellationToken.None);
+
+        Assert.Equal(
+            fhirRefresh,
+            inserted.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Equal(42, inserted.SourceContentRevision);
+
+        JiraProcessingSourceTicketRecord cleared = await store.UpsertAsync(
+            CreateTicket("FHIR-1", title: "Updated"),
+            "fhir",
+            false,
+            provenance: null,
+            CancellationToken.None);
+
+        Assert.Null(cleared.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Null(cleared.SourceContentRevision);
+        JiraProcessingSourceTicketRecord reloaded =
+            (await store.GetByKeyAsync(
+                "FHIR-1",
+                "fhir",
+                CancellationToken.None))!;
+        Assert.Null(reloaded.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Null(reloaded.SourceContentRevision);
+    }
+
+    [Fact]
+    public async Task Upsert_DoesNotApplyAnotherProjectsWatermark()
+    {
+        JiraProcessingSourceTicketStore store = CreateStore();
+        DateTimeOffset pssRefresh =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        SourceReadProvenance provenance = new()
+        {
+            Source = "jira",
+            ContentRevision = 43,
+            IsStable = true,
+            ProjectLastSuccessfulRefreshAt =
+                new Dictionary<string, DateTimeOffset?>
+                {
+                    ["PSS"] = pssRefresh,
+                },
+        };
+
+        JiraProcessingSourceTicketRecord record = await store.UpsertAsync(
+            CreateTicket("FHIR-1"),
+            "fhir",
+            false,
+            provenance,
+            CancellationToken.None);
+
+        Assert.Null(record.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Equal(43, record.SourceContentRevision);
+    }
+
+    [Fact]
     public async Task ResetForReprocessing_ClearsTimingStatusAndErrorColumns()
     {
         JiraProcessingSourceTicketStore store = CreateStore();
@@ -367,12 +445,20 @@ public class JiraProcessingSourceTicketStoreTests
         await verify.OpenAsync();
         Dictionary<string, (int Pk, string Type)> columns = ReadTableInfo(verify, "jira_processing_source_tickets");
         Assert.True(columns.ContainsKey("Specification"), "Specification column should exist after EnsureSchema");
+        Assert.True(
+            columns.ContainsKey("SourceProjectLastSuccessfulRefreshAt"),
+            "SourceProjectLastSuccessfulRefreshAt column should exist after EnsureSchema");
+        Assert.True(
+            columns.ContainsKey("SourceContentRevision"),
+            "SourceContentRevision column should exist after EnsureSchema");
 
         // Upsert + readback should succeed against the migrated DB.
         await store.UpsertAsync(CreateTicket("FHIR-9", specification: "fhir-core"), "fhir", false, CancellationToken.None);
         JiraProcessingSourceTicketRecord? row = await store.GetByKeyAsync("FHIR-9", "fhir", CancellationToken.None);
         Assert.NotNull(row);
         Assert.Equal("fhir-core", row.Specification);
+        Assert.Null(row.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Null(row.SourceContentRevision);
     }
 
     [Fact]

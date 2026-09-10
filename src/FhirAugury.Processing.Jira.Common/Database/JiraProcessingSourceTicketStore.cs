@@ -42,10 +42,66 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         EnsureSchema();
     }
 
+    public Task<JiraProcessingSourceTicketRecord> UpsertAsync(
+        JiraIssueSummaryEntry ticket,
+        string sourceTicketShape,
+        bool resetProcessingStatus,
+        CancellationToken ct)
+        => UpsertAsync(
+            ticket,
+            sourceTicketShape,
+            resetProcessingStatus,
+            sourceProjectLastSuccessfulRefreshAt: null,
+            sourceContentRevision: null,
+            ct: ct);
+
+    public Task<JiraProcessingSourceTicketRecord> UpsertAsync(
+        JiraIssueSummaryEntry ticket,
+        string sourceTicketShape,
+        bool resetProcessingStatus,
+        SourceReadProvenance? provenance,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(ticket);
+        DateTimeOffset? sourceProjectLastSuccessfulRefreshAt = null;
+        long? sourceContentRevision = null;
+        if (provenance is { IsStable: true } &&
+            string.Equals(
+                provenance.Source,
+                "jira",
+                StringComparison.OrdinalIgnoreCase) &&
+            provenance.ProjectLastSuccessfulRefreshAt is not null)
+        {
+            sourceContentRevision = provenance.ContentRevision;
+            foreach ((string project, DateTimeOffset? watermark) in
+                     provenance.ProjectLastSuccessfulRefreshAt)
+            {
+                if (string.Equals(
+                        project,
+                        ticket.ProjectKey,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    sourceProjectLastSuccessfulRefreshAt = watermark;
+                    break;
+                }
+            }
+        }
+
+        return UpsertAsync(
+            ticket,
+            sourceTicketShape,
+            resetProcessingStatus,
+            sourceProjectLastSuccessfulRefreshAt,
+            sourceContentRevision,
+            ct);
+    }
+
     public async Task<JiraProcessingSourceTicketRecord> UpsertAsync(
         JiraIssueSummaryEntry ticket,
         string sourceTicketShape,
         bool resetProcessingStatus,
+        DateTimeOffset? sourceProjectLastSuccessfulRefreshAt,
+        long? sourceContentRevision,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ticket);
@@ -70,6 +126,9 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 SourceTicketShape = sourceTicketShape,
                 LastSyncedAt = now,
                 LastUpdated = ticket.UpdatedAt,
+                SourceProjectLastSuccessfulRefreshAt =
+                    sourceProjectLastSuccessfulRefreshAt,
+                SourceContentRevision = sourceContentRevision,
             };
             await InsertAsync(connection, transaction, inserted, ct);
             await transaction.CommitAsync(ct);
@@ -84,6 +143,9 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         existing.Specification = ticket.Specification;
         existing.LastSyncedAt = now;
         existing.LastUpdated = ticket.UpdatedAt;
+        existing.SourceProjectLastSuccessfulRefreshAt =
+            sourceProjectLastSuccessfulRefreshAt;
+        existing.SourceContentRevision = sourceContentRevision;
         if (resetProcessingStatus)
         {
             ClearProcessing(existing);
@@ -529,6 +591,16 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 "jira_processing_source_tickets",
                 "Specification",
                 "TEXT NOT NULL DEFAULT ''");
+            SqliteSchemaHelpers.AddColumnIfMissing(
+                connection,
+                "jira_processing_source_tickets",
+                "SourceProjectLastSuccessfulRefreshAt",
+                "TEXT NULL");
+            SqliteSchemaHelpers.AddColumnIfMissing(
+                connection,
+                "jira_processing_source_tickets",
+                "SourceContentRevision",
+                "INTEGER NULL");
         }
 
         JiraProcessingSourceTicketRecord.CreateTable(connection);
@@ -603,10 +675,12 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         command.CommandText = """
             INSERT INTO jira_processing_source_tickets
             (Id, Key, Title, Description, Project, Status, WorkGroup, Type, Specification, SourceTicketShape, LastSyncedAt, LastUpdated,
+             SourceProjectLastSuccessfulRefreshAt, SourceContentRevision,
              StartedProcessingAt, CompletedProcessingAt, LastProcessingAttemptAt, ProcessingStatus, ProcessingError, ProcessingAttemptCount,
              CompletionId, ErrorMessage, AgentExitCode, ErrorOccurredAt)
             VALUES
             (@Id, @Key, @Title, @Description, @Project, @Status, @WorkGroup, @Type, @Specification, @SourceTicketShape, @LastSyncedAt, @LastUpdated,
+             @SourceProjectLastSuccessfulRefreshAt, @SourceContentRevision,
              @StartedProcessingAt, @CompletedProcessingAt, @LastProcessingAttemptAt, @ProcessingStatus, @ProcessingError, @ProcessingAttemptCount,
              @CompletionId, @ErrorMessage, @AgentExitCode, @ErrorOccurredAt)
             """;
@@ -629,6 +703,8 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
                 Specification = @Specification,
                 LastSyncedAt = @LastSyncedAt,
                 LastUpdated = @LastUpdated,
+                SourceProjectLastSuccessfulRefreshAt = @SourceProjectLastSuccessfulRefreshAt,
+                SourceContentRevision = @SourceContentRevision,
                 StartedProcessingAt = @StartedProcessingAt,
                 CompletedProcessingAt = @CompletedProcessingAt,
                 LastProcessingAttemptAt = @LastProcessingAttemptAt,
@@ -659,6 +735,12 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         command.Parameters.AddWithValue("@SourceTicketShape", record.SourceTicketShape);
         command.Parameters.AddWithValue("@LastSyncedAt", Format(record.LastSyncedAt));
         command.Parameters.AddWithValue("@LastUpdated", FormatNullable(record.LastUpdated));
+        command.Parameters.AddWithValue(
+            "@SourceProjectLastSuccessfulRefreshAt",
+            FormatNullable(record.SourceProjectLastSuccessfulRefreshAt));
+        command.Parameters.AddWithValue(
+            "@SourceContentRevision",
+            (object?)record.SourceContentRevision ?? DBNull.Value);
         command.Parameters.AddWithValue("@StartedProcessingAt", FormatNullable(record.StartedProcessingAt));
         command.Parameters.AddWithValue("@CompletedProcessingAt", FormatNullable(record.CompletedProcessingAt));
         command.Parameters.AddWithValue("@LastProcessingAttemptAt", FormatNullable(record.LastProcessingAttemptAt));
@@ -703,6 +785,12 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         SourceTicketShape = reader.GetString(reader.GetOrdinal("SourceTicketShape")),
         LastSyncedAt = ParseDate(reader, "LastSyncedAt") ?? DateTimeOffset.MinValue,
         LastUpdated = ParseDate(reader, "LastUpdated"),
+        SourceProjectLastSuccessfulRefreshAt = ParseDate(
+            reader,
+            "SourceProjectLastSuccessfulRefreshAt"),
+        SourceContentRevision = GetNullableLong(
+            reader,
+            "SourceContentRevision"),
         StartedProcessingAt = ParseDate(reader, "StartedProcessingAt"),
         CompletedProcessingAt = ParseDate(reader, "CompletedProcessingAt"),
         LastProcessingAttemptAt = ParseDate(reader, "LastProcessingAttemptAt"),
@@ -759,6 +847,12 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     {
         int ordinal = reader.GetOrdinal(name);
         return reader.IsDBNull(ordinal) ? null : reader.GetInt32(ordinal);
+    }
+
+    private static long? GetNullableLong(SqliteDataReader reader, string name)
+    {
+        int ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetInt64(ordinal);
     }
 
     private static DateTimeOffset? ParseDate(SqliteDataReader reader, string name)

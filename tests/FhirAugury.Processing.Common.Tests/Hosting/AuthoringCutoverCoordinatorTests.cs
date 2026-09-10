@@ -49,6 +49,68 @@ public sealed class AuthoringCutoverCoordinatorTests
     }
 
     [Fact]
+    public async Task ActivationPersistsParticipantProvenanceWithInitialRun()
+    {
+        using AuthoringTestDatabase database = new();
+        DateTimeOffset refreshedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+
+        AuthoringProcessorModeRecord active =
+            await new AuthoringCutoverCoordinator(database.OpenConnection)
+                .ActivateAsync(
+                    new AuthoringCutoverRequest(
+                        "test",
+                        database.DatabasePath,
+                        $"{database.DatabasePath}.pre-cutover"),
+                    new StaticParticipant(
+                        [new("FHIR-1", "ticket", "revision-1")],
+                        [new("jira", refreshedAt, 42)]));
+
+        AuthoringRunRecord run =
+            (await database.Store.GetRunAsync(active.RevalidationRunId!))!;
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await database.Store.GetRunInputProvenanceAsync(run.Id));
+        Assert.Equal(refreshedAt, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(42, provenance.ContentRevision);
+        Assert.Equal(run.CreatedAt, provenance.CapturedAt);
+    }
+
+    [Fact]
+    public async Task InvalidParticipantProvenanceRollsBackInitialRunAndActivation()
+    {
+        using AuthoringTestDatabase database = new();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            new AuthoringCutoverCoordinator(database.OpenConnection)
+                .ActivateAsync(
+                    new AuthoringCutoverRequest(
+                        "test",
+                        database.DatabasePath,
+                        $"{database.DatabasePath}.pre-cutover"),
+                    new StaticParticipant(
+                        [new("FHIR-1", "ticket", "revision-1")],
+                        [
+                            new("jira", null, null),
+                            new("JIRA", null, null),
+                        ])));
+
+        AuthoringProcessorModeRecord mode =
+            await database.Store.GetProcessorModeAsync("test");
+        Assert.Equal(
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            mode.Mode);
+        Assert.Null(mode.RevalidationRunId);
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_input_provenance"));
+    }
+
+    [Fact]
     public async Task ActivationIsIdempotentAndOrdinaryRunsWaitForRevalidation()
     {
         using AuthoringTestDatabase database = new();
@@ -299,7 +361,8 @@ public sealed class AuthoringCutoverCoordinatorTests
     }
 
     private sealed class StaticParticipant(
-        IReadOnlyList<AuthoringRunItemDefinition> items)
+        IReadOnlyList<AuthoringRunItemDefinition> items,
+        IReadOnlyList<AuthoringRunInputProvenanceDefinition>? inputProvenance = null)
         : IAuthoringCutoverParticipant
     {
         public int Calls { get; private set; }
@@ -309,7 +372,10 @@ public sealed class AuthoringCutoverCoordinatorTests
             CancellationToken ct)
         {
             Calls++;
-            return Task.FromResult(new AuthoringCutoverPreparation(items));
+            return Task.FromResult(
+                new AuthoringCutoverPreparation(
+                    items,
+                    inputProvenance));
         }
     }
 

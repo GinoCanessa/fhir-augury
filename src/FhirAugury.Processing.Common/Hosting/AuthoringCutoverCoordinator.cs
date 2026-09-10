@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
@@ -13,7 +14,8 @@ public sealed record AuthoringCutoverRequest(
     string BackupPath);
 
 public sealed record AuthoringCutoverPreparation(
-    IReadOnlyList<AuthoringRunItemDefinition> Items);
+    IReadOnlyList<AuthoringRunItemDefinition> Items,
+    IReadOnlyList<AuthoringRunInputProvenanceDefinition>? InputProvenance = null);
 
 public interface IAuthoringCutoverParticipant
 {
@@ -204,6 +206,7 @@ public sealed class AuthoringCutoverCoordinator(
                     epoch,
                     runId,
                     preparation.Items,
+                    preparation.InputProvenance,
                     now,
                     ct);
             }
@@ -256,6 +259,7 @@ public sealed class AuthoringCutoverCoordinator(
         long epoch,
         string runId,
         IReadOnlyList<AuthoringRunItemDefinition> items,
+        IReadOnlyList<AuthoringRunInputProvenanceDefinition>? inputProvenance,
         DateTimeOffset now,
         CancellationToken ct)
     {
@@ -310,6 +314,12 @@ public sealed class AuthoringCutoverCoordinator(
                 ("@status", AuthoringStatusValues.Items.Pending),
                 ("@createdAt", Format(now)));
         }
+        await AuthoringRunStore.InsertRunInputProvenanceAsync(
+            connection,
+            runId,
+            inputProvenance,
+            now,
+            ct);
     }
 
     private async Task CreateOrVerifyBackupAsync(

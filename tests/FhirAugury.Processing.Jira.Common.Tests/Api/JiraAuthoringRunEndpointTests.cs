@@ -150,6 +150,57 @@ public sealed class JiraAuthoringRunEndpointTests
     }
 
     [Fact]
+    public async Task CreateRun_MissingSourceRowFreezesDiscoveryProvenance()
+    {
+        DateTimeOffset refreshedAt =
+            new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        StaticDiscoveryClient discovery = new(
+            new JiraIssueSummaryEntry
+            {
+                Key = "FHIR-42",
+                ProjectKey = "FHIR",
+                Title = "Discovered",
+                Type = "Change Request",
+                Status = "Triaged",
+                WorkGroup = "FHIR-I",
+                UpdatedAt = refreshedAt.AddHours(1),
+            },
+            new SourceReadProvenance
+            {
+                Source = "jira",
+                ContentRevision = 77,
+                IsStable = true,
+                ProjectLastSuccessfulRefreshAt =
+                    new Dictionary<string, DateTimeOffset?>
+                    {
+                        ["FHIR"] = refreshedAt,
+                    },
+            });
+        using EndpointFixture fixture = new(discoveryClient: discovery);
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-42"]));
+        AuthoringRunResponse body =
+            (await response.Content
+                .ReadFromJsonAsync<AuthoringRunResponse>())!;
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        JiraProcessingSourceTicketRecord source =
+            (await fixture.SourceStore.GetByKeyAsync(
+                "FHIR-42",
+                "fhir",
+                CancellationToken.None))!;
+        Assert.Equal(refreshedAt, source.SourceProjectLastSuccessfulRefreshAt);
+        Assert.Equal(77, source.SourceContentRevision);
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await fixture.Store.GetRunInputProvenanceAsync(
+                body.Run.RunId));
+        Assert.Equal(refreshedAt, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(77, provenance.ContentRevision);
+    }
+
+    [Fact]
     public async Task CreateRun_RevisionAndRevalidationConflictsIncludeRunCoordinates()
     {
         using EndpointFixture revisionFixture = new();
@@ -217,7 +268,9 @@ public sealed class JiraAuthoringRunEndpointTests
         private readonly string _directory;
         private readonly WebApplication _app;
 
-        public EndpointFixture(int maxActiveAuthoringRuns = int.MaxValue)
+        public EndpointFixture(
+            int maxActiveAuthoringRuns = int.MaxValue,
+            IJiraTicketDiscoveryClient? discoveryClient = null)
         {
             _directory = Path.Combine(
                 Path.GetTempPath(),
@@ -282,7 +335,7 @@ public sealed class JiraAuthoringRunEndpointTests
                 new AuthoringRunControlService(Store, retryPolicy));
             builder.Services.AddSingleton(Coordinator);
             builder.Services.AddSingleton<IJiraTicketDiscoveryClient>(
-                new EmptyDiscoveryClient());
+                discoveryClient ?? new EmptyDiscoveryClient());
             builder.Services.AddSingleton(options);
             _app = builder.Build();
             _app.MapJiraProcessingTicketEndpoints();
@@ -359,6 +412,40 @@ public sealed class JiraAuthoringRunEndpointTests
             string sourceTicketShape,
             CancellationToken ct)
             => Task.FromResult<JiraIssueSummaryEntry?>(null);
+
+        public Task MarkProcessedAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+            => Task.CompletedTask;
+    }
+
+    private sealed class StaticDiscoveryClient(
+        JiraIssueSummaryEntry ticket,
+        SourceReadProvenance provenance) : IJiraTicketDiscoveryClient
+    {
+        public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(
+            ResolvedJiraProcessingFilters filters,
+            CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>([]);
+
+        public Task<JiraIssueSummaryEntry?> GetTicketAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+            => Task.FromResult<JiraIssueSummaryEntry?>(
+                string.Equals(key, ticket.Key, StringComparison.OrdinalIgnoreCase)
+                    ? ticket
+                    : null);
+
+        public Task<JiraTicketDiscoveryItem?> GetTicketWithProvenanceAsync(
+            string key,
+            string sourceTicketShape,
+            CancellationToken ct)
+            => Task.FromResult(
+                string.Equals(key, ticket.Key, StringComparison.OrdinalIgnoreCase)
+                    ? new JiraTicketDiscoveryItem(ticket, provenance)
+                    : null);
 
         public Task MarkProcessedAsync(
             string key,

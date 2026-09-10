@@ -75,6 +75,156 @@ public sealed class JiraAuthoringRunCoordinatorTests
     }
 
     [Fact]
+    public async Task ScheduledRun_UsesMaximumCompleteProjectRefreshAndSharedRevision()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        DateTimeOffset sourceRevision =
+            new(2026, 9, 8, 10, 0, 0, TimeSpan.Zero);
+        DateTimeOffset firstRefresh = sourceRevision.AddHours(-2);
+        DateTimeOffset secondRefresh = sourceRevision.AddHours(-1);
+        await fixture.SeedAsync(
+            "FHIR-1",
+            sourceRevision,
+            sourceRefresh: firstRefresh,
+            contentRevision: 42);
+        await fixture.SeedAsync(
+            "FHIR-2",
+            sourceRevision,
+            sourceRefresh: secondRefresh,
+            contentRevision: 42);
+        await fixture.ActivateAsync();
+
+        JiraAuthoringRunCreation creation =
+            (await fixture.Coordinator.CreateScheduledRunAsync())!;
+
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(
+                creation.Run.Id));
+        Assert.Equal("jira", provenance.Source);
+        Assert.Equal(secondRefresh, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(42, provenance.ContentRevision);
+        Assert.Equal(creation.Run.CreatedAt, provenance.CapturedAt);
+    }
+
+    [Fact]
+    public async Task RunProvenanceSuppressesMixedOrIncompleteCoordinates()
+    {
+        using JiraAuthoringTestFixture mixedRevisionFixture = new();
+        DateTimeOffset sourceRevision =
+            new(2026, 9, 8, 10, 0, 0, TimeSpan.Zero);
+        DateTimeOffset firstRefresh = sourceRevision.AddHours(-2);
+        DateTimeOffset secondRefresh = sourceRevision.AddHours(-1);
+        JiraProcessingSourceTicketRecord first =
+            await mixedRevisionFixture.SeedAsync(
+                "FHIR-1",
+                sourceRevision,
+                sourceRefresh: firstRefresh,
+                contentRevision: 41);
+        JiraProcessingSourceTicketRecord second =
+            await mixedRevisionFixture.SeedAsync(
+                "FHIR-2",
+                sourceRevision,
+                sourceRefresh: secondRefresh,
+                contentRevision: 42);
+        await mixedRevisionFixture.ActivateAsync();
+
+        JiraAuthoringRunCreation mixed =
+            await mixedRevisionFixture.Coordinator.CreateExplicitRunAsync(
+                [first, second],
+                databaseOnly: false);
+        AuthoringRunInputProvenanceRecord mixedProvenance = Assert.Single(
+            await mixedRevisionFixture.AuthoringStore
+                .GetRunInputProvenanceAsync(mixed.Run.Id));
+        Assert.Equal(
+            secondRefresh,
+            mixedProvenance.LatestSuccessfulRefreshAt);
+        Assert.Null(mixedProvenance.ContentRevision);
+
+        using JiraAuthoringTestFixture missingRefreshFixture = new();
+        JiraProcessingSourceTicketRecord known =
+            await missingRefreshFixture.SeedAsync(
+                "FHIR-1",
+                sourceRevision,
+                sourceRefresh: firstRefresh,
+                contentRevision: 42);
+        JiraProcessingSourceTicketRecord unknown =
+            await missingRefreshFixture.SeedAsync(
+                "FHIR-2",
+                sourceRevision,
+                sourceRefresh: null,
+                contentRevision: 42);
+        await missingRefreshFixture.ActivateAsync();
+
+        JiraAuthoringRunCreation incomplete =
+            await missingRefreshFixture.Coordinator.CreateExplicitRunAsync(
+                [known, unknown],
+                databaseOnly: false);
+        AuthoringRunInputProvenanceRecord incompleteProvenance =
+            Assert.Single(
+                await missingRefreshFixture.AuthoringStore
+                    .GetRunInputProvenanceAsync(incomplete.Run.Id));
+        Assert.Null(incompleteProvenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(42, incompleteProvenance.ContentRevision);
+    }
+
+    [Fact]
+    public async Task OneItemRunAlwaysBindsConservativeJiraProvenance()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        JiraProcessingSourceTicketRecord source = await fixture.SeedAsync(
+            "FHIR-1",
+            new DateTimeOffset(2026, 9, 8, 10, 0, 0, TimeSpan.Zero));
+        await fixture.ActivateAsync();
+
+        JiraAuthoringRunCreation creation =
+            await fixture.Coordinator.CreateOneItemRunAsync(source);
+
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(
+                creation.Run.Id));
+        Assert.Equal("jira", provenance.Source);
+        Assert.Null(provenance.LatestSuccessfulRefreshAt);
+        Assert.Null(provenance.ContentRevision);
+    }
+
+    [Fact]
+    public async Task ExactReplayPreservesPreviouslyFrozenProvenance()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        DateTimeOffset ticketRevision =
+            new(2026, 9, 8, 10, 0, 0, TimeSpan.Zero);
+        DateTimeOffset firstRefresh = ticketRevision.AddHours(-2);
+        JiraProcessingSourceTicketRecord firstSource = await fixture.SeedAsync(
+            "FHIR-1",
+            ticketRevision,
+            sourceRefresh: firstRefresh,
+            contentRevision: 41);
+        await fixture.ActivateAsync();
+        JiraAuthoringRunCreation first =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [firstSource],
+                databaseOnly: false);
+
+        JiraProcessingSourceTicketRecord refreshedSource =
+            await fixture.SeedAsync(
+                "FHIR-1",
+                ticketRevision,
+                sourceRefresh: firstRefresh.AddHours(1),
+                contentRevision: 42);
+        JiraAuthoringRunCreation replay =
+            await fixture.Coordinator.CreateExplicitRunAsync(
+                [refreshedSource],
+                databaseOnly: false);
+
+        Assert.Equal(first.Run.Id, replay.Run.Id);
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(
+                replay.Run.Id));
+        Assert.Equal(firstRefresh, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(41, provenance.ContentRevision);
+    }
+
+    [Fact]
     public async Task CreateExplicitRun_RejectsSecondActiveRunAtCapacity()
     {
         using JiraAuthoringTestFixture fixture = new(maxActiveAuthoringRuns: 1);
@@ -396,6 +546,55 @@ public sealed class JiraAuthoringRunCoordinatorTests
     }
 
     [Fact]
+    public async Task StaleInitialRevalidationReplacementDerivesNewProvenance()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        DateTimeOffset firstRevision =
+            new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset firstRefresh = firstRevision.AddHours(-1);
+        await fixture.SeedAsync(
+            "FHIR-1",
+            firstRevision,
+            sourceRefresh: firstRefresh,
+            contentRevision: 10);
+        AuthoringProcessorModeRecord active =
+            await new AuthoringCutoverCoordinator(
+                fixture.SourceStoreConnection).ActivateAsync(
+                new AuthoringCutoverRequest(
+                    "jira-fhir",
+                    fixture.DatabasePath,
+                    $"{fixture.DatabasePath}.pre-cutover"),
+                new StaticCutoverParticipant(
+                    [new("FHIR-1", "fhir", firstRevision.ToString("O"))],
+                    [new("jira", firstRefresh, 10)]));
+
+        DateTimeOffset secondRevision = firstRevision.AddDays(1);
+        DateTimeOffset secondRefresh = secondRevision.AddHours(-1);
+        await fixture.SeedAsync(
+            "FHIR-1",
+            secondRevision,
+            title: "Updated",
+            sourceRefresh: secondRefresh,
+            contentRevision: 11);
+
+        Assert.True(await fixture.Coordinator.SupersedeStaleItemsAsync(
+            active.RevalidationRunId!));
+        AuthoringProcessorModeRecord refreshedMode =
+            await fixture.AuthoringStore.GetProcessorModeAsync("jira-fhir");
+        AuthoringRunInputProvenanceRecord original = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(
+                active.RevalidationRunId!));
+        AuthoringRunInputProvenanceRecord replacement = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(
+                refreshedMode.RevalidationRunId!));
+
+        Assert.Equal(firstRefresh, original.LatestSuccessfulRefreshAt);
+        Assert.Equal(10, original.ContentRevision);
+        Assert.Equal(secondRefresh, replacement.LatestSuccessfulRefreshAt);
+        Assert.Equal(11, replacement.ContentRevision);
+    }
+
+    [Fact]
     public async Task InitialRevalidation_UnchangedRevisionPreservesAttemptBudgetAcrossReplacement()
     {
         using JiraAuthoringTestFixture fixture = new();
@@ -608,13 +807,17 @@ public sealed class JiraAuthoringRunCoordinatorTests
     }
 
     private sealed class StaticCutoverParticipant(
-        IReadOnlyList<AuthoringRunItemDefinition> items)
+        IReadOnlyList<AuthoringRunItemDefinition> items,
+        IReadOnlyList<AuthoringRunInputProvenanceDefinition>? inputProvenance = null)
         : IAuthoringCutoverParticipant
     {
         public Task<AuthoringCutoverPreparation> PrepareCutoverAsync(
             Microsoft.Data.Sqlite.SqliteConnection connection,
             CancellationToken ct) =>
-            Task.FromResult(new AuthoringCutoverPreparation(items));
+            Task.FromResult(
+                new AuthoringCutoverPreparation(
+                    items,
+                    inputProvenance));
     }
 }
 
@@ -699,7 +902,9 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
     public Task<JiraProcessingSourceTicketRecord> SeedAsync(
         string key,
         DateTimeOffset revision,
-        string title = "Title")
+        string title = "Title",
+        DateTimeOffset? sourceRefresh = null,
+        long? contentRevision = null)
         => SourceStore.UpsertAsync(
             new JiraIssueSummaryEntry
             {
@@ -714,6 +919,8 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
             },
             "fhir",
             resetProcessingStatus: false,
+            sourceRefresh,
+            contentRevision,
             CancellationToken.None);
 
     public void Dispose()

@@ -30,6 +30,8 @@ public sealed class JiraAuthoringRunCoordinator(
     IOptions<ProcessingServiceOptions>? processingOptionsAccessor = null)
     : IAuthoringRunLifecycleAdapter
 {
+    private const string ProvenanceSource = "jira";
+
     private readonly JiraProcessingOptions _options = optionsAccessor.Value;
     private readonly int _maxActiveRuns =
         processingOptionsAccessor?.Value.MaxActiveAuthoringRuns ?? int.MaxValue;
@@ -145,25 +147,33 @@ public sealed class JiraAuthoringRunCoordinator(
             throw new ArgumentException("An authoring run requires at least one Jira ticket.", nameof(tickets));
         }
 
-        AuthoringRunItemDefinition[] definitions = tickets
+        JiraProcessingSourceTicketRecord[] distinctTickets = tickets
             .GroupBy(ticket => ticket.Key, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
+            .ToArray();
+        AuthoringRunItemDefinition[] definitions = distinctTickets
             .Select(ticket => new AuthoringRunItemDefinition(
                 ticket.Key,
                 ticket.SourceTicketShape,
                 JiraProcessingSourceTicketStore.GetSourceRevision(ticket)))
             .ToArray();
+        DateTimeOffset createdAt = DateTimeOffset.UtcNow;
         AuthoringRunRecord run = await authoringStore.CreateRunAsync(
             ProcessorKind,
             definitions,
             databaseOnly,
+            now: createdAt,
             ct: ct,
             requestJson: JsonSerializer.Serialize(
                 new JiraAuthoringRunRequestSnapshot(
                     definitions.Select(definition => definition.BusinessKey).ToArray(),
                     databaseOnly),
                 JsonSerializerOptions.Web),
-            maxActiveRuns: _maxActiveRuns);
+            maxActiveRuns: _maxActiveRuns,
+            inputProvenance:
+            [
+                CreateInputProvenance(distinctTickets),
+            ]);
         return new JiraAuthoringRunCreation(
             run,
             await authoringStore.GetRunItemsAsync(run.Id, ct));
@@ -254,7 +264,7 @@ public sealed class JiraAuthoringRunCoordinator(
                 return false;
             }
 
-            List<AuthoringRunItemDefinition> replacements = [];
+            List<JiraProcessingSourceTicketRecord> replacementTickets = [];
             foreach (AuthoringRunItemRecord item in items.Where(item =>
                          item.Status != AuthoringStatusValues.Items.Superseded &&
                          (item.AcceptedReceiptId is null ||
@@ -271,16 +281,25 @@ public sealed class JiraAuthoringRunCoordinator(
                         AuthoringConflictCode.SourceRevisionMismatch,
                         $"Jira source ticket '{item.BusinessKey}' disappeared during initial revalidation.");
                 }
-                replacements.Add(new AuthoringRunItemDefinition(
+                replacementTickets.Add(source);
+            }
+            AuthoringRunItemDefinition[] replacements = replacementTickets
+                .Select(source => new AuthoringRunItemDefinition(
                     source.Key,
                     source.SourceTicketShape,
-                    JiraProcessingSourceTicketStore.GetSourceRevision(source)));
-            }
+                    JiraProcessingSourceTicketStore.GetSourceRevision(source)))
+                .ToArray();
+            DateTimeOffset createdAt = DateTimeOffset.UtcNow;
             await authoringStore.ReplaceRevalidationRunAsync(
                 ProcessorKind,
                 runId,
                 replacements,
-                ct: ct);
+                now: createdAt,
+                ct: ct,
+                inputProvenance:
+                [
+                    CreateInputProvenance(replacementTickets),
+                ]);
             return true;
         }
 
@@ -466,6 +485,33 @@ public sealed class JiraAuthoringRunCoordinator(
             : new JiraAuthoringRunCreation(
                 run,
                 await authoringStore.GetRunItemsAsync(runId, ct));
+    }
+
+    private static AuthoringRunInputProvenanceDefinition CreateInputProvenance(
+        IReadOnlyCollection<JiraProcessingSourceTicketRecord> tickets)
+    {
+        DateTimeOffset? latestSuccessfulRefreshAt =
+            tickets.All(ticket =>
+                ticket.SourceProjectLastSuccessfulRefreshAt is not null)
+                ? tickets.Max(ticket =>
+                    ticket.SourceProjectLastSuccessfulRefreshAt!.Value)
+                : null;
+
+        long? contentRevision = null;
+        if (tickets.All(ticket => ticket.SourceContentRevision is not null))
+        {
+            long candidate = tickets.First().SourceContentRevision!.Value;
+            if (tickets.All(ticket =>
+                    ticket.SourceContentRevision == candidate))
+            {
+                contentRevision = candidate;
+            }
+        }
+
+        return new AuthoringRunInputProvenanceDefinition(
+            ProvenanceSource,
+            latestSuccessfulRefreshAt,
+            contentRevision);
     }
 
 }
