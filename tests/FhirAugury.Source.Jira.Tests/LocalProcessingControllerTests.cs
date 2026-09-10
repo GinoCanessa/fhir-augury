@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
@@ -127,6 +128,86 @@ public class LocalProcessingControllerTests : IDisposable
         Assert.Equal(2, response.Limit);
         Assert.Equal(2, response.Offset);
         Assert.Equal(["FHIR-3", "FHIR-4"], response.Results.Select(r => r.Key).ToArray());
+    }
+
+    [Fact]
+    public void GetTickets_EveryPageCarriesSameStableSourceProvenance()
+    {
+        DateTimeOffset refreshedAt = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1");
+            SeedIssue(connection, "FHIR-2");
+            SeedIssue(connection, "FHIR-3");
+            InsertSyncState(connection, "FHIR", refreshedAt);
+        }
+
+        JiraLocalProcessingListResponse first = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest
+            {
+                Limit = 2,
+                Offset = 0,
+            }));
+        JiraLocalProcessingListResponse second = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest
+            {
+                Limit = 2,
+                Offset = 2,
+            }));
+
+        Assert.NotNull(first.Provenance);
+        Assert.NotNull(second.Provenance);
+        Assert.True(first.Provenance.IsStable);
+        Assert.True(second.Provenance.IsStable);
+        Assert.Equal(first.Provenance.ContentRevision, second.Provenance.ContentRevision);
+        Assert.Equal(
+            refreshedAt,
+            first.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        Assert.Equal(
+            refreshedAt,
+            second.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        Assert.Equal(["FHIR-1", "FHIR-2"], first.Results.Select(result => result.Key));
+        Assert.Equal(["FHIR-3"], second.Results.Select(result => result.Key));
+        Assert.Equal(3, first.Total);
+        Assert.Equal(3, second.Total);
+
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        string json = JsonSerializer.Serialize(first, jsonOptions);
+        JiraLocalProcessingListResponse? roundTrip =
+            JsonSerializer.Deserialize<JiraLocalProcessingListResponse>(
+                json,
+                jsonOptions);
+        Assert.NotNull(roundTrip);
+        Assert.NotNull(roundTrip.Provenance);
+        Assert.Equal(
+            refreshedAt,
+            roundTrip.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+    }
+
+    [Fact]
+    public void GetTickets_DuringMutationMarksPageProvenanceUnstable()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1");
+        }
+
+        JiraSourceStateRecord started = _db.BeginContentMutation();
+        try
+        {
+            JiraLocalProcessingListResponse response = UnwrapList(
+                _controller.GetTickets(new JiraLocalProcessingListRequest()));
+
+            Assert.NotNull(response.Provenance);
+            Assert.False(response.Provenance.IsStable);
+            Assert.Equal(started.ContentRevision, response.Provenance.ContentRevision);
+            Assert.Single(response.Results);
+            Assert.Equal(1, response.Total);
+        }
+        finally
+        {
+            _db.CompleteContentMutation();
+        }
     }
 
     [Fact]
@@ -310,6 +391,90 @@ public class LocalProcessingControllerTests : IDisposable
         Assert.Empty(JiraIssueRecord.SelectList(conn, Key: "NOPE-1"));
     }
 
+    [Fact]
+    public void GetTickets_InterleavedProcessedMutationsChangeMembershipAndRevision()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1");
+            SeedIssue(connection, "FHIR-2");
+            SeedIssue(connection, "FHIR-3");
+        }
+
+        JiraLocalProcessingListRequest request = new()
+        {
+            ProcessedLocally = false,
+            Limit = 1,
+            Offset = 0,
+        };
+        JiraLocalProcessingListResponse before = UnwrapList(
+            _controller.GetTickets(request));
+
+        UnwrapSet(_controller.SetProcessed(
+            new JiraLocalProcessingSetRequest
+            {
+                Key = "FHIR-1",
+                ProcessedLocally = true,
+            }));
+
+        JiraLocalProcessingListResponse afterSet = UnwrapList(
+            _controller.GetTickets(request));
+
+        Assert.Equal(3, before.Total);
+        Assert.Equal("FHIR-1", Assert.Single(before.Results).Key);
+        Assert.Equal(2, afterSet.Total);
+        Assert.Equal("FHIR-2", Assert.Single(afterSet.Results).Key);
+        Assert.NotNull(before.Provenance);
+        Assert.NotNull(afterSet.Provenance);
+        Assert.Equal(
+            before.Provenance.ContentRevision + 1,
+            afterSet.Provenance.ContentRevision);
+
+        JiraLocalProcessingClearResponse cleared = UnwrapClear(
+            _controller.ClearAllProcessed(type: "fhir"));
+        JiraLocalProcessingListResponse afterClear = UnwrapList(
+            _controller.GetTickets(request));
+
+        Assert.Equal(1, cleared.RowsAffected);
+        Assert.Equal(3, afterClear.Total);
+        Assert.Equal("FHIR-1", Assert.Single(afterClear.Results).Key);
+        Assert.NotNull(afterClear.Provenance);
+        Assert.Equal(
+            afterSet.Provenance.ContentRevision + 1,
+            afterClear.Provenance.ContentRevision);
+    }
+
+    [Fact]
+    public void SetProcessed_WhenRevisionAdvanceFails_RollsBackMembershipChange()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1");
+            using SqliteCommand trigger = connection.CreateCommand();
+            trigger.CommandText = """
+                CREATE TRIGGER reject_source_revision
+                BEFORE UPDATE ON jira_source_state
+                BEGIN
+                    SELECT RAISE(ABORT, 'revision rejected');
+                END;
+                """;
+            trigger.ExecuteNonQuery();
+        }
+
+        Assert.Throws<SqliteException>(() =>
+            _controller.SetProcessed(new JiraLocalProcessingSetRequest
+            {
+                Key = "FHIR-1",
+                ProcessedLocally = true,
+            }));
+
+        using SqliteConnection check = _db.OpenConnection();
+        JiraIssueRecord issue = Assert.Single(
+            JiraIssueRecord.SelectList(check, Key: "FHIR-1"));
+        Assert.Null(issue.ProcessedLocallyAt);
+        Assert.Equal(0, JiraDatabase.ReadSourceState(check).ContentRevision);
+    }
+
     // ── Phase 9 / 10: per-shape ?type= routing ─────────────────────────
 
     private static JiraProjectScopeStatementRecord NewPss(string key, DateTimeOffset? processedAt) => new JiraProjectScopeStatementRecord
@@ -368,6 +533,27 @@ public class LocalProcessingControllerTests : IDisposable
         ResolvedAt = null,
         ProcessedLocallyAt = processedAt,
     };
+
+    private static void InsertSyncState(
+        SqliteConnection connection,
+        string project,
+        DateTimeOffset refreshedAt)
+    {
+        JiraSyncStateRecord.Insert(connection, new JiraSyncStateRecord
+        {
+            Id = JiraSyncStateRecord.GetIndex(),
+            SourceName = JiraSource.SourceName,
+            SubSource = JiraSyncStateHelper.SyncKey(project, "full"),
+            LastSyncAt = refreshedAt,
+            LastSuccessfulSyncAt = refreshedAt,
+            LastCursor = null,
+            ItemsIngested = 1,
+            SyncSchedule = null,
+            NextScheduledAt = null,
+            Status = "success",
+            LastError = null,
+        });
+    }
 
     [Fact]
     public void SetProcessed_PssTable_MarksOnlyPssRow()

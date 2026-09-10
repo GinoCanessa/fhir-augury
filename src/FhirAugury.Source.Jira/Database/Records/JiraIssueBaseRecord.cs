@@ -39,7 +39,9 @@ public partial record class JiraIssueBaseRecord
     public required string Priority { get; set; }
     public required string Status { get; set; }
     public required string? Assignee { get; set; }
+    public int? AssigneeUserId { get; set; }
     public required string? Reporter { get; set; }
+    public int? ReporterUserId { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
     public required DateTimeOffset UpdatedAt { get; set; }
     public required DateTimeOffset? ResolvedAt { get; set; }

@@ -45,9 +45,12 @@ public class JiraIngestionPipeline(
             throw new InvalidOperationException("An ingestion is already in progress.");
 
         _currentStatus = "running_full";
+        bool mutationStarted = false;
 
         try
         {
+            database.BeginContentMutation(ct);
+            mutationStarted = true;
             logger.LogInformation("Starting full ingestion");
 
             string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
@@ -56,6 +59,7 @@ public class JiraIngestionPipeline(
 
             // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            ct.ThrowIfCancellationRequested();
 
             List<JiraProjectConfig> projects = project is not null
                 ? [new JiraProjectConfig { Key = project }]
@@ -79,17 +83,25 @@ public class JiraIngestionPipeline(
 
                     string jql = jqlOverride ?? proj.Jql ?? $"project = \"{proj.Key}\"";
                     IngestionResult downloadResult = await source.DownloadAllAsync(proj, jql, ct);
+                    ct.ThrowIfCancellationRequested();
                     combined = MergeResults(combined, downloadResult);
 
-                    UpdateSyncState(downloadResult, proj.Key, "full");
-                    source.UpdateProjectCounters(proj.Key, downloadResult.CompletedAt);
+                    DateTimeOffset? watermark = UpdateSyncState(downloadResult, proj.Key, "full");
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger.LogError(ex, "Ingestion failed for project {Project}", proj.Key);
-                    combined = MergeResults(combined, new IngestionResult(
+                    IngestionResult failureResult = new IngestionResult(
                         0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
-                        DateTimeOffset.UtcNow));
+                        DateTimeOffset.UtcNow);
+                    combined = MergeResults(combined, failureResult);
+                    DateTimeOffset? watermark = UpdateSyncState(
+                        failureResult,
+                        proj.Key,
+                        "full",
+                        ex);
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
             }
 
@@ -110,7 +122,17 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _runLock.Release();
+            try
+            {
+                if (mutationStarted)
+                {
+                    database.CompleteContentMutation(CancellationToken.None);
+                }
+            }
+            finally
+            {
+                _runLock.Release();
+            }
         }
     }
 
@@ -121,15 +143,19 @@ public class JiraIngestionPipeline(
             throw new InvalidOperationException("An ingestion is already in progress.");
 
         _currentStatus = "running_incremental";
+        bool mutationStarted = false;
 
         try
         {
+            database.BeginContentMutation(ct);
+            mutationStarted = true;
             string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
             if (wgXmlPath is not null)
                 hl7WorkGroupIndexer.Rebuild(wgXmlPath, ct);
 
             // Pre-seed from cache if DB is empty (load ALL projects at once)
             IngestionResult? cacheResult = await LoadCacheIfDatabaseEmptyAsync(ct);
+            ct.ThrowIfCancellationRequested();
 
             List<JiraProjectConfig> projects = project is not null
                 ? [new JiraProjectConfig { Key = project }]
@@ -154,17 +180,25 @@ public class JiraIngestionPipeline(
 
                     IngestionResult downloadResult = await source.DownloadIncrementalAsync(
                         proj, proj.Jql, since, ct);
+                    ct.ThrowIfCancellationRequested();
                     combined = MergeResults(combined, downloadResult);
 
-                    UpdateSyncState(downloadResult, proj.Key, "incremental");
-                    source.UpdateProjectCounters(proj.Key, downloadResult.CompletedAt);
+                    DateTimeOffset? watermark = UpdateSyncState(downloadResult, proj.Key, "incremental");
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger.LogError(ex, "Ingestion failed for project {Project}", proj.Key);
-                    combined = MergeResults(combined, new IngestionResult(
+                    IngestionResult failureResult = new IngestionResult(
                         0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
-                        DateTimeOffset.UtcNow));
+                        DateTimeOffset.UtcNow);
+                    combined = MergeResults(combined, failureResult);
+                    DateTimeOffset? watermark = UpdateSyncState(
+                        failureResult,
+                        proj.Key,
+                        "incremental",
+                        ex);
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
             }
 
@@ -185,7 +219,17 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _runLock.Release();
+            try
+            {
+                if (mutationStarted)
+                {
+                    database.CompleteContentMutation(CancellationToken.None);
+                }
+            }
+            finally
+            {
+                _runLock.Release();
+            }
         }
     }
 
@@ -202,12 +246,30 @@ public class JiraIngestionPipeline(
             throw new InvalidOperationException("An ingestion is already in progress.");
 
         _currentStatus = "rebuilding";
+        bool mutationStarted = false;
 
         try
         {
+            database.BeginContentMutation(ct);
+            mutationStarted = true;
             logger.LogInformation("Rebuilding database from cache");
+
+            IReadOnlyDictionary<string, DateTimeOffset?> watermarks;
+            long contentRevision;
+            using (SqliteConnection captureConnection = database.OpenConnection())
+            {
+                using SqliteCommand captureTransaction = captureConnection.CreateCommand();
+                captureTransaction.CommandText = "BEGIN DEFERRED;";
+                captureTransaction.ExecuteNonQuery();
+                watermarks = JiraSyncStateHelper.CaptureProjectWatermarks(captureConnection);
+                contentRevision = JiraDatabase.ReadSourceState(captureConnection).ContentRevision;
+                captureTransaction.CommandText = "COMMIT;";
+                captureTransaction.ExecuteNonQuery();
+            }
+
             string? wgXmlPath = await workGroupSupportFileAcquirer.EnsureAsync(ct).ConfigureAwait(false);
-            database.ResetDatabase(ct);
+            database.ResetDatabase(watermarks, contentRevision, ct);
+            source.ClearUserCache();
             if (wgXmlPath is not null)
                 hl7WorkGroupIndexer.Rebuild(wgXmlPath, ct);
 
@@ -225,16 +287,24 @@ public class JiraIngestionPipeline(
                 try
                 {
                     IngestionResult projectResult = await source.LoadFromCacheAsync(project: proj.Key, ct: ct);
+                    ct.ThrowIfCancellationRequested();
                     combined = MergeResults(combined, projectResult);
-                    UpdateSyncState(projectResult, proj.Key, "rebuild");
-                    source.UpdateProjectCounters(proj.Key, projectResult.CompletedAt);
+                    DateTimeOffset? watermark = UpdateSyncState(projectResult, proj.Key, "rebuild");
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logger.LogError(ex, "Rebuild failed for project {Project}", proj.Key);
-                    combined = MergeResults(combined, new IngestionResult(
+                    IngestionResult failureResult = new IngestionResult(
                         0, 0, 0, 1, [$"Project {proj.Key}: {ex.Message}"],
-                        DateTimeOffset.UtcNow));
+                        DateTimeOffset.UtcNow);
+                    combined = MergeResults(combined, failureResult);
+                    DateTimeOffset? watermark = UpdateSyncState(
+                        failureResult,
+                        proj.Key,
+                        "rebuild",
+                        ex);
+                    source.UpdateProjectCounters(proj.Key, watermark);
                 }
             }
 
@@ -255,7 +325,17 @@ public class JiraIngestionPipeline(
         }
         finally
         {
-            _runLock.Release();
+            try
+            {
+                if (mutationStarted)
+                {
+                    database.CompleteContentMutation(CancellationToken.None);
+                }
+            }
+            finally
+            {
+                _runLock.Release();
+            }
         }
     }
 
@@ -381,7 +461,12 @@ public class JiraIngestionPipeline(
         }
     }
 
-    private void UpdateSyncState(IngestionResult result, string project, string runType, CancellationToken ct = default)
+    private DateTimeOffset? UpdateSyncState(
+        IngestionResult result,
+        string project,
+        string runType,
+        Exception? failure = null,
+        CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -389,6 +474,14 @@ public class JiraIngestionPipeline(
 
         string subSource = JiraSyncStateHelper.SyncKey(project, runType);
         JiraSyncStateRecord? existing = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: subSource);
+        DateTimeOffset? previousWatermark =
+            JiraSyncStateHelper.GetLastSuccessfulSyncAt(connection, project);
+        DateTimeOffset? nextWatermark =
+            JiraSyncStateHelper.ComputeNextLastSuccessfulSyncAt(
+                previousWatermark,
+                runType,
+                failure is null ? result : null);
+        bool completedWithErrors = result.ItemsFailed > 0 || result.Errors.Count > 0;
 
         JiraSyncStateRecord syncState = new JiraSyncStateRecord
         {
@@ -396,44 +489,36 @@ public class JiraIngestionPipeline(
             SourceName = JiraSource.SourceName,
             SubSource = subSource,
             LastSyncAt = result.CompletedAt,
+            LastSuccessfulSyncAt = nextWatermark,
             LastCursor = null,
             ItemsIngested = result.ItemsProcessed,
             SyncSchedule = _options.SyncSchedule,
             NextScheduledAt = DateTimeOffset.UtcNow.Add(TimeSpan.Parse(_options.SyncSchedule)),
-            Status = result.Errors.Count == 0 ? "success" : "completed_with_errors",
-            LastError = result.Errors.Count > 0 ? result.Errors[^1] : null,
+            Status = failure is not null
+                ? "failed"
+                : completedWithErrors
+                    ? "completed_with_errors"
+                    : "success",
+            LastError = failure?.Message ??
+                        (result.Errors.Count > 0 ? result.Errors[^1] : null),
         };
 
         if (existing is not null)
             JiraSyncStateRecord.Update(connection, syncState);
         else
             JiraSyncStateRecord.Insert(connection, syncState);
+
+        return nextWatermark;
     }
 
     private DateTimeOffset GetLastSyncTime(string project)
     {
         using SqliteConnection connection = database.OpenConnection();
 
-        // Try project-scoped key first
-        string subSource = JiraSyncStateHelper.SyncKey(project, "incremental");
-        JiraSyncStateRecord? state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: subSource);
-
-        // Also check for "full" sync state if no incremental state exists
-        if (state is null)
-        {
-            string fullSubSource = JiraSyncStateHelper.SyncKey(project, "full");
-            state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: fullSubSource);
-        }
-
-        // Backward compat: check for old un-prefixed rows (only for the default project)
-        if (state is null && project == _options.DefaultProject)
-        {
-            state = JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: "incremental");
-            state ??= JiraSyncStateRecord.SelectSingle(connection, SourceName: JiraSource.SourceName, SubSource: "full");
-        }
-
-        if (state is not null)
-            return state.LastSyncAt;
+        DateTimeOffset? lastSuccessfulSyncAt =
+            JiraSyncStateHelper.GetLastSuccessfulSyncAt(connection, project);
+        if (lastSuccessfulSyncAt is not null)
+            return lastSuccessfulSyncAt.Value;
 
         // No DB record — check cache for the latest cached date and resume from the day after
         HashSet<DateOnly> cachedDates = source.GetCachedDates(project);
@@ -469,13 +554,9 @@ public class JiraIngestionPipeline(
     public DateTimeOffset? GetLastSyncCompletedAt()
     {
         using SqliteConnection connection = database.OpenConnection();
-        List<JiraSyncStateRecord> allStates = JiraSyncStateRecord.SelectList(connection)
-            .Where(s => s.SourceName == JiraSource.SourceName)
-            .ToList();
-
-        if (allStates.Count == 0)
-            return null;
-
-        return allStates.Max(s => s.LastSyncAt);
+        return JiraSyncStateHelper.CaptureProjectWatermarks(connection)
+            .Values
+            .Where(value => value is not null)
+            .Max();
     }
 }

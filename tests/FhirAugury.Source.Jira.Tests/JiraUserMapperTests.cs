@@ -37,6 +37,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "alice");
         Assert.NotNull(record);
         Assert.Equal("Alice A", record.DisplayName);
+        Assert.True(record.HasExplicitDisplayName);
         Assert.Equal(id.Value, record.Id);
     }
 
@@ -65,6 +66,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "alice");
         Assert.NotNull(record);
         Assert.Equal("Alice B", record.DisplayName);
+        Assert.True(record.HasExplicitDisplayName);
     }
 
     [Fact]
@@ -77,7 +79,7 @@ public class JiraUserMapperTests : IDisposable
     }
 
     [Fact]
-    public void ResolveUser_UsernameOnly_UsesAsDisplayName()
+    public void UsernameOnlyUser_IsNotEligibleForPublicPeopleProjection()
     {
         using SqliteConnection conn = _db.OpenConnection();
         int? id = _mapper.ResolveUser(conn, "alice", null);
@@ -87,6 +89,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "alice");
         Assert.NotNull(record);
         Assert.Equal("alice", record.DisplayName);
+        Assert.False(record.HasExplicitDisplayName);
     }
 
     [Fact]
@@ -100,6 +103,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "Alice A");
         Assert.NotNull(record);
         Assert.Equal("Alice A", record.DisplayName);
+        Assert.True(record.HasExplicitDisplayName);
     }
 
     [Fact]
@@ -113,6 +117,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "Bob B");
         Assert.NotNull(record);
         Assert.Equal("Bob B", record.DisplayName);
+        Assert.True(record.HasExplicitDisplayName);
     }
 
     [Fact]
@@ -199,5 +204,39 @@ public class JiraUserMapperTests : IDisposable
         Assert.NotNull(id1);
         Assert.NotNull(id2);
         Assert.NotEqual(id1, id2);
+    }
+
+    [Fact]
+    public void ResolveUser_LaterDisplayNameUpgradesCachedUsernameOnlyRow()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        int? placeholderId = _mapper.ResolveUser(conn, "alice", null);
+
+        int? upgradedId = _mapper.ResolveUser(conn, "alice", "Alice A");
+
+        Assert.Equal(placeholderId, upgradedId);
+        JiraUserRecord record = Assert.Single(JiraUserRecord.SelectList(conn));
+        Assert.Equal("Alice A", record.DisplayName);
+        Assert.True(record.HasExplicitDisplayName);
+    }
+
+    [Fact]
+    public void ResolveByDisplayName_UpgradesLegacyMatchingRow()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        JiraUserRecord legacy = new()
+        {
+            Id = JiraUserRecord.GetIndex(),
+            Username = "legacy",
+            DisplayName = "Legacy User",
+            HasExplicitDisplayName = false,
+        };
+        JiraUserRecord.Insert(conn, legacy);
+
+        int? id = _mapper.ResolveByDisplayName(conn, "Legacy User");
+
+        Assert.Equal(legacy.Id, id);
+        JiraUserRecord upgraded = Assert.Single(JiraUserRecord.SelectList(conn));
+        Assert.True(upgraded.HasExplicitDisplayName);
     }
 }

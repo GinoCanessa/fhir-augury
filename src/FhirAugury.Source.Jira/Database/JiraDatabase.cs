@@ -1,6 +1,7 @@
 using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -18,6 +19,9 @@ public class JiraDatabase : SourceDatabase
     }
 
     protected override void InitializeSchema(SqliteConnection connection)
+        => InitializeSchema(connection, recoverStaleMutation: true);
+
+    private void InitializeSchema(SqliteConnection connection, bool recoverStaleMutation)
     {
         JiraUserRecord.CreateTable(connection);
         JiraProjectRecord.CreateTable(connection);
@@ -34,6 +38,7 @@ public class JiraDatabase : SourceDatabase
         JiraIssueLinkRecord.CreateTable(connection);
         JiraIssueRelatedRecord.CreateTable(connection);
         JiraSyncStateRecord.CreateTable(connection);
+        JiraSourceStateRecord.CreateTable(connection);
         JiraKeywordRecord.CreateTable(connection);
         JiraCorpusKeywordRecord.CreateTable(connection);
         JiraDocStatsRecord.CreateTable(connection);
@@ -62,19 +67,76 @@ public class JiraDatabase : SourceDatabase
         CreateJiraBaldefFts(connection);
         CreateJiraBallotFts(connection);
 
-        MigrateSchema(connection);
+        MigrateSchema(connection, recoverStaleMutation);
     }
 
     /// <summary>
     /// Applies schema migrations for tables/columns added after initial
     /// release. Safe to call repeatedly; each migration checks before altering.
     /// </summary>
-    private static void MigrateSchema(SqliteConnection connection)
+    private static void MigrateSchema(
+        SqliteConnection connection,
+        bool recoverStaleMutation)
     {
+        // Additive source-provenance migrations must run before any generated
+        // reader materializes the newly-added record properties.
+        AddColumnIfMissing(
+            connection,
+            "sync_state",
+            "LastSuccessfulSyncAt",
+            "TEXT NULL");
+        AddColumnIfMissing(
+            connection,
+            "jira_users",
+            "HasExplicitDisplayName",
+            "INTEGER NOT NULL DEFAULT 0");
+        foreach (string table in new[]
+                 {
+                     "jira_issues",
+                     "jira_pss",
+                     "jira_baldef",
+                     "jira_ballot",
+                 })
+        {
+            AddColumnIfMissing(
+                connection,
+                table,
+                "AssigneeUserId",
+                "INTEGER NULL");
+            AddColumnIfMissing(
+                connection,
+                table,
+                "ReporterUserId",
+                "INTEGER NULL");
+        }
+
+        // A legacy successful upstream row is the only unambiguous source for
+        // a historical watermark. Rebuilds, partial/error outcomes, and
+        // unknown run types intentionally remain null.
+        using (SqliteCommand backfill = connection.CreateCommand())
+        {
+            backfill.CommandText = """
+                UPDATE sync_state
+                SET LastSuccessfulSyncAt = LastSyncAt
+                WHERE LastSuccessfulSyncAt IS NULL
+                  AND lower(trim(SourceName)) = 'jira'
+                  AND lower(trim(Status)) = 'success'
+                  AND lower(trim(
+                        CASE
+                          WHEN instr(SubSource, ':') > 0
+                            THEN substr(SubSource, instr(SubSource, ':') + 1)
+                          ELSE SubSource
+                        END
+                      )) IN ('full', 'incremental')
+                """;
+            backfill.ExecuteNonQuery();
+        }
+
         // Migration: add jira_projects table for older databases that did
         // not include it at initial schema creation. CreateTable is
         // idempotent (CREATE TABLE IF NOT EXISTS), so this is safe.
         JiraProjectRecord.CreateTable(connection);
+        RealignProjectLastSyncAt(connection);
 
         // Migration: add hl7_workgroups (FR 02) for older databases.
         Hl7WorkGroupRecord.CreateTable(connection);
@@ -98,6 +160,114 @@ public class JiraDatabase : SourceDatabase
         AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountWithdrawn",        "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountDeferred",         "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing(connection, "jira_index_workgroups", "IssueCountOther",            "INTEGER NOT NULL DEFAULT 0");
+
+        EnsureSourceState(connection);
+        if (recoverStaleMutation)
+        {
+            RecoverStaleSourceState(connection);
+        }
+    }
+
+    private static void EnsureSourceState(SqliteConnection connection)
+    {
+        using SqliteCommand insert = connection.CreateCommand();
+        insert.CommandText = """
+            INSERT OR IGNORE INTO jira_source_state
+                (Id, ContentRevision, MutationInProgress, UpdatedAt)
+            VALUES
+                (@id, 0, 0, @updatedAt)
+            """;
+        insert.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+        insert.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+        insert.ExecuteNonQuery();
+    }
+
+    private static void RecoverStaleSourceState(SqliteConnection connection)
+    {
+        JiraSourceStateRecord sourceState = ReadSourceState(connection);
+        if (!sourceState.MutationInProgress)
+        {
+            return;
+        }
+
+        using SqliteCommand update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE jira_source_state
+            SET ContentRevision = ContentRevision + 1,
+                MutationInProgress = 0,
+                UpdatedAt = @updatedAt
+            WHERE Id = @id
+            """;
+        update.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+        update.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+        update.ExecuteNonQuery();
+    }
+
+    private static void RealignProjectLastSyncAt(SqliteConnection connection)
+    {
+        IReadOnlyDictionary<string, DateTimeOffset?> watermarks =
+            JiraSyncStateHelper.CaptureProjectWatermarks(connection);
+
+        foreach (JiraProjectRecord project in JiraProjectRecord.SelectList(connection))
+        {
+            DateTimeOffset? canonical = watermarks.TryGetValue(
+                project.Key,
+                out DateTimeOffset? watermark)
+                ? watermark
+                : null;
+            if (project.LastSyncAt == canonical)
+            {
+                continue;
+            }
+
+            project.LastSyncAt = canonical;
+            JiraProjectRecord.Update(connection, project);
+        }
+    }
+
+    /// <summary>Reads the singleton source generation state.</summary>
+    public static JiraSourceStateRecord ReadSourceState(SqliteConnection connection)
+        => JiraSourceStateRecord.SelectSingle(
+               connection,
+               Id: JiraSourceStateRecord.SingletonId)
+           ?? throw new InvalidOperationException("The Jira source state row is missing.");
+
+    /// <summary>
+    /// Advances the source revision and marks the following writes unstable.
+    /// </summary>
+    public JiraSourceStateRecord BeginContentMutation(CancellationToken ct = default)
+        => AdvanceContentRevision(mutationInProgress: true, ct);
+
+    /// <summary>
+    /// Advances the source revision once more and exposes the resulting
+    /// on-disk generation as stable, including after a failed mutation.
+    /// </summary>
+    public JiraSourceStateRecord CompleteContentMutation(CancellationToken ct = default)
+        => AdvanceContentRevision(mutationInProgress: false, ct);
+
+    private JiraSourceStateRecord AdvanceContentRevision(
+        bool mutationInProgress,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE jira_source_state
+            SET ContentRevision = ContentRevision + 1,
+                MutationInProgress = @mutationInProgress,
+                UpdatedAt = @updatedAt
+            WHERE Id = @id
+            """;
+        update.Parameters.AddWithValue("@mutationInProgress", mutationInProgress);
+        update.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+        update.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+        if (update.ExecuteNonQuery() != 1)
+        {
+            throw new InvalidOperationException("The Jira source state row is missing.");
+        }
+
+        return ReadSourceState(connection);
     }
 
     /// <summary>
@@ -219,8 +389,60 @@ public class JiraDatabase : SourceDatabase
         ct.ThrowIfCancellationRequested();
         using SqliteConnection connection = OpenConnection();
 
-        using SqliteCommand cmd = connection.CreateCommand();
-        cmd.CommandText = """
+        IReadOnlyDictionary<string, DateTimeOffset?> watermarks =
+            JiraSyncStateHelper.CaptureProjectWatermarks(connection);
+        JiraSourceStateRecord sourceState = ReadSourceState(connection);
+
+        ResetDatabase(
+            connection,
+            watermarks,
+            sourceState.ContentRevision,
+            ct);
+
+        // A direct reset owns its complete mutation fence. Rebuild callers
+        // begin the outer fence first and complete it after replay/indexing.
+        if (!sourceState.MutationInProgress)
+        {
+            CompleteContentMutation(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Resets local storage while preserving previously proven upstream
+    /// watermarks. The newly-created database remains mutation-fenced for the
+    /// caller's subsequent cache replay.
+    /// </summary>
+    internal void ResetDatabase(
+        IReadOnlyDictionary<string, DateTimeOffset?> watermarks,
+        long previousContentRevision,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        ResetDatabase(connection, watermarks, previousContentRevision, ct);
+    }
+
+    private void ResetDatabase(
+        SqliteConnection connection,
+        IReadOnlyDictionary<string, DateTimeOffset?> watermarks,
+        long previousContentRevision,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        using SqliteCommand transactionCommand = connection.CreateCommand();
+        transactionCommand.CommandText = "BEGIN IMMEDIATE;";
+        transactionCommand.ExecuteNonQuery();
+
+        try
+        {
+            long resetContentRevision = checked(
+                Math.Max(
+                    previousContentRevision,
+                    ReadSourceState(connection).ContentRevision) + 1);
+
+            using SqliteCommand cmd = connection.CreateCommand();
+            cmd.CommandText = """
             DROP TABLE IF EXISTS jira_issues_fts;
             DROP TABLE IF EXISTS jira_comments_fts;
             DROP TABLE IF EXISTS jira_pss_fts;
@@ -236,6 +458,7 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS jira_issue_related;
             DROP TABLE IF EXISTS jira_issue_labels;
             DROP TABLE IF EXISTS sync_state;
+            DROP TABLE IF EXISTS jira_source_state;
             DROP TABLE IF EXISTS index_keywords;
             DROP TABLE IF EXISTS index_corpus;
             DROP TABLE IF EXISTS index_doc_stats;
@@ -259,9 +482,37 @@ public class JiraDatabase : SourceDatabase
             DROP TABLE IF EXISTS xref_fhir_element;
             DROP TABLE IF EXISTS hl7_workgroups;
             """;
-        cmd.ExecuteNonQuery();
+            cmd.ExecuteNonQuery();
 
-        InitializeSchema(connection);
+            InitializeSchema(connection, recoverStaleMutation: false);
+            JiraSyncStateHelper.RestoreProjectWatermarks(connection, watermarks);
+
+            using (SqliteCommand updateState = connection.CreateCommand())
+            {
+                updateState.CommandText = """
+                    UPDATE jira_source_state
+                    SET ContentRevision = @contentRevision,
+                        MutationInProgress = 1,
+                        UpdatedAt = @updatedAt
+                    WHERE Id = @id
+                    """;
+                updateState.Parameters.AddWithValue(
+                    "@contentRevision",
+                    resetContentRevision);
+                updateState.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+                updateState.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+                updateState.ExecuteNonQuery();
+            }
+
+            transactionCommand.CommandText = "COMMIT;";
+            transactionCommand.ExecuteNonQuery();
+        }
+        catch
+        {
+            transactionCommand.CommandText = "ROLLBACK;";
+            transactionCommand.ExecuteNonQuery();
+            throw;
+        }
     }
 
 }

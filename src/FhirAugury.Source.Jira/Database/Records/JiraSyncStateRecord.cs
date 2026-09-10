@@ -14,6 +14,7 @@ public partial record class JiraSyncStateRecord : ISyncState
     public required string SourceName { get; set; }
     public required string SubSource { get; set; }
     public required DateTimeOffset LastSyncAt { get; set; }
+    public DateTimeOffset? LastSuccessfulSyncAt { get; set; }
     public required string? LastCursor { get; set; }
     public required int ItemsIngested { get; set; }
     public required string? SyncSchedule { get; set; }

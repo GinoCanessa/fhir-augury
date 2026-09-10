@@ -2,6 +2,7 @@ using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -40,9 +41,271 @@ public class JiraDatabaseTests : IDisposable
         Assert.Contains("index_doc_stats", tables);
         Assert.Contains("jira_users", tables);
         Assert.Contains("jira_issue_inpersons", tables);
+        Assert.Contains("jira_source_state", tables);
         Assert.Contains("jira_index_users", tables);
         Assert.Contains("jira_index_inpersons", tables);
         Assert.Contains("hl7_workgroups", tables);
+    }
+
+    [Fact]
+    public void MigrateSchema_BackfillsOnlySuccessfulUpstreamWatermarks()
+    {
+        DateTimeOffset fullAt = new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset legacyIncrementalAt = fullAt.AddDays(1);
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                DROP TABLE sync_state;
+                CREATE TABLE sync_state (
+                    Id INTEGER PRIMARY KEY,
+                    SourceName TEXT NOT NULL,
+                    SubSource TEXT NOT NULL,
+                    LastSyncAt TEXT NOT NULL,
+                    LastCursor TEXT NULL,
+                    ItemsIngested INTEGER NOT NULL,
+                    SyncSchedule TEXT NULL,
+                    NextScheduledAt TEXT NULL,
+                    Status TEXT NOT NULL,
+                    LastError TEXT NULL
+                );
+                INSERT INTO sync_state
+                    (Id, SourceName, SubSource, LastSyncAt, LastCursor,
+                     ItemsIngested, SyncSchedule, NextScheduledAt, Status, LastError)
+                VALUES
+                    (1, 'jira', 'FHIR:full', @fullAt, NULL, 10, NULL, NULL, 'success', NULL),
+                    (2, 'jira', 'FHIR:incremental', @partialAt, NULL, 5, NULL, NULL, 'completed_with_errors', 'partial'),
+                    (3, 'jira', 'PSS:rebuild', @rebuildAt, NULL, 5, NULL, NULL, 'success', NULL),
+                    (4, 'jira', 'BALDEF:unknown', @unknownAt, NULL, 5, NULL, NULL, 'success', NULL),
+                    (5, 'jira', 'incremental', @legacyAt, NULL, 5, NULL, NULL, 'success', NULL),
+                    (6, 'jira', 'CDA:full', @failedAt, NULL, 0, NULL, NULL, 'failed', 'failure'),
+                    (7, 'other', 'OTHER:full', @otherAt, NULL, 1, NULL, NULL, 'success', NULL);
+                """;
+            command.Parameters.AddWithValue("@fullAt", fullAt);
+            command.Parameters.AddWithValue("@partialAt", fullAt.AddHours(1));
+            command.Parameters.AddWithValue("@rebuildAt", fullAt.AddHours(2));
+            command.Parameters.AddWithValue("@unknownAt", fullAt.AddHours(3));
+            command.Parameters.AddWithValue("@legacyAt", legacyIncrementalAt);
+            command.Parameters.AddWithValue("@failedAt", fullAt.AddHours(4));
+            command.Parameters.AddWithValue("@otherAt", fullAt.AddHours(5));
+            command.ExecuteNonQuery();
+        }
+
+        _db.Initialize();
+
+        using SqliteConnection check = _db.OpenConnection();
+        Dictionary<string, DateTimeOffset?> migrated = JiraSyncStateRecord
+            .SelectList(check)
+            .ToDictionary(record => record.SubSource, record => record.LastSuccessfulSyncAt);
+
+        Assert.Equal(fullAt, migrated["FHIR:full"]);
+        Assert.Equal(legacyIncrementalAt, migrated["incremental"]);
+        Assert.Null(migrated["FHIR:incremental"]);
+        Assert.Null(migrated["PSS:rebuild"]);
+        Assert.Null(migrated["BALDEF:unknown"]);
+        Assert.Null(migrated["CDA:full"]);
+        Assert.Null(migrated["OTHER:full"]);
+    }
+
+    [Fact]
+    public void MigrateSchema_ExistingUsersRemainIneligibleUntilReingested()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                DROP TABLE jira_users;
+                CREATE TABLE jira_users (
+                    Id INTEGER PRIMARY KEY,
+                    Username TEXT NOT NULL UNIQUE,
+                    DisplayName TEXT NOT NULL
+                );
+                INSERT INTO jira_users (Id, Username, DisplayName)
+                VALUES (1, 'legacy.user', 'Legacy User');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        _db.Initialize();
+
+        using SqliteConnection check = _db.OpenConnection();
+        JiraUserRecord user = Assert.Single(JiraUserRecord.SelectList(check));
+        Assert.False(user.HasExplicitDisplayName);
+    }
+
+    [Fact]
+    public void MigrateSchema_AddsPeopleIdentityColumnsWithoutBindingLegacyRows()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            JiraIssueRecord legacy = CreateSampleIssue("FHIR-LEGACY");
+            legacy.Reporter = "Shared Display Name";
+            legacy.Assignee = "Shared Display Name";
+            JiraIssueRecord.Insert(connection, legacy);
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                ALTER TABLE jira_issues DROP COLUMN AssigneeUserId;
+                ALTER TABLE jira_issues DROP COLUMN ReporterUserId;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        _db.Initialize();
+
+        using SqliteConnection check = _db.OpenConnection();
+        JiraIssueRecord migrated = Assert.Single(
+            JiraIssueRecord.SelectList(check, Key: "FHIR-LEGACY"));
+        Assert.Null(migrated.AssigneeUserId);
+        Assert.Null(migrated.ReporterUserId);
+        Assert.Equal("Shared Display Name", migrated.Assignee);
+        Assert.Equal("Shared Display Name", migrated.Reporter);
+    }
+
+    [Fact]
+    public void MigrateSchema_RealignsProjectTimestampsToCanonicalWatermarks()
+    {
+        DateTimeOffset successfulAt =
+            new(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset staleLocalAt = successfulAt.AddDays(5);
+
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            JiraProjectRecord.Insert(connection, new JiraProjectRecord
+            {
+                Id = JiraProjectRecord.GetIndex(),
+                Key = "FHIR",
+                Enabled = true,
+                BaselineValue = 5,
+                IssueCount = 0,
+                LastSyncAt = staleLocalAt,
+            });
+            JiraProjectRecord.Insert(connection, new JiraProjectRecord
+            {
+                Id = JiraProjectRecord.GetIndex(),
+                Key = "PSS",
+                Enabled = true,
+                BaselineValue = 5,
+                IssueCount = 0,
+                LastSyncAt = staleLocalAt,
+            });
+            JiraProjectRecord.Insert(connection, new JiraProjectRecord
+            {
+                Id = JiraProjectRecord.GetIndex(),
+                Key = "NO-SYNC",
+                Enabled = true,
+                BaselineValue = 5,
+                IssueCount = 0,
+                LastSyncAt = staleLocalAt,
+            });
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                DROP TABLE sync_state;
+                CREATE TABLE sync_state (
+                    Id INTEGER PRIMARY KEY,
+                    SourceName TEXT NOT NULL,
+                    SubSource TEXT NOT NULL,
+                    LastSyncAt TEXT NOT NULL,
+                    LastCursor TEXT NULL,
+                    ItemsIngested INTEGER NOT NULL,
+                    SyncSchedule TEXT NULL,
+                    NextScheduledAt TEXT NULL,
+                    Status TEXT NOT NULL,
+                    LastError TEXT NULL
+                );
+                INSERT INTO sync_state
+                    (Id, SourceName, SubSource, LastSyncAt, LastCursor,
+                     ItemsIngested, SyncSchedule, NextScheduledAt, Status, LastError)
+                VALUES
+                    (1, 'jira', 'FHIR:full', @successfulAt, NULL, 10, NULL, NULL, 'success', NULL),
+                    (2, 'jira', 'FHIR:rebuild', @staleLocalAt, NULL, 10, NULL, NULL, 'success', NULL),
+                    (3, 'jira', 'PSS:incremental', @staleLocalAt, NULL, 5, NULL, NULL, 'completed_with_errors', 'partial');
+                """;
+            command.Parameters.AddWithValue("@successfulAt", successfulAt);
+            command.Parameters.AddWithValue("@staleLocalAt", staleLocalAt);
+            command.ExecuteNonQuery();
+        }
+
+        _db.Initialize();
+
+        using SqliteConnection check = _db.OpenConnection();
+        Dictionary<string, DateTimeOffset?> migrated = JiraProjectRecord
+            .SelectList(check)
+            .ToDictionary(project => project.Key, project => project.LastSyncAt);
+        Assert.Equal(successfulAt, migrated["FHIR"]);
+        Assert.Null(migrated["PSS"]);
+        Assert.Null(migrated["NO-SYNC"]);
+    }
+
+    [Fact]
+    public void SourceState_BracketsMutationAndSurvivesResetWithHigherRevision()
+    {
+        DateTimeOffset watermark = new(2026, 9, 8, 14, 30, 0, TimeSpan.Zero);
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            JiraProjectRecord.Insert(connection, new JiraProjectRecord
+            {
+                Id = JiraProjectRecord.GetIndex(),
+                Key = "FHIR",
+                Enabled = true,
+                BaselineValue = 5,
+                IssueCount = 0,
+                LastSyncAt = watermark,
+            });
+            JiraSyncStateRecord.Insert(connection, new JiraSyncStateRecord
+            {
+                Id = JiraSyncStateRecord.GetIndex(),
+                SourceName = JiraSource.SourceName,
+                SubSource = JiraSyncStateHelper.SyncKey("FHIR", "full"),
+                LastSyncAt = watermark,
+                LastSuccessfulSyncAt = watermark,
+                LastCursor = null,
+                ItemsIngested = 10,
+                SyncSchedule = null,
+                NextScheduledAt = null,
+                Status = "success",
+                LastError = null,
+            });
+        }
+
+        JiraSourceStateRecord inProgress = _db.BeginContentMutation();
+        Assert.True(inProgress.MutationInProgress);
+
+        IReadOnlyDictionary<string, DateTimeOffset?> captured;
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            captured = JiraSyncStateHelper.CaptureProjectWatermarks(connection);
+        }
+
+        _db.ResetDatabase(captured, inProgress.ContentRevision);
+
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            JiraSourceStateRecord resetState = JiraDatabase.ReadSourceState(connection);
+            Assert.True(resetState.MutationInProgress);
+            Assert.True(resetState.ContentRevision > inProgress.ContentRevision);
+            Assert.Equal(
+                watermark,
+                JiraSyncStateHelper.GetLastSuccessfulSyncAt(connection, "FHIR"));
+        }
+
+        JiraSourceStateRecord completed = _db.CompleteContentMutation();
+        Assert.False(completed.MutationInProgress);
+        Assert.True(completed.ContentRevision > inProgress.ContentRevision);
+    }
+
+    [Fact]
+    public void Initialize_RecoversStaleMutationWithNewStableRevision()
+    {
+        JiraSourceStateRecord stale = _db.BeginContentMutation();
+
+        _db.Initialize();
+
+        using SqliteConnection connection = _db.OpenConnection();
+        JiraSourceStateRecord recovered = JiraDatabase.ReadSourceState(connection);
+        Assert.False(recovered.MutationInProgress);
+        Assert.True(recovered.ContentRevision > stale.ContentRevision);
     }
 
     [Fact]

@@ -319,6 +319,12 @@ public class JiraSource(
         return Task.FromResult(new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt));
     }
 
+    /// <summary>
+    /// Clears user ID mappings before a destructive database reset is
+    /// replayed. Cached IDs belong to the prior database generation.
+    /// </summary>
+    internal void ClearUserCache() => userMapper.ClearCache();
+
     private static IEnumerable<JiraParsedItem> ParseCachedFile(
         Stream stream, string key, IReadOnlyDictionary<string, JiraProjectShape> shapeMap)
     {
@@ -549,8 +555,14 @@ public class JiraSource(
         // below; user resolution is intentionally not deduplicated.
         foreach (JiraParsedItem item in items)
         {
-            userMapper.ResolveUser(conn, item.UserInfo.AssigneeUsername, item.UserInfo.AssigneeDisplayName);
-            userMapper.ResolveUser(conn, item.UserInfo.ReporterUsername, item.UserInfo.ReporterDisplayName);
+            item.BaseRecord.AssigneeUserId = userMapper.ResolveUser(
+                conn,
+                item.UserInfo.AssigneeUsername,
+                item.UserInfo.AssigneeDisplayName);
+            item.BaseRecord.ReporterUserId = userMapper.ResolveUser(
+                conn,
+                item.UserInfo.ReporterUsername,
+                item.UserInfo.ReporterDisplayName);
             userMapper.ResolveByDisplayName(conn, item.VoteMover);
             userMapper.ResolveByDisplayName(conn, item.VoteSeconder);
 
@@ -858,11 +870,14 @@ public class JiraSource(
     }
 
     /// <summary>
-    /// Updates the <c>IssueCount</c> and <c>LastSyncAt</c> columns on the
-    /// project row from the current contents of <c>jira_issues</c>. No-op
-    /// if the project row does not exist.
+    /// Updates the <c>IssueCount</c> and aligns <c>LastSyncAt</c> with the
+    /// canonical successful upstream watermark. Local rebuild or partial-run
+    /// completion times are never substituted. No-op if the project row does
+    /// not exist.
     /// </summary>
-    public void UpdateProjectCounters(string projectKey, DateTimeOffset syncedAt)
+    public void UpdateProjectCounters(
+        string projectKey,
+        DateTimeOffset? lastSuccessfulSyncAt)
     {
         using SqliteConnection connection = database.OpenConnection();
         JiraProjectRecord? existing = JiraProjectRecord.SelectSingle(connection, Key: projectKey);
@@ -874,7 +889,7 @@ public class JiraSource(
         int count = Convert.ToInt32(cmd.ExecuteScalar());
 
         existing.IssueCount = count;
-        existing.LastSyncAt = syncedAt;
+        existing.LastSyncAt = lastSuccessfulSyncAt;
         JiraProjectRecord.Update(connection, existing);
     }
 }

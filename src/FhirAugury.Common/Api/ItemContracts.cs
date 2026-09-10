@@ -1,5 +1,24 @@
 namespace FhirAugury.Common.Api;
 
+/// <summary>
+/// Identifies the source-owned database generation represented by a response.
+/// Project refresh values are the latest successful upstream refreshes known
+/// for each project; they are independent of the latest local mutation.
+/// </summary>
+public record SourceReadProvenance
+{
+    public required string Source { get; init; }
+    public required long ContentRevision { get; init; }
+    public required bool IsStable { get; init; }
+    public required IReadOnlyDictionary<string, DateTimeOffset?> ProjectLastSuccessfulRefreshAt { get; init; }
+}
+
+/// <summary>Display-name-only people associated with an item.</summary>
+public record ItemPeopleResponse(
+    string? Reporter,
+    string? Assignee,
+    IReadOnlyList<string> InPersonRequesters);
+
 /// <summary>Full item detail from a source service.</summary>
 public record ItemResponse
 {
@@ -13,6 +32,8 @@ public record ItemResponse
     public DateTimeOffset? UpdatedAt { get; init; }
     public Dictionary<string, string>? Metadata { get; init; }
     public List<CommentInfo>? Comments { get; init; }
+    public SourceReadProvenance? Provenance { get; init; }
+    public ItemPeopleResponse? People { get; init; }
 }
 
 /// <summary>A comment on an item.</summary>

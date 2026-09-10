@@ -57,7 +57,11 @@ public record JiraLocalProcessingListResponse(
     IReadOnlyList<JiraIssueSummaryEntry> Results,
     int Limit,
     int Offset,
-    int Total);
+    int Total)
+{
+    /// <summary>The source database generation represented by this page.</summary>
+    public SourceReadProvenance? Provenance { get; init; }
+}
 
 /// <summary>Set-processed request for a single Jira issue key.</summary>
 public record JiraLocalProcessingSetRequest

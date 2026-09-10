@@ -137,8 +137,8 @@ public static class JiraXmlParser
         record.Type = JiraFieldMapper.CleanFieldValue(item.Type?.Text) ?? "Unknown";
         record.Priority = JiraFieldMapper.CleanFieldValue(item.Priority?.Text) ?? "Unknown";
         record.Status = JiraFieldMapper.CleanFieldValue(item.Status?.Text) ?? "Unknown";
-        record.Assignee = JiraFieldMapper.CleanFieldValue(item.Assignee?.Text ?? item.Assignee?.Username);
-        record.Reporter = JiraFieldMapper.CleanFieldValue(item.Reporter?.Text ?? item.Reporter?.Username);
+        record.Assignee = JiraFieldMapper.CleanFieldValue(item.Assignee?.Text);
+        record.Reporter = JiraFieldMapper.CleanFieldValue(item.Reporter?.Text);
         record.CreatedAt = ParseDate(item.Created);
         record.UpdatedAt = ParseDate(item.Updated);
         record.ResolvedAt = ParseNullableDate(item.Resolved);

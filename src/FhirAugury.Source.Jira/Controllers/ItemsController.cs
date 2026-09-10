@@ -5,6 +5,7 @@ using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -26,9 +27,16 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
     {
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN DEFERRED;";
+        transaction.ExecuteNonQuery();
         JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
         if (issue is null)
+        {
+            transaction.CommandText = "COMMIT;";
+            transaction.ExecuteNonQuery();
             return NotFound(new { error = $"Issue {key} not found" });
+        }
 
         Dictionary<string, string> metadata = new()
         {
@@ -63,6 +71,14 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
                 c.Id.ToString(), c.Author, c.Body, c.CreatedAt, null)).ToList();
         }
 
+        ItemPeopleResponse people = new(
+            ResolveExplicitDisplayName(connection, issue.ReporterUserId),
+            ResolveExplicitDisplayName(connection, issue.AssigneeUserId),
+            ReadInPersonRequesters(connection, key));
+        SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
+            connection,
+            [issue.ProjectKey]);
+
         ItemResponse response = new ItemResponse
         {
             Source = SourceSystems.Jira,
@@ -74,8 +90,12 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             UpdatedAt = issue.UpdatedAt,
             Metadata = metadata,
             Comments = comments,
+            Provenance = provenance,
+            People = people,
         };
 
+        transaction.CommandText = "COMMIT;";
+        transaction.ExecuteNonQuery();
         return Ok(response);
     }
 
@@ -245,5 +265,58 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             .ToList();
 
         return Ok(links);
+    }
+
+    private static string? ResolveExplicitDisplayName(
+        SqliteConnection connection,
+        int? userId)
+    {
+        if (userId is null)
+        {
+            return null;
+        }
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DisplayName
+            FROM jira_users
+            WHERE Id = @userId
+              AND HasExplicitDisplayName = 1
+              AND trim(DisplayName) <> ''
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("@userId", userId.Value);
+        return (command.ExecuteScalar() as string)?.Trim();
+    }
+
+    private static IReadOnlyList<string> ReadInPersonRequesters(
+        SqliteConnection connection,
+        string issueKey)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT u.DisplayName
+            FROM jira_issue_inpersons AS requester
+            INNER JOIN jira_users AS u ON u.Id = requester.UserId
+            WHERE requester.IssueKey = @issueKey
+              AND u.HasExplicitDisplayName = 1
+              AND trim(u.DisplayName) <> ''
+            ORDER BY u.DisplayName COLLATE NOCASE, u.DisplayName, u.Id
+            """;
+        command.Parameters.AddWithValue("@issueKey", issueKey);
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        List<string> displayNames = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string displayName = reader.GetString(0).Trim();
+            if (seen.Add(displayName))
+            {
+                displayNames.Add(displayName);
+            }
+        }
+
+        return displayNames;
     }
 }

@@ -1,7 +1,10 @@
+using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Source.Jira.Tests;
 
@@ -93,6 +96,37 @@ public class JiraProjectBaselineTests : IDisposable
         Assert.Single(ranked);
         Assert.Equal("ORPHAN-1", ranked[0].Key);
         Assert.True(ranked[0].Score > 0);
+    }
+
+    [Fact]
+    public void UpdateProjectCounters_RebuildKeepsCanonicalSuccessfulWatermark()
+    {
+        DateTimeOffset successfulAt = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset localRebuildAt = successfulAt.AddDays(1);
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            InsertProject(connection, "FHIR", baseline: 5);
+            JiraProjectRecord project = JiraProjectRecord.SelectSingle(connection, Key: "FHIR")!;
+            project.LastSyncAt = localRebuildAt;
+            JiraProjectRecord.Update(connection, project);
+            InsertIssue(connection, "FHIR-1", "FHIR", "first issue");
+            InsertIssue(connection, "FHIR-2", "FHIR", "second issue");
+        }
+
+        JiraSource source = new(
+            Options.Create(new JiraServiceOptions()),
+            httpClientFactory: null!,
+            _db,
+            cache: null!,
+            new JiraUserMapper(),
+            NullLogger<JiraSource>.Instance);
+
+        source.UpdateProjectCounters("FHIR", successfulAt);
+
+        using SqliteConnection check = _db.OpenConnection();
+        JiraProjectRecord updated = JiraProjectRecord.SelectSingle(check, Key: "FHIR")!;
+        Assert.Equal(2, updated.IssueCount);
+        Assert.Equal(successfulAt, updated.LastSyncAt);
     }
 
     private static void InsertProject(SqliteConnection conn, string key, int baseline)
