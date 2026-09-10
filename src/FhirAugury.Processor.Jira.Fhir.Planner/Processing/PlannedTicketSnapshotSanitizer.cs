@@ -1,11 +1,12 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 
 public sealed class PlannedTicketSnapshotSanitizer(string runId)
-    : AuthoringSnapshotSanitizer(CreateTables())
+    : AuthoringSnapshotSanitizer(PlannedTicketSnapshotSchemaV1.Catalog)
 {
     public override async Task SanitizeAsync(
         SqliteConnection connection,
@@ -129,35 +130,6 @@ public sealed class PlannedTicketSnapshotSanitizer(string runId)
             ("@runId", runId));
         await base.SanitizeAsync(connection, ct);
     }
-
-    private static IReadOnlyList<AuthoringSnapshotTable> CreateTables()
-        =>
-        [
-            .. AuthoringSnapshotSanitizer.GetCoreTableDefinitions(),
-            new("planned_tickets"),
-            new("planned_ticket_repos"),
-            new("planned_ticket_repo_changes"),
-            new("planned_ticket_repo_impacts"),
-            new("planned_ticket_change_validations"),
-            new("planned_ticket_testing_considerations"),
-            new("planned_ticket_open_questions"),
-            new("planned_ticket_related_jira"),
-            new("planned_ticket_related_zulip"),
-            new("planned_ticket_related_github"),
-            new("planned_ticket_hydration"),
-            new("planned_jira_hydration"),
-            new("planned_zulip_hydration"),
-            new("planned_github_hydration"),
-            new("planned_repo_hydration"),
-            new("planned_ticket_jira_xref"),
-            new("planned_ticket_jira_content"),
-            new("planned_ticket_topics"),
-            new("planned_ticket_topic_groups"),
-            new("planned_ticket_topic_members"),
-            new("planned_ticket_topic_repos"),
-            new("planned_ticket_partition_receipts"),
-            new("jira_review_workgroups"),
-        ];
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,

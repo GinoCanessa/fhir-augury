@@ -1,3 +1,4 @@
+using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processing.Common.Database;
@@ -16,6 +17,11 @@ public class AuthoringSnapshotSanitizer
         _tables = tables.ToDictionary(table => table.Name, StringComparer.OrdinalIgnoreCase);
     }
 
+    public AuthoringSnapshotSanitizer(AuthoringSnapshotSchemaCatalog schema)
+        : this(CreateTableDefinitions(schema))
+    {
+    }
+
     public static AuthoringSnapshotSanitizer CreateCore(
         IEnumerable<AuthoringSnapshotTable>? domainTables = null)
     {
@@ -29,66 +35,17 @@ public class AuthoringSnapshotSanitizer
     }
 
     public static IReadOnlyList<AuthoringSnapshotTable> GetCoreTableDefinitions()
-        =>
-        [
-            new(
-                "authoring_runs",
-                [
-                    "Id",
-                    "ProcessorKind",
-                    "AuthoringEpoch",
-                    "Status",
-                    "DatabaseOnly",
-                    "TotalItems",
-                    "CreatedAt",
-                    "StartedAt",
-                    "CompletedAt",
-                    "SnapshotId",
-                ]),
-            new(
-                "authoring_run_items",
-                [
-                    "Id",
-                    "RunId",
-                    "BusinessKey",
-                    "ItemKind",
-                    "ExpectedSourceRevision",
-                    "Status",
-                    "AcceptedReceiptId",
-                    "AttemptCount",
-                    "CreatedAt",
-                    "StartedAt",
-                    "CompletedAt",
-                ]),
-            new(
-                "authoring_result_receipts",
-                [
-                    "Id",
-                    "OperationId",
-                    "RunId",
-                    "RunItemId",
-                    "BusinessKey",
-                    "ContentHash",
-                    "ExpectedSourceRevision",
-                    "ObservedSourceRevision",
-                    "AuthoringEpoch",
-                    "PersistedAt",
-                ]),
-            new(
-                "authoring_snapshot_provenance",
-                [
-                    "SnapshotId",
-                    "ProcessorKind",
-                    "RunId",
-                    "AuthoringEpoch",
-                    "Sequence",
-                    "SchemaVersion",
-                    "ItemCount",
-                    "ReceiptCount",
-                    "TableCountsJson",
-                    "CreatedAt",
-                ]),
-        ];
+        => AuthoringSnapshotSchemaV1.CoreTables
+            .Select(table => new AuthoringSnapshotTable(table.Name, table.Columns))
+            .ToArray();
+
+    private static IEnumerable<AuthoringSnapshotTable> CreateTableDefinitions(
+        AuthoringSnapshotSchemaCatalog schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return schema.Tables.Select(
+            table => new AuthoringSnapshotTable(table.Name, table.Columns));
+    }
 
     public virtual async Task SanitizeAsync(SqliteConnection connection, CancellationToken ct = default)
     {

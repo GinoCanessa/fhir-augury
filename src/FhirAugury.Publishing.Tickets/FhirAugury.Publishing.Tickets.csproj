@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+  <Import Project="..\sqlite.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Publishing.Tickets</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Common\FhirAugury.Common.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Client\FhirAugury.Processing.Client.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processing.Contracts\FhirAugury.Processing.Contracts.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts\FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj" />
+    <ProjectReference Include="..\FhirAugury.Processor.Jira.Fhir.Planner.Contracts\FhirAugury.Processor.Jira.Fhir.Planner.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Publishing.Tickets.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="web-assets\discussion\index.template.html" LogicalName="web-assets/discussion/index.template.html" />
+    <EmbeddedResource Include="web-assets\discussion\app.css" LogicalName="web-assets/discussion/app.css" />
+    <EmbeddedResource Include="web-assets\discussion\app.js" LogicalName="web-assets/discussion/app.js" />
+    <EmbeddedResource Include="web-assets\applying\index.template.html" LogicalName="web-assets/applying/index.template.html" />
+    <EmbeddedResource Include="web-assets\applying\app.css" LogicalName="web-assets/applying/app.css" />
+    <EmbeddedResource Include="web-assets\applying\app.js" LogicalName="web-assets/applying/app.js" />
+    <EmbeddedResource Include="web-assets\shared\sql-wasm.js" LogicalName="web-assets/shared/sql-wasm.js" />
+    <EmbeddedResource Include="web-assets\shared\sql-wasm.wasm" LogicalName="web-assets/shared/sql-wasm.wasm" />
+    <EmbeddedResource Include="web-assets\shared\marked.min.js" LogicalName="web-assets/shared/marked.min.js" />
+    <EmbeddedResource Include="web-assets\shared\purify.min.js" LogicalName="web-assets/shared/purify.min.js" />
+    <EmbeddedResource Include="web-assets\chooser\index.template.html" LogicalName="web-assets/chooser/index.template.html" />
+    <EmbeddedResource Include="web-assets\chooser\chooser.css" LogicalName="web-assets/chooser/chooser.css" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="SourceGear.sqlite3" Version="3.53.3" />
+    <PackageReference Update="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+  </ItemGroup>
+</Project>

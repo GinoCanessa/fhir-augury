@@ -1,93 +1,21 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using FhirAugury.Common.IO;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 /// <summary>
-/// Fail-fast assertion that the preparer DB has already been hydrated.
-/// <c>ticket-site</c> discussion sub-site is a pure consumer of a hydrated DB now; the
-/// preparer service owns the hydration sweep (startup + admin
-/// endpoint). If the DB does not carry a <c>prepared_ticket_hydration</c>
-/// table with at least one row, the tool aborts with an actionable
-/// error pointing operators at the service.
+/// Validates the public schema, provenance, integrity, and browser queries
+/// required by the immutable discussion and applying renderers.
 /// </summary>
 internal static class HydrationAssertion
 {
-    public const int SupportedSnapshotSchemaVersion = 1;
+    public const int SupportedSnapshotSchemaVersion =
+        AuthoringSnapshotSchemaV1.Version;
     public const string JiraProcessorKind = "jira-fhir";
-
-    private static readonly string[] CorePublicTables =
-    [
-        "authoring_runs",
-        "authoring_run_items",
-        "authoring_result_receipts",
-        "authoring_snapshot_provenance",
-    ];
-
-    private static readonly string[] PreparerCountTables =
-    [
-        "prepared_tickets",
-        "prepared_ticket_repos",
-        "prepared_ticket_related_jira",
-        "prepared_ticket_related_zulip",
-        "prepared_ticket_related_github",
-        "prepared_ticket_hydration",
-        "prepared_jira_hydration",
-        "prepared_ticket_jira_content",
-        "prepared_ticket_artifacts",
-        "prepared_ticket_pages",
-        "prepared_ticket_topics",
-        "prepared_ticket_topic_groups",
-        "prepared_ticket_topic_members",
-        "prepared_ticket_partition_receipts",
-        "jira_review_workgroups",
-    ];
-
-    private static readonly string[] PreparerPublicTables =
-    [
-        .. CorePublicTables,
-        .. PreparerCountTables,
-        "prepared_github_hydration",
-        "prepared_repo_hydration",
-        "prepared_ticket_jira_xref",
-        "prepared_zulip_hydration",
-    ];
-
-    private static readonly string[] PlannerCountTables =
-    [
-        "planned_tickets",
-        "planned_ticket_repos",
-        "planned_ticket_repo_changes",
-        "planned_ticket_repo_impacts",
-        "planned_ticket_change_validations",
-        "planned_ticket_testing_considerations",
-        "planned_ticket_open_questions",
-        "planned_ticket_hydration",
-        "planned_jira_hydration",
-        "planned_ticket_jira_content",
-        "planned_ticket_topics",
-        "planned_ticket_topic_groups",
-        "planned_ticket_topic_members",
-        "planned_ticket_topic_repos",
-        "planned_ticket_partition_receipts",
-        "jira_review_workgroups",
-    ];
-
-    private static readonly string[] PlannerPublicTables =
-    [
-        .. CorePublicTables,
-        .. PlannerCountTables,
-        "planned_github_hydration",
-        "planned_repo_hydration",
-        "planned_ticket_jira_xref",
-        "planned_ticket_related_github",
-        "planned_ticket_related_jira",
-        "planned_ticket_related_zulip",
-        "planned_zulip_hydration",
-    ];
 
     private static readonly string[] ForbiddenColumnFragments =
     [
@@ -101,188 +29,75 @@ internal static class HydrationAssertion
         "diagnostic",
     ];
 
-    private static readonly string[] SanitizedAuthoringRunColumns =
-    [
-        "Id",
-        "ProcessorKind",
-        "AuthoringEpoch",
-        "Status",
-        "DatabaseOnly",
-        "TotalItems",
-        "CreatedAt",
-        "StartedAt",
-        "CompletedAt",
-        "SnapshotId",
-    ];
-
-    private static readonly string[] SanitizedAuthoringRunItemColumns =
-    [
-        "Id",
-        "RunId",
-        "BusinessKey",
-        "ItemKind",
-        "ExpectedSourceRevision",
-        "Status",
-        "AcceptedReceiptId",
-        "AttemptCount",
-        "CreatedAt",
-        "StartedAt",
-        "CompletedAt",
-    ];
-
-    private static readonly string[] SanitizedReceiptColumns =
-    [
-        "Id",
-        "OperationId",
-        "RunId",
-        "RunItemId",
-        "BusinessKey",
-        "ContentHash",
-        "ExpectedSourceRevision",
-        "ObservedSourceRevision",
-        "AuthoringEpoch",
-        "PersistedAt",
-    ];
-
-    private static readonly string[] SnapshotProvenanceColumns =
-    [
-        "SnapshotId",
-        "ProcessorKind",
-        "RunId",
-        "AuthoringEpoch",
-        "Sequence",
-        "SchemaVersion",
-        "ItemCount",
-        "ReceiptCount",
-        "TableCountsJson",
-        "CreatedAt",
-    ];
-
-    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyCollection<string>>>
-        PreparerSchema = new(() => CreateExpectedSchema(PreparerSubSiteEmitter.Kind));
-
-    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyCollection<string>>>
-        PlannerSchema = new(() => CreateExpectedSchema(PlannerSubSiteEmitter.Kind));
-
     public sealed record SnapshotValidationResult(
         AuthoringSnapshotDescriptor Descriptor,
         IReadOnlyDictionary<string, long> TableCounts);
 
-    public static async Task<SnapshotValidationResult?> ValidateSnapshotAsync(
-        string dbPath,
-        string descriptorPath,
-        string siteKind,
-        TextWriter stderr,
-        CancellationToken ct)
-    {
-        await using ImmutableFileSnapshot snapshot =
-            await ImmutableFileSnapshot.CreateAsync(dbPath, ct).ConfigureAwait(false);
-        return await ValidateSnapshotAsync(
-            snapshot,
-            descriptorPath,
-            siteKind,
-            stderr,
-            ct).ConfigureAwait(false);
-    }
-
-    public static async Task<SnapshotValidationResult?> ValidateSnapshotAsync(
+    public static async Task<SnapshotValidationResult> ValidateSnapshotAsync(
         ImmutableFileSnapshot snapshot,
-        string descriptorPath,
-        string siteKind,
-        TextWriter stderr,
+        AuthoringSnapshotDescriptor descriptor,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
-        try
+        ValidateDescriptorShape(descriptor, snapshot);
+        ValidateWholeFile(snapshot, descriptor);
+
+        await using SqliteConnection connection = OpenReadOnly(snapshot.Path);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await ValidatePublicSchemaAsync(connection, siteKind, ct).ConfigureAwait(false);
+        await ValidateBrowserQueriesAsync(connection, siteKind, ct).ConfigureAwait(false);
+        await ValidateIntegrityAsync(connection, ct).ConfigureAwait(false);
+        await ValidateProvenanceAsync(connection, descriptor, ct).ConfigureAwait(false);
+
+        IReadOnlyList<string> countTables = GetSchema(siteKind).CountedTables;
+        ValidateDescriptorCountKeys(descriptor.TableCounts, countTables);
+        IReadOnlyDictionary<string, long> counts =
+            await ReadTableCountsAsync(connection, countTables, ct).ConfigureAwait(false);
+        foreach ((string table, long expected) in descriptor.TableCounts)
         {
-            AuthoringSnapshotDescriptor descriptor =
-                await ReadDescriptorAsync(descriptorPath, ct).ConfigureAwait(false);
-            ValidateDescriptorShape(descriptor, snapshot);
-            ValidateWholeFile(snapshot, descriptor);
-
-            await using SqliteConnection connection = OpenReadOnly(snapshot.Path);
-            await connection.OpenAsync(ct).ConfigureAwait(false);
-            await ValidatePublicSchemaAsync(connection, siteKind, ct).ConfigureAwait(false);
-            await ValidateBrowserQueriesAsync(connection, siteKind, ct).ConfigureAwait(false);
-            await ValidateIntegrityAsync(connection, ct).ConfigureAwait(false);
-            await ValidateProvenanceAsync(connection, descriptor, ct).ConfigureAwait(false);
-
-            string[] countTables = siteKind == PreparerSubSiteEmitter.Kind
-                ? PreparerCountTables
-                : PlannerCountTables;
-            ValidateDescriptorCountKeys(descriptor.TableCounts, countTables);
-            IReadOnlyDictionary<string, long> counts =
-                await ReadTableCountsAsync(connection, countTables, ct).ConfigureAwait(false);
-            foreach ((string table, long expected) in descriptor.TableCounts)
-            {
-                if (!counts.TryGetValue(table, out long actual) || actual != expected)
-                {
-                    throw new InvalidOperationException(
-                        $"Snapshot table count mismatch for '{table}': descriptor={expected}, database={actual}.");
-                }
-            }
-
-            long itemCount = await ScalarInt64Async(
-                connection,
-                "SELECT COUNT(*) FROM authoring_run_items WHERE RunId = @runId",
-                ct,
-                ("@runId", descriptor.RunId)).ConfigureAwait(false);
-            long receiptCount = await ScalarInt64Async(
-                connection,
-                "SELECT COUNT(*) FROM authoring_result_receipts",
-                ct).ConfigureAwait(false);
-            if (itemCount != descriptor.ItemCount)
+            if (!counts.TryGetValue(table, out long actual) || actual != expected)
             {
                 throw new InvalidOperationException(
-                    $"Snapshot item count mismatch: descriptor={descriptor.ItemCount}, database={itemCount}.");
+                    $"Snapshot table count mismatch for '{table}': descriptor={expected}, database={actual}.");
             }
-            if (receiptCount != descriptor.ReceiptCount)
-            {
-                throw new InvalidOperationException(
-                    $"Snapshot receipt count mismatch: descriptor={descriptor.ReceiptCount}, database={receiptCount}.");
-            }
+        }
 
-            await ValidateTicketCompletenessAsync(connection, siteKind, ct)
-                .ConfigureAwait(false);
-            return new SnapshotValidationResult(descriptor, counts);
-        }
-        catch (Exception ex) when (
-            ex is IOException or UnauthorizedAccessException or JsonException or
-            CryptographicException or SqliteException or InvalidOperationException)
+        long itemCount = await ScalarInt64Async(
+            connection,
+            "SELECT COUNT(*) FROM authoring_run_items WHERE RunId = @runId",
+            ct,
+            ("@runId", descriptor.RunId)).ConfigureAwait(false);
+        long receiptCount = await ScalarInt64Async(
+            connection,
+            "SELECT COUNT(*) FROM authoring_result_receipts",
+            ct).ConfigureAwait(false);
+        if (itemCount != descriptor.ItemCount)
         {
-            await stderr.WriteLineAsync($"Snapshot validation failed: {ex.Message}")
-                .ConfigureAwait(false);
-            return null;
+            throw new InvalidOperationException(
+                $"Snapshot item count mismatch: descriptor={descriptor.ItemCount}, database={itemCount}.");
         }
+        if (receiptCount != descriptor.ReceiptCount)
+        {
+            throw new InvalidOperationException(
+                $"Snapshot receipt count mismatch: descriptor={descriptor.ReceiptCount}, database={receiptCount}.");
+        }
+
+        await ValidateTicketCompletenessAsync(connection, siteKind, ct)
+            .ConfigureAwait(false);
+        return new SnapshotValidationResult(descriptor, counts);
     }
 
     public static async Task<IReadOnlyDictionary<string, long>> ReadManifestCountsAsync(
         string dbPath,
-        string siteKind,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
         await using SqliteConnection connection = OpenReadOnly(dbPath);
         await connection.OpenAsync(ct).ConfigureAwait(false);
-        string[] tables = siteKind == PreparerSubSiteEmitter.Kind
-            ? PreparerCountTables
-            : PlannerCountTables;
-        return await ReadTableCountsAsync(connection, tables, ct).ConfigureAwait(false);
-    }
-
-    private static async Task<AuthoringSnapshotDescriptor> ReadDescriptorAsync(
-        string descriptorPath,
-        CancellationToken ct)
-    {
-        if (!File.Exists(descriptorPath))
-        {
-            throw new IOException($"Descriptor file not found: {descriptorPath}");
-        }
-        await using FileStream stream = File.OpenRead(descriptorPath);
-        return await JsonSerializer.DeserializeAsync<AuthoringSnapshotDescriptor>(
-            stream,
-            new JsonSerializerOptions(JsonSerializerDefaults.Web),
-            ct).ConfigureAwait(false)
-            ?? throw new InvalidOperationException(
-                $"Descriptor file '{descriptorPath}' is empty.");
+        return await ReadTableCountsAsync(
+            connection,
+            GetSchema(siteKind).CountedTables,
+            ct).ConfigureAwait(false);
     }
 
     private static void ValidateDescriptorShape(
@@ -319,6 +134,11 @@ internal static class HydrationAssertion
             throw new InvalidOperationException(
                 "Descriptor item and receipt counts are inconsistent.");
         }
+        if (descriptor.TableCounts is null)
+        {
+            throw new InvalidOperationException(
+                "Descriptor table counts are required.");
+        }
         if (descriptor.SizeBytes < 1 ||
             !string.Equals(
                 snapshot.SourceFileName,
@@ -328,7 +148,7 @@ internal static class HydrationAssertion
             throw new InvalidOperationException(
                 "Descriptor file name or size is inconsistent with the snapshot input.");
         }
-        if (descriptor.Sha256.Length != 64 ||
+        if (descriptor.Sha256 is not { Length: 64 } ||
             descriptor.Sha256.Any(character => !Uri.IsHexDigit(character)))
         {
             throw new InvalidOperationException(
@@ -357,13 +177,14 @@ internal static class HydrationAssertion
 
     private static async Task ValidatePublicSchemaAsync(
         SqliteConnection connection,
-        string siteKind,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
         IReadOnlyDictionary<string, IReadOnlyCollection<string>> expected =
-            siteKind == PreparerSubSiteEmitter.Kind
-                ? PreparerSchema.Value
-                : PlannerSchema.Value;
+            GetSchema(siteKind).Tables.ToDictionary(
+                table => table.Name,
+                table => (IReadOnlyCollection<string>)table.Columns,
+                StringComparer.OrdinalIgnoreCase);
 
         await using SqliteCommand objects = connection.CreateCommand();
         objects.CommandText =
@@ -448,11 +269,11 @@ internal static class HydrationAssertion
 
     private static async Task ValidateBrowserQueriesAsync(
         SqliteConnection connection,
-        string siteKind,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
         string[] queries;
-        if (siteKind == PreparerSubSiteEmitter.Kind)
+        if (siteKind == TicketSiteKind.Discussion)
         {
             await ExecuteAsync(
                 connection,
@@ -539,62 +360,6 @@ internal static class HydrationAssertion
             await using SqliteDataReader reader =
                 await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         }
-    }
-
-    private static IReadOnlyDictionary<string, IReadOnlyCollection<string>>
-        CreateExpectedSchema(string siteKind)
-    {
-        using SqliteConnection connection = new("Data Source=:memory:");
-        connection.Open();
-        string[] publicTables;
-        if (siteKind == PreparerSubSiteEmitter.Kind)
-        {
-            FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.PreparerDatabase
-                .EnsureSchema(connection);
-            publicTables = PreparerPublicTables;
-        }
-        else
-        {
-            FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.PlannerDatabase
-                .EnsureSchema(connection);
-            publicTables = PlannerPublicTables;
-        }
-
-        Dictionary<string, IReadOnlyCollection<string>> schema =
-            new(StringComparer.OrdinalIgnoreCase);
-        foreach (string table in publicTables)
-        {
-            schema[table] = table switch
-            {
-                "authoring_runs" => SanitizedAuthoringRunColumns,
-                "authoring_run_items" => SanitizedAuthoringRunItemColumns,
-                "authoring_result_receipts" => SanitizedReceiptColumns,
-                "authoring_snapshot_provenance" => SnapshotProvenanceColumns,
-                _ => ReadColumnNames(connection, table),
-            };
-        }
-        return schema;
-    }
-
-    private static IReadOnlyList<string> ReadColumnNames(
-        SqliteConnection connection,
-        string table)
-    {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            $"PRAGMA table_info(\"{table.Replace("\"", "\"\"", StringComparison.Ordinal)}\")";
-        using SqliteDataReader reader = command.ExecuteReader();
-        List<string> columns = [];
-        while (reader.Read())
-        {
-            columns.Add(reader.GetString(1));
-        }
-        if (columns.Count == 0)
-        {
-            throw new InvalidOperationException(
-                $"Producer schema did not create required public table '{table}'.");
-        }
-        return columns;
     }
 
     private static async Task<IReadOnlyList<string>> ReadColumnNamesAsync(
@@ -752,25 +517,26 @@ internal static class HydrationAssertion
 
     private static async Task ValidateTicketCompletenessAsync(
         SqliteConnection connection,
-        string siteKind,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
-        string ticketTable = siteKind == PreparerSubSiteEmitter.Kind
+        bool discussion = siteKind == TicketSiteKind.Discussion;
+        string ticketTable = discussion
             ? "prepared_tickets"
             : "planned_tickets";
-        string hydrationTable = siteKind == PreparerSubSiteEmitter.Kind
+        string hydrationTable = discussion
             ? "prepared_ticket_hydration"
             : "planned_ticket_hydration";
-        string hydrationKey = siteKind == PreparerSubSiteEmitter.Kind
+        string hydrationKey = discussion
             ? "TicketKey"
             : "IssueKey";
-        string jiraTable = siteKind == PreparerSubSiteEmitter.Kind
+        string jiraTable = discussion
             ? "prepared_jira_hydration"
             : "planned_jira_hydration";
-        string jiraParentKey = siteKind == PreparerSubSiteEmitter.Kind
+        string jiraParentKey = discussion
             ? "TicketKey"
             : "IssueKey";
-        string partitionTable = siteKind == PreparerSubSiteEmitter.Kind
+        string partitionTable = discussion
             ? "prepared_ticket_partition_receipts"
             : "planned_ticket_partition_receipts";
 
@@ -819,6 +585,19 @@ internal static class HydrationAssertion
             Mode = SqliteOpenMode.ReadOnly,
             Pooling = false,
         }.ToString());
+
+    private static AuthoringSnapshotSchemaCatalog GetSchema(
+        TicketSiteKind siteKind)
+        => siteKind switch
+        {
+            TicketSiteKind.Discussion =>
+                PreparedTicketSnapshotSchemaV1.Catalog,
+            TicketSiteKind.Applying =>
+                PlannedTicketSnapshotSchemaV1.Catalog,
+            _ => throw new TicketSitePublishException(
+                TicketSitePublishFailure.InvalidRequest,
+                $"Unknown ticket site kind '{siteKind}'."),
+        };
 
     private static async Task<IReadOnlyDictionary<string, long>> ReadTableCountsAsync(
         SqliteConnection connection,

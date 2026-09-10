@@ -1,14 +1,13 @@
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 internal static class FilterResolver
 {
-    public static async Task<ResolvedFilters?> TryResolveAsync(
+    public static async Task<ResolvedFilters> ResolveAsync(
         string dbPath,
-        CliOptions cli,
-        string kind,
-        TextWriter stderr,
+        TicketSiteFilters requested,
+        TicketSiteKind siteKind,
         CancellationToken ct)
     {
         SqliteConnectionStringBuilder builder = new()
@@ -21,50 +20,50 @@ internal static class FilterResolver
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
         string? canonicalSpec = null;
-        if (!string.IsNullOrEmpty(cli.FilterSpec))
+        if (!string.IsNullOrEmpty(requested.Specification))
         {
             List<string> values = await GetDistinctAsync(
                 connection,
-                kind == PlannerSubSiteEmitter.Kind
+                siteKind == TicketSiteKind.Applying
                     ? "SELECT DISTINCT Specification FROM planned_ticket_hydration WHERE Specification IS NOT NULL"
                     : "SELECT DISTINCT Specification FROM prepared_ticket_hydration WHERE Specification IS NOT NULL",
                 ct).ConfigureAwait(false);
-            canonicalSpec = MatchCaseInsensitive(values, cli.FilterSpec);
+            canonicalSpec = MatchCaseInsensitive(values, requested.Specification);
             if (canonicalSpec is null)
             {
-                await WriteUnknownAsync(stderr, "--spec", cli.FilterSpec, values).ConfigureAwait(false);
-                return null;
+                throw Unknown("--spec", requested.Specification, values);
             }
         }
 
         string? canonicalProject = null;
-        if (!string.IsNullOrEmpty(cli.FilterProject))
+        if (!string.IsNullOrEmpty(requested.Project))
         {
             List<string> values = await GetDistinctAsync(
                 connection,
-                kind == PlannerSubSiteEmitter.Kind
+                siteKind == TicketSiteKind.Applying
                     ? "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM planned_tickets WHERE instr(Key, '-') > 1"
                     : "SELECT DISTINCT substr(Key, 1, instr(Key, '-') - 1) FROM prepared_tickets WHERE instr(Key, '-') > 1",
                 ct).ConfigureAwait(false);
-            canonicalProject = MatchCaseInsensitive(values, cli.FilterProject);
+            canonicalProject = MatchCaseInsensitive(values, requested.Project);
             if (canonicalProject is null)
             {
-                await WriteUnknownAsync(stderr, "--project", cli.FilterProject, values).ConfigureAwait(false);
-                return null;
+                throw Unknown("--project", requested.Project, values);
             }
         }
 
         string? canonicalWorkGroup = null;
-        if (!string.IsNullOrEmpty(cli.FilterWorkGroup))
+        if (!string.IsNullOrEmpty(requested.WorkGroup))
         {
             List<string> wgValues = await GetDistinctAsync(
                 connection,
-                kind == PlannerSubSiteEmitter.Kind
+                siteKind == TicketSiteKind.Applying
                     ? "SELECT DISTINCT WorkGroup FROM planned_jira_hydration WHERE IssueKey = JiraKey AND WorkGroup IS NOT NULL"
                     : "SELECT DISTINCT WorkGroup FROM prepared_jira_hydration WHERE TicketKey = JiraKey AND WorkGroup IS NOT NULL",
                 ct).ConfigureAwait(false);
 
-            string? directMatch = MatchCaseInsensitive(wgValues, cli.FilterWorkGroup);
+            string? directMatch = MatchCaseInsensitive(
+                wgValues,
+                requested.WorkGroup);
             if (directMatch is not null)
             {
                 canonicalWorkGroup = directMatch;
@@ -72,7 +71,7 @@ internal static class FilterResolver
             else
             {
                 string? resolved = await WorkGroupResolver.TryResolveAsync(
-                    cli.FilterWorkGroup,
+                    requested.WorkGroup,
                     dbPath,
                     ct).ConfigureAwait(false);
 
@@ -83,12 +82,7 @@ internal static class FilterResolver
 
                 if (canonicalWorkGroup is null)
                 {
-                    await WriteUnknownAsync(
-                        stderr,
-                        "--wg",
-                        cli.FilterWorkGroup,
-                        wgValues).ConfigureAwait(false);
-                    return null;
+                    throw Unknown("--wg", requested.WorkGroup, wgValues);
                 }
             }
         }
@@ -124,26 +118,18 @@ internal static class FilterResolver
         return null;
     }
 
-    private static async Task WriteUnknownAsync(
-        TextWriter stderr,
+    private static TicketSitePublishException Unknown(
         string flag,
         string raw,
         List<string> values)
     {
-        await stderr.WriteLineAsync($"Unknown value for {flag}: '{raw}'.").ConfigureAwait(false);
-        if (values.Count == 0)
-        {
-            await stderr.WriteLineAsync(
-                $"No values are present for {flag} in this processor snapshot.")
-                .ConfigureAwait(false);
-            return;
-        }
-        await stderr.WriteLineAsync("Available values:").ConfigureAwait(false);
         List<string> sorted = [.. values];
         sorted.Sort(StringComparer.OrdinalIgnoreCase);
-        foreach (string value in sorted)
-        {
-            await stderr.WriteLineAsync(value).ConfigureAwait(false);
-        }
+        string available = sorted.Count == 0
+            ? $"No values are present for {flag} in this processor snapshot."
+            : $"Available values:{Environment.NewLine}{string.Join(Environment.NewLine, sorted)}";
+        return new TicketSitePublishException(
+            TicketSitePublishFailure.FilterValidation,
+            $"Unknown value for {flag}: '{raw}'.{Environment.NewLine}{available}");
     }
 }

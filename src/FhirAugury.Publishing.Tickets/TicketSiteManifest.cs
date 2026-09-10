@@ -4,9 +4,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using FhirAugury.Processing.Contracts;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
-internal sealed record SiteBuildManifest(
+public sealed record TicketSiteManifestFilters(
+    string? Spec,
+    string? Project,
+    string? Wg);
+
+public sealed record TicketSiteManifest(
     string SiteKind,
     string ProcessorKind,
     string RunId,
@@ -21,7 +26,7 @@ internal sealed record SiteBuildManifest(
     int IncludedItemCount,
     int IncludedReceiptCount,
     IReadOnlyDictionary<string, long> TableCounts,
-    MetaFilters Filters,
+    TicketSiteManifestFilters Filters,
     string Title,
     string RendererAssetsVersion,
     string BuildIdentity,
@@ -37,7 +42,7 @@ internal sealed record SiteBuildManifest(
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static SiteBuildManifest Create(
+    internal static TicketSiteManifest Create(
         string siteKind,
         AuthoringSnapshotDescriptor descriptor,
         int includedItemCount,
@@ -72,12 +77,10 @@ internal sealed record SiteBuildManifest(
             includedItemCount,
             descriptor.ReceiptCount,
             tableCounts,
-            new MetaFilters
-            {
-                Spec = filters.Specification,
-                Project = filters.Project,
-                Wg = filters.WorkGroup,
-            },
+            new TicketSiteManifestFilters(
+                filters.Specification,
+                filters.Project,
+                filters.WorkGroup),
             title,
             rendererAssetsVersion,
             buildIdentity,
@@ -85,7 +88,7 @@ internal sealed record SiteBuildManifest(
             generatedAt);
     }
 
-    public static string ComputeBuildIdentity(
+    internal static string ComputeBuildIdentity(
         string siteKind,
         ResolvedFilters filters,
         string title,
@@ -107,20 +110,32 @@ internal sealed record SiteBuildManifest(
             .ToLowerInvariant();
     }
 
-    public static void Write(string directory, SiteBuildManifest manifest)
+    internal static async Task WriteAsync(
+        string directory,
+        TicketSiteManifest manifest,
+        CancellationToken ct)
     {
         Directory.CreateDirectory(directory);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(directory, FileName),
-            JsonSerializer.Serialize(manifest, SerializerOptions));
+            JsonSerializer.Serialize(manifest, SerializerOptions),
+            ct).ConfigureAwait(false);
     }
 
-    public static string ToSummaryJson(SiteBuildManifest manifest)
+    public static string ToSummaryJson(TicketSiteManifest manifest)
         => JsonSerializer.Serialize(manifest, SerializerOptions);
 
-    public static SiteBuildManifest Read(string path)
-        => JsonSerializer.Deserialize<SiteBuildManifest>(
+    public static TicketSiteManifest Read(string path)
+        => JsonSerializer.Deserialize<TicketSiteManifest>(
             File.ReadAllText(path),
+            SerializerOptions)
+        ?? throw new InvalidOperationException($"Site manifest '{path}' is empty.");
+
+    public static async Task<TicketSiteManifest> ReadAsync(
+        string path,
+        CancellationToken ct = default)
+        => JsonSerializer.Deserialize<TicketSiteManifest>(
+            await File.ReadAllTextAsync(path, ct).ConfigureAwait(false),
             SerializerOptions)
         ?? throw new InvalidOperationException($"Site manifest '{path}' is empty.");
 }

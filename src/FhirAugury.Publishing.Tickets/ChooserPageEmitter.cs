@@ -1,6 +1,6 @@
 using System.Reflection;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 /// <summary>
 /// Emits the chooser landing page at <c>&lt;rootOut&gt;/index.html</c>.
@@ -18,8 +18,12 @@ internal static class ChooserPageEmitter
     private const string ApplyingStateMarker = "<!-- __APPLYING_STATE__ -->";
     private const string AssetVersionMarker = "__ASSET_VERSION__";
 
-    public static void Emit(string rootOut)
+    public static async Task EmitAsync(
+        string rootOut,
+        Func<bool, bool, CancellationToken, Task>? beforeCommitAsync,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         Directory.CreateDirectory(rootOut);
         Directory.CreateDirectory(Path.Combine(rootOut, "assets"));
 
@@ -27,8 +31,10 @@ internal static class ChooserPageEmitter
         bool applyingLive = File.Exists(Path.Combine(rootOut, PlannerSubSiteEmitter.SubSiteFolder, "index.html"));
 
         Assembly asm = typeof(ChooserPageEmitter).Assembly;
-        string template = ReadEmbedded(asm, TemplateName);
-        string css = ReadEmbedded(asm, CssName);
+        string template = await ReadEmbeddedAsync(asm, TemplateName, ct)
+            .ConfigureAwait(false);
+        string css = await ReadEmbeddedAsync(asm, CssName, ct)
+            .ConfigureAwait(false);
 
         string html = template
             .Replace(DiscussionStateMarker, discussionLive ? "live" : "missing", StringComparison.Ordinal)
@@ -37,15 +43,52 @@ internal static class ChooserPageEmitter
                 AssetVersionMarker,
                 PreparerSubSiteEmitter.RendererAssetsVersion,
                 StringComparison.Ordinal);
-        File.WriteAllText(Path.Combine(rootOut, "index.html"), html);
-        File.WriteAllText(Path.Combine(rootOut, "assets", "chooser.css"), css);
+        string indexPath = Path.Combine(rootOut, "index.html");
+        string cssPath = Path.Combine(rootOut, "assets", "chooser.css");
+        string indexTempPath = indexPath + $".tmp-{Guid.NewGuid():N}";
+        string cssTempPath = cssPath + $".tmp-{Guid.NewGuid():N}";
+        try
+        {
+            await File.WriteAllTextAsync(indexTempPath, html, ct)
+                .ConfigureAwait(false);
+            await File.WriteAllTextAsync(cssTempPath, css, ct)
+                .ConfigureAwait(false);
+            if (beforeCommitAsync is not null)
+            {
+                await beforeCommitAsync(discussionLive, applyingLive, ct)
+                    .ConfigureAwait(false);
+            }
+
+            File.Move(cssTempPath, cssPath, overwrite: true);
+            File.Move(indexTempPath, indexPath, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(indexTempPath);
+            TryDelete(cssTempPath);
+        }
     }
 
-    private static string ReadEmbedded(Assembly asm, string name)
+    private static async Task<string> ReadEmbeddedAsync(
+        Assembly asm,
+        string name,
+        CancellationToken ct)
     {
         using Stream stream = asm.GetManifestResourceStream(name)
             ?? throw new InvalidOperationException($"Missing embedded resource: {name}");
         using StreamReader reader = new(stream);
-        return reader.ReadToEnd();
+        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 }

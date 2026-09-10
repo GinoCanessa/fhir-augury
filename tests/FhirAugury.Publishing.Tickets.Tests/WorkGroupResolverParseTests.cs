@@ -1,4 +1,4 @@
-namespace FhirAugury.Tools.TicketSite.Tests;
+namespace FhirAugury.Publishing.Tickets.Tests;
 
 public class WorkGroupResolverParseTests
 {

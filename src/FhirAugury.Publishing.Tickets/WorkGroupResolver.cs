@@ -1,7 +1,7 @@
 using FhirAugury.Common.WorkGroups;
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 internal static class WorkGroupResolver
 {

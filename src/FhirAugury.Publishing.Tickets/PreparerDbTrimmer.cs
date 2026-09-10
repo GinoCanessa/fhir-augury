@@ -1,6 +1,6 @@
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 internal static class PreparerDbTrimmer
 {
@@ -42,10 +42,9 @@ internal static class PreparerDbTrimmer
     public static async Task<BuildResult> BuildAsync(
         string sourceDbPath,
         ResolvedFilters filters,
-        bool immutableSnapshot,
         CancellationToken ct)
     {
-        if (immutableSnapshot && !filters.HasAnyFilter)
+        if (!filters.HasAnyFilter)
         {
             return new BuildResult(
                 sourceDbPath,
@@ -56,7 +55,8 @@ internal static class PreparerDbTrimmer
         string tempPath = Path.GetTempFileName();
         try
         {
-            File.Copy(sourceDbPath, tempPath, overwrite: true);
+            await CopySnapshotAsync(sourceDbPath, tempPath, ct)
+                .ConfigureAwait(false);
             File.SetAttributes(tempPath, FileAttributes.Normal);
 
             long surviving;
@@ -70,12 +70,6 @@ internal static class PreparerDbTrimmer
             await using SqliteConnection connection = new(builder.ConnectionString);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
-            if (!immutableSnapshot)
-            {
-                FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.PreparerDatabase
-                    .EnsureSchema(connection);
-            }
-
             await using SqliteTransaction tx = (SqliteTransaction)await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
             // Trim prepared_tickets to the intersection of all active filters.
@@ -83,28 +77,18 @@ internal static class PreparerDbTrimmer
             await using (SqliteCommand cmd = connection.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = immutableSnapshot
-                    ? """
-                      DELETE FROM prepared_tickets WHERE Key NOT IN (
-                        SELECT pt.Key FROM prepared_tickets pt
-                        LEFT JOIN prepared_jira_hydration jh
-                          ON jh.TicketKey = pt.Key AND jh.JiraKey = pt.Key
-                        LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
-                        WHERE (@project IS NULL OR LOWER(substr(pt.Key, 1, instr(pt.Key, '-') - 1)) = LOWER(@project))
-                          AND (@wg      IS NULL OR LOWER(jh.WorkGroup) = LOWER(@wg))
-                          AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
-                      )
-                      """
-                    : """
-                      DELETE FROM prepared_tickets WHERE Key NOT IN (
-                        SELECT pt.Key FROM prepared_tickets pt
-                        LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key
-                        LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
-                        WHERE (@project IS NULL OR LOWER(jst.Project) = LOWER(@project))
-                          AND (@wg      IS NULL OR LOWER(jst.WorkGroup) = LOWER(@wg))
-                          AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
-                      )
-                      """;
+                cmd.CommandText =
+                    """
+                    DELETE FROM prepared_tickets WHERE Key NOT IN (
+                      SELECT pt.Key FROM prepared_tickets pt
+                      LEFT JOIN prepared_jira_hydration jh
+                        ON jh.TicketKey = pt.Key AND jh.JiraKey = pt.Key
+                      LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key
+                      WHERE (@project IS NULL OR LOWER(substr(pt.Key, 1, instr(pt.Key, '-') - 1)) = LOWER(@project))
+                        AND (@wg      IS NULL OR LOWER(jh.WorkGroup) = LOWER(@wg))
+                        AND (@spec    IS NULL OR LOWER(pth.Specification) = LOWER(@spec))
+                    )
+                    """;
                 cmd.Parameters.AddWithValue("@project", (object?)filters.Project ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@wg", (object?)filters.WorkGroup ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("@spec", (object?)filters.Specification ?? DBNull.Value);
@@ -120,9 +104,8 @@ internal static class PreparerDbTrimmer
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
-            if (immutableSnapshot)
+            await using (SqliteCommand cmd = connection.CreateCommand())
             {
-                await using SqliteCommand cmd = connection.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandText =
                     """
@@ -150,16 +133,6 @@ internal static class PreparerDbTrimmer
                     """;
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
-            else
-            {
-                await using SqliteCommand cmd = connection.CreateCommand();
-                cmd.Transaction = tx;
-                cmd.CommandText =
-                    "DELETE FROM prepared_ticket_topic_groups WHERE RowId NOT IN (" +
-                    "SELECT DISTINCT TopicGroupRowId FROM prepared_ticket_topic_members " +
-                    "WHERE TopicGroupRowId IS NOT NULL)";
-                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            }
 
             await using (SqliteCommand cmd = connection.CreateCommand())
             {
@@ -167,16 +140,6 @@ internal static class PreparerDbTrimmer
                 cmd.CommandText =
                     "DELETE FROM prepared_ticket_topics WHERE RowId NOT IN (" +
                     "SELECT DISTINCT TopicRowId FROM prepared_ticket_topic_members)";
-                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            }
-
-            if (!immutableSnapshot)
-            {
-                await using SqliteCommand cmd = connection.CreateCommand();
-                cmd.Transaction = tx;
-                cmd.CommandText =
-                    "DELETE FROM jira_processing_source_tickets " +
-                    "WHERE Key NOT IN (SELECT Key FROM prepared_tickets)";
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
@@ -190,12 +153,9 @@ internal static class PreparerDbTrimmer
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
 
-            if (immutableSnapshot)
-            {
-                await using SqliteCommand vacuum = connection.CreateCommand();
-                vacuum.CommandText = "VACUUM";
-                await vacuum.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            }
+            await using SqliteCommand vacuum = connection.CreateCommand();
+            vacuum.CommandText = "VACUUM";
+            await vacuum.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             return new BuildResult(tempPath, surviving, OwnsTempFile: true);
         }
@@ -205,12 +165,6 @@ internal static class PreparerDbTrimmer
             throw;
         }
     }
-
-    public static Task<BuildResult> BuildAsync(
-        string sourceDbPath,
-        ResolvedFilters filters,
-        CancellationToken ct)
-        => BuildAsync(sourceDbPath, filters, immutableSnapshot: false, ct);
 
     private static async Task<long> CountAsync(
         string dbPath,
@@ -227,5 +181,28 @@ internal static class PreparerDbTrimmer
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = $"SELECT COUNT(*) FROM {table}";
         return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
+    }
+
+    private static async Task CopySnapshotAsync(
+        string sourcePath,
+        string destinationPath,
+        CancellationToken ct)
+    {
+        await using FileStream source = new(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using FileStream destination = new(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await source.CopyToAsync(destination, ct).ConfigureAwait(false);
+        await destination.FlushAsync(ct).ConfigureAwait(false);
     }
 }

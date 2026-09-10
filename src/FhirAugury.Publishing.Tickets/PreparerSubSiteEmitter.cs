@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Text.Json;
 using FhirAugury.Common.IO;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 /// <summary>
 /// Emits the discussion (preparer) sub-site under
@@ -30,13 +30,14 @@ internal static class PreparerSubSiteEmitter
         StagedDirectoryPublisher.GetRendererAssetsVersion(
             typeof(PreparerSubSiteEmitter).Assembly);
 
-    public static void Emit(
+    public static async Task EmitAsync(
         string subSiteOut,
         string baseTitle,
         ResolvedFilters filters,
         byte[] dbBytes,
-        bool snapshotMode = false)
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (Directory.Exists(subSiteOut))
         {
             Directory.Delete(subSiteOut, recursive: true);
@@ -50,12 +51,17 @@ internal static class PreparerSubSiteEmitter
 
         string fullTitle = baseTitle + filters.ToTitleSuffix();
         string encodedTitle = WebUtility.HtmlEncode(fullTitle);
-        string base64 = Convert.ToBase64String(GzipBytes(dbBytes));
+        byte[] compressed =
+            await GzipBytesAsync(dbBytes, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        string base64 = Convert.ToBase64String(compressed);
+        ct.ThrowIfCancellationRequested();
         string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
         string filtersScript = BuildFiltersScript(filters);
 
         foreach (string name in resourceNames)
         {
+            ct.ThrowIfCancellationRequested();
             bool isDiscussion = name.StartsWith(DiscussionPrefix, StringComparison.Ordinal);
             bool isShared = name.StartsWith(SharedPrefix, StringComparison.Ordinal);
             if (!isDiscussion && !isShared) continue;
@@ -66,7 +72,8 @@ internal static class PreparerSubSiteEmitter
             if (string.Equals(name, TemplateName, StringComparison.Ordinal))
             {
                 using StreamReader reader = new(stream);
-                string template = reader.ReadToEnd();
+                string template = await reader.ReadToEndAsync(ct)
+                    .ConfigureAwait(false);
                 string html = template
                     .Replace(TitleMarker, encodedTitle, StringComparison.Ordinal)
                     .Replace(FiltersMarker, filtersScript, StringComparison.Ordinal)
@@ -75,7 +82,10 @@ internal static class PreparerSubSiteEmitter
                         AssetVersionMarker,
                         RendererAssetsVersion,
                         StringComparison.Ordinal);
-                File.WriteAllText(Path.Combine(subSiteOut, "index.html"), html);
+                await File.WriteAllTextAsync(
+                    Path.Combine(subSiteOut, "index.html"),
+                    html,
+                    ct).ConfigureAwait(false);
             }
             else
             {
@@ -84,11 +94,11 @@ internal static class PreparerSubSiteEmitter
                     : name.Substring(SharedPrefix.Length);
                 string outFile = Path.Combine(assetsDir, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
-                if (snapshotMode &&
-                    string.Equals(relative, "app.js", StringComparison.Ordinal))
+                if (string.Equals(relative, "app.js", StringComparison.Ordinal))
                 {
                     using StreamReader reader = new(stream);
-                    string script = reader.ReadToEnd();
+                    string script = await reader.ReadToEndAsync(ct)
+                        .ConfigureAwait(false);
                     const string anchor = "db = new SQL.Database(bytes);";
                     const string compatibilityView =
                         """
@@ -99,26 +109,38 @@ internal static class PreparerSubSiteEmitter
                         throw new InvalidOperationException(
                             "Discussion app.js database initialization marker is missing.");
                     }
-                    File.WriteAllText(
+                    await File.WriteAllTextAsync(
                         outFile,
                         script.Replace(
                             anchor,
                             anchor + Environment.NewLine + compatibilityView,
-                            StringComparison.Ordinal));
+                            StringComparison.Ordinal),
+                        ct).ConfigureAwait(false);
                     continue;
                 }
-                using FileStream fs = File.Create(outFile);
-                stream.CopyTo(fs);
+                await using FileStream fs = new(
+                    outFile,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 64 * 1024,
+                    useAsync: true);
+                await stream.CopyToAsync(fs, ct).ConfigureAwait(false);
             }
         }
     }
 
-    private static byte[] GzipBytes(byte[] raw)
+    private static async Task<byte[]> GzipBytesAsync(
+        byte[] raw,
+        CancellationToken ct)
     {
         using MemoryStream output = new();
-        using (GZipStream gzip = new(output, CompressionLevel.Optimal, leaveOpen: true))
+        await using (GZipStream gzip = new(
+            output,
+            CompressionLevel.Optimal,
+            leaveOpen: true))
         {
-            gzip.Write(raw, 0, raw.Length);
+            await gzip.WriteAsync(raw, ct).ConfigureAwait(false);
         }
         return output.ToArray();
     }

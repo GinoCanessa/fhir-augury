@@ -20,6 +20,7 @@
     <Project Path="src/FhirAugury.Parsing.Xml/FhirAugury.Parsing.Xml.csproj" />
     <Project Path="src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj" />
     <Project Path="src/FhirAugury.Processing.Client/FhirAugury.Processing.Client.csproj" />
+    <Project Path="src/FhirAugury.Publishing.Tickets/FhirAugury.Publishing.Tickets.csproj" />
     <Project Path="src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj" />
     <Project Path="src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj" />
@@ -54,6 +55,7 @@
     <Project Path="tests/FhirAugury.Parsing.Xml.Tests/FhirAugury.Parsing.Xml.Tests.csproj" />
     <Project Path="tests/FhirAugury.DevUi.Tests/FhirAugury.DevUi.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Client.Tests/FhirAugury.Processing.Client.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Publishing.Tickets.Tests/FhirAugury.Publishing.Tickets.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Common.Tests/FhirAugury.Processing.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Jira.Common.Tests/FhirAugury.Processing.Jira.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests.csproj" />

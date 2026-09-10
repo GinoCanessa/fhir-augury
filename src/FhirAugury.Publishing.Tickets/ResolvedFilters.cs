@@ -1,4 +1,4 @@
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 internal sealed record ResolvedFilters(
     string? Specification,
@@ -22,4 +22,7 @@ internal sealed record ResolvedFilters(
         if (WorkGroup is not null) parts.Add($"wg={WorkGroup}");
         return $" (filtered: {string.Join(", ", parts)})";
     }
+
+    public TicketSiteFilters ToPublic()
+        => new(Specification, Project, WorkGroup);
 }

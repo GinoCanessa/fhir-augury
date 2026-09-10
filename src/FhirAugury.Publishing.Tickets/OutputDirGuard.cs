@@ -6,7 +6,7 @@ using FhirAugury.Common.IO;
 using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
 
-namespace FhirAugury.Tools.TicketSite;
+namespace FhirAugury.Publishing.Tickets;
 
 internal sealed class MetaFilterSet
 {
@@ -51,7 +51,9 @@ internal static class OutputDirGuard
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static MetaFilterSet? TryReadExistingMarker(string subSiteOut)
+    public static async Task<MetaFilterSet?> TryReadExistingMarkerAsync(
+        string subSiteOut,
+        CancellationToken ct)
     {
         string markerPath = Path.Combine(subSiteOut, MarkerFileName);
         if (!File.Exists(markerPath))
@@ -60,7 +62,8 @@ internal static class OutputDirGuard
         }
         try
         {
-            string json = File.ReadAllText(markerPath);
+            string json = await File.ReadAllTextAsync(markerPath, ct)
+                .ConfigureAwait(false);
             return JsonSerializer.Deserialize<MetaFilterSet>(json);
         }
         catch (JsonException)
@@ -73,12 +76,13 @@ internal static class OutputDirGuard
         }
     }
 
-    public static void WriteMarker(
+    public static async Task WriteMarkerAsync(
         string subSiteOut,
         string kind,
         ResolvedFilters filters,
         DateTimeOffset createdAt,
-        AuthoringSnapshotDescriptor? descriptor = null)
+        AuthoringSnapshotDescriptor descriptor,
+        CancellationToken ct)
     {
         MetaFilterSet payload = new()
         {
@@ -90,13 +94,16 @@ internal static class OutputDirGuard
                 Wg = filters.WorkGroup,
             },
             CreatedAt = createdAt.ToString("O"),
-            RunId = descriptor?.RunId,
-            SnapshotId = descriptor?.SnapshotId,
-            SnapshotSequence = descriptor?.Sequence,
+            RunId = descriptor.RunId,
+            SnapshotId = descriptor.SnapshotId,
+            SnapshotSequence = descriptor.Sequence,
         };
         string json = JsonSerializer.Serialize(payload, WriteOptions);
         Directory.CreateDirectory(subSiteOut);
-        File.WriteAllText(Path.Combine(subSiteOut, MarkerFileName), json);
+        await File.WriteAllTextAsync(
+            Path.Combine(subSiteOut, MarkerFileName),
+            json,
+            ct).ConfigureAwait(false);
     }
 
     public static bool FilterSetsMatch(MetaFilterSet? existing, ResolvedFilters incoming)
@@ -117,44 +124,10 @@ internal static class OutputDirGuard
         return string.IsNullOrEmpty(existing.Kind) || string.Equals(existing.Kind, incomingKind, StringComparison.Ordinal);
     }
 
-    public static Task ValidateLegacyReplacementAsync(
-        string outputDirectory,
-        string kind,
-        ResolvedFilters filters,
-        bool force,
-        CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        MetaFilterSet? existing = TryReadExistingMarker(outputDirectory);
-        if (existing is null)
-        {
-            if (!force)
-            {
-                throw new InvalidOperationException(
-                    $"Output sub-site directory '{outputDirectory}' has no valid ownership marker. " +
-                    "Pass --force to replace it.");
-            }
-            return Task.CompletedTask;
-        }
-        if (!KindMatches(existing, kind))
-        {
-            throw new InvalidOperationException(
-                $"Output sub-site directory '{outputDirectory}' was produced as kind " +
-                $"'{existing.Kind}' but the current build is '{kind}'.");
-        }
-        if (!force && !FilterSetsMatch(existing, filters))
-        {
-            throw new InvalidOperationException(
-                $"Output sub-site directory '{outputDirectory}' was produced with a " +
-                "different filter set. Pass --force to overwrite, or choose a different --out.");
-        }
-        return Task.CompletedTask;
-    }
-
-    public static Task ValidateSnapshotStageAsync(
+    public static async Task ValidateSnapshotStageAsync(
         string stagingDirectory,
         string kind,
-        SiteBuildManifest expected,
+        TicketSiteManifest expected,
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -162,7 +135,7 @@ internal static class OutputDirGuard
         [
             "index.html",
             MarkerFileName,
-            SiteBuildManifest.FileName,
+            TicketSiteManifest.FileName,
             StagedDirectoryPublisher.VersionFileName,
             Path.Combine("assets", "app.js"),
             Path.Combine("assets", "app.css"),
@@ -180,7 +153,9 @@ internal static class OutputDirGuard
             }
         }
 
-        MetaFilterSet marker = TryReadExistingMarker(stagingDirectory)
+        MetaFilterSet marker =
+            await TryReadExistingMarkerAsync(stagingDirectory, ct)
+                .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 $"Staged {kind} site has an invalid ownership marker.");
         if (!string.Equals(marker.Kind, kind, StringComparison.Ordinal) ||
@@ -192,15 +167,16 @@ internal static class OutputDirGuard
                 $"Staged {kind} site ownership marker does not match its snapshot.");
         }
 
-        SiteBuildManifest actual = SiteBuildManifest.Read(
-            Path.Combine(stagingDirectory, SiteBuildManifest.FileName));
+        TicketSiteManifest actual = await TicketSiteManifest.ReadAsync(
+            Path.Combine(stagingDirectory, TicketSiteManifest.FileName),
+            ct).ConfigureAwait(false);
         if (!ManifestMatches(actual, expected))
         {
             throw new InvalidOperationException(
                 $"Staged {kind} site manifest does not match the validated build summary.");
         }
 
-        return ValidateEmbeddedDatabaseAsync(
+        await ValidateEmbeddedDatabaseAsync(
             stagingDirectory,
             kind,
             expected.EmbeddedDbSha256,
@@ -211,63 +187,12 @@ internal static class OutputDirGuard
                 : "planned_tickets",
             expected.IncludedItemCount,
             expected.IncludedReceiptCount,
-            ct);
-    }
-
-    public static async Task ValidateLegacyStageAsync(
-        string stagingDirectory,
-        string kind,
-        ResolvedFilters filters,
-        string embeddedDbSha256,
-        long embeddedDbSizeBytes,
-        IReadOnlyDictionary<string, long> tableCounts,
-        CancellationToken ct)
-    {
-        string[] requiredFiles =
-        [
-            "index.html",
-            MarkerFileName,
-            StagedDirectoryPublisher.VersionFileName,
-            Path.Combine("assets", "app.js"),
-            Path.Combine("assets", "app.css"),
-            Path.Combine("assets", "sql-wasm.js"),
-            Path.Combine("assets", "sql-wasm.wasm"),
-            Path.Combine("assets", "marked.min.js"),
-            Path.Combine("assets", "purify.min.js"),
-        ];
-        foreach (string relative in requiredFiles)
-        {
-            if (!File.Exists(Path.Combine(stagingDirectory, relative)))
-            {
-                throw new InvalidOperationException(
-                    $"Staged {kind} site is missing required file '{relative}'.");
-            }
-        }
-
-        MetaFilterSet marker = TryReadExistingMarker(stagingDirectory)
-            ?? throw new InvalidOperationException(
-                $"Staged {kind} site has an invalid ownership marker.");
-        if (!KindMatches(marker, kind) || !FilterSetsMatch(marker, filters))
-        {
-            throw new InvalidOperationException(
-                $"Staged {kind} site ownership marker does not match its build.");
-        }
-
-        await ValidateEmbeddedDatabaseAsync(
-            stagingDirectory,
-            kind,
-            embeddedDbSha256,
-            embeddedDbSizeBytes,
-            tableCounts,
-            itemTable: null,
-            expectedItemCount: null,
-            expectedReceiptCount: null,
-            ct: ct).ConfigureAwait(false);
+            ct).ConfigureAwait(false);
     }
 
     private static bool ManifestMatches(
-        SiteBuildManifest actual,
-        SiteBuildManifest expected)
+        TicketSiteManifest actual,
+        TicketSiteManifest expected)
         =>
         string.Equals(actual.SiteKind, expected.SiteKind, StringComparison.Ordinal) &&
         string.Equals(actual.ProcessorKind, expected.ProcessorKind, StringComparison.Ordinal) &&
@@ -309,9 +234,11 @@ internal static class OutputDirGuard
         string html = await File.ReadAllTextAsync(
             Path.Combine(stagingDirectory, "index.html"),
             ct).ConfigureAwait(false);
-        byte[] databaseBytes = ExtractEmbeddedDatabase(html, kind);
-        string actualSha256 =
-            Convert.ToHexString(SHA256.HashData(databaseBytes)).ToLowerInvariant();
+        byte[] databaseBytes = await ExtractEmbeddedDatabaseAsync(
+            html,
+            kind,
+            ct).ConfigureAwait(false);
+        string actualSha256 = ComputeSha256(databaseBytes, ct);
         if (databaseBytes.LongLength != expectedSizeBytes ||
             !string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal))
         {
@@ -399,7 +326,10 @@ internal static class OutputDirGuard
             System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static byte[] ExtractEmbeddedDatabase(string html, string kind)
+    private static async Task<byte[]> ExtractEmbeddedDatabaseAsync(
+        string html,
+        string kind,
+        CancellationToken ct)
     {
         const string marker = "window.__DB__='";
         int start = html.IndexOf(marker, StringComparison.Ordinal);
@@ -419,7 +349,9 @@ internal static class OutputDirGuard
         byte[] compressed;
         try
         {
+            ct.ThrowIfCancellationRequested();
             compressed = Convert.FromBase64String(html[start..end]);
+            ct.ThrowIfCancellationRequested();
         }
         catch (FormatException ex)
         {
@@ -429,9 +361,27 @@ internal static class OutputDirGuard
         }
 
         using MemoryStream input = new(compressed);
-        using GZipStream gzip = new(input, CompressionMode.Decompress);
+        await using GZipStream gzip = new(input, CompressionMode.Decompress);
         using MemoryStream output = new();
-        gzip.CopyTo(output);
+        await gzip.CopyToAsync(output, ct).ConfigureAwait(false);
         return output.ToArray();
+    }
+
+    private static string ComputeSha256(
+        byte[] bytes,
+        CancellationToken ct)
+    {
+        using IncrementalHash hash =
+            IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        const int chunkSize = 128 * 1024;
+        for (int offset = 0; offset < bytes.Length; offset += chunkSize)
+        {
+            ct.ThrowIfCancellationRequested();
+            int count = Math.Min(chunkSize, bytes.Length - offset);
+            hash.AppendData(bytes, offset, count);
+        }
+        ct.ThrowIfCancellationRequested();
+        return Convert.ToHexString(hash.GetHashAndReset())
+            .ToLowerInvariant();
     }
 }

@@ -1,3 +1,5 @@
+using FhirAugury.Publishing.Tickets.Tests;
+
 namespace FhirAugury.Tools.TicketSite.Tests;
 
 [Collection("ConsoleRedirect")]
@@ -6,10 +8,12 @@ public sealed class ChooserAndCliTests
     [Fact]
     public async Task CliRejectsMissingSnapshotInput()
     {
-        (int exit, string error) = await RunAsync("--out", "unused");
+        (int exit, _, string error) = await RunAsync("--out", "unused");
 
         Assert.Equal(2, exit);
-        Assert.Contains("Specify either --preparer-snapshot or --planner-snapshot", error);
+        Assert.Contains(
+            "Specify either --preparer-snapshot or --planner-snapshot",
+            error);
     }
 
     [Theory]
@@ -19,7 +23,7 @@ public sealed class ChooserAndCliTests
     [InlineData("--jira-source-db")]
     public async Task CliRejectsRetiredLiveInputOptions(string option)
     {
-        (int exit, string error) = await RunAsync(option, "retired");
+        (int exit, _, string error) = await RunAsync(option, "retired");
 
         Assert.Equal(2, exit);
         Assert.Contains($"Unknown argument: {option}", error);
@@ -28,7 +32,7 @@ public sealed class ChooserAndCliTests
     [Fact]
     public async Task CliSnapshotRequiresDescriptor()
     {
-        (int exit, string error) = await RunAsync(
+        (int exit, _, string error) = await RunAsync(
             "--preparer-snapshot",
             "snapshot.db");
 
@@ -37,150 +41,62 @@ public sealed class ChooserAndCliTests
     }
 
     [Fact]
-    public async Task PreparerSnapshotBuildsDiscussionAndChooser()
+    public async Task HelpRetainsEverySupportedFlag()
+    {
+        (int exit, string output, string error) = await RunAsync("--help");
+
+        Assert.Equal(0, exit);
+        Assert.Empty(error);
+        string[] flags =
+        [
+            "--preparer-snapshot",
+            "--planner-snapshot",
+            "--snapshot-descriptor",
+            "--out",
+            "--title",
+            "--spec",
+            "--project",
+            "--wg",
+            "--force",
+            "--help",
+        ];
+        foreach (string flag in flags)
+        {
+            Assert.Contains(flag, output, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task LooseSnapshotRejectsSidecarCreatedAfterInitialCheck()
     {
         string root = Path.Combine(
             Path.GetTempPath(),
-            $"ticket-site-cli-{Guid.NewGuid():N}");
+            $"ticket-site-late-sidecar-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
         {
             TicketSnapshotFixture snapshot =
                 await TicketSnapshotFixture.CreatePreparerAsync(root);
             string output = Path.Combine(root, "site");
+            bool captureStarted = false;
+            TicketSiteCliTestHooks hooks = new(
+                BeforeLegacySnapshotCaptureAsync: (databasePath, _) =>
+                {
+                    captureStarted = true;
+                    File.WriteAllText(databasePath + "-wal", "late sidecar");
+                    return Task.CompletedTask;
+                });
 
-            int exit = await Program.Main([
+            (int exit, _, string error) = await RunWithHooksAsync(
+                hooks,
                 "--preparer-snapshot", snapshot.DatabasePath,
                 "--snapshot-descriptor", snapshot.DescriptorPath,
-                "--out", output,
-            ]);
+                "--out", output);
 
-            Assert.Equal(0, exit);
-            Assert.True(File.Exists(Path.Combine(output, "discussion", "index.html")));
-            Assert.True(File.Exists(Path.Combine(output, "index.html")));
-            Assert.False(Directory.Exists(Path.Combine(output, "applying")));
-
-            string assetVersion = PreparerSubSiteEmitter.RendererAssetsVersion;
-            string discussionHtml = await File.ReadAllTextAsync(
-                Path.Combine(output, "discussion", "index.html"));
-            Assert.Contains(
-                $"assets/app.css?v={assetVersion}",
-                discussionHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/sql-wasm.js?v={assetVersion}",
-                discussionHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/app.js?v={assetVersion}",
-                discussionHtml,
-                StringComparison.Ordinal);
-
-            string chooserHtml = await File.ReadAllTextAsync(
-                Path.Combine(output, "index.html"));
-            Assert.Contains(
-                $"assets/chooser.css?v={assetVersion}",
-                chooserHtml,
-                StringComparison.Ordinal);
-        }
-        finally
-        {
-            TestFileCleanup.SafeDeleteDirectory(root);
-        }
-    }
-
-    [Fact]
-    public async Task PreparerTopicWorkGroupFilterUsesDisplayName()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            $"ticket-site-topic-filter-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        try
-        {
-            string output = Path.Combine(root, "discussion");
-            PreparerSubSiteEmitter.Emit(
-                output,
-                "Tickets",
-                ResolvedFilters.None,
-                [1]);
-
-            string script = await File.ReadAllTextAsync(
-                Path.Combine(output, "assets", "app.js"));
-
-            Assert.Contains(
-                "pushInList('t.WorkGroupDisplay', wgValues)",
-                script,
-                StringComparison.Ordinal);
-            Assert.DoesNotContain(
-                "pushInList('t.WorkGroupClean', wgValues)",
-                script,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                "'?v=' + encodeURIComponent(assetVersion)",
-                script,
-                StringComparison.Ordinal);
-        }
-        finally
-        {
-            TestFileCleanup.SafeDeleteDirectory(root);
-        }
-    }
-
-    [Fact]
-    public async Task PlannerSnapshotBuildsApplyingAndChooser()
-    {
-        string root = Path.Combine(
-            Path.GetTempPath(),
-            $"ticket-site-cli-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        try
-        {
-            TicketSnapshotFixture snapshot =
-                await TicketSnapshotFixture.CreatePlannerAsync(root);
-            string output = Path.Combine(root, "site");
-
-            int exit = await Program.Main([
-                "--planner-snapshot", snapshot.DatabasePath,
-                "--snapshot-descriptor", snapshot.DescriptorPath,
-                "--out", output,
-            ]);
-
-            Assert.Equal(0, exit);
-            Assert.True(File.Exists(Path.Combine(output, "applying", "index.html")));
-            Assert.True(File.Exists(Path.Combine(output, "index.html")));
+            Assert.True(captureStarted);
+            Assert.Equal(1, exit);
+            Assert.Contains("sidecar", error, StringComparison.OrdinalIgnoreCase);
             Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
-
-            string assetVersion = PlannerSubSiteEmitter.RendererAssetsVersion;
-            string applyingHtml = await File.ReadAllTextAsync(
-                Path.Combine(output, "applying", "index.html"));
-            Assert.Contains(
-                $"assets/app.css?v={assetVersion}",
-                applyingHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/sql-wasm.js?v={assetVersion}",
-                applyingHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/marked.min.js?v={assetVersion}",
-                applyingHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/purify.min.js?v={assetVersion}",
-                applyingHtml,
-                StringComparison.Ordinal);
-            Assert.Contains(
-                $"assets/app.js?v={assetVersion}",
-                applyingHtml,
-                StringComparison.Ordinal);
-
-            string script = await File.ReadAllTextAsync(
-                Path.Combine(output, "applying", "assets", "app.js"));
-            Assert.Contains(
-                "'?v=' + encodeURIComponent(assetVersion)",
-                script,
-                StringComparison.Ordinal);
         }
         finally
         {
@@ -188,31 +104,36 @@ public sealed class ChooserAndCliTests
         }
     }
 
-    [Fact]
-    public void OutputDirGuardKindMatchesDetectsMismatch()
-    {
-        MetaFilterSet existing = new()
-        {
-            Kind = PreparerSubSiteEmitter.Kind,
-            Filters = new MetaFilters(),
-        };
-
-        Assert.True(OutputDirGuard.KindMatches(existing, PreparerSubSiteEmitter.Kind));
-        Assert.False(OutputDirGuard.KindMatches(existing, PlannerSubSiteEmitter.Kind));
-    }
-
-    private static async Task<(int Exit, string Error)> RunAsync(
+    internal static async Task<(int Exit, string Output, string Error)> RunAsync(
         params string[] args)
+        => await RunCoreAsync(args, testHooks: null).ConfigureAwait(false);
+
+    private static async Task<(int Exit, string Output, string Error)>
+        RunWithHooksAsync(
+            TicketSiteCliTestHooks testHooks,
+            params string[] args)
+        => await RunCoreAsync(args, testHooks).ConfigureAwait(false);
+
+    private static async Task<(int Exit, string Output, string Error)> RunCoreAsync(
+        string[] args,
+        TicketSiteCliTestHooks? testHooks)
     {
+        TextWriter originalOut = Console.Out;
         TextWriter originalError = Console.Error;
+        StringWriter output = new();
         StringWriter error = new();
+        Console.SetOut(output);
         Console.SetError(error);
         try
         {
-            return (await Program.Main(args), error.ToString());
+            return (
+                await Program.RunAsync(args, testHooks: testHooks),
+                output.ToString(),
+                error.ToString());
         }
         finally
         {
+            Console.SetOut(originalOut);
             Console.SetError(originalError);
         }
     }

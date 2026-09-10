@@ -1,11 +1,12 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 
 public sealed class PreparedTicketSnapshotSanitizer(string runId)
-    : AuthoringSnapshotSanitizer(CreateTables())
+    : AuthoringSnapshotSanitizer(PreparedTicketSnapshotSchemaV1.Catalog)
 {
     public override async Task SanitizeAsync(
         SqliteConnection connection,
@@ -130,31 +131,6 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
 
         await base.SanitizeAsync(connection, ct);
     }
-
-    private static IReadOnlyList<AuthoringSnapshotTable> CreateTables()
-        =>
-        [
-            .. AuthoringSnapshotSanitizer.GetCoreTableDefinitions(),
-            new("prepared_tickets"),
-            new("prepared_ticket_repos"),
-            new("prepared_ticket_related_jira"),
-            new("prepared_ticket_related_zulip"),
-            new("prepared_ticket_related_github"),
-            new("prepared_ticket_hydration"),
-            new("prepared_jira_hydration"),
-            new("prepared_zulip_hydration"),
-            new("prepared_github_hydration"),
-            new("prepared_repo_hydration"),
-            new("prepared_ticket_jira_xref"),
-            new("prepared_ticket_jira_content"),
-            new("prepared_ticket_artifacts"),
-            new("prepared_ticket_pages"),
-            new("prepared_ticket_topics"),
-            new("prepared_ticket_topic_groups"),
-            new("prepared_ticket_topic_members"),
-            new("prepared_ticket_partition_receipts"),
-            new("jira_review_workgroups"),
-        ];
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,

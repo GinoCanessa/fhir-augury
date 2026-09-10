@@ -1,4 +1,6 @@
-namespace FhirAugury.Tools.TicketSite.Tests;
+using FhirAugury.Processing.Client;
+
+namespace FhirAugury.Publishing.Tickets.Tests;
 
 public sealed class HydrationAssertionTests
 {
@@ -17,17 +19,14 @@ public sealed class HydrationAssertionTests
                 snapshot.DescriptorPath,
                 snapshot.Descriptor with { ProcessorKind = "wrong-processor" });
 
-            using StringWriter stderr = new();
-            HydrationAssertion.SnapshotValidationResult? result =
-                await HydrationAssertion.ValidateSnapshotAsync(
-                    snapshot.DatabasePath,
-                    snapshot.DescriptorPath,
-                    PreparerSubSiteEmitter.Kind,
-                    stderr,
-                    CancellationToken.None);
+            InvalidOperationException exception = await Assert.ThrowsAsync<
+                InvalidOperationException>(
+                () => snapshot.CreateVerifiedPairAsync("Preparer"));
 
-            Assert.Null(result);
-            Assert.Contains("processor kind", stderr.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(
+                "processor",
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -50,17 +49,17 @@ public sealed class HydrationAssertionTests
                     includeSecondTicket: true);
             await snapshot.MoveSecondTicketToHistoricalLedgerAsync();
 
-            using StringWriter stderr = new();
-            HydrationAssertion.SnapshotValidationResult? result =
-                await HydrationAssertion.ValidateSnapshotAsync(
-                    snapshot.DatabasePath,
-                    snapshot.DescriptorPath,
-                    PreparerSubSiteEmitter.Kind,
-                    stderr,
-                    CancellationToken.None);
+            VerifiedAuthoringSnapshotPair pair =
+                await snapshot.CreateVerifiedPairAsync("Preparer");
+            TicketSitePublishResult result =
+                await new TicketSitePublisher().PublishAsync(
+                    new TicketSitePublishRequest(
+                        pair,
+                        TicketSiteKind.Discussion,
+                        Path.Combine(root, "site"),
+                        "Tickets"));
 
-            Assert.True(result is not null, stderr.ToString());
-            Assert.Equal(2, result!.Descriptor.ReceiptCount);
+            Assert.Equal(2, result.Manifest.IncludedReceiptCount);
         }
         finally
         {
