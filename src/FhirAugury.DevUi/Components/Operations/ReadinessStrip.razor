@@ -1,0 +1,134 @@
+<section class="readiness-strip"
+         aria-labelledby="@HeadingId">
+    <div class="readiness-strip__header">
+        <div>
+            <h2 id="@HeadingId" class="h5 mb-1">
+                @Readiness.Workflow.DisplayName readiness
+            </h2>
+            <p class="text-body-secondary small mb-0">
+                @if (Readiness.CheckedAt is DateTimeOffset checkedAt)
+                {
+                    <span>
+                        Last recheck
+                        <time datetime="@checkedAt.ToString("O")"
+                              title="@checkedAt.LocalDateTime.ToString("F")">
+                            @FormatRelativeTime(checkedAt)
+                        </time>
+                    </span>
+                }
+                else
+                {
+                    <span>Last recheck not observed</span>
+                }
+            </p>
+        </div>
+        <StatusIndicator Status="@(Readiness.CanStart ? "ready" : "warning")"
+                         Label="@(Readiness.CanStart ? "Ready to start" : $"{Readiness.Blockers.Count} blocker{(Readiness.Blockers.Count == 1 ? "" : "s")}")" />
+    </div>
+
+    <ul class="readiness-strip__services"
+        aria-label="@($"{Readiness.Workflow.DisplayName} service readiness")">
+        @foreach (ServiceReadinessObservation observation in Observations)
+        {
+            <li>
+                <div class="readiness-service__name">
+                    <strong>@observation.Name</strong>
+                    <span class="text-body-secondary">
+                        @ServiceKindLabel(observation.ServiceKind)
+                    </span>
+                </div>
+                <StatusIndicator Status="@observation.State.ToString()"
+                                 Label="@ReadinessLabel(observation.State)" />
+                <span class="readiness-service__message">
+                    @observation.Message
+                </span>
+                <span class="readiness-service__time">
+                    @if (observation.CheckedAt is DateTimeOffset observedAt)
+                    {
+                        <span>
+                            Observed
+                            <time datetime="@observedAt.ToString("O")"
+                                  title="@observedAt.LocalDateTime.ToString("F")">
+                                @FormatRelativeTime(observedAt)
+                            </time>
+                        </span>
+                    }
+                    else
+                    {
+                        <span>Observation unavailable</span>
+                    }
+                </span>
+            </li>
+        }
+    </ul>
+
+    @if (Readiness.Blockers.Count > 0)
+    {
+        <div class="readiness-strip__guidance">
+            <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
+            <span>
+                Resolve the named service blockers in the Aspire dashboard,
+                then recheck here. This workspace does not start or stop
+                resources.
+            </span>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public TicketWorkflowReadiness Readiness { get; set; } = null!;
+
+    private string HeadingId =>
+        $"readiness-{Readiness.Workflow.RouteKey}";
+
+    private IEnumerable<ServiceReadinessObservation> Observations =>
+        new[]
+        {
+            Readiness.Orchestrator,
+            Readiness.Processor,
+        }.Concat(Readiness.RequiredServices);
+
+    private static string ReadinessLabel(
+        ServiceReadinessState state) =>
+        state switch
+        {
+            ServiceReadinessState.Ready => "Ready",
+            ServiceReadinessState.Degraded => "Degraded",
+            ServiceReadinessState.Unavailable => "Unavailable",
+            ServiceReadinessState.NotObserved => "Not observed",
+            ServiceReadinessState.Disabled => "Disabled",
+            _ => state.ToString(),
+        };
+
+    private static string ServiceKindLabel(string kind) =>
+        kind.ToLowerInvariant() switch
+        {
+            "orchestrator" => "Gateway",
+            "processing" => "Processor",
+            "source" => "Required source",
+            _ => kind,
+        };
+
+    private static string FormatRelativeTime(DateTimeOffset timestamp)
+    {
+        TimeSpan age = DateTimeOffset.UtcNow - timestamp;
+        if (age < TimeSpan.Zero)
+        {
+            return timestamp.LocalDateTime.ToString("g");
+        }
+        if (age.TotalMinutes < 1)
+        {
+            return "just now";
+        }
+        if (age.TotalHours < 1)
+        {
+            return $"{(int)age.TotalMinutes} min ago";
+        }
+        if (age.TotalDays < 1)
+        {
+            return $"{(int)age.TotalHours} hr ago";
+        }
+        return timestamp.LocalDateTime.ToString("g");
+    }
+}

@@ -1,0 +1,833 @@
+@page "/operations/{workflow}/new"
+@implements IDisposable
+@inject TicketOperationsService Operations
+@inject TicketWorkflowCatalog Catalog
+@inject JiraTicketKeyParser TicketKeyParser
+@inject NavigationManager Navigation
+
+<PageTitle>@(_definition?.DisplayName ?? "Ticket operation") — FHIR Augury Dev UI</PageTitle>
+
+@if (_definition is null)
+{
+    <div class="page-heading">
+        <div>
+            <p class="page-heading__eyebrow">Guided ticket processing</p>
+            <h1>Unknown workflow</h1>
+        </div>
+    </div>
+    <div class="alert alert-danger" role="alert">
+        <strong>The workflow “@Workflow” is not available.</strong>
+        Choose Prepare tickets or Plan tickets from the operations
+        workspace.
+    </div>
+    <a class="btn btn-primary" href="/">Back to operations</a>
+}
+else
+{
+    <div class="page-heading">
+        <div>
+            <a class="back-link" href="/">
+                <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                Operations
+            </a>
+            <p class="page-heading__eyebrow">
+                @_definition.ProcessingServiceName processor
+            </p>
+            <h1>Start @_definition.DisplayName.ToLowerInvariant()</h1>
+            <p class="page-heading__summary">
+                Choose tickets, review the authoritative readiness
+                observations, then submit once.
+            </p>
+        </div>
+        <button class="btn btn-outline-primary"
+                type="button"
+                disabled="@_loadingReadiness"
+                @onclick="RefreshReadinessAsync">
+            @if (_loadingReadiness)
+            {
+                <span class="spinner-border spinner-border-sm"
+                      aria-hidden="true"></span>
+            }
+            else
+            {
+                <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            }
+            Recheck readiness
+        </button>
+    </div>
+
+    <ol class="form-steps" aria-label="Start run progress">
+        <li class="@(_step == 1 ? "current" : "complete")"
+            aria-current="@(_step == 1 ? "step" : null)">
+            <span>1</span>
+            Choose tickets and output
+        </li>
+        <li class="@(_step == 2 ? "current" : "")"
+            aria-current="@(_step == 2 ? "step" : null)">
+            <span>2</span>
+            Review and start
+        </li>
+    </ol>
+
+    @if (_readinessError is not null)
+    {
+        <div class="alert alert-danger" role="alert">
+            <strong>Readiness could not be loaded.</strong>
+            @_readinessError
+        </div>
+    }
+
+    @if (_readiness is not null)
+    {
+        <ReadinessStrip Readiness="@_readiness" />
+    }
+    else if (_loadingReadiness)
+    {
+        <div class="loading-state loading-state--compact" role="status">
+            <span class="spinner-border spinner-border-sm"
+                  aria-hidden="true"></span>
+            <span>Loading readiness observations…</span>
+        </div>
+    }
+
+    <div class="operation-announcer"
+         aria-live="polite"
+         aria-atomic="true">
+        @if (_submitting)
+        {
+            <span>Submitting one start request. Do not resubmit.</span>
+        }
+    </div>
+
+    @if (_unknownReviewRequired && _result is null)
+    {
+        <div class="alert alert-warning" role="alert">
+            <i class="bi bi-question-octagon-fill" aria-hidden="true"></i>
+            <div>
+                <strong>Start outcome unknown.</strong>
+                A previous start in this browser circuit needs explicit
+                review. Inspect this workflow’s active and recent runs
+                before allowing another submission.
+                <div class="mt-2 d-flex flex-wrap gap-2">
+                    <a class="btn btn-sm btn-outline-secondary" href="/">
+                        Review workflow runs
+                    </a>
+                    <button class="btn btn-sm btn-warning"
+                            type="button"
+                            @onclick="AcknowledgeUnknownStart">
+                        I inspected the runs; allow another start
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_result is not null)
+    {
+        <div class="alert @ResultAlertClass"
+             role="@(_result.Disposition == TicketOperationDisposition.OutcomeUnknown ? "alert" : "status")">
+            <div>
+                <strong>@ResultHeading</strong>
+                @if (!string.IsNullOrWhiteSpace(_result.Message))
+                {
+                    <span class="d-block">@_result.Message</span>
+                }
+
+                @if (_result.Disposition ==
+                    TicketOperationDisposition.Conflict)
+                {
+                    @if (_result.ConflictingRunIds.Count > 0)
+                    {
+                        <p class="mt-2 mb-1">
+                            Inspect every authoritative conflicting run:
+                        </p>
+                        <ul class="run-link-list">
+                            @foreach (string runId in
+                                _result.ConflictingRunIds)
+                            {
+                                <li>
+                                    <a href="@RunUrl(runId)">
+                                        Open run @runId
+                                    </a>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    else
+                    {
+                        <p class="mt-2 mb-0">
+                            The processor did not return a conflicting run
+                            coordinate. Recheck the workflow list before
+                            trying again.
+                        </p>
+                    }
+                }
+
+                @if (_result.Disposition ==
+                    TicketOperationDisposition.OutcomeUnknown)
+                {
+                    <p class="mt-2 mb-1">
+                        The request was not replayed. These read-only
+                        reconciliation candidates were created after the
+                        submission began:
+                    </p>
+                    @if (_result.Candidates.Count > 0)
+                    {
+                        <ul class="reconciliation-list">
+                            @foreach (AuthoringRunStatus candidate in
+                                _result.Candidates)
+                            {
+                                <li>
+                                    <a href="@RunUrl(candidate.RunId)"
+                                       target="_blank"
+                                       rel="noopener">
+                                        @candidate.RunId
+                                    </a>
+                                    <StatusIndicator Status="@candidate.Status" />
+                                    <time datetime="@candidate.CreatedAt.ToString("O")">
+                                        @candidate.CreatedAt.LocalDateTime.ToString("g")
+                                    </time>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    else
+                    {
+                        <p class="mb-2">
+                            No candidate was returned. Inspect the workflow
+                            list and processor logs in Aspire before
+                            acknowledging this outcome.
+                        </p>
+                    }
+                    @if (_result.Reconciliation?.Outcome ==
+                        TicketReconciliationOutcome.Failed)
+                    {
+                        <p class="mb-2">
+                            <strong>Read reconciliation failed:</strong>
+                            @_result.Reconciliation.Error
+                        </p>
+                    }
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <a class="btn btn-sm btn-outline-secondary"
+                           href="/"
+                           target="_blank"
+                           rel="noopener">
+                            Review workflow list
+                        </a>
+                        <button class="btn btn-sm btn-warning"
+                                type="button"
+                                @onclick="AcknowledgeUnknownStart">
+                            I inspected the result; allow another start
+                        </button>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    <form class="start-run-form"
+          @onsubmit="SubmitAsync"
+          @onsubmit:preventDefault
+          novalidate>
+        @if (_step == 1)
+        {
+            <section class="operation-panel"
+                     aria-labelledby="selection-heading">
+                <div class="operation-panel__heading">
+                    <div>
+                        <p class="operation-panel__eyebrow">Step 1</p>
+                        <h2 id="selection-heading" class="h4 mb-0">
+                            Choose the ticket selection
+                        </h2>
+                    </div>
+                </div>
+
+                <fieldset class="selection-options">
+                    <legend class="visually-hidden">
+                        Ticket selection mode
+                    </legend>
+                    <label class="selection-option"
+                           for="selection-configured">
+                        <input id="selection-configured"
+                               class="form-check-input"
+                               type="radio"
+                               name="selection-mode"
+                               checked="@(_selectionMode == TicketSelectionMode.Configured)"
+                               @onchange="() => SetSelectionMode(TicketSelectionMode.Configured)" />
+                        <span>
+                            <strong>Configured selection</strong>
+                            <span>
+                                Let the @_definition.ProcessingServiceName
+                                processor apply its configured candidate
+                                query.
+                            </span>
+                        </span>
+                    </label>
+                    <label class="selection-option"
+                           for="selection-explicit">
+                        <input id="selection-explicit"
+                               class="form-check-input"
+                               type="radio"
+                               name="selection-mode"
+                               checked="@(_selectionMode == TicketSelectionMode.Explicit)"
+                               @onchange="() => SetSelectionMode(TicketSelectionMode.Explicit)" />
+                        <span>
+                            <strong>Explicit Jira keys</strong>
+                            <span>
+                                Paste a bounded set of known tickets.
+                            </span>
+                        </span>
+                    </label>
+                </fieldset>
+
+                @if (_selectionMode == TicketSelectionMode.Explicit)
+                {
+                    <div class="explicit-selection">
+                        <label class="form-label fw-semibold"
+                               for="explicit-ticket-keys">
+                            Jira ticket keys
+                        </label>
+                        <textarea id="explicit-ticket-keys"
+                                  class="form-control @ExplicitInputClass"
+                                  rows="5"
+                                  placeholder="FHIR-123, FHIR-456"
+                                  @bind="_explicitKeys"
+                                  @bind:event="oninput"
+                                  @bind:after="ParseExplicitKeys"
+                                  aria-describedby="explicit-ticket-help explicit-ticket-preview"
+                                  aria-invalid="@ExplicitInputInvalid"></textarea>
+                        <div id="explicit-ticket-help" class="form-text">
+                            Separate keys with commas, semicolons, spaces, or
+                            new lines. Keys are normalized to uppercase and
+                            duplicates are removed.
+                        </div>
+
+                        <div id="explicit-ticket-preview"
+                             class="selection-preview"
+                             aria-live="polite">
+                            <div>
+                                <strong>
+                                    Valid keys (@_parsedKeys.ValidKeys.Count)
+                                </strong>
+                                @if (_parsedKeys.ValidKeys.Count > 0)
+                                {
+                                    <ul class="token-list">
+                                        @foreach (string key in
+                                            _parsedKeys.ValidKeys)
+                                        {
+                                            <li>@key</li>
+                                        }
+                                    </ul>
+                                }
+                                else
+                                {
+                                    <span class="text-body-secondary d-block">
+                                        No valid keys yet.
+                                    </span>
+                                }
+                            </div>
+                            <div>
+                                <strong>
+                                    Invalid tokens
+                                    (@_parsedKeys.InvalidTokens.Count)
+                                </strong>
+                                @if (_parsedKeys.InvalidTokens.Count > 0)
+                                {
+                                    <ul class="token-list token-list--invalid">
+                                        @foreach (string token in
+                                            _parsedKeys.InvalidTokens)
+                                        {
+                                            <li>@token</li>
+                                        }
+                                    </ul>
+                                }
+                                else
+                                {
+                                    <span class="text-body-secondary d-block">
+                                        None.
+                                    </span>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                <details class="advanced-options">
+                    <summary>Advanced output options</summary>
+                    <div class="advanced-options__body">
+                        <div class="form-check">
+                            <input id="database-only"
+                                   class="form-check-input"
+                                   type="checkbox"
+                                   @bind="_databaseOnly" />
+                            <label class="form-check-label"
+                                   for="database-only">
+                                Database-only output
+                            </label>
+                        </div>
+                        <p class="form-text mb-0">
+                            The default produces an immutable snapshot and
+                            supports review-site generation. Database-only
+                            mode intentionally skips both; use it only when
+                            no review artifact is needed.
+                        </p>
+                    </div>
+                </details>
+
+                @if (_selectionValidationAttempted &&
+                    !SelectionIsValid)
+                {
+                    <div class="validation-summary"
+                         role="alert"
+                         tabindex="-1">
+                        <strong>Review the ticket selection.</strong>
+                        <ul>
+                            @if (_parsedKeys.ValidKeys.Count == 0)
+                            {
+                                <li>
+                                    Enter at least one valid Jira ticket key.
+                                </li>
+                            }
+                            @if (_parsedKeys.InvalidTokens.Count > 0)
+                            {
+                                <li>
+                                    Remove or correct every invalid token.
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                <div class="form-actions">
+                    <a class="btn btn-outline-secondary" href="/">
+                        Cancel
+                    </a>
+                    <button class="btn btn-primary"
+                            type="button"
+                            @onclick="ContinueToReview">
+                        Continue to review
+                        <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </section>
+        }
+        else
+        {
+            <section class="operation-panel"
+                     aria-labelledby="review-heading">
+                <div class="operation-panel__heading">
+                    <div>
+                        <p class="operation-panel__eyebrow">Step 2</p>
+                        <h2 id="review-heading" class="h4 mb-0">
+                            Review the start request
+                        </h2>
+                    </div>
+                </div>
+
+                <dl class="review-summary">
+                    <div>
+                        <dt>Processor</dt>
+                        <dd>@_definition.ProcessingServiceName</dd>
+                    </div>
+                    <div>
+                        <dt>Selection</dt>
+                        <dd>
+                            @if (_selectionMode ==
+                                TicketSelectionMode.Configured)
+                            {
+                                <span>Configured candidate selection</span>
+                            }
+                            else
+                            {
+                                <span>
+                                    @_parsedKeys.ValidKeys.Count explicit
+                                    Jira
+                                    @(_parsedKeys.ValidKeys.Count == 1
+                                        ? "key"
+                                        : "keys"):
+                                    @string.Join(
+                                        ", ",
+                                        _parsedKeys.ValidKeys)
+                                </span>
+                            }
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>Output mode</dt>
+                        <dd>
+                            @(_databaseOnly
+                                ? "Database only — no snapshot or review site"
+                                : "Snapshot and review site")
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>Readiness</dt>
+                        <dd>
+                            @if (_readiness?.CanStart == true)
+                            {
+                                <StatusIndicator Status="ready"
+                                                 Label="Ready to start" />
+                            }
+                            else
+                            {
+                                <StatusIndicator Status="warning"
+                                                 Label="@($"{_readiness?.Blockers.Count ?? 1} blocking observation(s)")" />
+                            }
+                        </dd>
+                    </div>
+                </dl>
+
+                @if (_readiness is null ||
+                    !_readiness.CanStart)
+                {
+                    <div class="validation-summary" role="alert">
+                        <strong>The run cannot be submitted yet.</strong>
+                        @if (_readiness is not null)
+                        {
+                            <ul>
+                                @foreach (ServiceReadinessObservation blocker
+                                    in _readiness.Blockers)
+                                {
+                                    <li>
+                                        <strong>@blocker.Name:</strong>
+                                        @blocker.Message
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        <p class="mb-0">
+                            Resolve these resources in Aspire and recheck.
+                        </p>
+                    </div>
+                }
+
+                @if (_databaseOnly)
+                {
+                    <div class="callout callout--warning">
+                        <i class="bi bi-database-exclamation"
+                           aria-hidden="true"></i>
+                        <span>
+                            Database-only mode is selected. A successful run
+                            will not offer snapshot download or review-site
+                            generation.
+                        </span>
+                    </div>
+                }
+
+                <div class="form-actions">
+                    <button class="btn btn-outline-secondary"
+                            type="button"
+                            disabled="@_submitting"
+                            @onclick="BackToSelection">
+                        <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                        Back
+                    </button>
+                    <button class="btn btn-primary"
+                            type="submit"
+                            disabled="@(!CanSubmit)">
+                        @if (_submitting)
+                        {
+                            <span class="spinner-border spinner-border-sm"
+                                  aria-hidden="true"></span>
+                            <span>Starting once…</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-play-circle-fill"
+                               aria-hidden="true"></i>
+                            <span>Start @_definition.DisplayName.ToLowerInvariant()</span>
+                        }
+                    </button>
+                </div>
+
+                @if (_unknownReviewRequired)
+                {
+                    <p class="form-text text-warning-emphasis">
+                        Submission remains disabled until the unknown
+                        previous outcome is explicitly inspected and
+                        acknowledged above.
+                    </p>
+                }
+            </section>
+        }
+    </form>
+}
+
+@code {
+    [Parameter]
+    public string Workflow { get; set; } = "";
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private TicketWorkflowDefinition? _definition;
+    private TicketWorkflowReadiness? _readiness;
+    private JiraTicketKeyParseResult _parsedKeys = new([], []);
+    private TicketStartResult? _result;
+    private string? _loadedWorkflow;
+    private string? _readinessError;
+    private string _explicitKeys = "";
+    private TicketSelectionMode _selectionMode =
+        TicketSelectionMode.Configured;
+    private int _step = 1;
+    private int _loadGeneration;
+    private bool _databaseOnly;
+    private bool _loadingReadiness;
+    private bool _selectionValidationAttempted;
+    private bool _submitting;
+    private bool _unknownReviewRequired;
+
+    private bool SelectionIsValid =>
+        _selectionMode == TicketSelectionMode.Configured ||
+        _parsedKeys.IsValid;
+
+    private bool CanSubmit =>
+        _step == 2 &&
+        SelectionIsValid &&
+        _readiness?.CanStart == true &&
+        !_submitting &&
+        !_unknownReviewRequired;
+
+    private bool ExplicitInputInvalid =>
+        _selectionValidationAttempted &&
+        _selectionMode == TicketSelectionMode.Explicit &&
+        !_parsedKeys.IsValid;
+
+    private string ExplicitInputClass =>
+        ExplicitInputInvalid ? "is-invalid" : "";
+
+    private string ResultAlertClass =>
+        _result?.Disposition switch
+        {
+            TicketOperationDisposition.NoCandidates =>
+                "alert-info",
+            TicketOperationDisposition.Conflict =>
+                "alert-warning",
+            TicketOperationDisposition.OutcomeUnknown =>
+                "alert-warning",
+            TicketOperationDisposition.Busy =>
+                "alert-warning",
+            TicketOperationDisposition.InvalidInput =>
+                "alert-danger",
+            TicketOperationDisposition.Failed =>
+                "alert-danger",
+            _ => "alert-info",
+        };
+
+    private string ResultHeading =>
+        _result?.Disposition switch
+        {
+            TicketOperationDisposition.NoCandidates =>
+                "No authoring candidates were found.",
+            TicketOperationDisposition.Conflict =>
+                "The processor rejected this start because it conflicts with existing work.",
+            TicketOperationDisposition.OutcomeUnknown =>
+                "Start outcome unknown.",
+            TicketOperationDisposition.Busy =>
+                "Another operation is in progress.",
+            TicketOperationDisposition.InvalidInput =>
+                "The request is invalid.",
+            TicketOperationDisposition.Failed =>
+                "The run could not be started.",
+            _ => "Start request update.",
+        };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.Equals(
+            _loadedWorkflow,
+            Workflow,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _loadedWorkflow = Workflow;
+        _loadGeneration++;
+        ResetForm();
+        if (!Catalog.TryGet(
+            Workflow,
+            out TicketWorkflowDefinition definition))
+        {
+            _definition = null;
+            return;
+        }
+
+        _definition = definition;
+        _unknownReviewRequired =
+            Operations.RequiresUnknownStartReview(
+                definition.RouteKey);
+        await LoadReadinessAsync(
+            refresh: false,
+            _loadGeneration);
+    }
+
+    private void ResetForm()
+    {
+        _readiness = null;
+        _parsedKeys = new([], []);
+        _result = null;
+        _readinessError = null;
+        _explicitKeys = "";
+        _selectionMode = TicketSelectionMode.Configured;
+        _step = 1;
+        _databaseOnly = false;
+        _selectionValidationAttempted = false;
+        _submitting = false;
+        _unknownReviewRequired = false;
+    }
+
+    private Task RefreshReadinessAsync() =>
+        LoadReadinessAsync(
+            refresh: true,
+            _loadGeneration);
+
+    private async Task LoadReadinessAsync(
+        bool refresh,
+        int generation)
+    {
+        if (_definition is null)
+        {
+            return;
+        }
+
+        _loadingReadiness = true;
+        _readinessError = null;
+        string routeKey = _definition.RouteKey;
+        try
+        {
+            TicketWorkflowReadiness readiness =
+                await Operations.GetReadinessAsync(
+                    routeKey,
+                    refresh,
+                    _lifetime.Token);
+            if (generation == _loadGeneration)
+            {
+                _readiness = readiness;
+            }
+        }
+        catch (OperationCanceledException)
+            when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (generation == _loadGeneration)
+            {
+                _readinessError = ex.Message;
+            }
+        }
+        finally
+        {
+            if (generation == _loadGeneration)
+            {
+                _loadingReadiness = false;
+            }
+        }
+    }
+
+    private void SetSelectionMode(TicketSelectionMode mode)
+    {
+        _selectionMode = mode;
+        _selectionValidationAttempted = false;
+        ParseExplicitKeys();
+    }
+
+    private void ParseExplicitKeys()
+    {
+        _parsedKeys =
+            TicketKeyParser.Parse(_explicitKeys);
+    }
+
+    private void ContinueToReview()
+    {
+        _selectionValidationAttempted = true;
+        ParseExplicitKeys();
+        if (!SelectionIsValid)
+        {
+            return;
+        }
+        _step = 2;
+    }
+
+    private void BackToSelection()
+    {
+        _step = 1;
+    }
+
+    private async Task SubmitAsync()
+    {
+        _selectionValidationAttempted = true;
+        ParseExplicitKeys();
+        if (!CanSubmit || _definition is null)
+        {
+            return;
+        }
+
+        _submitting = true;
+        _result = null;
+        try
+        {
+            TicketStartResult result =
+                await Operations.StartAsync(
+                    new TicketRunStartRequest(
+                        _definition.RouteKey,
+                        _selectionMode,
+                        _selectionMode ==
+                            TicketSelectionMode.Explicit
+                            ? _explicitKeys
+                            : null,
+                        _databaseOnly),
+                    _lifetime.Token);
+            _result = result;
+            _unknownReviewRequired =
+                result.Disposition ==
+                    TicketOperationDisposition.OutcomeUnknown ||
+                Operations.RequiresUnknownStartReview(
+                    _definition.RouteKey);
+
+            if (result.Disposition ==
+                    TicketOperationDisposition.Succeeded &&
+                result.Run is not null)
+            {
+                Navigation.NavigateTo(
+                    RunUrl(result.Run.Run.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _result = new TicketStartResult(
+                TicketOperationDisposition.Failed,
+                _definition,
+                ParsedKeys: _parsedKeys,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void AcknowledgeUnknownStart()
+    {
+        if (_definition is null)
+        {
+            return;
+        }
+        Operations.AcknowledgeUnknownStartReview(
+            _definition.RouteKey);
+        _unknownReviewRequired = false;
+        _result = null;
+    }
+
+    private string RunUrl(string runId) =>
+        $"/operations/{_definition!.RouteKey}/{Uri.EscapeDataString(runId)}";
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+    }
+}

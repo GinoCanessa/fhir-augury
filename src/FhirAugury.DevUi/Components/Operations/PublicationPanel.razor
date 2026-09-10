@@ -1,0 +1,459 @@
+<section class="operation-panel publication-panel"
+         aria-labelledby="@HeadingId">
+    <div class="operation-panel__heading">
+        <div>
+            <p class="operation-panel__eyebrow">Separate local step</p>
+            <h2 id="@HeadingId" class="h4 mb-0">
+                Review-site publication
+            </h2>
+        </div>
+        <StatusIndicator Status="@PublicationStatus"
+                         Label="@PublicationLabel" />
+    </div>
+
+    <div class="processor-result-reminder">
+        <strong>Processor result:</strong>
+        <span>@ProcessorResultLabel</span>
+    </div>
+
+    @if (Details.Outcome.Processor ==
+        ProcessorRunOutcome.Completed)
+    {
+        <div class="publication-readiness publication-readiness--full">
+            <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
+            <div>
+                <strong>Full processor success.</strong>
+                All tickets completed; the verified snapshot is eligible
+                for publication.
+            </div>
+        </div>
+    }
+    else if (Details.Outcome.Processor ==
+        ProcessorRunOutcome.CompletedWithSupersededItems)
+    {
+        <div class="publication-readiness publication-readiness--partial">
+            <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+            <div>
+                <strong>Partial processor success.</strong>
+                The following tickets were explicitly superseded and will
+                not appear as completed output:
+            </div>
+        </div>
+        <ul class="superseded-publication-list">
+            @foreach (AuthoringRunItemStatus item in SupersededItems)
+            {
+                <li>
+                    <a href="@ItemViewerUrl.For("jira", item.BusinessKey)">
+                        @item.BusinessKey
+                    </a>
+                    <span>
+                        @(string.IsNullOrWhiteSpace(item.SupersessionReason)
+                            ? "No reason was returned by the processor."
+                            : item.SupersessionReason)
+                    </span>
+                </li>
+            }
+        </ul>
+    }
+
+    @if (Details.Outcome.Processor ==
+        ProcessorRunOutcome.CompletedDatabaseOnly)
+    {
+        <div class="callout callout--neutral">
+            <i class="bi bi-database-check" aria-hidden="true"></i>
+            <div>
+                <strong>Database-only output selected.</strong>
+                This successful run intentionally has no immutable snapshot
+                to download and no review site to generate.
+            </div>
+        </div>
+    }
+    else if (Details.Outcome.Processor is
+        ProcessorRunOutcome.Active or
+        ProcessorRunOutcome.RecoverableError)
+    {
+        <p class="text-body-secondary">
+            Site generation becomes available after the processor completes
+            a snapshot-producing run.
+        </p>
+    }
+    else if (Details.Outcome.Processor ==
+        ProcessorRunOutcome.Superseded)
+    {
+        <p class="text-body-secondary">
+            A superseded run cannot be published.
+        </p>
+    }
+
+    @if (Publication is ReviewSitePublication publication)
+    {
+        <div class="publication-location">
+            <div>
+                <span class="publication-location__label">
+                    Run-scoped output
+                </span>
+                <code>@publication.Coordinates.SiteDirectory</code>
+            </div>
+            <a class="btn btn-success"
+               href="@publication.Coordinates.SiteUrl"
+               target="_blank"
+               rel="noopener">
+                <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
+                Open review site
+            </a>
+        </div>
+    }
+
+    @if (LastResult?.Disposition ==
+        TicketOperationDisposition.Failed)
+    {
+        <div class="alert alert-danger" role="alert">
+            <strong>Site publication failed.</strong>
+            @LastResult.Message
+            @if (LastResult.VerifiedPairAvailable)
+            {
+                <span class="d-block mt-1">
+                    The verified snapshot pair remains available, so retrying
+                    will not replay processor authoring work.
+                </span>
+            }
+            <span class="d-block mt-1">
+                The processor result shown above is unchanged.
+            </span>
+        </div>
+    }
+    else if (LastResult is not null &&
+        LastResult.Disposition !=
+            TicketOperationDisposition.Succeeded)
+    {
+        <div class="alert alert-warning" role="status">
+            <strong>Site generation was not started.</strong>
+            @LastResult.Message
+            <span class="d-block mt-1">
+                The processor result shown above is unchanged.
+            </span>
+        </div>
+    }
+    else if (!string.IsNullOrWhiteSpace(
+        Details.PublicationError))
+    {
+        <div class="alert alert-warning" role="alert">
+            <strong>Existing site could not be reconstructed.</strong>
+            @Details.PublicationError
+            <span class="d-block mt-1">
+                The processor result shown above is unchanged.
+            </span>
+        </div>
+    }
+
+    @if (LastResult?.Warnings is { Count: > 0 } warnings)
+    {
+        <div class="callout callout--warning">
+            <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i>
+            <div>
+                <strong>Publication warnings</strong>
+                <ul class="mb-0">
+                    @foreach (string warning in warnings)
+                    {
+                        <li>@warning</li>
+                    }
+                </ul>
+            </div>
+        </div>
+    }
+
+    @if (CanPublish)
+    {
+        <div class="publication-panel__actions">
+            <button @ref="_primaryAction"
+                    class="btn btn-primary"
+                    type="button"
+                    disabled="@(Busy || Disabled || _confirmingReplacement)"
+                    @onclick="PublishPrimaryAsync">
+                @if (Busy)
+                {
+                    <span class="spinner-border spinner-border-sm"
+                          aria-hidden="true"></span>
+                    <span>Generating site…</span>
+                }
+                else if (Publication is not null)
+                {
+                    <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+                    <span>Regenerate review site</span>
+                }
+                else if (LastResult?.Disposition ==
+                    TicketOperationDisposition.Failed ||
+                    HasReconstructionFailure)
+                {
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                    <span>Retry without replacing output</span>
+                }
+                else
+                {
+                    <i class="bi bi-file-earmark-code-fill"
+                       aria-hidden="true"></i>
+                    <span>Generate review site</span>
+                }
+            </button>
+            @if (ShowReplacementRecovery)
+            {
+                <button @ref="_replacementTrigger"
+                        class="btn btn-outline-danger"
+                        type="button"
+                        disabled="@(Busy || Disabled || _confirmingReplacement)"
+                        aria-expanded="@_confirmingReplacement"
+                        aria-controls="@ReplacementPanelId"
+                        @onclick="BeginReplacementAsync">
+                    <i class="bi bi-exclamation-diamond"
+                       aria-hidden="true"></i>
+                    Replace existing output…
+                </button>
+            }
+            <p class="form-text mb-0">
+                Generation runs in this Dev UI process. It does not launch
+                another server process or replay ticket authoring.
+            </p>
+        </div>
+
+        @if (_confirmingReplacement)
+        {
+            <div id="@ReplacementPanelId"
+                 class="publication-replacement-confirmation"
+                 role="group"
+                 aria-busy="@ReplacementAttemptBusy"
+                 aria-labelledby="@ReplacementHeadingId">
+                <h3 id="@ReplacementHeadingId" class="h6">
+                    Replace this run's existing review-site output?
+                </h3>
+                <p>
+                    Normal generation will not overwrite output that it
+                    cannot verify. This explicit forced regeneration may
+                    take ownership of, or replace, files already present in
+                    this run-scoped site directory.
+                </p>
+                <p>
+                    Continue only after verifying that the existing local
+                    output can be discarded. The replacement is staged and
+                    validated before publication; processor authoring is not
+                    replayed and the processor result remains unchanged.
+                </p>
+                <div class="publication-replacement-confirmation__actions">
+                    <button @ref="_replacementConfirm"
+                            class="btn btn-sm btn-danger"
+                            type="button"
+                            disabled="@(ReplacementAttemptBusy || Disabled)"
+                            @onclick="ConfirmReplacementAsync">
+                        @if (ReplacementAttemptBusy)
+                        {
+                            <span class="spinner-border spinner-border-sm"
+                                  aria-hidden="true"></span>
+                            <span>Replacing output…</span>
+                        }
+                        else
+                        {
+                            <span>Replace and regenerate site</span>
+                        }
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            type="button"
+                            disabled="@(ReplacementAttemptBusy || Disabled)"
+                            @onclick="CancelReplacementAsync">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public TicketRunDetails Details { get; set; } = null!;
+
+    [Parameter]
+    public TicketPublicationResult? LastResult { get; set; }
+
+    [Parameter]
+    public bool Busy { get; set; }
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter]
+    public EventCallback<bool> OnPublish { get; set; }
+
+    private readonly string _id =
+        Guid.NewGuid().ToString("N");
+    private ElementReference _primaryAction;
+    private ElementReference _replacementTrigger;
+    private ElementReference _replacementConfirm;
+    private bool _confirmingReplacement;
+    private bool _focusPrimaryAction;
+    private bool _focusReplacementConfirm;
+    private bool _replacementAttemptActive;
+
+    private string HeadingId =>
+        $"run-{Details.Response.Run.RunId.GetHashCode(StringComparison.Ordinal):x}-publication";
+
+    private string ReplacementPanelId =>
+        $"publication-replacement-{_id}";
+
+    private string ReplacementHeadingId =>
+        $"{ReplacementPanelId}-heading";
+
+    private ReviewSitePublication? Publication =>
+        Details.Publication ?? LastResult?.Publication;
+
+    private IReadOnlyList<AuthoringRunItemStatus> SupersededItems =>
+        Details.Response.Items
+            .Where(item => string.Equals(
+                item.Status,
+                "superseded",
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+    private bool CanPublish =>
+        Details.Outcome.Processor is
+            ProcessorRunOutcome.Completed or
+            ProcessorRunOutcome.CompletedWithSupersededItems &&
+        !Details.Response.Run.DatabaseOnly;
+
+    private bool HasReconstructionFailure =>
+        !string.IsNullOrWhiteSpace(
+            Details.PublicationError);
+
+    private bool ShowReplacementRecovery =>
+        Publication is null &&
+        (HasReconstructionFailure ||
+            LastResult?.Disposition ==
+                TicketOperationDisposition.Failed);
+
+    private bool ReplacementAttemptBusy =>
+        Busy || _replacementAttemptActive;
+
+    private string PublicationStatus
+    {
+        get
+        {
+            if (Busy)
+            {
+                return "publishing";
+            }
+            if (LastResult?.Disposition ==
+                TicketOperationDisposition.Failed ||
+                !string.IsNullOrWhiteSpace(
+                    Details.PublicationError))
+            {
+                return "failed";
+            }
+            if (LastResult is not null &&
+                LastResult.Disposition !=
+                    TicketOperationDisposition.Succeeded)
+            {
+                return "warning";
+            }
+            return Publication is null
+                ? CanPublish
+                    ? "ready"
+                    : "unavailable-for-publication"
+                : "published";
+        }
+    }
+
+    private string PublicationLabel =>
+        PublicationStatus switch
+        {
+            "publishing" => "Generating",
+            "failed" => "Publication failed",
+            "warning" => "Not started",
+            "ready" => "Ready to generate",
+            "published" => "Published",
+            _ => "Not available",
+        };
+
+    private string ProcessorResultLabel =>
+        Details.Outcome.Processor switch
+        {
+            ProcessorRunOutcome.Active => "Processing active",
+            ProcessorRunOutcome.RecoverableError =>
+                "Recoverable error; still non-terminal",
+            ProcessorRunOutcome.Completed => "Full success",
+            ProcessorRunOutcome.CompletedWithSupersededItems =>
+                "Partial success with superseded tickets",
+            ProcessorRunOutcome.CompletedDatabaseOnly =>
+                "Database-only success",
+            ProcessorRunOutcome.Superseded => "Run superseded",
+            _ => Details.Outcome.Processor.ToString(),
+        };
+
+    protected override void OnParametersSet()
+    {
+        if (!ReplacementAttemptBusy &&
+            !ShowReplacementRecovery)
+        {
+            _confirmingReplacement = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(
+        bool firstRender)
+    {
+        if (_focusReplacementConfirm)
+        {
+            _focusReplacementConfirm = false;
+            await _replacementConfirm.FocusAsync(
+                preventScroll: true);
+        }
+        else if (_focusPrimaryAction &&
+            !Busy &&
+            !Disabled)
+        {
+            _focusPrimaryAction = false;
+            await _primaryAction.FocusAsync(
+                preventScroll: true);
+        }
+    }
+
+    private Task PublishPrimaryAsync() =>
+        OnPublish.InvokeAsync(Publication is not null);
+
+    private Task BeginReplacementAsync()
+    {
+        _confirmingReplacement = true;
+        _focusReplacementConfirm = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task ConfirmReplacementAsync()
+    {
+        if (ReplacementAttemptBusy || Disabled)
+        {
+            return;
+        }
+
+        _replacementAttemptActive = true;
+        try
+        {
+            await OnPublish.InvokeAsync(true);
+        }
+        finally
+        {
+            _replacementAttemptActive = false;
+            _confirmingReplacement = false;
+            _focusPrimaryAction = true;
+        }
+    }
+
+    private async Task CancelReplacementAsync()
+    {
+        if (ReplacementAttemptBusy || Disabled)
+        {
+            return;
+        }
+
+        _confirmingReplacement = false;
+        await InvokeAsync(StateHasChanged);
+        await _replacementTrigger.FocusAsync(
+            preventScroll: true);
+    }
+}

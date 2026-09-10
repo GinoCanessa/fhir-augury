@@ -1,0 +1,146 @@
+<section class="operation-panel"
+         aria-labelledby="@HeadingId">
+    <div class="operation-panel__heading">
+        <div>
+            <p class="operation-panel__eyebrow">Authoritative progress</p>
+            <h2 id="@HeadingId" class="h4 mb-0">Run outcome</h2>
+        </div>
+        <StatusIndicator Status="@OutcomeStatus"
+                         Label="@OutcomeLabel" />
+    </div>
+
+    <p class="run-outcome-copy">@OutcomeDescription</p>
+
+    <div class="run-progress"
+         role="progressbar"
+         aria-label="@($"{ResolvedItems} of {Run.TotalItems} tickets resolved")"
+         aria-valuemin="0"
+         aria-valuemax="@Run.TotalItems"
+         aria-valuenow="@ResolvedItems">
+        <span style="@($"width: {ResolvedPercent}%")"></span>
+    </div>
+
+    <dl class="metric-grid">
+        <div>
+            <dt>Total tickets</dt>
+            <dd>@Run.TotalItems</dd>
+        </div>
+        <div>
+            <dt>Complete</dt>
+            <dd>@Run.CompletedItems</dd>
+        </div>
+        <div>
+            <dt>Recoverable errors</dt>
+            <dd>@Run.RetryableErrorItems</dd>
+        </div>
+        <div>
+            <dt>Superseded</dt>
+            <dd>@Run.SupersededItems</dd>
+        </div>
+        <div>
+            <dt>In progress or queued</dt>
+            <dd>@UnresolvedItems</dd>
+        </div>
+        <div>
+            <dt>Output mode</dt>
+            <dd>@(Run.DatabaseOnly ? "Database only" : "Snapshot and site")</dd>
+        </div>
+    </dl>
+
+    <div class="publication-axis">
+        <span>Review-site publication</span>
+        <StatusIndicator Status="@Details.Outcome.Publication.ToString()"
+                         Label="@PublicationLabel" />
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public TicketRunDetails Details { get; set; } = null!;
+
+    private AuthoringRunStatus Run => Details.Response.Run;
+
+    private string HeadingId =>
+        $"run-{Run.RunId.GetHashCode(StringComparison.Ordinal):x}-progress";
+
+    private int ResolvedItems =>
+        Math.Min(
+            Run.TotalItems,
+            Math.Max(
+                0,
+                Run.CompletedItems + Run.SupersededItems));
+
+    private int UnresolvedItems =>
+        Math.Max(
+            0,
+            Run.TotalItems -
+                Run.CompletedItems -
+                Run.RetryableErrorItems -
+                Run.SupersededItems);
+
+    private int ResolvedPercent =>
+        Run.TotalItems == 0
+            ? 0
+            : (int)Math.Round(
+                ResolvedItems * 100d / Run.TotalItems);
+
+    private string OutcomeStatus =>
+        Details.Outcome.Processor switch
+        {
+            ProcessorRunOutcome.Active => "active",
+            ProcessorRunOutcome.RecoverableError =>
+                "recoverable-error",
+            ProcessorRunOutcome.Completed => "full-success",
+            ProcessorRunOutcome.CompletedWithSupersededItems =>
+                "partial-success",
+            ProcessorRunOutcome.CompletedDatabaseOnly =>
+                "database-only",
+            ProcessorRunOutcome.Superseded => "superseded",
+            _ => "unknown",
+        };
+
+    private string OutcomeLabel =>
+        Details.Outcome.Processor switch
+        {
+            ProcessorRunOutcome.Active => "Processing active",
+            ProcessorRunOutcome.RecoverableError =>
+                "Recoverable error",
+            ProcessorRunOutcome.Completed =>
+                "Full processor success",
+            ProcessorRunOutcome.CompletedWithSupersededItems =>
+                "Partial processor success",
+            ProcessorRunOutcome.CompletedDatabaseOnly =>
+                "Database-only success",
+            ProcessorRunOutcome.Superseded => "Run superseded",
+            _ => Details.Outcome.Processor.ToString(),
+        };
+
+    private string OutcomeDescription =>
+        Details.Outcome.Processor switch
+        {
+            ProcessorRunOutcome.Active =>
+                "The processor is still working. This page will continue to poll sequentially.",
+            ProcessorRunOutcome.RecoverableError =>
+                "The run is not terminal. Automatic retry remains the recommended recovery path.",
+            ProcessorRunOutcome.Completed =>
+                "Every ticket completed successfully. The immutable snapshot can be published as a review site.",
+            ProcessorRunOutcome.CompletedWithSupersededItems =>
+                "The processor completed with explicitly superseded tickets. Review every exclusion before publication.",
+            ProcessorRunOutcome.CompletedDatabaseOnly =>
+                "The requested database-only run completed successfully. It does not produce a review snapshot or site.",
+            ProcessorRunOutcome.Superseded =>
+                "This run was superseded and is terminal.",
+            _ => "The processor reported an unknown outcome.",
+        };
+
+    private string PublicationLabel =>
+        Details.Outcome.Publication switch
+        {
+            PublicationOutcome.Unavailable => "Not available",
+            PublicationOutcome.Ready => "Ready to generate",
+            PublicationOutcome.Publishing => "Generating",
+            PublicationOutcome.Published => "Published",
+            PublicationOutcome.Failed => "Publication failed",
+            _ => Details.Outcome.Publication.ToString(),
+        };
+}

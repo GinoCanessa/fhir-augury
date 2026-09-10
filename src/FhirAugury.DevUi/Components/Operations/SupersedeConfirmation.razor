@@ -1,0 +1,145 @@
+<div class="supersede-control">
+    <button @ref="_trigger"
+            class="btn btn-sm btn-outline-danger"
+            type="button"
+            disabled="@(Disabled || _submitting)"
+            aria-expanded="@_confirming"
+            aria-controls="@PanelId"
+            @onclick="BeginConfirmationAsync">
+        <i class="bi bi-slash-circle" aria-hidden="true"></i>
+        Supersede
+    </button>
+
+    @if (_confirming)
+    {
+        <div id="@PanelId"
+             class="supersede-confirmation"
+             role="group"
+             aria-labelledby="@HeadingId">
+            <h4 id="@HeadingId" class="h6">
+                Supersede @BusinessKey
+            </h4>
+            <p id="@HelpId" class="small text-body-secondary">
+                This permanently excludes the errored ticket from this run.
+                Record why it is safe to proceed without it.
+            </p>
+            <label class="form-label fw-semibold" for="@InputId">
+                Supersession reason
+            </label>
+            <textarea @ref="_reasonInput"
+                      id="@InputId"
+                      class="form-control @(_validationAttempted && string.IsNullOrWhiteSpace(_reason) ? "is-invalid" : "")"
+                      rows="2"
+                      required
+                      @bind="_reason"
+                      @bind:event="oninput"
+                      aria-describedby="@HelpId"
+                      aria-invalid="@(_validationAttempted && string.IsNullOrWhiteSpace(_reason))"></textarea>
+            @if (_validationAttempted &&
+                string.IsNullOrWhiteSpace(_reason))
+            {
+                <div class="invalid-feedback d-block" role="alert">
+                    Enter a non-empty supersession reason.
+                </div>
+            }
+            <div class="supersede-confirmation__actions">
+                <button class="btn btn-sm btn-danger"
+                        type="button"
+                        disabled="@_submitting"
+                        @onclick="ConfirmAsync">
+                    @if (_submitting)
+                    {
+                        <span class="spinner-border spinner-border-sm"
+                              aria-hidden="true"></span>
+                    }
+                    Confirm supersession
+                </button>
+                <button class="btn btn-sm btn-outline-secondary"
+                        type="button"
+                        disabled="@_submitting"
+                        @onclick="CancelAsync">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string BusinessKey { get; set; } = "";
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter, EditorRequired]
+    public EventCallback<string> OnConfirm { get; set; }
+
+    private readonly string _id =
+        Guid.NewGuid().ToString("N");
+    private ElementReference _trigger;
+    private ElementReference _reasonInput;
+    private string _reason = "";
+    private bool _confirming;
+    private bool _focusReason;
+    private bool _submitting;
+    private bool _validationAttempted;
+
+    private string PanelId => $"supersede-{_id}";
+    private string HeadingId => $"{PanelId}-heading";
+    private string InputId => $"{PanelId}-reason";
+    private string HelpId => $"{PanelId}-help";
+
+    protected override async Task OnAfterRenderAsync(
+        bool firstRender)
+    {
+        if (_focusReason)
+        {
+            _focusReason = false;
+            await _reasonInput.FocusAsync(
+                preventScroll: true);
+        }
+    }
+
+    private Task BeginConfirmationAsync()
+    {
+        _confirming = true;
+        _focusReason = true;
+        _validationAttempted = false;
+        return Task.CompletedTask;
+    }
+
+    private async Task ConfirmAsync()
+    {
+        _validationAttempted = true;
+        if (string.IsNullOrWhiteSpace(_reason))
+        {
+            _focusReason = true;
+            return;
+        }
+
+        _submitting = true;
+        string reason = _reason.Trim();
+        try
+        {
+            await OnConfirm.InvokeAsync(reason);
+            _confirming = false;
+            _reason = "";
+            _validationAttempted = false;
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task CancelAsync()
+    {
+        _confirming = false;
+        _reason = "";
+        _validationAttempted = false;
+        await InvokeAsync(StateHasChanged);
+        await _trigger.FocusAsync(
+            preventScroll: true);
+    }
+}
