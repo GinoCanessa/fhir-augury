@@ -19,15 +19,19 @@ earlier ones:
 
 ## Environment Variable Naming
 
-Environment variables follow the standard
+Each service registers a literal prefix ending in `_`. Append the top-level
+configuration section directly to that prefix, then use the standard
 [ASP.NET Core configuration](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/)
-pattern. Each service has its own prefix:
+double underscore between nested key segments:
 
 ```
-FHIR_AUGURY_{SERVICE}__{Section}__{Key}
+FHIR_AUGURY_{SERVICE}_{Section}__{Key}
 ```
 
-Double underscores (`__`) separate nested keys.
+The underscore ending the service prefix is not a hierarchy separator, so do
+not add another underscore before the section name. For example, a Dev UI key
+starts with `FHIR_AUGURY_DEVUI_DevUi__`, not
+`FHIR_AUGURY_DEVUI__DevUi__`.
 
 **Quick reference — env var prefixes:**
 
@@ -38,6 +42,7 @@ Double underscores (`__`) separate nested keys.
 | Confluence Source | `FHIR_AUGURY_CONFLUENCE_` | `Confluence` |
 | GitHub Source | `FHIR_AUGURY_GITHUB_` | `GitHub` |
 | Orchestrator | `FHIR_AUGURY_ORCHESTRATOR_` | `Orchestrator` |
+| Dev UI | `FHIR_AUGURY_DEVUI_` | `DevUi` |
 | Jira FHIR Preparer | `FHIR_AUGURY_PREPARER_` | `Processing` |
 | Jira FHIR Planner | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_` | `Processing` |
 | Jira FHIR Applier | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_APPLIER_` | `Processing` |
@@ -72,13 +77,13 @@ Each source service runs independently with its own database, cache, and ports.
 
 ```bash
 # Cookie auth
-FHIR_AUGURY_JIRA__Jira__AuthMode=cookie
-FHIR_AUGURY_JIRA__Jira__Cookie=JSESSIONID=ABC123...
+FHIR_AUGURY_JIRA_Jira__AuthMode=cookie
+FHIR_AUGURY_JIRA_Jira__Cookie=JSESSIONID=ABC123...
 
 # API token auth
-FHIR_AUGURY_JIRA__Jira__AuthMode=apitoken
-FHIR_AUGURY_JIRA__Jira__Email=you@example.com
-FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
+FHIR_AUGURY_JIRA_Jira__AuthMode=apitoken
+FHIR_AUGURY_JIRA_Jira__Email=you@example.com
+FHIR_AUGURY_JIRA_Jira__ApiToken=your-token
 ```
 
 ### Zulip Source (`:5170`)
@@ -98,8 +103,8 @@ FHIR_AUGURY_JIRA__Jira__ApiToken=your-token
 `CredentialFile` (`.zuliprc` format):
 
 ```bash
-FHIR_AUGURY_ZULIP__Zulip__Email=bot@example.com
-FHIR_AUGURY_ZULIP__Zulip__ApiKey=your-api-key
+FHIR_AUGURY_ZULIP_Zulip__Email=bot@example.com
+FHIR_AUGURY_ZULIP_Zulip__ApiKey=your-api-key
 ```
 
 ### Confluence Source (`:5180` HTTP)
@@ -127,13 +132,13 @@ to narrow that, or to `[]` to index nothing.
 
 ```bash
 # Cookie auth
-FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode=cookie
-FHIR_AUGURY_CONFLUENCE__Confluence__Cookie=JSESSIONID=...
+FHIR_AUGURY_CONFLUENCE_Confluence__AuthMode=cookie
+FHIR_AUGURY_CONFLUENCE_Confluence__Cookie=JSESSIONID=...
 
 # Basic auth
-FHIR_AUGURY_CONFLUENCE__Confluence__AuthMode=basic
-FHIR_AUGURY_CONFLUENCE__Confluence__Username=username
-FHIR_AUGURY_CONFLUENCE__Confluence__ApiToken=your-token
+FHIR_AUGURY_CONFLUENCE_Confluence__AuthMode=basic
+FHIR_AUGURY_CONFLUENCE_Confluence__Username=username
+FHIR_AUGURY_CONFLUENCE_Confluence__ApiToken=your-token
 ```
 
 ### GitHub Source (`:5190`)
@@ -159,7 +164,7 @@ also set the token directly:
 GITHUB_TOKEN=ghp_...
 
 # Or set the token directly in config
-FHIR_AUGURY_GITHUB__GitHub__Auth__Token=ghp_...
+FHIR_AUGURY_GITHUB_GitHub__Auth__Token=ghp_...
 ```
 
 **Data provider:** The `Provider` setting selects the data fetch implementation
@@ -206,11 +211,39 @@ in the [Configuration Reference](../configuration.md#orchestrator-service).
 Configure which source services the orchestrator connects to:
 
 ```bash
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__HttpAddress=http://localhost:5160
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Jira__Enabled=true
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://localhost:5170
-FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__Enabled=true
+FHIR_AUGURY_ORCHESTRATOR_Orchestrator__Services__Jira__HttpAddress=http://localhost:5160
+FHIR_AUGURY_ORCHESTRATOR_Orchestrator__Services__Jira__Enabled=true
+FHIR_AUGURY_ORCHESTRATOR_Orchestrator__Services__Zulip__HttpAddress=http://localhost:5170
+FHIR_AUGURY_ORCHESTRATOR_Orchestrator__Services__Zulip__Enabled=true
 ```
+
+The Orchestrator also carries operator-readiness metadata for processing
+services. The shipped mappings are fixed: Preparer requires Jira, while
+Planner requires Jira and GitHub:
+
+```json
+{
+  "Orchestrator": {
+    "ProcessingServices": {
+      "Preparer": {
+        "HttpAddress": "http://localhost:5171",
+        "Enabled": true,
+        "RequiredServices": [ "Jira" ]
+      },
+      "Planner": {
+        "HttpAddress": "http://localhost:5172",
+        "Enabled": true,
+        "RequiredServices": [ "Jira", "GitHub" ]
+      }
+    }
+  }
+}
+```
+
+These names drive readiness messages; they do not start or stop resources.
+Aspire applies the same dependency catalog to its runtime topology. A disabled
+required source is shown as a blocker in the Dev UI rather than treated as an
+Orchestrator configuration failure.
 
 ---
 
@@ -261,6 +294,58 @@ database path or token placeholder in the command.
 
 For the complete Preparer, Planner, Applier, and BallotNotes tables, see
 [Configuration Reference → Processing Services](../configuration.md#processing-services).
+
+---
+
+## Dev UI (`:5210`)
+
+Under Aspire, the AppHost supplies the Orchestrator address and repository-local
+artifact roots automatically. For a standalone Dev UI, local overrides belong
+in the gitignored `src\FhirAugury.DevUi\appsettings.local.json`:
+
+```json
+{
+  "DevUi": {
+    "OrchestratorAddress": "http://localhost:5150",
+    "RecentRunLimit": 20,
+    "RunPollInterval": "00:00:03",
+    "CacheRoot": "..\\..\\cache",
+    "SnapshotCacheRoot": "devui-authoring-snapshots",
+    "ReviewSitesRoot": "devui-review-sites"
+  }
+}
+```
+
+The default/AppHost layout is:
+
+| Artifact | Local path | Browser exposure |
+|-|-|-|
+| Verified snapshot pair | `cache\devui-authoring-snapshots\{prepare|plan}\{runId}\` | Private; never web-served |
+| Generated review site | `cache\devui-review-sites\{prepare|plan}\{runId}\{discussion|applying}\` | `/review-sites/{prepare|plan}/{runId}/{discussion|applying}/` |
+
+Pair directories contain the database, descriptor, and `verified-pair.json`.
+Published sub-sites contain `site-manifest.json`. Both roots are under ignored
+`cache\`; no credential or operation token belongs in either. Sites and pairs
+are retained until an operator removes an old workflow/run directory while the
+Dev UI is stopped.
+
+The roots must be separate strict descendants of `DevUi:CacheRoot`. Startup
+rejects repository/content/web/filesystem roots, ancestor/descendant overlap,
+unsafe Windows names or alternate-data-stream syntax, and existing reparse
+points. Only `DevUi:ReviewSitesRoot` is served. See the
+[complete Dev UI option table](../configuration.md#dev-ui).
+
+For standalone environment configuration, use the exact prefix and option
+keys below:
+
+```text
+FHIR_AUGURY_DEVUI_DevUi__OrchestratorAddress=http://localhost:5150
+FHIR_AUGURY_DEVUI_DevUi__RecentRunLimit=20
+FHIR_AUGURY_DEVUI_DevUi__RunPollInterval=00:00:03
+FHIR_AUGURY_DEVUI_DevUi__CacheRoot=..\..\cache
+FHIR_AUGURY_DEVUI_DevUi__SnapshotCacheRoot=devui-authoring-snapshots
+FHIR_AUGURY_DEVUI_DevUi__ReviewSitesRoot=devui-review-sites
+```
 
 ---
 
@@ -343,8 +428,8 @@ can be tuned per service — for example, a lower `B` for short Zulip messages a
 a higher `B` for long Confluence pages:
 
 ```bash
-FHIR_AUGURY_ZULIP__Zulip__Bm25__K1=1.5
-FHIR_AUGURY_ZULIP__Zulip__Bm25__B=0.5
+FHIR_AUGURY_ZULIP_Zulip__Bm25__K1=1.5
+FHIR_AUGURY_ZULIP_Zulip__Bm25__B=0.5
 ```
 
 See the [Configuration Reference](../configuration.md) for the full `Bm25`
@@ -361,8 +446,8 @@ Configure the paths in each source's `AuxiliaryDatabase` section
 back to built-in defaults when unset, with no loss of functionality:
 
 ```bash
-FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/data/auxiliary.db
-FHIR_AUGURY_JIRA__Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/data/fhir-spec.db
+FHIR_AUGURY_JIRA_Jira__AuxiliaryDatabase__AuxiliaryDatabasePath=/data/auxiliary.db
+FHIR_AUGURY_JIRA_Jira__AuxiliaryDatabase__FhirSpecDatabasePath=/data/fhir-spec.db
 ```
 
 See the [Configuration Reference](../configuration.md) for details.

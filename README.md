@@ -9,7 +9,9 @@ FTS5 and BM25 relevance scoring.
 
 FHIR Augury v2 uses a microservices architecture where each data source runs as
 an independent HTTP service with its own database and cache. The Orchestrator
-aggregates results and manages cross-references across sources.
+aggregates results and manages cross-references across sources. The CLI, MCP
+servers, and Dev UI use the Orchestrator as their aggregate gateway rather than
+opening service databases or calling source services directly.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -41,6 +43,9 @@ Two component groups are omitted from the diagram to keep it readable:
 - **Processors** (:5171–:5174) — the Preparer, Planner, Applier, and BallotNotes
   services consume source data to produce derived artifacts (ticket prep, plans,
   applied changes, ballot notes).
+- **Dev UI** (:5210) — a trusted-local operations workspace for Preparer and
+  Planner runs, plus the existing Services, API Tests, and Item View tools. Its
+  source-oriented API tabs still send every request through the Orchestrator.
 
 See [Architecture](docs/technical/architecture.md) for the full component and
 data-flow diagrams.
@@ -69,8 +74,17 @@ dotnet run --project src/FhirAugury.AppHost
 
 The Aspire dashboard provides real-time service health, logs, traces, and
 metrics at the URL shown in the console output. Confluence, all four
-processors, Dev UI, MCP HTTP, and CLI use explicit start and must be started
-manually from the dashboard.
+processors, the terminology server, Dev UI, MCP HTTP, and CLI use explicit
+start and must be started manually from the dashboard.
+
+For guided ticket preparation or planning, start `devui` and the corresponding
+Preparer or Planner resource from Aspire, then open
+[http://localhost:5210](http://localhost:5210). Aspire remains the control
+plane for resource start/stop, logs, and traces; the Dev UI controls only
+processor-owned ticket runs and local review-site publication. See
+[Generating Discussion Tickets](docs/user/generating-discussion-tickets.md)
+and
+[Generating Application Tickets](docs/user/generating-application-tickets.md).
 
 ### From Source
 
@@ -99,7 +113,7 @@ dotnet run --project src/FhirAugury.Orchestrator
 | GitHub | [5190](http://localhost:5190/health) | Compose + Aspire | HL7 GitHub issues, PRs, and commits |
 | FHIR Spec | [5195](http://localhost:5195/health) | Aspire only | Read-only FHIR specification reference data (StructureDefinitions, canonical resources) |
 | MCP (HTTP) | [5200](http://localhost:5200/mcp) | Aspire only | MCP server (HTTP/SSE transport) |
-| Dev UI | [5210](http://localhost:5210) | Aspire only | Blazor Server operational dashboard |
+| Dev UI | [5210](http://localhost:5210) | Aspire only | Guided Preparer/Planner operations workspace, services dashboard, item viewer, and Orchestrator-routed API tester |
 | Terminology Server | [5300](http://localhost:5300/health) | Compose + Aspire | THO overlap check for submitted CodeSystem / ValueSet resources |
 
 ## Features
@@ -118,6 +132,9 @@ dotnet run --project src/FhirAugury.Orchestrator
 - **CLI tool** for searching and managing services via HTTP
 - **Processor-owned authoring** with frozen runs, atomic receipts, item retry,
   mutation fencing, and immutable review snapshots
+- **Guided ticket operations** with durable active/recent run discovery,
+  server-advertised recovery actions, exact-run reopening, and run-scoped local
+  discussion/applying sites
 - **Docker Compose** deployment with profiles for subset stacks
 - **.NET Aspire** orchestration with dashboard, OpenTelemetry, and service discovery
 
@@ -194,6 +211,8 @@ docker compose --profile terminology up -d  # Terminology server only
 | Processor satellites | `src/FhirAugury.Processor.*.{Persistence,Hydration}`, `*.Hydration.Common` | Per-family persistence + hydration support libraries for the Preparer / Planner / BallotNotes processors |
 | Processing Common | `src/FhirAugury.Processing.Common` | Shared run/item/receipt ledger, operation-token verification, retry, mutation fences, cutover, finalization stages, and snapshot descriptors |
 | Processing (Jira Common) | `src/FhirAugury.Processing.Jira.Common` | Jira candidate discovery plus frozen run creation, worker dispatch, source-revision guards, and callback handling |
+| Processing Client | `src/FhirAugury.Processing.Client` | Orchestrator-based outer run control and workflow-bound verified snapshot-pair download; contains no worker submission or operation-token surface |
+| Ticket Publisher | `src/FhirAugury.Publishing.Tickets` | In-process immutable-snapshot publisher shared by the Dev UI and `ticket-site` adapter |
 | Zulip Source | `src/FhirAugury.Source.Zulip` | Zulip message ingestion and search |
 | Confluence Source | `src/FhirAugury.Source.Confluence` | Confluence page ingestion and search |
 | GitHub Source | `src/FhirAugury.Source.GitHub` | GitHub issues, PRs, commits, FHIR artifacts |
@@ -207,8 +226,8 @@ docker compose --profile terminology up -d  # Terminology server only
 | MCP Server (stdio) | `src/FhirAugury.McpStdio` | MCP server for LLM agents (stdio transport, e.g., Claude Desktop) |
 | MCP Server (HTTP) | `src/FhirAugury.McpHttp` | MCP server for LLM agents (HTTP/SSE transport) |
 | MCP Shared | `src/FhirAugury.McpShared` | Shared MCP tool implementations and HTTP client registration |
-| CLI | `src/FhirAugury.Cli` | Command-line interface via HTTP |
-| Dev UI | `src/FhirAugury.DevUi` | Blazor Server operational dashboard |
+| CLI | `src/FhirAugury.Cli` | Headless source and processor control through the Orchestrator; retains worker callbacks inside the CLI assembly |
+| Dev UI | `src/FhirAugury.DevUi` | Blazor Server operations workspace and diagnostics client, exclusively through the Orchestrator |
 | Service Defaults | `src/FhirAugury.ServiceDefaults` | Shared Aspire defaults (OpenTelemetry, health checks, resilience) |
 | App Host | `src/FhirAugury.AppHost` | .NET Aspire orchestrator for local development |
 
@@ -216,7 +235,7 @@ docker compose --profile terminology up -d  # Terminology server only
 
 | Utility | Project | Description |
 |---------|---------|-------------|
-| Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | Builds the discussion or applying static review site from exactly one trusted Preparer/Planner snapshot plus its descriptor; never opens the live processor store. |
+| Ticket site | [`tools/ticket-site`](tools/ticket-site/README.md) | Thin command-line adapter over the shared ticket publisher; builds a discussion or applying site from a verified Preparer/Planner snapshot pair and never opens the live processor store. |
 | Dictionary build | [`tools/dictionary-build`](tools/dictionary-build/README.md) | One-shot `dotnet`-run utility that rebuilds `cache/dictionary.db` from the spell-check source files under `dictionary/`. Run after editing anything under `dictionary/`. |
 | Notes site | [`tools/notes-site`](tools/notes-site/README.md) | Builds the BallotNotes static review SPA from a trusted immutable snapshot and descriptor. |
 | BallotNotes reallocate-WG | [`tools/ballotnotes-reallocate-wg`](tools/ballotnotes-reallocate-wg/README.md) | Recomputes workgroup ownership from read-only evidence and submits one expected-revision batch through the BallotNotes processor fence. |
@@ -235,6 +254,12 @@ The orchestrator self-metadata routes (`/api/v1/source/orchestrator/openapi.json
 and `/api/v1/source/orchestrator/list-sources`) are preserved by design; there is
 no generic `/api/v1/source/{name}/...` reverse proxy — per-source operations are
 exposed through the typed proxies.
+
+The Dev UI's source tabs are source-oriented views over this same merged
+Orchestrator document. Each operation is mapped to an Orchestrator-native
+aggregate route, a typed `/api/v1/{name}/...` proxy, or a typed
+readiness/metadata replacement; selecting a source never changes the HTTP base
+away from the Orchestrator.
 
 The CLI uses this document to enumerate and invoke any operation
 generically — no new code is required to call a newly added endpoint:

@@ -21,6 +21,13 @@ Outer-control mode requires all of these variables to be absent:
 - `FHIR_AUGURY_AUTHORING_OPERATION_TOKEN`
 - `FHIR_AUGURY_AUTHORING_SOURCE_REVISION`
 
+A trusted local operator may use the Dev UI route
+`/operations/prepare/new`; it is an outer-control alternative over the same
+processor-owned run and publisher contracts. The command flow below remains
+the supported headless equivalent. Neither outer surface receives operation
+tokens or performs repository mutation, commit pushes, pull-request creation,
+or other GitHub writes.
+
 Start one processor-owned run:
 
 ```powershell
@@ -34,11 +41,24 @@ Then:
 3. An item is authored only when its status is `complete` and it has a
    non-empty `acceptedReceiptId`. Never infer completion from prose, a local
    file, or process exit alone.
-4. Use action `retry` only for an item whose current status is `error`.
-5. Treat run status `error` or `superseded` as failure and include the run ID,
-   item IDs, operation IDs, and receipt IDs in the result.
+4. Continue polling while `run.state.isTerminal` is false, including
+   recoverable run status `error`. Automatic retry is the default.
+5. Use action `retry` only for a current `error` item with
+   `allowedActions.canRetryNow:true`. Use `supersede` only with an explicit
+   non-blank reason when `allowedActions.canSupersede:true`; never supersede a
+   receipt-backed item.
 6. Success is `completed` for a normal run or `completed-database-only` only
    when the caller explicitly requested `databaseOnly:true`.
+7. A terminal run `superseded` is failure. Include run, item, operation, and
+   receipt IDs. There is no generic terminal `failed` state.
+
+At the processor/Orchestrator HTTP surface, structured start conflicts supply
+authoritative `conflictingRunIds` and may include the legacy single `runId`;
+the Dev UI turns them into links, while the CLI retains its existing error
+envelope. If start, retry, or supersede loses its response after it may have
+reached the processor, report **outcome unknown**, never replay it, and
+reconcile only through list/detail reads. Require explicit review before
+another ambiguous start.
 
 For a normal run, download the processor snapshot and trusted descriptor as
 one verified pair:
@@ -52,6 +72,11 @@ Publish only from that immutable pair:
 ```powershell
 dotnet run --project tools\ticket-site -- --preparer-snapshot "<snapshotPath>" --snapshot-descriptor "<descriptorPath>" --out "cache\jira-ticket-site" --force
 ```
+
+The directory-valued snapshot output contains the descriptor, database, and
+`verified-pair.json`. The ready manifest binds `Preparer`, run/snapshot
+coordinates, safe filenames, size, and both SHA-256 digests. Successful
+publication writes the exact sub-site manifest `site-manifest.json`.
 
 If publication fails, keep the accepted receipts, snapshot bytes, and
 descriptor untouched, but fail the outer command. Return `runId`,

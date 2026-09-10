@@ -4,6 +4,8 @@ FHIR Augury v2 uses a microservices architecture with HTTP/REST APIs for all
 communication. The CLI and MCP tools connect to the orchestrator via HTTP.
 Source services expose search and ingestion APIs; processor services expose
 health, lifecycle, authoring, and maintenance APIs according to their role.
+The Dev UI also uses the Orchestrator exclusively, including its
+source-oriented API Tests tabs.
 
 ## Architecture
 
@@ -59,10 +61,10 @@ readiness probes and dashboards.
 
 > **Note on the difference vs `GET /api/v1/services`.** `health` and
 > `status` are orchestrator-only signals (process liveness / readiness).
-> `services` is the **aggregate dashboard** — it fans out to every source
-> and returns per-source health, last-sync time, item counts, and index
-> state. Use `services` to render UI; use `status` for an automated
-> ready/not-ready decision.
+> `services` is the **aggregate dashboard** — it returns the latest typed
+> observations for the Orchestrator, enabled sources, and enabled processors.
+> Use `services` to render UI; use `status` for an automated ready/not-ready
+> decision.
 
 The legacy unversioned `GET /health` endpoint is still served by the
 default Aspire health-check pipeline.
@@ -71,7 +73,44 @@ default Aspire health-check pipeline.
 
 #### `GET /api/v1/services`
 
-Get health status of all connected services with index information.
+Get the cached typed readiness payload:
+
+```jsonc
+{
+  "services": [
+    {
+      "name": "Planner",
+      "serviceKind": "processing",
+      "status": "healthy",
+      "enabled": true,
+      "configured": true,
+      "checkedAt": "2026-09-10T12:00:00Z",
+      "processingStatus": "running",
+      "processingIsRunning": true,
+      "processingRemainingCount": 2,
+      "processingInFlightCount": 1,
+      "processingErrorCount": 0,
+      "requiredServices": [ "Jira", "GitHub" ]
+    }
+  ],
+  "lastCheckedAt": "2026-09-10T12:00:00Z"
+}
+```
+
+The payload always includes a local Orchestrator entry and every enabled
+configured source/processor, including services not yet successfully observed.
+`serviceKind` distinguishes `orchestrator`, `source`, and `processing`.
+Processing observations include cached lifecycle/queue fields and
+`requiredServices`. A missing observation is not proof that Aspire stopped a
+resource.
+
+#### `POST /api/v1/services/refresh`
+
+Run a fresh bounded health sweep and return the same
+`ServicesStatusResponse`. One service timeout is recorded as that service's
+unavailable observation without discarding the rest of the sweep. This route
+does not start or stop resources; use Aspire for resource lifecycle, logs, and
+traces.
 
 #### `GET /api/v1/endpoints`
 
@@ -210,11 +249,13 @@ the freshly-updated source. Both halves of this protocol carry the
 
 ### Typed Source Proxies
 
-Every source endpoint is reachable through a typed orchestrator proxy at
+Source-specific endpoints are reachable through typed orchestrator proxies at
 `/api/v1/{name}/...`, where `{name}` is one of `jira`, `zulip`,
-`confluence`, or `github`. The proxy preserves method, query string,
-body, response status, and ETag / `Last-Modified` headers; it strips
-`Authorization` and `Cookie` headers by design.
+`confluence`, `github`, or `fhir`. Shared content and lifecycle operations may
+instead use an Orchestrator-native aggregate route or typed metadata
+replacement. A typed proxy preserves method, query string, body, response
+status, and ETag / `Last-Modified` headers; it strips `Authorization` and
+`Cookie` headers by design.
 
 Examples:
 
@@ -237,6 +278,12 @@ The full set of typed proxy routes is enumerated in
 [Source Endpoint Reference](../technical/source-endpoint-reference.md)
 and surfaced in the merged orchestrator OpenAPI document.
 
+The Dev UI's source tabs use an exhaustive route matrix over these gateway
+surfaces. A tab may select an Orchestrator-native aggregate content route, a
+typed source proxy, or an aggregate readiness/statistics replacement, but the
+invocation base and inline schema document are always the Orchestrator. Source
+tabs do not call the source ports directly.
+
 ### Processing-service proxies
 
 The Orchestrator exposes configured processors under
@@ -251,8 +298,9 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/start` | Start queue processing |
 | `POST` | `/api/v1/processing-services/{name}/stop` | Stop queue processing |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs?limit=N` | List bounded ordinary operator runs (Preparer and Planner only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
-| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot` | Get the trusted snapshot descriptor |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
@@ -261,9 +309,11 @@ Shipped configuration enables the names `Preparer`, `Planner`, and
 `BallotNotes`. Applier is directly addressable on port 5173 but is not
 registered with the Orchestrator by default. A generic proxy route does not
 mean every configured service implements the underlying capability:
-Preparer and Planner provide the common lifecycle plus authoring APIs,
-BallotNotes provides authoring but not the Jira processors' lifecycle/queue
-surface, and Applier provides lifecycle/queue but no authoring-run API.
+Preparer and Planner provide the common lifecycle plus the Jira authoring APIs,
+including bounded run listing and structured conflict coordinates. BallotNotes
+provides its existing authoring surface but not the Jira processors'
+lifecycle/queue surface, bounded run listing, or structured conflict-coordinate
+extension. Applier provides lifecycle/queue but no authoring-run API.
 Receipt lookup and authenticated worker result submission are direct
 processor endpoints; the Orchestrator does not proxy them.
 
@@ -271,6 +321,71 @@ The supersede request body is `{"reason":"<non-empty operator reason>"}`.
 The Orchestrator forwards the request and preserves the processor's response
 body, content type, status code, and `Retry-After`; it does not interpret the
 reason, attempt count, receipt state, or processor-owned lifecycle.
+
+For Preparer and Planner, the run collection defaults to 20 entries and accepts
+`limit` from 1 through 100. It selects at most `limit + 1` ordinary Jira
+authoring runs before item aggregation, prioritizes `queued`, `running`,
+`finalizing`, and recoverable `error` runs, then orders terminal history newest
+first. Initial revalidation, maintenance, and legacy rows without the durable
+ordinary-run request marker are omitted. The response is:
+
+```jsonc
+{
+  "runs": [ /* AuthoringRunStatus */ ],
+  "truncated": false
+}
+```
+
+Use exact-run `GET` as the escape hatch for a known omitted or older run.
+
+Run status appends processor-owned state:
+
+- `state.isTerminal` is `false` for `queued`, `running`, `finalizing`, and
+  `error`; an `error` is recoverable and remains pollable.
+- `state.isTerminal` is `true` only for `completed`,
+  `completed-database-only`, and `superseded`. There is no generic terminal
+  `failed` status.
+- `state.nextAutomaticRecoveryAt` describes the next run-level recovery time
+  when known.
+
+Items retain the legacy `error` field and append `currentError`,
+`supersessionReason`, and processor-computed `allowedActions`.
+`allowedActions.canRetryNow` is true only for an eligible `error` in the
+currently fenced run with an accepted receipt to resume or authoring attempts
+remaining. `allowedActions.canSupersede` additionally requires no accepted
+receipt. These capabilities are display hints: retry and supersede recheck the
+fence, receipt, state, and budget atomically and may still return `409`.
+
+For Preparer and Planner, create/retry/supersede conflicts preserve the stable
+`error` and optional `detail` fields and add authoritative coordinates:
+
+```jsonc
+{
+  "error": "active-run-capacity-reached",
+  "detail": "...",
+  "conflictingRunIds": [ "<runId>" ],
+  "runId": "<runId>"
+}
+```
+
+`runId` is present for legacy compatibility when there is one related run.
+Capacity, revision-collision, and revalidation conflicts populate
+`conflictingRunIds` when coordinates are available. Clients must not parse
+human-readable detail to find a run.
+
+BallotNotes retains its existing conflict bodies with `error` and optional
+`detail`; clients must not require `conflictingRunIds` or `runId` from that
+processor.
+
+Outer-control clients do not replay start, retry, or supersede after transport
+loss because the processor may have committed the mutation. The Dev UI
+reports **outcome unknown** and reconciles through list/detail reads. Reads and
+snapshot downloads may use transient retry.
+
+Snapshot bytes are streamed through the Orchestrator rather than buffered as a
+complete SQLite file. Range and conditional request headers are forwarded, and
+the proxy preserves `206`, `304`, content range/length/disposition,
+`Accept-Ranges`, ETag, last-modified, and `Retry-After` semantics.
 
 > **Note.** There is no generic reverse proxy at
 > `/api/v1/source/{name}/...`; per-source operations are exposed through
@@ -536,8 +651,9 @@ Preparer and Planner expose the same direct control family under
 | Method | Route | Purpose |
 |--------|-------|---------|
 | `POST` | `/api/v1/processing/authoring/runs` | Create a frozen run |
+| `GET` | `/api/v1/processing/authoring/runs?limit=N` | List bounded ordinary operator runs |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
-| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
@@ -573,6 +689,10 @@ versioned status, queue, start, or stop routes apply to it.
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
 | `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
 | `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/{type}/{slug}/result` | Submit an authenticated worker result |
+
+BallotNotes does not expose a collection `GET` for bounded run listing, and its
+conflict responses do not guarantee the Preparer/Planner
+`conflictingRunIds`/`runId` extension.
 
 All three run-status envelopes use the same additive failure fields:
 `failedItems` is the aggregate of retryable errors plus terminal
@@ -649,4 +769,5 @@ Common HTTP status codes:
 | `202` | Accepted (ingestion triggered) |
 | `400` | Bad request (missing/invalid parameters) |
 | `404` | Item not found |
+| `409` | Processor-owned conflict or an action that lost eligibility |
 | `503` | Service unavailable |

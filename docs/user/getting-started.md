@@ -15,7 +15,8 @@ FHIR Augury v2 uses a microservices architecture:
 - **GitHub source** — (`:5190`) indexes HL7 GitHub repos
 
 Each source service maintains its own SQLite database, FTS5 indexes, and
-response cache. The CLI and MCP tools connect to the orchestrator via HTTP.
+response cache. The CLI, MCP tools, and Dev UI connect to the orchestrator via
+HTTP.
 
 ## Prerequisites
 
@@ -76,8 +77,10 @@ dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"
 
 ## Option B: .NET Aspire (Recommended for Development)
 
-Aspire provides an integrated dashboard with logs, traces, and metrics, and
-starts all services with a single command.
+Aspire provides an integrated dashboard with logs, traces, metrics, and
+resource lifecycle controls. Starting the AppHost registers and launches the
+topology, but resources marked for explicit start still require an operator
+action in the dashboard.
 
 ### 1. Install the Aspire workload
 
@@ -94,10 +97,10 @@ cd fhir-augury
 dotnet run --project src/FhirAugury.AppHost
 ```
 
-The Aspire dashboard URL is shown in the console output. 13 projects are
-registered: five sources, the orchestrator, four processors, the MCP HTTP
-server, the Dev UI, and the CLI tool. Confluence, all four processors, Dev UI,
-the MCP HTTP server, and the CLI use
+The Aspire dashboard URL is shown in the console output. 14 projects are
+registered: five sources, the orchestrator, four processors, the terminology
+server, the MCP HTTP server, the Dev UI, and the CLI tool. Confluence, all four
+processors, the terminology server, Dev UI, the MCP HTTP server, and the CLI use
 `WithExplicitStart()` and must be started manually from the Aspire dashboard.
 The orchestrator waits for Jira, Zulip, GitHub, and FHIR to be healthy before starting.
 Zulip and GitHub also wait for Jira.
@@ -115,6 +118,32 @@ source.
 ```bash
 dotnet run --project src/FhirAugury.Cli -- --json '{"command":"search","query":"patient"}' --pretty
 ```
+
+### 5. Use the ticket operations workspace
+
+In the Aspire dashboard, start `devui` and the processor needed for the task:
+
+- **Prepare tickets:** `processor-jira-fhir-preparer`; readiness also requires
+  the Orchestrator and Jira source.
+- **Plan tickets:** `processor-jira-fhir-planner`; readiness also requires the
+  Orchestrator, Jira source, and GitHub source.
+
+Open [http://localhost:5210](http://localhost:5210). The root
+**Operations workspace** lists processor-owned active/recovering runs before
+recent terminal runs, supports **Open by run ID**, and provides guided
+configured-selection or explicit-Jira-key starts. The run page polls
+authoritative detail, exposes only processor-advertised recovery actions, and
+can generate the completed run's local discussion or applying site.
+
+The workspace does not start or stop Aspire resources and does not display
+Aspire logs or traces. A service shown as **not observed** is missing readiness
+evidence; the UI does not claim that Aspire has stopped it. Resolve resource
+state in Aspire, then use **Refresh and recheck** in the Dev UI.
+
+The CLI and the `orchestrate-prep` / `orchestrate-plan` skills remain supported
+headless equivalents. See
+[Generating Discussion Tickets](generating-discussion-tickets.md) or
+[Generating Application Tickets](generating-application-tickets.md).
 
 ## Option C: Run from Source
 
@@ -433,6 +462,10 @@ for setup instructions and available tools.
 ## Next Steps
 
 - [User Guides Index](README.md) — all task-oriented guides in one place
+- [Generating Discussion Tickets](generating-discussion-tickets.md) — operate
+  Preparer runs in the Dev UI or headlessly
+- [Generating Application Tickets](generating-application-tickets.md) —
+  operate Planner runs in the Dev UI or headlessly
 - [CLI Reference](cli-reference.md) — all commands and options
 - [API Reference](api-reference.md) — HTTP API details
 - [MCP Tools](mcp-tools.md) — integrate with LLM agents

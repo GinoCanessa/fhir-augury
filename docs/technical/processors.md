@@ -18,6 +18,28 @@ snapshot pairs.
 All four resources use `WithExplicitStart()` under Aspire. Start the required
 sources and Orchestrator first, then start the processor.
 
+## Operations workspace and Aspire boundary
+
+The Dev UI root (`http://localhost:5210`) is a task-oriented workspace for the
+Preparer and Planner only:
+
+| Workflow | UI routes | Required observations | Review site |
+|-|-|-|-|
+| Prepare | `/operations/prepare/new`, `/operations/prepare/{runId}` | Orchestrator, Preparer, Jira | `/review-sites/prepare/{runId}/discussion/` |
+| Plan | `/operations/plan/new`, `/operations/plan/{runId}` | Orchestrator, Planner, Jira, GitHub | `/review-sites/plan/{runId}/applying/` |
+
+It does not control BallotNotes or the Applier, mutate repositories, push
+commits, create pull requests, or perform other GitHub writes. It also does not
+start/stop Aspire resources or embed logs and traces. Resolve resource
+lifecycle in the Aspire dashboard and use the UI's readiness recheck only to
+request a fresh Orchestrator health sweep. A service that has not been
+successfully observed is reported as **not observed**, not assumed stopped.
+
+The CLI and `orchestrate-prep` / `orchestrate-plan` skills remain supported
+headless equivalents. Both UI and headless paths are clients of
+processor-owned state; neither is a scheduler, worker callback, or completion
+authority.
+
 ## Run-backed authoring contract
 
 ### One-way activation
@@ -45,6 +67,17 @@ provenance in the logical revalidation corpus.
 A run freezes its item membership and expected source/evidence revisions.
 Typical run states are `queued`, `running`, `finalizing`, `completed`,
 `completed-database-only`, `error`, and `superseded`.
+
+The processor appends `state` to each operator run:
+
+| Run status | `state.isTerminal` | `state.isRecoverable` | Polling |
+|-|-|-|-|
+| `queued`, `running`, `finalizing` | `false` | `false` | Continue |
+| `error` | `false` | `true` | Continue; automatic recovery remains authoritative |
+| `completed`, `completed-database-only`, `superseded` | `true` | `false` | Stop |
+
+There is no generic terminal `failed` run state. `state.nextAutomaticRecoveryAt`
+is populated for a valid run-level automatic recovery time when known.
 
 `AuthoringRunScheduler<TItem>` is the sole run-backed lifecycle loop. It
 reconciles durable errors and source revisions, acquires the mutation fence for
@@ -78,6 +111,43 @@ terminal non-authored outcomes. `retryableErrorItems` reports the former and
 `supersededItems` reports the latter. An error item also reports
 `attemptsRemaining` and `nextAutomaticRetryAt` when applicable.
 
+### Discovery, actions, and conflicts
+
+Preparer and Planner expose ordinary operator history directly at
+`GET /api/v1/processing/authoring/runs?limit=N` and through the Orchestrator at
+`GET /api/v1/processing-services/{Preparer|Planner}/authoring/runs?limit=N`.
+The default is 20 and the accepted range is 1 through 100. The store first
+selects at most `limit + 1` candidate run IDs, then aggregates items only for
+that bounded set. Non-terminal `queued`, `running`, `finalizing`, and `error`
+runs sort before terminal runs; each group is newest first.
+
+Only ordinary Jira authoring runs with a durable normalized start request are
+listed. Initial revalidation, grouping maintenance, and legacy null-marker
+runs remain available by exact ID but are intentionally absent. The response
+contains `runs` and `truncated`; use exact detail as the escape hatch for a
+known older run.
+
+Detail appends these item fields while preserving legacy `error`:
+
+- `currentError` only for a current error;
+- `supersessionReason` only for a superseded item;
+- `allowedActions.canRetryNow` only for an error in the currently fenced run
+  with either an accepted receipt to resume or remaining authoring attempts;
+- `allowedActions.canSupersede` only for an error in the currently fenced run
+  without an accepted receipt.
+
+Automatic retry remains the default. UI or headless automation must use these
+capabilities to decide what to present, but the mutation endpoint is the final
+authority: retry and supersede recheck status, fence, receipt, and attempt
+budget in an immediate transaction and can return `409` after a status read.
+Supersession always requires a non-empty operator reason.
+
+Create/retry/supersede conflict JSON uses `AuthoringConflictResponse`. It keeps
+the existing `error` and optional `detail`, adds `conflictingRunIds`, and also
+sets the legacy-compatible `runId` when one related run is known. Capacity,
+revision-collision, and initial-revalidation conflicts therefore give clients
+authoritative navigation coordinates without prose parsing.
+
 ### Finalization and snapshots
 
 For Preparer and Planner, post-persistence item processing completes hydration
@@ -107,9 +177,21 @@ items make it an explicit partial-authoring result. Snapshot and site
 publication may continue from accepted results, but every superseded item and
 reason must remain visible.
 
-The CLI downloads and verifies the descriptor/byte pair, then promotes both
-files atomically. `ticket-site` and `notes-site` reject live processor
-databases.
+`FhirAugury.Processing.Client` downloads the descriptor and streamed bytes into
+a sibling staging directory, validates service/workflow/run/snapshot binding,
+safe filenames, size, and SHA-256, then writes `verified-pair.json` last. The
+ready manifest records `serviceName`, `runId`, `snapshotId`,
+`formatVersion`, `descriptorFileName`, `databaseFileName`, `sizeBytes`,
+`descriptorSha256`, and `databaseSha256`. Promotion/recovery is locked and
+directory-scoped, so a partial download is never a ready pair. Preparer and
+Planner require this explicit service binding because both descriptors use
+processor kind `jira-fhir`.
+
+`FhirAugury.Publishing.Tickets` accepts only a durable verified pair and checks
+the public snapshot schema before rendering. The Dev UI invokes it in-process;
+`ticket-site` is a thin CLI adapter over the same publisher. Each sub-site
+writes the exact filename `site-manifest.json`. Neither publisher accepts a
+live processor database.
 
 ### Failure boundaries
 
@@ -126,6 +208,27 @@ databases.
 - **Source revision change:** stale work is superseded or the initial
   revalidation run is atomically replaced. The gate is not cleared by stale
   work.
+- **Ambiguous outer mutation:** start, immediate retry, and supersede are
+  single-attempt. If transport is lost after the server may have received the
+  request, report **outcome unknown**, never replay, and reconcile only through
+  list/detail reads. A new start requires explicit operator review first.
+
+Processor completion and site-publication completion are separate axes.
+Accepted receipts and a terminal processor result remain valid when local site
+generation fails. The Dev UI retains the verified pair and retries only
+publication.
+
+Under Aspire, the UI stores pairs and sites in deterministic ignored roots:
+
+```text
+cache\devui-authoring-snapshots\{prepare|plan}\{runId}\
+cache\devui-review-sites\{prepare|plan}\{runId}\{discussion|applying}\
+```
+
+Only the review root is served, at `/review-sites`; snapshot pairs remain
+private. The same-origin site mapping is a trusted-local boundary. No automatic
+retention policy exists in the first release: stop the Dev UI before manually
+removing old workflow/run directories.
 
 ### Recovery and Jira rediscovery
 
@@ -149,6 +252,9 @@ workers. Use the outer-control skill for the complete flow:
 ```text
 /orchestrate-prep
 ```
+
+For the guided equivalent, open `/operations/prepare/new`; active/recovering
+and recent runs are listed at `/`, with **Open by run ID** for exact lookup.
 
 Manual CLI control:
 
@@ -188,6 +294,9 @@ consumed by the Applier.
 ```text
 /orchestrate-plan
 ```
+
+For the guided equivalent, open `/operations/plan/new`; the workflow ends at
+the applying review site and does not expose Applier or GitHub-write controls.
 
 Manual CLI control:
 
@@ -304,14 +413,16 @@ configuration files or outer-control commands.
 
 | Processor | Durable service state | Review publication |
 |-----------|-----------------------|--------------------|
-| Preparer | `data\processor.jira.fhir.preparer.db` | Verified snapshot -> `ticket-site` discussion |
-| Planner | `data\processor.jira.fhir.planner.db` | Verified snapshot -> `ticket-site` applying |
+| Preparer | `data\processor.jira.fhir.preparer.db` | Verified pair -> shared publisher -> discussion site |
+| Planner | `data\processor.jira.fhir.planner.db` | Verified pair -> shared publisher -> applying site |
 | Applier | worktrees, local commits, `data\processor.jira.fhir.applier.db` | On-demand upstream push |
 | BallotNotes | `cache\ballot-notes.db` | Verified snapshot -> `notes-site` |
 
 The database paths above are operator backup/configuration locations, not
-client integration surfaces. The Orchestrator and CLI proxy run control over
-HTTP; static sites consume only trusted snapshots.
+client integration surfaces. The Orchestrator proxies run control over HTTP;
+the Dev UI and CLI are outer clients, and static sites consume only verified
+pairs. The Dev UI's run-scoped local destinations are documented above;
+headless callers retain their explicit CLI/tool output paths.
 
 Markdown remains supported as authored content inside structured database
 fields and explicit site copy/export features. It is not a processor input,

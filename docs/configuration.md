@@ -515,7 +515,27 @@ loaded from a prepared FHIR spec database and exposed over FTS.
       "Jira": { "HttpAddress": "http://localhost:5160", "Enabled": true },
       "Zulip": { "HttpAddress": "http://localhost:5170", "Enabled": true },
       "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
-      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true }
+      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true },
+      "Fhir": { "HttpAddress": "http://localhost:5195", "Enabled": true }
+    },
+    "ProcessingServices": {
+      "Preparer": {
+        "HttpAddress": "http://localhost:5171",
+        "Enabled": true,
+        "Description": "FHIR ticket preparation",
+        "RequiredServices": [ "Jira" ]
+      },
+      "Planner": {
+        "HttpAddress": "http://localhost:5172",
+        "Enabled": true,
+        "Description": "FHIR ticket planning",
+        "RequiredServices": [ "Jira", "GitHub" ]
+      },
+      "BallotNotes": {
+        "HttpAddress": "http://localhost:5174",
+        "Enabled": true,
+        "Description": "FHIR ballot-note authoring"
+      }
     },
     "Search": {
       "DefaultLimit": 20,
@@ -531,6 +551,8 @@ loaded from a prepared FHIR spec database and exposed over FTS.
       "PerSourceTimeoutSeconds": 2
     },
     "ReconnectIntervalSeconds": 30,
+    "HealthCheckIntervalSeconds": 60,
+    "HealthCheckStartupDelaySeconds": 5,
     "DictionaryDatabase": {
       "SourcePath": "./cache/dictionary",
       "DatabasePath": "./data/dictionary.db",
@@ -540,8 +562,8 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 }
 ```
 
-> **Note:** The default `appsettings.json` ships with Jira, Zulip, and GitHub
-> enabled. Confluence is present but disabled by default — set
+> **Note:** The default `appsettings.json` ships with Jira, Zulip, GitHub, and
+> FHIR enabled. Confluence is present but disabled by default — set
 > `Services.Confluence.Enabled` to `true` when deploying the Confluence source
 > service.
 
@@ -553,6 +575,10 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 | `Ports.Http` | int | `5150` | HTTP listen port |
 | `Services.{Name}.HttpAddress` | string | varies | HTTP endpoint for source |
 | `Services.{Name}.Enabled` | bool | `true` | Enable/disable source |
+| `ProcessingServices.{Name}.HttpAddress` | string | varies | HTTP endpoint for a processing service |
+| `ProcessingServices.{Name}.Enabled` | bool | `true` | Include the processing service in Orchestrator discovery, readiness, and proxy routing |
+| `ProcessingServices.{Name}.Description` | string? | varies | Operator-facing processing-service description |
+| `ProcessingServices.{Name}.RequiredServices` | string[] | `[]` | Source-service names used as operator-readiness dependencies. Preparer must declare `Jira`; Planner must declare `Jira` and `GitHub`. |
 | `Search.DefaultLimit` | int | `20` | Default search result limit |
 | `Search.MaxLimit` | int | `100` | Maximum search result limit |
 | `Search.FreshnessWeights` | Dictionary | varies | Per-source freshness weight multipliers |
@@ -563,9 +589,20 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 | `Related.MaxKeyTerms` | int | `15` | Max terms for similarity |
 | `Related.PerSourceTimeoutSeconds` | int | `2` | Timeout in seconds for each source during related item queries |
 | `ReconnectIntervalSeconds` | int | `30` | Interval in seconds between reconnection attempts for offline sources. Set to 0 to disable. |
+| `HealthCheckIntervalSeconds` | int | `60` | Interval in seconds between cached source and processing-service health sweeps |
+| `HealthCheckStartupDelaySeconds` | int | `5` | Delay in seconds before the first health sweep; `0` checks immediately |
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
+
+`ProcessingServices.{Name}.RequiredServices` is readiness metadata, not a
+resource-lifecycle control. The shipped mappings are validated against the
+shared ticket-workflow catalog: Preparer requires Jira, and Planner requires
+Jira plus GitHub. A known dependency that is disabled remains a visible
+readiness blocker rather than preventing Orchestrator startup. The AppHost
+applies the same catalog to Aspire `WaitFor()` relationships, but Aspire still
+owns resource start/stop, logs, and traces; `POST /api/v1/services/refresh`
+only performs a health recheck.
 
 ---
 
@@ -744,6 +781,76 @@ bypass the wait but cannot reset or increase the configured budget.
 | `Hydration.OrchestratorAddress` | string | `http://localhost:5150` | Primary attribution upstream (cross-references + ticket details) |
 | `Hydration.JiraSourceAddress` | string | `http://localhost:5160` | Fallback attribution upstream when the orchestrator is unreachable |
 | `Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+---
+
+## Dev UI
+
+**Prefix:** `FHIR_AUGURY_DEVUI_`
+**Port:** 5210
+
+The Dev UI is a trusted-local Blazor Server client of the Orchestrator. Its
+operations workspace controls only Preparer and Planner runs. It neither
+starts/stops Aspire resources nor reads a live source or processor database.
+
+### Effective defaults
+
+```json
+{
+  "DevUi": {
+    "OrchestratorAddress": "http://localhost:5150",
+    "RecentRunLimit": 20,
+    "RunPollInterval": "00:00:03",
+    "CacheRoot": "..\\..\\cache",
+    "SnapshotCacheRoot": "devui-authoring-snapshots",
+    "ReviewSitesRoot": "devui-review-sites"
+  }
+}
+```
+
+Relative `CacheRoot` values resolve from the Dev UI content root.
+`SnapshotCacheRoot` and `ReviewSitesRoot` resolve beneath `CacheRoot`; absolute
+child paths are also accepted when they remain strict, non-overlapping
+descendants. Under the AppHost, all three are supplied as absolute
+repository-local paths, producing:
+
+```text
+cache\devui-authoring-snapshots\{prepare|plan}\{runId}\
+cache\devui-review-sites\{prepare|plan}\{runId}\{discussion|applying}\
+```
+
+The snapshot directory is private. Only the validated review-site root is
+mapped at `/review-sites`, without directory browsing. Generated sites share
+the Dev UI origin in this trusted-local release.
+
+### Configuration options
+
+| Key | Type | Default | Description |
+|-|-|-|-|
+| `DevUi:OrchestratorAddress` | string | `http://localhost:5150` | Absolute HTTP/HTTPS Orchestrator address; user information is rejected |
+| `DevUi:RecentRunLimit` | int | `20` | Bounded active/recent run-list limit; valid range `1..100` |
+| `DevUi:RunPollInterval` | TimeSpan | `00:00:03` | Sequential detail refresh interval; must be greater than zero |
+| `DevUi:CacheRoot` | string | `..\..\cache` | Approved artifact root; cannot be a filesystem, repository, content, or web root |
+| `DevUi:SnapshotCacheRoot` | string | `devui-authoring-snapshots` | Private verified-pair child of `CacheRoot` |
+| `DevUi:ReviewSitesRoot` | string | `devui-review-sites` | Web-served run-site child of `CacheRoot` |
+
+Startup rejects roots that escape or contain one another, traverse an existing
+reparse point/junction, use unsafe Windows path syntax, or would expose the
+snapshot cache through `wwwroot`. The AppHost uses these exact environment
+variables:
+
+```text
+FHIR_AUGURY_DEVUI_DevUi__OrchestratorAddress
+FHIR_AUGURY_DEVUI_DevUi__CacheRoot
+FHIR_AUGURY_DEVUI_DevUi__SnapshotCacheRoot
+FHIR_AUGURY_DEVUI_DevUi__ReviewSitesRoot
+```
+
+Each verified-pair run directory contains the descriptor, database, and
+`verified-pair.json`; each published sub-site contains `site-manifest.json`.
+The first release retains these ignored `cache\` artifacts indefinitely.
+Operators may remove old workflow/run directories manually while the Dev UI is
+stopped; there is no automatic retention job or cleanup UI.
 
 ---
 

@@ -282,8 +282,8 @@ worker-submission fields:
 |--------|---------------------------------|------------------------|
 | `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. The Preparer returns HTTP `409` with `active-run-capacity-reached` while another Preparer run is live. |
 | `status` | `runId` | Inspect the frozen run and its items, including durable receipt evidence, retry timing, remaining attempts, and superseded outcomes. |
-| `retry` | `runId`, `itemId` | Request an immediate retry of one eligible current error. This may bypass the automatic delay but cannot expand the processor's total attempt budget. |
-| `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one currently fenced `error` item without a receipt as terminal and non-authored. Never infer the reason or use this for a receipt-backed item. |
+| `retry` | `runId`, `itemId` | Request an immediate retry only when the latest status advertises `allowedActions.canRetryNow`. This may bypass the automatic delay but cannot expand the processor's total attempt budget. |
+| `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one current error terminal and non-authored only when status advertises `allowedActions.canSupersede`. Never infer the reason or use this for a receipt-backed item. |
 | `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
 | `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
 
@@ -318,7 +318,7 @@ Minimal outer-control examples:
 // Inspect the run and item receipts
 { "command": "prepared-ticket-authoring", "action": "status", "runId": "<runId>" }
 
-// Retry one eligible failed item
+// Retry one eligible current error item
 { "command": "prepared-ticket-authoring", "action": "retry", "runId": "<runId>", "itemId": "<itemId>" }
 
 // Explicitly close one known non-actionable current error
@@ -333,11 +333,34 @@ polling instead of issuing `retry`; use immediate retry only as an explicit
 operator choice, and do not replay either mutating action after an ambiguous
 transport failure.
 
+Run status `error` is recoverable and non-terminal. Continue polling whenever
+`state.isTerminal` is false (`queued`, `running`, `finalizing`, or `error`).
+Only `completed`, `completed-database-only`, and `superseded` are terminal;
+there is no generic terminal `failed` state. Item status appends
+`currentError`, `supersessionReason`, and processor-computed `allowedActions`
+while retaining legacy fields.
+
 The Preparer has an active-run capacity of one. `queued`, `running`,
 `finalizing`, and recoverable `error` runs are live; only a terminal
 `completed`, `completed-database-only`, or `superseded` run releases capacity.
 Its normalized start request is stored with the run so a restart resumes the
 same run rather than reconstructing a second one.
+
+For Preparer and Planner only, the Orchestrator exposes a bounded ordinary-run
+list at
+`GET /api/v1/processing-services/{name}/authoring/runs?limit=N`, with active
+and recovering runs first, terminal history newest first, and
+`truncated:true` when older rows were omitted. The current CLI command families
+preserve their six existing actions rather than adding a seventh list action;
+use the Dev UI operations overview for guided history, or the HTTP route for a
+headless list. Exact CLI `status` remains the escape hatch when a run ID is
+known.
+
+Preparer and Planner create/retry/supersede conflicts may include
+`conflictingRunIds` and the legacy-compatible single `runId` as authoritative
+recovery coordinates. BallotNotes retains its existing six-action CLI surface:
+its processor does not implement the bounded collection `GET`, and its conflict
+bodies do not guarantee those coordinate fields.
 
 In status responses, `failedItems` remains the aggregate,
 `retryableErrorItems` counts errors still under automatic retry, and
@@ -352,6 +375,21 @@ response shapes, run `fhir-augury --help <command>` or export them with
 [`save-schemas`](#save-schemas--save-schemas-to-disk). Workflow and
 finalization details remain in the three guides above and the
 [processor runbook](../technical/processors.md).
+
+For a directory-valued `snapshotPath`, the CLI creates or reuses one durable
+workflow-bound pair directory containing the descriptor, database, and
+`verified-pair.json`. The ready manifest records service, run, snapshot,
+filenames, size, and descriptor/database SHA-256 digests. It is written last
+and reverified before the pair is returned. Legacy loose-file output remains a
+compatibility adapter, not durable publisher state.
+
+The Dev UI's Prepare/Plan flows use the same outer-control client and verified
+pair/publisher boundaries. They add a guided readiness view, processor-owned
+active/recent discovery, structured conflict links, unknown-outcome
+reconciliation, and run-scoped site URLs; the CLI and orchestration skills
+remain the supported headless equivalent. Neither surface exposes worker
+callback tokens. Site publication failure never authorizes replaying
+authoring.
 
 ### `version` — Show version
 

@@ -17,7 +17,9 @@ Planner, Applier, BallotNotes) consumes that data to produce derived
 artifacts. Each authoring processor owns its database, durable run/receipt
 ledger, mutation fence, and review snapshots. The Orchestrator exposes thin
 HTTP proxies for run control and snapshot transfer; it never opens a processor
-database. See the [processors runbook](processors.md).
+database. The Dev UI operations workspace and the CLI are outer clients of
+those proxies; neither is a scheduler or completion authority. See the
+[processors runbook](processors.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -85,6 +87,8 @@ Ports (HTTP only):
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
 | **Processing.Common** | `FhirAugury.Processing.Common` | Durable runs/items/attempts/receipts, operation tokens, retry, mutation fencing, one-way cutover, finalization stages, and snapshot descriptors |
 | **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira candidate discovery and frozen source revisions, processor worker dispatch, callback handling, and final source-revision guards |
+| **Processing.Client** | `FhirAugury.Processing.Client` | Reusable Orchestrator-based outer run-control client and workflow-bound verified snapshot-pair boundary; deliberately has no worker submit API or operation-token constant |
+| **Publishing.Tickets** | `FhirAugury.Publishing.Tickets` | In-process immutable-snapshot discussion/applying publisher shared by the Dev UI and thin `ticket-site` adapter |
 | **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — owns ticket-preparation runs, hydration, grouping, receipts, and discussion snapshots |
 | **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — owns planning runs, grouping, receipts, applying snapshots, and the Applier compatibility projection |
 | **Processor.Jira.Fhir.Applier** | `FhirAugury.Processor.Jira.Fhir.Applier` | Applier processor (port 5173) — auto-discovers completed plans, applies each in a git worktree, push API on demand |
@@ -92,8 +96,8 @@ Ports (HTTP only):
 | **MCP Shared** | `FhirAugury.McpShared` | Shared MCP library: 22 tool-type classes (126 tool methods — UnifiedTools, ContentTools, JiraTools, FhirTools, …) and McpHttpRegistration |
 | **MCP Stdio** | `FhirAugury.McpStdio` | Stdio-based MCP server for LLM agents (packaged as `fhir-augury-mcp` dotnet tool, generic .NET Host) |
 | **MCP HTTP** | `FhirAugury.McpHttp` | HTTP/SSE-based MCP server (ASP.NET Core, port 5200, `/mcp` endpoint, Aspire ServiceDefaults) |
-| **CLI** | `FhirAugury.Cli` | Command-line interface for source queries plus typed processor run control and snapshot download (HTTP to Orchestrator) |
-| **Dev UI** | `FhirAugury.DevUi` | Blazor Server operational dashboard (port 5210, HTTP to orchestrator) |
+| **CLI** | `FhirAugury.Cli` | Command-line interface for source queries plus typed processor run control and snapshot download (HTTP to Orchestrator); worker submission remains CLI-private |
+| **Dev UI** | `FhirAugury.DevUi` | Blazor Server operations workspace and diagnostics client (port 5210, HTTP to Orchestrator) |
 | **ServiceDefaults** | `FhirAugury.ServiceDefaults` | Shared Aspire defaults: OpenTelemetry, health checks, service discovery, HTTP resilience |
 | **AppHost** | `FhirAugury.AppHost` | .NET Aspire distributed application host — orchestrates all services for local development |
 
@@ -125,13 +129,22 @@ FhirAugury.Processor.Jira.Fhir.Planner        ← Processing.Common + Processing
 FhirAugury.Processor.Jira.Fhir.Applier        ← Processing.Common + Processing.Jira.Common (apply plans in worktrees, :5173)
 FhirAugury.Processor.GitHub.Fhir.BallotNotes  ← Common + Processing.Common (hydration + run-backed authoring, :5174)
     ↑
+FhirAugury.Processing.Client    ← Common + Processing.Contracts (outer control only; no worker callback)
+    ↑
+FhirAugury.Publishing.Tickets   ← Common + Processing.Client + Processing.Contracts
+                                  + Preparer/Planner public snapshot-schema contracts
+    ↑
 FhirAugury.McpShared            ← Common (shared MCP tool implementations, HTTP clients)
 FhirAugury.McpStdio             ← McpShared (stdio transport, generic .NET Host)
 FhirAugury.McpHttp              ← McpShared + ServiceDefaults (HTTP/SSE transport, ASP.NET Core)
-FhirAugury.Cli                  ← Common (HTTP client to Orchestrator)
-FhirAugury.DevUi                ← Common + ServiceDefaults (Blazor Server, HTTP to Orchestrator)
+FhirAugury.Cli                  ← Common + Processing.Client (HTTP to Orchestrator;
+                                  CLI assembly retains authenticated worker submission)
+FhirAugury.DevUi                ← Common + ServiceDefaults + Processing.Client
+                                  + Publishing.Tickets (HTTP to Orchestrator)
+tools/ticket-site               ← Processing.Client + Publishing.Tickets (thin CLI adapter)
 
 FhirAugury.AppHost             ← Aspire AppHost (references all service projects for orchestration)
+```
 
 ## Source Service Architecture
 
@@ -244,8 +257,8 @@ writers of their domain databases and own their hydration and grouping stages.
 
 The run-backed data flow is:
 
-1. A client starts a scheduled or explicit run through the typed CLI or
-   Orchestrator proxy.
+1. A client starts a scheduled or explicit run through the Dev UI, typed CLI,
+   or Orchestrator proxy.
 2. The processor freezes item membership/revisions and leaves the run queued.
    The shared scheduler reconciles source state and acquires the mutation fence
    for the oldest eligible run.
@@ -259,8 +272,12 @@ The run-backed data flow is:
    shared catalogs, performs grouping, and creates a sanitized immutable
    snapshot. Completion releases the fence before the oldest queued successor
    can activate.
-7. The client downloads the verified descriptor/byte pair and invokes the
-   static site tool. Publication is outside processor state.
+7. `FhirAugury.Processing.Client` downloads a workflow/service-bound pair
+   directory and writes `verified-pair.json` last after validating coordinates,
+   filenames, length, and digests.
+8. The Dev UI invokes `FhirAugury.Publishing.Tickets` in-process, or the
+   `ticket-site` adapter invokes the same publisher headlessly. Publication is
+   outside processor state and writes `site-manifest.json`.
 
 There are four concrete processors:
 
@@ -280,6 +297,48 @@ There are four concrete processors:
 
 For operator instructions (kick-off curl, monitoring, output locations), see the
 [processors runbook](processors.md).
+
+### Operations workspace and local artifacts
+
+`FhirAugury.DevUi` composes three narrow boundaries:
+
+1. typed readiness and source/processor metadata from the Orchestrator;
+2. `IAuthoringControlClient` for Preparer/Planner list, detail, start,
+   server-advertised item actions, and snapshot download; and
+3. `ITicketSitePublisher` for immutable-pair publication.
+
+The overview reads processor-owned ordinary runs on every load. The bounded
+list puts active/recoverable runs first and reports truncation; exact run detail
+is always addressable by
+`/operations/{prepare|plan}/{runId}`. Run status `error` is recoverable and
+non-terminal, so polling continues until processor-provided
+`state.isTerminal` becomes true.
+
+Mutating outer calls are single-attempt. A response lost after start, retry, or
+supersede is an outcome-unknown condition: the UI serializes further
+mutations, performs only list/detail reconciliation reads, and never replays
+the request. The processor's `allowedActions` values are display capabilities,
+not authorization snapshots; mutation-fence, receipt, state, and attempt checks
+run again inside the processor transaction.
+
+The AppHost configures two ignored, non-overlapping children beneath
+repository `cache\`:
+
+```text
+cache\devui-authoring-snapshots\{workflow}\{runId}\
+cache\devui-review-sites\{workflow}\{runId}\{discussion|applying}\
+```
+
+Only the second root is web-served at
+`/review-sites/{workflow}/{runId}/{discussion|applying}/`. Browser input cannot
+choose a filesystem path, and path validation rejects escapes, reserved/ADS
+segments, and existing reparse points. Snapshot pairs are never served. The
+generated site shares the Dev UI origin under the first-release trusted-local
+model; remote/multi-user hardening requires a separate design.
+
+Artifacts are retained indefinitely in the first release. There is no
+automatic retention job or delete UI; operators may remove old run directories
+manually while the Dev UI is stopped.
 
 ## Key Design Decisions
 
@@ -308,11 +367,19 @@ contract classes in `FhirAugury.Common/Api/` define the request/response types:
 
 Services use `IHttpClientFactory` with named clients for HTTP communication.
 The Orchestrator communicates with source services via HTTP and exposes typed,
-thin authoring proxies for processor run creation, status, retry, explicit
-item supersession, and snapshot transfer. MCP/CLI clients connect to the
-Orchestrator via HTTP. The Orchestrator validates only service availability and
-preserves processor responses; it does not interpret retry budgets, receipts,
-supersession reasons, or processor database state.
+thin authoring proxies for processor run creation, bounded list/detail,
+retry, explicit item supersession, and streamed snapshot transfer. It also
+returns typed source/processor readiness with required-source metadata and an
+explicit health-refresh route. MCP, CLI, and Dev UI clients connect to the
+Orchestrator via HTTP. The Orchestrator validates only service availability
+and preserves processor responses; it does not interpret retry budgets,
+receipts, supersession reasons, or processor database state.
+
+The Dev UI's API tester preserves source-oriented tabs but resolves every
+descriptor through an explicit gateway route matrix. The invocation base and
+schema source are always the Orchestrator and its merged
+`/api/v1/openapi.json`; no Dev UI source-direct client or source-address
+configuration remains.
 
 ### Source-Generated CRUD over ORM
 
@@ -345,16 +412,21 @@ modes via `CacheMode`:
 This enables `RebuildFromCache` — rebuilding the database entirely from cached
 API responses without hitting the remote API.
 
-### MCP and CLI as HTTP Clients
+### MCP, CLI, and Dev UI as HTTP Clients
 
-Both MCP servers and the CLI are thin HTTP clients to the Orchestrator. They
-contain no live service-database access. Typed CLI authoring commands start,
-inspect, request an immediate bounded retry, explicitly supersede a current
-non-receipt-backed error with a reason, submit worker callbacks, and download
-snapshots through the Orchestrator proxies. Mutating outer requests are not
-replayed after ambiguous transport failure. The CLI verifies snapshot identity,
-size, and SHA-256 before atomically promoting the descriptor/byte pair. McpHttp
-is also an ASP.NET Core web application (port 5200, `/mcp` endpoint) that
+Both MCP servers, the CLI, and the Dev UI are HTTP clients to the Orchestrator.
+They contain no live service-database access. Typed outer authoring commands
+start, inspect, request an immediate bounded retry, explicitly supersede a
+current non-receipt-backed error with a reason, and download snapshots through
+the Orchestrator proxies. Worker callback submission is separate: it exists
+only in the CLI assembly and posts to the
+processor-supplied callback URL with an environment-only operation token. The
+shared outer client and Dev UI expose no submit method or token concept.
+
+Mutating outer requests are not replayed after ambiguous transport failure.
+The shared client verifies snapshot identity, workflow/service binding, size,
+and SHA-256 before atomically promoting a durable pair directory. McpHttp is
+also an ASP.NET Core web application (port 5200, `/mcp` endpoint) that
 participates in Aspire orchestration via ServiceDefaults.
 
 ## Concurrency Model
@@ -370,20 +442,24 @@ participates in Aspire orchestration via ServiceDefaults.
   concurrently inside that run
 - **Startup ownership:** Preparer, Planner, and BallotNotes acquire an exclusive
   owner lock before schema migration or abandoned-fence recovery
-- **Health monitoring:** `ServiceHealthMonitor` polls source services every 60
-  seconds; unhealthy sources are excluded from fan-out
+- **Health monitoring:** `ServiceHealthMonitor` polls enabled source and
+  processing services every 60 seconds; one probe timeout becomes a typed
+  unavailable observation rather than failing the whole sweep
 
 ## Error Handling
 
 - **HTTP error handling:** Standard HTTP status codes (404 Not Found, 503
   Service Unavailable, 500 Internal Server Error, etc.) for error responses
-- **Transient HTTP failures:** `HttpRetryHelper` retries on HTTP
+- **Transient HTTP failures:** for retry-safe operations, `HttpRetryHelper`
+  retries on HTTP
   429/500/502/503/504 with exponential backoff + jitter (max 3 retries).
   Respects `Retry-After` headers.
 - **Auth failures:** Immediate failure on HTTP 401/403 with a clear error
   message
 - **Partial failure isolation:** One source service failing doesn't block
   others — the orchestrator returns results from healthy sources
+- **Ambiguous outer mutation:** Start, immediate retry, and supersede are never
+  replayed after transport loss; clients reconcile with idempotent reads
 - **GitHub rate limiting:** Dedicated `GitHubRateLimiter` monitors
   `X-RateLimit-Remaining` headers and pauses automatically
 - **Health checks:** All services expose `/health` endpoints; Docker Compose
@@ -415,8 +491,9 @@ under Aspire and when running standalone.
 ### AppHost
 
 The `FhirAugury.AppHost` project uses `Aspire.AppHost.Sdk` to orchestrate all
-13 projects (five sources, the orchestrator, four processors, the Dev UI, the
-MCP HTTP server, and the CLI) with fixed ports matching the existing convention:
+14 projects (five sources, the orchestrator, four processors, the terminology
+server, the Dev UI, the MCP HTTP server, and the CLI) with fixed ports matching
+the existing convention:
 
 | Service | HTTP |
 |---------|------|
@@ -430,14 +507,22 @@ MCP HTTP server, and the CLI) with fixed ports matching the existing convention:
 | processor-jira-fhir-planner | 5172 |
 | processor-jira-fhir-applier | 5173 |
 | processor-github-fhir-ballotnotes | 5174 |
+| server-terminology | 5300 |
 | devui | 5210 |
 | mcp | 5200 |
 | cli | — |
 
 The orchestrator uses `WaitFor()` to depend on the Jira, Zulip, GitHub, and
-FHIR source services. Confluence, all four processors, the Dev UI, the MCP HTTP
-server, and the CLI use `WithExplicitStart()` to allow manual triggering; the
-processors additionally `WaitFor()` their upstream dependencies (the Jira/GitHub
-sources, the orchestrator, and — for the Applier — the Planner). All endpoints
-use `isProxied: false` so services listen on their own ports directly (no
-Aspire reverse proxy).
+FHIR source services. Confluence, all four processors, the terminology server,
+the Dev UI, the MCP HTTP server, and the CLI use `WithExplicitStart()` to allow
+manual triggering. The shared ticket-workflow dependency catalog applies
+`Preparer -> Jira` and
+`Planner -> Jira, GitHub` to processor `WaitFor()` topology and is also
+validated against Orchestrator `RequiredServices` readiness metadata. The
+processors additionally wait for the Orchestrator; the Applier waits for Jira,
+the Orchestrator, and Planner.
+
+The Dev UI references and waits for the Orchestrator but deliberately does not
+control Aspire lifecycle or introspect AppHost state. Its readiness refresh is
+an Orchestrator health sweep only. All endpoints use `isProxied: false` so
+services listen on their own ports directly (no Aspire reverse proxy).

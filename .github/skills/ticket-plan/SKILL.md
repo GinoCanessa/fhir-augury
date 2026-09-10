@@ -12,7 +12,16 @@ Choose exactly one mode.
 ### Outer-control mode
 
 Outer-control mode requires every `FHIR_AUGURY_AUTHORING_*` worker variable
-to be absent. Start one processor-owned run:
+to be absent.
+
+A trusted local operator may use the Dev UI route
+`/operations/plan/new`; it is an outer-control alternative over the same
+processor-owned run and publisher contracts. The command flow below remains
+the supported headless equivalent. Neither outer surface receives operation
+tokens, controls the Applier, mutates repositories, pushes commits, creates
+pull requests, or performs other GitHub writes.
+
+Start one processor-owned run:
 
 ```powershell
 fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"start","ticketKeys":["FHIR-55197"],"databaseOnly":false}'
@@ -23,12 +32,24 @@ returned run and item records:
 
 - Every authored item must reach `complete` with a non-empty
   `acceptedReceiptId`.
-- Use action `retry` only for a current `error` item.
-- `error` and `superseded` run states fail with the run, item, operation, and
-  receipt IDs.
+- Keep polling while `run.state.isTerminal` is false, including recoverable
+  run status `error`; automatic retry is the default.
+- Use action `retry` only for a current `error` item with
+  `allowedActions.canRetryNow:true`.
+- Use action `supersede` only with a non-blank explicit reason when
+  `allowedActions.canSupersede:true`; never supersede a receipt-backed item.
+- A terminal `superseded` run fails with the run, item, operation, and receipt
+  IDs. There is no generic terminal `failed` state.
 - A normal run succeeds only at `completed`.
 - `completed-database-only` is success only when the caller explicitly chose
   `databaseOnly:true`.
+
+At the processor/Orchestrator HTTP surface, structured start conflicts expose
+`conflictingRunIds` and may include the legacy single `runId`; the Dev UI turns
+them into links, while the CLI retains its existing error envelope. An
+ambiguous transport failure after start, retry, or supersede is **outcome
+unknown**: never replay the mutation, reconcile only through list/detail reads,
+and require explicit review before another ambiguous start.
 
 For a normal run, download the immutable snapshot and descriptor together:
 
@@ -41,6 +62,11 @@ Publish the applying site from that pair:
 ```powershell
 dotnet run --project tools\ticket-site -- --planner-snapshot "<snapshotPath>" --snapshot-descriptor "<descriptorPath>" --out "cache\jira-ticket-site" --force
 ```
+
+The directory-valued snapshot output contains the descriptor, database, and
+`verified-pair.json`, binding `Planner`, run/snapshot coordinates, safe
+filenames, size, and descriptor/database SHA-256 digests. Successful
+publication writes the exact sub-site manifest `site-manifest.json`.
 
 Publication failure does not invalidate receipts or the snapshot. Preserve
 both, fail the outer command, and return `runId`, `snapshotId`, all
