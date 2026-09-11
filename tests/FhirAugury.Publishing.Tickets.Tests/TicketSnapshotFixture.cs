@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Publishing.Tickets.Tests;
@@ -101,12 +103,14 @@ internal sealed class TicketSnapshotFixture
             ("@createdAt", Descriptor.CreatedAt.ToString("O")),
             ("@currentRunId", Descriptor.RunId));
         await connection.CloseAsync();
+        await connection.DisposeAsync();
 
         Descriptor = await CreateDescriptorAsync(
             DatabasePath,
             Descriptor.RunId,
             Descriptor.SnapshotId,
             Descriptor.Sequence,
+            Descriptor.SchemaVersion,
             Descriptor.TableCounts,
             Descriptor.CreatedAt,
             itemCount: 1,
@@ -118,13 +122,33 @@ internal sealed class TicketSnapshotFixture
         string root,
         long sequence = 1,
         string? snapshotId = null,
-        bool includeSecondTicket = false)
+        bool includeSecondTicket = false,
+        int schemaVersion = PreparedTicketSnapshotSchemaV1.Version,
+        bool useMultipleRuns = false,
+        bool includeRendererEvidence = false,
+        bool includeNullProvenance = false)
     {
+        AuthoringSnapshotSchemaCatalog catalog =
+            PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion);
         string id = snapshotId ?? $"snapshot-{Guid.NewGuid():N}";
         string databasePath = Path.Combine(root, $"jira-fhir-{id}.db");
         string descriptorPath = databasePath + ".json";
         string runId = $"run-{id}";
-        DateTimeOffset createdAt = DateTimeOffset.UtcNow;
+        string firstRunId = includeSecondTicket && useMultipleRuns
+            ? $"historical-{id}"
+            : runId;
+        int currentRunItemCount =
+            includeSecondTicket && !useMultipleRuns ? 2 : 1;
+        DateTimeOffset createdAt =
+            new(2026, 9, 11, 12, 30, 0, TimeSpan.Zero);
+        DateTimeOffset firstRefresh =
+            new(2026, 9, 7, 18, 0, 0, TimeSpan.Zero);
+        DateTimeOffset firstHydrationRefresh =
+            new(2026, 9, 8, 5, 0, 0, TimeSpan.Zero);
+        DateTimeOffset secondRefresh =
+            new(2026, 9, 9, 20, 0, 0, TimeSpan.Zero);
+        DateTimeOffset secondHydrationRefresh =
+            new(2026, 9, 10, 23, 30, 0, TimeSpan.Zero);
 
         await using SqliteConnection connection = new(
             $"Data Source={databasePath};Pooling=False");
@@ -138,17 +162,23 @@ internal sealed class TicketSnapshotFixture
             INSERT INTO authoring_runs(
                 Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly, TotalItems,
                 CreatedAt, StartedAt, CompletedAt, SnapshotId)
-            VALUES(@runId, 'jira-fhir', 1, 'finalizing', 0, 1,
+            VALUES(@runId, 'jira-fhir', 1, 'finalizing', 0, @currentRunItemCount,
                 @createdAt, @createdAt, NULL, @snapshotId);
+            INSERT INTO authoring_runs(
+                Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly, TotalItems,
+                CreatedAt, StartedAt, CompletedAt, SnapshotId)
+            SELECT @firstRunId, 'jira-fhir', 1, 'superseded', 0, 1,
+                   @createdAt, @createdAt, @createdAt, NULL
+            WHERE @firstRunId <> @runId;
             INSERT INTO authoring_run_items(
                 Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision, Status,
                 AcceptedReceiptId, AttemptCount, CreatedAt, StartedAt, CompletedAt)
-            VALUES('item-1', @runId, 'FHIR-1001', 'ticket', 'rev-1', 'complete',
+            VALUES('item-1', @firstRunId, 'FHIR-1001', 'ticket', 'rev-1', 'complete',
                 'receipt-1', 1, @createdAt, @createdAt, @createdAt);
             INSERT INTO authoring_result_receipts(
                 Id, OperationId, RunId, RunItemId, BusinessKey, ContentHash,
                 ExpectedSourceRevision, ObservedSourceRevision, AuthoringEpoch, PersistedAt)
-            VALUES('receipt-1', 'operation-1', @runId, 'item-1', 'FHIR-1001',
+            VALUES('receipt-1', 'operation-1', @firstRunId, 'item-1', 'FHIR-1001',
                 'hash', 'rev-1', 'rev-1', 1, @createdAt);
             INSERT INTO prepared_tickets(
                 Id, Key, RequestSummary, CommentSummary, LinkedTicketSummary,
@@ -160,14 +190,29 @@ internal sealed class TicketSnapshotFixture
                 'A', 'A because', 'Non-substantive', 'B', 'B because',
                 'Compatible, substantive', 'C', 'C because', 'A', 'Because', @createdAt);
             INSERT INTO prepared_ticket_hydration(
-                Id, TicketKey, Specification, HydratedAt, HydrationStatus)
-            VALUES('hydration-1', 'FHIR-1001', 'FHIR', @createdAt, 'resolved');
+                Id, TicketKey, Priority, Resolution, ResolutionDescriptionPlain,
+                Specification, RaisedInVersion, SelectedBallot, ChangeCategory,
+                Impact, CommentCount, DescriptionPlain, Reporter, Assignee,
+                SourceProject, SourceLastSuccessfulRefreshAt,
+                SourceContentRevision, HydratedAt, HydrationStatus)
+            VALUES(
+                'hydration-1', 'FHIR-1001', 'Major', 'Persuasive',
+                'parent resolution plain', 'FHIR', '5.0.0', '2026-09',
+                'Correction', 'Non-substantive', 3, 'parent request plain',
+                'Ada Lovelace', 'Grace Hopper', 'FHIR',
+                @firstHydrationRefresh, 111, @createdAt, 'resolved');
             INSERT INTO prepared_jira_hydration(
-                Id, TicketKey, JiraKey, Title, Status, Type, WorkGroup, WorkGroupClean,
-                Specification, HydratedAt, HydrationStatus)
-            VALUES('jira-1', 'FHIR-1001', 'FHIR-1001', 'Snapshot title', 'Open',
-                'Change Request', 'FHIR Infrastructure', 'FHIRInfrastructure',
-                'FHIR', @createdAt, 'resolved');
+                Id, TicketKey, JiraKey, Title, Status, Type, Priority,
+                Resolution, ResolutionDescriptionPlain, WorkGroup,
+                WorkGroupClean, Specification, Url, Reporter, Assignee,
+                HydratedAt, HydrationStatus)
+            VALUES(
+                'jira-1', 'FHIR-1001', 'FHIR-1001', 'Snapshot title', 'Open',
+                'Change Request', 'Self priority', 'Self resolution',
+                'self resolution plain', 'FHIR Infrastructure',
+                'FHIRInfrastructure', 'Self specification',
+                'https://jira.hl7.org/browse/FHIR-1001', 'Legacy Reporter',
+                'Legacy Assignee', @createdAt, 'resolved');
             INSERT INTO prepared_ticket_jira_content(
                 TicketKey, DescriptionHtml, ResolutionDescriptionHtml)
             VALUES('FHIR-1001', '<p>request html</p>', '<p>resolution html</p>');
@@ -184,13 +229,16 @@ internal sealed class TicketSnapshotFixture
             VALUES('fhir-i', 'FHIR Infrastructure', 'FHIRInfrastructure', @createdAt);
             """,
             ("@runId", runId),
+            ("@firstRunId", firstRunId),
+            ("@currentRunItemCount", currentRunItemCount),
             ("@snapshotId", id),
-            ("@createdAt", createdAt.ToString("O")));
+            ("@createdAt", createdAt.ToString("O")),
+            ("@firstHydrationRefresh", firstHydrationRefresh.ToString("O")));
 
-        int itemCount = 1;
+        int receiptCount = 1;
         if (includeSecondTicket)
         {
-            itemCount = 2;
+            receiptCount = 2;
             await ExecuteAsync(connection,
                 """
                 INSERT INTO authoring_run_items(
@@ -213,14 +261,29 @@ internal sealed class TicketSnapshotFixture
                     'A', 'A because', 'Non-substantive', 'B', 'B because',
                     'Compatible, substantive', 'C', 'C because', 'A', 'Because', @createdAt);
                 INSERT INTO prepared_ticket_hydration(
-                    Id, TicketKey, Specification, HydratedAt, HydrationStatus)
-                VALUES('hydration-2', 'CDS-2001', 'CDS Hooks', @createdAt, 'resolved');
+                    Id, TicketKey, Priority, Resolution,
+                    ResolutionDescriptionPlain, Specification, DescriptionPlain,
+                    Reporter, Assignee, SourceProject,
+                    SourceLastSuccessfulRefreshAt, SourceContentRevision,
+                    HydratedAt, HydrationStatus)
+                VALUES(
+                    'hydration-2', 'CDS-2001', 'Minor', 'Persuasive',
+                    'CDS resolution plain', 'CDS Hooks', 'CDS request plain',
+                    'Katherine Johnson', NULL, 'CDS',
+                    @secondHydrationRefresh, 222, @createdAt, 'resolved');
                 INSERT INTO prepared_jira_hydration(
-                    Id, TicketKey, JiraKey, Title, Status, Type, WorkGroup, WorkGroupClean,
-                    Specification, HydratedAt, HydrationStatus)
-                VALUES('jira-2', 'CDS-2001', 'CDS-2001', 'CDS title', 'Open',
-                    'Change Request', 'Clinical Decision Support', 'ClinicalDecisionSupport',
-                    'CDS Hooks', @createdAt, 'resolved');
+                    Id, TicketKey, JiraKey, Title, Status, Type, Priority,
+                    Resolution, ResolutionDescriptionPlain, WorkGroup,
+                    WorkGroupClean, Specification, Url, HydratedAt,
+                    HydrationStatus)
+                VALUES(
+                    'jira-2', 'CDS-2001', 'CDS-2001', 'CDS title', 'Open',
+                    'Change Request', 'Self CDS priority',
+                    'Self CDS resolution', 'self CDS resolution plain',
+                    'Clinical Decision Support', 'ClinicalDecisionSupport',
+                    'Self CDS specification',
+                    'https://jira.hl7.org/browse/CDS-2001', @createdAt,
+                    'resolved');
                 INSERT INTO prepared_ticket_partition_receipts(
                     RunId, StageId, PartitionKey, InputFingerprint, TopicRows,
                     TopicGroupRows, MemberRows, PersistedAt)
@@ -230,64 +293,226 @@ internal sealed class TicketSnapshotFixture
                 VALUES('cds', 'Clinical Decision Support', 'ClinicalDecisionSupport', @createdAt);
                 """,
                 ("@runId", runId),
-                ("@createdAt", createdAt.ToString("O")));
+                ("@createdAt", createdAt.ToString("O")),
+                ("@secondHydrationRefresh", secondHydrationRefresh.ToString("O")));
         }
 
-        string[] countTables =
-        [
-            "prepared_tickets",
-            "prepared_ticket_repos",
-            "prepared_ticket_related_jira",
-            "prepared_ticket_related_zulip",
-            "prepared_ticket_related_github",
-            "prepared_ticket_hydration",
-            "prepared_jira_hydration",
-            "prepared_ticket_jira_content",
-            "prepared_ticket_artifacts",
-            "prepared_ticket_pages",
-            "prepared_ticket_topics",
-            "prepared_ticket_topic_groups",
-            "prepared_ticket_topic_members",
-            "prepared_ticket_partition_receipts",
-            "jira_review_workgroups",
-        ];
-        await SanitizeSnapshotSchemaAsync(
-            connection,
-            [
-                "authoring_runs",
-                "authoring_run_items",
-                "authoring_result_receipts",
-                "authoring_snapshot_provenance",
-                .. countTables,
-                "prepared_github_hydration",
-                "prepared_repo_hydration",
-                "prepared_ticket_jira_xref",
-                "prepared_zulip_hydration",
-            ]);
+        if (schemaVersion == PreparedTicketSnapshotSchemaV2.Version)
+        {
+            DateTimeOffset? firstProvenanceRefresh = includeNullProvenance
+                ? null
+                : includeSecondTicket && !useMultipleRuns
+                    ? secondRefresh
+                    : firstRefresh;
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_run_input_provenance(
+                    RunId, Source, LatestSuccessfulRefreshAt,
+                    ContentRevision, CapturedAt)
+                VALUES(
+                    @firstRunId, 'jira', @firstRefresh,
+                    @firstRevision, @createdAt);
+                INSERT INTO authoring_run_input_provenance(
+                    RunId, Source, LatestSuccessfulRefreshAt,
+                    ContentRevision, CapturedAt)
+                SELECT @runId, 'jira', @secondRefresh, 202, @createdAt
+                WHERE @runId <> @firstRunId;
+                """,
+                ("@firstRunId", firstRunId),
+                ("@runId", runId),
+                ("@firstRefresh", firstProvenanceRefresh?.ToString("O")),
+                ("@firstRevision", includeNullProvenance ? null : 101),
+                ("@secondRefresh", secondRefresh.ToString("O")),
+                ("@createdAt", createdAt.ToString("O")));
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO prepared_ticket_in_person_requesters(
+                    TicketKey, DisplayName)
+                VALUES('FHIR-1001', 'Lin Example');
+                """);
+        }
+
+        if (includeRendererEvidence)
+        {
+            if (!includeSecondTicket)
+            {
+                throw new ArgumentException(
+                    "Renderer evidence requires the second ticket.",
+                    nameof(includeSecondTicket));
+            }
+
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE prepared_tickets
+                SET LinkedTicketSummary = 'Linked FHIR-2002',
+                    RelatedTicketSummary = 'Related FHIR-2002',
+                    RelatedZulipSummary = 'Related discussion',
+                    RelatedGitHubSummary = 'GitHub context',
+                    ProposalBImpact = ProposalAImpact
+                WHERE Key = 'FHIR-1001';
+                UPDATE prepared_jira_hydration
+                SET WorkGroup = '   ',
+                    WorkGroupClean = ''
+                WHERE TicketKey = 'CDS-2001'
+                  AND JiraKey = 'CDS-2001';
+
+                INSERT INTO prepared_ticket_artifacts(TicketKey, Value)
+                VALUES
+                    ('FHIR-1001', 'observation'),
+                    ('FHIR-1001', '   '),
+                    ('FHIR-1001', '(unknown)'),
+                    ('FHIR-1001', '__unknown__'),
+                    ('FHIR-1001', '__UNKNOWN__'),
+                    ('FHIR-1001', 'UnbrokenArtifactName012345678901234567890123456789');
+                INSERT INTO prepared_ticket_pages(TicketKey, Value)
+                VALUES
+                    ('FHIR-1001', '   ');
+
+                INSERT INTO prepared_ticket_related_jira(
+                    Id, TicketKey, AssociatedTicketKey, LinkType, Justification)
+                VALUES
+                    ('related-jira-1', 'FHIR-1001', 'FHIR-2002', 'linked', 'linked why'),
+                    ('related-jira-2', 'FHIR-1001', 'fhir-2002', 'LINKED', 'duplicate'),
+                    ('related-jira-3', 'FHIR-1001', 'FHIR-2002', 'related', 'related why');
+                INSERT INTO prepared_jira_hydration(
+                    Id, TicketKey, JiraKey, Title, Status, Type, Resolution,
+                    Url, HydratedAt, HydrationStatus)
+                VALUES(
+                    'jira-related-1', 'FHIR-1001', 'FHIR-2002',
+                    'Related title', 'Resolved', 'Change Request',
+                    'Persuasive', 'https://jira.example/FHIR-2002',
+                    @createdAt, 'resolved');
+
+                INSERT INTO prepared_ticket_related_zulip(
+                    Id, TicketKey, ZulipThreadId, Justification)
+                VALUES
+                    ('related-zulip-1', 'FHIR-1001', 'thread-1', 'zulip why'),
+                    ('related-zulip-2', 'FHIR-1001', 'THREAD-1', 'duplicate');
+                INSERT INTO prepared_zulip_hydration(
+                    Id, TicketKey, ZulipThreadId, StreamName, Topic,
+                    MessageCount, Url, HydratedAt, HydrationStatus)
+                VALUES(
+                    'zulip-1', 'FHIR-1001', 'thread-1', 'FHIR',
+                    'Ticket discussion', 4,
+                    'https://chat.fhir.org/#narrow/channel/1/topic/Ticket',
+                    @createdAt, 'resolved');
+
+                INSERT INTO prepared_ticket_related_github(
+                    Id, TicketKey, GitHubItemId, Justification)
+                VALUES(
+                    'related-github-1', 'FHIR-1001', 'github-1', 'github why');
+                INSERT INTO prepared_github_hydration(
+                    Id, TicketKey, GitHubItemId, Owner, Repo, Number,
+                    Title, State, IsPullRequest, Url, HydratedAt,
+                    HydrationStatus)
+                VALUES(
+                    'github-1', 'FHIR-1001', 'github-1', 'HL7', 'fhir',
+                    42, 'Issue title', 'open', 0,
+                    'https://github.com/HL7/fhir/issues/42',
+                    @createdAt, 'resolved');
+
+                INSERT INTO prepared_ticket_repos(
+                    Id, TicketKey, Repo, RepoCategory, Justification)
+                VALUES(
+                    'repo-1', 'FHIR-1001', 'HL7/fhir', 'spec', 'repo why');
+                INSERT INTO prepared_repo_hydration(
+                    Id, TicketKey, Repo, Description, Url, HydratedAt,
+                    HydrationStatus)
+                VALUES(
+                    'repo-hydration-1', 'FHIR-1001', 'HL7/fhir',
+                    'FHIR specification',
+                    'https://github.com/HL7/fhir',
+                    @createdAt, 'resolved');
+                INSERT INTO prepared_ticket_jira_xref(
+                    Id, TicketKey, JiraKey, Source)
+                VALUES(
+                    'xref-1', 'FHIR-1001', 'FHIR-2002', 'links');
+
+                INSERT INTO prepared_ticket_topics(
+                    Id, WorkGroupClean, WorkGroupDisplay, Specification,
+                    Type, ShortDescription, LongerDescription,
+                    RenderOrderHint, SavedAt)
+                VALUES(
+                    'topic-renderer', 'FHIRInfrastructure',
+                    'FHIR Infrastructure', 'FHIR', 'Change Request',
+                    'Renderer topic', 'Longer renderer topic', 7, @createdAt);
+                INSERT INTO prepared_ticket_topic_groups(
+                    Id, TopicRowId, FirstTicketKey, Rationale,
+                    OrderInTopic, SavedAt)
+                SELECT
+                    'group-renderer', RowId, 'FHIR-1001',
+                    'Discuss together', 0, @createdAt
+                FROM prepared_ticket_topics
+                WHERE Id = 'topic-renderer';
+                INSERT INTO prepared_ticket_topic_members(
+                    Id, TopicRowId, TopicGroupRowId, TicketKey,
+                    OrderInContainer)
+                SELECT
+                    'member-renderer-1', topic.RowId, groups.RowId,
+                    'FHIR-1001', 0
+                FROM prepared_ticket_topics topic
+                INNER JOIN prepared_ticket_topic_groups groups
+                    ON groups.TopicRowId = topic.RowId
+                WHERE topic.Id = 'topic-renderer';
+                INSERT INTO prepared_ticket_topic_members(
+                    Id, TopicRowId, TopicGroupRowId, TicketKey,
+                    OrderInContainer)
+                SELECT
+                    'member-renderer-2', topic.RowId, groups.RowId,
+                    'CDS-2001', 1
+                FROM prepared_ticket_topics topic
+                INNER JOIN prepared_ticket_topic_groups groups
+                    ON groups.TopicRowId = topic.RowId
+                WHERE topic.Id = 'topic-renderer';
+                """,
+                ("@createdAt", createdAt.ToString("O")));
+
+            if (schemaVersion == PreparedTicketSnapshotSchemaV2.Version)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO prepared_ticket_in_person_requesters(
+                        TicketKey, DisplayName)
+                    VALUES
+                        ('FHIR-1001', '  Alan Turing  ');
+                    """);
+            }
+        }
+
+        await SanitizeSnapshotSchemaAsync(connection, catalog);
         Dictionary<string, long> counts =
-            await ReadCountsAsync(connection, countTables);
+            await ReadCountsAsync(connection, catalog.CountedTables);
         await ExecuteAsync(connection,
             """
             INSERT INTO authoring_snapshot_provenance
-            VALUES(@snapshotId, 'jira-fhir', @runId, 1, @sequence, 1, @itemCount, @itemCount, @counts, @createdAt)
+            VALUES(@snapshotId, 'jira-fhir', @runId, 1, @sequence,
+                @schemaVersion, @itemCount, @receiptCount, @counts, @createdAt)
             """,
             ("@snapshotId", id),
             ("@runId", runId),
             ("@sequence", sequence),
-            ("@itemCount", itemCount),
+            ("@schemaVersion", schemaVersion),
+            ("@itemCount", currentRunItemCount),
+            ("@receiptCount", receiptCount),
             ("@counts", JsonSerializer.Serialize(counts)),
             ("@createdAt", createdAt.ToString("O")));
         await connection.CloseAsync();
+        await connection.DisposeAsync();
 
         AuthoringSnapshotDescriptor descriptor = await CreateDescriptorAsync(
             databasePath,
             runId,
             id,
             sequence,
+            schemaVersion,
             counts,
             createdAt,
-            itemCount,
-            itemCount);
+            currentRunItemCount,
+            receiptCount);
         await WriteDescriptorAsync(descriptorPath, descriptor);
         return new TicketSnapshotFixture(databasePath, descriptorPath, descriptor);
     }
@@ -353,43 +578,11 @@ internal sealed class TicketSnapshotFixture
             ("@snapshotId", id),
             ("@createdAt", createdAt.ToString("O")));
 
-        string[] countTables =
-        [
-            "planned_tickets",
-            "planned_ticket_repos",
-            "planned_ticket_repo_changes",
-            "planned_ticket_repo_impacts",
-            "planned_ticket_change_validations",
-            "planned_ticket_testing_considerations",
-            "planned_ticket_open_questions",
-            "planned_ticket_hydration",
-            "planned_jira_hydration",
-            "planned_ticket_jira_content",
-            "planned_ticket_topics",
-            "planned_ticket_topic_groups",
-            "planned_ticket_topic_members",
-            "planned_ticket_topic_repos",
-            "planned_ticket_partition_receipts",
-            "jira_review_workgroups",
-        ];
-        await SanitizeSnapshotSchemaAsync(
-            connection,
-            [
-                "authoring_runs",
-                "authoring_run_items",
-                "authoring_result_receipts",
-                "authoring_snapshot_provenance",
-                .. countTables,
-                "planned_github_hydration",
-                "planned_repo_hydration",
-                "planned_ticket_jira_xref",
-                "planned_ticket_related_github",
-                "planned_ticket_related_jira",
-                "planned_ticket_related_zulip",
-                "planned_zulip_hydration",
-            ]);
+        AuthoringSnapshotSchemaCatalog catalog =
+            PlannedTicketSnapshotSchemaV1.Catalog;
+        await SanitizeSnapshotSchemaAsync(connection, catalog);
         Dictionary<string, long> counts =
-            await ReadCountsAsync(connection, countTables);
+            await ReadCountsAsync(connection, catalog.CountedTables);
         await ExecuteAsync(connection,
             """
             INSERT INTO authoring_snapshot_provenance
@@ -401,12 +594,14 @@ internal sealed class TicketSnapshotFixture
             ("@counts", JsonSerializer.Serialize(counts)),
             ("@createdAt", createdAt.ToString("O")));
         await connection.CloseAsync();
+        await connection.DisposeAsync();
 
         AuthoringSnapshotDescriptor descriptor = await CreateDescriptorAsync(
             databasePath,
             runId,
             id,
             sequence,
+            PlannedTicketSnapshotSchemaV1.Version,
             counts,
             createdAt,
             1,
@@ -437,6 +632,7 @@ internal sealed class TicketSnapshotFixture
         string runId,
         string snapshotId,
         long sequence,
+        int schemaVersion,
         IReadOnlyDictionary<string, long> counts,
         DateTimeOffset createdAt,
         int itemCount,
@@ -447,7 +643,7 @@ internal sealed class TicketSnapshotFixture
             snapshotId,
             1,
             sequence,
-            1,
+            schemaVersion,
             await ComputeHashAsync(databasePath),
             new FileInfo(databasePath).Length,
             itemCount,
@@ -483,30 +679,8 @@ internal sealed class TicketSnapshotFixture
 
     private static async Task SanitizeSnapshotSchemaAsync(
         SqliteConnection connection,
-        IReadOnlyCollection<string> publicTables)
+        AuthoringSnapshotSchemaCatalog catalog)
     {
-        Dictionary<string, string[]> selectedColumns =
-            new(StringComparer.OrdinalIgnoreCase)
-            {
-                ["authoring_runs"] =
-                [
-                    "Id", "ProcessorKind", "AuthoringEpoch", "Status", "DatabaseOnly",
-                    "TotalItems", "CreatedAt", "StartedAt", "CompletedAt", "SnapshotId",
-                ],
-                ["authoring_run_items"] =
-                [
-                    "Id", "RunId", "BusinessKey", "ItemKind", "ExpectedSourceRevision",
-                    "Status", "AcceptedReceiptId", "AttemptCount", "CreatedAt", "StartedAt",
-                    "CompletedAt",
-                ],
-                ["authoring_result_receipts"] =
-                [
-                    "Id", "OperationId", "RunId", "RunItemId", "BusinessKey",
-                    "ContentHash", "ExpectedSourceRevision", "ObservedSourceRevision",
-                    "AuthoringEpoch", "PersistedAt",
-                ],
-            };
-
         await ExecuteAsync(connection, "PRAGMA foreign_keys = OFF");
         List<(string Type, string Name)> objects = [];
         await using (SqliteCommand command = connection.CreateCommand())
@@ -534,7 +708,10 @@ internal sealed class TicketSnapshotFixture
         }
         foreach ((_, string name) in objects.Where(item => item.Type == "table"))
         {
-            if (!publicTables.Contains(name, StringComparer.OrdinalIgnoreCase))
+            if (!catalog.Tables.Any(table => string.Equals(
+                table.Name,
+                name,
+                StringComparison.OrdinalIgnoreCase)))
             {
                 await ExecuteAsync(
                     connection,
@@ -542,20 +719,20 @@ internal sealed class TicketSnapshotFixture
             }
         }
 
-        foreach ((string table, string[] columns) in selectedColumns)
+        foreach (AuthoringSnapshotTableSchema table in catalog.Tables)
         {
             string replacement = $"__snapshot_{Guid.NewGuid():N}";
             string columnList = string.Join(
                 ", ",
-                columns.Select(column =>
+                table.Columns.Select(column =>
                     $"\"{column.Replace("\"", "\"\"", StringComparison.Ordinal)}\""));
             await ExecuteAsync(
                 connection,
                 $"""
                 CREATE TABLE "{replacement}" AS
-                SELECT {columnList} FROM "{table}";
-                DROP TABLE "{table}";
-                ALTER TABLE "{replacement}" RENAME TO "{table}";
+                SELECT {columnList} FROM "{table.Name}";
+                DROP TABLE "{table.Name}";
+                ALTER TABLE "{replacement}" RENAME TO "{table.Name}";
                 """);
         }
         await ExecuteAsync(connection, "VACUUM; PRAGMA foreign_keys = ON");
@@ -564,13 +741,13 @@ internal sealed class TicketSnapshotFixture
     private static async Task ExecuteAsync(
         SqliteConnection connection,
         string sql,
-        params (string Name, object Value)[] parameters)
+        params (string Name, object? Value)[] parameters)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = sql;
-        foreach ((string name, object value) in parameters)
+        foreach ((string name, object? value) in parameters)
         {
-            command.Parameters.AddWithValue(name, value);
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
         await command.ExecuteNonQueryAsync();
     }

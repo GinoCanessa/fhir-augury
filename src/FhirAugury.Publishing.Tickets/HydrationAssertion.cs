@@ -8,13 +8,11 @@ using Microsoft.Data.Sqlite;
 namespace FhirAugury.Publishing.Tickets;
 
 /// <summary>
-/// Validates the public schema, provenance, integrity, and browser queries
-/// required by the immutable discussion and applying renderers.
+/// Validates the public schema, provenance, integrity, and canonical hydration
+/// required by the immutable discussion and applying source snapshots.
 /// </summary>
 internal static class HydrationAssertion
 {
-    public const int SupportedSnapshotSchemaVersion =
-        AuthoringSnapshotSchemaV1.Version;
     public const string JiraProcessorKind = "jira-fhir";
 
     private static readonly string[] ForbiddenColumnFragments =
@@ -39,17 +37,26 @@ internal static class HydrationAssertion
         TicketSiteKind siteKind,
         CancellationToken ct)
     {
+        AuthoringSnapshotSchemaCatalog schema =
+            GetSchema(siteKind, descriptor.SchemaVersion);
         ValidateDescriptorShape(descriptor, snapshot);
         ValidateWholeFile(snapshot, descriptor);
 
         await using SqliteConnection connection = OpenReadOnly(snapshot.Path);
         await connection.OpenAsync(ct).ConfigureAwait(false);
-        await ValidatePublicSchemaAsync(connection, siteKind, ct).ConfigureAwait(false);
-        await ValidateBrowserQueriesAsync(connection, siteKind, ct).ConfigureAwait(false);
+        await ValidatePublicSchemaAsync(
+            connection,
+            schema,
+            ct).ConfigureAwait(false);
+        if (siteKind == TicketSiteKind.Applying)
+        {
+            await ValidateApplyingBrowserQueriesAsync(connection, ct)
+                .ConfigureAwait(false);
+        }
         await ValidateIntegrityAsync(connection, ct).ConfigureAwait(false);
         await ValidateProvenanceAsync(connection, descriptor, ct).ConfigureAwait(false);
 
-        IReadOnlyList<string> countTables = GetSchema(siteKind).CountedTables;
+        IReadOnlyList<string> countTables = schema.CountedTables;
         ValidateDescriptorCountKeys(descriptor.TableCounts, countTables);
         IReadOnlyDictionary<string, long> counts =
             await ReadTableCountsAsync(connection, countTables, ct).ConfigureAwait(false);
@@ -94,9 +101,12 @@ internal static class HydrationAssertion
     {
         await using SqliteConnection connection = OpenReadOnly(dbPath);
         await connection.OpenAsync(ct).ConfigureAwait(false);
+        int schemaVersion = await ReadSnapshotSchemaVersionAsync(
+            connection,
+            ct).ConfigureAwait(false);
         return await ReadTableCountsAsync(
             connection,
-            GetSchema(siteKind).CountedTables,
+            GetSchema(siteKind, schemaVersion).CountedTables,
             ct).ConfigureAwait(false);
     }
 
@@ -122,12 +132,6 @@ internal static class HydrationAssertion
         {
             throw new InvalidOperationException(
                 "Descriptor authoring epoch and snapshot sequence must be positive.");
-        }
-        if (descriptor.SchemaVersion != SupportedSnapshotSchemaVersion)
-        {
-            throw new InvalidOperationException(
-                $"Unsupported snapshot schema version {descriptor.SchemaVersion}; " +
-                $"expected {SupportedSnapshotSchemaVersion}.");
         }
         if (descriptor.ItemCount < 0 || descriptor.ReceiptCount < 0)
         {
@@ -177,11 +181,11 @@ internal static class HydrationAssertion
 
     private static async Task ValidatePublicSchemaAsync(
         SqliteConnection connection,
-        TicketSiteKind siteKind,
+        AuthoringSnapshotSchemaCatalog schema,
         CancellationToken ct)
     {
         IReadOnlyDictionary<string, IReadOnlyCollection<string>> expected =
-            GetSchema(siteKind).Tables.ToDictionary(
+            schema.Tables.ToDictionary(
                 table => table.Name,
                 table => (IReadOnlyCollection<string>)table.Columns,
                 StringComparer.OrdinalIgnoreCase);
@@ -252,7 +256,7 @@ internal static class HydrationAssertion
             if (missingColumns.Length > 0 || unexpectedColumns.Length > 0)
             {
                 throw new InvalidOperationException(
-                    $"Snapshot table '{table}' does not match schema v1. " +
+                    $"Snapshot table '{table}' does not match schema v{schema.Version}. " +
                     $"Missing columns: [{string.Join(", ", missingColumns)}]; " +
                     $"unexpected columns: [{string.Join(", ", unexpectedColumns)}].");
             }
@@ -267,91 +271,40 @@ internal static class HydrationAssertion
         }
     }
 
-    private static async Task ValidateBrowserQueriesAsync(
+    private static async Task ValidateApplyingBrowserQueriesAsync(
         SqliteConnection connection,
-        TicketSiteKind siteKind,
         CancellationToken ct)
     {
-        string[] queries;
-        if (siteKind == TicketSiteKind.Discussion)
-        {
-            await ExecuteAsync(
-                connection,
-                """
-                CREATE TEMP VIEW jira_processing_source_tickets AS
-                SELECT jh.JiraKey AS Key,
-                       jh.Title,
-                       CASE WHEN instr(jh.JiraKey, '-') > 1
-                            THEN substr(jh.JiraKey, 1, instr(jh.JiraKey, '-') - 1)
-                            ELSE '' END AS Project,
-                       jh.Status,
-                       jh.WorkGroup,
-                       jh.Type,
-                       jh.Specification
-                FROM prepared_jira_hydration jh
-                WHERE jh.TicketKey = jh.JiraKey
-                """,
-                ct).ConfigureAwait(false);
-            queries =
-            [
-                "SELECT pt.*, jst.Title, jst.WorkGroup, jst.Status, jst.Type FROM prepared_tickets pt LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key LIMIT 0",
-                "SELECT Repo, RepoCategory, Justification FROM prepared_ticket_repos LIMIT 0",
-                "SELECT AssociatedTicketKey, LinkType, Justification FROM prepared_ticket_related_jira LIMIT 0",
-                "SELECT ZulipThreadId, Justification FROM prepared_ticket_related_zulip LIMIT 0",
-                "SELECT GitHubItemId, Justification FROM prepared_ticket_related_github LIMIT 0",
-                "SELECT * FROM prepared_ticket_hydration LIMIT 0",
-                "SELECT * FROM prepared_jira_hydration LIMIT 0",
-                "SELECT * FROM prepared_zulip_hydration LIMIT 0",
-                "SELECT * FROM prepared_github_hydration LIMIT 0",
-                "SELECT * FROM prepared_repo_hydration LIMIT 0",
-                "SELECT * FROM prepared_ticket_jira_xref LIMIT 0",
-                "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM prepared_ticket_jira_content LIMIT 0",
-                "SELECT TicketKey, Value FROM prepared_ticket_artifacts LIMIT 0",
-                "SELECT TicketKey, Value FROM prepared_ticket_pages LIMIT 0",
-                "SELECT RowId, Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint FROM prepared_ticket_topics LIMIT 0",
-                "SELECT RowId, Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic FROM prepared_ticket_topic_groups LIMIT 0",
-                "SELECT TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer FROM prepared_ticket_topic_members LIMIT 0",
-                "SELECT RunId, PartitionKey FROM prepared_ticket_partition_receipts LIMIT 0",
-                "SELECT Code, Name, NameClean FROM jira_review_workgroups LIMIT 0",
-                "SELECT Id, ProcessorKind FROM authoring_runs LIMIT 0",
-                "SELECT Id, RunId, BusinessKey, Status FROM authoring_run_items LIMIT 0",
-                "SELECT Id, OperationId, BusinessKey FROM authoring_result_receipts LIMIT 0",
-                "SELECT SnapshotId, ProcessorKind, RunId, Sequence FROM authoring_snapshot_provenance LIMIT 0",
-            ];
-        }
-        else
-        {
-            queries =
-            [
-                "SELECT pt.*, jh.Title, jh.WorkGroup, jh.Status, jh.Type, jh.Url, COALESCE(th.Specification, jh.Specification), COALESCE(th.Priority, jh.Priority), COALESCE(th.Resolution, jh.Resolution), th.DescriptionPlain, COALESCE(th.ResolutionDescriptionPlain, jh.ResolutionDescriptionPlain) FROM planned_tickets pt LEFT JOIN planned_jira_hydration jh ON jh.IssueKey = pt.Key AND jh.JiraKey = pt.Key LEFT JOIN planned_ticket_hydration th ON th.IssueKey = pt.Key LIMIT 0",
-                "SELECT RepoKey, RepoRevision, Justification FROM planned_ticket_repos LIMIT 0",
-                "SELECT TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle, ChangeDescription, ReplacementLines FROM planned_ticket_repo_changes LIMIT 0",
-                "SELECT RepoKey, AffectedFilePath, HowAffected FROM planned_ticket_repo_impacts LIMIT 0",
-                "SELECT RepoKey, ValidationSequence, Action FROM planned_ticket_change_validations LIMIT 0",
-                "SELECT RepoKey, ConsiderationSequence, Consideration FROM planned_ticket_testing_considerations LIMIT 0",
-                "SELECT RepoKey, QuestionSequence, Question FROM planned_ticket_open_questions LIMIT 0",
-                "SELECT * FROM planned_ticket_related_jira LIMIT 0",
-                "SELECT * FROM planned_ticket_related_zulip LIMIT 0",
-                "SELECT * FROM planned_ticket_related_github LIMIT 0",
-                "SELECT * FROM planned_ticket_hydration LIMIT 0",
-                "SELECT * FROM planned_jira_hydration LIMIT 0",
-                "SELECT * FROM planned_zulip_hydration LIMIT 0",
-                "SELECT * FROM planned_github_hydration LIMIT 0",
-                "SELECT * FROM planned_repo_hydration LIMIT 0",
-                "SELECT * FROM planned_ticket_jira_xref LIMIT 0",
-                "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM planned_ticket_jira_content LIMIT 0",
-                "SELECT RowId, Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint FROM planned_ticket_topics LIMIT 0",
-                "SELECT RowId, Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic FROM planned_ticket_topic_groups LIMIT 0",
-                "SELECT TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer FROM planned_ticket_topic_members LIMIT 0",
-                "SELECT TopicRowId, RepoKey, OrderInTopic FROM planned_ticket_topic_repos LIMIT 0",
-                "SELECT RunId, PartitionKey FROM planned_ticket_partition_receipts LIMIT 0",
-                "SELECT Code, Name, NameClean FROM jira_review_workgroups LIMIT 0",
-                "SELECT Id, ProcessorKind FROM authoring_runs LIMIT 0",
-                "SELECT Id, RunId, BusinessKey, Status FROM authoring_run_items LIMIT 0",
-                "SELECT Id, OperationId, BusinessKey FROM authoring_result_receipts LIMIT 0",
-                "SELECT SnapshotId, ProcessorKind, RunId, Sequence FROM authoring_snapshot_provenance LIMIT 0",
-            ];
-        }
+        string[] queries =
+        [
+            "SELECT pt.*, jh.Title, jh.WorkGroup, jh.Status, jh.Type, jh.Url, COALESCE(th.Specification, jh.Specification), COALESCE(th.Priority, jh.Priority), COALESCE(th.Resolution, jh.Resolution), th.DescriptionPlain, COALESCE(th.ResolutionDescriptionPlain, jh.ResolutionDescriptionPlain) FROM planned_tickets pt LEFT JOIN planned_jira_hydration jh ON jh.IssueKey = pt.Key AND jh.JiraKey = pt.Key LEFT JOIN planned_ticket_hydration th ON th.IssueKey = pt.Key LIMIT 0",
+            "SELECT RepoKey, RepoRevision, Justification FROM planned_ticket_repos LIMIT 0",
+            "SELECT TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle, ChangeDescription, ReplacementLines FROM planned_ticket_repo_changes LIMIT 0",
+            "SELECT RepoKey, AffectedFilePath, HowAffected FROM planned_ticket_repo_impacts LIMIT 0",
+            "SELECT RepoKey, ValidationSequence, Action FROM planned_ticket_change_validations LIMIT 0",
+            "SELECT RepoKey, ConsiderationSequence, Consideration FROM planned_ticket_testing_considerations LIMIT 0",
+            "SELECT RepoKey, QuestionSequence, Question FROM planned_ticket_open_questions LIMIT 0",
+            "SELECT * FROM planned_ticket_related_jira LIMIT 0",
+            "SELECT * FROM planned_ticket_related_zulip LIMIT 0",
+            "SELECT * FROM planned_ticket_related_github LIMIT 0",
+            "SELECT * FROM planned_ticket_hydration LIMIT 0",
+            "SELECT * FROM planned_jira_hydration LIMIT 0",
+            "SELECT * FROM planned_zulip_hydration LIMIT 0",
+            "SELECT * FROM planned_github_hydration LIMIT 0",
+            "SELECT * FROM planned_repo_hydration LIMIT 0",
+            "SELECT * FROM planned_ticket_jira_xref LIMIT 0",
+            "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM planned_ticket_jira_content LIMIT 0",
+            "SELECT RowId, Id, WorkGroupClean, WorkGroupDisplay, Specification, Type, ShortDescription, LongerDescription, RenderOrderHint FROM planned_ticket_topics LIMIT 0",
+            "SELECT RowId, Id, TopicRowId, FirstTicketKey, Rationale, OrderInTopic FROM planned_ticket_topic_groups LIMIT 0",
+            "SELECT TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer FROM planned_ticket_topic_members LIMIT 0",
+            "SELECT TopicRowId, RepoKey, OrderInTopic FROM planned_ticket_topic_repos LIMIT 0",
+            "SELECT RunId, PartitionKey FROM planned_ticket_partition_receipts LIMIT 0",
+            "SELECT Code, Name, NameClean FROM jira_review_workgroups LIMIT 0",
+            "SELECT Id, ProcessorKind FROM authoring_runs LIMIT 0",
+            "SELECT Id, RunId, BusinessKey, Status FROM authoring_run_items LIMIT 0",
+            "SELECT Id, OperationId, BusinessKey FROM authoring_result_receipts LIMIT 0",
+            "SELECT SnapshotId, ProcessorKind, RunId, Sequence FROM authoring_snapshot_provenance LIMIT 0",
+        ];
 
         foreach (string query in queries)
         {
@@ -378,16 +331,6 @@ internal static class HydrationAssertion
             columns.Add(reader.GetString(1));
         }
         return columns;
-    }
-
-    private static async Task ExecuteAsync(
-        SqliteConnection connection,
-        string sql,
-        CancellationToken ct)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = sql;
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     private static async Task ValidateProvenanceAsync(
@@ -587,17 +530,51 @@ internal static class HydrationAssertion
         }.ToString());
 
     private static AuthoringSnapshotSchemaCatalog GetSchema(
-        TicketSiteKind siteKind)
-        => siteKind switch
+        TicketSiteKind siteKind,
+        int schemaVersion)
+        => (siteKind, schemaVersion) switch
         {
-            TicketSiteKind.Discussion =>
+            (TicketSiteKind.Discussion, PreparedTicketSnapshotSchemaV1.Version) =>
                 PreparedTicketSnapshotSchemaV1.Catalog,
-            TicketSiteKind.Applying =>
+            (TicketSiteKind.Discussion, PreparedTicketSnapshotSchemaV2.Version) =>
+                PreparedTicketSnapshotSchemaV2.Catalog,
+            (TicketSiteKind.Applying, PlannedTicketSnapshotSchemaV1.Version) =>
                 PlannedTicketSnapshotSchemaV1.Catalog,
+            (TicketSiteKind.Discussion, _) =>
+                throw new InvalidOperationException(
+                    $"Unsupported Discussion snapshot schema version {schemaVersion}; " +
+                    $"expected one of: {string.Join(", ", PreparedTicketSnapshotSchemaResolver.SupportedVersions)}."),
+            (TicketSiteKind.Applying, _) =>
+                throw new InvalidOperationException(
+                    $"Unsupported Applying snapshot schema version {schemaVersion}; " +
+                    $"expected {PlannedTicketSnapshotSchemaV1.Version}."),
             _ => throw new TicketSitePublishException(
                 TicketSitePublishFailure.InvalidRequest,
                 $"Unknown ticket site kind '{siteKind}'."),
         };
+
+    private static async Task<int> ReadSnapshotSchemaVersionAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT SchemaVersion FROM authoring_snapshot_provenance";
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "Snapshot provenance row is missing.");
+        }
+        int schemaVersion = reader.GetInt32(0);
+        if (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                "Snapshot contains more than one provenance row.");
+        }
+        return schemaVersion;
+    }
 
     private static async Task<IReadOnlyDictionary<string, long>> ReadTableCountsAsync(
         SqliteConnection connection,
