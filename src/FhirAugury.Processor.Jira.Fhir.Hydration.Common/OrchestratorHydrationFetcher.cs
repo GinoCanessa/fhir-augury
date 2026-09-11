@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using FhirAugury.Common;
+using FhirAugury.Common.Text;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 using Microsoft.Extensions.Logging;
 
@@ -54,7 +55,8 @@ public class OrchestratorHydrationFetcher(
         }
 
         Dictionary<string, string> metadata = result.Value.Metadata ?? [];
-        OrchestratorItemPeopleResponse? people = result.Value.People;
+        OrchestratorItemPeopleResponse? people =
+            ReadTrustedPeople(result.Value.People);
         (
             string? sourceProject,
             DateTimeOffset? sourceLastSuccessfulRefreshAt,
@@ -97,7 +99,9 @@ public class OrchestratorHydrationFetcher(
             SourceLastSuccessfulRefreshAt: sourceLastSuccessfulRefreshAt,
             SourceContentRevision: sourceContentRevision,
             SourceIsStable: sourceIsStable,
-            StructuredReporter: NormalizeDisplayName(people?.Reporter));
+            StructuredReporter: NormalizeDisplayName(people?.Reporter),
+            PublicDisplayNamePolicyVersion:
+                people?.PublicDisplayNamePolicyVersion);
 
         AppendXref(ticketKey, metadata.GetValueOrDefault("duplicate_of"), "DuplicateOf", xrefRows);
         AppendXref(ticketKey, metadata.GetValueOrDefault("related_issues"), "RelatedIssues", xrefRows);
@@ -155,7 +159,8 @@ public class OrchestratorHydrationFetcher(
         }
 
         Dictionary<string, string> metadata = result.Value.Metadata ?? [];
-        OrchestratorItemPeopleResponse? people = result.Value.People;
+        OrchestratorItemPeopleResponse? people =
+            ReadTrustedPeople(result.Value.People);
         return new HydrationJiraRow(
             TicketKey: ticketKey,
             JiraKey: jiraKey,
@@ -179,7 +184,9 @@ public class OrchestratorHydrationFetcher(
             RelatedArtifactsRaw: metadata.GetValueOrDefault("related_artifacts"),
             RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"),
             Assignee: NormalizeDisplayName(people?.Assignee),
-            StructuredReporter: NormalizeDisplayName(people?.Reporter));
+            StructuredReporter: NormalizeDisplayName(people?.Reporter),
+            PublicDisplayNamePolicyVersion:
+                people?.PublicDisplayNamePolicyVersion);
     }
 
     public virtual async Task<HydrationZulipRow> FetchZulipAsync(string ticketKey, string threadId, DateTimeOffset hydratedAt, CancellationToken ct)
@@ -451,16 +458,23 @@ public class OrchestratorHydrationFetcher(
         return (null, null, null, null);
     }
 
+    private static OrchestratorItemPeopleResponse? ReadTrustedPeople(
+        OrchestratorItemPeopleResponse? people)
+        => people?.PublicDisplayNamePolicyVersion ==
+            PublicDisplayNamePolicy.CurrentVersion
+                ? people
+                : null;
+
     private static string? NormalizeDisplayName(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        => PublicDisplayNamePolicy.Normalize(value);
 
     private static IReadOnlyList<string> NormalizeDisplayNames(
         IReadOnlyList<string>? values)
         => values is null
             ? []
             : values
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value.Trim())
+                .Select(NormalizeDisplayName)
+                .OfType<string>()
                 .Order(StringComparer.Ordinal)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Order(StringComparer.OrdinalIgnoreCase)

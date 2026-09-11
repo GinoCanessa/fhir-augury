@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
@@ -12,6 +13,7 @@ public sealed class PreparedTicketSnapshotSanitizer
     private readonly string _runId;
     private readonly bool _retainsInputProvenance;
     private readonly bool _retainsInPersonRequesters;
+    private readonly bool _enforcesTrustedPeople;
 
     public PreparedTicketSnapshotSanitizer(
         string runId,
@@ -22,7 +24,7 @@ public sealed class PreparedTicketSnapshotSanitizer
     {
     }
 
-    private PreparedTicketSnapshotSanitizer(
+    internal PreparedTicketSnapshotSanitizer(
         string runId,
         AuthoringSnapshotSchemaCatalog catalog)
         : base(catalog)
@@ -38,6 +40,8 @@ public sealed class PreparedTicketSnapshotSanitizer
                 table.Name,
                 "prepared_ticket_in_person_requesters",
                 StringComparison.OrdinalIgnoreCase));
+        _enforcesTrustedPeople =
+            catalog.Version == PreparedTicketSnapshotSchemaV3.Version;
     }
 
     public override async Task SanitizeAsync(
@@ -79,6 +83,10 @@ public sealed class PreparedTicketSnapshotSanitizer
                 )
                 """,
                 ct);
+        }
+        if (_enforcesTrustedPeople)
+        {
+            await SanitizeTrustedPeopleAsync(connection, ct);
         }
 
         await ExecuteAsync(
@@ -187,6 +195,167 @@ public sealed class PreparedTicketSnapshotSanitizer
 
         await base.SanitizeAsync(connection, ct);
     }
+
+    private static async Task SanitizeTrustedPeopleAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await SanitizePeopleValuesAsync(
+            connection,
+            "prepared_ticket_hydration",
+            ct);
+        await SanitizePeopleValuesAsync(
+            connection,
+            "prepared_jira_hydration",
+            ct);
+        await SanitizeInPersonRequestersAsync(connection, ct);
+    }
+
+    private static async Task SanitizePeopleValuesAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken ct)
+    {
+        List<(
+            long RowId,
+            string? Reporter,
+            string? Assignee,
+            long? PolicyVersion)> rows = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                $"""
+                SELECT RowId, Reporter, Assignee,
+                       PublicDisplayNamePolicyVersion
+                FROM {table}
+                """;
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                rows.Add((
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3)));
+            }
+        }
+
+        foreach ((long rowId, string? reporter, string? assignee,
+                  long? policyVersion) in rows)
+        {
+            await ExecuteAsync(
+                connection,
+                $"""
+                UPDATE {table}
+                SET Reporter = @reporter,
+                    Assignee = @assignee
+                WHERE RowId = @rowId
+                """,
+                ct,
+                ("@reporter", NormalizeTrustedDisplayName(
+                    reporter,
+                    policyVersion)),
+                ("@assignee", NormalizeTrustedDisplayName(
+                    assignee,
+                    policyVersion)),
+                ("@rowId", rowId));
+        }
+    }
+
+    private static async Task SanitizeInPersonRequestersAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        List<(
+            long RowId,
+            string TicketKey,
+            string DisplayName,
+            long? PolicyVersion)> rows = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT RowId, TicketKey, DisplayName,
+                       PublicDisplayNamePolicyVersion
+                FROM prepared_ticket_in_person_requesters
+                ORDER BY RowId
+                """;
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                rows.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3)));
+            }
+        }
+
+        Dictionary<string, HashSet<string>> seenByTicket =
+            new(StringComparer.OrdinalIgnoreCase);
+        List<long> rowsToDelete = [];
+        List<(long RowId, string DisplayName)> rowsToUpdate = [];
+        foreach ((long rowId, string ticketKey, string displayName,
+                  long? policyVersion) in rows)
+        {
+            string? normalized = NormalizeTrustedDisplayName(
+                displayName,
+                policyVersion);
+            if (!seenByTicket.TryGetValue(
+                    ticketKey,
+                    out HashSet<string>? seen))
+            {
+                seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                seenByTicket[ticketKey] = seen;
+            }
+            if (normalized is null || !seen.Add(normalized))
+            {
+                rowsToDelete.Add(rowId);
+                continue;
+            }
+            if (!string.Equals(
+                    displayName,
+                    normalized,
+                    StringComparison.Ordinal))
+            {
+                rowsToUpdate.Add((rowId, normalized));
+            }
+        }
+
+        foreach (long rowId in rowsToDelete)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_in_person_requesters
+                WHERE RowId = @rowId
+                """,
+                ct,
+                ("@rowId", rowId));
+        }
+        foreach ((long rowId, string displayName) in rowsToUpdate)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE prepared_ticket_in_person_requesters
+                SET DisplayName = @displayName
+                WHERE RowId = @rowId
+                """,
+                ct,
+                ("@displayName", displayName),
+                ("@rowId", rowId));
+        }
+    }
+
+    private static string? NormalizeTrustedDisplayName(
+        string? value,
+        long? policyVersion)
+        => policyVersion == PublicDisplayNamePolicy.CurrentVersion
+            ? PublicDisplayNamePolicy.Normalize(value)
+            : null;
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,

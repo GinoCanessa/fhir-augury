@@ -35,7 +35,8 @@ public sealed record PreparedTicketHydrationRow(
     string? Assignee = null,
     string? SourceProject = null,
     DateTimeOffset? SourceLastSuccessfulRefreshAt = null,
-    long? SourceContentRevision = null);
+    long? SourceContentRevision = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record PreparedJiraHydrationRow(
     string TicketKey,
@@ -59,7 +60,8 @@ public sealed record PreparedJiraHydrationRow(
     DateTimeOffset? CreatedAt = null,
     string? RelatedArtifactsRaw = null,
     string? RelatedPagesRaw = null,
-    string? Assignee = null);
+    string? Assignee = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record PreparedZulipHydrationRow(
     string TicketKey,
@@ -112,7 +114,8 @@ public sealed record PreparedTicketJiraXrefRow(
 
 public sealed record PreparedTicketInPersonRequesterRow(
     string TicketKey,
-    string DisplayName);
+    string DisplayName,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record PreparedTicketHydrationBatch(
     string TicketKey,

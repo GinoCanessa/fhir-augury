@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
@@ -97,7 +98,8 @@ public sealed class PreparedTicketReviewSnapshotTests
                     'Assignee',
                     'SourceProject',
                     'SourceLastSuccessfulRefreshAt',
-                    'SourceContentRevision')
+                    'SourceContentRevision',
+                    'PublicDisplayNamePolicyVersion')
                 """));
     }
 
@@ -697,6 +699,188 @@ public sealed class PreparedTicketReviewSnapshotTests
                 FROM prepared_ticket_hydration
                 WHERE TicketKey = 'FHIR-1'
                 """));
+        Assert.Equal(
+            0,
+            Scalar<int>(
+                snapshot,
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT name
+                    FROM pragma_table_info('prepared_ticket_hydration')
+                    UNION ALL
+                    SELECT name
+                    FROM pragma_table_info('prepared_jira_hydration')
+                    UNION ALL
+                    SELECT name
+                    FROM pragma_table_info(
+                        'prepared_ticket_in_person_requesters')
+                )
+                WHERE name = 'PublicDisplayNamePolicyVersion'
+                """));
+    }
+
+    [Fact]
+    public async Task FinalizeRun_EmitsV3WithOnlyCurrentPolicyPeople()
+    {
+        using Fixture fixture = new();
+        (AuthoringRunRecord firstRun, _) =
+            await fixture.CreateCompletedRunAsync(
+                databaseOnly: false,
+                key: "FHIR-1");
+        _ = await fixture.CreatePostProcessor(
+                PreparedTicketSnapshotSchemaV3.Version)
+            .FinalizeRunAsync(firstRun.Id);
+
+        (AuthoringRunRecord secondRun, _) =
+            await fixture.CreateCompletedRunAsync(
+                databaseOnly: false,
+                key: "FHIR-2");
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE prepared_ticket_hydration
+                SET PublicDisplayNamePolicyVersion = @oldPolicy
+                WHERE TicketKey = 'FHIR-2';
+                UPDATE prepared_jira_hydration
+                SET PublicDisplayNamePolicyVersion = @oldPolicy
+                WHERE TicketKey = 'FHIR-2';
+                UPDATE prepared_ticket_in_person_requesters
+                SET PublicDisplayNamePolicyVersion = @oldPolicy
+                WHERE TicketKey = 'FHIR-2';
+
+                UPDATE prepared_ticket_hydration
+                SET Assignee = 'unsafe@example.org'
+                WHERE TicketKey = 'FHIR-1';
+                UPDATE prepared_jira_hydration
+                SET Reporter = 'Related Reporter',
+                    Assignee = 'Related <related@example.org>'
+                WHERE TicketKey = 'FHIR-1';
+                INSERT INTO prepared_ticket_in_person_requesters(
+                    TicketKey,
+                    DisplayName,
+                    PublicDisplayNamePolicyVersion)
+                VALUES(
+                    'FHIR-1',
+                    'Unsafe <unsafe@example.org>',
+                    @currentPolicy);
+                """;
+            command.Parameters.AddWithValue(
+                "@oldPolicy",
+                PublicDisplayNamePolicy.CurrentVersion - 1);
+            command.Parameters.AddWithValue(
+                "@currentPolicy",
+                PublicDisplayNamePolicy.CurrentVersion);
+            command.ExecuteNonQuery();
+        }
+
+        AuthoringSnapshotDescriptor descriptor =
+            (await fixture.CreatePostProcessor(
+                    PreparedTicketSnapshotSchemaV3.Version)
+                .FinalizeRunAsync(secondRun.Id))!;
+
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            descriptor.SchemaVersion);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.CountedTables.Order(),
+            descriptor.TableCounts.Keys.Order());
+        Assert.Equal(
+            2,
+            descriptor.TableCounts["prepared_ticket_hydration"]);
+        Assert.Equal(
+            2,
+            descriptor.TableCounts["prepared_jira_hydration"]);
+        Assert.Equal(
+            1,
+            descriptor.TableCounts[
+                "prepared_ticket_in_person_requesters"]);
+
+        using SqliteConnection snapshot = OpenReadOnly(
+            Path.Combine(fixture.SnapshotDirectory, descriptor.FileName));
+        AssertMatchesCatalog(
+            snapshot,
+            PreparedTicketSnapshotSchemaV3.Catalog);
+        Assert.Equal(
+            "Ada",
+            Scalar<string>(
+                snapshot,
+                """
+                SELECT Reporter
+                FROM prepared_ticket_hydration
+                WHERE TicketKey = 'FHIR-1'
+                """));
+        Assert.Equal(
+            1,
+            Scalar<int>(
+                snapshot,
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_hydration
+                WHERE TicketKey = 'FHIR-1'
+                  AND Assignee IS NULL
+                  AND PublicDisplayNamePolicyVersion = {PublicDisplayNamePolicy.CurrentVersion}
+                """));
+        Assert.Equal(
+            "Related Reporter",
+            Scalar<string>(
+                snapshot,
+                """
+                SELECT Reporter
+                FROM prepared_jira_hydration
+                WHERE TicketKey = 'FHIR-1'
+                """));
+        Assert.Equal(
+            1,
+            Scalar<int>(
+                snapshot,
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_jira_hydration
+                WHERE TicketKey = 'FHIR-1'
+                  AND Assignee IS NULL
+                  AND PublicDisplayNamePolicyVersion = {PublicDisplayNamePolicy.CurrentVersion}
+                """));
+        Assert.Equal(
+            1,
+            Scalar<int>(
+                snapshot,
+                """
+                SELECT COUNT(*)
+                FROM prepared_ticket_hydration
+                WHERE TicketKey = 'FHIR-2'
+                  AND Reporter IS NULL
+                  AND Assignee IS NULL
+                """));
+        Assert.Equal(
+            1,
+            Scalar<int>(
+                snapshot,
+                """
+                SELECT COUNT(*)
+                FROM prepared_jira_hydration
+                WHERE TicketKey = 'FHIR-2'
+                  AND Reporter IS NULL
+                  AND Assignee IS NULL
+                """));
+        Assert.Equal(
+            "Lin Example",
+            Scalar<string>(
+                snapshot,
+                """
+                SELECT DisplayName
+                FROM prepared_ticket_in_person_requesters
+                """));
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            Scalar<int>(
+                snapshot,
+                """
+                SELECT PublicDisplayNamePolicyVersion
+                FROM prepared_ticket_in_person_requesters
+                """));
     }
 
     [Fact]
@@ -989,7 +1173,9 @@ public sealed class PreparedTicketReviewSnapshotTests
             bool databaseOnly,
             string key = "FHIR-1",
             DateTimeOffset? sourceLastSuccessfulRefreshAt = null,
-            long? sourceContentRevision = null)
+            long? sourceContentRevision = null,
+            int? publicDisplayNamePolicyVersion =
+                PublicDisplayNamePolicy.CurrentVersion)
         {
             JiraProcessingSourceTicketRecord source = await _sourceStore.UpsertAsync(
                 new JiraIssueSummaryEntry
@@ -1068,7 +1254,9 @@ public sealed class PreparedTicketReviewSnapshotTests
                             : "FHIR",
                         SourceLastSuccessfulRefreshAt:
                             sourceLastSuccessfulRefreshAt,
-                        SourceContentRevision: sourceContentRevision),
+                        SourceContentRevision: sourceContentRevision,
+                        PublicDisplayNamePolicyVersion:
+                            publicDisplayNamePolicyVersion),
                     [
                         new PreparedJiraHydrationRow(
                             key,
@@ -1086,7 +1274,9 @@ public sealed class PreparedTicketReviewSnapshotTests
                             hydratedAt,
                             "resolved",
                             null,
-                            Assignee: "Grace Example"),
+                            Assignee: "Grace Example",
+                            PublicDisplayNamePolicyVersion:
+                                publicDisplayNamePolicyVersion),
                     ],
                     [],
                     [],
@@ -1094,7 +1284,8 @@ public sealed class PreparedTicketReviewSnapshotTests
                     [],
                     [new PreparedTicketInPersonRequesterRow(
                         key,
-                        "Lin Example")]));
+                        "Lin Example",
+                        publicDisplayNamePolicyVersion)]));
             await AuthoringStore.MarkItemCompleteAsync(item.Id, receipt.Receipt.ReceiptId);
             return (creation.Run, item);
         }

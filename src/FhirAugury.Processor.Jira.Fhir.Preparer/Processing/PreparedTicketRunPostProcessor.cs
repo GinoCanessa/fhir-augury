@@ -172,7 +172,7 @@ public sealed class PreparedTicketRunPostProcessor(
                                 counts,
                                 new PreparedTicketSnapshotSanitizer(
                                     runId,
-                                    snapshotSchema.Version)),
+                                    snapshotSchema)),
                             cancellationToken);
                     },
                 completionGuard,

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using FhirAugury.Common.Text;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
@@ -127,6 +128,8 @@ public sealed class PreparedTicketHydratorTests
                 reporter = "Ada",
                 assignee = "Grace",
                 inPersonRequesters = new[] { "Ada", "Lin" },
+                publicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
             }));
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-200",
             JsonMetadata(new Dictionary<string, string>
@@ -135,7 +138,17 @@ public sealed class PreparedTicketHydratorTests
                 ["type"] = "Change Request",
                 ["priority"] = "Major",
                 ["work_group"] = "FHIR-I",
-            }, title: "related jira", url: "https://jira/browse/FHIR-200"));
+            },
+            title: "related jira",
+            url: "https://jira/browse/FHIR-200",
+            people: new
+            {
+                reporter = "Related Reporter",
+                assignee = "Related Assignee",
+                inPersonRequesters = Array.Empty<string>(),
+                publicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            }));
         handler.AddJsonResponse("/api/v1/zulip/threads",
             """{"streamId":42,"stream":"fhir/infrastructure-wg","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
         handler.AddJsonResponse("/api/v1/github/items/HL7/fhir%2342",
@@ -164,8 +177,16 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("Ada", read.Parent.Reporter);
         Assert.Equal("Grace", read.Parent.Assignee);
         Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Equal(
             ["Ada", "Lin"],
             read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+        Assert.All(
+            read.InPersonRequesters,
+            row => Assert.Equal(
+                PublicDisplayNamePolicy.CurrentVersion,
+                row.PublicDisplayNamePolicyVersion));
         Assert.NotNull(read.Parent.CreatedAt);
         Assert.Equal("Patient, Observation", read.Parent.RelatedArtifactsRaw);
         Assert.Equal("patient.html; observation.html", read.Parent.RelatedPagesRaw);
@@ -174,6 +195,11 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("resolved", selfJira.HydrationStatus);
         PreparedJiraHydrationRow related = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-200");
         Assert.Equal("resolved", related.HydrationStatus);
+        Assert.Equal("Related Reporter", related.Reporter);
+        Assert.Equal("Related Assignee", related.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            related.PublicDisplayNamePolicyVersion);
         Assert.Single(read.ZulipRows);
         Assert.Equal(42, read.ZulipRows[0].StreamId);
         Assert.Equal(3, read.ZulipRows[0].MessageCount);
@@ -237,6 +263,8 @@ public sealed class PreparedTicketHydratorTests
                         "alan example",
                         " ",
                     },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
                 },
                 provenance: new
                 {
@@ -265,6 +293,9 @@ public sealed class PreparedTicketHydratorTests
             success.Batch.Parent.StructuredReporter);
         Assert.Equal("Ada Lovelace", read.Parent!.Reporter);
         Assert.Equal("Grace Hopper", read.Parent.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
         Assert.Equal("FHIR", read.Parent.SourceProject);
         Assert.Equal(refreshAt, read.Parent.SourceLastSuccessfulRefreshAt);
         Assert.Equal(42, read.Parent.SourceContentRevision);
@@ -274,9 +305,172 @@ public sealed class PreparedTicketHydratorTests
         PreparedJiraHydrationRow self = Assert.Single(read.JiraRows);
         Assert.Equal("Ada Lovelace", self.Reporter);
         Assert.Equal("Grace Hopper", self.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            self.PublicDisplayNamePolicyVersion);
         Assert.DoesNotContain(
             read.InPersonRequesters,
             row => row.DisplayName.Contains("private", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Hydrate_CurrentPolicyRejectsEmailValuedPeopleForParentAndRelatedJira()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(
+            database,
+            "FHIR-111",
+            jiraKey: "FHIR-211");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-111",
+            JsonMetadata(
+                [],
+                title: "parent",
+                url: "https://jira/browse/FHIR-111",
+                people: new
+                {
+                    reporter = "Ada <ada@example.org>",
+                    assignee = "grace@example.org",
+                    inPersonRequesters = new[]
+                    {
+                        "Safe Requester",
+                        "Unsafe <unsafe@example.org>",
+                    },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                }));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-211",
+            JsonMetadata(
+                [],
+                title: "related",
+                url: "https://jira/browse/FHIR-211",
+                people: new
+                {
+                    reporter = "related@example.org",
+                    assignee = "Related Assignee",
+                    inPersonRequesters = Array.Empty<string>(),
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-111",
+                    CancellationToken.None));
+
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            success.Batch.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(success.Batch.Parent.Assignee);
+        Assert.Equal(
+            ["Safe Requester"],
+            success.Batch.Parent.InPersonRequesters);
+        HydrationJiraRow relatedNeutral = Assert.Single(
+            success.Batch.JiraRows,
+            row => row.JiraKey == "FHIR-211");
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            relatedNeutral.PublicDisplayNamePolicyVersion);
+        Assert.Null(relatedNeutral.StructuredReporter);
+        Assert.Equal("Related Assignee", relatedNeutral.Assignee);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-111"));
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        PreparedTicketInPersonRequesterRow requester =
+            Assert.Single(read.InPersonRequesters);
+        Assert.Equal("Safe Requester", requester.DisplayName);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            requester.PublicDisplayNamePolicyVersion);
+        PreparedJiraHydrationRow related = Assert.Single(
+            read.JiraRows,
+            row => row.JiraKey == "FHIR-211");
+        Assert.Null(related.Reporter);
+        Assert.Equal("Related Assignee", related.Assignee);
+    }
+
+    public static TheoryData<string, int?> NonCurrentPeoplePolicyVersions =>
+        new()
+        {
+            { "missing", null },
+            { "old", PublicDisplayNamePolicy.CurrentVersion - 1 },
+            { "unknown", -17 },
+            { "future", PublicDisplayNamePolicy.CurrentVersion + 1 },
+        };
+
+    [Theory]
+    [MemberData(nameof(NonCurrentPeoplePolicyVersions))]
+    public async Task Hydrate_NonCurrentPolicyRejectsCompletePeoplePayload(
+        string markerKind,
+        int? policyVersion)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(
+            database,
+            "FHIR-112",
+            jiraKey: "FHIR-212");
+        object people = PeoplePayload(markerKind, policyVersion);
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-112",
+            JsonMetadata(
+                [],
+                title: "parent",
+                url: "https://jira/browse/FHIR-112",
+                people: people));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-212",
+            JsonMetadata(
+                [],
+                title: "related",
+                url: "https://jira/browse/FHIR-212",
+                people: people));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-112",
+                    CancellationToken.None));
+
+        Assert.Null(success.Batch.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(success.Batch.Parent.Assignee);
+        Assert.Empty(success.Batch.Parent.InPersonRequesters!);
+        Assert.All(
+            success.Batch.JiraRows,
+            row =>
+            {
+                Assert.Null(row.PublicDisplayNamePolicyVersion);
+                Assert.Null(row.StructuredReporter);
+                Assert.Null(row.Assignee);
+            });
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-112"));
+        Assert.Null(read.Parent!.PublicDisplayNamePolicyVersion);
+        Assert.Null(read.Parent.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Empty(read.InPersonRequesters);
+        Assert.All(
+            read.JiraRows,
+            row =>
+            {
+                Assert.Null(row.PublicDisplayNamePolicyVersion);
+                Assert.Null(row.Reporter);
+                Assert.Null(row.Assignee);
+            });
     }
 
     [Fact]
@@ -627,6 +821,23 @@ public sealed class PreparedTicketHydratorTests
             provenance,
         };
         return JsonSerializer.Serialize(payload);
+    }
+
+    private static object PeoplePayload(
+        string markerKind,
+        int? policyVersion)
+    {
+        Dictionary<string, object?> people = new()
+        {
+            ["reporter"] = "Reporter Person",
+            ["assignee"] = "Assignee Person",
+            ["inPersonRequesters"] = new[] { "Requester Person" },
+        };
+        if (!string.Equals(markerKind, "missing", StringComparison.Ordinal))
+        {
+            people["publicDisplayNamePolicyVersion"] = policyVersion;
+        }
+        return people;
     }
 
     private static TestDatabase CreateDatabase()

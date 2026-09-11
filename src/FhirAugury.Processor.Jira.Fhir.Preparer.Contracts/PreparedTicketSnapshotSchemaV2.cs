@@ -85,6 +85,7 @@ public static class PreparedTicketSnapshotSchemaResolver
         [
             PreparedTicketSnapshotSchemaV1.Version,
             PreparedTicketSnapshotSchemaV2.Version,
+            PreparedTicketSnapshotSchemaV3.Version,
         ]);
 
     public static AuthoringSnapshotSchemaCatalog Resolve(int schemaVersion)
@@ -94,6 +95,8 @@ public static class PreparedTicketSnapshotSchemaResolver
                 PreparedTicketSnapshotSchemaV1.Catalog,
             PreparedTicketSnapshotSchemaV2.Version =>
                 PreparedTicketSnapshotSchemaV2.Catalog,
+            PreparedTicketSnapshotSchemaV3.Version =>
+                PreparedTicketSnapshotSchemaV3.Catalog,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(schemaVersion),
                 schemaVersion,
@@ -110,6 +113,8 @@ public static class PreparedTicketSnapshotSchemaResolver
                 PreparedTicketSnapshotSchemaV1.Catalog,
             PreparedTicketSnapshotSchemaV2.Version =>
                 PreparedTicketSnapshotSchemaV2.Catalog,
+            PreparedTicketSnapshotSchemaV3.Version =>
+                PreparedTicketSnapshotSchemaV3.Catalog,
             _ => null,
         };
         return catalog is not null;

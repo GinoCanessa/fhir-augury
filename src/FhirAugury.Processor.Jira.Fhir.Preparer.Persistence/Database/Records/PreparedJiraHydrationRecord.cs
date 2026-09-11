@@ -38,4 +38,5 @@ public partial record class PreparedJiraHydrationRecord
     public required DateTimeOffset HydratedAt { get; set; }
     public required string HydrationStatus { get; set; }
     public string? HydrationReason { get; set; }
+    public int? PublicDisplayNamePolicyVersion { get; set; }
 }

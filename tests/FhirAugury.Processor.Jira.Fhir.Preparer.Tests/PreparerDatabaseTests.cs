@@ -1,10 +1,12 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
@@ -330,10 +332,14 @@ public sealed class PreparerDatabaseTests
         {
             InPersonRequesters =
             [
-                new("FHIR-1", "  Zoë Example "),
-                new("FHIR-1", "zoë example"),
-                new("FHIR-1", " "),
-                new("FHIR-1", "Alan Example"),
+                new("FHIR-1", "  Zoë Example ",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new("FHIR-1", "zoë example",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new("FHIR-1", " ",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new("FHIR-1", "Alan Example",
+                    PublicDisplayNamePolicy.CurrentVersion),
             ],
         };
         await database.Database.SaveHydrationAsync(first);
@@ -349,8 +355,10 @@ public sealed class PreparerDatabaseTests
         {
             InPersonRequesters =
             [
-                new("FHIR-1", "Grace Example"),
-                new("FHIR-1", "grace example"),
+                new("FHIR-1", "Grace Example",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new("FHIR-1", "grace example",
+                    PublicDisplayNamePolicy.CurrentVersion),
             ],
         };
         await database.Database.SaveHydrationAsync(replacement);
@@ -366,7 +374,7 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
-    public async Task SaveHydration_PersistsOnlyDisplayNamesForRequesters()
+    public async Task SaveHydration_PersistsOnlyDisplayNamesAndPolicyProofForRequesters()
     {
         using TestDatabase database = CreateDatabase();
         await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1"));
@@ -387,13 +395,213 @@ public sealed class PreparerDatabaseTests
         }
 
         Assert.Equal(
-            ["RowId", "TicketKey", "DisplayName"],
+            [
+                "RowId",
+                "TicketKey",
+                "DisplayName",
+                "PublicDisplayNamePolicyVersion",
+            ],
             columns);
         Assert.DoesNotContain(
             columns,
             column =>
                 column.Contains("user", StringComparison.OrdinalIgnoreCase) ||
                 column.Contains("email", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task SaveHydration_TrustedPeopleArePersistedAndUntrustedReplacementClearsThem()
+    {
+        using TestDatabase database = CreateDatabase();
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        PreparedTicketHydrationBatch trusted = SampleBatch("FHIR-1") with
+        {
+            Parent = SampleParent("FHIR-1", hydratedAt) with
+            {
+                Reporter = "  Ada Example ",
+                Assignee = " Grace Example ",
+                PublicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            },
+            JiraRows =
+            [
+                SampleJiraRow("FHIR-1", "FHIR-100", hydratedAt) with
+                {
+                    Reporter = "Related Reporter",
+                    Assignee = "Related Assignee",
+                    PublicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+            ],
+            InPersonRequesters =
+            [
+                new(
+                    "FHIR-1",
+                    "Requester Person",
+                    PublicDisplayNamePolicy.CurrentVersion),
+            ],
+        };
+
+        await database.Database.SaveHydrationAsync(trusted);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Equal("Ada Example", read.Parent!.Reporter);
+        Assert.Equal("Grace Example", read.Parent.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
+        PreparedJiraHydrationRow jira = Assert.Single(read.JiraRows);
+        Assert.Equal("Related Reporter", jira.Reporter);
+        Assert.Equal("Related Assignee", jira.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            jira.PublicDisplayNamePolicyVersion);
+        PreparedTicketInPersonRequesterRow requester =
+            Assert.Single(read.InPersonRequesters);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            requester.PublicDisplayNamePolicyVersion);
+
+        int oldPolicyVersion = PublicDisplayNamePolicy.CurrentVersion - 1;
+        PreparedTicketHydrationBatch untrusted = trusted with
+        {
+            Parent = trusted.Parent with
+            {
+                Reporter = "Replacement Reporter",
+                Assignee = "Replacement Assignee",
+                PublicDisplayNamePolicyVersion = oldPolicyVersion,
+            },
+            JiraRows =
+            [
+                trusted.JiraRows[0] with
+                {
+                    Reporter = "Replacement Related Reporter",
+                    Assignee = "Replacement Related Assignee",
+                    PublicDisplayNamePolicyVersion = oldPolicyVersion,
+                },
+            ],
+            InPersonRequesters =
+            [
+                new(
+                    "FHIR-1",
+                    "Replacement Requester",
+                    oldPolicyVersion),
+            ],
+        };
+
+        await database.Database.SaveHydrationAsync(untrusted);
+
+        read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Null(read.Parent.PublicDisplayNamePolicyVersion);
+        jira = Assert.Single(read.JiraRows);
+        Assert.Null(jira.Reporter);
+        Assert.Null(jira.Assignee);
+        Assert.Null(jira.PublicDisplayNamePolicyVersion);
+        Assert.Empty(read.InPersonRequesters);
+    }
+
+    [Fact]
+    public async Task SaveHydration_CurrentMarkerStillRejectsEmailValuedPeople()
+    {
+        using TestDatabase database = CreateDatabase();
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        PreparedTicketHydrationBatch batch = SampleBatch("FHIR-1") with
+        {
+            Parent = SampleParent("FHIR-1", hydratedAt) with
+            {
+                Reporter = "Ada <ada@example.org>",
+                Assignee = "safe assignee",
+                PublicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            },
+            JiraRows =
+            [
+                SampleJiraRow("FHIR-1", "FHIR-100", hydratedAt) with
+                {
+                    Reporter = "related@example.org",
+                    Assignee = "Related <related@example.org>",
+                    PublicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+            ],
+            InPersonRequesters =
+            [
+                new(
+                    "FHIR-1",
+                    "Safe Requester",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new(
+                    "FHIR-1",
+                    "Unsafe <unsafe@example.org>",
+                    PublicDisplayNamePolicy.CurrentVersion),
+            ],
+        };
+
+        await database.Database.SaveHydrationAsync(batch);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Equal("safe assignee", read.Parent.Assignee);
+        PreparedJiraHydrationRow jira = Assert.Single(read.JiraRows);
+        Assert.Null(jira.Reporter);
+        Assert.Null(jira.Assignee);
+        Assert.Equal(
+            ["Safe Requester"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+    }
+
+    [Fact]
+    public async Task NeutralSaveHydration_PreservesTrustedMarkersAndClearsOnUntrustedReplacement()
+    {
+        using TestDatabase database = CreateDatabase();
+        IHydrationTargetDatabase target = database.Database;
+        HydrationBatch trusted = SampleNeutralBatch(
+            "FHIR-1",
+            PublicDisplayNamePolicy.CurrentVersion);
+
+        await target.SaveHydrationAsync(trusted, CancellationToken.None);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Equal("Parent Reporter", read.Parent!.Reporter);
+        Assert.Equal("Parent Assignee", read.Parent.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
+        PreparedJiraHydrationRow jira = Assert.Single(read.JiraRows);
+        Assert.Equal("Jira Reporter", jira.Reporter);
+        Assert.Equal("Jira Assignee", jira.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            jira.PublicDisplayNamePolicyVersion);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            Assert.Single(read.InPersonRequesters)
+                .PublicDisplayNamePolicyVersion);
+
+        HydrationBatch untrusted = SampleNeutralBatch(
+            "FHIR-1",
+            PublicDisplayNamePolicy.CurrentVersion + 1);
+        await target.SaveHydrationAsync(untrusted, CancellationToken.None);
+
+        read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Null(read.Parent.PublicDisplayNamePolicyVersion);
+        jira = Assert.Single(read.JiraRows);
+        Assert.Null(jira.Reporter);
+        Assert.Null(jira.Assignee);
+        Assert.Null(jira.PublicDisplayNamePolicyVersion);
+        Assert.Empty(read.InPersonRequesters);
     }
 
     [Fact]
@@ -850,7 +1058,7 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
-    public void SnapshotSchemaV2_ExtendsV1WithoutMutatingV1Catalog()
+    public void SnapshotSchemaV3_ExtendsV2WithoutMutatingOlderCatalogs()
     {
         Assert.DoesNotContain(
             AuthoringSnapshotSchemaV1.CoreTables,
@@ -873,14 +1081,51 @@ public sealed class PreparerDatabaseTests
             PreparedTicketSnapshotSchemaV2.Tables.Single(
                 table => table.Name == "prepared_ticket_hydration").Columns,
             column => column == "SourceContentRevision");
+        Assert.DoesNotContain(
+            PreparedTicketSnapshotSchemaV2.Tables.SelectMany(
+                table => table.Columns),
+            column => column == "PublicDisplayNamePolicyVersion");
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV2.Tables.Select(table => table.Name),
+            PreparedTicketSnapshotSchemaV3.Tables.Select(table => table.Name));
+        foreach (AuthoringSnapshotTableSchema v2Table in
+                 PreparedTicketSnapshotSchemaV2.Tables)
+        {
+            AuthoringSnapshotTableSchema v3Table =
+                PreparedTicketSnapshotSchemaV3.Tables.Single(
+                    table => table.Name == v2Table.Name);
+            string[] expectedColumns = v2Table.Name is
+                "prepared_ticket_hydration" or
+                "prepared_jira_hydration" or
+                "prepared_ticket_in_person_requesters"
+                    ? [.. v2Table.Columns, "PublicDisplayNamePolicyVersion"]
+                    : [.. v2Table.Columns];
+            Assert.Equal(expectedColumns, v3Table.Columns);
+        }
         Assert.Same(
             PreparedTicketSnapshotSchemaV1.Catalog,
             PreparedTicketSnapshotSchemaResolver.Resolve(1));
         Assert.Same(
             PreparedTicketSnapshotSchemaV2.Catalog,
             PreparedTicketSnapshotSchemaResolver.Resolve(2));
+        Assert.Same(
+            PreparedTicketSnapshotSchemaV3.Catalog,
+            PreparedTicketSnapshotSchemaResolver.Resolve(3));
+        Assert.True(
+            PreparedTicketSnapshotSchemaResolver.TryResolve(
+                3,
+                out AuthoringSnapshotSchemaCatalog? resolvedV3));
+        Assert.Same(PreparedTicketSnapshotSchemaV3.Catalog, resolvedV3);
+        Assert.False(
+            PreparedTicketSnapshotSchemaResolver.TryResolve(
+                4,
+                out AuthoringSnapshotSchemaCatalog? unsupported));
+        Assert.Null(unsupported);
+        Assert.Equal(
+            [1, 2, 3],
+            PreparedTicketSnapshotSchemaResolver.SupportedVersions);
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => PreparedTicketSnapshotSchemaResolver.Resolve(3));
+            () => PreparedTicketSnapshotSchemaResolver.Resolve(4));
     }
 
     [Fact]
@@ -893,6 +1138,8 @@ public sealed class PreparerDatabaseTests
             await database.Database.GetSnapshotTableCountsAsync(1);
         IReadOnlyDictionary<string, long> v2 =
             await database.Database.GetSnapshotTableCountsAsync(2);
+        IReadOnlyDictionary<string, long> v3 =
+            await database.Database.GetSnapshotTableCountsAsync(3);
 
         Assert.Equal(
             PreparedTicketSnapshotSchemaV1.CountedTables.Order(),
@@ -900,11 +1147,17 @@ public sealed class PreparerDatabaseTests
         Assert.Equal(
             PreparedTicketSnapshotSchemaV2.CountedTables.Order(),
             v2.Keys.Order());
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.CountedTables.Order(),
+            v3.Keys.Order());
         Assert.False(v1.ContainsKey(
             "prepared_ticket_in_person_requesters"));
         Assert.Equal(
             2,
             v2["prepared_ticket_in_person_requesters"]);
+        Assert.Equal(
+            2,
+            v3["prepared_ticket_in_person_requesters"]);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => database.Database.GetSnapshotTableCountsAsync(99));
     }
@@ -1022,6 +1275,130 @@ public sealed class PreparerDatabaseTests
                 ScalarInt(
                     connection,
                     "SELECT COUNT(*) FROM prepared_ticket_in_person_requesters"));
+        }
+        finally
+        {
+            upgraded.Dispose();
+            SqliteConnection.ClearAllPools();
+            TestFileCleanup.SafeDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Initialize_AddsNullablePeoplePolicyMarkersWithoutTrustingExistingRows()
+    {
+        string directory = Path.Combine(
+            Environment.CurrentDirectory,
+            "temp",
+            "preparer-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        PreparerDatabase legacy = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        legacy.Initialize();
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        PreparedTicketHydrationBatch batch = SampleBatch("FHIR-1") with
+        {
+            Parent = SampleParent("FHIR-1", hydratedAt) with
+            {
+                Reporter = "Legacy Parent",
+                Assignee = "Legacy Parent Assignee",
+                PublicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            },
+            JiraRows =
+            [
+                SampleJiraRow("FHIR-1", "FHIR-100", hydratedAt) with
+                {
+                    Reporter = "Legacy Jira",
+                    Assignee = "Legacy Jira Assignee",
+                    PublicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+            ],
+        };
+        await legacy.SaveHydrationAsync(batch);
+        using (SqliteConnection connection = legacy.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                ALTER TABLE prepared_ticket_hydration
+                DROP COLUMN PublicDisplayNamePolicyVersion;
+                ALTER TABLE prepared_jira_hydration
+                DROP COLUMN PublicDisplayNamePolicyVersion;
+                ALTER TABLE prepared_ticket_in_person_requesters
+                DROP COLUMN PublicDisplayNamePolicyVersion;
+                """;
+            command.ExecuteNonQuery();
+        }
+        legacy.Dispose();
+
+        PreparerDatabase upgraded = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        upgraded.Initialize();
+        try
+        {
+            using SqliteConnection connection = upgraded.OpenConnection();
+            foreach (string table in new[]
+                     {
+                         "prepared_ticket_hydration",
+                         "prepared_jira_hydration",
+                         "prepared_ticket_in_person_requesters",
+                     })
+            {
+                using SqliteCommand column = connection.CreateCommand();
+                column.CommandText =
+                    $"""
+                    SELECT COUNT(*)
+                    FROM pragma_table_info('{table}')
+                    WHERE name = 'PublicDisplayNamePolicyVersion'
+                    """;
+                Assert.Equal(1, Convert.ToInt32(column.ExecuteScalar()));
+
+                using SqliteCommand marker = connection.CreateCommand();
+                marker.CommandText =
+                    $"""
+                    SELECT COUNT(*)
+                    FROM {table}
+                    WHERE PublicDisplayNamePolicyVersion IS NOT NULL
+                    """;
+                Assert.Equal(0, Convert.ToInt32(marker.ExecuteScalar()));
+            }
+            Assert.Equal(
+                1,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM prepared_ticket_hydration
+                    WHERE Reporter = 'Legacy Parent'
+                      AND Assignee = 'Legacy Parent Assignee'
+                    """));
+            Assert.Equal(
+                2,
+                ScalarInt(
+                    connection,
+                    "SELECT COUNT(*) FROM prepared_ticket_in_person_requesters"));
+            PreparedTicketHydrationReadModel read =
+                Assert.IsType<PreparedTicketHydrationReadModel>(
+                    await upgraded.GetHydrationAsync("FHIR-1"));
+            Assert.Null(read.Parent!.Reporter);
+            Assert.Null(read.Parent.Assignee);
+            Assert.Null(read.Parent.PublicDisplayNamePolicyVersion);
+            Assert.All(
+                read.JiraRows,
+                row =>
+                {
+                    Assert.Null(row.Reporter);
+                    Assert.Null(row.Assignee);
+                    Assert.Null(row.PublicDisplayNamePolicyVersion);
+                });
+            Assert.Empty(read.InPersonRequesters);
         }
         finally
         {
@@ -1184,9 +1561,72 @@ public sealed class PreparerDatabaseTests
             JiraXrefRows: [new PreparedTicketJiraXrefRow(ticketKey, "FHIR-9999", "RelatedIssues")],
             InPersonRequesters:
             [
-                new(ticketKey, "Ada Example"),
-                new(ticketKey, "Grace Example"),
+                new(
+                    ticketKey,
+                    "Ada Example",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                new(
+                    ticketKey,
+                    "Grace Example",
+                    PublicDisplayNamePolicy.CurrentVersion),
             ]);
+    }
+
+    private static HydrationBatch SampleNeutralBatch(
+        string ticketKey,
+        int? publicDisplayNamePolicyVersion)
+    {
+        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
+        return new HydrationBatch(
+            TicketKey: ticketKey,
+            Parent: new HydrationTicketRow(
+                TicketKey: ticketKey,
+                Priority: null,
+                Resolution: null,
+                ResolutionDescriptionPlain: null,
+                Specification: "FHIR",
+                RaisedInVersion: null,
+                SelectedBallot: null,
+                ChangeCategory: null,
+                Impact: null,
+                Labels: null,
+                CommentCount: null,
+                DescriptionPlain: null,
+                HydratedAt: hydratedAt,
+                HydrationStatus: "resolved",
+                HydrationReason: null,
+                Assignee: "Parent Assignee",
+                InPersonRequesters: ["Requester Person"],
+                StructuredReporter: "Parent Reporter",
+                PublicDisplayNamePolicyVersion:
+                    publicDisplayNamePolicyVersion),
+            JiraRows:
+            [
+                new HydrationJiraRow(
+                    TicketKey: ticketKey,
+                    JiraKey: ticketKey,
+                    Title: "title",
+                    Status: "Open",
+                    Type: "Change Request",
+                    Priority: null,
+                    Resolution: null,
+                    ResolutionDescriptionPlain: null,
+                    WorkGroup: "FHIR-I",
+                    Specification: "FHIR",
+                    UpdatedAt: hydratedAt,
+                    Url: $"https://jira.example.com/browse/{ticketKey}",
+                    HydratedAt: hydratedAt,
+                    HydrationStatus: "resolved",
+                    HydrationReason: null,
+                    Assignee: "Jira Assignee",
+                    StructuredReporter: "Jira Reporter",
+                    PublicDisplayNamePolicyVersion:
+                        publicDisplayNamePolicyVersion),
+            ],
+            ZulipRows: [],
+            GitHubRows: [],
+            RepoRows: [],
+            JiraXrefRows: []);
     }
 
     private static PreparedTicketHydrationRow SampleParent(string ticketKey, DateTimeOffset hydratedAt) =>

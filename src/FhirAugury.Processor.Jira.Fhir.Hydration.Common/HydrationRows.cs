@@ -37,7 +37,8 @@ public sealed record HydrationTicketRow(
     DateTimeOffset? SourceLastSuccessfulRefreshAt = null,
     long? SourceContentRevision = null,
     bool? SourceIsStable = null,
-    string? StructuredReporter = null);
+    string? StructuredReporter = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record HydrationJiraRow(
     string TicketKey,
@@ -62,7 +63,8 @@ public sealed record HydrationJiraRow(
     string? RelatedArtifactsRaw = null,
     string? RelatedPagesRaw = null,
     string? Assignee = null,
-    string? StructuredReporter = null);
+    string? StructuredReporter = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record HydrationZulipRow(
     string TicketKey,

@@ -30,6 +30,7 @@ internal sealed record OrchestratorItemPeopleResponse
     public string? Reporter { get; init; }
     public string? Assignee { get; init; }
     public IReadOnlyList<string>? InPersonRequesters { get; init; }
+    public int? PublicDisplayNamePolicyVersion { get; init; }
 }
 
 internal sealed record OrchestratorZulipThreadResponse

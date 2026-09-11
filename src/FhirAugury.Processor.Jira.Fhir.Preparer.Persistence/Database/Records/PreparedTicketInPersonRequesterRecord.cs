@@ -11,4 +11,5 @@ public partial record class PreparedTicketInPersonRequesterRecord
 
     public required string TicketKey { get; set; }
     public required string DisplayName { get; set; }
+    public int? PublicDisplayNamePolicyVersion { get; set; }
 }
