@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -31,7 +32,10 @@ public sealed record TicketSiteManifest(
     string RendererAssetsVersion,
     string BuildIdentity,
     string OutputPath,
-    DateTimeOffset GeneratedAt)
+    DateTimeOffset GeneratedAt,
+    string? DisplayTitle = null,
+    DateTimeOffset? JiraSourceLastSuccessfulRefreshAt = null,
+    int? RendererSchemaVersion = null)
 {
     public const string FileName = "site-manifest.json";
 
@@ -53,7 +57,8 @@ public sealed record TicketSiteManifest(
         string embeddedDbSha256,
         long embeddedDbSizeBytes,
         string outputPath,
-        DateTimeOffset generatedAt)
+        DateTimeOffset generatedAt,
+        TicketSitePresentation? discussionPresentation = null)
     {
         string buildIdentity = ComputeBuildIdentity(
             siteKind,
@@ -61,7 +66,10 @@ public sealed record TicketSiteManifest(
             title,
             rendererAssetsVersion,
             descriptor.Sha256,
-            embeddedDbSha256);
+            embeddedDbSha256,
+            discussionPresentation?.SiteName,
+            discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
+            discussionPresentation?.RendererSchemaVersion);
         return new(
             siteKind,
             descriptor.ProcessorKind,
@@ -85,7 +93,10 @@ public sealed record TicketSiteManifest(
             rendererAssetsVersion,
             buildIdentity,
             outputPath,
-            generatedAt);
+            generatedAt,
+            discussionPresentation?.SiteName,
+            discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
+            discussionPresentation?.RendererSchemaVersion);
     }
 
     internal static string ComputeBuildIdentity(
@@ -94,10 +105,13 @@ public sealed record TicketSiteManifest(
         string title,
         string rendererAssetsVersion,
         string sourceIdentity,
-        string embeddedDbSha256)
+        string embeddedDbSha256,
+        string? displayTitle = null,
+        DateTimeOffset? jiraSourceLastSuccessfulRefreshAt = null,
+        int? rendererSchemaVersion = null)
     {
-        string input = string.Join(
-            "\n",
+        List<string> coordinates =
+        [
             "site-kind=" + siteKind,
             "spec=" + (filters.Specification ?? string.Empty),
             "project=" + (filters.Project ?? string.Empty),
@@ -105,7 +119,24 @@ public sealed record TicketSiteManifest(
             "title=" + title,
             "renderer-assets=" + rendererAssetsVersion,
             "source=" + sourceIdentity,
-            "embedded-db=" + embeddedDbSha256);
+            "embedded-db=" + embeddedDbSha256,
+        ];
+        if (displayTitle is not null ||
+            jiraSourceLastSuccessfulRefreshAt is not null ||
+            rendererSchemaVersion is not null)
+        {
+            coordinates.Add("display-title=" + (displayTitle ?? string.Empty));
+            coordinates.Add(
+                "jira-source-last-successful-refresh-at=" +
+                (jiraSourceLastSuccessfulRefreshAt?.ToString(
+                    "O",
+                    CultureInfo.InvariantCulture) ?? string.Empty));
+            coordinates.Add(
+                "renderer-schema-version=" +
+                (rendererSchemaVersion?.ToString(
+                    CultureInfo.InvariantCulture) ?? string.Empty));
+        }
+        string input = string.Join("\n", coordinates);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input)))
             .ToLowerInvariant();
     }

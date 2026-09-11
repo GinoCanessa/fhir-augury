@@ -1,5 +1,10 @@
+using System.Diagnostics;
+using System.IO.Compression;
+using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
@@ -42,6 +47,23 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Equal(TicketSitePublishOutcome.Published, result.Outcome);
         Assert.Equal("preparer", result.Manifest.SiteKind);
         Assert.Equal(pair.SnapshotId, result.Manifest.SnapshotId);
+        Assert.Equal(pair.Descriptor.SchemaVersion, result.Manifest.SnapshotSchemaVersion);
+        Assert.Equal(pair.Descriptor.Sha256, result.Manifest.SnapshotSha256);
+        Assert.NotEqual(
+            result.Manifest.SnapshotSha256,
+            result.Manifest.EmbeddedDbSha256);
+        Assert.Equal(pair.Descriptor.ReceiptCount, result.Manifest.IncludedReceiptCount);
+        Assert.Equal("Tickets for Discussion", result.Manifest.Title);
+        Assert.Equal("Tickets for Discussion", result.Manifest.DisplayTitle);
+        Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal(
+            DiscussionRendererSchema.Version,
+            result.Manifest.RendererSchemaVersion);
+        Assert.Equal(1, result.Manifest.IncludedItemCount);
+        Assert.Equal(1, result.Manifest.TableCounts["tickets"]);
+        Assert.DoesNotContain(
+            result.Manifest.TableCounts.Keys,
+            table => table.StartsWith("prepared_", StringComparison.Ordinal));
         Assert.True(File.Exists(Path.Combine(
             output,
             "discussion",
@@ -56,19 +78,244 @@ public sealed class TicketSitePublisherTests : IDisposable
             $"assets/app.js?v={result.Manifest.RendererAssetsVersion}",
             html,
             StringComparison.Ordinal);
+        Assert.Contains(
+            $"assets/components.js?v={result.Manifest.RendererAssetsVersion}",
+            html,
+            StringComparison.Ordinal);
+        Assert.True(
+            html.IndexOf("assets/components.js", StringComparison.Ordinal) <
+            html.IndexOf("assets/app.js", StringComparison.Ordinal));
+        Assert.DoesNotContain("type=\"module\"", html, StringComparison.Ordinal);
+        Assert.Contains(
+            "<script id=\"site-presentation\" type=\"application/json\">",
+            html,
+            StringComparison.Ordinal);
         string script = await File.ReadAllTextAsync(Path.Combine(
             output,
             "discussion",
             "assets",
             "app.js"));
-        Assert.Contains(
-            "CREATE TEMP VIEW jira_processing_source_tickets",
+        Assert.Equal(
+            await ReadEmbeddedResourceAsync("web-assets/discussion/app.js"),
+            script);
+        Assert.DoesNotContain("prepared_", script, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "jira_processing_source_tickets",
             script,
             StringComparison.Ordinal);
+        Assert.Contains("FROM ticket_facets", script, StringComparison.Ordinal);
+        AssertFacetHashContract(script);
+        AssertCopyForAiContract(script);
+
+        byte[] databaseBytes = await ExtractEmbeddedDatabaseAsync(html);
+        Assert.Equal(
+            result.Manifest.EmbeddedDbSizeBytes,
+            databaseBytes.LongLength);
+        Assert.Equal(
+            result.Manifest.EmbeddedDbSha256,
+            Convert.ToHexString(SHA256.HashData(databaseBytes))
+                .ToLowerInvariant());
+        string embeddedPath = Path.Combine(
+            _root,
+            $"embedded-{Guid.NewGuid():N}.db");
+        try
+        {
+            await File.WriteAllBytesAsync(embeddedPath, databaseBytes);
+            Assert.Equal(
+                DiscussionRendererSchema.Tables
+                    .Select(table => table.Name)
+                    .Order(StringComparer.Ordinal),
+                await ReadTableNamesAsync(embeddedPath));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(embeddedPath);
+        }
+    }
+
+    [Fact]
+    public async Task PostBuildPathMutationCannotChangePublishedRendererBytes()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(_root, "post-build-path-mutation");
+        const string mutatedTitle = "Mutated after renderer byte capture";
+        string? mutatedDigest = null;
+        TicketSitePublisher publisher = new(
+            new TicketSitePublisherTestHooks(
+                AfterDiscussionRendererBytesCapturedAsync:
+                    async (rendererPath, token) =>
+                    {
+                        await using (SqliteConnection connection = new(
+                            new SqliteConnectionStringBuilder
+                            {
+                                DataSource = rendererPath,
+                                Mode = SqliteOpenMode.ReadWrite,
+                                Pooling = false,
+                            }.ToString()))
+                        {
+                            await connection.OpenAsync(token);
+                            await using SqliteCommand command =
+                                connection.CreateCommand();
+                            command.CommandText =
+                                """
+                                UPDATE tickets
+                                SET Title = @title
+                                WHERE Key = 'FHIR-1001'
+                                """;
+                            command.Parameters.AddWithValue(
+                                "@title",
+                                mutatedTitle);
+                            Assert.Equal(
+                                1,
+                                await command.ExecuteNonQueryAsync(token));
+                        }
+                        mutatedDigest = await ComputeHashAsync(rendererPath);
+                    }));
+
+        TicketSitePublishResult result = await publisher.PublishAsync(
+            new TicketSitePublishRequest(
+                pair,
+                TicketSiteKind.Discussion,
+                output,
+                "Tickets for Discussion"));
+
+        Assert.NotNull(mutatedDigest);
+        Assert.NotEqual(mutatedDigest, result.Manifest.EmbeddedDbSha256);
+        string html = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "index.html"));
+        string embeddedPath = Path.Combine(
+            _root,
+            $"post-build-path-mutation-{Guid.NewGuid():N}.db");
+        try
+        {
+            await File.WriteAllBytesAsync(
+                embeddedPath,
+                await ExtractEmbeddedDatabaseAsync(html));
+            Assert.Equal(
+                "Snapshot title",
+                await ScalarAsync<string>(
+                    embeddedPath,
+                    """
+                    SELECT Title
+                    FROM tickets
+                    WHERE Key = 'FHIR-1001'
+                    """));
+            Assert.Equal(
+                0,
+                await ScalarAsync<long>(
+                    embeddedPath,
+                    $"""
+                    SELECT COUNT(*)
+                    FROM tickets
+                    WHERE Title = '{mutatedTitle}'
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(embeddedPath);
+        }
+    }
+
+    [Fact]
+    public async Task PublishesQualifiedDiscussionTitleWithoutScriptRewriting()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                includeSecondTicket: true,
+                schemaVersion: 2,
+                useMultipleRuns: true,
+                includeRendererEvidence: true);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(_root, "qualified-discussion");
+
+        TicketSitePublishResult result =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    pair,
+                    TicketSiteKind.Discussion,
+                    output,
+                    "Tickets for Discussion"));
+
+        DateTimeOffset expectedRefresh =
+            new(2026, 9, 10, 23, 30, 0, TimeSpan.Zero);
+        const string expectedTitle =
+            "Tickets for Discussion - Built September 10, 2026";
+        Assert.Equal("Tickets for Discussion", result.Manifest.Title);
+        Assert.Equal(expectedTitle, result.Manifest.DisplayTitle);
+        Assert.Equal(
+            expectedRefresh,
+            result.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal(2, result.Manifest.SnapshotSchemaVersion);
+        Assert.Equal(DiscussionRendererSchema.Version, result.Manifest.RendererSchemaVersion);
+        Assert.Equal(2, result.Manifest.IncludedItemCount);
+        Assert.Equal(2, result.Manifest.IncludedReceiptCount);
+
+        string discussionHtml = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "index.html"));
         Assert.Contains(
-            "pushInList('t.WorkGroupDisplay', wgValues)",
-            script,
+            $"<h1>{expectedTitle}</h1>",
+            discussionHtml,
             StringComparison.Ordinal);
+        Assert.Contains(
+            JsonEncodedText.Encode(expectedTitle).ToString(),
+            discussionHtml,
+            StringComparison.Ordinal);
+        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "index.html"));
+        Assert.Contains(
+            $"<div class=\"card-title\">{expectedTitle}</div>",
+            chooserHtml,
+            StringComparison.Ordinal);
+
+        string emittedScript = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "assets",
+            "app.js"));
+        Assert.Equal(
+            await ReadEmbeddedResourceAsync("web-assets/discussion/app.js"),
+            emittedScript);
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    public async Task UnprovenancedDiscussionUsesUnsuffixedTitle(
+        int schemaVersion,
+        bool includeNullProvenance)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: schemaVersion,
+                includeNullProvenance: includeNullProvenance);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+
+        TicketSitePublishResult result =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    pair,
+                    TicketSiteKind.Discussion,
+                    Path.Combine(
+                        _root,
+                        $"unsuffixed-{schemaVersion}-{includeNullProvenance}"),
+                    "Tickets for Discussion"));
+
+        Assert.Equal(
+            "Tickets for Discussion",
+            result.Manifest.DisplayTitle);
+        Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
     }
 
     [Fact]
@@ -89,6 +336,9 @@ public sealed class TicketSitePublisherTests : IDisposable
                     "Tickets for Applying"));
 
         Assert.Equal("planner", result.Manifest.SiteKind);
+        Assert.Null(result.Manifest.DisplayTitle);
+        Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Null(result.Manifest.RendererSchemaVersion);
         Assert.True(File.Exists(Path.Combine(
             output,
             "applying",
@@ -107,6 +357,452 @@ public sealed class TicketSitePublisherTests : IDisposable
             html,
             StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
+    }
+
+    [Fact]
+    public async Task ApplyingPublishPreservesCommittedDiscussionChooserLabel()
+    {
+        TicketSnapshotFixture preparerFixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: 2);
+        TicketSnapshotFixture plannerFixture =
+            await TicketSnapshotFixture.CreatePlannerAsync(_root);
+        VerifiedAuthoringSnapshotPair preparerPair =
+            await preparerFixture.CreateVerifiedPairAsync("Preparer");
+        VerifiedAuthoringSnapshotPair plannerPair =
+            await plannerFixture.CreateVerifiedPairAsync("Planner");
+        string output = Path.Combine(_root, "preserved-label");
+
+        TicketSitePublishResult discussion =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    preparerPair,
+                    TicketSiteKind.Discussion,
+                    output,
+                    "Tickets for Discussion"));
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                plannerPair,
+                TicketSiteKind.Applying,
+                output,
+                "Tickets for Applying"));
+
+        string chooser = await File.ReadAllTextAsync(
+            Path.Combine(output, "index.html"));
+        Assert.Contains(
+            $"<div class=\"card-title\">{discussion.Manifest.DisplayTitle}</div>",
+            chooser,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "<div class=\"card-title\">Tickets for Applying</div>",
+            chooser,
+            StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(
+            output,
+            "applying",
+            "assets",
+            "app.js")));
+        Assert.False(File.Exists(Path.Combine(
+            output,
+            "applying",
+            "assets",
+            "components.js")));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task UnknownWorkGroupFacetMatchesNullEmptyAndWhitespace(
+        string? workGroup)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                includeSecondTicket: true);
+        await fixture.SetTicketWorkGroupAsync("CDS-2001", workGroup);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(
+            _root,
+            $"unknown-workgroup-{Guid.NewGuid():N}");
+
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                pair,
+                TicketSiteKind.Discussion,
+                output,
+                "Tickets for Discussion"));
+
+        string html = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "index.html"));
+        string databasePath = Path.Combine(
+            _root,
+            $"unknown-workgroup-{Guid.NewGuid():N}.db");
+        try
+        {
+            await File.WriteAllBytesAsync(
+                databasePath,
+                await ExtractEmbeddedDatabaseAsync(html));
+            Assert.Equal(
+                1,
+                await ScalarAsync<long>(
+                    databasePath,
+                    """
+                    SELECT COUNT(DISTINCT TicketKey)
+                    FROM ticket_facets
+                    WHERE Dimension = 'wg'
+                      AND ValueKey = '__unknown__'
+                    """));
+            Assert.Equal(
+                "CDS-2001",
+                await ScalarAsync<string>(
+                    databasePath,
+                    """
+                    SELECT TicketKey
+                    FROM ticket_facets
+                    WHERE Dimension = 'wg'
+                      AND ValueKey = '__unknown__'
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData("(unknown)", "value:(unknown)")]
+    [InlineData("__unknown__", "value:__unknown__")]
+    [InlineData("value:machine-key", "value:value:machine-key")]
+    public async Task ReservedLookingFacetDisplaysKeepDistinctRendererKeys(
+        string displayValue,
+        string expectedValueKey)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+        await fixture.SetTicketWorkGroupAsync("FHIR-1001", displayValue);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(
+            _root,
+            $"reserved-looking-facet-{Guid.NewGuid():N}");
+
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                pair,
+                TicketSiteKind.Discussion,
+                output,
+                "Tickets for Discussion"));
+
+        string html = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "index.html"));
+        string databasePath = Path.Combine(
+            _root,
+            $"reserved-looking-facet-{Guid.NewGuid():N}.db");
+        try
+        {
+            await File.WriteAllBytesAsync(
+                databasePath,
+                await ExtractEmbeddedDatabaseAsync(html));
+            Assert.Equal(
+                expectedValueKey,
+                await ScalarAsync<string>(
+                    databasePath,
+                    """
+                    SELECT ValueKey
+                    FROM ticket_facets
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Dimension = 'wg'
+                    """));
+            Assert.Equal(
+                displayValue,
+                await ScalarAsync<string>(
+                    databasePath,
+                    """
+                    SELECT DisplayValue
+                    FROM ticket_facets
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Dimension = 'wg'
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task StageValidationRejectsPresentationDrift()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: 2);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(_root, "presentation-drift");
+        TicketSitePublisher publisher = new(
+            new TicketSitePublisherTestHooks(
+                BeforeStageValidationAsync: async (staging, token) =>
+                {
+                    string path = Path.Combine(staging, "index.html");
+                    string html = await File.ReadAllTextAsync(path, token);
+                    const string expected =
+                        "\"siteName\":\"Tickets for Discussion - Built " +
+                        "September 08, 2026\"";
+                    Assert.Contains(expected, html, StringComparison.Ordinal);
+                    await File.WriteAllTextAsync(
+                        path,
+                        html.Replace(
+                            expected,
+                            "\"siteName\":\"drifted\"",
+                            StringComparison.Ordinal),
+                        token);
+                }));
+
+        TicketSitePublishException exception = await Assert.ThrowsAsync<
+            TicketSitePublishException>(
+            () => publisher.PublishAsync(
+                new TicketSitePublishRequest(
+                    pair,
+                    TicketSiteKind.Discussion,
+                    output,
+                    "Tickets for Discussion")));
+
+        Assert.Equal(TicketSitePublishFailure.Publication, exception.Failure);
+        Assert.Contains(
+            "presentation",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
+    }
+
+    [Fact]
+    public async Task ChooserUsesSafeLabelAndOldOrMalformedManifestFallback()
+    {
+        TicketSnapshotFixture preparerFixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: 2);
+        TicketSnapshotFixture plannerFixture =
+            await TicketSnapshotFixture.CreatePlannerAsync(_root);
+        VerifiedAuthoringSnapshotPair preparerPair =
+            await preparerFixture.CreateVerifiedPairAsync("Preparer");
+        VerifiedAuthoringSnapshotPair plannerPair =
+            await plannerFixture.CreateVerifiedPairAsync("Planner");
+        string output = Path.Combine(_root, "chooser-fallback");
+
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                preparerPair,
+                TicketSiteKind.Discussion,
+                output,
+                "<Tickets & Discussion>"));
+        string chooserPath = Path.Combine(output, "index.html");
+        string chooser = await File.ReadAllTextAsync(chooserPath);
+        Assert.Contains(
+            "&lt;Tickets &amp; Discussion&gt; - Built September 08, 2026",
+            chooser,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "<div class=\"card-title\"><Tickets",
+            chooser,
+            StringComparison.Ordinal);
+
+        string discussionManifestPath = Path.Combine(
+            output,
+            "discussion",
+            TicketSiteManifest.FileName);
+        JsonObject oldManifest =
+            JsonNode.Parse(await File.ReadAllTextAsync(discussionManifestPath))!
+                .AsObject();
+        Assert.True(oldManifest.Remove("displayTitle"));
+        Assert.True(oldManifest.Remove("jiraSourceLastSuccessfulRefreshAt"));
+        Assert.True(oldManifest.Remove("rendererSchemaVersion"));
+        await File.WriteAllTextAsync(
+            discussionManifestPath,
+            oldManifest.ToJsonString(JsonOptions));
+        TicketSiteManifest deserializedOldManifest =
+            TicketSiteManifest.Read(discussionManifestPath);
+        Assert.Null(deserializedOldManifest.DisplayTitle);
+        Assert.Null(deserializedOldManifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Null(deserializedOldManifest.RendererSchemaVersion);
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                plannerPair,
+                TicketSiteKind.Applying,
+                output,
+                "Tickets for Applying"));
+
+        chooser = await File.ReadAllTextAsync(chooserPath);
+        Assert.Contains(
+            "<div class=\"card-title\">Tickets for Discussion</div>",
+            chooser,
+            StringComparison.Ordinal);
+
+        await File.WriteAllTextAsync(
+            discussionManifestPath,
+            "{ malformed");
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                plannerPair,
+                TicketSiteKind.Applying,
+                output,
+                "Tickets for Applying"));
+        chooser = await File.ReadAllTextAsync(chooserPath);
+        Assert.Contains(
+            "<div class=\"card-title\">Tickets for Discussion</div>",
+            chooser,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiscussionAssetsExposeRendererOnlyAccessibleContracts()
+    {
+        string template = await ReadEmbeddedResourceAsync(
+            "web-assets/discussion/index.template.html");
+        string componentsScript = await ReadEmbeddedResourceAsync(
+            "web-assets/discussion/components.js");
+        string appScript = await ReadEmbeddedResourceAsync(
+            "web-assets/discussion/app.js");
+        string stylesheet = await ReadEmbeddedResourceAsync(
+            "web-assets/discussion/app.css");
+
+        Assert.True(
+            template.IndexOf(
+                "assets/components.js",
+                StringComparison.Ordinal) <
+            template.IndexOf("assets/app.js", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            "type=\"module\"",
+            template,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "button.type = 'button'",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "th.setAttribute('aria-sort'",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "originalIndex",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "unknownLast",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "/FHIR-[0-9]+/g",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "target = '_blank'",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "rel = 'noopener noreferrer'",
+            componentsScript,
+            StringComparison.Ordinal);
+
+        foreach (string rendererTable in new[]
+        {
+            "site_metadata",
+            "tickets",
+            "ticket_people",
+            "ticket_facets",
+            "summary_sources",
+            "related_items",
+            "topics",
+            "topic_groups",
+            "topic_members",
+        })
+        {
+            Assert.Contains(rendererTable, appScript, StringComparison.Ordinal);
+        }
+        Assert.DoesNotContain("prepared_", appScript, StringComparison.Ordinal);
+        Assert.Contains(
+            "resolveFacetValueKey",
+            appScript,
+            StringComparison.Ordinal);
+        AssertFacetHashContract(appScript);
+        AssertCopyForAiContract(appScript);
+        Assert.Contains(
+            "'Related GitHub Summary'",
+            appScript,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "sourcesByKind['related-github']",
+            appScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "appendPlainSection(body, 'Existing Proposed'",
+            appScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grid-template-columns: repeat(4, minmax(0, 1fr))",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grid-template-columns: repeat(2, minmax(0, 1fr))",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "grid-template-columns: minmax(0, 1fr)",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".grouped-ticket-table",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "overflow-x: auto",
+            stylesheet,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EmittedCopyForAiSerializesZulipThreadContext()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                includeSecondTicket: true,
+                schemaVersion: 2,
+                includeRendererEvidence: true);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(_root, "copy-for-ai-zulip");
+
+        await new TicketSitePublisher().PublishAsync(
+            new TicketSitePublishRequest(
+                pair,
+                TicketSiteKind.Discussion,
+                output,
+                "Tickets for Discussion"));
+
+        string appScriptPath = Path.Combine(
+            output,
+            "discussion",
+            "assets",
+            "app.js");
+        string markdown = await RunCopyForAiProbeAsync(appScriptPath);
+        const string expected =
+            "### Related Zulip threads (2)\n\n" +
+            "| Thread | Detail | Justification |\n" +
+            "| --- | --- | --- |\n" +
+            "| thread-1 | FHIR \u203a Ticket discussion \u00b7 " +
+            "4 messages \u00b7 last 2026-09-10 | zulip why |\n" +
+            "| thread-fallback | 2 messages | fallback why |\n\n";
+
+        Assert.Equal(expected, markdown.ReplaceLineEndings("\n"));
     }
 
     [Fact]
@@ -232,7 +928,8 @@ public sealed class TicketSitePublisherTests : IDisposable
             "FHIR Infrastructure",
             result.ResolvedFilters.WorkGroup);
         Assert.Equal(1, result.Manifest.IncludedItemCount);
-        Assert.Equal(1, result.Manifest.TableCounts["prepared_tickets"]);
+        Assert.Equal(2, result.Manifest.IncludedReceiptCount);
+        Assert.Equal(1, result.Manifest.TableCounts["tickets"]);
     }
 
     [Fact]
@@ -819,6 +1516,369 @@ public sealed class TicketSitePublisherTests : IDisposable
                 cancellation.Token));
 
         Assert.False(Directory.Exists(output));
+    }
+
+    private static async Task<string> ReadEmbeddedResourceAsync(string name)
+    {
+        Assembly assembly = typeof(TicketSitePublisher).Assembly;
+        await using Stream stream = assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException(
+                $"Missing embedded resource '{name}'.");
+        using StreamReader reader = new(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<byte[]> ExtractEmbeddedDatabaseAsync(string html)
+    {
+        const string marker = "window.__DB__='";
+        int start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "Embedded database marker was not found.");
+        start += marker.Length;
+        int end = html.IndexOf('\'', start);
+        Assert.True(end > start, "Embedded database payload was not found.");
+        byte[] compressed = Convert.FromBase64String(html[start..end]);
+        await using MemoryStream input = new(compressed);
+        await using GZipStream gzip = new(input, CompressionMode.Decompress);
+        using MemoryStream output = new();
+        await gzip.CopyToAsync(output);
+        return output.ToArray();
+    }
+
+    private async Task<string> RunCopyForAiProbeAsync(string appScriptPath)
+    {
+        string runnerPath = Path.Combine(
+            _root,
+            $"copy-for-ai-probe-{Guid.NewGuid():N}.cjs");
+        await File.WriteAllTextAsync(
+            runnerPath,
+            """
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+
+            const appPath = process.argv[2];
+            const marker = "  if (document.readyState === 'loading') {";
+            let source = fs.readFileSync(appPath, 'utf8');
+            if (!source.includes(marker)) {
+              throw new Error('Copy for AI probe marker was not found.');
+            }
+
+            const probe = `
+              globalThis.__copyForAiMarkdown = (function () {
+                var zulipRows = [
+                  {
+                    ItemKey: 'thread-1',
+                    LinkType: null,
+                    Label: 'FHIR \u203a Ticket discussion',
+                    Detail: '4 messages \u00b7 last 2026-09-10',
+                    Justification: 'zulip why',
+                    HydrationStatus: 'resolved',
+                    HydrationReason: null
+                  },
+                  {
+                    ItemKey: 'thread-fallback',
+                    LinkType: null,
+                    Label: 'thread-fallback',
+                    Detail: '2 messages',
+                    Justification: 'fallback why',
+                    HydrationStatus: 'resolved',
+                    HydrationReason: null
+                  }
+                ];
+                db = {
+                  prepare: function (sql) {
+                    var projection = sql.slice(0, sql.indexOf('FROM'));
+                    var rows = sql.indexOf("Kind = 'zulip'") >= 0
+                      ? zulipRows
+                      : [];
+                    var index = -1;
+                    return {
+                      bind: function () {},
+                      step: function () {
+                        index++;
+                        return index < rows.length;
+                      },
+                      getAsObject: function () {
+                        var projected = {};
+                        Object.keys(rows[index]).forEach(function (key) {
+                          if (projection.indexOf(key) >= 0) {
+                            projected[key] = rows[index][key];
+                          }
+                        });
+                        return projected;
+                      },
+                      getColumnNames: function () { return []; },
+                      free: function () {}
+                    };
+                  }
+                };
+                return serializeZulipItemsMarkdown(
+                  readCopyRelatedItems('FHIR-1001').relatedZulip);
+              })();
+            `;
+            source = source.replace(marker, probe + '\n' + marker);
+
+            const sandbox = {
+              document: {
+                readyState: 'loading',
+                addEventListener: function () {}
+              },
+              window: {}
+            };
+            vm.runInNewContext(source, sandbox, { filename: appPath });
+            process.stdout.write(sandbox.__copyForAiMarkdown);
+            """);
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "node",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add(runnerPath);
+        startInfo.ArgumentList.Add(appScriptPath);
+
+        using Process process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start Node.js.");
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        string standardOutput = await output;
+        string standardError = await error;
+        Assert.True(
+            process.ExitCode == 0,
+            $"Copy for AI JavaScript probe failed:{Environment.NewLine}" +
+            standardError);
+        return standardOutput;
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadTableNamesAsync(
+        string databasePath)
+    {
+        List<string> names = [];
+        await using SqliteConnection connection = new(
+            $"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """;
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(0));
+        }
+        return names;
+    }
+
+    private static async Task<T> ScalarAsync<T>(
+        string databasePath,
+        string sql)
+    {
+        await using SqliteConnection connection = new(
+            $"Data Source={databasePath};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        object? value = await command.ExecuteScalarAsync();
+        Assert.NotNull(value);
+        if (value is T typed)
+        {
+            return typed;
+        }
+        return (T)Convert.ChangeType(
+            value,
+            typeof(T),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static void AssertFacetHashContract(string script)
+    {
+        foreach (string parameter in new[]
+        {
+            "spec: 'specKey'",
+            "project: 'projectKey'",
+            "wg: 'wgKey'",
+            "type: 'typeKey'",
+            "artifact: 'artifactKey'",
+            "page: 'pageKey'",
+            "impact: 'impactKey'",
+        })
+        {
+            Assert.Contains(parameter, script, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(
+            "parameters.getAll(facetKeyParameters[currentDimension])",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "parameters.getAll(currentDimension)",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "resolveLegacyFacetDisplayValue",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "value.toLowerCase() === '(unknown)'",
+            script,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "value.toLowerCase() === '__unknown__'",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "facetKeyParameters[dimension],",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "removeChipValue(capturedDimension, capturedValueKey);",
+            script,
+            StringComparison.Ordinal);
+    }
+
+    private static void AssertCopyForAiContract(string script)
+    {
+        int start = script.IndexOf(
+            "function readCopyRelatedItems",
+            StringComparison.Ordinal);
+        int end = script.IndexOf(
+            "if (document.readyState === 'loading')",
+            start,
+            StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        string contract = script[start..end];
+
+        AssertAppearsInOrder(
+            contract,
+            "Kind = 'repo'",
+            "Kind = 'jira'",
+            "Kind = 'jira-xref'",
+            "Kind = 'zulip'",
+            "Kind = 'github'");
+        AssertAppearsInOrder(
+            contract,
+            "['Key', ticket.Key]",
+            "['Title', ticket.Title]",
+            "['Workgroup', ticket.WorkGroup]",
+            "['Status', ticket.Status]",
+            "['Type', ticket.Type]",
+            "['Priority', ticket.Priority]",
+            "['Resolution', ticket.Resolution]",
+            "['Specification', ticket.Specification]",
+            "['Raised in', ticket.RaisedInVersion]",
+            "['Selected ballot', ticket.SelectedBallot]",
+            "['Change category', ticket.ChangeCategory]",
+            "['Impact', ticket.Impact]",
+            "['Comments', ticket.CommentCount]",
+            "['Recommendation', ticket.Recommendation]",
+            "['Saved', ticket.SavedAt]");
+        AssertAppearsInOrder(
+            contract,
+            "'Original request'",
+            "'Proposed / accepted resolution'",
+            "['Request Summary', ticket.RequestSummary]",
+            "['Comment Summary', ticket.CommentSummary]",
+            "['Linked Ticket Summary', ticket.LinkedTicketSummary]",
+            "['Related Ticket Summary', ticket.RelatedTicketSummary]",
+            "['Related Zulip Summary', ticket.RelatedZulipSummary]",
+            "['Related GitHub Summary', ticket.RelatedGitHubSummary]",
+            "['Existing Proposed', ticket.ExistingProposed]",
+            "'Proposal A'",
+            "'Proposal B'",
+            "'Proposal C'",
+            "'Recommendation'");
+        AssertAppearsInOrder(
+            contract,
+            "serializeRepoItemsMarkdown(context.repos || [])",
+            "serializeJiraItemsMarkdown(context.relatedJira || [])",
+            "serializeJiraXrefItemsMarkdown(context.jiraXrefs || [])",
+            "serializeZulipItemsMarkdown(context.relatedZulip || [])",
+            "serializeGitHubItemsMarkdown(context.relatedGitHub || [])");
+        Assert.Contains(
+            "['Repo', 'Category', 'Detail', 'Justification']",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "['Key', 'Link type', 'Detail', 'Justification']",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "['Source', 'Key', 'Detail']",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "['Thread', 'Detail', 'Justification']",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "['Item', 'Detail', 'Justification']",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (items.length === 0) return '';",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "String(item.ItemKey || '')",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SELECT ItemKey, LinkType, Label, Detail, Justification",
+            contract,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "copyZulipDetail(item)",
+            contract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ticket_people",
+            contract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "summary_sources",
+            contract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "DisplayName",
+            contract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "['Thread', 'Link type'",
+            contract,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "['Item', 'Link type'",
+            contract,
+            StringComparison.Ordinal);
+    }
+
+    private static void AssertAppearsInOrder(
+        string value,
+        params string[] expectedValues)
+    {
+        int offset = 0;
+        foreach (string expected in expectedValues)
+        {
+            int index = value.IndexOf(
+                expected,
+                offset,
+                StringComparison.Ordinal);
+            Assert.True(
+                index >= 0,
+                $"Expected '{expected}' after offset {offset}.");
+            offset = index + expected.Length;
+        }
     }
 
     private static TicketSitePublishRequest Request(

@@ -1,4 +1,6 @@
+using System.Net;
 using System.Reflection;
+using System.Text.Json;
 
 namespace FhirAugury.Publishing.Tickets;
 
@@ -16,7 +18,9 @@ internal static class ChooserPageEmitter
 
     private const string DiscussionStateMarker = "<!-- __DISCUSSION_STATE__ -->";
     private const string ApplyingStateMarker = "<!-- __APPLYING_STATE__ -->";
+    private const string DiscussionLabelMarker = "<!-- __DISCUSSION_LABEL__ -->";
     private const string AssetVersionMarker = "__ASSET_VERSION__";
+    private const string DefaultDiscussionLabel = "Tickets for Discussion";
 
     public static async Task EmitAsync(
         string rootOut,
@@ -29,6 +33,9 @@ internal static class ChooserPageEmitter
 
         bool discussionLive = File.Exists(Path.Combine(rootOut, PreparerSubSiteEmitter.SubSiteFolder, "index.html"));
         bool applyingLive = File.Exists(Path.Combine(rootOut, PlannerSubSiteEmitter.SubSiteFolder, "index.html"));
+        string discussionLabel = discussionLive
+            ? await ReadDiscussionLabelAsync(rootOut, ct).ConfigureAwait(false)
+            : DefaultDiscussionLabel;
 
         Assembly asm = typeof(ChooserPageEmitter).Assembly;
         string template = await ReadEmbeddedAsync(asm, TemplateName, ct)
@@ -39,6 +46,10 @@ internal static class ChooserPageEmitter
         string html = template
             .Replace(DiscussionStateMarker, discussionLive ? "live" : "missing", StringComparison.Ordinal)
             .Replace(ApplyingStateMarker, applyingLive ? "live" : "missing", StringComparison.Ordinal)
+            .Replace(
+                DiscussionLabelMarker,
+                WebUtility.HtmlEncode(discussionLabel),
+                StringComparison.Ordinal)
             .Replace(
                 AssetVersionMarker,
                 PreparerSubSiteEmitter.RendererAssetsVersion,
@@ -78,6 +89,36 @@ internal static class ChooserPageEmitter
             ?? throw new InvalidOperationException($"Missing embedded resource: {name}");
         using StreamReader reader = new(stream);
         return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+    }
+
+    private static async Task<string> ReadDiscussionLabelAsync(
+        string rootOut,
+        CancellationToken ct)
+    {
+        string manifestPath = Path.Combine(
+            rootOut,
+            PreparerSubSiteEmitter.SubSiteFolder,
+            TicketSiteManifest.FileName);
+        if (!File.Exists(manifestPath))
+        {
+            return DefaultDiscussionLabel;
+        }
+
+        try
+        {
+            TicketSiteManifest manifest =
+                await TicketSiteManifest.ReadAsync(manifestPath, ct)
+                    .ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(manifest.DisplayTitle)
+                ? DefaultDiscussionLabel
+                : manifest.DisplayTitle;
+        }
+        catch (Exception ex) when (
+            ex is JsonException or IOException or UnauthorizedAccessException or
+            InvalidOperationException or NotSupportedException)
+        {
+            return DefaultDiscussionLabel;
+        }
     }
 
     private static void TryDelete(string path)

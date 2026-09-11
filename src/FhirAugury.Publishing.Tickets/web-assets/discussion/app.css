@@ -53,14 +53,17 @@ h3 { margin-top: 1.25rem; font-size: 1rem; color: var(--muted); }
 table {
   border-collapse: collapse;
   width: 100%;
+  max-width: 100%;
   font-size: 0.9rem;
   background: var(--card);
 }
 th, td {
+  min-width: 0;
   text-align: left;
   padding: 0.4rem 0.6rem;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 thead th {
   position: sticky;
@@ -68,23 +71,54 @@ thead th {
   background: var(--card);
   border-bottom: 2px solid var(--border);
 }
-thead th.sortable { cursor: pointer; user-select: none; }
-thead th.sortable:hover { color: var(--link); }
+thead th.sortable { padding: 0; user-select: none; }
 thead th.sortable[aria-sort="ascending"],
 thead th.sortable[aria-sort="descending"] { color: var(--link); }
+.sort-button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.sort-button:hover { color: var(--link); }
+.sort-button:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: -2px;
+}
+.sort-indicator {
+  min-width: 1em;
+  color: var(--link);
+}
 tbody tr:nth-child(even) { background: var(--row-alt); }
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1rem;
 }
-.summary-grid section {
+.summary-grid section,
+.crosscut-card {
+  min-width: 0;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0.75rem 1rem;
+  padding: 0.5rem;
 }
-.summary-grid section h2 { margin-top: 0; }
+.crosscut-table {
+  table-layout: fixed;
+}
+.crosscut-table th:first-child,
+.crosscut-table td:first-child {
+  width: 75%;
+}
 .filter-row { margin-bottom: 0.75rem; }
 .filter-row input[type="text"] {
   width: 100%;
@@ -111,6 +145,10 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .ticket-header dt { font-weight: 600; color: var(--muted); }
 .ticket-header dd { margin: 0; }
 .ticket-header dd a { color: var(--link); }
+.people-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
 
 /* Collapsible section chrome (discussion ticket detail). Ported from the
    applying sub-site, adapted to discussion's CSS variables. Scoped to
@@ -147,6 +185,16 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 .accordion > summary h3 { margin: 0; font-size: 1rem; display: inline; color: inherit; }
 .accordion-body { padding: 0.25rem 0.75rem 0.75rem; }
+.accordion-body pre {
+  max-width: 100%;
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.summary-source-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.4rem;
+}
 .accordion.repo-section {
   border-left: 3px solid var(--link);
   padding-left: 0;
@@ -204,6 +252,12 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
+  flex-wrap: wrap;
+}
+.summary-links {
+  display: inline-flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 .summary-row .show-ticket-list {
   font-size: 0.9rem;
@@ -240,11 +294,27 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   white-space: pre-wrap;
 }
 .topic-group {
+  min-width: 0;
   margin-top: 1.5rem;
 }
 .topic-back {
   margin-top: 1rem;
 }
+.table-overflow {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.table-overflow:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.grouped-ticket-table {
+  table-layout: fixed;
+}
+.grouped-ticket-table .group-col-key { width: 8.5rem; }
+.grouped-ticket-table .group-col-title { width: auto; }
+.grouped-ticket-table .group-col-status { width: 8rem; }
+.grouped-ticket-table .group-col-type { width: 10rem; }
 
 /* Copy for AI affordance (shared convention; identical across tools). */
 .copy-ai {
@@ -270,4 +340,23 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 }
 @media (prefers-color-scheme: dark) {
   .copy-ai-status { color: #7ee2a8; }
+}
+@media (max-width: 72rem) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 42rem) {
+  header {
+    padding-right: 7.5rem;
+  }
+  main {
+    padding: 1rem;
+  }
+  .summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .grouped-ticket-table {
+    min-width: 42rem;
+  }
 }

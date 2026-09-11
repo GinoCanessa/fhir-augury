@@ -1,17 +1,14 @@
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
-using System.Text.Json;
 using FhirAugury.Common.IO;
 
 namespace FhirAugury.Publishing.Tickets;
 
 /// <summary>
 /// Emits the discussion (preparer) sub-site under
-/// <c>&lt;rootOut&gt;/discussion/</c>. Identical SPA shape to the original
-/// ticket-site discussion-sub-site SPA; only the resource path prefix moved to
-/// <c>web-assets/discussion/</c> and the shared sql.js bytes are pulled
-/// from <c>web-assets/shared/</c>.
+/// <c>&lt;rootOut&gt;/discussion/</c> from a validated renderer database and
+/// its presentation metadata.
 /// </summary>
 internal static class PreparerSubSiteEmitter
 {
@@ -23,7 +20,7 @@ internal static class PreparerSubSiteEmitter
     private const string TemplateName = "web-assets/discussion/index.template.html";
     private const string TitleMarker = "<!-- __TITLE__ -->";
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
-    private const string FiltersMarker = "<!-- __FILTERS__ -->";
+    private const string PresentationMarker = "<!-- __PRESENTATION__ -->";
     private const string AssetVersionMarker = "__ASSET_VERSION__";
 
     public static string RendererAssetsVersion =>
@@ -32,8 +29,7 @@ internal static class PreparerSubSiteEmitter
 
     public static async Task EmitAsync(
         string subSiteOut,
-        string baseTitle,
-        ResolvedFilters filters,
+        TicketSitePresentation presentation,
         byte[] dbBytes,
         CancellationToken ct)
     {
@@ -49,15 +45,17 @@ internal static class PreparerSubSiteEmitter
         Assembly asm = typeof(PreparerSubSiteEmitter).Assembly;
         string[] resourceNames = asm.GetManifestResourceNames();
 
-        string fullTitle = baseTitle + filters.ToTitleSuffix();
-        string encodedTitle = WebUtility.HtmlEncode(fullTitle);
+        string encodedTitle = WebUtility.HtmlEncode(presentation.SiteName);
         byte[] compressed =
             await GzipBytesAsync(dbBytes, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         string base64 = Convert.ToBase64String(compressed);
         ct.ThrowIfCancellationRequested();
         string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
-        string filtersScript = BuildFiltersScript(filters);
+        string presentationScript =
+            "<script id=\"site-presentation\" type=\"application/json\">" +
+            TicketSitePresentationJson.Serialize(presentation) +
+            "</script>";
 
         foreach (string name in resourceNames)
         {
@@ -76,7 +74,10 @@ internal static class PreparerSubSiteEmitter
                     .ConfigureAwait(false);
                 string html = template
                     .Replace(TitleMarker, encodedTitle, StringComparison.Ordinal)
-                    .Replace(FiltersMarker, filtersScript, StringComparison.Ordinal)
+                    .Replace(
+                        PresentationMarker,
+                        presentationScript,
+                        StringComparison.Ordinal)
                     .Replace(DbBlobMarker, blobScript, StringComparison.Ordinal)
                     .Replace(
                         AssetVersionMarker,
@@ -94,30 +95,6 @@ internal static class PreparerSubSiteEmitter
                     : name.Substring(SharedPrefix.Length);
                 string outFile = Path.Combine(assetsDir, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(outFile)!);
-                if (string.Equals(relative, "app.js", StringComparison.Ordinal))
-                {
-                    using StreamReader reader = new(stream);
-                    string script = await reader.ReadToEndAsync(ct)
-                        .ConfigureAwait(false);
-                    const string anchor = "db = new SQL.Database(bytes);";
-                    const string compatibilityView =
-                        """
-                        db.run("CREATE TEMP VIEW jira_processing_source_tickets AS SELECT jh.JiraKey AS Key, jh.Title AS Title, CASE WHEN instr(jh.JiraKey, '-') > 1 THEN substr(jh.JiraKey, 1, instr(jh.JiraKey, '-') - 1) ELSE '' END AS Project, jh.Status AS Status, jh.WorkGroup AS WorkGroup, jh.Type AS Type, jh.Specification AS Specification FROM prepared_jira_hydration jh WHERE jh.TicketKey = jh.JiraKey");
-                        """;
-                    if (!script.Contains(anchor, StringComparison.Ordinal))
-                    {
-                        throw new InvalidOperationException(
-                            "Discussion app.js database initialization marker is missing.");
-                    }
-                    await File.WriteAllTextAsync(
-                        outFile,
-                        script.Replace(
-                            anchor,
-                            anchor + Environment.NewLine + compatibilityView,
-                            StringComparison.Ordinal),
-                        ct).ConfigureAwait(false);
-                    continue;
-                }
                 await using FileStream fs = new(
                     outFile,
                     FileMode.CreateNew,
@@ -143,15 +120,5 @@ internal static class PreparerSubSiteEmitter
             await gzip.WriteAsync(raw, ct).ConfigureAwait(false);
         }
         return output.ToArray();
-    }
-
-    private static string BuildFiltersScript(ResolvedFilters filters)
-    {
-        Dictionary<string, string> map = [];
-        if (filters.Specification is not null) map["spec"] = filters.Specification;
-        if (filters.Project is not null) map["project"] = filters.Project;
-        if (filters.WorkGroup is not null) map["wg"] = filters.WorkGroup;
-        string json = JsonSerializer.Serialize(map);
-        return $"<script>window.__FILTERS__={json};</script>";
     }
 }

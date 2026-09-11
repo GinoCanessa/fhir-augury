@@ -347,10 +347,16 @@ internal sealed class TicketSnapshotFixture
                 connection,
                 """
                 UPDATE prepared_tickets
-                SET LinkedTicketSummary = 'Linked FHIR-2002',
+                SET RequestSummary =
+                        'Request FHIR-1002; embedded XFHIR-1003 stays text',
+                    CommentSummary =
+                        'Comment FHIR-1004 and FHIR-1005suffix stays text',
+                    LinkedTicketSummary = 'Linked FHIR-2002',
                     RelatedTicketSummary = 'Related FHIR-2002',
-                    RelatedZulipSummary = 'Related discussion',
-                    RelatedGitHubSummary = 'GitHub context',
+                    RelatedZulipSummary =
+                        'Related discussion for FHIR-2003',
+                    RelatedGitHubSummary =
+                        'GitHub context mentioning FHIR-2004',
                     ProposalBImpact = ProposalAImpact
                 WHERE Key = 'FHIR-1001';
                 UPDATE prepared_jira_hydration
@@ -620,6 +626,32 @@ internal sealed class TicketSnapshotFixture
         await WriteDescriptorAsync(DescriptorPath, Descriptor);
     }
 
+    public async Task SetTicketWorkGroupAsync(
+        string ticketKey,
+        string? workGroup)
+    {
+        await using SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False");
+        await connection.OpenAsync();
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE prepared_jira_hydration
+            SET WorkGroup = @workGroup,
+                WorkGroupClean = CASE
+                    WHEN @workGroup IS NULL THEN NULL
+                    ELSE REPLACE(TRIM(@workGroup), ' ', '')
+                END
+            WHERE TicketKey = @ticketKey
+              AND JiraKey = @ticketKey
+            """,
+            ("@workGroup", workGroup),
+            ("@ticketKey", ticketKey));
+        await connection.CloseAsync();
+        await connection.DisposeAsync();
+        await RefreshDescriptorHashAsync();
+    }
+
     public static Task WriteDescriptorAsync(
         string path,
         AuthoringSnapshotDescriptor descriptor)
@@ -654,13 +686,29 @@ internal sealed class TicketSnapshotFixture
 
     private static async Task<string> ComputeHashAsync(string path)
     {
-        await using FileStream stream = new(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream))
-            .ToLowerInvariant();
+        const int maxAttempts = 20;
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await using FileStream stream = new(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read);
+                return Convert.ToHexString(
+                        await SHA256.HashDataAsync(stream))
+                    .ToLowerInvariant();
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt));
+            }
+            catch (UnauthorizedAccessException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt));
+            }
+        }
     }
 
     private static async Task<Dictionary<string, long>> ReadCountsAsync(

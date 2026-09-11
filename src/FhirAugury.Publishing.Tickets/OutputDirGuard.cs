@@ -131,7 +131,7 @@ internal static class OutputDirGuard
         CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        string[] requiredFiles =
+        List<string> requiredFiles =
         [
             "index.html",
             MarkerFileName,
@@ -144,6 +144,13 @@ internal static class OutputDirGuard
             Path.Combine("assets", "marked.min.js"),
             Path.Combine("assets", "purify.min.js"),
         ];
+        if (string.Equals(
+                kind,
+                PreparerSubSiteEmitter.Kind,
+                StringComparison.Ordinal))
+        {
+            requiredFiles.Add(Path.Combine("assets", "components.js"));
+        }
         foreach (string relative in requiredFiles)
         {
             if (!File.Exists(Path.Combine(stagingDirectory, relative)))
@@ -179,14 +186,7 @@ internal static class OutputDirGuard
         await ValidateEmbeddedDatabaseAsync(
             stagingDirectory,
             kind,
-            expected.EmbeddedDbSha256,
-            expected.EmbeddedDbSizeBytes,
-            expected.TableCounts,
-            expected.SiteKind == PreparerSubSiteEmitter.Kind
-                ? "prepared_tickets"
-                : "planned_tickets",
-            expected.IncludedItemCount,
-            expected.IncludedReceiptCount,
+            expected,
             ct).ConfigureAwait(false);
     }
 
@@ -215,6 +215,10 @@ internal static class OutputDirGuard
         string.Equals(actual.BuildIdentity, expected.BuildIdentity, StringComparison.Ordinal) &&
         string.Equals(actual.OutputPath, expected.OutputPath, StringComparison.Ordinal) &&
         actual.GeneratedAt == expected.GeneratedAt &&
+        string.Equals(actual.DisplayTitle, expected.DisplayTitle, StringComparison.Ordinal) &&
+        actual.JiraSourceLastSuccessfulRefreshAt ==
+            expected.JiraSourceLastSuccessfulRefreshAt &&
+        actual.RendererSchemaVersion == expected.RendererSchemaVersion &&
         actual.TableCounts.Count == expected.TableCounts.Count &&
         actual.TableCounts.All(pair =>
             expected.TableCounts.TryGetValue(pair.Key, out long value) &&
@@ -223,12 +227,7 @@ internal static class OutputDirGuard
     private static async Task ValidateEmbeddedDatabaseAsync(
         string stagingDirectory,
         string kind,
-        string expectedSha256,
-        long expectedSizeBytes,
-        IReadOnlyDictionary<string, long> expectedCounts,
-        string? itemTable,
-        int? expectedItemCount,
-        int? expectedReceiptCount,
+        TicketSiteManifest expected,
         CancellationToken ct)
     {
         string html = await File.ReadAllTextAsync(
@@ -239,8 +238,11 @@ internal static class OutputDirGuard
             kind,
             ct).ConfigureAwait(false);
         string actualSha256 = ComputeSha256(databaseBytes, ct);
-        if (databaseBytes.LongLength != expectedSizeBytes ||
-            !string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal))
+        if (databaseBytes.LongLength != expected.EmbeddedDbSizeBytes ||
+            !string.Equals(
+                actualSha256,
+                expected.EmbeddedDbSha256,
+                StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Staged {kind} embedded database checksum or size does not match its manifest.");
@@ -261,43 +263,46 @@ internal static class OutputDirGuard
                     Pooling = false,
                 }.ToString());
             await connection.OpenAsync(ct).ConfigureAwait(false);
-            foreach ((string table, long expected) in expectedCounts)
+            if (string.Equals(
+                    kind,
+                    PreparerSubSiteEmitter.Kind,
+                    StringComparison.Ordinal))
             {
-                await using SqliteCommand command = connection.CreateCommand();
-                command.CommandText =
-                    $"SELECT COUNT(*) FROM \"{table.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
-                long actual = Convert.ToInt64(
-                    await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
-                    System.Globalization.CultureInfo.InvariantCulture);
-                if (actual != expected)
-                {
-                    throw new InvalidOperationException(
-                        $"Staged {kind} embedded database count mismatch for '{table}': " +
-                        $"manifest={expected}, database={actual}.");
-                }
+                await connection.CloseAsync().ConfigureAwait(false);
+                await ValidateDiscussionDatabaseAsync(
+                    validationPath,
+                    html,
+                    expected,
+                    ct).ConfigureAwait(false);
             }
-            if (itemTable is not null && expectedItemCount is not null)
+            else
             {
-                long actualItems = await ReadCountAsync(connection, itemTable, ct)
-                    .ConfigureAwait(false);
-                if (actualItems != expectedItemCount)
+                await ValidateTableCountsAsync(
+                    connection,
+                    kind,
+                    expected.TableCounts,
+                    ct).ConfigureAwait(false);
+                long actualItems = await ReadCountAsync(
+                    connection,
+                    "planned_tickets",
+                    ct).ConfigureAwait(false);
+                if (actualItems != expected.IncludedItemCount)
                 {
                     throw new InvalidOperationException(
                         $"Staged {kind} embedded database item count mismatch: " +
-                        $"manifest={expectedItemCount}, database={actualItems}.");
+                        $"manifest={expected.IncludedItemCount}, " +
+                        $"database={actualItems}.");
                 }
-            }
-            if (expectedReceiptCount is not null)
-            {
                 long actualReceipts = await ReadCountAsync(
                     connection,
                     "authoring_result_receipts",
                     ct).ConfigureAwait(false);
-                if (actualReceipts != expectedReceiptCount)
+                if (actualReceipts != expected.IncludedReceiptCount)
                 {
                     throw new InvalidOperationException(
                         $"Staged {kind} embedded database receipt count mismatch: " +
-                        $"manifest={expectedReceiptCount}, database={actualReceipts}.");
+                        $"manifest={expected.IncludedReceiptCount}, " +
+                        $"database={actualReceipts}.");
                 }
             }
         }
@@ -310,6 +315,128 @@ internal static class OutputDirGuard
             catch (IOException)
             {
             }
+        }
+    }
+
+    private static async Task ValidateDiscussionDatabaseAsync(
+        string databasePath,
+        string html,
+        TicketSiteManifest expected,
+        CancellationToken ct)
+    {
+        DiscussionSiteDatabaseValidator.ValidationResult validation =
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                databasePath,
+                ct).ConfigureAwait(false);
+        EnsureTableCountsMatch(
+            PreparerSubSiteEmitter.Kind,
+            validation.TableCounts,
+            expected.TableCounts);
+        if (!validation.TableCounts.TryGetValue("tickets", out long ticketCount) ||
+            ticketCount != expected.IncludedItemCount)
+        {
+            throw new InvalidOperationException(
+                "Staged preparer embedded database item count mismatch: " +
+                $"manifest={expected.IncludedItemCount}, database={ticketCount}.");
+        }
+
+        if (expected.RendererSchemaVersion is not int rendererSchemaVersion ||
+            string.IsNullOrWhiteSpace(expected.DisplayTitle))
+        {
+            throw new InvalidOperationException(
+                "Staged preparer manifest is missing discussion presentation metadata.");
+        }
+        TicketSitePresentation manifestPresentation = new(
+            rendererSchemaVersion,
+            expected.Title,
+            expected.DisplayTitle,
+            expected.JiraSourceLastSuccessfulRefreshAt,
+            new ResolvedFilters(
+                expected.Filters.Spec,
+                expected.Filters.Project,
+                expected.Filters.Wg));
+        TicketSitePresentation injectedPresentation =
+            ReadInjectedPresentation(html);
+        if (validation.Presentation != manifestPresentation ||
+            injectedPresentation != manifestPresentation)
+        {
+            throw new InvalidOperationException(
+                "Staged preparer presentation does not match its renderer database and manifest.");
+        }
+    }
+
+    private static async Task ValidateTableCountsAsync(
+        SqliteConnection connection,
+        string kind,
+        IReadOnlyDictionary<string, long> expectedCounts,
+        CancellationToken ct)
+    {
+        Dictionary<string, long> actualCounts =
+            new(StringComparer.Ordinal);
+        foreach (string table in expectedCounts.Keys)
+        {
+            actualCounts[table] =
+                await ReadCountAsync(connection, table, ct)
+                    .ConfigureAwait(false);
+        }
+        EnsureTableCountsMatch(kind, actualCounts, expectedCounts);
+    }
+
+    private static void EnsureTableCountsMatch(
+        string kind,
+        IReadOnlyDictionary<string, long> actualCounts,
+        IReadOnlyDictionary<string, long> expectedCounts)
+    {
+        foreach ((string table, long expected) in expectedCounts)
+        {
+            if (!actualCounts.TryGetValue(table, out long actual) ||
+                actual != expected)
+            {
+                throw new InvalidOperationException(
+                    $"Staged {kind} embedded database count mismatch for " +
+                    $"'{table}': manifest={expected}, database=" +
+                    (actualCounts.ContainsKey(table)
+                        ? actual.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture)
+                        : "missing") +
+                    ".");
+            }
+        }
+        if (actualCounts.Count != expectedCounts.Count)
+        {
+            throw new InvalidOperationException(
+                $"Staged {kind} embedded database table-count inventory differs " +
+                "from its manifest.");
+        }
+    }
+
+    private static TicketSitePresentation ReadInjectedPresentation(string html)
+    {
+        const string startMarker =
+            "<script id=\"site-presentation\" type=\"application/json\">";
+        const string endMarker = "</script>";
+        int start = html.IndexOf(startMarker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            throw new InvalidOperationException(
+                "Staged preparer site does not contain presentation JSON.");
+        }
+        start += startMarker.Length;
+        int end = html.IndexOf(endMarker, start, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            throw new InvalidOperationException(
+                "Staged preparer site has invalid presentation JSON.");
+        }
+        try
+        {
+            return TicketSitePresentationJson.Deserialize(html[start..end]);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                "Staged preparer site has invalid presentation JSON.",
+                ex);
         }
     }
 

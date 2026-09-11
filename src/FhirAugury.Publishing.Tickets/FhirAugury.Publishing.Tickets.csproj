@@ -21,6 +21,7 @@
   <ItemGroup>
     <EmbeddedResource Include="web-assets\discussion\index.template.html" LogicalName="web-assets/discussion/index.template.html" />
     <EmbeddedResource Include="web-assets\discussion\app.css" LogicalName="web-assets/discussion/app.css" />
+    <EmbeddedResource Include="web-assets\discussion\components.js" LogicalName="web-assets/discussion/components.js" />
     <EmbeddedResource Include="web-assets\discussion\app.js" LogicalName="web-assets/discussion/app.js" />
     <EmbeddedResource Include="web-assets\applying\index.template.html" LogicalName="web-assets/applying/index.template.html" />
     <EmbeddedResource Include="web-assets\applying\app.css" LogicalName="web-assets/applying/app.css" />

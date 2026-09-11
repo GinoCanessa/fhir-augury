@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Processing.Client;
 
 namespace FhirAugury.Publishing.Tickets;
@@ -61,4 +62,26 @@ public interface ITicketSitePublisher
     Task<TicketSitePublishResult> PublishAsync(
         TicketSitePublishRequest request,
         CancellationToken ct = default);
+}
+
+internal sealed record TicketSiteEmbeddedDatabaseBuild(
+    byte[] DatabaseBytes,
+    long IncludedItemCount,
+    IReadOnlyDictionary<string, long> TableCounts,
+    TicketSitePresentation? DiscussionPresentation);
+
+internal static class TicketSitePresentationJson
+{
+    private static readonly JsonSerializerOptions SerializerOptions =
+        new(JsonSerializerDefaults.Web);
+
+    public static string Serialize(TicketSitePresentation presentation)
+        => JsonSerializer.Serialize(presentation, SerializerOptions);
+
+    public static TicketSitePresentation Deserialize(string json)
+        => JsonSerializer.Deserialize<TicketSitePresentation>(
+            json,
+            SerializerOptions)
+        ?? throw new InvalidOperationException(
+            "The discussion presentation payload is empty.");
 }

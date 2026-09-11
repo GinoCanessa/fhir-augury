@@ -1,1771 +1,1519 @@
-// ticket-site discussion-sub-site SPA — vanilla JS, sql.js in the browser, hash router.
-// SECURITY: all ticket content is user-supplied text. Render via
-// textContent / createElement only — never innerHTML.
-
+// Tickets for Discussion SPA. The browser reads only renderer schema v1.
 (function () {
   'use strict';
 
-  /** @type {any} */
-  let db = null;
-  /** @type {Set<string>} */
-  const inRunKeys = new Set();
+  var db = null;
+  var presentation = null;
+  var components = null;
+  var currentExport = null;
+  var inRunKeys = Object.create(null);
 
-  const SITE_NAME = 'Tickets';
-  let STATIC_TITLE = '';
+  var filterableDimensions = [
+    'spec',
+    'project',
+    'wg',
+    'type',
+    'artifact',
+    'page',
+    'impact'
+  ];
+  var generationDimensions = ['spec', 'project', 'wg'];
+  var rendererDimensions = {
+    spec: 'spec',
+    project: 'project',
+    wg: 'wg',
+    type: 'type',
+    artifact: 'artifact',
+    page: 'page',
+    impact: 'impact'
+  };
+  var facetKeyParameters = {
+    spec: 'specKey',
+    project: 'projectKey',
+    wg: 'wgKey',
+    type: 'typeKey',
+    artifact: 'artifactKey',
+    page: 'pageKey',
+    impact: 'impactKey'
+  };
+  var generationChips = {};
+  var activeChips = {};
+  var facetCatalog = Object.create(null);
 
-  function truncate(str, max) {
-    if (!str) return str;
-    return str.length > max ? str.slice(0, max - 1) + '…' : str;
+  function parsePresentation() {
+    var element = document.getElementById('site-presentation');
+    if (!element) throw new Error('Discussion presentation data is missing.');
+    var value = JSON.parse(element.textContent || '');
+    if (!value || value.rendererSchemaVersion !== 1 ||
+        typeof value.siteName !== 'string' ||
+        typeof value.baseTitle !== 'string') {
+      throw new Error('Discussion presentation data is invalid.');
+    }
+    if (!value.filters || typeof value.filters !== 'object') {
+      value.filters = {};
+    }
+    return value;
   }
 
-  function setDocTitle(subject) {
-    document.title = subject ? subject + ' — ' + SITE_NAME : STATIC_TITLE;
-  }
-
-  // Chip dimensions that can appear as filter chips. `spec`, `project`,
-  // and `wg` are the three the generation pipeline can pre-pin (baked
-  // into the trimmed DB); `artifact` and `page` are in-page-only and
-  // surface from clicking crosscut rows (Phase 4).
-  const FilterableDimensions = ['spec', 'project', 'wg', 'type', 'artifact', 'page', 'impact'];
-  const GenerationDimensions = ['spec', 'project', 'wg'];
-
-  // Each chip value is stored as a list (today: length one). The UX is
-  // single-value per dimension but the underlying state is forward-proofed
-  // for a future "let me OR two artifacts together" enhancement.
-  /** @type {{[k: string]: string[]}} */
-  const GenerationChips = {};
-  (function seedGenerationChips() {
-    const raw = (typeof window.__FILTERS__ === 'object' && window.__FILTERS__) ? window.__FILTERS__ : {};
-    for (let i = 0; i < GenerationDimensions.length; i++) {
-      const dim = GenerationDimensions[i];
-      if (typeof raw[dim] === 'string' && raw[dim].length > 0) {
-        GenerationChips[dim] = [raw[dim]];
+  function loadFacetCatalog() {
+    var rows = query(
+      'SELECT DISTINCT Dimension, ValueKey, DisplayValue, SortKey, IsUnknown ' +
+      'FROM ticket_facets ' +
+      'ORDER BY Dimension, IsUnknown, SortKey, DisplayValue, ValueKey',
+      null).rows;
+    for (var index = 0; index < rows.length; index++) {
+      var row = rows[index];
+      var dimension = String(row.Dimension);
+      if (!facetCatalog[dimension]) {
+        facetCatalog[dimension] = {
+          byKey: Object.create(null),
+          byDisplay: Object.create(null)
+        };
+      }
+      var entry = {
+        valueKey: String(row.ValueKey),
+        displayValue: String(row.DisplayValue),
+        isUnknown: Number(row.IsUnknown) === 1
+      };
+      facetCatalog[dimension].byKey[entry.valueKey.toLowerCase()] = entry;
+      var displayKey = entry.displayValue.toLowerCase();
+      if (!facetCatalog[dimension].byDisplay[displayKey]) {
+        facetCatalog[dimension].byDisplay[displayKey] = entry;
       }
     }
-  })();
-  /** @type {{[k: string]: string[]}} */
-  let ActiveChips = {};
+  }
 
-  const App = {
+  function resolveFacetValueKey(dimension, rawValue) {
+    var value = rawValue == null ? '' : String(rawValue).trim();
+    if (!value) return null;
+    var rendererDimension = rendererDimensions[dimension];
+    var catalog = facetCatalog[rendererDimension];
+    if (catalog) {
+      var byKey = catalog.byKey[value.toLowerCase()];
+      if (byKey) return byKey.valueKey;
+    }
+    return value;
+  }
+
+  function resolveLegacyFacetDisplayValue(dimension, rawValue) {
+    var value = rawValue == null ? '' : String(rawValue).trim();
+    if (!value) return null;
+    if (value.toLowerCase() === '(unknown)') return '__unknown__';
+    var rendererDimension = rendererDimensions[dimension];
+    var catalog = facetCatalog[rendererDimension];
+    if (catalog) {
+      var byDisplay = catalog.byDisplay[value.toLowerCase()];
+      if (byDisplay) return byDisplay.valueKey;
+    }
+    return 'value:' + value;
+  }
+
+  function facetLabel(dimension, valueKey) {
+    if (String(valueKey).toLowerCase() === '__unknown__') return '(unknown)';
+    var catalog = facetCatalog[rendererDimensions[dimension]];
+    var entry = catalog && catalog.byKey[String(valueKey).toLowerCase()];
+    if (entry) return entry.displayValue;
+    return String(valueKey).toLowerCase().indexOf('value:') === 0
+      ? String(valueKey).slice(6)
+      : String(valueKey);
+  }
+
+  function seedGenerationChips() {
+    var filters = presentation.filters || {};
+    var values = {
+      spec: filters.specification,
+      project: filters.project,
+      wg: filters.workGroup
+    };
+    for (var index = 0; index < generationDimensions.length; index++) {
+      var dimension = generationDimensions[index];
+      var valueKey = resolveLegacyFacetDisplayValue(
+        dimension,
+        values[dimension]);
+      if (valueKey) generationChips[dimension] = [valueKey];
+    }
+  }
+
+  var App = {
     init: async function () {
-      const main = document.getElementById('app');
+      var main = document.getElementById('app');
       try {
-        // initSqlJs is global, set by sql-wasm.js.
-        // eslint-disable-next-line no-undef
-        const assetVersion = (typeof window.__ASSET_VERSION__ === 'string')
+        components = window.DiscussionComponents;
+        if (!components) throw new Error('Discussion components failed to load.');
+        presentation = parsePresentation();
+        document.title = presentation.siteName;
+        var heading = document.querySelector('header h1');
+        if (heading) heading.textContent = presentation.siteName;
+
+        var assetVersion = typeof window.__ASSET_VERSION__ === 'string'
           ? window.__ASSET_VERSION__
           : '';
-        const SQL = await initSqlJs({
-          locateFile: function (f) {
-            const versionSuffix = assetVersion
-              ? '?v=' + encodeURIComponent(assetVersion)
-              : '';
-            return 'assets/' + f + versionSuffix;
+        // initSqlJs is provided by the classic sql-wasm.js asset.
+        var SQL = await initSqlJs({
+          locateFile: function (fileName) {
+            return 'assets/' + fileName +
+              (assetVersion ? '?v=' + encodeURIComponent(assetVersion) : '');
           }
         });
-        const blob = (typeof window.__DB__ === 'string') ? window.__DB__ : '';
-        if (!blob) {
-          throw new Error('window.__DB__ missing — emitter did not inline the database.');
+        var encodedDatabase = typeof window.__DB__ === 'string'
+          ? window.__DB__
+          : '';
+        if (!encodedDatabase) {
+          throw new Error('The embedded discussion database is missing.');
         }
-        const bin = atob(blob);
-        let bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var binary = atob(encodedDatabase);
+        var bytes = new Uint8Array(binary.length);
+        for (var index = 0; index < binary.length; index++) {
+          bytes[index] = binary.charCodeAt(index);
+        }
         if (window.__DBGZ__) {
-          // The emitter gzips the snapshot before base64-inlining it. Inflate
-          // with the native DecompressionStream (no bundled inflate library).
           if (typeof DecompressionStream !== 'function') {
-            throw new Error('This browser lacks DecompressionStream, needed to inflate the gzipped database. Open in a current Chrome, Edge, Firefox, or Safari.');
+            throw new Error(
+              'This browser needs DecompressionStream to open the discussion database.');
           }
-          const gzStream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-          bytes = new Uint8Array(await new Response(gzStream).arrayBuffer());
+          var stream = new Blob([bytes]).stream()
+            .pipeThrough(new DecompressionStream('gzip'));
+          bytes = new Uint8Array(await new Response(stream).arrayBuffer());
         }
         db = new SQL.Database(bytes);
-        const keysRes = query('SELECT Key FROM prepared_tickets', null);
-        for (let i = 0; i < keysRes.rows.length; i++) inRunKeys.add(String(keysRes.rows[i].Key));
-      } catch (err) {
-        renderError(main, 'Failed to load database: ' + err.message);
+
+        var metadata = query(
+          'SELECT RendererSchemaVersion, BaseTitle, SiteName, ' +
+          'JiraSourceLastSuccessfulRefreshAt, FilterSpecification, ' +
+          'FilterProject, FilterWorkGroup FROM site_metadata',
+          null).rows;
+        if (metadata.length !== 1 ||
+            Number(metadata[0].RendererSchemaVersion) !==
+              Number(presentation.rendererSchemaVersion) ||
+            String(metadata[0].BaseTitle) !== presentation.baseTitle ||
+            String(metadata[0].SiteName) !== presentation.siteName) {
+          throw new Error(
+            'The embedded discussion database does not match its presentation.');
+        }
+
+        var keyRows = query('SELECT Key FROM tickets', null).rows;
+        for (var keyIndex = 0; keyIndex < keyRows.length; keyIndex++) {
+          inRunKeys[String(keyRows[keyIndex].Key).toLowerCase()] = true;
+        }
+        loadFacetCatalog();
+        seedGenerationChips();
+      } catch (error) {
+        renderError(main, 'Failed to load database: ' + error.message);
         return;
       }
 
       installCopyButton();
-      STATIC_TITLE = document.title;
       window.addEventListener('hashchange', App.route);
       App.route();
     },
 
     route: function () {
-      const main = document.getElementById('app');
+      var main = document.getElementById('app');
       clearChildren(main);
       clearCopyExport();
-      setDocTitle(null);
-      const fullHash = window.location.hash || '#/';
+      setDocumentTitle(null);
 
-      // Split path and chip-query suffix. Encoded as a `?` after the
-      // route path inside the hash, e.g. `#/list?wg=PA&artifact=Observation`.
-      // GenerationChips always win — if both URL and generation pin a
-      // dimension, the GenerationChips value is preserved.
-      const stripped = fullHash.replace(/^#\/?/, '');
-      const queryIdx = stripped.indexOf('?');
-      const pathPart = queryIdx >= 0 ? stripped.slice(0, queryIdx) : stripped;
-      const queryPart = queryIdx >= 0 ? stripped.slice(queryIdx + 1) : '';
-      ActiveChips = parseChipsFromQuery(queryPart);
+      var fullHash = window.location.hash || '#/';
+      var stripped = fullHash.replace(/^#\/?/, '');
+      var queryIndex = stripped.indexOf('?');
+      var pathPart = queryIndex >= 0
+        ? stripped.slice(0, queryIndex)
+        : stripped;
+      var queryPart = queryIndex >= 0
+        ? stripped.slice(queryIndex + 1)
+        : '';
+      activeChips = parseChipsFromQuery(queryPart);
+      var parts = pathPart.split('/').filter(function (part) {
+        return part.length > 0;
+      });
 
-      const parts = pathPart.split('/').filter(function (p) { return p.length > 0; });
       try {
         if (parts.length === 0) {
           setBreadcrumb([]);
           Views.landing(main);
         } else if (parts[0] === 'list') {
           setBreadcrumb([{ label: 'List', href: null }]);
-          Views.list(main, null);
+          Views.list(main);
         } else if (parts[0] === 'topics') {
           setBreadcrumb([{ label: 'Topics', href: null }]);
           Views.topics(main);
         } else if (parts[0] === 'topic' && parts.length >= 2) {
-          const topicId = decodeURIComponent(parts[1]);
-          setBreadcrumb([
-            { label: 'Topics', href: '#/topics' + currentHashSuffix() },
-            { label: topicId, href: null },
-          ]);
-          Views.topic(main, topicId);
+          Views.topic(main, decodeURIComponent(parts[1]));
         } else if (parts[0] === 'ticket' && parts.length >= 2) {
-          const key = decodeURIComponent(parts[1]);
+          Views.ticket(main, decodeURIComponent(parts[1]));
+        } else if (Crosscuts[parts[0]]) {
+          if (parts.length >= 2) {
+            redirectToFacetList(
+              Crosscuts[parts[0]].dimension,
+              decodeURIComponent(parts[1]));
+            return;
+          }
           setBreadcrumb([
-            { label: 'List', href: '#/list' },
-            { label: key, href: null },
+            { label: Crosscuts[parts[0]].pageTitle, href: null }
           ]);
-          Views.ticket(main, key);
-        } else if (parts[0] === 'by-workgroup') {
-          if (parts.length >= 2) {
-            // Backwards-compat: deep-links like #/by-workgroup/Foo are
-            // redirected into the equivalent chip-applied list view.
-            const wg = decodeURIComponent(parts[1]);
-            redirectToChipListView('wg', wg);
-            return;
-          }
-          setBreadcrumb([{ label: 'By workgroup', href: null }]);
-          setDocTitle('By workgroup');
-          Views.crosscutIndex(main, 'by-workgroup');
-        } else if (parts[0] === 'by-type') {
-          if (parts.length >= 2) {
-            const tv = decodeURIComponent(parts[1]);
-            redirectToChipListView('type', tv);
-            return;
-          }
-          setBreadcrumb([{ label: 'By type', href: null }]);
-          setDocTitle('By type');
-          Views.crosscutIndex(main, 'by-type');
-        } else if (parts[0] === 'by-artifact') {
-          if (parts.length >= 2) {
-            const av = decodeURIComponent(parts[1]);
-            redirectToChipListView('artifact', av);
-            return;
-          }
-          setBreadcrumb([{ label: 'By artifact', href: null }]);
-          setDocTitle('By artifact');
-          Views.crosscutIndex(main, 'by-artifact');
-        } else if (parts[0] === 'by-page') {
-          if (parts.length >= 2) {
-            const pv = decodeURIComponent(parts[1]);
-            redirectToChipListView('page', pv);
-            return;
-          }
-          setBreadcrumb([{ label: 'By page', href: null }]);
-          setDocTitle('By page');
-          Views.crosscutIndex(main, 'by-page');
-        } else if (parts[0] === 'by-impact') {
-          if (parts.length >= 2) {
-            const iv = decodeURIComponent(parts[1]);
-            redirectToChipListView('impact', iv);
-            return;
-          }
-          setBreadcrumb([{ label: 'By impact', href: null }]);
-          setDocTitle('By impact');
-          Views.crosscutIndex(main, 'by-impact');
-        } else if (parts[0] === 'by-specification') {
-          if (parts.length >= 2) {
-            const sv = decodeURIComponent(parts[1]);
-            redirectToChipListView('spec', sv);
-            return;
-          }
-          setBreadcrumb([{ label: 'By specification', href: null }]);
-          setDocTitle('By specification');
-          Views.crosscutIndex(main, 'by-specification');
+          Views.crosscut(main, parts[0]);
         } else {
           setBreadcrumb([]);
           Views.notFound(main, fullHash);
         }
-      } catch (err) {
-        renderError(main, 'Route render failed: ' + err.message);
-      }
-    },
-  };
-
-  // ------- Chip-state helpers -------
-
-  function parseChipsFromQuery(queryPart) {
-    /** @type {{[k: string]: string[]}} */
-    const result = {};
-    // Seed from GenerationChips first so they always survive.
-    for (const k in GenerationChips) {
-      if (GenerationChips[k] && GenerationChips[k].length > 0) {
-        result[k] = GenerationChips[k].slice();
+      } catch (error) {
+        renderError(main, 'Route render failed: ' + error.message);
       }
     }
+  };
+
+  function parseChipsFromQuery(queryPart) {
+    var result = {};
+    for (var dimension in generationChips) {
+      result[dimension] = generationChips[dimension].slice();
+    }
     if (!queryPart) return result;
-    // URLSearchParams handles `+`, `%xx`, repeated keys, etc. Each
-    // dimension may appear multiple times (e.g., `impact=A&impact=B`);
-    // values are never comma-split because impact values legitimately
-    // contain commas (e.g., "Compatible, substantive").
-    const params = new URLSearchParams(queryPart);
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      const values = params.getAll(dim).filter(function (v) { return v.length > 0; });
-      if (values.length === 0) continue;
-      // Merge with GenerationChips (already in `result[dim]`); if a value
-      // is already present (case-insensitive) keep it; otherwise append.
-      const existing = result[dim] ? result[dim].slice() : [];
-      const seen = {};
-      for (let j = 0; j < existing.length; j++) seen[existing[j].toLowerCase()] = true;
-      for (let j = 0; j < values.length; j++) {
-        if (!seen[values[j].toLowerCase()]) {
-          existing.push(values[j]);
-          seen[values[j].toLowerCase()] = true;
+
+    var parameters = new URLSearchParams(queryPart);
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var currentDimension = filterableDimensions[index];
+      var existing = result[currentDimension]
+        ? result[currentDimension].slice()
+        : [];
+      var rawKeyValues =
+        parameters.getAll(facetKeyParameters[currentDimension]);
+      for (var keyIndex = 0; keyIndex < rawKeyValues.length; keyIndex++) {
+        var valueKey = resolveFacetValueKey(
+          currentDimension,
+          rawKeyValues[keyIndex]);
+        if (valueKey && !containsCaseInsensitive(existing, valueKey)) {
+          existing.push(valueKey);
         }
       }
-      result[dim] = existing;
+      var rawDisplayValues = parameters.getAll(currentDimension);
+      for (var displayIndex = 0;
+        displayIndex < rawDisplayValues.length;
+        displayIndex++) {
+        var legacyValueKey = resolveLegacyFacetDisplayValue(
+          currentDimension,
+          rawDisplayValues[displayIndex]);
+        if (legacyValueKey &&
+            !containsCaseInsensitive(existing, legacyValueKey)) {
+          existing.push(legacyValueKey);
+        }
+      }
+      if (existing.length > 0) result[currentDimension] = existing;
     }
     return result;
   }
 
-  function getInPageChips() {
-    // ActiveChips minus the generation pins (those can't be removed from
-    // the URL). Returned shape matches ActiveChips: { dim: string[] }.
-    /** @type {{[k: string]: string[]}} */
-    const out = {};
-    for (const dim in ActiveChips) {
-      const all = ActiveChips[dim] || [];
-      const gen = GenerationChips[dim] || [];
-      const genSet = {};
-      for (let i = 0; i < gen.length; i++) genSet[gen[i].toLowerCase()] = true;
-      const remaining = [];
-      for (let i = 0; i < all.length; i++) {
-        if (!genSet[all[i].toLowerCase()]) remaining.push(all[i]);
-      }
-      if (remaining.length > 0) out[dim] = remaining;
+  function containsCaseInsensitive(values, candidate) {
+    var normalized = String(candidate).toLowerCase();
+    for (var index = 0; index < values.length; index++) {
+      if (String(values[index]).toLowerCase() === normalized) return true;
     }
-    return out;
+    return false;
+  }
+
+  function getInPageChips() {
+    var result = {};
+    for (var dimension in activeChips) {
+      var generationValues = generationChips[dimension] || [];
+      var values = (activeChips[dimension] || []).filter(function (value) {
+        return !containsCaseInsensitive(generationValues, value);
+      });
+      if (values.length > 0) result[dimension] = values;
+    }
+    return result;
   }
 
   function buildChipQuerySuffix(chips) {
-    const params = new URLSearchParams();
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      const values = chips[dim];
-      if (!values || values.length === 0) continue;
-      // Repeated-key encoding (one `dim=value` per value) so values
-      // containing `,` (e.g., "Compatible, substantive") survive a
-      // round-trip without being split.
-      for (let j = 0; j < values.length; j++) {
-        params.append(dim, values[j]);
+    var parameters = new URLSearchParams();
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var dimension = filterableDimensions[index];
+      var values = chips[dimension] || [];
+      for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
+        parameters.append(
+          facetKeyParameters[dimension],
+          values[valueIndex]);
       }
     }
-    const s = params.toString();
-    return s.length > 0 ? '?' + s : '';
+    var queryString = parameters.toString();
+    return queryString ? '?' + queryString : '';
   }
 
   function currentHashSuffix() {
     return buildChipQuerySuffix(getInPageChips());
   }
 
-  function setHashChips(inPageChips) {
-    const fullHash = window.location.hash || '#/';
-    const stripped = fullHash.replace(/^#\/?/, '');
-    const queryIdx = stripped.indexOf('?');
-    const pathPart = queryIdx >= 0 ? stripped.slice(0, queryIdx) : stripped;
-    const suffix = buildChipQuerySuffix(inPageChips);
-    window.location.hash = '#/' + pathPart + suffix;
+  function setHashChips(chips) {
+    var stripped = (window.location.hash || '#/').replace(/^#\/?/, '');
+    var queryIndex = stripped.indexOf('?');
+    var pathPart = queryIndex >= 0
+      ? stripped.slice(0, queryIndex)
+      : stripped;
+    window.location.hash = '#/' + pathPart + buildChipQuerySuffix(chips);
   }
 
-  function toggleChip(dim, value) {
-    if (FilterableDimensions.indexOf(dim) < 0) return;
-    const current = getInPageChips();
-    const existing = current[dim] ? current[dim].slice() : [];
-    const lc = value.toLowerCase();
-    let removed = false;
-    for (let i = existing.length - 1; i >= 0; i--) {
-      if (existing[i].toLowerCase() === lc) {
-        existing.splice(i, 1);
-        removed = true;
+  function openFacetList(dimension, valueKey) {
+    var chips = getInPageChips();
+    chips[dimension] = [valueKey];
+    window.location.hash = '#/list' + buildChipQuerySuffix(chips);
+  }
+
+  function redirectToFacetList(dimension, rawValue) {
+    var valueKey = resolveLegacyFacetDisplayValue(dimension, rawValue);
+    if (!valueKey) return;
+    openFacetList(dimension, valueKey);
+  }
+
+  function removeChipValue(dimension, valueKey) {
+    var chips = getInPageChips();
+    var normalized = String(valueKey).toLowerCase();
+    var remaining = (chips[dimension] || []).filter(function (value) {
+      return String(value).toLowerCase() !== normalized;
+    });
+    if (remaining.length > 0) chips[dimension] = remaining;
+    else delete chips[dimension];
+    setHashChips(chips);
+  }
+
+  function isGenerationChip(dimension, valueKey) {
+    return containsCaseInsensitive(
+      generationChips[dimension] || [],
+      valueKey);
+  }
+
+  function hasActiveChips() {
+    for (var dimension in activeChips) {
+      if (activeChips[dimension] && activeChips[dimension].length > 0) {
+        return true;
       }
     }
-    if (removed) {
-      if (existing.length === 0) delete current[dim];
-      else current[dim] = existing;
-    } else {
-      // Single-value UX: replace any other in-page values in this dim.
-      current[dim] = [value];
-    }
-    setHashChips(current);
-  }
-
-  function removeChipValue(dim, value) {
-    const current = getInPageChips();
-    const existing = current[dim] ? current[dim].slice() : [];
-    const lc = value.toLowerCase();
-    const filtered = existing.filter(function (v) { return v.toLowerCase() !== lc; });
-    if (filtered.length === 0) delete current[dim];
-    else current[dim] = filtered;
-    setHashChips(current);
-  }
-
-  function isGenerationChip(dim, value) {
-    const gen = GenerationChips[dim] || [];
-    const lc = value.toLowerCase();
-    for (let i = 0; i < gen.length; i++) {
-      if (gen[i].toLowerCase() === lc) return true;
-    }
     return false;
   }
 
-  function hasAnyActiveChips() {
-    for (const dim in ActiveChips) {
-      if (ActiveChips[dim] && ActiveChips[dim].length > 0) return true;
-    }
-    return false;
-  }
-
-  // Returns the active-filter subject for the tab title: the selected chip
-  // values across every filter dimension (stable order), joined with ' · ',
-  // or null when no chips are active (so the title falls back to static).
   function chipsSubject() {
-    if (!hasAnyActiveChips()) return null;
-    const values = [];
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      const vals = ActiveChips[dim] || [];
-      for (let j = 0; j < vals.length; j++) values.push(String(vals[j]));
+    var values = [];
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var dimension = filterableDimensions[index];
+      var chipValues = activeChips[dimension] || [];
+      for (var valueIndex = 0; valueIndex < chipValues.length; valueIndex++) {
+        values.push(facetLabel(dimension, chipValues[valueIndex]));
+      }
     }
-    return values.length > 0 ? values.join(' · ') : null;
+    return values.join(' · ');
   }
 
   function renderChipBanner(main) {
-    if (!hasAnyActiveChips()) return;
-    const banner = document.createElement('div');
-    banner.id = 'filter-banner';
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      const values = ActiveChips[dim] || [];
-      for (let j = 0; j < values.length; j++) {
-        const value = values[j];
-        const chip = document.createElement('span');
-        chip.className = 'filter-chip';
-        chip.appendChild(document.createTextNode(dim + ': ' + value));
-        if (!isGenerationChip(dim, value)) {
-          // Wrap dim+value in a closure-stable pair to avoid loop var bugs
-          // in the click handler.
-          const removeBtn = document.createElement('button');
-          removeBtn.type = 'button';
-          removeBtn.className = 'chip-remove';
-          removeBtn.setAttribute('aria-label', 'Remove ' + dim + ' filter ' + value);
-          removeBtn.appendChild(document.createTextNode('×'));
-          (function (capturedDim, capturedValue) {
-            removeBtn.addEventListener('click', function () {
-              removeChipValue(capturedDim, capturedValue);
+    if (!hasActiveChips()) return;
+    var banner = el('div', { id: 'filter-banner' });
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var dimension = filterableDimensions[index];
+      var values = activeChips[dimension] || [];
+      for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
+        var valueKey = values[valueIndex];
+        var label = facetLabel(dimension, valueKey);
+        var chip = el('span', { class: 'filter-chip' });
+        chip.appendChild(document.createTextNode(dimension + ': ' + label));
+        if (!isGenerationChip(dimension, valueKey)) {
+          var removeButton = el('button', {
+            type: 'button',
+            class: 'chip-remove',
+            'aria-label': 'Remove ' + dimension + ' filter ' + label
+          }, '×');
+          (function (capturedDimension, capturedValueKey) {
+            removeButton.addEventListener('click', function () {
+              removeChipValue(capturedDimension, capturedValueKey);
             });
-          })(dim, value);
-          chip.appendChild(removeBtn);
+          })(dimension, valueKey);
+          chip.appendChild(removeButton);
         }
         banner.appendChild(chip);
       }
     }
-    if (main.firstChild) {
-      main.insertBefore(banner, main.firstChild);
-    } else {
-      main.appendChild(banner);
+    main.appendChild(banner);
+  }
+
+  function buildTicketKeysSubquery(excludedDimensions) {
+    var excluded = Object.create(null);
+    var predicates = [];
+    var parameters = {};
+    for (var excludedIndex = 0;
+      excludedDimensions && excludedIndex < excludedDimensions.length;
+      excludedIndex++) {
+      excluded[excludedDimensions[excludedIndex]] = true;
     }
-  }
 
-  // Expose toggleChip for crosscut-row click handlers added in Phase 4.
-  window.__preparerToggleChip = toggleChip;
-  window.__preparerCurrentHashSuffix = currentHashSuffix;
-
-  function redirectToChipListView(dim, value) {
-    // Deep-link compatibility for `#/by-<dim>/<value>`: convert into the
-    // canonical chip-applied `#/list?dim=value` form. Trigger a hashchange
-    // by assigning a new hash; the router re-runs and picks up the chip.
-    if (FilterableDimensions.indexOf(dim) < 0) return;
-    const params = new URLSearchParams();
-    params.set(dim, value);
-    window.location.hash = '#/list?' + params.toString();
-  }
-
-  function query(sql, params) {
-    const stmt = db.prepare(sql);
-    if (params) stmt.bind(params);
-    const columns = stmt.getColumnNames();
-    const rows = [];
-    while (stmt.step()) rows.push(stmt.getAsObject());
-    stmt.free();
-    return { columns: columns, rows: rows };
-  }
-
-  function clearChildren(el) {
-    while (el.firstChild) el.removeChild(el.firstChild);
-  }
-
-  function el(tag, attrs, children) {
-    const node = document.createElement(tag);
-    if (attrs) {
-      for (const k in attrs) {
-        if (k === 'class') node.className = attrs[k];
-        else if (k === 'href') node.setAttribute('href', attrs[k]);
-        else node.setAttribute(k, attrs[k]);
+    var predicateIndex = 0;
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var dimension = filterableDimensions[index];
+      var values = activeChips[dimension] || [];
+      if (excluded[dimension] || values.length === 0) continue;
+      var dimensionParameter = '$facetDimension' + predicateIndex;
+      parameters[dimensionParameter] = rendererDimensions[dimension];
+      var valueParameters = [];
+      for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
+        var valueParameter =
+          '$facetValue' + predicateIndex + '_' + valueIndex;
+        parameters[valueParameter] = values[valueIndex];
+        valueParameters.push(valueParameter);
       }
+      predicates.push(
+        'EXISTS (SELECT 1 FROM ticket_facets f' + predicateIndex +
+        ' WHERE f' + predicateIndex + '.TicketKey = t.Key' +
+        ' AND f' + predicateIndex + '.Dimension = ' + dimensionParameter +
+        ' AND f' + predicateIndex + '.ValueKey IN (' +
+        valueParameters.join(', ') + '))');
+      predicateIndex++;
     }
-    if (children) {
-      if (typeof children === 'string') {
-        node.textContent = children;
-      } else if (Array.isArray(children)) {
-        for (let i = 0; i < children.length; i++) {
-          const c = children[i];
-          if (c == null) continue;
-          if (typeof c === 'string') node.appendChild(document.createTextNode(c));
-          else node.appendChild(c);
-        }
-      } else if (children instanceof Node) {
-        node.appendChild(children);
-      } else {
-        node.textContent = String(children);
-      }
-    }
-    return node;
+
+    return {
+      sql: 'SELECT t.Key FROM tickets t' +
+        (predicates.length > 0 ? ' WHERE ' + predicates.join(' AND ') : ''),
+      params: parameters
+    };
   }
 
-  function renderError(main, msg) {
-    clearChildren(main);
-    main.appendChild(el('p', { class: 'error' }, msg));
+  function mergeParameters(target, source) {
+    for (var key in source) target[key] = source[key];
   }
 
-  // SECURITY: deliberate, sanitizer-gated exception to this file's
-  // "never innerHTML" rule. The request/resolution HTML is authored Jira
-  // content; DOMPurify is the single sanitization layer. Degrades to escaped
-  // text (textContent) when DOMPurify is unavailable.
-  function htmlBlock(rawHtml) {
-    const div = el('div', { class: 'md' });
-    if (rawHtml == null || rawHtml === '') return div;
-    if (typeof DOMPurify === 'undefined') { div.textContent = String(rawHtml); return div; }
-    div.innerHTML = DOMPurify.sanitize(String(rawHtml));
-    return div;
-  }
-
-  function accordion(labelText, bodyNode, open) {
-    const d = el('details', open ? { class: 'accordion', open: '' } : { class: 'accordion' });
-    const s = el('summary'); s.appendChild(el('h3', null, labelText)); d.appendChild(s);
-    const body = el('div', { class: 'accordion-body' }); body.appendChild(bodyNode); d.appendChild(body);
-    return d;
-  }
-
-  function setBreadcrumb(tail) {
-    const bc = document.getElementById('breadcrumb');
-    if (!bc) return;
-    clearChildren(bc);
-    const hasTail = Array.isArray(tail) && tail.length > 0;
-    const parts = [
-      { label: 'Chooser', href: '../index.html' },
-      { label: 'Discussion', href: hasTail ? '#/' : null },
-    ];
-    if (hasTail) {
-      for (let i = 0; i < tail.length; i++) parts.push(tail[i]);
-    }
-    for (let i = 0; i < parts.length; i++) {
-      if (i > 0) bc.appendChild(document.createTextNode(' › '));
-      const p = parts[i];
-      if (p.href) bc.appendChild(el('a', { href: p.href }, p.label));
-      else bc.appendChild(document.createTextNode(p.label));
-    }
-  }
-
-  const Crosscuts = {
+  var Crosscuts = {
     'by-workgroup': {
-      title: 'By workgroup',
-      dim: 'wg',
-      sql: function (chipKeysSql) {
-        return (
-          "SELECT COALESCE(NULLIF(jst.WorkGroup, ''), '(unknown)') AS k, count(*) AS n " +
-          'FROM prepared_tickets pt ' +
-          'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
-          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
+      pageTitle: 'By workgroup',
+      columnLabel: 'Workgroup',
+      dimension: 'wg'
     },
     'by-type': {
-      title: 'By type',
-      dim: 'type',
-      sql: function (chipKeysSql) {
-        return (
-          "SELECT COALESCE(NULLIF(jst.Type, ''), '(unknown)') AS k, count(*) AS n " +
-          'FROM prepared_tickets pt ' +
-          'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
-          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
+      pageTitle: 'By type',
+      columnLabel: 'Type',
+      dimension: 'type'
     },
     'by-artifact': {
-      title: 'By artifact',
-      dim: 'artifact',
-      sql: function (chipKeysSql) {
-        return (
-          'SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n ' +
-          'FROM prepared_ticket_artifacts ' +
-          'WHERE TicketKey IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
+      pageTitle: 'By artifact',
+      columnLabel: 'Artifact',
+      dimension: 'artifact'
     },
     'by-page': {
-      title: 'By page',
-      dim: 'page',
-      sql: function (chipKeysSql) {
-        return (
-          'SELECT Value AS k, COUNT(DISTINCT TicketKey) AS n ' +
-          'FROM prepared_ticket_pages ' +
-          'WHERE TicketKey IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
+      pageTitle: 'By page',
+      columnLabel: 'Page',
+      dimension: 'page'
     },
     'by-impact': {
-      title: 'By impact',
-      dim: 'impact',
-      sql: function (chipKeysSql) {
-        return (
-          'SELECT k, count(*) AS n FROM (' +
-          "SELECT COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') AS k FROM prepared_tickets " +
-          'WHERE Key IN (' + chipKeysSql + ') ' +
-          'UNION ALL ' +
-          "SELECT COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') AS k FROM prepared_tickets " +
-          'WHERE Key IN (' + chipKeysSql + ')' +
-          ') GROUP BY k ORDER BY n DESC, k'
-        );
-      },
+      pageTitle: 'By impact',
+      columnLabel: 'Impact',
+      dimension: 'impact'
     },
     'by-specification': {
-      title: 'By specification',
-      dim: 'spec',
-      sql: function (chipKeysSql) {
-        return (
-          "SELECT COALESCE(NULLIF(pth.Specification, ''), '(unknown)') AS k, " +
-          '       COUNT(DISTINCT pt.Key) AS n ' +
-          'FROM prepared_tickets pt ' +
-          'LEFT JOIN prepared_ticket_hydration pth ON pth.TicketKey = pt.Key ' +
-          'WHERE pt.Key IN (' + chipKeysSql + ') ' +
-          'GROUP BY k ORDER BY n DESC, k'
-        );
-      },
-    },
+      pageTitle: 'By specification',
+      columnLabel: 'Specification',
+      dimension: 'spec'
+    }
   };
-
-  // Order of columns on the landing page. by-recommendation is gone;
-  // by-artifact and by-page are new.
-  const LandingCrosscutOrder = [
+  var landingCrosscutOrder = [
     'by-workgroup',
     'by-type',
     'by-artifact',
     'by-page',
     'by-impact',
-    'by-specification',
+    'by-specification'
   ];
 
-  // ------- Chip-composed WHERE for the ticket list and crosscuts -------
-
-  // Maps a chip dimension to the predicate it injects against pt.Key,
-  // plus the params object to bind. Used by both Views.list and the
-  // crosscut SQL builders.
-  function chipPredicateAndParams(dim, values, paramPrefix) {
-    if (!values || values.length === 0) return null;
-    const placeholders = [];
-    /** @type {{[k: string]: string}} */
-    const params = {};
-    for (let i = 0; i < values.length; i++) {
-      const pname = '$' + paramPrefix + dim + i;
-      placeholders.push(pname);
-      params[pname] = values[i];
-    }
-    const inList = placeholders.join(', ');
-    switch (dim) {
-      case 'spec':
-        return {
-          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_hydration WHERE Specification IN (' + inList + '))',
-          params: params,
-        };
-      case 'wg':
-        return {
-          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE WorkGroup IN (' + inList + '))',
-          params: params,
-        };
-      case 'type':
-        return {
-          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE Type IN (' + inList + '))',
-          params: params,
-        };
-      case 'project':
-        return {
-          predicate: 'pt.Key IN (SELECT Key FROM jira_processing_source_tickets WHERE Project IN (' + inList + '))',
-          params: params,
-        };
-      case 'artifact':
-        return {
-          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_artifacts WHERE Value IN (' + inList + '))',
-          params: params,
-        };
-      case 'page':
-        return {
-          predicate: 'pt.Key IN (SELECT TicketKey FROM prepared_ticket_pages WHERE Value IN (' + inList + '))',
-          params: params,
-        };
-      case 'impact':
-        return {
-          predicate:
-            'pt.Key IN (SELECT Key FROM prepared_tickets WHERE ' +
-            "COALESCE(NULLIF(ProposalAImpact, ''), '(unknown)') IN (" + inList + ') ' +
-            'OR ' +
-            "COALESCE(NULLIF(ProposalBImpact, ''), '(unknown)') IN (" + inList + '))',
-          params: params,
-        };
-      default:
-        return null;
-    }
-  }
-
-  // Returns { sql, params } where `sql` is a subquery yielding the set of
-  // ticket keys that survive the active chip filter (excluding the chip
-  // dimensions named in `excludeDims`). Used to scope crosscut counts to
-  // the post-chip data set without zeroing out the column being filtered.
-  function buildChipKeysSubquery(excludeDims) {
-    const excludeSet = {};
-    if (excludeDims) {
-      for (let i = 0; i < excludeDims.length; i++) excludeSet[excludeDims[i]] = true;
-    }
-    const predicates = [];
-    /** @type {{[k: string]: string}} */
-    const params = {};
-    let idx = 0;
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      if (excludeSet[dim]) continue;
-      const values = ActiveChips[dim];
-      const part = chipPredicateAndParams(dim, values, 'ckq' + idx + '_');
-      if (!part) continue;
-      predicates.push(part.predicate);
-      for (const p in part.params) params[p] = part.params[p];
-      idx++;
-    }
-    if (predicates.length === 0) {
-      return { sql: 'SELECT Key FROM prepared_tickets', params: {} };
-    }
-    return {
-      sql: 'SELECT pt.Key FROM prepared_tickets pt WHERE ' + predicates.join(' AND '),
-      params: params,
-    };
-  }
-
-  // Returns { where, params } scoping Views.list's main SELECT by every
-  // active chip dimension. Empty where when no chips are active.
-  function buildListChipWhere() {
-    const predicates = [];
-    /** @type {{[k: string]: string}} */
-    const params = {};
-    let idx = 0;
-    for (let i = 0; i < FilterableDimensions.length; i++) {
-      const dim = FilterableDimensions[i];
-      const values = ActiveChips[dim];
-      const part = chipPredicateAndParams(dim, values, 'cw' + idx + '_');
-      if (!part) continue;
-      predicates.push(part.predicate);
-      for (const p in part.params) params[p] = part.params[p];
-      idx++;
-    }
-    if (predicates.length === 0) {
-      return { where: '', params: null };
-    }
-    return { where: ' WHERE ' + predicates.join(' AND '), params: params };
-  }
-
-  // Returns { where, params } scoping the topic-list SELECT (alias `t`)
-  // by every active chip dimension. Direct-column dimensions
-  // (`wg`, `spec`, `type`) translate into case-insensitive IN-lists on
-  // columns of prepared_ticket_topics; the remaining dimensions
-  // (`artifact`, `page`, `impact`, `project`) translate into a
-  // member-ticket subquery built from `buildChipKeysSubquery` with the
-  // direct-column dims excluded (so they aren't double-applied).
-  function buildTopicChipWhere() {
-    const predicates = ['1=1'];
-    /** @type {{[k: string]: string}} */
-    const params = {};
-    let idx = 0;
-
-    function pushInList(column, values) {
-      const placeholders = [];
-      for (let i = 0; i < values.length; i++) {
-        const pname = '$tw' + idx + '_' + i;
-        placeholders.push(pname);
-        params[pname] = String(values[i]).toLowerCase();
-      }
-      predicates.push('LOWER(' + column + ') IN (' + placeholders.join(', ') + ')');
-      idx++;
-    }
-
-    const wgValues = ActiveChips['wg'];
-    if (wgValues && wgValues.length > 0) pushInList('t.WorkGroupDisplay', wgValues);
-    const specValues = ActiveChips['spec'];
-    if (specValues && specValues.length > 0) pushInList('t.Specification', specValues);
-    const typeValues = ActiveChips['type'];
-    if (typeValues && typeValues.length > 0) pushInList('t.Type', typeValues);
-
-    // Member-ticket dimensions: build the surviving-key subquery without
-    // the direct-column dims (they're already applied above).
-    const memberDims = ['artifact', 'page', 'impact', 'project'];
-    let anyMember = false;
-    for (let i = 0; i < memberDims.length; i++) {
-      const dim = memberDims[i];
-      const values = ActiveChips[dim];
-      if (values && values.length > 0) { anyMember = true; break; }
-    }
-    if (anyMember) {
-      const sub = buildChipKeysSubquery(['wg', 'spec', 'type']);
-      // Params are namespaced ($ckq…) and disjoint from the topic
-      // chip-where's $tw… params, so merge them directly.
-      for (const k in sub.params) params[k] = sub.params[k];
-      predicates.push(
-        't.RowId IN (SELECT m.TopicRowId FROM prepared_ticket_topic_members m ' +
-        'WHERE m.TicketKey IN (' + sub.sql + '))'
-      );
-      idx++;
-    }
-
-    return {
-      where: ' WHERE ' + predicates.join(' AND '),
-      params: Object.keys(params).length > 0 ? params : null,
-    };
-  }
-
-  const Views = {
+  var Views = {
     landing: function (main) {
       renderChipBanner(main);
+      var ticketKeys = buildTicketKeysSubquery([]);
+      var totalRows = query(
+        'SELECT COUNT(*) AS Count FROM (' + ticketKeys.sql + ')',
+        ticketKeys.params).rows;
+      var total = totalRows.length ? Number(totalRows[0].Count) : 0;
 
-      // Post-chip surviving ticket count.
-      const chipKeys = buildChipKeysSubquery([]);
-      const totalRes = query('SELECT count(*) AS n FROM (' + chipKeys.sql + ')', chipKeys.params);
-      const total = totalRes.rows.length ? totalRes.rows[0].n : 0;
-
-      const summaryRow = el('p', { class: 'summary-row' });
-      const countSpan = el('span', null,
-        (total === 0 && hasAnyActiveChips())
-          ? '0 prepared tickets match this filter.'
-          : (total + ' prepared tickets in this run.'));
-      summaryRow.appendChild(countSpan);
-
-      const showListLink = el('a', { href: '#/list' + currentHashSuffix(), class: 'show-ticket-list' },
-        'Show Ticket List →');
-      summaryRow.appendChild(showListLink);
-
-      // Topic surface affordance: render `Show Topic List →` next to
-      // the ticket-list link. The trimmer guarantees no orphan topics
-      // ship in the inlined DB, so the probe just counts surviving
-      // topic rows. Defensive try/catch handles older inlined DBs
-      // emitted before the topic tables existed.
-      let topicsTotal = 0;
-      try {
-        const topicsRes = query('SELECT count(*) AS n FROM prepared_ticket_topics', null);
-        topicsTotal = (topicsRes.rows.length > 0 && topicsRes.rows[0].n != null)
-          ? Number(topicsRes.rows[0].n) : 0;
-      } catch (e) {
-        topicsTotal = 0;
-      }
-      if (topicsTotal > 0) {
-        const showTopicLink = el('a', {
+      var summary = el('p', { class: 'summary-row' });
+      summary.appendChild(el(
+        'span',
+        null,
+        total + (total === 1
+          ? ' prepared ticket in this run.'
+          : ' prepared tickets in this run.')));
+      var links = el('span', { class: 'summary-links' });
+      links.appendChild(el('a', {
+        href: '#/list' + currentHashSuffix(),
+        class: 'show-ticket-list'
+      }, 'Show Ticket List →'));
+      var topicCount = Number(query(
+        'SELECT COUNT(*) AS Count FROM topics',
+        null).rows[0].Count);
+      if (topicCount > 0) {
+        links.appendChild(el('a', {
           href: '#/topics' + currentHashSuffix(),
-          class: 'show-topic-list',
-        }, 'Show Topic List →');
-        summaryRow.appendChild(showTopicLink);
+          class: 'show-topic-list'
+        }, 'Show Topic List →'));
       } else {
-        const disabled = el('span', {
+        links.appendChild(el('span', {
           class: 'show-topic-list show-topic-list-disabled',
-          title: 'No topics in this run.',
-        }, 'Show Topic List →');
-        summaryRow.appendChild(disabled);
+          title: 'No topics in this run.'
+        }, 'Show Topic List →'));
       }
-      main.appendChild(summaryRow);
+      summary.appendChild(links);
+      main.appendChild(summary);
 
-      const grid = el('div', { class: 'summary-grid' });
-      for (let i = 0; i < LandingCrosscutOrder.length; i++) {
-        const route = LandingCrosscutOrder[i];
-        const cfg = Crosscuts[route];
-        if (!cfg) continue;
-        const section = buildSummarySectionFor(route, true);
-        if (section) grid.appendChild(section);
+      var grid = el('div', { class: 'summary-grid' });
+      for (var index = 0; index < landingCrosscutOrder.length; index++) {
+        grid.appendChild(buildCrosscutSection(landingCrosscutOrder[index]));
       }
       main.appendChild(grid);
     },
 
-    crosscutIndex: function (main, route) {
-      const cfg = Crosscuts[route];
-      if (!cfg) {
-        Views.notFound(main, '#/' + route);
-        return;
-      }
+    crosscut: function (main, route) {
+      var config = Crosscuts[route];
       renderChipBanner(main);
-      main.appendChild(el('h2', null, cfg.title));
-      const section = buildSummarySectionFor(route, false);
-      if (section) {
-        // Unwrap the inner section into main; strip the duplicate <h2>
-        // emitted by buildSummarySectionFor.
-        while (section.firstChild) {
-          const child = section.firstChild;
-          section.removeChild(child);
-          if (child.tagName && child.tagName.toLowerCase() === 'h2') continue;
-          main.appendChild(child);
-        }
-      }
+      setDocumentTitle(config.pageTitle);
+      main.appendChild(el('h2', null, config.pageTitle));
+      main.appendChild(buildCrosscutSection(route));
     },
 
-    list: function (main, filter) {
+    list: function (main) {
       renderChipBanner(main);
-      setDocTitle(chipsSubject());
-      const baseSql =
-        'SELECT pt.Key, jst.Title, jst.WorkGroup, jst.Status, jst.Type, ' +
-        'pt.ProposalAImpact, pt.ProposalBImpact, ' +
-        'pt.RequestSummary AS _SearchBody ' +
-        'FROM prepared_tickets pt ' +
-        'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key';
+      setDocumentTitle(
+        hasActiveChips()
+          ? 'Filtered tickets: ' + chipsSubject()
+          : 'All prepared tickets');
+      var ticketKeys = buildTicketKeysSubquery([]);
+      var rows = query(
+        'SELECT Key, Title, WorkGroup, Status, Type, ProposalAImpact, ' +
+        'ProposalBImpact, RequestSummary AS SearchBody FROM tickets ' +
+        'WHERE Key IN (' + ticketKeys.sql + ') ' +
+        'ORDER BY Key COLLATE NOCASE',
+        ticketKeys.params).rows;
 
-      // Chip-composed WHERE: every active chip dimension participates.
-      const chipBind = buildListChipWhere();
-      const wherePredicates = [];
-      /** @type {{[k: string]: any}} */
-      const bind = {};
-      if (chipBind.where) {
-        wherePredicates.push('(' + chipBind.where.replace(/^ WHERE /, '') + ')');
-        for (const k in chipBind.params) bind[k] = chipBind.params[k];
-      }
-
-      let heading;
-      if (hasAnyActiveChips()) {
-        heading = 'Filtered ticket list';
-      } else {
-        heading = 'All prepared tickets';
-      }
-
-      const where = wherePredicates.length > 0
-        ? ' WHERE ' + wherePredicates.join(' AND ')
-        : '';
-      const finalSql = baseSql + where + ' ORDER BY pt.Key';
-      const res = query(finalSql, Object.keys(bind).length > 0 ? bind : null);
-
-      main.appendChild(el('h2', null, heading + ' (' + res.rows.length + ')'));
-
-      const filterRow = el('div', { class: 'filter-row' });
-      const input = el('input', {
+      main.appendChild(el(
+        'h2',
+        null,
+        (hasActiveChips() ? 'Filtered ticket list' : 'All prepared tickets') +
+        ' (' + rows.length + ')'));
+      var filterRow = el('div', { class: 'filter-row' });
+      var input = el('input', {
         type: 'text',
         placeholder: 'Filter by key, title, or request summary…',
         autocomplete: 'off',
+        'aria-label': 'Filter ticket list'
       });
       filterRow.appendChild(input);
       main.appendChild(filterRow);
 
-      const countWrap = el('p', { class: 'muted' });
-      const countSpan = el('span', null, String(res.rows.length));
-      countWrap.appendChild(countSpan);
-      countWrap.appendChild(document.createTextNode(' rows'));
-      main.appendChild(countWrap);
+      var count = el('span', null, String(rows.length));
+      main.appendChild(el('p', { class: 'muted' }, [
+        count,
+        document.createTextNode(' rows')
+      ]));
 
-      const table = el('table');
-      const thead = el('thead');
-      const headRow = el('tr');
-
-      const columns = [
-        { label: 'Key',       get: function (r) { return String(r.Key || ''); },             cmp: 'key' },
-        { label: 'Title',     get: function (r) { return String(r.Title || ''); },           cmp: 'ci' },
-        { label: 'Workgroup', get: function (r) { return String(r.WorkGroup || ''); },       cmp: 'ci' },
-        { label: 'Status',    get: function (r) { return String(r.Status || ''); },          cmp: 'ci' },
-        { label: 'Type',      get: function (r) { return String(r.Type || ''); },            cmp: 'ci' },
-        { label: 'Impact A',  get: function (r) { return String(r.ProposalAImpact || ''); }, cmp: 'ci' },
-        { label: 'Impact B',  get: function (r) { return String(r.ProposalBImpact || ''); }, cmp: 'ci' },
-      ];
-
-      // Per-mount sort state — resets every time the list view re-renders
-      // because `let` locals live in the closure created by this call.
-      let sortCol = 'Key';
-      let sortDir = 'asc';
-
-      const headerCells = [];
-      for (let ci = 0; ci < columns.length; ci++) {
-        const col = columns[ci];
-        const th = el('th', { class: 'sortable', role: 'button', tabindex: '0', 'aria-sort': 'none' }, col.label);
-        const onActivate = (function (label) {
-          return function () {
-            if (sortCol === label) {
-              sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
-            } else {
-              sortCol = label;
-              sortDir = 'asc';
+      var table = components.createSortableTable({
+        rows: rows,
+        initialSort: { key: 'key', direction: 'ascending' },
+        ariaLabel: 'Prepared tickets',
+        columns: [
+          {
+            key: 'key',
+            label: 'Key',
+            value: function (row) { return row.Key; },
+            compare: 'natural',
+            render: function (row) {
+              return el('a', {
+                href: '#/ticket/' + encodeURIComponent(String(row.Key)) +
+                  currentHashSuffix()
+              }, String(row.Key));
             }
-            renderRows(input.value);
-            updateHeaderAffordances();
-          };
-        })(col.label);
-        th.addEventListener('click', onActivate);
-        th.addEventListener('keydown', function (ev) {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            onActivate();
+          },
+          {
+            key: 'title',
+            label: 'Title',
+            value: function (row) { return row.Title; }
+          },
+          {
+            key: 'workgroup',
+            label: 'Workgroup',
+            value: function (row) { return displayValue(row.WorkGroup); }
+          },
+          {
+            key: 'status',
+            label: 'Status',
+            value: function (row) { return displayValue(row.Status); }
+          },
+          {
+            key: 'type',
+            label: 'Type',
+            value: function (row) { return displayValue(row.Type); }
+          },
+          {
+            key: 'impact-a',
+            label: 'Impact A',
+            value: function (row) {
+              return displayValue(row.ProposalAImpact);
+            }
+          },
+          {
+            key: 'impact-b',
+            label: 'Impact B',
+            value: function (row) {
+              return displayValue(row.ProposalBImpact);
+            }
           }
-        });
-        headerCells.push({ th: th, label: col.label });
-        headRow.appendChild(th);
-      }
-      thead.appendChild(headRow);
-      table.appendChild(thead);
+        ]
+      });
+      main.appendChild(table.element);
 
-      function updateHeaderAffordances() {
-        for (let i = 0; i < headerCells.length; i++) {
-          const cell = headerCells[i];
-          const active = (cell.label === sortCol);
-          const glyph = active ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
-          cell.th.textContent = cell.label + glyph;
-          cell.th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
-        }
-      }
-
-      function compareFor(cmpType) {
-        if (cmpType === 'key') {
-          return function (a, b) {
-            return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-          };
-        }
-        return function (a, b) {
-          return a.localeCompare(b, undefined, { sensitivity: 'base' });
-        };
-      }
-
-      const tbody = el('tbody');
-      const renderRows = function (needle) {
-        clearChildren(tbody);
-        const n = needle.toLowerCase();
-        const filtered = [];
-        for (let i = 0; i < res.rows.length; i++) {
-          const r = res.rows[i];
-          if (n.length > 0) {
-            const hay = String(r.Key || '') + '\n' + String(r.Title || '') + '\n' + String(r._SearchBody || '');
-            if (hay.toLowerCase().indexOf(n) < 0) continue;
-          }
-          filtered.push(r);
-        }
-
-        let activeCol = null;
-        for (let i = 0; i < columns.length; i++) {
-          if (columns[i].label === sortCol) { activeCol = columns[i]; break; }
-        }
-        if (activeCol) {
-          const cmp = compareFor(activeCol.cmp);
-          const dirMul = (sortDir === 'desc') ? -1 : 1;
-          const get = activeCol.get;
-          filtered.sort(function (a, b) { return cmp(get(a), get(b)) * dirMul; });
-        }
-
-        for (let i = 0; i < filtered.length; i++) {
-          const r = filtered[i];
-          const tr = el('tr');
-          const keyCell = el('td');
-          keyCell.appendChild(el('a', { href: '#/ticket/' + encodeURIComponent(String(r.Key)) }, String(r.Key)));
-          tr.appendChild(keyCell);
-          tr.appendChild(el('td', null, String(r.Title || '')));
-          tr.appendChild(el('td', null, String(r.WorkGroup || '')));
-          tr.appendChild(el('td', null, String(r.Status || '')));
-          tr.appendChild(el('td', null, String(r.Type || '')));
-          tr.appendChild(el('td', null, String(r.ProposalAImpact || '')));
-          tr.appendChild(el('td', null, String(r.ProposalBImpact || '')));
-          tbody.appendChild(tr);
-        }
-        countSpan.textContent = needle.length > 0 ? (filtered.length + ' of ' + res.rows.length) : String(res.rows.length);
-      };
-
-      table.appendChild(tbody);
-      main.appendChild(table);
-
-      let debounce = 0;
+      var debounce = 0;
       input.addEventListener('input', function () {
         if (debounce) window.clearTimeout(debounce);
-        debounce = window.setTimeout(function () { renderRows(input.value); }, 150);
+        debounce = window.setTimeout(function () {
+          var needle = input.value.toLowerCase();
+          var filtered = rows.filter(function (row) {
+            return !needle ||
+              (String(row.Key || '') + '\n' +
+               String(row.Title || '') + '\n' +
+               String(row.SearchBody || '')).toLowerCase().indexOf(needle) >= 0;
+          });
+          table.setRows(filtered);
+          count.textContent = needle
+            ? filtered.length + ' of ' + rows.length
+            : String(rows.length);
+        }, 150);
       });
-      renderRows('');
-      updateHeaderAffordances();
+    },
+
+    topics: function (main) {
+      renderChipBanner(main);
+      setDocumentTitle(
+        hasActiveChips()
+          ? 'Filtered topics: ' + chipsSubject()
+          : 'Topics');
+      var ticketKeys = buildTicketKeysSubquery([]);
+      var parameters = {};
+      mergeParameters(parameters, ticketKeys.params);
+      var where = hasActiveChips()
+        ? ' WHERE t.RowId IN (' +
+          'SELECT DISTINCT m.TopicRowId FROM topic_members m ' +
+          'WHERE m.TicketKey IN (' + ticketKeys.sql + '))'
+        : '';
+      var rows = query(
+        'SELECT t.Id, t.ShortDescription, t.LongerDescription, ' +
+        't.WorkGroupDisplay, t.Specification, t.Type, t.RenderOrderHint, ' +
+        '(SELECT COUNT(*) FROM topic_groups g ' +
+        ' WHERE g.TopicRowId = t.RowId) AS GroupCount, ' +
+        '(SELECT COUNT(*) FROM topic_members m ' +
+        ' WHERE m.TopicRowId = t.RowId) AS TicketCount ' +
+        'FROM topics t' + where +
+        ' ORDER BY CASE WHEN t.RenderOrderHint IS NULL THEN 1 ELSE 0 END, ' +
+        't.RenderOrderHint, t.RowId',
+        parameters).rows;
+
+      main.appendChild(el(
+        'h2',
+        null,
+        (hasActiveChips() ? 'Filtered topic list' : 'Topics') +
+        ' (' + rows.length + ')'));
+      if (rows.length === 0) {
+        main.appendChild(el(
+          'p',
+          { class: 'muted' },
+          hasActiveChips()
+            ? 'No topics match this filter.'
+            : 'No topics in this run.'));
+        return;
+      }
+
+      var filterRow = el('div', { class: 'filter-row' });
+      var input = el('input', {
+        type: 'text',
+        placeholder: 'Filter by topic description…',
+        autocomplete: 'off',
+        'aria-label': 'Filter topic list'
+      });
+      filterRow.appendChild(input);
+      main.appendChild(filterRow);
+      var count = el('span', null, String(rows.length));
+      main.appendChild(el('p', { class: 'muted' }, [
+        count,
+        document.createTextNode(' rows')
+      ]));
+
+      var table = components.createSortableTable({
+        rows: rows,
+        initialSort: null,
+        ariaLabel: 'Discussion topics',
+        columns: [
+          {
+            key: 'topic',
+            label: 'Topic',
+            value: function (row) { return row.ShortDescription; },
+            render: function (row) {
+              return el('a', {
+                href: '#/topic/' + encodeURIComponent(String(row.Id)) +
+                  currentHashSuffix()
+              }, String(row.ShortDescription || ''));
+            }
+          },
+          {
+            key: 'workgroup',
+            label: 'Workgroup',
+            value: function (row) { return row.WorkGroupDisplay; }
+          },
+          {
+            key: 'specification',
+            label: 'Spec',
+            value: function (row) { return row.Specification; }
+          },
+          {
+            key: 'type',
+            label: 'Type',
+            value: function (row) { return row.Type; }
+          },
+          {
+            key: 'groups',
+            label: 'Groups',
+            value: function (row) { return row.GroupCount; },
+            compare: 'numeric'
+          },
+          {
+            key: 'tickets',
+            label: 'Tickets',
+            value: function (row) { return row.TicketCount; },
+            compare: 'numeric'
+          }
+        ]
+      });
+      main.appendChild(table.element);
+
+      var debounce = 0;
+      input.addEventListener('input', function () {
+        if (debounce) window.clearTimeout(debounce);
+        debounce = window.setTimeout(function () {
+          var needle = input.value.toLowerCase();
+          var filtered = rows.filter(function (row) {
+            return !needle ||
+              (String(row.ShortDescription || '') + '\n' +
+               String(row.LongerDescription || ''))
+                .toLowerCase().indexOf(needle) >= 0;
+          });
+          table.setRows(filtered);
+          count.textContent = needle
+            ? filtered.length + ' of ' + rows.length
+            : String(rows.length);
+        }, 150);
+      });
+    },
+
+    topic: function (main, topicId) {
+      var rows = query(
+        'SELECT * FROM topics WHERE Id = $id',
+        { $id: topicId }).rows;
+      if (rows.length === 0) {
+        renderChipBanner(main);
+        main.appendChild(el(
+          'p',
+          { class: 'error' },
+          'No topic with id ' + topicId + '.'));
+        return;
+      }
+      var topic = rows[0];
+      setDocumentTitle(String(topic.ShortDescription || topicId));
+      setBreadcrumb([
+        { label: 'Topics', href: '#/topics' + currentHashSuffix() },
+        {
+          label: String(topic.ShortDescription || topicId),
+          href: null
+        }
+      ]);
+      renderChipBanner(main);
+
+      var header = el('section', { class: 'topic-detail' });
+      header.appendChild(el(
+        'h2',
+        null,
+        String(topic.ShortDescription || '')));
+      var metadata = [
+        topic.WorkGroupDisplay,
+        topic.Specification,
+        topic.Type
+      ].filter(function (value) {
+        return value != null && String(value).trim() !== '';
+      });
+      if (metadata.length > 0) {
+        header.appendChild(el(
+          'p',
+          { class: 'topic-meta' },
+          metadata.join(' · ')));
+      }
+      if (topic.LongerDescription) {
+        header.appendChild(el(
+          'p',
+          { class: 'topic-longer' },
+          String(topic.LongerDescription)));
+      }
+      main.appendChild(header);
+
+      var groups = query(
+        'SELECT RowId, Id, FirstTicketKey, Rationale, OrderInTopic ' +
+        'FROM topic_groups WHERE TopicRowId = $topicRowId ' +
+        'ORDER BY OrderInTopic, RowId',
+        { $topicRowId: topic.RowId }).rows;
+      var members = query(
+        'SELECT TopicGroupRowId, TicketKey, Title, Status, Type, ' +
+        'OrderInContainer FROM topic_members ' +
+        'WHERE TopicRowId = $topicRowId ' +
+        'ORDER BY CASE WHEN TopicGroupRowId IS NULL THEN 1 ELSE 0 END, ' +
+        'TopicGroupRowId, OrderInContainer',
+        { $topicRowId: topic.RowId }).rows;
+      var membersByGroup = Object.create(null);
+      var ungrouped = [];
+      for (var memberIndex = 0;
+        memberIndex < members.length;
+        memberIndex++) {
+        var member = members[memberIndex];
+        if (member.TopicGroupRowId == null) {
+          ungrouped.push(member);
+        } else {
+          var groupKey = String(member.TopicGroupRowId);
+          if (!membersByGroup[groupKey]) membersByGroup[groupKey] = [];
+          membersByGroup[groupKey].push(member);
+        }
+      }
+
+      for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+        var group = groups[groupIndex];
+        var groupSection = el('section', { class: 'topic-group' });
+        var groupHeading = 'Group: ' + String(group.FirstTicketKey || '');
+        groupSection.appendChild(el('h3', null, groupHeading));
+        if (group.Rationale) {
+          groupSection.appendChild(el(
+            'p',
+            { class: 'muted' },
+            'Rationale: ' + String(group.Rationale)));
+        }
+        var groupMembers = membersByGroup[String(group.RowId)] || [];
+        if (groupMembers.length > 0) {
+          groupSection.appendChild(
+            createGroupedTicketTable(groupMembers, groupHeading));
+        } else {
+          groupSection.appendChild(el(
+            'p',
+            { class: 'muted' },
+            'No tickets in this group.'));
+        }
+        main.appendChild(groupSection);
+      }
+
+      if (ungrouped.length > 0) {
+        var ungroupedSection = el('section', { class: 'topic-group' });
+        var ungroupedHeading = groups.length > 0
+          ? 'Other tickets in this topic'
+          : 'Tickets in this topic';
+        ungroupedSection.appendChild(el('h3', null, ungroupedHeading));
+        ungroupedSection.appendChild(
+          createGroupedTicketTable(ungrouped, ungroupedHeading));
+        main.appendChild(ungroupedSection);
+      }
+      if (groups.length === 0 && ungrouped.length === 0) {
+        main.appendChild(el(
+          'p',
+          { class: 'muted' },
+          'No tickets in this topic.'));
+      }
+
+      main.appendChild(el('p', { class: 'topic-back' }, el('a', {
+        href: '#/topics' + currentHashSuffix()
+      }, '← Back to topics')));
     },
 
     ticket: function (main, key) {
-      const head = query(
-        'SELECT pt.*, jst.Title, jst.WorkGroup, jst.Status, jst.Type ' +
-        'FROM prepared_tickets pt ' +
-        'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = pt.Key ' +
-        'WHERE pt.Key = $k',
-        { $k: key });
-      if (head.rows.length === 0) {
-        main.appendChild(el('p', { class: 'error' }, 'No prepared ticket with key ' + key + '.'));
-        main.appendChild(el('p', null, el('a', { href: '#/list' }, '← Back to list')));
+      var rows = query(
+        'SELECT * FROM tickets WHERE Key = $key',
+        { $key: key }).rows;
+      if (rows.length === 0) {
+        main.appendChild(el(
+          'p',
+          { class: 'error' },
+          'No prepared ticket with key ' + key + '.'));
+        main.appendChild(el('p', null, el('a', {
+          href: '#/list' + currentHashSuffix()
+        }, '← Back to list')));
         return;
       }
-      const t = head.rows[0];
-      setDocTitle(t.Title ? String(t.Key) + ': ' + truncate(String(t.Title), 60) : String(t.Key));
+      var ticket = rows[0];
+      setDocumentTitle(
+        ticket.Title
+          ? String(ticket.Key) + ': ' + truncate(String(ticket.Title), 60)
+          : String(ticket.Key));
+      setBreadcrumb([
+        { label: 'List', href: '#/list' + currentHashSuffix() },
+        { label: String(ticket.Key), href: null }
+      ]);
+      renderChipBanner(main);
 
-      const repos = query('SELECT Repo, RepoCategory, Justification FROM prepared_ticket_repos WHERE TicketKey = $k ORDER BY Repo', { $k: key }).rows;
-      const relatedJira = query('SELECT AssociatedTicketKey, LinkType, Justification FROM prepared_ticket_related_jira WHERE TicketKey = $k ORDER BY AssociatedTicketKey', { $k: key }).rows;
-      const relatedZulip = query('SELECT ZulipThreadId, Justification FROM prepared_ticket_related_zulip WHERE TicketKey = $k ORDER BY ZulipThreadId', { $k: key }).rows;
-      const relatedGitHub = query('SELECT GitHubItemId, Justification FROM prepared_ticket_related_github WHERE TicketKey = $k ORDER BY GitHubItemId', { $k: key }).rows;
+      var people = query(
+        'SELECT Role, DisplayName, OrderInRole FROM ticket_people ' +
+        'WHERE TicketKey = $key ORDER BY Role, OrderInRole',
+        { $key: ticket.Key }).rows;
+      var reporter = null;
+      var assignee = null;
+      var requesters = [];
+      for (var personIndex = 0; personIndex < people.length; personIndex++) {
+        var person = people[personIndex];
+        if (person.Role === 'reporter') reporter = person.DisplayName;
+        else if (person.Role === 'assignee') assignee = person.DisplayName;
+        else if (person.Role === 'in-person-requester' &&
+                 person.DisplayName) {
+          requesters.push(String(person.DisplayName));
+        }
+      }
 
-      const hydrationParentRes = query('SELECT * FROM prepared_ticket_hydration WHERE TicketKey = $k', { $k: key });
-      const hydrationParent = hydrationParentRes.rows.length > 0 ? hydrationParentRes.rows[0] : null;
-
-      const buildMap = function (sql, idCol) {
-        const m = Object.create(null);
-        const rows = query(sql, { $k: key }).rows;
-        for (let i = 0; i < rows.length; i++) m[String(rows[i][idCol])] = rows[i];
-        return m;
-      };
-      const jiraHydration = buildMap('SELECT * FROM prepared_jira_hydration WHERE TicketKey = $k', 'JiraKey');
-      const zulipHydration = buildMap('SELECT * FROM prepared_zulip_hydration WHERE TicketKey = $k', 'ZulipThreadId');
-      const githubHydration = buildMap('SELECT * FROM prepared_github_hydration WHERE TicketKey = $k', 'GitHubItemId');
-      const repoHydration = buildMap('SELECT * FROM prepared_repo_hydration WHERE TicketKey = $k', 'Repo');
-      const jiraXref = query('SELECT * FROM prepared_ticket_jira_xref WHERE TicketKey = $k ORDER BY Source, JiraKey', { $k: key }).rows;
-
-      const headerWrap = el('section', { class: 'ticket-header' });
-      headerWrap.appendChild(el('h2', null, String(t.Key) + (t.Title ? ' — ' + String(t.Title) : '')));
-      const dl = el('dl');
-      const kv = function (k, v) {
-        dl.appendChild(el('dt', null, k));
-        dl.appendChild(el('dd', null, v == null || v === '' ? '—' : String(v)));
-      };
-      dl.appendChild(el('dt', null, 'Key'));
-      dl.appendChild(el('dd', null, el('a', {
-        href: 'https://jira.hl7.org/browse/' + encodeURIComponent(String(t.Key)),
+      var header = el('section', { class: 'ticket-header' });
+      header.appendChild(el(
+        'h2',
+        null,
+        String(ticket.Key) +
+          (ticket.Title ? ' — ' + String(ticket.Title) : '')));
+      var definitions = el('dl');
+      appendDefinition(definitions, 'Key', el('a', {
+        href: 'https://jira.hl7.org/browse/' +
+          encodeURIComponent(String(ticket.Key)),
         target: '_blank',
-        rel: 'noopener noreferrer',
-      }, String(t.Key))));
-      kv('Title', t.Title);
-      kv('Workgroup', t.WorkGroup);
-      kv('Status', t.Status);
-      kv('Type', t.Type);
-      kv('Priority', hydrationParent ? hydrationParent.Priority : null);
-      kv('Resolution', hydrationParent ? hydrationParent.Resolution : null);
-      kv('Specification', hydrationParent ? hydrationParent.Specification : null);
-      kv('Raised in', hydrationParent ? hydrationParent.RaisedInVersion : null);
-      kv('Selected ballot', hydrationParent ? hydrationParent.SelectedBallot : null);
-      kv('Change category', hydrationParent ? hydrationParent.ChangeCategory : null);
-      kv('Impact', hydrationParent ? hydrationParent.Impact : null);
-      kv('Comments', hydrationParent ? hydrationParent.CommentCount : null);
-      kv('Recommendation', t.Recommendation);
-      kv('Saved', t.SavedAt);
-      headerWrap.appendChild(dl);
-      if (hydrationParent && hydrationParent.HydrationStatus === 'unresolved') {
-        headerWrap.appendChild(el('p', { class: 'muted' }, 'Hydration unresolved: ' + String(hydrationParent.HydrationReason || '')));
+        rel: 'noopener noreferrer'
+      }, String(ticket.Key)));
+      appendDefinition(definitions, 'Title', ticket.Title);
+      appendDefinition(definitions, 'Workgroup', ticket.WorkGroup);
+      appendDefinition(definitions, 'Status', ticket.Status);
+      appendDefinition(definitions, 'Type', ticket.Type);
+      appendDefinition(definitions, 'Priority', ticket.Priority);
+      appendDefinition(definitions, 'Resolution', ticket.Resolution);
+      appendDefinition(definitions, 'Specification', ticket.Specification);
+      appendDefinition(definitions, 'Raised in', ticket.RaisedInVersion);
+      appendDefinition(definitions, 'Selected ballot', ticket.SelectedBallot);
+      appendDefinition(definitions, 'Change category', ticket.ChangeCategory);
+      appendDefinition(definitions, 'Impact', ticket.Impact);
+      appendDefinition(definitions, 'Comments', ticket.CommentCount);
+      appendDefinition(definitions, 'Reporter', reporter);
+      appendDefinition(definitions, 'Assignee', assignee);
+      if (requesters.length > 0) {
+        var requesterList = el('ul', { class: 'people-list' });
+        for (var requesterIndex = 0;
+          requesterIndex < requesters.length;
+          requesterIndex++) {
+          requesterList.appendChild(el('li', null, requesters[requesterIndex]));
+        }
+        appendDefinition(
+          definitions,
+          'In-person requesters',
+          requesterList);
       }
-      main.appendChild(headerWrap);
+      appendDefinition(definitions, 'Recommendation', ticket.Recommendation);
+      appendDefinition(definitions, 'Saved', ticket.SavedAt);
+      header.appendChild(definitions);
+      main.appendChild(header);
 
-      // HTML request / resolution (sourced from prepared_ticket_jira_content,
-      // backfilled at emit time from jira.db). Older inlined DBs lack the
-      // table, so query defensively. Prefer the authored HTML; fall back to
-      // the already-inlined plain-text variant rendered as an escaped <pre>
-      // (never through htmlBlock — plain text may contain literal <…>).
-      let content = { rows: [] };
-      try {
-        content = query('SELECT DescriptionHtml, ResolutionDescriptionHtml FROM prepared_ticket_jira_content WHERE TicketKey = $k', { $k: key });
-      } catch (e) { content = { rows: [] }; }
-      const c = content.rows[0] || {};
-
-      const descHtml = c.DescriptionHtml;
-      const descPlain = hydrationParent ? hydrationParent.DescriptionPlain : null;
-      if (descHtml != null && descHtml !== '') {
-        main.appendChild(accordion('Original request', htmlBlock(descHtml), true));
-      } else if (descPlain != null && descPlain !== '') {
-        main.appendChild(accordion('Original request', el('pre', null, String(descPlain)), true));
+      if (ticket.RequestHtml) {
+        main.appendChild(accordion(
+          'Original request',
+          htmlBlock(ticket.RequestHtml),
+          true));
+      } else if (ticket.RequestPlain) {
+        main.appendChild(accordion(
+          'Original request',
+          el('pre', null, String(ticket.RequestPlain)),
+          true));
       }
-
-      const resHtml = c.ResolutionDescriptionHtml;
-      const resPlain = hydrationParent ? hydrationParent.ResolutionDescriptionPlain : null;
-      if (resHtml != null && resHtml !== '') {
-        main.appendChild(accordion('Proposed / accepted resolution', htmlBlock(resHtml), true));
-      } else if (resPlain != null && resPlain !== '') {
-        main.appendChild(accordion('Proposed / accepted resolution', el('pre', null, String(resPlain)), true));
-      }
-
-      // Topic back-link(s): if this ticket is a member of one or more
-      // topics, render one `Member of topic: <ShortDescription>` line
-      // per topic, sorted by short description for deterministic order.
-      // Defensive try/catch: older inlined DBs may pre-date the topic
-      // schema entirely.
-      let topicMemberships = { rows: [] };
-      try {
-        topicMemberships = query(
-          'SELECT t.Id AS TopicId, t.ShortDescription AS Short ' +
-          'FROM prepared_ticket_topic_members m ' +
-          'INNER JOIN prepared_ticket_topics t ON t.RowId = m.TopicRowId ' +
-          'WHERE m.TicketKey = $k ORDER BY t.ShortDescription',
-          { $k: key });
-      } catch (e) {
-        topicMemberships = { rows: [] };
-      }
-      for (let ti = 0; ti < topicMemberships.rows.length; ti++) {
-        const tr = topicMemberships.rows[ti];
-        const p = el('p', { class: 'topic-back' });
-        p.appendChild(document.createTextNode('Member of topic: '));
-        p.appendChild(el('a', {
-          href: '#/topic/' + encodeURIComponent(String(tr.TopicId)) + currentHashSuffix(),
-        }, String(tr.Short || '')));
-        main.appendChild(p);
+      if (ticket.ResolutionHtml) {
+        main.appendChild(accordion(
+          'Proposed / accepted resolution',
+          htmlBlock(ticket.ResolutionHtml),
+          true));
+      } else if (ticket.ResolutionPlain) {
+        main.appendChild(accordion(
+          'Proposed / accepted resolution',
+          el('pre', null, String(ticket.ResolutionPlain)),
+          true));
       }
 
-      const body = el('section', { class: 'ticket-body' });
-      const sect = function (title, value) {
-        if (value == null || value === '') return;
-        body.appendChild(accordion(title, el('pre', null, String(value)), false));
-      };
-      const subsect = function (title, value) {
-        if (value == null || value === '') return;
-        body.appendChild(accordion(title, el('pre', null, String(value)), false));
-      };
-
-      sect('Request Summary', t.RequestSummary);
-      sect('Comment Summary', t.CommentSummary);
-      sect('Linked Ticket Summary', t.LinkedTicketSummary);
-      sect('Related Ticket Summary', t.RelatedTicketSummary);
-      sect('Related Zulip Summary', t.RelatedZulipSummary);
-      sect('Related GitHub Summary', t.RelatedGitHubSummary);
-      sect('Existing Proposed', t.ExistingProposed);
-
-      if (t.ProposalA || t.ProposalAJustification || t.ProposalAImpact) {
-        sect('Proposal A', t.ProposalA);
-        subsect('Proposal A — Justification', t.ProposalAJustification);
-        subsect('Proposal A — Impact', t.ProposalAImpact);
-      }
-      if (t.ProposalB || t.ProposalBJustification || t.ProposalBImpact) {
-        sect('Proposal B', t.ProposalB);
-        subsect('Proposal B — Justification', t.ProposalBJustification);
-        subsect('Proposal B — Impact', t.ProposalBImpact);
-      }
-      if (t.ProposalC || t.ProposalCJustification) {
-        sect('Proposal C', t.ProposalC);
-        subsect('Proposal C — Justification', t.ProposalCJustification);
-      }
-      if (t.Recommendation || t.RecommendationJustification) {
-        sect('Recommendation', t.Recommendation);
-        subsect('Recommendation — Justification', t.RecommendationJustification);
+      var topicMemberships = query(
+        'SELECT t.Id AS TopicId, t.ShortDescription AS Short ' +
+        'FROM topic_members m INNER JOIN topics t ON t.RowId = m.TopicRowId ' +
+        'WHERE m.TicketKey = $key ' +
+        'ORDER BY t.ShortDescription COLLATE NOCASE, t.Id',
+        { $key: ticket.Key }).rows;
+      for (var topicIndex = 0;
+        topicIndex < topicMemberships.length;
+        topicIndex++) {
+        var membership = topicMemberships[topicIndex];
+        var topicBack = el('p', { class: 'topic-back' });
+        topicBack.appendChild(document.createTextNode('Member of topic: '));
+        topicBack.appendChild(el('a', {
+          href: '#/topic/' +
+            encodeURIComponent(String(membership.TopicId)) +
+            currentHashSuffix()
+        }, String(membership.Short || '')));
+        main.appendChild(topicBack);
       }
 
+      var summarySources = query(
+        'SELECT SummaryKind, SourceKey, Label, Url FROM summary_sources ' +
+        'WHERE TicketKey = $key ORDER BY SummaryKind, SortKey, Label, SourceKey',
+        { $key: ticket.Key }).rows;
+      var sourcesByKind = Object.create(null);
+      for (var sourceIndex = 0;
+        sourceIndex < summarySources.length;
+        sourceIndex++) {
+        var source = summarySources[sourceIndex];
+        if (!sourcesByKind[source.SummaryKind]) {
+          sourcesByKind[source.SummaryKind] = [];
+        }
+        sourcesByKind[source.SummaryKind].push(source);
+      }
+
+      var body = el('section', { class: 'ticket-body' });
+      appendAuthoredSummary(
+        body,
+        'Request Summary',
+        ticket.RequestSummary,
+        []);
+      appendAuthoredSummary(
+        body,
+        'Comment Summary',
+        ticket.CommentSummary,
+        []);
+      appendAuthoredSummary(
+        body,
+        'Linked Ticket Summary',
+        ticket.LinkedTicketSummary,
+        sourcesByKind['linked-jira'] || []);
+      appendAuthoredSummary(
+        body,
+        'Related Ticket Summary',
+        ticket.RelatedTicketSummary,
+        sourcesByKind['related-jira'] || []);
+      appendAuthoredSummary(
+        body,
+        'Related Zulip Summary',
+        ticket.RelatedZulipSummary,
+        sourcesByKind['related-zulip'] || []);
+      appendAuthoredSummary(
+        body,
+        'Related GitHub Summary',
+        ticket.RelatedGitHubSummary,
+        []);
+      appendPlainSection(body, 'Existing Proposed', ticket.ExistingProposed);
+      appendProposalSections(body, 'A', ticket.ProposalA,
+        ticket.ProposalAJustification, ticket.ProposalAImpact);
+      appendProposalSections(body, 'B', ticket.ProposalB,
+        ticket.ProposalBJustification, ticket.ProposalBImpact);
+      appendProposalSections(body, 'C', ticket.ProposalC,
+        ticket.ProposalCJustification, null);
+      appendPlainSection(body, 'Recommendation', ticket.Recommendation);
+      appendPlainSection(
+        body,
+        'Recommendation — Justification',
+        ticket.RecommendationJustification);
       main.appendChild(body);
 
-      const sidebar = el('section', { class: 'related-sidebar' });
-      sidebar.appendChild(el('h2', null, 'Related items'));
+      var relatedItems = query(
+        'SELECT Kind, ItemKey, LinkType, Label, Url, Detail, Justification, ' +
+        'HydrationStatus, HydrationReason FROM related_items ' +
+        'WHERE TicketKey = $key ' +
+        'ORDER BY CASE Kind ' +
+        "WHEN 'repo' THEN 1 WHEN 'jira' THEN 2 WHEN 'jira-xref' THEN 3 " +
+        "WHEN 'zulip' THEN 4 ELSE 5 END, SortKey, ItemKey, LinkTypeKey",
+        { $key: ticket.Key }).rows;
+      renderRelatedItems(main, relatedItems);
 
-      const relatedList = function (label, items, renderItem) {
-        if (!items || items.length === 0) return;
-        sidebar.appendChild(el('h3', null, label));
-        const ul = el('ul');
-        for (let i = 0; i < items.length; i++) {
-          const li = el('li');
-          renderItem(li, items[i]);
-          ul.appendChild(li);
-        }
-        sidebar.appendChild(ul);
-      };
+      main.appendChild(el('p', { class: 'muted' }, el('a', {
+        href: '#/list' + currentHashSuffix()
+      }, '← Back to list')));
 
-      const appendUnresolvedBadge = function (li, hydrationRow) {
-        if (hydrationRow && hydrationRow.HydrationStatus === 'unresolved') {
-          li.appendChild(document.createTextNode(' '));
-          li.appendChild(el('span', { class: 'muted' }, '(unresolved: ' + String(hydrationRow.HydrationReason || '') + ')'));
-        }
-      };
-
-      relatedList('Repos', repos, function (li, r) {
-        const cat = r.RepoCategory ? ' [' + r.RepoCategory + ']' : '';
-        li.appendChild(document.createTextNode(String(r.Repo) + cat));
-        const h = repoHydration[String(r.Repo)];
-        if (h && h.HydrationStatus === 'resolved' && h.Description) {
-          li.appendChild(document.createTextNode(' · ' + String(h.Description)));
-        }
-        appendUnresolvedBadge(li, h);
-        if (r.Justification) {
-          li.appendChild(document.createElement('br'));
-          li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
-        }
-      });
-
-      const renderJiraRelatedItem = function (li, r, hydrationRow) {
-        const k = String(r.AssociatedTicketKey || r.JiraKey || '');
-        if (inRunKeys.has(k)) {
-          li.appendChild(el('a', { href: '#/ticket/' + encodeURIComponent(k) }, k));
-        } else {
-          li.appendChild(el('a', {
-            href: 'https://jira.hl7.org/browse/' + encodeURIComponent(k),
-            target: '_blank',
-            rel: 'noopener noreferrer',
-          }, k + ' ↗'));
-        }
-        if (hydrationRow && hydrationRow.HydrationStatus === 'resolved') {
-          const parts = [];
-          if (hydrationRow.Title) parts.push(String(hydrationRow.Title));
-          if (hydrationRow.Status) parts.push(String(hydrationRow.Status));
-          if (hydrationRow.Type) parts.push(String(hydrationRow.Type));
-          if (hydrationRow.Resolution) parts.push(String(hydrationRow.Resolution));
-          if (parts.length > 0) li.appendChild(document.createTextNode(' · ' + parts.join(' · ')));
-        }
-        if (r.LinkType) {
-          li.appendChild(document.createTextNode(' (' + r.LinkType + ')'));
-        }
-        appendUnresolvedBadge(li, hydrationRow);
-        if (r.Justification) {
-          li.appendChild(document.createElement('br'));
-          li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
-        }
-      };
-
-      relatedList('Related Jira tickets', relatedJira, function (li, r) {
-        const h = jiraHydration[String(r.AssociatedTicketKey || '')];
-        renderJiraRelatedItem(li, r, h);
-      });
-
-      if (jiraXref.length > 0) {
-        sidebar.appendChild(el('h3', null, 'Other Jira-declared links'));
-        const groups = {};
-        for (let i = 0; i < jiraXref.length; i++) {
-          const src = String(jiraXref[i].Source || '');
-          if (!groups[src]) groups[src] = [];
-          groups[src].push(jiraXref[i]);
-        }
-        const sources = Object.keys(groups).sort();
-        for (let i = 0; i < sources.length; i++) {
-          sidebar.appendChild(el('h4', null, sources[i]));
-          const ul = el('ul');
-          for (let j = 0; j < groups[sources[i]].length; j++) {
-            const xref = groups[sources[i]][j];
-            const li = el('li');
-            renderJiraRelatedItem(li, { JiraKey: xref.JiraKey }, jiraHydration[String(xref.JiraKey)]);
-            ul.appendChild(li);
-          }
-          sidebar.appendChild(ul);
-        }
-      }
-
-      relatedList('Related Zulip threads', relatedZulip, function (li, r) {
-        const h = zulipHydration[String(r.ZulipThreadId)];
-        if (h && h.HydrationStatus === 'resolved') {
-          const stream = h.StreamName || '';
-          const topic = h.Topic || '';
-          const headline = (stream ? stream + ' › ' : '') + topic;
-          li.appendChild(document.createTextNode(headline || String(r.ZulipThreadId)));
-          const meta = [];
-          if (h.MessageCount != null) meta.push(String(h.MessageCount) + ' messages');
-          if (h.LastMessageAt) meta.push('last ' + String(h.LastMessageAt));
-          if (meta.length > 0) li.appendChild(document.createTextNode(' · ' + meta.join(' · ')));
-          if (h.FirstMessageExcerpt) {
-            li.appendChild(document.createElement('br'));
-            li.appendChild(el('span', { class: 'muted' }, '“' + String(h.FirstMessageExcerpt) + '”'));
-          }
-        } else {
-          li.appendChild(document.createTextNode(String(r.ZulipThreadId)));
-        }
-        appendUnresolvedBadge(li, h);
-        if (r.Justification) {
-          li.appendChild(document.createElement('br'));
-          li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
-        }
-      });
-
-      relatedList('Related GitHub items', relatedGitHub, function (li, r) {
-        const id = String(r.GitHubItemId);
-        const h = githubHydration[id];
-        if (h && h.HydrationStatus === 'resolved') {
-          const kind = h.IsPullRequest ? '(PR)' : '(Issue)';
-          if (h.Path) {
-            li.appendChild(document.createTextNode((h.Repo ? String(h.Repo) + ': ' : '') + String(h.Path) +
-              (h.Title ? ' · ' + String(h.Title) : '')));
-          } else {
-            const headline = (h.Repo ? String(h.Repo) : '') + (h.Number != null ? '#' + h.Number : '');
-            li.appendChild(document.createTextNode((headline || id) +
-              (h.Title ? ' · ' + String(h.Title) : '') +
-              (h.State ? ' · ' + String(h.State) : '') + ' ' + kind));
-          }
-        } else {
-          li.appendChild(document.createTextNode(id));
-        }
-        appendUnresolvedBadge(li, h);
-        if (r.Justification) {
-          li.appendChild(document.createElement('br'));
-          li.appendChild(el('span', { class: 'muted' }, String(r.Justification)));
-        }
-      });
-
-      main.appendChild(sidebar);
-
-      const back = el('p', { class: 'muted' });
-      back.appendChild(el('a', { href: '#/list' }, '← Back to list'));
-      main.appendChild(back);
-
+      var copyRelatedItems = readCopyRelatedItems(ticket.Key);
       setCopyExport(function () {
         return serializeTicketMarkdown({
-          t: t,
-          hydrationParent: hydrationParent,
-          repos: repos,
-          relatedJira: relatedJira,
-          relatedZulip: relatedZulip,
-          relatedGitHub: relatedGitHub,
-          jiraHydration: jiraHydration,
-          zulipHydration: zulipHydration,
-          githubHydration: githubHydration,
-          repoHydration: repoHydration,
-          jiraXref: jiraXref,
-          topicMemberships: topicMemberships.rows,
+          ticket: ticket,
+          topicMemberships: topicMemberships,
+          repos: copyRelatedItems.repos,
+          relatedJira: copyRelatedItems.relatedJira,
+          jiraXrefs: copyRelatedItems.jiraXrefs,
+          relatedZulip: copyRelatedItems.relatedZulip,
+          relatedGitHub: copyRelatedItems.relatedGitHub
         });
       });
     },
 
     notFound: function (main, hash) {
-      main.appendChild(el('p', { class: 'error' }, 'No view for route ' + hash + '.'));
-      main.appendChild(el('p', null, el('a', { href: '#/' }, '← Home')));
-    },
-
-    topics: function (main) {
-      renderChipBanner(main);
-
-      const chip = buildTopicChipWhere();
-      const baseSql =
-        'SELECT t.Id AS Id, t.ShortDescription AS ShortDescription, ' +
-        '       t.LongerDescription AS LongerDescription, ' +
-        '       t.WorkGroupDisplay AS WorkGroupDisplay, ' +
-        '       t.WorkGroupClean AS WorkGroupClean, ' +
-        '       t.Specification AS Specification, t.Type AS Type, ' +
-        '       t.RenderOrderHint AS RenderOrderHint, ' +
-        '       (SELECT COUNT(*) FROM prepared_ticket_topic_groups g WHERE g.TopicRowId = t.RowId) AS GroupCount, ' +
-        '       (SELECT COUNT(*) FROM prepared_ticket_topic_members m WHERE m.TopicRowId = t.RowId) AS TicketCount ' +
-        'FROM prepared_ticket_topics t';
-      const orderBy =
-        ' ORDER BY (CASE WHEN t.RenderOrderHint IS NULL THEN 1 ELSE 0 END), ' +
-        't.RenderOrderHint ASC, t.ShortDescription ASC';
-      const finalSql = baseSql + chip.where + orderBy;
-      const res = query(finalSql, chip.params);
-
-      const heading = hasAnyActiveChips() ? 'Filtered topic list' : 'Topics';
-      main.appendChild(el('h2', null, heading + ' (' + res.rows.length + ')'));
-
-      if (res.rows.length === 0) {
-        main.appendChild(el('p', { class: 'muted' },
-          hasAnyActiveChips() ? 'No topics match this filter.' : 'No topics in this run.'));
-        return;
-      }
-
-      const filterRow = el('div', { class: 'filter-row' });
-      const input = el('input', {
-        type: 'text',
-        placeholder: 'Filter by topic description…',
-        autocomplete: 'off',
-      });
-      filterRow.appendChild(input);
-      main.appendChild(filterRow);
-
-      const countWrap = el('p', { class: 'muted' });
-      const countSpan = el('span', null, String(res.rows.length));
-      countWrap.appendChild(countSpan);
-      countWrap.appendChild(document.createTextNode(' rows'));
-      main.appendChild(countWrap);
-
-      const columns = [
-        { label: 'Topic',     get: function (r) { return String(r.ShortDescription || ''); }, cmp: 'ci' },
-        { label: 'Workgroup', get: function (r) { return String(r.WorkGroupDisplay || ''); }, cmp: 'ci' },
-        { label: 'Spec',      get: function (r) { return String(r.Specification || ''); },   cmp: 'ci' },
-        { label: 'Type',      get: function (r) { return String(r.Type || ''); },            cmp: 'ci' },
-        { label: 'Groups',    get: function (r) { return String(r.GroupCount != null ? r.GroupCount : ''); }, cmp: 'num' },
-        { label: 'Tickets',   get: function (r) { return String(r.TicketCount != null ? r.TicketCount : ''); }, cmp: 'num' },
-      ];
-
-      const table = el('table');
-      const thead = el('thead');
-      const headRow = el('tr');
-
-      // No initial sort column — keep the SQL-driven order
-      // (`RenderOrderHint` then `ShortDescription`) on first render.
-      let sortCol = null;
-      let sortDir = 'asc';
-
-      const headerCells = [];
-      for (let ci = 0; ci < columns.length; ci++) {
-        const col = columns[ci];
-        const th = el('th', { class: 'sortable', role: 'button', tabindex: '0', 'aria-sort': 'none' }, col.label);
-        const onActivate = (function (label) {
-          return function () {
-            if (sortCol === label) {
-              sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
-            } else {
-              sortCol = label;
-              sortDir = 'asc';
-            }
-            renderRows(input.value);
-            updateHeaderAffordances();
-          };
-        })(col.label);
-        th.addEventListener('click', onActivate);
-        th.addEventListener('keydown', function (ev) {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            onActivate();
-          }
-        });
-        headerCells.push({ th: th, label: col.label });
-        headRow.appendChild(th);
-      }
-      thead.appendChild(headRow);
-      table.appendChild(thead);
-
-      function updateHeaderAffordances() {
-        for (let i = 0; i < headerCells.length; i++) {
-          const cell = headerCells[i];
-          const active = (cell.label === sortCol);
-          const glyph = active ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
-          cell.th.textContent = cell.label + glyph;
-          cell.th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
-        }
-      }
-
-      function compareFor(cmpType) {
-        if (cmpType === 'num') {
-          return function (a, b) {
-            const na = Number(a);
-            const nb = Number(b);
-            if (!isFinite(na) && !isFinite(nb)) return 0;
-            if (!isFinite(na)) return 1;
-            if (!isFinite(nb)) return -1;
-            return na - nb;
-          };
-        }
-        return function (a, b) {
-          return a.localeCompare(b, undefined, { sensitivity: 'base' });
-        };
-      }
-
-      const tbody = el('tbody');
-      const renderRows = function (needle) {
-        clearChildren(tbody);
-        const n = needle.toLowerCase();
-        const filtered = [];
-        for (let i = 0; i < res.rows.length; i++) {
-          const r = res.rows[i];
-          if (n.length > 0) {
-            const hay = String(r.ShortDescription || '') + '\n' + String(r.LongerDescription || '');
-            if (hay.toLowerCase().indexOf(n) < 0) continue;
-          }
-          filtered.push(r);
-        }
-
-        if (sortCol) {
-          let activeCol = null;
-          for (let i = 0; i < columns.length; i++) {
-            if (columns[i].label === sortCol) { activeCol = columns[i]; break; }
-          }
-          if (activeCol) {
-            const cmp = compareFor(activeCol.cmp);
-            const dirMul = (sortDir === 'desc') ? -1 : 1;
-            const get = activeCol.get;
-            filtered.sort(function (a, b) { return cmp(get(a), get(b)) * dirMul; });
-          }
-        }
-
-        const suffix = currentHashSuffix();
-        for (let i = 0; i < filtered.length; i++) {
-          const r = filtered[i];
-          const tr = el('tr');
-          const topicCell = el('td');
-          topicCell.appendChild(el('a', {
-            href: '#/topic/' + encodeURIComponent(String(r.Id)) + suffix,
-          }, String(r.ShortDescription || '')));
-          tr.appendChild(topicCell);
-          tr.appendChild(el('td', null, String(r.WorkGroupDisplay || '')));
-          tr.appendChild(el('td', null, String(r.Specification || '')));
-          tr.appendChild(el('td', null, String(r.Type || '')));
-          tr.appendChild(el('td', null, String(r.GroupCount != null ? r.GroupCount : '')));
-          tr.appendChild(el('td', null, String(r.TicketCount != null ? r.TicketCount : '')));
-          tbody.appendChild(tr);
-        }
-        countSpan.textContent = needle.length > 0
-          ? (filtered.length + ' of ' + res.rows.length)
-          : String(res.rows.length);
-      };
-
-      table.appendChild(tbody);
-      main.appendChild(table);
-
-      let debounce = 0;
-      input.addEventListener('input', function () {
-        if (debounce) window.clearTimeout(debounce);
-        debounce = window.setTimeout(function () { renderRows(input.value); }, 150);
-      });
-      renderRows('');
-      updateHeaderAffordances();
-    },
-
-    topic: function (main, topicId) {
-      const head = query(
-        'SELECT * FROM prepared_ticket_topics WHERE Id = $id',
-        { $id: topicId });
-      if (head.rows.length === 0) {
-        renderChipBanner(main);
-        main.appendChild(el('p', { class: 'error' }, 'No topic with id ' + topicId + '.'));
-        main.appendChild(el('p', null, el('a', {
-          href: '#/topics' + currentHashSuffix(),
-        }, '← Back to topics')));
-        return;
-      }
-      const t = head.rows[0];
-
-      // Overwrite the route-time breadcrumb placeholder with the
-      // resolved short description.
-      setDocTitle(String(t.ShortDescription || topicId));
-      setBreadcrumb([
-        { label: 'Topics', href: '#/topics' + currentHashSuffix() },
-        { label: String(t.ShortDescription || topicId), href: null },
-      ]);
-
-      renderChipBanner(main);
-
-      const headerSection = el('section', { class: 'topic-detail' });
-      headerSection.appendChild(el('h2', null, String(t.ShortDescription || '')));
-      const metaParts = [];
-      if (t.WorkGroupDisplay) metaParts.push(String(t.WorkGroupDisplay));
-      if (t.Specification) metaParts.push(String(t.Specification));
-      if (t.Type) metaParts.push(String(t.Type));
-      if (metaParts.length > 0) {
-        headerSection.appendChild(el('p', { class: 'topic-meta' }, metaParts.join(' · ')));
-      }
-      if (t.LongerDescription) {
-        headerSection.appendChild(el('p', { class: 'topic-longer' }, String(t.LongerDescription)));
-      }
-      main.appendChild(headerSection);
-
-      const groupsRes = query(
-        'SELECT RowId, Id, FirstTicketKey, Rationale, OrderInTopic ' +
-        'FROM prepared_ticket_topic_groups WHERE TopicRowId = $rid ' +
-        'ORDER BY OrderInTopic, RowId',
-        { $rid: t.RowId });
-
-      const membersRes = query(
-        'SELECT m.TopicGroupRowId, m.OrderInContainer, m.TicketKey, ' +
-        '       jst.Title, jst.Status, jst.Type ' +
-        'FROM prepared_ticket_topic_members m ' +
-        'LEFT JOIN jira_processing_source_tickets jst ON jst.Key = m.TicketKey ' +
-        'WHERE m.TopicRowId = $rid ' +
-        'ORDER BY m.OrderInContainer, m.TicketKey',
-        { $rid: t.RowId });
-
-      // Partition members by TopicGroupRowId.
-      /** @type {{[rowId: string]: any[]}} */
-      const byGroup = Object.create(null);
-      const ungrouped = [];
-      for (let i = 0; i < membersRes.rows.length; i++) {
-        const m = membersRes.rows[i];
-        if (m.TopicGroupRowId == null) {
-          ungrouped.push(m);
-        } else {
-          const k = String(m.TopicGroupRowId);
-          if (!byGroup[k]) byGroup[k] = [];
-          byGroup[k].push(m);
-        }
-      }
-
-      function renderTicketTable(items) {
-        const table = el('table');
-        const thead = el('thead');
-        const headRow = el('tr');
-        headRow.appendChild(el('th', null, 'Key'));
-        headRow.appendChild(el('th', null, 'Title'));
-        headRow.appendChild(el('th', null, 'Status'));
-        headRow.appendChild(el('th', null, 'Type'));
-        thead.appendChild(headRow);
-        table.appendChild(thead);
-        const tbody = el('tbody');
-        for (let i = 0; i < items.length; i++) {
-          const r = items[i];
-          const tr = el('tr');
-          const keyCell = el('td');
-          keyCell.appendChild(el('a', {
-            href: '#/ticket/' + encodeURIComponent(String(r.TicketKey)),
-          }, String(r.TicketKey)));
-          tr.appendChild(keyCell);
-          tr.appendChild(el('td', null, String(r.Title || '')));
-          tr.appendChild(el('td', null, String(r.Status || '')));
-          tr.appendChild(el('td', null, String(r.Type || '')));
-          tbody.appendChild(tr);
-        }
-        table.appendChild(tbody);
-        return table;
-      }
-
-      for (let gi = 0; gi < groupsRes.rows.length; gi++) {
-        const g = groupsRes.rows[gi];
-        const section = el('section', { class: 'topic-group' });
-        section.appendChild(el('h3', null, 'Group: ' + String(g.FirstTicketKey || '')));
-        if (g.Rationale) {
-          const p = el('p', { class: 'muted' });
-          p.appendChild(document.createTextNode('Rationale: '));
-          p.appendChild(document.createTextNode(String(g.Rationale)));
-          section.appendChild(p);
-        }
-        const items = byGroup[String(g.RowId)] || [];
-        if (items.length === 0) {
-          section.appendChild(el('p', { class: 'muted' }, 'No tickets in this group.'));
-        } else {
-          section.appendChild(renderTicketTable(items));
-        }
-        main.appendChild(section);
-      }
-
-      if (ungrouped.length > 0) {
-        const section = el('section', { class: 'topic-group' });
-        section.appendChild(el('h3', null,
-          groupsRes.rows.length > 0 ? 'Other tickets in this topic' : 'Tickets in this topic'));
-        section.appendChild(renderTicketTable(ungrouped));
-        main.appendChild(section);
-      }
-
-      if (groupsRes.rows.length === 0 && ungrouped.length === 0) {
-        main.appendChild(el('p', { class: 'muted' }, 'No tickets in this topic.'));
-      }
-
-      const back = el('p', { class: 'topic-back' });
-      back.appendChild(el('a', { href: '#/topics' + currentHashSuffix() }, '← Back to topics'));
-      main.appendChild(back);
-    },
+      setDocumentTitle('Not found');
+      main.appendChild(el(
+        'p',
+        { class: 'error' },
+        'No view for route ' + hash + '.'));
+      main.appendChild(el(
+        'p',
+        null,
+        el('a', { href: '#/' }, '← Home')));
+    }
   };
 
-  // Builds a crosscut <section> for `route` (e.g., 'by-workgroup'). When
-  // `applyAutoHide` is true (landing grid), returns null if the column
-  // should be hidden because its own dimension is pinned by a chip or
-  // has ≤ 1 distinct non-null value in the post-chip data set.
-  function buildSummarySectionFor(route, applyAutoHide) {
-    const cfg = Crosscuts[route];
-    if (!cfg) return null;
-
-    // Exclude the column's own dim from the chip WHERE so the column
-    // doesn't pre-filter against the value it's about to render.
-    const ownDim = cfg.dim;
-    const chipKeys = ownDim
-      ? buildChipKeysSubquery([ownDim])
-      : buildChipKeysSubquery([]);
-    const sql = (typeof cfg.sql === 'function') ? cfg.sql(chipKeys.sql) : cfg.sql;
-    const res = query(sql, Object.keys(chipKeys.params).length > 0 ? chipKeys.params : null);
-
-    if (applyAutoHide && ownDim) {
-      // Hide if the dim is already pinned by an active chip.
-      if (ActiveChips[ownDim] && ActiveChips[ownDim].length > 0) return null;
-      // Hide if there is ≤ 1 distinct non-"(unknown)" value in the
-      // post-chip data set (column would add only noise).
-      let distinctReal = 0;
-      for (let i = 0; i < res.rows.length; i++) {
-        const k = res.rows[i].k;
-        if (k != null && String(k) !== '' && String(k) !== '(unknown)') distinctReal++;
-      }
-      if (distinctReal <= 1) return null;
-    }
-
-    const section = el('section');
-    section.appendChild(el('h2', null, cfg.title));
-    if (res.rows.length === 0) {
+  function buildCrosscutSection(route) {
+    var config = Crosscuts[route];
+    var ticketKeys = buildTicketKeysSubquery([config.dimension]);
+    var parameters = { $dimension: rendererDimensions[config.dimension] };
+    mergeParameters(parameters, ticketKeys.params);
+    var rows = query(
+      'SELECT f.ValueKey, MIN(f.DisplayValue) AS DisplayValue, ' +
+      'MIN(f.SortKey) AS SortKey, MAX(f.IsUnknown) AS IsUnknown, ' +
+      'COUNT(DISTINCT f.TicketKey) AS Count ' +
+      'FROM ticket_facets f ' +
+      'WHERE f.Dimension = $dimension ' +
+      'AND f.TicketKey IN (' + ticketKeys.sql + ') ' +
+      'GROUP BY f.ValueKey ' +
+      'ORDER BY IsUnknown, SortKey, DisplayValue COLLATE NOCASE, ValueKey',
+      parameters).rows;
+    var section = el('section', { class: 'crosscut-card' });
+    if (rows.length === 0) {
       section.appendChild(el('p', { class: 'muted' }, 'No data.'));
       return section;
     }
-    const table = el('table');
-    const thead = el('thead');
-    const headRow = el('tr');
-    headRow.appendChild(el('th', null, cfg.title.replace(/^By /, '')));
-    headRow.appendChild(el('th', null, 'Count'));
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-    const tbody = el('tbody');
-    for (let i = 0; i < res.rows.length; i++) {
-      const r = res.rows[i];
-      const tr = el('tr');
-      const keyCell = el('td');
-      const keyText = String(r.k != null ? r.k : '');
-      if (ownDim) {
-        // Filterable column: row toggles the chip on the current view.
-        const btn = el('button', { type: 'button', class: 'crosscut-row' }, keyText);
-        (function (capturedDim, capturedValue) {
-          btn.addEventListener('click', function () {
-            toggleChip(capturedDim, capturedValue);
-          });
-        })(ownDim, keyText);
-        keyCell.appendChild(btn);
-      } else {
-        // Non-filterable column: row stays a navigation link.
-        keyCell.appendChild(el('a', { href: '#/' + route + '/' + encodeURIComponent(keyText) }, keyText));
-      }
-      tr.appendChild(keyCell);
-      tr.appendChild(el('td', null, String(r.n)));
-      tbody.appendChild(tr);
-    }
-    table.appendChild(tbody);
-    section.appendChild(table);
+
+    var table = components.createSortableTable({
+      rows: rows,
+      initialSort: { key: 'category', direction: 'ascending' },
+      className: 'crosscut-table',
+      ariaLabel: config.pageTitle + ' crosscut',
+      columns: [
+        {
+          key: 'category',
+          label: config.columnLabel,
+          value: function (row) { return row.DisplayValue; },
+          unknownLast: true,
+          isUnknown: function (row) {
+            return Number(row.IsUnknown) === 1;
+          },
+          render: function (row) {
+            var button = el('button', {
+              type: 'button',
+              class: 'crosscut-row'
+            }, String(row.DisplayValue));
+            button.addEventListener('click', function () {
+              openFacetList(config.dimension, String(row.ValueKey));
+            });
+            return button;
+          }
+        },
+        {
+          key: 'count',
+          label: 'Count',
+          value: function (row) { return row.Count; },
+          compare: 'numeric'
+        }
+      ]
+    });
+    section.appendChild(table.element);
     return section;
   }
 
-  // ---- Copy for AI (shared convention; identical across tools) -------------
-  // A top-right "Copy for AI" button on detail/leaf views. It serializes the
-  // current view from the in-memory rows to markdown (CurrentExport) and writes
-  // it to the clipboard, with an execCommand fallback for file:// where the
-  // async Clipboard API is unavailable. Detail views opt in via setCopyExport();
-  // the router hides the button again via clearCopyExport() on every route.
+  function createGroupedTicketTable(items, label) {
+    var region = el('div', {
+      class: 'table-overflow',
+      role: 'region',
+      tabindex: '0',
+      'aria-label': label + ' ticket table'
+    });
+    var table = el('table', { class: 'grouped-ticket-table' });
+    var colgroup = el('colgroup');
+    colgroup.appendChild(el('col', { class: 'group-col-key' }));
+    colgroup.appendChild(el('col', { class: 'group-col-title' }));
+    colgroup.appendChild(el('col', { class: 'group-col-status' }));
+    colgroup.appendChild(el('col', { class: 'group-col-type' }));
+    table.appendChild(colgroup);
+    var thead = el('thead');
+    var headerRow = el('tr');
+    ['Key', 'Title', 'Status', 'Type'].forEach(function (heading) {
+      headerRow.appendChild(el('th', { scope: 'col' }, heading));
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    var tbody = el('tbody');
+    for (var index = 0; index < items.length; index++) {
+      var item = items[index];
+      var row = el('tr');
+      row.appendChild(el('td', null, el('a', {
+        href: '#/ticket/' + encodeURIComponent(String(item.TicketKey)) +
+          currentHashSuffix()
+      }, String(item.TicketKey))));
+      row.appendChild(el('td', null, String(item.Title || '')));
+      row.appendChild(el('td', null, displayValue(item.Status)));
+      row.appendChild(el('td', null, displayValue(item.Type)));
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    region.appendChild(table);
+    return region;
+  }
 
-  var CurrentExport = null;
+  function appendDefinition(list, label, value) {
+    list.appendChild(el('dt', null, label));
+    var definition = el('dd');
+    if (value instanceof Node) definition.appendChild(value);
+    else definition.textContent =
+      value == null || String(value).trim() === '' ? '—' : String(value);
+    list.appendChild(definition);
+  }
+
+  function appendAuthoredSummary(body, title, value, sources) {
+    if (value == null || String(value).trim() === '') return;
+    body.appendChild(
+      components.createSummarySection(title, String(value), sources));
+  }
+
+  function appendPlainSection(body, title, value) {
+    if (value == null || String(value).trim() === '') return;
+    body.appendChild(accordion(
+      title,
+      el('pre', null, String(value)),
+      false));
+  }
+
+  function appendProposalSections(
+    body,
+    proposalName,
+    proposal,
+    justification,
+    impact) {
+    appendPlainSection(body, 'Proposal ' + proposalName, proposal);
+    appendPlainSection(
+      body,
+      'Proposal ' + proposalName + ' — Justification',
+      justification);
+    appendPlainSection(
+      body,
+      'Proposal ' + proposalName + ' — Impact',
+      impact);
+  }
+
+  function renderRelatedItems(main, rows) {
+    var sidebar = el('section', { class: 'related-sidebar' });
+    sidebar.appendChild(el('h2', null, 'Related items'));
+    var groups = [
+      { kind: 'repo', label: 'Repos' },
+      { kind: 'jira', label: 'Related Jira tickets' },
+      { kind: 'jira-xref', label: 'Other Jira-declared links' },
+      { kind: 'zulip', label: 'Related Zulip threads' },
+      { kind: 'github', label: 'Related GitHub items' }
+    ];
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      var group = groups[groupIndex];
+      var items = rows.filter(function (row) {
+        return row.Kind === group.kind;
+      });
+      if (items.length === 0) continue;
+      sidebar.appendChild(el('h3', null, group.label));
+      var list = el('ul');
+      for (var index = 0; index < items.length; index++) {
+        list.appendChild(renderRelatedItem(items[index]));
+      }
+      sidebar.appendChild(list);
+    }
+    main.appendChild(sidebar);
+  }
+
+  function renderRelatedItem(item) {
+    var listItem = el('li');
+    var label = String(item.Label || item.ItemKey || '');
+    if ((item.Kind === 'jira' || item.Kind === 'jira-xref') &&
+        inRunKeys[String(item.ItemKey).toLowerCase()]) {
+      listItem.appendChild(el('a', {
+        href: '#/ticket/' + encodeURIComponent(String(item.ItemKey)) +
+          currentHashSuffix()
+      }, label));
+    } else if ((item.Kind === 'jira' || item.Kind === 'jira-xref') &&
+               item.Url) {
+      listItem.appendChild(el('a', {
+        href: String(item.Url),
+        target: '_blank',
+        rel: 'noopener noreferrer'
+      }, label + ' ↗'));
+    } else {
+      listItem.appendChild(document.createTextNode(label));
+    }
+    if (item.LinkType) {
+      listItem.appendChild(document.createTextNode(
+        ' (' + String(item.LinkType) + ')'));
+    }
+    if (item.Detail) {
+      listItem.appendChild(document.createTextNode(
+        ' · ' + String(item.Detail)));
+    }
+    if (item.HydrationStatus === 'unresolved') {
+      listItem.appendChild(document.createTextNode(' '));
+      listItem.appendChild(el(
+        'span',
+        { class: 'muted' },
+        '(unresolved: ' + String(item.HydrationReason || '') + ')'));
+    }
+    if (item.Justification) {
+      listItem.appendChild(document.createElement('br'));
+      listItem.appendChild(el(
+        'span',
+        { class: 'muted' },
+        String(item.Justification)));
+    }
+    return listItem;
+  }
+
+  function query(sql, params) {
+    var statement = db.prepare(sql);
+    try {
+      if (params && Object.keys(params).length > 0) statement.bind(params);
+      var rows = [];
+      while (statement.step()) rows.push(statement.getAsObject());
+      return { columns: statement.getColumnNames(), rows: rows };
+    } finally {
+      statement.free();
+    }
+  }
+
+  function clearChildren(element) {
+    while (element.firstChild) element.removeChild(element.firstChild);
+  }
+
+  function el(tag, attributes, children) {
+    var node = document.createElement(tag);
+    if (attributes) {
+      for (var key in attributes) {
+        if (key === 'class') node.className = attributes[key];
+        else if (key === 'id') node.id = attributes[key];
+        else node.setAttribute(key, attributes[key]);
+      }
+    }
+    if (children != null) {
+      if (Array.isArray(children)) {
+        for (var index = 0; index < children.length; index++) {
+          appendChild(node, children[index]);
+        }
+      } else {
+        appendChild(node, children);
+      }
+    }
+    return node;
+  }
+
+  function appendChild(parent, child) {
+    if (child == null) return;
+    if (child instanceof Node) parent.appendChild(child);
+    else parent.appendChild(document.createTextNode(String(child)));
+  }
+
+  function renderError(main, message) {
+    clearChildren(main);
+    main.appendChild(el('p', { class: 'error' }, message));
+  }
+
+  function htmlBlock(rawHtml) {
+    var block = el('div', { class: 'md' });
+    if (rawHtml == null || rawHtml === '') return block;
+    if (typeof DOMPurify === 'undefined') {
+      block.textContent = String(rawHtml);
+      return block;
+    }
+    block.innerHTML = DOMPurify.sanitize(String(rawHtml));
+    return block;
+  }
+
+  function accordion(label, bodyNode, open) {
+    var details = el(
+      'details',
+      open ? { class: 'accordion', open: '' } : { class: 'accordion' });
+    details.appendChild(el('summary', null, el('h3', null, label)));
+    details.appendChild(el(
+      'div',
+      { class: 'accordion-body' },
+      bodyNode));
+    return details;
+  }
+
+  function setBreadcrumb(tail) {
+    var breadcrumb = document.getElementById('breadcrumb');
+    if (!breadcrumb) return;
+    clearChildren(breadcrumb);
+    var hasTail = Array.isArray(tail) && tail.length > 0;
+    var parts = [
+      { label: 'Chooser', href: '../index.html' },
+      { label: 'Discussion', href: hasTail ? '#/' : null }
+    ];
+    if (hasTail) {
+      for (var index = 0; index < tail.length; index++) {
+        parts.push(tail[index]);
+      }
+    }
+    for (var partIndex = 0; partIndex < parts.length; partIndex++) {
+      if (partIndex > 0) {
+        breadcrumb.appendChild(document.createTextNode(' › '));
+      }
+      var part = parts[partIndex];
+      breadcrumb.appendChild(
+        part.href
+          ? el('a', { href: part.href }, part.label)
+          : document.createTextNode(part.label));
+    }
+  }
+
+  function setDocumentTitle(subject) {
+    document.title = subject
+      ? subject + ' — ' + presentation.siteName
+      : presentation.siteName;
+  }
+
+  function displayValue(value) {
+    return value == null || String(value).trim() === ''
+      ? '(unknown)'
+      : String(value);
+  }
+
+  function truncate(value, maximumLength) {
+    if (!value || value.length <= maximumLength) return value;
+    return value.slice(0, maximumLength - 1) + '…';
+  }
 
   function installCopyButton() {
     if (document.querySelector('.copy-ai')) return;
     var header = document.querySelector('header');
     if (!header) return;
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'copy-ai';
-    btn.hidden = true;
-    btn.textContent = '📋 Copy for AI';
-    var status = document.createElement('span');
-    status.className = 'copy-ai-status';
-    status.setAttribute('role', 'status');
-    btn.addEventListener('click', function () {
+    var button = el('button', {
+      type: 'button',
+      class: 'copy-ai',
+      hidden: ''
+    }, '📋 Copy for AI');
+    var status = el('span', {
+      class: 'copy-ai-status',
+      role: 'status'
+    });
+    button.addEventListener('click', function () {
       try {
-        var md = CurrentExport && CurrentExport();
-        if (md) copyForAi(md);
+        var markdown = currentExport && currentExport();
+        if (markdown) copyForAi(markdown);
         else setCopyStatus('Nothing to copy');
-      } catch (e) {
+      } catch (error) {
         setCopyStatus('Copy failed');
       }
     });
-    header.appendChild(btn);
+    header.appendChild(button);
     header.appendChild(status);
   }
 
-  function setCopyStatus(msg) {
+  function setCopyStatus(message) {
     var status = document.querySelector('.copy-ai-status');
-    if (status) status.textContent = msg;
+    if (status) status.textContent = message;
   }
 
-  function setCopyExport(fn) {
-    CurrentExport = fn;
-    var btn = document.querySelector('.copy-ai');
-    if (btn) btn.hidden = false;
+  function setCopyExport(exporter) {
+    currentExport = exporter;
+    var button = document.querySelector('.copy-ai');
+    if (button) button.hidden = false;
     setCopyStatus('');
   }
 
   function clearCopyExport() {
-    CurrentExport = null;
-    var btn = document.querySelector('.copy-ai');
-    if (btn) btn.hidden = true;
+    currentExport = null;
+    var button = document.querySelector('.copy-ai');
+    if (button) button.hidden = true;
     setCopyStatus('');
   }
 
@@ -1773,220 +1521,299 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
         function () { setCopyStatus('Copied!'); },
-        function () { setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed'); }
-      );
+        function () {
+          setCopyStatus(
+            copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
+        });
     } else {
       setCopyStatus(copyViaTextarea(text) ? 'Copied!' : 'Copy failed');
     }
   }
 
   function copyViaTextarea(text) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.left = '-9999px';
-    ta.style.top = '0';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    if (textarea.setSelectionRange) {
+      textarea.setSelectionRange(0, text.length);
+    }
     var copied = false;
-    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
-    document.body.removeChild(ta);
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      copied = false;
+    }
+    document.body.removeChild(textarea);
     return copied;
   }
 
-  function mdEscapeCell(s) {
-    if (s == null) return '';
-    return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  function markdownCell(value) {
+    return value == null
+      ? ''
+      : String(value).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
   }
 
-  function mdTable(headers, rows) {
-    var out = '| ' + headers.map(mdEscapeCell).join(' | ') + ' |\n';
-    out += '| ' + headers.map(function () { return '---'; }).join(' | ') + ' |\n';
-    for (var i = 0; i < rows.length; i++) {
-      out += '| ' + rows[i].map(mdEscapeCell).join(' | ') + ' |\n';
+  function markdownTable(headers, rows) {
+    var output = '| ' + headers.map(markdownCell).join(' | ') + ' |\n';
+    output += '| ' + headers.map(function () {
+      return '---';
+    }).join(' | ') + ' |\n';
+    for (var index = 0; index < rows.length; index++) {
+      output += '| ' + rows[index].map(markdownCell).join(' | ') + ' |\n';
     }
-    return out;
-  }
-  // ---- end Copy for AI shared convention ----------------------------------
-
-  // ---- Copy for AI serializer (discussion / preparer specific) ------------
-
-  function serializeTicketMarkdown(ctx) {
-    var t = ctx.t || {};
-    var hp = ctx.hydrationParent;
-    var out = '# ' + String(t.Key || '') + (t.Title ? ' — ' + String(t.Title) : '') + '\n\n';
-
-    out += mdTable(['Field', 'Value'], [
-      ['Key', String(t.Key || '')],
-      ['Title', t.Title == null ? '' : String(t.Title)],
-      ['Workgroup', t.WorkGroup == null ? '' : String(t.WorkGroup)],
-      ['Status', t.Status == null ? '' : String(t.Status)],
-      ['Type', t.Type == null ? '' : String(t.Type)],
-      ['Priority', hp && hp.Priority != null ? String(hp.Priority) : ''],
-      ['Resolution', hp && hp.Resolution != null ? String(hp.Resolution) : ''],
-      ['Specification', hp && hp.Specification != null ? String(hp.Specification) : ''],
-      ['Raised in', hp && hp.RaisedInVersion != null ? String(hp.RaisedInVersion) : ''],
-      ['Selected ballot', hp && hp.SelectedBallot != null ? String(hp.SelectedBallot) : ''],
-      ['Change category', hp && hp.ChangeCategory != null ? String(hp.ChangeCategory) : ''],
-      ['Impact', hp && hp.Impact != null ? String(hp.Impact) : ''],
-      ['Comments', hp && hp.CommentCount != null ? String(hp.CommentCount) : ''],
-      ['Recommendation', t.Recommendation == null ? '' : String(t.Recommendation)],
-      ['Saved', t.SavedAt == null ? '' : String(t.SavedAt)]
-    ]) + '\n';
-
-    if (ctx.topicMemberships && ctx.topicMemberships.length > 0) {
-      for (var ti = 0; ti < ctx.topicMemberships.length; ti++) {
-        out += 'Member of topic: ' + String(ctx.topicMemberships[ti].Short || '') + '\n';
-      }
-      out += '\n';
-    }
-
-    // Original request / resolution — prefer the *Plain text (D2).
-    out += mdProseSection('Original request', hp ? hp.DescriptionPlain : null);
-    out += mdProseSection('Proposed / accepted resolution', hp ? hp.ResolutionDescriptionPlain : null);
-
-    // Prose sections (mirror sect/subsect) — only when present.
-    out += mdProseSection('Request Summary', t.RequestSummary);
-    out += mdProseSection('Comment Summary', t.CommentSummary);
-    out += mdProseSection('Linked Ticket Summary', t.LinkedTicketSummary);
-    out += mdProseSection('Related Ticket Summary', t.RelatedTicketSummary);
-    out += mdProseSection('Related Zulip Summary', t.RelatedZulipSummary);
-    out += mdProseSection('Related GitHub Summary', t.RelatedGitHubSummary);
-    out += mdProseSection('Existing Proposed', t.ExistingProposed);
-
-    if (t.ProposalA || t.ProposalAJustification || t.ProposalAImpact) {
-      out += mdProseSection('Proposal A', t.ProposalA);
-      out += mdProseSection('Proposal A — Justification', t.ProposalAJustification);
-      out += mdProseSection('Proposal A — Impact', t.ProposalAImpact);
-    }
-    if (t.ProposalB || t.ProposalBJustification || t.ProposalBImpact) {
-      out += mdProseSection('Proposal B', t.ProposalB);
-      out += mdProseSection('Proposal B — Justification', t.ProposalBJustification);
-      out += mdProseSection('Proposal B — Impact', t.ProposalBImpact);
-    }
-    if (t.ProposalC || t.ProposalCJustification) {
-      out += mdProseSection('Proposal C', t.ProposalC);
-      out += mdProseSection('Proposal C — Justification', t.ProposalCJustification);
-    }
-    if (t.Recommendation || t.RecommendationJustification) {
-      out += mdProseSection('Recommendation', t.Recommendation);
-      out += mdProseSection('Recommendation — Justification', t.RecommendationJustification);
-    }
-
-    out += '## Related items\n\n';
-
-    var repos = ctx.repos || [];
-    out += '### Repos (' + repos.length + ')\n\n';
-    if (repos.length > 0) {
-      out += mdTable(['Repo', 'Category', 'Detail', 'Justification'],
-        repos.map(function (r) {
-          return [String(r.Repo || ''), String(r.RepoCategory || ''),
-            repoHydrationDetail(ctx.repoHydration[String(r.Repo)]), String(r.Justification || '')];
-        })) + '\n';
-    } else {
-      out += '_None._\n\n';
-    }
-
-    var relatedJira = ctx.relatedJira || [];
-    out += '### Related Jira tickets (' + relatedJira.length + ')\n\n';
-    if (relatedJira.length > 0) {
-      out += mdTable(['Key', 'Link type', 'Detail', 'Justification'],
-        relatedJira.map(function (r) {
-          return [String(r.AssociatedTicketKey || ''), String(r.LinkType || ''),
-            jiraHydrationDetail(ctx.jiraHydration[String(r.AssociatedTicketKey || '')]), String(r.Justification || '')];
-        })) + '\n';
-    } else {
-      out += '_None._\n\n';
-    }
-
-    var jiraXref = ctx.jiraXref || [];
-    if (jiraXref.length > 0) {
-      out += '### Other Jira-declared links (' + jiraXref.length + ')\n\n';
-      out += mdTable(['Source', 'Key', 'Detail'],
-        jiraXref.map(function (x) {
-          return [String(x.Source || ''), String(x.JiraKey || ''),
-            jiraHydrationDetail(ctx.jiraHydration[String(x.JiraKey)])];
-        })) + '\n';
-    }
-
-    var relatedZulip = ctx.relatedZulip || [];
-    out += '### Related Zulip threads (' + relatedZulip.length + ')\n\n';
-    if (relatedZulip.length > 0) {
-      out += mdTable(['Thread', 'Detail', 'Justification'],
-        relatedZulip.map(function (r) {
-          return [String(r.ZulipThreadId || ''),
-            zulipHydrationDetail(ctx.zulipHydration[String(r.ZulipThreadId)]), String(r.Justification || '')];
-        })) + '\n';
-    } else {
-      out += '_None._\n\n';
-    }
-
-    var relatedGitHub = ctx.relatedGitHub || [];
-    out += '### Related GitHub items (' + relatedGitHub.length + ')\n\n';
-    if (relatedGitHub.length > 0) {
-      out += mdTable(['Item', 'Detail', 'Justification'],
-        relatedGitHub.map(function (r) {
-          return [String(r.GitHubItemId || ''),
-            githubHydrationDetail(ctx.githubHydration[String(r.GitHubItemId)]), String(r.Justification || '')];
-        })) + '\n';
-    } else {
-      out += '_None._\n\n';
-    }
-
-    return out;
+    return output;
   }
 
-  function mdProseSection(title, value) {
+  function markdownProseSection(title, value) {
     if (value == null || String(value).trim() === '') return '';
     return '## ' + title + '\n\n' + String(value).trim() + '\n\n';
   }
 
-  function repoHydrationDetail(h) {
-    if (!h) return '';
-    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
-    return (h.HydrationStatus === 'resolved' && h.Description) ? String(h.Description) : '';
+  function readCopyRelatedItems(ticketKey) {
+    var parameters = { $key: ticketKey };
+    var columns =
+      'SELECT ItemKey, LinkType, Label, Detail, Justification, ' +
+      'HydrationStatus, HydrationReason FROM related_items ';
+    return {
+      repos: query(
+        columns +
+        "WHERE TicketKey = $key AND Kind = 'repo' " +
+        'ORDER BY ItemKey, LinkTypeKey',
+        parameters).rows,
+      relatedJira: query(
+        columns +
+        "WHERE TicketKey = $key AND Kind = 'jira' " +
+        'ORDER BY ItemKey, LinkTypeKey',
+        parameters).rows,
+      jiraXrefs: query(
+        columns +
+        "WHERE TicketKey = $key AND Kind = 'jira-xref' " +
+        'ORDER BY LinkType, ItemKey',
+        parameters).rows,
+      relatedZulip: query(
+        columns +
+        "WHERE TicketKey = $key AND Kind = 'zulip' " +
+        'ORDER BY ItemKey',
+        parameters).rows,
+      relatedGitHub: query(
+        columns +
+        "WHERE TicketKey = $key AND Kind = 'github' " +
+        'ORDER BY ItemKey',
+        parameters).rows
+    };
   }
 
-  function jiraHydrationDetail(h) {
-    if (!h) return '';
-    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
-    if (h.HydrationStatus !== 'resolved') return '';
-    var parts = [];
-    if (h.Title) parts.push(String(h.Title));
-    if (h.Status) parts.push(String(h.Status));
-    if (h.Type) parts.push(String(h.Type));
-    if (h.Resolution) parts.push(String(h.Resolution));
-    return parts.join(' · ');
-  }
+  function serializeTicketMarkdown(context) {
+    var ticket = context.ticket || {};
+    var output = '# ' + String(ticket.Key || '') +
+      (ticket.Title ? ' — ' + String(ticket.Title) : '') + '\n\n';
+    output += markdownTable(['Field', 'Value'], [
+      ['Key', ticket.Key],
+      ['Title', ticket.Title],
+      ['Workgroup', ticket.WorkGroup],
+      ['Status', ticket.Status],
+      ['Type', ticket.Type],
+      ['Priority', ticket.Priority],
+      ['Resolution', ticket.Resolution],
+      ['Specification', ticket.Specification],
+      ['Raised in', ticket.RaisedInVersion],
+      ['Selected ballot', ticket.SelectedBallot],
+      ['Change category', ticket.ChangeCategory],
+      ['Impact', ticket.Impact],
+      ['Comments', ticket.CommentCount],
+      ['Recommendation', ticket.Recommendation],
+      ['Saved', ticket.SavedAt]
+    ]) + '\n';
 
-  function zulipHydrationDetail(h) {
-    if (!h) return '';
-    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
-    if (h.HydrationStatus !== 'resolved') return '';
-    var stream = h.StreamName || '';
-    var headline = (stream ? stream + ' › ' : '') + (h.Topic || '');
-    var detail = headline;
-    var meta = [];
-    if (h.MessageCount != null) meta.push(String(h.MessageCount) + ' messages');
-    if (h.LastMessageAt) meta.push('last ' + String(h.LastMessageAt));
-    if (meta.length > 0) detail += (detail ? ' · ' : '') + meta.join(' · ');
-    if (h.FirstMessageExcerpt) detail += (detail ? ' · ' : '') + '“' + String(h.FirstMessageExcerpt) + '”';
-    return detail;
-  }
-
-  function githubHydrationDetail(h) {
-    if (!h) return '';
-    if (h.HydrationStatus === 'unresolved') return 'unresolved: ' + String(h.HydrationReason || '');
-    if (h.HydrationStatus !== 'resolved') return '';
-    var kind = h.IsPullRequest ? '(PR)' : '(Issue)';
-    if (h.Path) {
-      return (h.Repo ? String(h.Repo) + ': ' : '') + String(h.Path) + (h.Title ? ' · ' + String(h.Title) : '');
+    var memberships = context.topicMemberships || [];
+    for (var membershipIndex = 0;
+      membershipIndex < memberships.length;
+      membershipIndex++) {
+      output += 'Member of topic: ' +
+        String(memberships[membershipIndex].Short || '') + '\n';
     }
-    var headline = (h.Repo ? String(h.Repo) : '') + (h.Number != null ? '#' + h.Number : '');
-    return headline + (h.Title ? ' · ' + String(h.Title) : '') + (h.State ? ' · ' + String(h.State) : '') + ' ' + kind;
+    if (memberships.length > 0) output += '\n';
+
+    output += markdownProseSection(
+      'Original request',
+      ticket.RequestPlain);
+    output += markdownProseSection(
+      'Proposed / accepted resolution',
+      ticket.ResolutionPlain);
+    [
+      ['Request Summary', ticket.RequestSummary],
+      ['Comment Summary', ticket.CommentSummary],
+      ['Linked Ticket Summary', ticket.LinkedTicketSummary],
+      ['Related Ticket Summary', ticket.RelatedTicketSummary],
+      ['Related Zulip Summary', ticket.RelatedZulipSummary],
+      ['Related GitHub Summary', ticket.RelatedGitHubSummary],
+      ['Existing Proposed', ticket.ExistingProposed]
+    ].forEach(function (section) {
+      output += markdownProseSection(section[0], section[1]);
+    });
+
+    if (ticket.ProposalA ||
+        ticket.ProposalAJustification ||
+        ticket.ProposalAImpact) {
+      output += markdownProseSection('Proposal A', ticket.ProposalA);
+      output += markdownProseSection(
+        'Proposal A — Justification',
+        ticket.ProposalAJustification);
+      output += markdownProseSection(
+        'Proposal A — Impact',
+        ticket.ProposalAImpact);
+    }
+    if (ticket.ProposalB ||
+        ticket.ProposalBJustification ||
+        ticket.ProposalBImpact) {
+      output += markdownProseSection('Proposal B', ticket.ProposalB);
+      output += markdownProseSection(
+        'Proposal B — Justification',
+        ticket.ProposalBJustification);
+      output += markdownProseSection(
+        'Proposal B — Impact',
+        ticket.ProposalBImpact);
+    }
+    if (ticket.ProposalC || ticket.ProposalCJustification) {
+      output += markdownProseSection('Proposal C', ticket.ProposalC);
+      output += markdownProseSection(
+        'Proposal C — Justification',
+        ticket.ProposalCJustification);
+    }
+    if (ticket.Recommendation || ticket.RecommendationJustification) {
+      output += markdownProseSection(
+        'Recommendation',
+        ticket.Recommendation);
+      output += markdownProseSection(
+        'Recommendation — Justification',
+        ticket.RecommendationJustification);
+    }
+
+    output += '## Related items\n\n';
+    output += serializeRepoItemsMarkdown(context.repos || []);
+    output += serializeJiraItemsMarkdown(context.relatedJira || []);
+    output += serializeJiraXrefItemsMarkdown(context.jiraXrefs || []);
+    output += serializeZulipItemsMarkdown(context.relatedZulip || []);
+    output += serializeGitHubItemsMarkdown(context.relatedGitHub || []);
+    return output;
+  }
+
+  function serializeRepoItemsMarkdown(items) {
+    return serializeRequiredRelatedItemsMarkdown(
+      'Repos',
+      ['Repo', 'Category', 'Detail', 'Justification'],
+      items,
+      function (item) {
+        return [
+          String(item.ItemKey || ''),
+          String(item.LinkType || ''),
+          copyHydrationDetail(item),
+          String(item.Justification || '')
+        ];
+      });
+  }
+
+  function serializeJiraItemsMarkdown(items) {
+    return serializeRequiredRelatedItemsMarkdown(
+      'Related Jira tickets',
+      ['Key', 'Link type', 'Detail', 'Justification'],
+      items,
+      function (item) {
+        return [
+          String(item.ItemKey || ''),
+          String(item.LinkType || ''),
+          copyHydrationDetail(item),
+          String(item.Justification || '')
+        ];
+      });
+  }
+
+  function serializeJiraXrefItemsMarkdown(items) {
+    if (items.length === 0) return '';
+    return '### Other Jira-declared links (' + items.length + ')\n\n' +
+      markdownTable(
+        ['Source', 'Key', 'Detail'],
+        items.map(function (item) {
+          return [
+            String(item.LinkType || ''),
+            String(item.ItemKey || ''),
+            copyHydrationDetail(item)
+          ];
+        })) + '\n';
+  }
+
+  function serializeZulipItemsMarkdown(items) {
+    return serializeRequiredRelatedItemsMarkdown(
+      'Related Zulip threads',
+      ['Thread', 'Detail', 'Justification'],
+      items,
+      function (item) {
+        return [
+          String(item.ItemKey || ''),
+          copyZulipDetail(item),
+          String(item.Justification || '')
+        ];
+      });
+  }
+
+  function serializeGitHubItemsMarkdown(items) {
+    return serializeRequiredRelatedItemsMarkdown(
+      'Related GitHub items',
+      ['Item', 'Detail', 'Justification'],
+      items,
+      function (item) {
+        return [
+          String(item.ItemKey || ''),
+          copyHydrationDetail(item),
+          String(item.Justification || '')
+        ];
+      });
+  }
+
+  function serializeRequiredRelatedItemsMarkdown(
+    heading,
+    headers,
+    items,
+    projectRow) {
+    var output = '### ' + heading + ' (' + items.length + ')\n\n';
+    if (items.length === 0) return output + '_None._\n\n';
+    return output + markdownTable(headers, items.map(projectRow)) + '\n';
+  }
+
+  function copyHydrationDetail(item) {
+    if (!item) return '';
+    if (item.HydrationStatus === 'unresolved') {
+      return 'unresolved: ' + String(item.HydrationReason || '');
+    }
+    if (item.HydrationStatus !== 'resolved') return '';
+    return item.Detail == null ? '' : String(item.Detail);
+  }
+
+  function copyZulipDetail(item) {
+    var detail = copyHydrationDetail(item);
+    if (!item || item.Label == null) return detail;
+
+    var label = String(item.Label).trim();
+    var itemKey = String(item.ItemKey || '').trim();
+    if (!label ||
+        label.toLowerCase() === itemKey.toLowerCase()) {
+      return detail;
+    }
+    if (!detail) return label;
+
+    var normalizedLabel = label.toLowerCase();
+    var normalizedDetail = detail.toLowerCase();
+    if (normalizedDetail === normalizedLabel ||
+        normalizedDetail.indexOf(normalizedLabel + ' · ') === 0) {
+      return detail;
+    }
+    return label + ' · ' + detail;
   }
 
   if (document.readyState === 'loading') {

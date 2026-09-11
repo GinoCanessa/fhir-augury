@@ -11,7 +11,9 @@ internal sealed record TicketSitePublisherTestHooks(
     Func<string, ValueTask>? DeleteFilteredDatabaseAsync = null,
     Func<string, CancellationToken, Task>? BeforeStageValidationAsync = null,
     Func<bool, bool, CancellationToken, Task>? BeforeChooserCommitAsync = null,
-    Func<string, FileStream>? OpenOutputRootLockFile = null);
+    Func<string, FileStream>? OpenOutputRootLockFile = null,
+    Func<string, CancellationToken, Task>?
+        AfterDiscussionRendererBytesCapturedAsync = null);
 
 public sealed class TicketSitePublisher : ITicketSitePublisher
 {
@@ -94,19 +96,47 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                 request.SiteKind,
                 ct).ConfigureAwait(false);
 
-            string embeddedDatabasePath;
-            long survivingCount;
+            TicketSiteEmbeddedDatabaseBuild embeddedBuild;
             if (request.SiteKind == TicketSiteKind.Discussion)
             {
-                PreparerDbTrimmer.BuildResult built =
-                    await PreparerDbTrimmer.BuildAsync(
+                DiscussionSiteDatabaseBuilder.BuildResult built =
+                    await DiscussionSiteDatabaseBuilder.BuildAsync(
                         privateSnapshot.Path,
+                        validation.Descriptor,
+                        request.Title,
                         filters,
                         ct).ConfigureAwait(false);
-                embeddedDatabasePath = built.TempDbPath;
                 filteredDatabasePath = built.TempDbPath;
-                survivingCount = built.SurvivingTicketCount;
                 ownsFilteredDatabase = built.OwnsTempFile;
+                byte[] capturedRendererBytes =
+                    await ReadAllBytesWithTransientRetryAsync(
+                        built.TempDbPath,
+                        ct).ConfigureAwait(false);
+                if (_testHooks?.AfterDiscussionRendererBytesCapturedAsync
+                    is { } capturedHook)
+                {
+                    await capturedHook(built.TempDbPath, ct)
+                        .ConfigureAwait(false);
+                }
+                DiscussionSiteDatabaseValidator.ValidationResult
+                    rendererValidation =
+                        await ValidateDiscussionRendererBytesAsync(
+                            capturedRendererBytes,
+                            privateSnapshot.Path,
+                            validation.Descriptor.SchemaVersion,
+                            request.Title,
+                            filters,
+                            ct).ConfigureAwait(false);
+                if (rendererValidation.Presentation != built.Presentation)
+                {
+                    throw new InvalidOperationException(
+                        "Discussion renderer presentation changed during validation.");
+                }
+                embeddedBuild = new TicketSiteEmbeddedDatabaseBuild(
+                    capturedRendererBytes,
+                    built.SurvivingTicketCount,
+                    rendererValidation.TableCounts,
+                    rendererValidation.Presentation);
             }
             else
             {
@@ -115,21 +145,24 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                         privateSnapshot.Path,
                         filters,
                         ct).ConfigureAwait(false);
-                embeddedDatabasePath = built.TempDbPath;
                 filteredDatabasePath = built.TempDbPath;
-                survivingCount = built.SurvivingTicketCount;
                 ownsFilteredDatabase = built.OwnsTempFile;
+                IReadOnlyDictionary<string, long> tableCounts =
+                    await HydrationAssertion.ReadManifestCountsAsync(
+                        built.TempDbPath,
+                        request.SiteKind,
+                        ct).ConfigureAwait(false);
+                embeddedBuild = new TicketSiteEmbeddedDatabaseBuild(
+                    await ReadAllBytesWithTransientRetryAsync(
+                        built.TempDbPath,
+                        ct).ConfigureAwait(false),
+                    built.SurvivingTicketCount,
+                    tableCounts,
+                    DiscussionPresentation: null);
             }
 
-            byte[] databaseBytes = await ReadAllBytesWithTransientRetryAsync(
-                embeddedDatabasePath,
-                ct).ConfigureAwait(false);
+            byte[] databaseBytes = embeddedBuild.DatabaseBytes;
             string embeddedSha256 = ComputeSha256(databaseBytes, ct);
-            IReadOnlyDictionary<string, long> manifestCounts =
-                await HydrationAssertion.ReadManifestCountsAsync(
-                    embeddedDatabasePath,
-                    request.SiteKind,
-                    ct).ConfigureAwait(false);
             DateTimeOffset generatedAt = DateTimeOffset.UtcNow;
             string rendererAssetsVersion =
                 request.SiteKind == TicketSiteKind.Discussion
@@ -138,15 +171,16 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
             TicketSiteManifest manifest = TicketSiteManifest.Create(
                 siteKind,
                 validation.Descriptor,
-                checked((int)survivingCount),
-                manifestCounts,
+                checked((int)embeddedBuild.IncludedItemCount),
+                embeddedBuild.TableCounts,
                 filters,
                 request.Title,
                 rendererAssetsVersion,
                 embeddedSha256,
                 databaseBytes.LongLength,
                 siteOutput,
-                generatedAt);
+                generatedAt,
+                embeddedBuild.DiscussionPresentation);
 
             StagedDirectoryPublishResult stagedResult;
             TicketSiteManifest publishedManifest;
@@ -171,8 +205,9 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                             {
                                 await PreparerSubSiteEmitter.EmitAsync(
                                     staging,
-                                    request.Title,
-                                    filters,
+                                    embeddedBuild.DiscussionPresentation
+                                    ?? throw new InvalidOperationException(
+                                        "Discussion presentation is unavailable."),
                                     databaseBytes,
                                     renderToken).ConfigureAwait(false);
                             }
@@ -459,7 +494,7 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                     path,
                     FileMode.Open,
                     FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete,
+                    FileShare.Read,
                     bufferSize: 64 * 1024,
                     useAsync: true);
                 long length = stream.Length;
@@ -486,6 +521,55 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                     TimeSpan.FromMilliseconds(50 * attempt),
                     ct).ConfigureAwait(false);
             }
+        }
+    }
+
+    private static async Task<
+        DiscussionSiteDatabaseValidator.ValidationResult>
+        ValidateDiscussionRendererBytesAsync(
+            byte[] databaseBytes,
+            string sourceDatabasePath,
+            int sourceSchemaVersion,
+            string baseTitle,
+            ResolvedFilters filters,
+            CancellationToken ct)
+    {
+        string validationDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"fhir-augury-renderer-validation-{Guid.NewGuid():N}");
+        string validationPath = Path.Combine(
+            validationDirectory,
+            "discussion-renderer.db");
+        Directory.CreateDirectory(validationDirectory);
+        try
+        {
+            await using (FileStream validationGuard = new(
+                validationPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.Read,
+                bufferSize: 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await validationGuard.WriteAsync(databaseBytes, ct)
+                    .ConfigureAwait(false);
+                await validationGuard.FlushAsync(ct).ConfigureAwait(false);
+                return await DiscussionSiteDatabaseValidator.ValidateAsync(
+                    validationPath,
+                    sourceDatabasePath,
+                    sourceSchemaVersion,
+                    baseTitle,
+                    filters,
+                    ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (File.Exists(validationPath))
+            {
+                File.Delete(validationPath);
+            }
+            Directory.Delete(validationDirectory);
         }
     }
 
