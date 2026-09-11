@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Publishing.Tickets;
@@ -762,14 +763,13 @@ internal static class DiscussionSiteDatabaseValidator
             }
 
             if (displayName is not null &&
-                (string.IsNullOrWhiteSpace(displayName) ||
-                 !string.Equals(
-                     displayName,
-                     displayName.Trim(),
-                     StringComparison.Ordinal)))
+                !string.Equals(
+                    displayName,
+                    PublicDisplayNamePolicy.Normalize(displayName),
+                    StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    $"Renderer person display name for '{ticketKey}' is not normalized.");
+                    $"Renderer person display name for '{ticketKey}' is unsafe or not normalized.");
             }
             if (!string.Equals(
                 sortKey,

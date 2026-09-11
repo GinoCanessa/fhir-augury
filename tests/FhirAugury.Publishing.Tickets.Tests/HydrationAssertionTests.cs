@@ -11,7 +11,8 @@ public sealed class HydrationAssertionTests
     [Theory]
     [InlineData(PreparedTicketSnapshotSchemaV1.Version)]
     [InlineData(PreparedTicketSnapshotSchemaV2.Version)]
-    public async Task DiscussionAcceptsPreparedV1AndV2(int schemaVersion)
+    [InlineData(PreparedTicketSnapshotSchemaV3.Version)]
+    public async Task DiscussionAcceptsPreparedV1V2AndV3(int schemaVersion)
     {
         string root = Path.Combine(
             Path.GetTempPath(),
@@ -35,7 +36,7 @@ public sealed class HydrationAssertionTests
 
             Assert.Equal(schemaVersion, result.Descriptor.SchemaVersion);
             Assert.Equal(
-                schemaVersion == PreparedTicketSnapshotSchemaV2.Version,
+                schemaVersion != PreparedTicketSnapshotSchemaV1.Version,
                 result.TableCounts.ContainsKey(
                     "prepared_ticket_in_person_requesters"));
         }
@@ -76,8 +77,11 @@ public sealed class HydrationAssertionTests
         }
     }
 
-    [Fact]
-    public async Task ApplyingRejectsPreparedV2BeforeSchemaInspection()
+    [Theory]
+    [InlineData(PreparedTicketSnapshotSchemaV2.Version)]
+    [InlineData(PreparedTicketSnapshotSchemaV3.Version)]
+    public async Task ApplyingRejectsPreparedV2AndV3BeforeSchemaInspection(
+        int schemaVersion)
     {
         string root = Path.Combine(
             Path.GetTempPath(),
@@ -88,7 +92,7 @@ public sealed class HydrationAssertionTests
             TicketSnapshotFixture fixture =
                 await TicketSnapshotFixture.CreatePreparerAsync(
                     root,
-                    schemaVersion: PreparedTicketSnapshotSchemaV2.Version);
+                    schemaVersion: schemaVersion);
             await using ImmutableFileSnapshot snapshot =
                 await CreateImmutableSnapshotAsync(fixture.DatabasePath);
 
@@ -105,7 +109,7 @@ public sealed class HydrationAssertionTests
                 exception.Message,
                 StringComparison.Ordinal);
             Assert.Contains(
-                "version 2",
+                $"version {schemaVersion}",
                 exception.Message,
                 StringComparison.OrdinalIgnoreCase);
         }
@@ -151,8 +155,11 @@ public sealed class HydrationAssertionTests
         }
     }
 
-    [Fact]
-    public async Task DiscussionV2RejectsExactCatalogDrift()
+    [Theory]
+    [InlineData(PreparedTicketSnapshotSchemaV2.Version)]
+    [InlineData(PreparedTicketSnapshotSchemaV3.Version)]
+    public async Task DiscussionV2AndV3RejectExactCatalogDrift(
+        int schemaVersion)
     {
         string root = Path.Combine(
             Path.GetTempPath(),
@@ -163,7 +170,7 @@ public sealed class HydrationAssertionTests
             TicketSnapshotFixture fixture =
                 await TicketSnapshotFixture.CreatePreparerAsync(
                     root,
-                    schemaVersion: PreparedTicketSnapshotSchemaV2.Version);
+                    schemaVersion: schemaVersion);
             await using (SqliteConnection connection = new(
                 $"Data Source={fixture.DatabasePath};Pooling=False"))
             {
@@ -189,7 +196,7 @@ public sealed class HydrationAssertionTests
                         CancellationToken.None));
 
             Assert.Contains(
-                "schema v2",
+                $"schema v{schemaVersion}",
                 exception.Message,
                 StringComparison.OrdinalIgnoreCase);
             Assert.Contains("UserName", exception.Message);

@@ -139,7 +139,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
     }
 
     [Fact]
-    public async Task V2ProjectionDerivesCompleteCorpusFreshnessPeopleAndSources()
+    public async Task V2ProjectionDerivesCompleteCorpusFreshnessAndSourcesWithoutPeople()
     {
         TicketSnapshotFixture fixture =
             await TicketSnapshotFixture.CreatePreparerAsync(
@@ -182,9 +182,8 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     FROM site_metadata
                     """));
 
-            Assert.Equal(
-                "Ada Lovelace",
-                await ScalarAsync<string>(
+            Assert.Null(
+                await ScalarNullableStringAsync(
                     built.TempDbPath,
                     """
                     SELECT DisplayName
@@ -192,9 +191,8 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     WHERE TicketKey = 'FHIR-1001'
                       AND Role = 'reporter'
                     """));
-            Assert.Equal(
-                "Grace Hopper",
-                await ScalarAsync<string>(
+            Assert.Null(
+                await ScalarNullableStringAsync(
                     built.TempDbPath,
                     """
                     SELECT DisplayName
@@ -202,8 +200,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     WHERE TicketKey = 'FHIR-1001'
                       AND Role = 'assignee'
                     """));
-            Assert.Equal(
-                ["Alan Turing", "Lin Example"],
+            Assert.Empty(
                 await ReadStringsAsync(
                     built.TempDbPath,
                     """
@@ -340,6 +337,164 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     SELECT TicketKey
                     FROM topic_members
                     ORDER BY OrderInContainer
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task V3ProjectionProjectsOnlyCurrentPolicySafePeople()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                includeSecondTicket: true,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version,
+                useMultipleRuns: true,
+                includeRendererEvidence: true,
+                includeUntrustedPeople: true);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets for Discussion",
+                ResolvedFilters.None);
+        try
+        {
+            DiscussionSiteDatabaseValidator.ValidationResult validation =
+                await DiscussionSiteDatabaseValidator.ValidateAsync(
+                    built.TempDbPath,
+                    fixture.DatabasePath,
+                    fixture.Descriptor.SchemaVersion,
+                    "Tickets for Discussion",
+                    ResolvedFilters.None);
+
+            Assert.Equal(
+                new DateTimeOffset(
+                    2026,
+                    9,
+                    10,
+                    23,
+                    30,
+                    0,
+                    TimeSpan.Zero),
+                validation.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Null(
+                await ScalarNullableStringAsync(
+                    built.TempDbPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'reporter'
+                    """));
+            Assert.Equal(
+                "Grace Hopper",
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'assignee'
+                    """));
+            Assert.Equal(
+                "Katherine Johnson",
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'CDS-2001'
+                      AND Role = 'reporter'
+                    """));
+            Assert.Null(
+                await ScalarNullableStringAsync(
+                    built.TempDbPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'CDS-2001'
+                      AND Role = 'assignee'
+                    """));
+            Assert.Equal(
+                ["Alan Turing", "Lin Example", "Trimmed Safe"],
+                await ReadStringsAsync(
+                    built.TempDbPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'in-person-requester'
+                    ORDER BY OrderInRole
+                    """));
+            Assert.Equal(
+                0,
+                await ScalarAsync<long>(
+                    built.TempDbPath,
+                    """
+                    SELECT COUNT(*)
+                    FROM ticket_people
+                    WHERE DisplayName LIKE '%@%'
+                       OR DisplayName IN (
+                           'Missing Policy',
+                           'Old Policy',
+                           'Unknown Policy',
+                           'Future Policy',
+                           'Related Stale'
+                       )
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(99)]
+    public async Task V3ProjectionRequiresCurrentParentPeoplePolicy(
+        int? policyVersion)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        string sqlPolicyVersion = policyVersion?.ToString(
+            CultureInfo.InvariantCulture) ?? "NULL";
+        await ExecuteAsync(
+            fixture.DatabasePath,
+            $"""
+            UPDATE prepared_ticket_hydration
+            SET PublicDisplayNamePolicyVersion = {sqlPolicyVersion}
+            WHERE TicketKey = 'FHIR-1001';
+            """);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.Equal(
+                0,
+                await ScalarAsync<long>(
+                    built.TempDbPath,
+                    """
+                    SELECT COUNT(*)
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role IN ('reporter', 'assignee')
+                      AND DisplayName IS NOT NULL
                     """));
         }
         finally
@@ -921,6 +1076,51 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             "exactly one accepted",
             exception.Message,
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ValidatorRejectsUnsafePeopleWithMatchingSortKey()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            await ExecuteAsync(
+                built.TempDbPath,
+                """
+                UPDATE ticket_people
+                SET DisplayName = 'Name <person@example.org>',
+                    SortKey = 'NAME <PERSON@EXAMPLE.ORG>'
+                WHERE TicketKey = 'FHIR-1001'
+                  AND Role = 'reporter';
+                """);
+
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => DiscussionSiteDatabaseValidator.ValidateAsync(
+                        built.TempDbPath));
+
+            Assert.Contains(
+                "unsafe",
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                "sort key",
+                exception.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
     }
 
     [Fact]

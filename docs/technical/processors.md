@@ -188,12 +188,15 @@ Normal runs produce:
 `completed-database-only`.
 
 The public snapshot schema is processor-specific. Preparer now writes
-discussion snapshot **v2**, which extends the immutable v1 catalog with
+discussion snapshot **v3**. Its immutable v2 base extends v1 with
 contributing-run input provenance, parent Jira hydration provenance, Assignee
-fields, and normalized in-person requester rows. Its sanitizer keeps
-provenance for every run contributing a retained receipt-backed ticket. The
-ticket publisher accepts both Preparer v1 and v2, adapting v1 additions to
-unavailable. Planner continues to write applying snapshot **v1**, and the
+fields, and normalized in-person requester rows; v3 adds nullable public
+display-name policy markers to parent hydration, related/self Jira hydration,
+and requester rows. Its sanitizer keeps provenance for every run contributing
+a retained receipt-backed ticket and retains people only with the exact
+current policy marker and a context-free-safe value. The ticket publisher
+accepts exact Preparer v1, v2, and v3 catalogs, but always treats v1/v2 people
+as unavailable. Planner continues to write applying snapshot **v1**, and the
 Tickets for Applying publication path accepts only that v1 contract.
 
 Discussion publication does not expose either processor schema directly to the
@@ -204,7 +207,7 @@ topic/group membership. Applying continues through its existing Planner-v1
 path. Both generated sites are static artifacts with no live source,
 Orchestrator, or processor dependency.
 
-For a v2 discussion corpus, every retained ticket must first resolve to
+For a v2 or v3 discussion corpus, every retained ticket must first resolve to
 exactly one accepted authoring coordinate. Zero or multiple matches are
 invalid snapshot structure and abort publication. With that structural
 requirement satisfied, the visible `Built` date is the latest successful
@@ -324,10 +327,11 @@ dotnet run --project tools\ticket-site -- `
   --force
 ```
 
-The checked-in Preparer configuration writes snapshot schema v2. The shared
-publisher remains able to publish older v1 pairs, but only v2 can carry the
-complete Jira freshness and people contract. The omitted `ticket-site` title
-for this input is `Tickets for Discussion`.
+The checked-in Preparer configuration writes snapshot schema v3. The shared
+publisher remains able to publish older v1 and v2 pairs for their source and
+freshness data, but people are unavailable for both older versions. Only v3
+carries the explicit policy proof required for public people. The omitted
+`ticket-site` title for this input is `Tickets for Discussion`.
 
 Grouping is part of finalization. To intentionally refresh all current
 grouping partitions later, use the processor-owned maintenance endpoint:

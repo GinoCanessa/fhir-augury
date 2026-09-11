@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Publishing.Tickets.Tests;
@@ -31,7 +32,10 @@ public sealed class TicketSitePublisherTests : IDisposable
     public async Task PublishesDiscussionSiteAndChooserFromVerifiedPair()
     {
         TicketSnapshotFixture fixture =
-            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version,
+                includeNullProvenance: true);
         VerifiedAuthoringSnapshotPair pair =
             await fixture.CreateVerifiedPairAsync("Preparer");
         string output = Path.Combine(_root, "discussion-site");
@@ -48,6 +52,9 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Equal("preparer", result.Manifest.SiteKind);
         Assert.Equal(pair.SnapshotId, result.Manifest.SnapshotId);
         Assert.Equal(pair.Descriptor.SchemaVersion, result.Manifest.SnapshotSchemaVersion);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            result.Manifest.SnapshotSchemaVersion);
         Assert.Equal(pair.Descriptor.Sha256, result.Manifest.SnapshotSha256);
         Assert.NotEqual(
             result.Manifest.SnapshotSha256,
@@ -143,6 +150,69 @@ public sealed class TicketSitePublisherTests : IDisposable
                     .Select(table => table.Name)
                     .Order(StringComparer.Ordinal),
                 await ReadTableNamesAsync(embeddedPath));
+            Assert.Equal(
+                "Ada Lovelace",
+                await ScalarAsync<string>(
+                    embeddedPath,
+                    """
+                    SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'reporter'
+                    """));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(embeddedPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(PreparedTicketSnapshotSchemaV1.Version)]
+    [InlineData(PreparedTicketSnapshotSchemaV2.Version)]
+    public async Task PublishesPreparedV1AndV2WithoutTrustingPeople(
+        int schemaVersion)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: schemaVersion);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+        string output = Path.Combine(
+            _root,
+            $"prepared-v{schemaVersion}-compatibility");
+
+        TicketSitePublishResult result =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    pair,
+                    TicketSiteKind.Discussion,
+                    output,
+                    "Tickets for Discussion"));
+
+        Assert.Equal(schemaVersion, result.Manifest.SnapshotSchemaVersion);
+        string html = await File.ReadAllTextAsync(Path.Combine(
+            output,
+            "discussion",
+            "index.html"));
+        string embeddedPath = Path.Combine(
+            _root,
+            $"prepared-v{schemaVersion}-{Guid.NewGuid():N}.db");
+        try
+        {
+            await File.WriteAllBytesAsync(
+                embeddedPath,
+                await ExtractEmbeddedDatabaseAsync(html));
+            Assert.Equal(
+                0,
+                await ScalarAsync<long>(
+                    embeddedPath,
+                    """
+                    SELECT COUNT(*)
+                    FROM ticket_people
+                    WHERE DisplayName IS NOT NULL
+                    """));
         }
         finally
         {
@@ -307,6 +377,7 @@ public sealed class TicketSitePublisherTests : IDisposable
     [Theory]
     [InlineData(1, false)]
     [InlineData(2, true)]
+    [InlineData(3, true)]
     public async Task UnprovenancedDiscussionUsesUnsuffixedTitle(
         int schemaVersion,
         bool includeNullProvenance)

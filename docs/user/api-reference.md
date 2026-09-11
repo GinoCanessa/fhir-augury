@@ -221,6 +221,7 @@ older payloads may omit them:
     }
   },
   "people": {
+    "publicDisplayNamePolicyVersion": 1,
     "reporter": "Ada Lovelace",
     "assignee": null,
     "inPersonRequesters": [
@@ -234,9 +235,16 @@ older payloads may omit them:
 `isStable:false` means the read occurred while that generation was being
 mutated. Project timestamps are the latest proven error-free upstream Jira
 full/incremental refreshes, not cache rebuild or response times. `people`
-contains only Jira-authenticated display names; it never adds username, email,
-or user ID fields. The requester list is case-insensitively deduplicated and
-deterministically ordered.
+contains only Jira-authenticated display names that pass the current public
+display-name policy; it never adds username, email, or user ID fields. The
+policy rejects a value equal to its proven account username
+case-insensitively and any value containing an email-address-shaped token.
+`publicDisplayNamePolicyVersion` is optional for wire compatibility, but a Jira
+response that evaluated the complete people payload sets it to the current
+version even when every name is absent. Downstream processors trust people
+only when that marker exactly matches their current policy; missing, older,
+unknown, and future markers fail closed. The requester list is
+case-insensitively deduplicated and deterministically ordered.
 
 ### Ingestion
 

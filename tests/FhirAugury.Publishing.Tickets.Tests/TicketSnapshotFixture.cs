@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using FhirAugury.Common.Text;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
@@ -126,10 +127,25 @@ internal sealed class TicketSnapshotFixture
         int schemaVersion = PreparedTicketSnapshotSchemaV1.Version,
         bool useMultipleRuns = false,
         bool includeRendererEvidence = false,
-        bool includeNullProvenance = false)
+        bool includeNullProvenance = false,
+        bool includeUntrustedPeople = false)
     {
         AuthoringSnapshotSchemaCatalog catalog =
             PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion);
+        if (includeUntrustedPeople &&
+            schemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new ArgumentException(
+                "Untrusted people evidence requires prepared snapshot schema v3.",
+                nameof(schemaVersion));
+        }
+        bool hasSourceProvenance =
+            schemaVersion is PreparedTicketSnapshotSchemaV2.Version or
+                PreparedTicketSnapshotSchemaV3.Version;
+        int? peoplePolicyVersion =
+            schemaVersion == PreparedTicketSnapshotSchemaV3.Version
+                ? PublicDisplayNamePolicy.CurrentVersion
+                : null;
         string id = snapshotId ?? $"snapshot-{Guid.NewGuid():N}";
         string databasePath = Path.Combine(root, $"jira-fhir-{id}.db");
         string descriptorPath = databasePath + ".json";
@@ -194,25 +210,28 @@ internal sealed class TicketSnapshotFixture
                 Specification, RaisedInVersion, SelectedBallot, ChangeCategory,
                 Impact, CommentCount, DescriptionPlain, Reporter, Assignee,
                 SourceProject, SourceLastSuccessfulRefreshAt,
-                SourceContentRevision, HydratedAt, HydrationStatus)
+                SourceContentRevision, HydratedAt, HydrationStatus,
+                PublicDisplayNamePolicyVersion)
             VALUES(
                 'hydration-1', 'FHIR-1001', 'Major', 'Persuasive',
                 'parent resolution plain', 'FHIR', '5.0.0', '2026-09',
                 'Correction', 'Non-substantive', 3, 'parent request plain',
                 'Ada Lovelace', 'Grace Hopper', 'FHIR',
-                @firstHydrationRefresh, 111, @createdAt, 'resolved');
+                @firstHydrationRefresh, 111, @createdAt, 'resolved',
+                @peoplePolicyVersion);
             INSERT INTO prepared_jira_hydration(
                 Id, TicketKey, JiraKey, Title, Status, Type, Priority,
                 Resolution, ResolutionDescriptionPlain, WorkGroup,
                 WorkGroupClean, Specification, Url, Reporter, Assignee,
-                HydratedAt, HydrationStatus)
+                HydratedAt, HydrationStatus, PublicDisplayNamePolicyVersion)
             VALUES(
                 'jira-1', 'FHIR-1001', 'FHIR-1001', 'Snapshot title', 'Open',
                 'Change Request', 'Self priority', 'Self resolution',
                 'self resolution plain', 'FHIR Infrastructure',
                 'FHIRInfrastructure', 'Self specification',
                 'https://jira.hl7.org/browse/FHIR-1001', 'Legacy Reporter',
-                'Legacy Assignee', @createdAt, 'resolved');
+                'Legacy Assignee', @createdAt, 'resolved',
+                @peoplePolicyVersion);
             INSERT INTO prepared_ticket_jira_content(
                 TicketKey, DescriptionHtml, ResolutionDescriptionHtml)
             VALUES('FHIR-1001', '<p>request html</p>', '<p>resolution html</p>');
@@ -233,7 +252,8 @@ internal sealed class TicketSnapshotFixture
             ("@currentRunItemCount", currentRunItemCount),
             ("@snapshotId", id),
             ("@createdAt", createdAt.ToString("O")),
-            ("@firstHydrationRefresh", firstHydrationRefresh.ToString("O")));
+            ("@firstHydrationRefresh", firstHydrationRefresh.ToString("O")),
+            ("@peoplePolicyVersion", peoplePolicyVersion));
 
         int receiptCount = 1;
         if (includeSecondTicket)
@@ -265,17 +285,19 @@ internal sealed class TicketSnapshotFixture
                     ResolutionDescriptionPlain, Specification, DescriptionPlain,
                     Reporter, Assignee, SourceProject,
                     SourceLastSuccessfulRefreshAt, SourceContentRevision,
-                    HydratedAt, HydrationStatus)
+                    HydratedAt, HydrationStatus,
+                    PublicDisplayNamePolicyVersion)
                 VALUES(
                     'hydration-2', 'CDS-2001', 'Minor', 'Persuasive',
                     'CDS resolution plain', 'CDS Hooks', 'CDS request plain',
-                    'Katherine Johnson', NULL, 'CDS',
-                    @secondHydrationRefresh, 222, @createdAt, 'resolved');
+                    'Katherine Johnson', 'Dorothy Vaughan', 'CDS',
+                    @secondHydrationRefresh, 222, @createdAt, 'resolved',
+                    @peoplePolicyVersion);
                 INSERT INTO prepared_jira_hydration(
                     Id, TicketKey, JiraKey, Title, Status, Type, Priority,
                     Resolution, ResolutionDescriptionPlain, WorkGroup,
                     WorkGroupClean, Specification, Url, HydratedAt,
-                    HydrationStatus)
+                    HydrationStatus, PublicDisplayNamePolicyVersion)
                 VALUES(
                     'jira-2', 'CDS-2001', 'CDS-2001', 'CDS title', 'Open',
                     'Change Request', 'Self CDS priority',
@@ -283,7 +305,7 @@ internal sealed class TicketSnapshotFixture
                     'Clinical Decision Support', 'ClinicalDecisionSupport',
                     'Self CDS specification',
                     'https://jira.hl7.org/browse/CDS-2001', @createdAt,
-                    'resolved');
+                    'resolved', @peoplePolicyVersion);
                 INSERT INTO prepared_ticket_partition_receipts(
                     RunId, StageId, PartitionKey, InputFingerprint, TopicRows,
                     TopicGroupRows, MemberRows, PersistedAt)
@@ -294,10 +316,11 @@ internal sealed class TicketSnapshotFixture
                 """,
                 ("@runId", runId),
                 ("@createdAt", createdAt.ToString("O")),
-                ("@secondHydrationRefresh", secondHydrationRefresh.ToString("O")));
+                ("@secondHydrationRefresh", secondHydrationRefresh.ToString("O")),
+                ("@peoplePolicyVersion", peoplePolicyVersion));
         }
 
-        if (schemaVersion == PreparedTicketSnapshotSchemaV2.Version)
+        if (hasSourceProvenance)
         {
             DateTimeOffset? firstProvenanceRefresh = includeNullProvenance
                 ? null
@@ -329,9 +352,11 @@ internal sealed class TicketSnapshotFixture
                 connection,
                 """
                 INSERT INTO prepared_ticket_in_person_requesters(
-                    TicketKey, DisplayName)
-                VALUES('FHIR-1001', 'Lin Example');
-                """);
+                    TicketKey, DisplayName, PublicDisplayNamePolicyVersion)
+                VALUES(
+                    'FHIR-1001', 'Lin Example', @peoplePolicyVersion);
+                """,
+                ("@peoplePolicyVersion", peoplePolicyVersion));
         }
 
         if (includeRendererEvidence)
@@ -385,12 +410,14 @@ internal sealed class TicketSnapshotFixture
                     ('related-jira-3', 'FHIR-1001', 'FHIR-2002', 'related', 'related why');
                 INSERT INTO prepared_jira_hydration(
                     Id, TicketKey, JiraKey, Title, Status, Type, Resolution,
-                    Url, HydratedAt, HydrationStatus)
+                    Url, Reporter, Assignee, HydratedAt, HydrationStatus,
+                    PublicDisplayNamePolicyVersion)
                 VALUES(
                     'jira-related-1', 'FHIR-1001', 'FHIR-2002',
                     'Related title', 'Resolved', 'Change Request',
                     'Persuasive', 'https://jira.example/FHIR-2002',
-                    @createdAt, 'resolved');
+                    'Related Reporter', 'Related Assignee',
+                    @createdAt, 'resolved', @peoplePolicyVersion);
 
                 INSERT INTO prepared_ticket_related_zulip(
                     Id, TicketKey, ZulipThreadId, Justification)
@@ -474,19 +501,60 @@ internal sealed class TicketSnapshotFixture
                     ON groups.TopicRowId = topic.RowId
                 WHERE topic.Id = 'topic-renderer';
                 """,
-                ("@createdAt", createdAt.ToString("O")));
+                ("@createdAt", createdAt.ToString("O")),
+                ("@peoplePolicyVersion", peoplePolicyVersion));
 
-            if (schemaVersion == PreparedTicketSnapshotSchemaV2.Version)
+            if (hasSourceProvenance)
             {
                 await ExecuteAsync(
                     connection,
                     """
                     INSERT INTO prepared_ticket_in_person_requesters(
-                        TicketKey, DisplayName)
+                        TicketKey, DisplayName,
+                        PublicDisplayNamePolicyVersion)
                     VALUES
-                        ('FHIR-1001', '  Alan Turing  ');
-                    """);
+                        ('FHIR-1001', '  Alan Turing  ',
+                         @peoplePolicyVersion);
+                    """,
+                    ("@peoplePolicyVersion", peoplePolicyVersion));
             }
+        }
+
+        if (includeUntrustedPeople)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE prepared_ticket_hydration
+                SET Reporter = NULL
+                WHERE TicketKey = 'FHIR-1001';
+                UPDATE prepared_ticket_hydration
+                SET Assignee = 'Dorothy <dorothy@example.org>'
+                WHERE TicketKey = 'CDS-2001';
+                UPDATE prepared_jira_hydration
+                SET Reporter = 'related@example.org',
+                    Assignee = 'Related Stale',
+                    PublicDisplayNamePolicyVersion = @oldPolicyVersion
+                WHERE TicketKey = 'FHIR-1001'
+                  AND JiraKey <> TicketKey;
+                INSERT INTO prepared_ticket_in_person_requesters(
+                    TicketKey, DisplayName, PublicDisplayNamePolicyVersion)
+                VALUES
+                    ('FHIR-1001', '  Trimmed Safe  ',
+                     @currentPolicyVersion),
+                    ('FHIR-1001', 'requester@example.org',
+                     @currentPolicyVersion),
+                    ('FHIR-1001', 'Missing Policy', NULL),
+                    ('FHIR-1001', 'Old Policy', @oldPolicyVersion),
+                    ('FHIR-1001', 'Unknown Policy', 99),
+                    ('FHIR-1001', 'Future Policy', @futurePolicyVersion);
+                """,
+                ("@currentPolicyVersion",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                ("@oldPolicyVersion",
+                    PublicDisplayNamePolicy.CurrentVersion - 1),
+                ("@futurePolicyVersion",
+                    PublicDisplayNamePolicy.CurrentVersion + 1));
         }
 
         await SanitizeSnapshotSchemaAsync(connection, catalog);

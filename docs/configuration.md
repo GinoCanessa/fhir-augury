@@ -630,10 +630,10 @@ manual retry may bypass that wait but never expands the total attempt budget.
 ### appsettings.json (Planner shown)
 
 Planner's checked-in `SnapshotSchemaVersion` is `1`. Preparer uses the same
-shape but omits the `Planner` block and sets `SnapshotSchemaVersion` to `2`.
+shape but omits the `Planner` block and sets `SnapshotSchemaVersion` to `3`.
 These defaults are intentionally processor-specific: Discussion has a
-reader-compatible v2 contract for provenance and people, while Applying
-remains on Planner v1.
+reader-compatible v3 contract for provenance and policy-marked public people,
+while Applying remains on Planner v1.
 
 ```json
 {
@@ -696,7 +696,7 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
 | `Processing.AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
 | `Processing.SnapshotDirectory` | string | per-processor | Directory owned by the processor for immutable review snapshots |
-| `Processing.SnapshotSchemaVersion` | int | Preparer: `2`; Planner: `1` | Public snapshot schema written by that processor. The ticket publisher reads Preparer v1/v2 for Discussion and Planner v1 for Applying. |
+| `Processing.SnapshotSchemaVersion` | int | Preparer: `3`; Planner: `1` | Public snapshot schema written by that processor. The ticket publisher reads exact Preparer v1/v2/v3 catalogs for Discussion, treats v1/v2 people as unavailable, and reads only Planner v1 for Applying. |
 | `Processing.ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot creation/promotion/recording |
 | `Processing.ActivateRunBackedAuthoring` | bool | `true` in Preparer/Planner | Perform the one-way legacy cutover and require initial revalidation |
 | `Processing.PreCutoverBackupPath` | string | per-processor | Verified rollback backup required when activation is enabled |

@@ -538,6 +538,8 @@ internal static class HydrationAssertion
                 PreparedTicketSnapshotSchemaV1.Catalog,
             (TicketSiteKind.Discussion, PreparedTicketSnapshotSchemaV2.Version) =>
                 PreparedTicketSnapshotSchemaV2.Catalog,
+            (TicketSiteKind.Discussion, PreparedTicketSnapshotSchemaV3.Version) =>
+                PreparedTicketSnapshotSchemaV3.Catalog,
             (TicketSiteKind.Applying, PlannedTicketSnapshotSchemaV1.Version) =>
                 PlannedTicketSnapshotSchemaV1.Catalog,
             (TicketSiteKind.Discussion, _) =>

@@ -335,10 +335,14 @@ of the upstream-success date.
 
 #### `jira_users` and `jira_issue_inpersons` — Public people source
 
-`jira_users` stores `Id`, unique `Username`, `DisplayName`, and
-`HasExplicitDisplayName`. Only rows whose flag is true are eligible for the
-structured public people contract; a username-derived placeholder is not a
-display name. `jira_issue_inpersons` joins `IssueKey` to `UserId`. Reporter and
+`jira_users` stores `Id`, unique `Username`, `DisplayName`,
+`HasAccountUsername`, and `HasExplicitDisplayName`. `HasAccountUsername`
+distinguishes a true account identifier from the synthetic key used by a
+display-name-only row; existing rows of unknown origin migrate conservatively
+to true, and later account observations upgrade the flag monotonically. Only
+rows whose explicit-display flag remains eligible under the shared
+account-equality and email-token policy can enter the structured public people
+contract. `jira_issue_inpersons` joins `IssueKey` to `UserId`. Reporter and
 Assignee use the exact IDs on `jira_issues`, while requester results are
 trimmed, case-insensitively deduplicated, and deterministically sorted. The
 public projection never includes usernames, email addresses, or user IDs.
@@ -820,7 +824,7 @@ revision is retained only when every selected ticket shares it. `CapturedAt`
 is run provenance, not a source-freshness fallback. Legacy Jira runs are seeded
 with null source coordinates.
 
-### Preparer public snapshot schema v2
+### Preparer public snapshot schemas v2 and v3
 
 Preparer schema v2 extends the unchanged v1 table catalog:
 
@@ -831,25 +835,40 @@ Preparer schema v2 extends the unchanged v1 table catalog:
 | `prepared_jira_hydration` | `Assignee` for related Jira projections |
 | `prepared_ticket_in_person_requesters` | New normalized `(RowId, TicketKey, DisplayName)` rows |
 
+Schema v3 leaves that immutable v2 catalog unchanged and adds nullable
+`PublicDisplayNamePolicyVersion` columns:
+
+| Table | v3 addition |
+|-------|-------------|
+| `prepared_ticket_hydration` | Policy proof for the parent Reporter and Assignee values |
+| `prepared_jira_hydration` | Policy proof for each self/related Jira Reporter and Assignee pair |
+| `prepared_ticket_in_person_requesters` | Policy proof for each requester row |
+
+Migrated rows receive null markers, not the current policy version. The v3
+sanitizer retains people only when the row carries the exact current marker
+and the value passes the context-free email safety check; untrusted parent and
+Jira values become null and untrusted requester rows are removed.
+
 The sanitizer selects one catalog by configured schema version and derives
 descriptor counts from that same catalog. It removes requester rows outside
 the retained ticket set and provenance outside contributing runs. The
-checked-in Preparer writer emits v2; the discussion publisher accepts v1 and
-v2, treating v1 freshness, Assignee, and requester data as unavailable.
-Planner and Tickets for Applying remain on the separate Planner snapshot v1
-catalog.
+checked-in Preparer writer emits v3; the discussion publisher accepts exact
+v1, v2, and v3 catalogs. V1 and v2 remain usable for freshness and source data
+available in their catalogs, but their unversioned people values are always
+treated as unavailable. Planner and Tickets for Applying remain on the
+separate Planner snapshot v1 catalog.
 
 ### Discussion renderer schema v1
 
-After it validates a Preparer v1 or v2 pair, the publisher creates a new
+After it validates a Preparer v1, v2, or v3 pair, the publisher creates a new
 filtered SQLite database from scratch. Renderer version 1 is independent of
-Preparer snapshot version 2 and contains only these browser-facing tables:
+the Preparer snapshot version and contains only these browser-facing tables:
 
 | Table | Key columns and purpose |
 |-------|-------------------------|
 | `site_metadata` | One row keyed by `RendererSchemaVersion`; stores `BaseTitle`, qualified `SiteName`, nullable Jira refresh, and resolved filters |
 | `tickets` | One row per case-insensitive ticket key with display metadata, summaries, proposals, rationale, and request/resolution content |
-| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`; display names only |
+| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`; only exact-current-policy, context-free-safe v3 display names are non-null |
 | `ticket_facets` | `(TicketKey, Dimension, ValueKey)` normalized across `project`, `wg`, `type`, `artifact`, `page`, `impact`, and `spec`, including the `__unknown__` machine key |
 | `summary_sources` | `(TicketKey, SummaryKind, SourceKey)` for unique `linked-jira`, `related-jira`, and `related-zulip` adjacent links |
 | `related_items` | `(TicketKey, Kind, ItemKey, LinkTypeKey)` for the broader related-context display |
@@ -863,12 +882,15 @@ browser queries this database only; processor ledger and persistence tables
 are not shipped as its contract. No live Jira, Orchestrator, or processor
 connection is needed after publication.
 
-For schema-v2 input, renderer construction requires exactly one accepted
-authoring coordinate for every retained ticket. Zero or multiple matches are
-structural validation errors and abort publication before this database is
-created. With valid structure, missing or null run provenance and incomplete
-parent project/revision/watermark coordinates leave the Jira refresh null and
-the display title unsuffixed.
+For schema-v2 or schema-v3 input, renderer construction requires exactly one
+accepted authoring coordinate for every retained ticket. Zero or multiple
+matches are structural validation errors and abort publication before this
+database is created. With valid structure, missing or null run provenance and
+incomplete parent project/revision/watermark coordinates leave the Jira refresh
+null and the display title unsuffixed. Schema-v1 and schema-v2 people are never
+copied into `ticket_people`; schema-v3 values are independently checked for
+the current marker and public value safety during projection and renderer
+validation.
 
 ---
 

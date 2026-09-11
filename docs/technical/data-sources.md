@@ -201,9 +201,10 @@ mode is used; otherwise Cookie mode.
   fields including HL7 custom fields and parsed vote components; reporter and
   assignee user IDs bind public display names to the actual Jira identities
 - `JiraCommentRecord` — Comment author, body, body plain text, timestamps (IssueKey FK)
-- `JiraUserRecord` — Jira username plus display name and an
-  `HasExplicitDisplayName` eligibility flag; username-derived placeholders are
-  never public people data
+- `JiraUserRecord` — Jira username plus display name,
+  `HasAccountUsername` origin evidence, and a `HasExplicitDisplayName`
+  eligibility flag; username-derived placeholders are never public people
+  data
 - `JiraSourceStateRecord` — Singleton content revision and
   mutation-in-progress fence for consistent source reads
 
@@ -260,10 +261,22 @@ Each candidate is stamped only with the watermark for its own project.
 Reporter and Assignee names plus a deterministic `InPersonRequesters` list.
 Names are resolved only through the exact Jira user identity with
 `HasExplicitDisplayName = 1`. The requester list is trimmed, case-insensitively
-deduplicated, and sorted. Usernames, email addresses, and Jira user IDs never
+deduplicated, and sorted. `HasAccountUsername` distinguishes a true Jira
+account username from the synthetic key used for display-name-only rows;
+unknown migrated origins are treated conservatively as account-backed, and a
+later real-account observation upgrades that evidence without downgrading it.
+
+The shared public display-name policy trims nonblank values, rejects a value
+equal to its proven account username case-insensitively, and rejects values
+containing an email-address-shaped token. The source applies that policy again
+while constructing the complete response and sets
+`PublicDisplayNamePolicyVersion` to the current version even when no people
+remain. Missing, older, unknown, or future markers are not trusted by
+downstream hydration. Usernames, email addresses, and Jira user IDs never
 cross this structured contract; old rows remain ineligible until reingestion
-supplies an authenticated display name. The existing string metadata remains
-a separate compatibility surface and is not used by Preparer hydration.
+supplies a policy-safe authenticated display name. The existing string
+metadata remains a separate compatibility surface and is not used by Preparer
+hydration.
 
 ---
 

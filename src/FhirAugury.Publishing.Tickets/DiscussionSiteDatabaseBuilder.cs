@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using FhirAugury.Common.Text;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
@@ -9,6 +10,10 @@ namespace FhirAugury.Publishing.Tickets;
 internal sealed record DiscussionSiteProjection(
     TicketSitePresentation Presentation,
     IReadOnlyDictionary<string, IReadOnlyList<object?[]>> Rows);
+
+internal readonly record struct DiscussionSourceCapabilities(
+    bool HasSourceProvenance,
+    bool HasTrustedPeople);
 
 internal static class DiscussionSiteDatabaseBuilder
 {
@@ -114,6 +119,8 @@ internal static class DiscussionSiteDatabaseBuilder
             throw new InvalidOperationException(
                 $"Unsupported discussion source snapshot schema version {sourceSchemaVersion}.");
         }
+        DiscussionSourceCapabilities capabilities =
+            GetSourceCapabilities(sourceSchemaVersion);
 
         await using SqliteConnection source = OpenReadOnly(sourceDatabasePath);
         await source.OpenAsync(ct).ConfigureAwait(false);
@@ -128,14 +135,14 @@ internal static class DiscussionSiteDatabaseBuilder
                 await ReadTicketAsync(
                     source,
                     key,
-                    sourceSchemaVersion,
+                    capabilities,
                     ct).ConfigureAwait(false));
         }
 
         DateTimeOffset? freshness = await ReadCorpusFreshnessAsync(
             source,
             tickets,
-            sourceSchemaVersion,
+            capabilities,
             ct).ConfigureAwait(false);
         TicketSitePresentation presentation =
             TicketSitePresentation.CreateDiscussion(
@@ -172,7 +179,7 @@ internal static class DiscussionSiteDatabaseBuilder
         await ProjectPeopleAsync(
             source,
             tickets,
-            sourceSchemaVersion,
+            capabilities,
             rows["ticket_people"],
             ct).ConfigureAwait(false);
         await ProjectFacetsAsync(
@@ -276,29 +283,27 @@ internal static class DiscussionSiteDatabaseBuilder
     private static async Task<SourceTicket> ReadTicketAsync(
         SqliteConnection source,
         string key,
-        int sourceSchemaVersion,
+        DiscussionSourceCapabilities capabilities,
         CancellationToken ct)
     {
-        string v2Reporter = sourceSchemaVersion ==
-            PreparedTicketSnapshotSchemaV2.Version
-                ? "parent.Reporter"
-                : "NULL";
-        string v2Assignee = sourceSchemaVersion ==
-            PreparedTicketSnapshotSchemaV2.Version
-                ? "parent.Assignee"
-                : "NULL";
-        string v2SourceProject = sourceSchemaVersion ==
-            PreparedTicketSnapshotSchemaV2.Version
-                ? "parent.SourceProject"
-                : "NULL";
-        string v2SourceRefresh = sourceSchemaVersion ==
-            PreparedTicketSnapshotSchemaV2.Version
-                ? "parent.SourceLastSuccessfulRefreshAt"
-                : "NULL";
-        string v2SourceRevision = sourceSchemaVersion ==
-            PreparedTicketSnapshotSchemaV2.Version
-                ? "parent.SourceContentRevision"
-                : "NULL";
+        string structuredReporter = capabilities.HasTrustedPeople
+            ? "parent.Reporter"
+            : "NULL";
+        string structuredAssignee = capabilities.HasTrustedPeople
+            ? "parent.Assignee"
+            : "NULL";
+        string peoplePolicyVersion = capabilities.HasTrustedPeople
+            ? "parent.PublicDisplayNamePolicyVersion"
+            : "NULL";
+        string sourceProject = capabilities.HasSourceProvenance
+            ? "parent.SourceProject"
+            : "NULL";
+        string sourceRefresh = capabilities.HasSourceProvenance
+            ? "parent.SourceLastSuccessfulRefreshAt"
+            : "NULL";
+        string sourceRevision = capabilities.HasSourceProvenance
+            ? "parent.SourceContentRevision"
+            : "NULL";
 
         await using SqliteCommand command = source.CreateCommand();
         command.CommandText =
@@ -341,11 +346,12 @@ internal static class DiscussionSiteDatabaseBuilder
                    ticket.ProposalBImpact,
                    ticket.ProposalC,
                    ticket.ProposalCJustification,
-                   {v2Reporter} AS StructuredReporter,
-                   {v2Assignee} AS StructuredAssignee,
-                   {v2SourceProject} AS SourceProject,
-                   {v2SourceRefresh} AS SourceLastSuccessfulRefreshAt,
-                   {v2SourceRevision} AS SourceContentRevision
+                   {structuredReporter} AS StructuredReporter,
+                   {structuredAssignee} AS StructuredAssignee,
+                   {peoplePolicyVersion} AS PublicDisplayNamePolicyVersion,
+                   {sourceProject} AS SourceProject,
+                   {sourceRefresh} AS SourceLastSuccessfulRefreshAt,
+                   {sourceRevision} AS SourceContentRevision
             FROM prepared_tickets ticket
             INNER JOIN prepared_ticket_hydration parent
                 ON parent.TicketKey = ticket.Key COLLATE NOCASE
@@ -403,11 +409,15 @@ internal static class DiscussionSiteDatabaseBuilder
             ProposalBImpact = ReadNullableString(reader, 32),
             ProposalC = ReadNullableString(reader, 33),
             ProposalCJustification = ReadNullableString(reader, 34),
-            Reporter = NormalizeDisplayName(ReadNullableString(reader, 35)),
-            Assignee = NormalizeDisplayName(ReadNullableString(reader, 36)),
-            SourceProject = ReadNullableString(reader, 37),
-            SourceLastSuccessfulRefreshAt = ReadNullableString(reader, 38),
-            SourceContentRevision = ReadNullableInt64(reader, 39),
+            Reporter = NormalizeTrustedDisplayName(
+                ReadNullableString(reader, 35),
+                ReadNullableInt64(reader, 37)),
+            Assignee = NormalizeTrustedDisplayName(
+                ReadNullableString(reader, 36),
+                ReadNullableInt64(reader, 37)),
+            SourceProject = ReadNullableString(reader, 38),
+            SourceLastSuccessfulRefreshAt = ReadNullableString(reader, 39),
+            SourceContentRevision = ReadNullableInt64(reader, 40),
         };
         if (string.IsNullOrWhiteSpace(ticket.Project))
         {
@@ -425,10 +435,10 @@ internal static class DiscussionSiteDatabaseBuilder
     private static async Task<DateTimeOffset?> ReadCorpusFreshnessAsync(
         SqliteConnection source,
         IReadOnlyList<SourceTicket> tickets,
-        int sourceSchemaVersion,
+        DiscussionSourceCapabilities capabilities,
         CancellationToken ct)
     {
-        if (sourceSchemaVersion == PreparedTicketSnapshotSchemaV1.Version ||
+        if (!capabilities.HasSourceProvenance ||
             tickets.Count == 0)
         {
             return null;
@@ -555,13 +565,13 @@ internal static class DiscussionSiteDatabaseBuilder
     private static async Task ProjectPeopleAsync(
         SqliteConnection source,
         IReadOnlyList<SourceTicket> tickets,
-        int sourceSchemaVersion,
+        DiscussionSourceCapabilities capabilities,
         ICollection<object?[]> destination,
         CancellationToken ct)
     {
         Dictionary<string, List<string>> requesters =
             new(StringComparer.OrdinalIgnoreCase);
-        if (sourceSchemaVersion == PreparedTicketSnapshotSchemaV2.Version)
+        if (capabilities.HasTrustedPeople)
         {
             HashSet<string> selected = tickets
                 .Select(ticket => ticket.Key)
@@ -569,7 +579,8 @@ internal static class DiscussionSiteDatabaseBuilder
             await using SqliteCommand command = source.CreateCommand();
             command.CommandText =
                 """
-                SELECT TicketKey, DisplayName
+                SELECT TicketKey, DisplayName,
+                       PublicDisplayNamePolicyVersion
                 FROM prepared_ticket_in_person_requesters
                 ORDER BY TicketKey COLLATE NOCASE, DisplayName COLLATE NOCASE,
                          DisplayName, RowId
@@ -584,7 +595,9 @@ internal static class DiscussionSiteDatabaseBuilder
                     continue;
                 }
                 string? displayName =
-                    NormalizeDisplayName(ReadNullableString(reader, 1));
+                    NormalizeTrustedDisplayName(
+                        ReadNullableString(reader, 1),
+                        ReadNullableInt64(reader, 2));
                 if (displayName is null)
                 {
                     continue;
@@ -602,20 +615,24 @@ internal static class DiscussionSiteDatabaseBuilder
 
         foreach (SourceTicket ticket in tickets)
         {
+            string? reporter =
+                PublicDisplayNamePolicy.Normalize(ticket.Reporter);
+            string? assignee =
+                PublicDisplayNamePolicy.Normalize(ticket.Assignee);
             destination.Add(
             [
                 ticket.Key,
                 "reporter",
-                ticket.Reporter,
-                DiscussionRendererSchema.NormalizeSortKey(ticket.Reporter),
+                reporter,
+                DiscussionRendererSchema.NormalizeSortKey(reporter),
                 0,
             ]);
             destination.Add(
             [
                 ticket.Key,
                 "assignee",
-                ticket.Assignee,
-                DiscussionRendererSchema.NormalizeSortKey(ticket.Assignee),
+                assignee,
+                DiscussionRendererSchema.NormalizeSortKey(assignee),
                 0,
             ]);
 
@@ -1749,8 +1766,29 @@ internal static class DiscussionSiteDatabaseBuilder
     private static string? NormalizeOptional(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static string? NormalizeDisplayName(string? value)
-        => NormalizeOptional(value);
+    private static string? NormalizeTrustedDisplayName(
+        string? value,
+        long? policyVersion)
+        => policyVersion == PublicDisplayNamePolicy.CurrentVersion
+            ? PublicDisplayNamePolicy.Normalize(value)
+            : null;
+
+    private static DiscussionSourceCapabilities GetSourceCapabilities(
+        int sourceSchemaVersion)
+        => sourceSchemaVersion switch
+        {
+            PreparedTicketSnapshotSchemaV1.Version => new(
+                HasSourceProvenance: false,
+                HasTrustedPeople: false),
+            PreparedTicketSnapshotSchemaV2.Version => new(
+                HasSourceProvenance: true,
+                HasTrustedPeople: false),
+            PreparedTicketSnapshotSchemaV3.Version => new(
+                HasSourceProvenance: true,
+                HasTrustedPeople: true),
+            _ => throw new InvalidOperationException(
+                $"Unsupported discussion source snapshot schema version {sourceSchemaVersion}."),
+        };
 
     private static DateTimeOffset ParseSourceTimestamp(
         string value,

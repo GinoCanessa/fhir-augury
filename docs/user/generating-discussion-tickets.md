@@ -21,35 +21,39 @@ pair downloaded after the run completes.
 Each durable pair contains the descriptor, database, and
 `verified-pair.json`. Each published discussion sub-site contains
 `site-manifest.json`. The checked-in Preparer default emits public snapshot
-schema v2; the publisher also accepts legacy schema-v1 discussion pairs. The
-live processor database is not a site input.
+schema v3; the publisher also accepts legacy schema-v1 and schema-v2
+discussion pairs. Older pairs remain publishable but their people values are
+treated as unavailable. The live processor database is not a site input.
 
 ## Reading the generated site
 
 The default visible title is
-`Tickets for Discussion - Built <Month dd, yyyy>` when the schema-v2 snapshot
-can prove Jira provenance for the complete retained corpus. `Built` means the
-latest successful upstream Jira refresh represented by every retained
-ticket's accepted authoring run and stable parent-ticket hydration. The date is
-formatted from the frozen UTC value. It is **not** the authoring completion,
-snapshot creation, or publication date.
+`Tickets for Discussion - Built <Month dd, yyyy>` when the schema-v2 or
+schema-v3 snapshot can prove Jira provenance for the complete retained corpus.
+`Built` means the latest successful upstream Jira refresh represented by every
+retained ticket's accepted authoring run and stable parent-ticket hydration.
+The date is formatted from the frozen UTC value. It is **not** the authoring
+completion, snapshot creation, or publication date.
 
-For schema-v2 input, each retained ticket must have exactly one accepted
-authoring coordinate. Zero or multiple matches are structural validation
-errors that abort publication rather than a reason to hide the date. After
-that check passes, the publisher omits the suffix rather than substitute
-another timestamp when a migrated legacy run has null provenance, a source
-read was unstable, or any run or parent freshness coordinate is missing,
-null, or partially bound. Schema-v1 input is also unsuffixed. An explicit
-`ticket-site --title` remains the base title; Discussion appends the freshness
-suffix and then any filter suffix. This does not affect Tickets for Applying,
-whose Planner snapshot and renderer path remain on schema v1.
+For schema-v2 or schema-v3 input, each retained ticket must have exactly one
+accepted authoring coordinate. Zero or multiple matches are structural
+validation errors that abort publication rather than a reason to hide the
+date. After that check passes, the publisher omits the suffix rather than
+substitute another timestamp when a migrated legacy run has null provenance,
+a source read was unstable, or any run or parent freshness coordinate is
+missing, null, or partially bound. Schema-v1 input is also unsuffixed. An
+explicit `ticket-site --title` remains the base title; Discussion appends the
+freshness suffix and then any filter suffix. This does not affect Tickets for
+Applying, whose Planner snapshot and renderer path remain on schema v1.
 
 Ticket pages use only public, snapshot-resident context:
 
-- Reporter and Assignee use Jira-authenticated display names and remain
-  visible as an em dash when unavailable. In-person requesters appear only
-  when at least one safe display name exists.
+- Reporter and Assignee use only schema-v3 display names carrying the exact
+  current public-policy marker and remain visible as an em dash when
+  unavailable. In-person requesters appear only when at least one
+  current-policy, context-free-safe v3 value exists. Schema-v1 and schema-v2
+  sites intentionally show no public people because those snapshots cannot
+  prove that the account-identifier policy ran.
 - Standalone `FHIR-<number>` keys in summary prose link to canonical Jira in a
   new tab. Linked/related Jira summaries and related Zulip summaries place
   deduplicated source lists beside the text; GitHub summaries do not gain
