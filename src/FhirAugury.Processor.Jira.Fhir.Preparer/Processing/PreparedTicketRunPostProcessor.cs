@@ -7,6 +7,7 @@ using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -33,6 +34,9 @@ public sealed class PreparedTicketRunPostProcessor(
     {
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+        AuthoringSnapshotSchemaCatalog snapshotSchema =
+            PreparedTicketSnapshotSchemaResolver.Resolve(
+                _options.SnapshotSchemaVersion);
         AuthoringProcessorModeRecord mode =
             await authoringStore.GetProcessorModeAsync(
                 coordinator.ProcessorKind,
@@ -148,7 +152,9 @@ public sealed class PreparedTicketRunPostProcessor(
                         IReadOnlyList<AuthoringRunItemRecord> items =
                             await authoringStore.GetRunItemsAsync(runId, cancellationToken);
                         IReadOnlyDictionary<string, long> counts =
-                            await database.GetSnapshotTableCountsAsync(cancellationToken);
+                            await database.GetSnapshotTableCountsAsync(
+                                snapshotSchema.Version,
+                                cancellationToken);
                         int receiptCount =
                             await database.GetSnapshotReceiptCountAsync(
                                 runId,
@@ -159,12 +165,14 @@ public sealed class PreparedTicketRunPostProcessor(
                                 coordinator.ProcessorKind,
                                 runId,
                                 Path.GetFullPath(_options.SnapshotDirectory),
-                                _options.SnapshotSchemaVersion,
+                                snapshotSchema.Version,
                                 items.Count(item =>
                                     item.Status is AuthoringStatusValues.Items.Complete or AuthoringStatusValues.Items.Superseded),
                                 receiptCount,
                                 counts,
-                                new PreparedTicketSnapshotSanitizer(runId)),
+                                new PreparedTicketSnapshotSanitizer(
+                                    runId,
+                                    snapshotSchema.Version)),
                             cancellationToken);
                     },
                 completionGuard,

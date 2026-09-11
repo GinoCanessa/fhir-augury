@@ -30,9 +30,13 @@ public partial record class PreparedTicketHydrationRecord
     public string? DescriptionHtml { get; set; }
     public string? ResolutionDescriptionHtml { get; set; }
     public string? Reporter { get; set; }
+    public string? Assignee { get; set; }
     public DateTimeOffset? CreatedAt { get; set; }
     public string? RelatedArtifactsRaw { get; set; }
     public string? RelatedPagesRaw { get; set; }
+    public string? SourceProject { get; set; }
+    public DateTimeOffset? SourceLastSuccessfulRefreshAt { get; set; }
+    public long? SourceContentRevision { get; set; }
     public required DateTimeOffset HydratedAt { get; set; }
     public required string HydrationStatus { get; set; }
     public string? HydrationReason { get; set; }

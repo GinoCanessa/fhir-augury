@@ -145,3 +145,24 @@ public static class AuthoringSnapshotSchemaV1
                 ]),
         ]);
 }
+
+public static class AuthoringSnapshotSchemaV2
+{
+    public const int Version = 2;
+
+    public static IReadOnlyList<AuthoringSnapshotTableSchema> CoreTables { get; } =
+        Array.AsReadOnly<AuthoringSnapshotTableSchema>(
+        [
+            .. AuthoringSnapshotSchemaV1.CoreTables,
+            new(
+                "authoring_run_input_provenance",
+                [
+                    "RowId",
+                    "RunId",
+                    "Source",
+                    "LatestSuccessfulRefreshAt",
+                    "ContentRevision",
+                    "CapturedAt",
+                ]),
+        ]);
+}

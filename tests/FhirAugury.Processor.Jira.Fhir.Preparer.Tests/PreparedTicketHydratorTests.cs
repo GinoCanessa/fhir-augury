@@ -115,10 +115,19 @@ public sealed class PreparedTicketHydratorTests
                 ["comment_count"] = "5",
                 ["description_plain"] = "body",
                 ["resolution_description"] = "<p>resolution</p>",
-                ["reporter"] = "Ada",
+                ["reporter"] = "legacy-reporter",
                 ["related_artifacts"] = "Patient, Observation",
                 ["related_pages"] = "patient.html; observation.html",
-            }, title: "parent", url: "https://jira/browse/FHIR-100", content: "<p>body</p>"));
+            },
+            title: "parent",
+            url: "https://jira/browse/FHIR-100",
+            content: "<p>body</p>",
+            people: new
+            {
+                reporter = "Ada",
+                assignee = "Grace",
+                inPersonRequesters = new[] { "Ada", "Lin" },
+            }));
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-200",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -153,6 +162,10 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("<p>body</p>", read.Parent.DescriptionHtml);
         Assert.Equal("<p>resolution</p>", read.Parent.ResolutionDescriptionHtml);
         Assert.Equal("Ada", read.Parent.Reporter);
+        Assert.Equal("Grace", read.Parent.Assignee);
+        Assert.Equal(
+            ["Ada", "Lin"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
         Assert.NotNull(read.Parent.CreatedAt);
         Assert.Equal("Patient, Observation", read.Parent.RelatedArtifactsRaw);
         Assert.Equal("patient.html; observation.html", read.Parent.RelatedPagesRaw);
@@ -191,6 +204,133 @@ public sealed class PreparedTicketHydratorTests
         command.CommandText =
             "SELECT GROUP_CONCAT(Value, ',') FROM (SELECT Value FROM prepared_ticket_pages WHERE TicketKey = 'FHIR-100' ORDER BY Value)";
         Assert.Equal("observation.html,patient.html", command.ExecuteScalar());
+    }
+
+    [Fact]
+    public async Task Hydrate_PersistsAssigneeAndDeduplicatedInPersonRequesters()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-109");
+        DateTimeOffset refreshAt =
+            new(2026, 9, 8, 12, 30, 0, TimeSpan.Zero);
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-109",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["reporter"] = "private-reporter-id",
+                    ["assignee"] = "private-assignee-id",
+                },
+                title: "people",
+                url: "https://jira/browse/FHIR-109",
+                people: new
+                {
+                    reporter = "  Ada Lovelace ",
+                    assignee = " Grace Hopper  ",
+                    inPersonRequesters = new[]
+                    {
+                        "  Zoë Example ",
+                        "zoë example",
+                        "Alan Example",
+                        "alan example",
+                        " ",
+                    },
+                },
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 42,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = refreshAt,
+                        },
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-109",
+                    CancellationToken.None));
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-109"));
+        Assert.Equal("private-reporter-id", success.Batch.Parent.Reporter);
+        Assert.Equal(
+            "Ada Lovelace",
+            success.Batch.Parent.StructuredReporter);
+        Assert.Equal("Ada Lovelace", read.Parent!.Reporter);
+        Assert.Equal("Grace Hopper", read.Parent.Assignee);
+        Assert.Equal("FHIR", read.Parent.SourceProject);
+        Assert.Equal(refreshAt, read.Parent.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(42, read.Parent.SourceContentRevision);
+        Assert.Equal(
+            ["Alan Example", "Zoë Example"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+        PreparedJiraHydrationRow self = Assert.Single(read.JiraRows);
+        Assert.Equal("Ada Lovelace", self.Reporter);
+        Assert.Equal("Grace Hopper", self.Assignee);
+        Assert.DoesNotContain(
+            read.InPersonRequesters,
+            row => row.DisplayName.Contains("private", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Hydrate_DoesNotFallbackToLegacyPeopleOrUnstableProvenance()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-110");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-110",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["reporter"] = "legacy-reporter",
+                    ["assignee"] = "legacy-assignee",
+                },
+                title: "legacy only",
+                url: "https://jira/browse/FHIR-110",
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 99,
+                    isStable = false,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-110",
+                    CancellationToken.None));
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-110"));
+        Assert.Equal("legacy-reporter", success.Batch.Parent.Reporter);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Null(read.Parent.SourceProject);
+        Assert.Null(read.Parent.SourceLastSuccessfulRefreshAt);
+        Assert.Null(read.Parent.SourceContentRevision);
+        Assert.Empty(read.InPersonRequesters);
+        HydrationJiraRow neutralSelf = Assert.Single(success.Batch.JiraRows);
+        Assert.Equal("legacy-reporter", neutralSelf.Reporter);
+        Assert.Null(neutralSelf.StructuredReporter);
+        PreparedJiraHydrationRow self = Assert.Single(read.JiraRows);
+        Assert.Null(self.Reporter);
+        Assert.Null(self.Assignee);
     }
 
     [Fact]
@@ -471,7 +611,9 @@ public sealed class PreparedTicketHydratorTests
         Dictionary<string, string> metadata,
         string title,
         string url,
-        string? content = null)
+        string? content = null,
+        object? people = null,
+        object? provenance = null)
     {
         var payload = new
         {
@@ -481,6 +623,8 @@ public sealed class PreparedTicketHydratorTests
             url,
             createdAt = "2026-04-01T00:00:00Z",
             metadata,
+            people,
+            provenance,
         };
         return JsonSerializer.Serialize(payload);
     }

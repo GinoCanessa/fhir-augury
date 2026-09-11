@@ -13,6 +13,23 @@ internal sealed record OrchestratorItemResponse
     public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
     public Dictionary<string, string>? Metadata { get; init; }
+    public OrchestratorSourceReadProvenance? Provenance { get; init; }
+    public OrchestratorItemPeopleResponse? People { get; init; }
+}
+
+internal sealed record OrchestratorSourceReadProvenance
+{
+    public string? Source { get; init; }
+    public long? ContentRevision { get; init; }
+    public bool? IsStable { get; init; }
+    public Dictionary<string, DateTimeOffset?>? ProjectLastSuccessfulRefreshAt { get; init; }
+}
+
+internal sealed record OrchestratorItemPeopleResponse
+{
+    public string? Reporter { get; init; }
+    public string? Assignee { get; init; }
+    public IReadOnlyList<string>? InPersonRequesters { get; init; }
 }
 
 internal sealed record OrchestratorZulipThreadResponse

@@ -9,6 +9,7 @@ using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -98,6 +99,31 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             SqliteSchemaHelpers.AddColumnIfMissing(connection, "prepared_ticket_hydration", column, "TEXT NULL");
             SqliteSchemaHelpers.AddColumnIfMissing(connection, "prepared_jira_hydration", column, "TEXT NULL");
         }
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_hydration",
+            "Assignee",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_hydration",
+            "SourceProject",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_hydration",
+            "SourceLastSuccessfulRefreshAt",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_hydration",
+            "SourceContentRevision",
+            "INTEGER NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_jira_hydration",
+            "Assignee",
+            "TEXT NULL");
 
         PreparedTicketRecord.CreateTable(connection);
         PreparedTicketJiraContentRecord.CreateTable(connection);
@@ -113,6 +139,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedGitHubHydrationRecord.CreateTable(connection);
         PreparedRepoHydrationRecord.CreateTable(connection);
         PreparedTicketJiraXrefRecord.CreateTable(connection);
+        PreparedTicketInPersonRequesterRecord.CreateTable(connection);
         PreparedTicketTopicRecord.CreateTable(connection);
         PreparedTicketTopicGroupRecord.CreateTable(connection);
         PreparedTicketTopicMemberRecord.CreateTable(connection);
@@ -124,6 +151,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         EnsureHydrationCompositeUniqueIndexes(connection);
         EnsureGroupingCompositeUniqueIndexes(connection);
         RunMigrationsIfNeeded(connection, logger);
+        SeedLegacyRunInputProvenance(connection);
     }
 
     private static void EnsureAuthoringStateTables(SqliteConnection connection)
@@ -206,6 +234,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_github_hydration_ticket_item ON prepared_github_hydration(TicketKey, GitHubItemId);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_repo_hydration_ticket_repo ON prepared_repo_hydration(TicketKey, Repo);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_jira_xref_ticket_jira_source ON prepared_ticket_jira_xref(TicketKey, JiraKey, Source);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_prepared_ticket_in_person_requesters_ticket_name ON prepared_ticket_in_person_requesters(TicketKey COLLATE NOCASE, DisplayName COLLATE NOCASE);",
         ];
         foreach (string sql in statements)
         {
@@ -213,6 +242,31 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             command.CommandText = sql;
             command.ExecuteNonQuery();
         }
+    }
+
+    private static void SeedLegacyRunInputProvenance(
+        SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO authoring_run_input_provenance(
+                RunId, Source, LatestSuccessfulRefreshAt,
+                ContentRevision, CapturedAt)
+            SELECT run.Id, 'jira', NULL, NULL, run.CreatedAt
+            FROM authoring_runs run
+            WHERE run.ProcessorKind = @processorKind COLLATE NOCASE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM authoring_run_input_provenance provenance
+                  WHERE provenance.RunId = run.Id
+                    AND provenance.Source = 'jira' COLLATE NOCASE
+              )
+            """;
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        command.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -282,6 +336,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 
     private const string HydrationCleanMigrationName = "prepared-jira-hydration-clean-v1";
     private const string TicketTopicsCleanMigrationName = "ticket-topics-clean-v1";
+    private const string StructuredPeopleMigrationName =
+        "prepared-hydration-structured-people-v2";
 
     /// <summary>
     /// Runs every one-shot data migration whose sentinel is not yet present.
@@ -291,6 +347,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// </summary>
     private static void RunMigrationsIfNeeded(SqliteConnection connection, ILogger? logger)
     {
+        if (!MigrationHasRun(connection, StructuredPeopleMigrationName))
+        {
+            InvalidateUnverifiedLegacyHydration(connection, logger);
+            MarkMigrationApplied(connection, StructuredPeopleMigrationName);
+        }
+
         if (!MigrationHasRun(connection, HydrationCleanMigrationName))
         {
             BackfillJiraHydrationWorkGroupClean(connection, logger);
@@ -302,6 +364,44 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             BackfillTicketTopicsWorkGroupClean(connection, logger);
             MarkMigrationApplied(connection, TicketTopicsCleanMigrationName);
         }
+    }
+
+    private static void InvalidateUnverifiedLegacyHydration(
+        SqliteConnection connection,
+        ILogger? logger)
+    {
+        using SqliteTransaction transaction =
+            connection.BeginTransaction(System.Data.IsolationLevel.Serializable);
+        int parentRows;
+        int jiraRows;
+        using (SqliteCommand parent = connection.CreateCommand())
+        {
+            parent.Transaction = transaction;
+            parent.CommandText =
+                """
+                UPDATE prepared_ticket_hydration
+                SET Reporter = NULL,
+                    HydrationStatus = 'unresolved',
+                    HydrationReason = 'structured people and provenance refresh required'
+                """;
+            parentRows = parent.ExecuteNonQuery();
+        }
+        using (SqliteCommand jira = connection.CreateCommand())
+        {
+            jira.Transaction = transaction;
+            jira.CommandText =
+                """
+                UPDATE prepared_jira_hydration
+                SET Reporter = NULL
+                WHERE Reporter IS NOT NULL
+                """;
+            jiraRows = jira.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        logger?.LogInformation(
+            "Invalidated unverified legacy hydration: parentRows={ParentRows} jiraReporterRows={JiraRows}",
+            parentRows,
+            jiraRows);
     }
 
     private static bool MigrationHasRun(SqliteConnection connection, string name)
@@ -689,11 +789,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     {
         await ClassifyLegacyPreparedTicketsCoreAsync(connection, ct);
         List<AuthoringRunItemDefinition> items = [];
+        List<(DateTimeOffset? LastSuccessfulRefreshAt, long? ContentRevision)>
+            provenanceCoordinates = [];
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """
             SELECT p.Key, s.SourceTicketShape, s.LastUpdated, s.Title,
-                   s.Status, s.WorkGroup, s.Type, s.Specification
+                   s.Status, s.WorkGroup, s.Type, s.Specification,
+                   s.SourceProjectLastSuccessfulRefreshAt,
+                   s.SourceContentRevision
             FROM prepared_tickets p
             INNER JOIN prepared_ticket_authoring_state a
                 ON a.TicketKey = p.Key
@@ -729,8 +833,46 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 key,
                 reader.GetString(1),
                 revision));
+            provenanceCoordinates.Add((
+                reader.IsDBNull(8)
+                    ? null
+                    : ParseDate(reader.GetString(8)),
+                reader.IsDBNull(9)
+                    ? null
+                    : reader.GetInt64(9)));
         }
-        return new AuthoringCutoverPreparation(items);
+
+        DateTimeOffset? latestSuccessfulRefreshAt =
+            provenanceCoordinates.Count > 0 &&
+            provenanceCoordinates.All(coordinate =>
+                coordinate.LastSuccessfulRefreshAt is not null)
+                ? provenanceCoordinates.Max(coordinate =>
+                    coordinate.LastSuccessfulRefreshAt!.Value)
+                : null;
+        long? contentRevision = null;
+        if (provenanceCoordinates.Count > 0 &&
+            provenanceCoordinates.All(coordinate =>
+                coordinate.ContentRevision is not null))
+        {
+            long candidate = provenanceCoordinates[0].ContentRevision!.Value;
+            if (provenanceCoordinates.All(coordinate =>
+                    coordinate.ContentRevision == candidate))
+            {
+                contentRevision = candidate;
+            }
+        }
+
+        return new AuthoringCutoverPreparation(
+            items,
+            items.Count == 0
+                ? null
+                :
+                [
+                    new AuthoringRunInputProvenanceDefinition(
+                        "jira",
+                        latestSuccessfulRefreshAt,
+                        contentRevision),
+                ]);
     }
 
     private async Task<int> ClassifyLegacyPreparedTicketsCoreAsync(
@@ -1343,38 +1485,31 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     }
 
     public async Task<IReadOnlyDictionary<string, long>> GetSnapshotTableCountsAsync(
+        int schemaVersion,
         CancellationToken ct = default)
     {
-        string[] tables =
-        [
-            "prepared_tickets",
-            "prepared_ticket_repos",
-            "prepared_ticket_related_jira",
-            "prepared_ticket_related_zulip",
-            "prepared_ticket_related_github",
-            "prepared_ticket_hydration",
-            "prepared_jira_hydration",
-            "prepared_ticket_jira_content",
-            "prepared_ticket_artifacts",
-            "prepared_ticket_pages",
-            "prepared_ticket_topics",
-            "prepared_ticket_topic_groups",
-            "prepared_ticket_topic_members",
-            "prepared_ticket_partition_receipts",
-            "jira_review_workgroups",
-        ];
+        AuthoringSnapshotSchemaCatalog schema =
+            PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion);
         Dictionary<string, long> counts = new(StringComparer.Ordinal);
         await using SqliteConnection connection = OpenConnection();
-        foreach (string table in tables)
+        foreach (string table in schema.CountedTables)
         {
             await using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = $"SELECT COUNT(*) FROM {table}";
+            string quoted =
+                $"\"{table.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+            command.CommandText = $"SELECT COUNT(*) FROM {quoted}";
             counts[table] = Convert.ToInt64(
                 await command.ExecuteScalarAsync(ct),
                 CultureInfo.InvariantCulture);
         }
         return counts;
     }
+
+    public Task<IReadOnlyDictionary<string, long>> GetSnapshotTableCountsAsync(
+        CancellationToken ct = default)
+        => GetSnapshotTableCountsAsync(
+            PreparedTicketSnapshotSchemaV1.Version,
+            ct);
 
     public async Task<int> GetSnapshotReceiptCountAsync(
         string runId,
@@ -1999,7 +2134,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             SELECT TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain,
-                   WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason
+                   WorkGroup, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason,
+                   Reporter, Assignee
             FROM prepared_jira_hydration
             WHERE JiraKey = TicketKey
               AND WorkGroupClean = @wg
@@ -2025,7 +2161,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 Url: ReadNullableString(reader, 11),
                 HydratedAt: ParseDate(reader.GetString(12)),
                 HydrationStatus: reader.GetString(13),
-                HydrationReason: ReadNullableString(reader, 14)));
+                HydrationReason: ReadNullableString(reader, 14),
+                Reporter: ReadNullableString(reader, 15),
+                Assignee: ReadNullableString(reader, 16)));
         }
 
         return rows;
@@ -2567,6 +2705,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             await DeleteHydrationRowsAsync(connection, batch.TicketKey, ct);
             await InsertHydrationParentAsync(connection, batch.Parent, ct);
             await ReplaceCanonicalJiraFieldsAsync(connection, batch.Parent, ct);
+            foreach (PreparedTicketInPersonRequesterRow row in
+                     NormalizeInPersonRequesters(
+                         batch.TicketKey,
+                         batch.InPersonRequesters))
+            {
+                await InsertInPersonRequesterAsync(connection, row, ct);
+            }
             foreach (PreparedJiraHydrationRow row in batch.JiraRows)
             {
                 await InsertJiraHydrationAsync(connection, row, ct);
@@ -2604,9 +2749,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     /// <summary>
     /// Explicit-interface mapping from the shared neutral
     /// <see cref="HydrationBatch"/> shape onto the preparer's concrete
-    /// <see cref="PreparedTicketHydrationBatch"/>. The field shapes are
-    /// identical by design, so this is a mechanical 1:1 copy that
-    /// delegates to the existing <see cref="SaveHydrationAsync(PreparedTicketHydrationBatch, CancellationToken)"/>.
+    /// <see cref="PreparedTicketHydrationBatch"/>. Reporter persistence
+    /// deliberately uses only the authenticated structured channel, while
+    /// the remaining fields map directly before delegating to the existing
+    /// <see cref="SaveHydrationAsync(PreparedTicketHydrationBatch, CancellationToken)"/>.
     /// </summary>
     Task IHydrationTargetDatabase.SaveHydrationAsync(HydrationBatch batch, CancellationToken ct)
     {
@@ -2629,10 +2775,21 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             HydrationReason: batch.Parent.HydrationReason,
             DescriptionHtml: batch.Parent.DescriptionHtml,
             ResolutionDescriptionHtml: batch.Parent.ResolutionDescriptionHtml,
-            Reporter: batch.Parent.Reporter,
+            Reporter: batch.Parent.StructuredReporter,
             CreatedAt: batch.Parent.CreatedAt,
             RelatedArtifactsRaw: batch.Parent.RelatedArtifactsRaw,
-            RelatedPagesRaw: batch.Parent.RelatedPagesRaw);
+            RelatedPagesRaw: batch.Parent.RelatedPagesRaw,
+            Assignee: batch.Parent.Assignee,
+            SourceProject: batch.Parent.SourceIsStable == true
+                ? batch.Parent.SourceProject
+                : null,
+            SourceLastSuccessfulRefreshAt:
+                batch.Parent.SourceIsStable == true
+                    ? batch.Parent.SourceLastSuccessfulRefreshAt
+                    : null,
+            SourceContentRevision: batch.Parent.SourceIsStable == true
+                ? batch.Parent.SourceContentRevision
+                : null);
 
         List<PreparedJiraHydrationRow> jiraRows = new(batch.JiraRows.Count);
         foreach (HydrationJiraRow r in batch.JiraRows)
@@ -2641,8 +2798,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 r.TicketKey, r.JiraKey, r.Title, r.Status, r.Type, r.Priority,
                 r.Resolution, r.ResolutionDescriptionPlain, r.WorkGroup, r.Specification,
                 r.UpdatedAt, r.Url, r.HydratedAt, r.HydrationStatus, r.HydrationReason,
-                r.DescriptionHtml, r.ResolutionDescriptionHtml, r.Reporter, r.CreatedAt,
-                r.RelatedArtifactsRaw, r.RelatedPagesRaw));
+                r.DescriptionHtml, r.ResolutionDescriptionHtml, r.StructuredReporter, r.CreatedAt,
+                r.RelatedArtifactsRaw, r.RelatedPagesRaw, r.Assignee));
         }
 
         List<PreparedZulipHydrationRow> zulipRows = new(batch.ZulipRows.Count);
@@ -2684,7 +2841,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             ZulipRows: zulipRows,
             GitHubRows: githubRows,
             RepoRows: repoRows,
-            JiraXrefRows: xrefRows);
+            JiraXrefRows: xrefRows,
+            InPersonRequesters:
+                NormalizeDisplayNames(batch.Parent.InPersonRequesters)
+                    .Select(displayName =>
+                        new PreparedTicketInPersonRequesterRow(
+                            batch.TicketKey,
+                            displayName))
+                    .ToArray());
 
         return SaveHydrationAsync(concrete, ct);
     }
@@ -2779,12 +2943,21 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         IReadOnlyList<PreparedGitHubHydrationRow> github = await ReadGitHubHydrationAsync(connection, key, ct);
         IReadOnlyList<PreparedRepoHydrationRow> repos = await ReadRepoHydrationAsync(connection, key, ct);
         IReadOnlyList<PreparedTicketJiraXrefRow> xref = await ReadJiraXrefAsync(connection, key, ct);
-        if (parent is null && jira.Count == 0 && zulip.Count == 0 && github.Count == 0 && repos.Count == 0 && xref.Count == 0)
+        IReadOnlyList<PreparedTicketInPersonRequesterRow> requesters =
+            await ReadInPersonRequestersAsync(connection, key, ct);
+        if (parent is null && jira.Count == 0 && zulip.Count == 0 && github.Count == 0 && repos.Count == 0 && xref.Count == 0 && requesters.Count == 0)
         {
             return null;
         }
 
-        return new PreparedTicketHydrationReadModel(parent, jira, zulip, github, repos, xref);
+        return new PreparedTicketHydrationReadModel(
+            parent,
+            jira,
+            zulip,
+            github,
+            repos,
+            xref,
+            requesters);
     }
 
     /// <summary>
@@ -2878,10 +3051,69 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "prepared_github_hydration",
             "prepared_repo_hydration",
             "prepared_ticket_jira_xref",
+            "prepared_ticket_in_person_requesters",
         })
         {
             await ExecuteAsync(connection, $"DELETE FROM {table} WHERE TicketKey = @key", ct, ("@key", key));
         }
+    }
+
+    private static IReadOnlyList<PreparedTicketInPersonRequesterRow>
+        NormalizeInPersonRequesters(
+            string ticketKey,
+            IReadOnlyList<PreparedTicketInPersonRequesterRow>? rows)
+    {
+        if (rows is null || rows.Count == 0)
+        {
+            return [];
+        }
+        if (rows.Any(row =>
+                !string.Equals(
+                    row.TicketKey,
+                    ticketKey,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException(
+                "Every in-person requester must belong to the hydration batch ticket.",
+                nameof(rows));
+        }
+
+        return NormalizeDisplayNames(rows.Select(row => row.DisplayName))
+            .Select(displayName =>
+                new PreparedTicketInPersonRequesterRow(
+                    ticketKey,
+                    displayName))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> NormalizeDisplayNames(
+        IEnumerable<string>? values)
+        => values is null
+            ? []
+            : values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Order(StringComparer.Ordinal)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value, StringComparer.Ordinal)
+                .ToArray();
+
+    private static async Task InsertInPersonRequesterAsync(
+        SqliteConnection connection,
+        PreparedTicketInPersonRequesterRow row,
+        CancellationToken ct)
+    {
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO prepared_ticket_in_person_requesters(
+                TicketKey, DisplayName)
+            VALUES(@ticketKey, @displayName)
+            """,
+            ct,
+            ("@ticketKey", row.TicketKey),
+            ("@displayName", row.DisplayName));
     }
 
     private static async Task InsertHydrationParentAsync(SqliteConnection connection, PreparedTicketHydrationRow row, CancellationToken ct)
@@ -2891,11 +3123,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             INSERT INTO prepared_ticket_hydration
             (Id, TicketKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot,
              ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, DescriptionHtml, ResolutionDescriptionHtml,
-             Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason)
+             Reporter, Assignee, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, SourceProject,
+             SourceLastSuccessfulRefreshAt, SourceContentRevision, HydratedAt, HydrationStatus, HydrationReason)
             VALUES
             (@Id, @TicketKey, @Priority, @Resolution, @ResolutionDescriptionPlain, @Specification, @RaisedInVersion, @SelectedBallot,
              @ChangeCategory, @Impact, @Labels, @CommentCount, @DescriptionPlain, @DescriptionHtml, @ResolutionDescriptionHtml,
-             @Reporter, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @HydratedAt, @HydrationStatus, @HydrationReason)
+             @Reporter, @Assignee, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @SourceProject,
+             @SourceLastSuccessfulRefreshAt, @SourceContentRevision, @HydratedAt, @HydrationStatus, @HydrationReason)
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("@TicketKey", row.TicketKey);
@@ -2913,9 +3147,21 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         AddNullable(command, "@DescriptionHtml", row.DescriptionHtml);
         AddNullable(command, "@ResolutionDescriptionHtml", row.ResolutionDescriptionHtml);
         AddNullable(command, "@Reporter", row.Reporter);
+        AddNullable(command, "@Assignee", row.Assignee);
         AddNullable(command, "@CreatedAt", row.CreatedAt.HasValue ? Format(row.CreatedAt.Value) : null);
         AddNullable(command, "@RelatedArtifactsRaw", row.RelatedArtifactsRaw);
         AddNullable(command, "@RelatedPagesRaw", row.RelatedPagesRaw);
+        AddNullable(command, "@SourceProject", row.SourceProject);
+        AddNullable(
+            command,
+            "@SourceLastSuccessfulRefreshAt",
+            row.SourceLastSuccessfulRefreshAt.HasValue
+                ? Format(row.SourceLastSuccessfulRefreshAt.Value)
+                : null);
+        AddNullable(
+            command,
+            "@SourceContentRevision",
+            row.SourceContentRevision);
         command.Parameters.AddWithValue("@HydratedAt", Format(row.HydratedAt));
         command.Parameters.AddWithValue("@HydrationStatus", row.HydrationStatus);
         AddNullable(command, "@HydrationReason", row.HydrationReason);
@@ -2990,11 +3236,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             INSERT INTO prepared_jira_hydration
             (Id, TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain,
              WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, DescriptionHtml, ResolutionDescriptionHtml,
-             Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason)
+             Reporter, Assignee, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason)
             VALUES
             (@Id, @TicketKey, @JiraKey, @Title, @Status, @Type, @Priority, @Resolution, @ResolutionDescriptionPlain,
              @WorkGroup, @WorkGroupClean, @Specification, @UpdatedAt, @Url, @DescriptionHtml, @ResolutionDescriptionHtml,
-             @Reporter, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @HydratedAt, @HydrationStatus, @HydrationReason)
+             @Reporter, @Assignee, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @HydratedAt, @HydrationStatus, @HydrationReason)
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("N"));
         command.Parameters.AddWithValue("@TicketKey", row.TicketKey);
@@ -3014,6 +3260,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         AddNullable(command, "@DescriptionHtml", row.DescriptionHtml);
         AddNullable(command, "@ResolutionDescriptionHtml", row.ResolutionDescriptionHtml);
         AddNullable(command, "@Reporter", row.Reporter);
+        AddNullable(command, "@Assignee", row.Assignee);
         AddNullable(command, "@CreatedAt", row.CreatedAt.HasValue ? Format(row.CreatedAt.Value) : null);
         AddNullable(command, "@RelatedArtifactsRaw", row.RelatedArtifactsRaw);
         AddNullable(command, "@RelatedPagesRaw", row.RelatedPagesRaw);
@@ -3124,7 +3371,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.CommandText = """
             SELECT TicketKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot,
                    ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, DescriptionHtml, ResolutionDescriptionHtml,
-                   Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason
+                   Reporter, Assignee, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, SourceProject,
+                   SourceLastSuccessfulRefreshAt, SourceContentRevision, HydratedAt, HydrationStatus, HydrationReason
             FROM prepared_ticket_hydration WHERE TicketKey = @key
             """;
         command.Parameters.AddWithValue("@key", key);
@@ -3147,15 +3395,23 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             Labels: ReadNullableString(reader, 9),
             CommentCount: reader.IsDBNull(10) ? null : reader.GetInt32(10),
             DescriptionPlain: ReadNullableString(reader, 11),
-            HydratedAt: ParseDate(reader.GetString(18)),
-            HydrationStatus: reader.GetString(19),
-            HydrationReason: ReadNullableString(reader, 20),
+            HydratedAt: ParseDate(reader.GetString(22)),
+            HydrationStatus: reader.GetString(23),
+            HydrationReason: ReadNullableString(reader, 24),
             DescriptionHtml: ReadNullableString(reader, 12),
             ResolutionDescriptionHtml: ReadNullableString(reader, 13),
             Reporter: ReadNullableString(reader, 14),
-            CreatedAt: reader.IsDBNull(15) ? null : ParseDate(reader.GetString(15)),
-            RelatedArtifactsRaw: ReadNullableString(reader, 16),
-            RelatedPagesRaw: ReadNullableString(reader, 17));
+            CreatedAt: reader.IsDBNull(16) ? null : ParseDate(reader.GetString(16)),
+            RelatedArtifactsRaw: ReadNullableString(reader, 17),
+            RelatedPagesRaw: ReadNullableString(reader, 18),
+            Assignee: ReadNullableString(reader, 15),
+            SourceProject: ReadNullableString(reader, 19),
+            SourceLastSuccessfulRefreshAt: reader.IsDBNull(20)
+                ? null
+                : ParseDate(reader.GetString(20)),
+            SourceContentRevision: reader.IsDBNull(21)
+                ? null
+                : reader.GetInt64(21));
     }
 
     private static async Task<IReadOnlyList<PreparedJiraHydrationRow>> ReadJiraHydrationAsync(SqliteConnection connection, string key, CancellationToken ct)
@@ -3164,7 +3420,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.CommandText = """
             SELECT TicketKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain,
                    WorkGroup, Specification, UpdatedAt, Url, DescriptionHtml, ResolutionDescriptionHtml,
-                   Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason
+                   Reporter, Assignee, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason
             FROM prepared_jira_hydration WHERE TicketKey = @key ORDER BY JiraKey
             """;
         command.Parameters.AddWithValue("@key", key);
@@ -3185,15 +3441,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 Specification: ReadNullableString(reader, 9),
                 UpdatedAt: reader.IsDBNull(10) ? null : ParseDate(reader.GetString(10)),
                 Url: ReadNullableString(reader, 11),
-                HydratedAt: ParseDate(reader.GetString(18)),
-                HydrationStatus: reader.GetString(19),
-                HydrationReason: ReadNullableString(reader, 20),
+                HydratedAt: ParseDate(reader.GetString(19)),
+                HydrationStatus: reader.GetString(20),
+                HydrationReason: ReadNullableString(reader, 21),
                 DescriptionHtml: ReadNullableString(reader, 12),
                 ResolutionDescriptionHtml: ReadNullableString(reader, 13),
                 Reporter: ReadNullableString(reader, 14),
-                CreatedAt: reader.IsDBNull(15) ? null : ParseDate(reader.GetString(15)),
-                RelatedArtifactsRaw: ReadNullableString(reader, 16),
-                RelatedPagesRaw: ReadNullableString(reader, 17)));
+                CreatedAt: reader.IsDBNull(16) ? null : ParseDate(reader.GetString(16)),
+                RelatedArtifactsRaw: ReadNullableString(reader, 17),
+                RelatedPagesRaw: ReadNullableString(reader, 18),
+                Assignee: ReadNullableString(reader, 15)));
         }
 
         return rows;
@@ -3308,6 +3565,32 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 Source: reader.GetString(2)));
         }
 
+        return rows;
+    }
+
+    private static async Task<IReadOnlyList<PreparedTicketInPersonRequesterRow>>
+        ReadInPersonRequestersAsync(
+            SqliteConnection connection,
+            string key,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT TicketKey, DisplayName
+            FROM prepared_ticket_in_person_requesters
+            WHERE TicketKey = @key COLLATE NOCASE
+            ORDER BY DisplayName COLLATE NOCASE, DisplayName
+            """;
+        command.Parameters.AddWithValue("@key", key);
+        List<PreparedTicketInPersonRequesterRow> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(new PreparedTicketInPersonRequesterRow(
+                reader.GetString(0),
+                reader.GetString(1)));
+        }
         return rows;
     }
 

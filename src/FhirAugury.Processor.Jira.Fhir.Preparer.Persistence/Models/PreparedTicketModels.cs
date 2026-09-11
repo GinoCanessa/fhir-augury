@@ -31,7 +31,11 @@ public sealed record PreparedTicketHydrationRow(
     string? Reporter = null,
     DateTimeOffset? CreatedAt = null,
     string? RelatedArtifactsRaw = null,
-    string? RelatedPagesRaw = null);
+    string? RelatedPagesRaw = null,
+    string? Assignee = null,
+    string? SourceProject = null,
+    DateTimeOffset? SourceLastSuccessfulRefreshAt = null,
+    long? SourceContentRevision = null);
 
 public sealed record PreparedJiraHydrationRow(
     string TicketKey,
@@ -54,7 +58,8 @@ public sealed record PreparedJiraHydrationRow(
     string? Reporter = null,
     DateTimeOffset? CreatedAt = null,
     string? RelatedArtifactsRaw = null,
-    string? RelatedPagesRaw = null);
+    string? RelatedPagesRaw = null,
+    string? Assignee = null);
 
 public sealed record PreparedZulipHydrationRow(
     string TicketKey,
@@ -105,6 +110,10 @@ public sealed record PreparedTicketJiraXrefRow(
     string JiraKey,
     string Source);
 
+public sealed record PreparedTicketInPersonRequesterRow(
+    string TicketKey,
+    string DisplayName);
+
 public sealed record PreparedTicketHydrationBatch(
     string TicketKey,
     PreparedTicketHydrationRow Parent,
@@ -112,7 +121,8 @@ public sealed record PreparedTicketHydrationBatch(
     IReadOnlyList<PreparedZulipHydrationRow> ZulipRows,
     IReadOnlyList<PreparedGitHubHydrationRow> GitHubRows,
     IReadOnlyList<PreparedRepoHydrationRow> RepoRows,
-    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows);
+    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows,
+    IReadOnlyList<PreparedTicketInPersonRequesterRow>? InPersonRequesters = null);
 
 public sealed record PreparedTicketHydrationReadModel(
     PreparedTicketHydrationRow? Parent,
@@ -120,4 +130,5 @@ public sealed record PreparedTicketHydrationReadModel(
     IReadOnlyList<PreparedZulipHydrationRow> ZulipRows,
     IReadOnlyList<PreparedGitHubHydrationRow> GitHubRows,
     IReadOnlyList<PreparedRepoHydrationRow> RepoRows,
-    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows);
+    IReadOnlyList<PreparedTicketJiraXrefRow> JiraXrefRows,
+    IReadOnlyList<PreparedTicketInPersonRequesterRow> InPersonRequesters);

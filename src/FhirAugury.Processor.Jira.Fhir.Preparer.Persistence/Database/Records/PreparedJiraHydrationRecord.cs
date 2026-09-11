@@ -31,6 +31,7 @@ public partial record class PreparedJiraHydrationRecord
     public string? DescriptionHtml { get; set; }
     public string? ResolutionDescriptionHtml { get; set; }
     public string? Reporter { get; set; }
+    public string? Assignee { get; set; }
     public DateTimeOffset? CreatedAt { get; set; }
     public string? RelatedArtifactsRaw { get; set; }
     public string? RelatedPagesRaw { get; set; }

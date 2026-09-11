@@ -54,6 +54,14 @@ public class OrchestratorHydrationFetcher(
         }
 
         Dictionary<string, string> metadata = result.Value.Metadata ?? [];
+        OrchestratorItemPeopleResponse? people = result.Value.People;
+        (
+            string? sourceProject,
+            DateTimeOffset? sourceLastSuccessfulRefreshAt,
+            long? sourceContentRevision,
+            bool? sourceIsStable) = ReadJiraProvenance(
+                ticketKey,
+                result.Value.Provenance);
         int? commentCount = null;
         if (metadata.TryGetValue("comment_count", out string? commentCountValue)
             && int.TryParse(commentCountValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int parsedCount))
@@ -82,7 +90,14 @@ public class OrchestratorHydrationFetcher(
             Reporter: metadata.GetValueOrDefault("reporter"),
             CreatedAt: result.Value.CreatedAt,
             RelatedArtifactsRaw: metadata.GetValueOrDefault("related_artifacts"),
-            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"));
+            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"),
+            Assignee: NormalizeDisplayName(people?.Assignee),
+            InPersonRequesters: NormalizeDisplayNames(people?.InPersonRequesters),
+            SourceProject: sourceProject,
+            SourceLastSuccessfulRefreshAt: sourceLastSuccessfulRefreshAt,
+            SourceContentRevision: sourceContentRevision,
+            SourceIsStable: sourceIsStable,
+            StructuredReporter: NormalizeDisplayName(people?.Reporter));
 
         AppendXref(ticketKey, metadata.GetValueOrDefault("duplicate_of"), "DuplicateOf", xrefRows);
         AppendXref(ticketKey, metadata.GetValueOrDefault("related_issues"), "RelatedIssues", xrefRows);
@@ -140,6 +155,7 @@ public class OrchestratorHydrationFetcher(
         }
 
         Dictionary<string, string> metadata = result.Value.Metadata ?? [];
+        OrchestratorItemPeopleResponse? people = result.Value.People;
         return new HydrationJiraRow(
             TicketKey: ticketKey,
             JiraKey: jiraKey,
@@ -161,7 +177,9 @@ public class OrchestratorHydrationFetcher(
             Reporter: metadata.GetValueOrDefault("reporter"),
             CreatedAt: result.Value.CreatedAt,
             RelatedArtifactsRaw: metadata.GetValueOrDefault("related_artifacts"),
-            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"));
+            RelatedPagesRaw: metadata.GetValueOrDefault("related_pages"),
+            Assignee: NormalizeDisplayName(people?.Assignee),
+            StructuredReporter: NormalizeDisplayName(people?.Reporter));
     }
 
     public virtual async Task<HydrationZulipRow> FetchZulipAsync(string ticketKey, string threadId, DateTimeOffset hydratedAt, CancellationToken ct)
@@ -382,6 +400,72 @@ public class OrchestratorHydrationFetcher(
             return new FetchResult<T>(null, $"malformed response: {ex.GetType().Name}");
         }
     }
+
+    private static (
+        string? SourceProject,
+        DateTimeOffset? SourceLastSuccessfulRefreshAt,
+        long? SourceContentRevision,
+        bool? SourceIsStable) ReadJiraProvenance(
+            string ticketKey,
+            OrchestratorSourceReadProvenance? provenance)
+    {
+        if (provenance is null)
+        {
+            return (null, null, null, null);
+        }
+
+        if (provenance.IsStable != true ||
+            provenance.ContentRevision is null ||
+            !string.Equals(
+                provenance.Source,
+                "jira",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null, null, false);
+        }
+
+        int separator = ticketKey.IndexOf('-', StringComparison.Ordinal);
+        if (separator <= 0 ||
+            provenance.ProjectLastSuccessfulRefreshAt is null)
+        {
+            return (null, null, null, null);
+        }
+
+        string expectedProject = ticketKey[..separator];
+        foreach ((string project, DateTimeOffset? refreshAt) in
+                 provenance.ProjectLastSuccessfulRefreshAt)
+        {
+            if (string.Equals(
+                    project,
+                    expectedProject,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return (
+                    project,
+                    refreshAt,
+                    provenance.ContentRevision,
+                    true);
+            }
+        }
+
+        return (null, null, null, null);
+    }
+
+    private static string? NormalizeDisplayName(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static IReadOnlyList<string> NormalizeDisplayNames(
+        IReadOnlyList<string>? values)
+        => values is null
+            ? []
+            : values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Order(StringComparer.Ordinal)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value, StringComparer.Ordinal)
+                .ToArray();
 
     private readonly record struct FetchResult<T>(T? Value, string? Reason) where T : class;
 }

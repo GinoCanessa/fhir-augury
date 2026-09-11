@@ -1,7 +1,11 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
@@ -28,6 +32,10 @@ public sealed class PreparerDatabaseTests
         Assert.True(Exists(database, "table", "prepared_ticket_jira_content"));
         Assert.True(Exists(database, "table", "prepared_ticket_artifacts"));
         Assert.True(Exists(database, "table", "prepared_ticket_pages"));
+        Assert.True(Exists(
+            database,
+            "table",
+            "prepared_ticket_in_person_requesters"));
         Assert.True(Exists(database, "table", "prepared_ticket_authoring_state"));
         Assert.True(Exists(database, "table", "prepared_ticket_partition_receipts"));
     }
@@ -145,6 +153,10 @@ public sealed class PreparerDatabaseTests
         Assert.True(Exists(database, "table", "prepared_github_hydration"));
         Assert.True(Exists(database, "table", "prepared_repo_hydration"));
         Assert.True(Exists(database, "table", "prepared_ticket_jira_xref"));
+        Assert.True(Exists(
+            database,
+            "table",
+            "prepared_ticket_in_person_requesters"));
 
         Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_hydration"));
         Assert.True(IsRowIdPrimaryKey(database, "prepared_jira_hydration"));
@@ -152,6 +164,9 @@ public sealed class PreparerDatabaseTests
         Assert.True(IsRowIdPrimaryKey(database, "prepared_github_hydration"));
         Assert.True(IsRowIdPrimaryKey(database, "prepared_repo_hydration"));
         Assert.True(IsRowIdPrimaryKey(database, "prepared_ticket_jira_xref"));
+        Assert.True(IsRowIdPrimaryKey(
+            database,
+            "prepared_ticket_in_person_requesters"));
 
         Assert.True(HasUniqueIndexOver(database, "prepared_ticket_hydration", "TicketKey"));
         Assert.True(HasUniqueIndexOverColumns(database, "prepared_jira_hydration", ["TicketKey", "JiraKey"]));
@@ -159,6 +174,10 @@ public sealed class PreparerDatabaseTests
         Assert.True(HasUniqueIndexOverColumns(database, "prepared_github_hydration", ["TicketKey", "GitHubItemId"]));
         Assert.True(HasUniqueIndexOverColumns(database, "prepared_repo_hydration", ["TicketKey", "Repo"]));
         Assert.True(HasUniqueIndexOverColumns(database, "prepared_ticket_jira_xref", ["TicketKey", "JiraKey", "Source"]));
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_in_person_requesters",
+            ["TicketKey", "DisplayName"]));
     }
 
     [Fact]
@@ -272,6 +291,9 @@ public sealed class PreparerDatabaseTests
         Assert.Equal(1, Count(database, "prepared_github_hydration"));
         Assert.Equal(1, Count(database, "prepared_repo_hydration"));
         Assert.Equal(1, Count(database, "prepared_ticket_jira_xref"));
+        Assert.Equal(
+            2,
+            Count(database, "prepared_ticket_in_person_requesters"));
 
         PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-1");
         Assert.NotNull(read);
@@ -283,6 +305,7 @@ public sealed class PreparerDatabaseTests
         Assert.Single(read.GitHubRows);
         Assert.Single(read.RepoRows);
         Assert.Single(read.JiraXrefRows);
+        Assert.Equal(2, read.InPersonRequesters.Count);
     }
 
     [Fact]
@@ -297,6 +320,80 @@ public sealed class PreparerDatabaseTests
         Assert.NotNull(read);
         Assert.Single(read!.JiraRows);
         Assert.Equal("FHIR-200", read.JiraRows[0].JiraKey);
+    }
+
+    [Fact]
+    public async Task SaveHydration_NormalizesDeduplicatesAndReplacesRequesters()
+    {
+        using TestDatabase database = CreateDatabase();
+        PreparedTicketHydrationBatch first = SampleBatch("FHIR-1") with
+        {
+            InPersonRequesters =
+            [
+                new("FHIR-1", "  Zoë Example "),
+                new("FHIR-1", "zoë example"),
+                new("FHIR-1", " "),
+                new("FHIR-1", "Alan Example"),
+            ],
+        };
+        await database.Database.SaveHydrationAsync(first);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Equal(
+            ["Alan Example", "Zoë Example"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+
+        PreparedTicketHydrationBatch replacement = SampleBatch("FHIR-1") with
+        {
+            InPersonRequesters =
+            [
+                new("FHIR-1", "Grace Example"),
+                new("FHIR-1", "grace example"),
+            ],
+        };
+        await database.Database.SaveHydrationAsync(replacement);
+
+        read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-1"));
+        Assert.Equal(
+            ["Grace Example"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+        Assert.Equal(
+            1,
+            Count(database, "prepared_ticket_in_person_requesters"));
+    }
+
+    [Fact]
+    public async Task SaveHydration_PersistsOnlyDisplayNamesForRequesters()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1"));
+
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT name
+            FROM pragma_table_info('prepared_ticket_in_person_requesters')
+            ORDER BY cid
+            """;
+        List<string> columns = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        Assert.Equal(
+            ["RowId", "TicketKey", "DisplayName"],
+            columns);
+        Assert.DoesNotContain(
+            columns,
+            column =>
+                column.Contains("user", StringComparison.OrdinalIgnoreCase) ||
+                column.Contains("email", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -752,6 +849,324 @@ public sealed class PreparerDatabaseTests
         Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], signals!.Tickets.Select(s => s.TicketKey).ToArray());
     }
 
+    [Fact]
+    public void SnapshotSchemaV2_ExtendsV1WithoutMutatingV1Catalog()
+    {
+        Assert.DoesNotContain(
+            AuthoringSnapshotSchemaV1.CoreTables,
+            table => table.Name == "authoring_run_input_provenance");
+        Assert.DoesNotContain(
+            PreparedTicketSnapshotSchemaV1.Tables,
+            table => table.Name == "prepared_ticket_in_person_requesters");
+        Assert.DoesNotContain(
+            PreparedTicketSnapshotSchemaV1.Tables.Single(
+                table => table.Name == "prepared_ticket_hydration").Columns,
+            column => column == "Assignee");
+
+        Assert.Contains(
+            AuthoringSnapshotSchemaV2.CoreTables,
+            table => table.Name == "authoring_run_input_provenance");
+        Assert.Contains(
+            PreparedTicketSnapshotSchemaV2.Tables,
+            table => table.Name == "prepared_ticket_in_person_requesters");
+        Assert.Contains(
+            PreparedTicketSnapshotSchemaV2.Tables.Single(
+                table => table.Name == "prepared_ticket_hydration").Columns,
+            column => column == "SourceContentRevision");
+        Assert.Same(
+            PreparedTicketSnapshotSchemaV1.Catalog,
+            PreparedTicketSnapshotSchemaResolver.Resolve(1));
+        Assert.Same(
+            PreparedTicketSnapshotSchemaV2.Catalog,
+            PreparedTicketSnapshotSchemaResolver.Resolve(2));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => PreparedTicketSnapshotSchemaResolver.Resolve(3));
+    }
+
+    [Fact]
+    public async Task SnapshotCounts_AreSelectedBySchemaVersion()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SaveHydrationAsync(SampleBatch("FHIR-1"));
+
+        IReadOnlyDictionary<string, long> v1 =
+            await database.Database.GetSnapshotTableCountsAsync(1);
+        IReadOnlyDictionary<string, long> v2 =
+            await database.Database.GetSnapshotTableCountsAsync(2);
+
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV1.CountedTables.Order(),
+            v1.Keys.Order());
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV2.CountedTables.Order(),
+            v2.Keys.Order());
+        Assert.False(v1.ContainsKey(
+            "prepared_ticket_in_person_requesters"));
+        Assert.Equal(
+            2,
+            v2["prepared_ticket_in_person_requesters"]);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => database.Database.GetSnapshotTableCountsAsync(99));
+    }
+
+    [Fact]
+    public async Task Initialize_MigratesLegacyHydrationSchemaAdditively()
+    {
+        string directory = Path.Combine(
+            Environment.CurrentDirectory,
+            "temp",
+            "preparer-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+
+        PreparerDatabase legacy = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        legacy.Initialize();
+        await legacy.SaveHydrationAsync(SampleBatch("FHIR-1"));
+        using (SqliteConnection connection = legacy.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE prepared_ticket_hydration
+                SET Reporter = 'legacy-parent-user'
+                WHERE TicketKey = 'FHIR-1';
+                UPDATE prepared_jira_hydration
+                SET Reporter = 'legacy-related-user'
+                WHERE TicketKey = 'FHIR-1';
+                DELETE FROM schema_migrations
+                WHERE Name = 'prepared-hydration-structured-people-v2';
+                DROP INDEX IF EXISTS idx_prepared_ticket_in_person_requesters_ticket_name;
+                DROP INDEX IF EXISTS IDX_prepared_ticket_in_person_requesters_TicketKey;
+                DROP TABLE prepared_ticket_in_person_requesters;
+                ALTER TABLE prepared_ticket_hydration DROP COLUMN Assignee;
+                ALTER TABLE prepared_ticket_hydration DROP COLUMN SourceProject;
+                ALTER TABLE prepared_ticket_hydration DROP COLUMN SourceLastSuccessfulRefreshAt;
+                ALTER TABLE prepared_ticket_hydration DROP COLUMN SourceContentRevision;
+                ALTER TABLE prepared_jira_hydration DROP COLUMN Assignee;
+                """;
+            command.ExecuteNonQuery();
+        }
+        legacy.Dispose();
+
+        PreparerDatabase upgraded = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        upgraded.Initialize();
+        try
+        {
+            using SqliteConnection connection = upgraded.OpenConnection();
+            Assert.Equal(
+                4,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM pragma_table_info('prepared_ticket_hydration')
+                    WHERE name IN (
+                        'Assignee',
+                        'SourceProject',
+                        'SourceLastSuccessfulRefreshAt',
+                        'SourceContentRevision')
+                    """));
+            Assert.Equal(
+                1,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM pragma_table_info('prepared_jira_hydration')
+                    WHERE name = 'Assignee'
+                    """));
+            Assert.Equal(
+                1,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM prepared_ticket_hydration
+                    WHERE TicketKey = 'FHIR-1'
+                    """));
+            Assert.Equal(
+                0,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM prepared_ticket_hydration
+                    WHERE Reporter IS NOT NULL
+                    """));
+            using (SqliteCommand status = connection.CreateCommand())
+            {
+                status.CommandText =
+                    """
+                    SELECT HydrationStatus
+                    FROM prepared_ticket_hydration
+                    WHERE TicketKey = 'FHIR-1'
+                    """;
+                Assert.Equal("unresolved", status.ExecuteScalar());
+            }
+            Assert.Equal(
+                0,
+                ScalarInt(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM prepared_jira_hydration
+                    WHERE Reporter IS NOT NULL
+                    """));
+            Assert.Equal(
+                0,
+                ScalarInt(
+                    connection,
+                    "SELECT COUNT(*) FROM prepared_ticket_in_person_requesters"));
+        }
+        finally
+        {
+            upgraded.Dispose();
+            SqliteConnection.ClearAllPools();
+            TestFileCleanup.SafeDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task Initialize_SeedsNullJiraProvenanceForLegacyRuns()
+    {
+        string directory = Path.Combine(
+            Environment.CurrentDirectory,
+            "temp",
+            "preparer-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string dbPath = Path.Combine(directory, "preparer.db");
+        AuthoringRunRecord run;
+
+        PreparerDatabase legacy = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        legacy.Initialize();
+        AuthoringRunStore store = new(legacy);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        run = await store.CreateRunAsync(
+            "jira-fhir",
+            [new AuthoringRunItemDefinition("FHIR-1", "fhir", "revision")]);
+        Assert.Empty(await store.GetRunInputProvenanceAsync(run.Id));
+        legacy.Dispose();
+
+        PreparerDatabase upgraded = new(
+            dbPath,
+            NullLogger<PreparerDatabase>.Instance);
+        upgraded.Initialize();
+        try
+        {
+            AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+                await new AuthoringRunStore(upgraded)
+                    .GetRunInputProvenanceAsync(run.Id));
+            Assert.Equal("jira", provenance.Source);
+            Assert.Null(provenance.LatestSuccessfulRefreshAt);
+            Assert.Null(provenance.ContentRevision);
+            Assert.Equal(run.CreatedAt, provenance.CapturedAt);
+        }
+        finally
+        {
+            upgraded.Dispose();
+            SqliteConnection.ClearAllPools();
+            TestFileCleanup.SafeDeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public async Task PrepareCutover_DerivesConservativeJiraProvenance()
+    {
+        using TestDatabase database = CreateDatabase();
+        await database.Database.SavePreparedTicketAsync(
+            SamplePayload("FHIR-1"));
+        await database.Database.SavePreparedTicketAsync(
+            SamplePayload("FHIR-2"));
+        JiraProcessingSourceTicketStore sourceStore = new(
+            database.Database.DatabasePath);
+        DateTimeOffset firstRefresh =
+            new(2026, 9, 7, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset secondRefresh = firstRefresh.AddDays(1);
+        JiraIssueSummaryEntry first = SourceTicket("FHIR-1");
+        JiraIssueSummaryEntry second = SourceTicket("FHIR-2");
+        await sourceStore.UpsertAsync(
+            first,
+            "fhir",
+            false,
+            firstRefresh,
+            77,
+            CancellationToken.None);
+        await sourceStore.UpsertAsync(
+            second,
+            "fhir",
+            false,
+            secondRefresh,
+            77,
+            CancellationToken.None);
+
+        await using SqliteConnection connection =
+            database.Database.OpenConnection();
+        AuthoringCutoverPreparation preparation =
+            await database.Database.PrepareCutoverAsync(
+                connection,
+                CancellationToken.None);
+
+        Assert.Equal(2, preparation.Items.Count);
+        AuthoringRunInputProvenanceDefinition provenance =
+            Assert.Single(preparation.InputProvenance!);
+        Assert.Equal("jira", provenance.Source);
+        Assert.Equal(secondRefresh, provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(77, provenance.ContentRevision);
+
+        await sourceStore.UpsertAsync(
+            second,
+            "fhir",
+            false,
+            sourceProjectLastSuccessfulRefreshAt: null,
+            sourceContentRevision: null,
+            ct: CancellationToken.None);
+        preparation = await database.Database.PrepareCutoverAsync(
+            connection,
+            CancellationToken.None);
+        provenance = Assert.Single(preparation.InputProvenance!);
+        Assert.Null(provenance.LatestSuccessfulRefreshAt);
+        Assert.Null(provenance.ContentRevision);
+    }
+
+    private static JiraIssueSummaryEntry SourceTicket(string key)
+        => new()
+        {
+            Key = key,
+            ProjectKey = "FHIR",
+            Title = $"Title {key}",
+            Type = "Change Request",
+            Status = "Triaged",
+            WorkGroup = "FHIR-I",
+            Specification = "FHIR",
+            UpdatedAt =
+                new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero),
+        };
+
+    private static int ScalarInt(
+        SqliteConnection connection,
+        string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
     private static async Task SeedHydrationRowAsyncShimToAvoidNameClash(
         PreparerDatabase database, string ticketKey, string jiraKey, string workGroup, string type, string specification)
         => await SeedHydrationRowAsync(database, ticketKey, jiraKey, workGroup, type, specification);
@@ -766,7 +1181,12 @@ public sealed class PreparerDatabaseTests
             ZulipRows: [SampleZulipRow(ticketKey, "implementers:ballot", hydratedAt)],
             GitHubRows: [SampleGitHubRow(ticketKey, "HL7/fhir#1", hydratedAt)],
             RepoRows: [SampleRepoRow(ticketKey, "HL7/fhir", hydratedAt)],
-            JiraXrefRows: [new PreparedTicketJiraXrefRow(ticketKey, "FHIR-9999", "RelatedIssues")]);
+            JiraXrefRows: [new PreparedTicketJiraXrefRow(ticketKey, "FHIR-9999", "RelatedIssues")],
+            InPersonRequesters:
+            [
+                new(ticketKey, "Ada Example"),
+                new(ticketKey, "Grace Example"),
+            ]);
     }
 
     private static PreparedTicketHydrationRow SampleParent(string ticketKey, DateTimeOffset hydratedAt) =>

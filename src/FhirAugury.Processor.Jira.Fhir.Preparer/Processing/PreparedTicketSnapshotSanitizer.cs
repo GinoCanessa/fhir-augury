@@ -1,13 +1,45 @@
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 
-public sealed class PreparedTicketSnapshotSanitizer(string runId)
-    : AuthoringSnapshotSanitizer(PreparedTicketSnapshotSchemaV1.Catalog)
+public sealed class PreparedTicketSnapshotSanitizer
+    : AuthoringSnapshotSanitizer
 {
+    private readonly string _runId;
+    private readonly bool _retainsInputProvenance;
+    private readonly bool _retainsInPersonRequesters;
+
+    public PreparedTicketSnapshotSanitizer(
+        string runId,
+        int schemaVersion = PreparedTicketSnapshotSchemaV1.Version)
+        : this(
+            runId,
+            PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion))
+    {
+    }
+
+    private PreparedTicketSnapshotSanitizer(
+        string runId,
+        AuthoringSnapshotSchemaCatalog catalog)
+        : base(catalog)
+    {
+        _runId = runId;
+        _retainsInputProvenance = catalog.Tables.Any(
+            table => string.Equals(
+                table.Name,
+                "authoring_run_input_provenance",
+                StringComparison.OrdinalIgnoreCase));
+        _retainsInPersonRequesters = catalog.Tables.Any(
+            table => string.Equals(
+                table.Name,
+                "prepared_ticket_in_person_requesters",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
     public override async Task SanitizeAsync(
         SqliteConnection connection,
         CancellationToken ct = default)
@@ -15,7 +47,7 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
         await PreparerDatabase.CreateCurrentSnapshotReceiptBackedTicketsAsync(
             connection,
             ct);
-        string[] ticketTables =
+        List<string> ticketTables =
         [
             "prepared_ticket_repos",
             "prepared_ticket_related_jira",
@@ -31,6 +63,10 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
             "prepared_ticket_artifacts",
             "prepared_ticket_pages",
         ];
+        if (_retainsInPersonRequesters)
+        {
+            ticketTables.Add("prepared_ticket_in_person_requesters");
+        }
         foreach (string table in ticketTables)
         {
             await ExecuteAsync(
@@ -97,7 +133,7 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
             connection,
             "DELETE FROM prepared_ticket_partition_receipts WHERE RunId <> @runId",
             ct,
-            ("@runId", runId));
+            ("@runId", _runId));
         await ExecuteAsync(
             connection,
             $"""
@@ -119,6 +155,27 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
             FROM authoring_result_receipts
             WHERE Id IN (SELECT Id FROM retained_snapshot_receipts);
             INSERT OR IGNORE INTO retained_snapshot_runs(RunId) VALUES(@runId);
+            """,
+            ct,
+            ("@runId", _runId));
+
+        if (_retainsInputProvenance)
+        {
+            await ExecuteAsync(
+                connection,
+                $"""
+                CREATE TEMP TABLE contributing_snapshot_runs AS
+                SELECT DISTINCT RunId
+                FROM {PreparerDatabase.CurrentSnapshotReceiptBackedTicketsTable};
+                DELETE FROM authoring_run_input_provenance
+                WHERE RunId NOT IN (SELECT RunId FROM contributing_snapshot_runs);
+                """,
+                ct);
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
             DELETE FROM authoring_result_receipts
             WHERE Id NOT IN (SELECT Id FROM retained_snapshot_receipts);
             DELETE FROM authoring_run_items
@@ -126,8 +183,7 @@ public sealed class PreparedTicketSnapshotSanitizer(string runId)
             DELETE FROM authoring_runs
             WHERE Id NOT IN (SELECT RunId FROM retained_snapshot_runs);
             """,
-            ct,
-            ("@runId", runId));
+            ct);
 
         await base.SanitizeAsync(connection, ct);
     }

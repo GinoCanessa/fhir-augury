@@ -6,8 +6,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 /// <see cref="IHydrationTargetDatabase.SaveHydrationAsync"/> boundary.
 /// Each concrete database implementation maps these into its own
 /// table-bound record shape before issuing INSERTs. The field shapes
-/// are intentionally identical to the existing preparer
-/// <c>Prepared*Row</c> records so the 1:1 mapping is mechanical.
+/// preserve legacy metadata channels for existing consumers while exposing
+/// separate structured fields where authenticated source data is required.
 /// </summary>
 public sealed record HydrationTicketRow(
     string TicketKey,
@@ -30,7 +30,14 @@ public sealed record HydrationTicketRow(
     string? Reporter = null,
     DateTimeOffset? CreatedAt = null,
     string? RelatedArtifactsRaw = null,
-    string? RelatedPagesRaw = null);
+    string? RelatedPagesRaw = null,
+    string? Assignee = null,
+    IReadOnlyList<string>? InPersonRequesters = null,
+    string? SourceProject = null,
+    DateTimeOffset? SourceLastSuccessfulRefreshAt = null,
+    long? SourceContentRevision = null,
+    bool? SourceIsStable = null,
+    string? StructuredReporter = null);
 
 public sealed record HydrationJiraRow(
     string TicketKey,
@@ -53,7 +60,9 @@ public sealed record HydrationJiraRow(
     string? Reporter = null,
     DateTimeOffset? CreatedAt = null,
     string? RelatedArtifactsRaw = null,
-    string? RelatedPagesRaw = null);
+    string? RelatedPagesRaw = null,
+    string? Assignee = null,
+    string? StructuredReporter = null);
 
 public sealed record HydrationZulipRow(
     string TicketKey,
