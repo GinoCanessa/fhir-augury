@@ -6,9 +6,10 @@ tables, indexes, and the source-generated CRUD layer.
 
 ## Overview
 
-In the v2 microservices architecture, each service maintains its **own SQLite
-database file**. There is no single shared database — data is distributed
-across services:
+In the v2 microservices architecture, each stateful service maintains its
+**own SQLite database file**. There is no single shared database — data is
+distributed across services, and publication creates a separate generated
+browser database:
 
 | Service | Database File | Contents |
 |---------|---------------|----------|
@@ -17,8 +18,11 @@ across services:
 | **Source.Confluence** | `confluence.db` | Spaces, pages, comments, attachments, FTS5, BM25 index, sync state |
 | **Source.GitHub** | `github.db` | Repos, issues/PRs, comments, FTS5, BM25 index, sync state |
 | **Orchestrator** | `orchestrator.db` | Cross-reference links, cross-ref scan state |
+| **Preparer** | `processor.jira.fhir.preparer.db` | Private preparation runs, receipts, hydration, grouping, and snapshot source state |
+| **Planner** | `processor.jira.fhir.planner.db` | Private planning runs, receipts, grouping, and Applier compatibility state |
+| **Discussion publication** | Embedded generated SQLite | Renderer-schema-v1 projection; not durable service state |
 
-Each database uses:
+Source databases use:
 
 - **WAL mode** — Concurrent readers alongside a single writer
 - **Source-generated CRUD** — All database operations generated at compile time
@@ -51,8 +55,10 @@ PRAGMA temp_store = MEMORY;
 | `GetDatabaseSizeBytes()` | Returns database file size |
 | `CheckIntegrity()` | Runs SQLite integrity check |
 
-All tables use `CREATE TABLE IF NOT EXISTS` — the schema is forward-only
-additive with no migration system.
+Base table creation uses `CREATE TABLE IF NOT EXISTS`. Services also run
+targeted forward-only startup migrations, such as additive `ALTER TABLE`
+columns and conservative backfills, when an existing database predates a
+required field.
 
 ---
 
@@ -62,12 +68,16 @@ additive with no migration system.
 
 #### `sync_state` — Per-source sync tracking
 
+The core shape is shared. `LastSuccessfulSyncAt` is an additive Jira-only
+column used by the provenance contract.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `Id` | INTEGER PK | Auto-increment |
 | `SourceName` | TEXT | Source identifier (jira, zulip, confluence, github) |
 | `SubSource` | TEXT? | Sub-source (e.g., Zulip stream name) |
-| `LastSyncAt` | TEXT | Timestamp of last successful sync |
+| `LastSyncAt` | TEXT | Timestamp of the latest recorded sync activity; for Jira this is not the canonical upstream-success watermark |
+| `LastSuccessfulSyncAt` | TEXT? | Jira-specific latest proven error-free upstream full/incremental refresh; null when unavailable |
 | `LastCursor` | TEXT? | Cursor for position-based sync (e.g., Zulip message ID) |
 | `ItemsIngested` | INTEGER | Total items ingested |
 | `SyncSchedule` | TEXT? | Configured sync interval (TimeSpan) |
@@ -76,6 +86,12 @@ additive with no migration system.
 | `LastError` | TEXT? | Last error message |
 
 Index: `(SourceName, SubSource)`
+
+Jira keys `SubSource` as `<project>:<run-type>`. Its
+`LastSuccessfulSyncAt` advances only for an error-free upstream `full` or
+`incremental` run. Partial/error results and cache rebuilds retain the prior
+value. Known project values are preserved across a database reset; no value is
+inferred from cache timestamps or local replay completion.
 
 #### `ingestion_log` — Ingestion run history
 
@@ -229,8 +245,10 @@ other sources (not itself):
 | `Resolution` | TEXT? | Resolution type |
 | `ResolutionDescription` | TEXT? | Resolution details (custom field) |
 | `ResolutionDescriptionPlain` | TEXT? | Plain-text version of ResolutionDescription (HTML stripped) |
-| `Assignee` | TEXT? | Assigned user |
-| `Reporter` | TEXT? | Reporter user |
+| `Assignee` | TEXT? | Legacy assigned-user display field |
+| `AssigneeUserId` | INTEGER? | Exact `jira_users.Id` used for safe public display-name resolution |
+| `Reporter` | TEXT? | Legacy reporter display field |
+| `ReporterUserId` | INTEGER? | Exact `jira_users.Id` used for safe public display-name resolution |
 | `CreatedAt` | TEXT | Creation timestamp |
 | `UpdatedAt` | TEXT | Last update timestamp |
 | `ResolvedAt` | TEXT? | Resolution timestamp |
@@ -286,6 +304,44 @@ Indexes: `(IssueKey)`, `(CreatedAt)`
 | `Id` | INTEGER | PRIMARY KEY |
 | `IssueId` | INTEGER | NOT NULL, indexed |
 | `LabelId` | INTEGER | NOT NULL, indexed |
+
+#### `jira_projects` — Project catalog and successful watermark projection
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Row identifier |
+| `Key` | TEXT UNIQUE | Jira project key |
+| `Enabled` | INTEGER | Whether ingestion configuration enables the project |
+| `BaselineValue` | INTEGER | Project search-ranking baseline |
+| `IssueCount` | INTEGER | Last observed local issue count |
+| `LastSyncAt` | TEXT? | Canonical latest successful upstream refresh for the project |
+
+Issue counts may change after local rebuild work, but `LastSyncAt` advances only
+with the project watermark described above.
+
+#### `jira_source_state` — Local content-generation fence
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Singleton ID (`1`) |
+| `ContentRevision` | INTEGER | Monotonic local database generation |
+| `MutationInProgress` | INTEGER | Boolean fence set while a source mutation is active |
+| `UpdatedAt` | TEXT | Time the generation state last changed |
+
+Mutations advance the revision before and after their writes. Readers capture
+this row, result data, and project watermarks in one transaction. A stable
+content revision is a consistency coordinate; it is deliberately independent
+of the upstream-success date.
+
+#### `jira_users` and `jira_issue_inpersons` — Public people source
+
+`jira_users` stores `Id`, unique `Username`, `DisplayName`, and
+`HasExplicitDisplayName`. Only rows whose flag is true are eligible for the
+structured public people contract; a username-derived placeholder is not a
+display name. `jira_issue_inpersons` joins `IssueKey` to `UserId`. Reporter and
+Assignee use the exact IDs on `jira_issues`, while requester results are
+trimmed, case-insensitively deduplicated, and deterministically sorted. The
+public projection never includes usernames, email addresses, or user IDs.
 
 #### Index/Lookup Tables
 
@@ -723,6 +779,96 @@ work-group inputs.
 `github_issues_fts`, `github_comments_fts`, `github_commits_fts`,
 `github_file_contents_fts`, `github_structure_definitions_fts`,
 `github_canonical_artifacts_fts`
+
+---
+
+## Processor snapshots and ticket publication databases
+
+Processor databases are private service state. Clients receive only sanitized,
+immutable snapshot pairs, and ticket publication creates a separate embedded
+database for browser use.
+
+### Jira processor input provenance
+
+`jira_processing_source_tickets` caches two nullable source coordinates with
+each candidate:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `SourceProjectLastSuccessfulRefreshAt` | TEXT? | Successful upstream watermark for that ticket's own Jira project |
+| `SourceContentRevision` | INTEGER? | Stable Jira local-content revision represented by discovery |
+
+A later unproven read overwrites these values with null rather than retaining
+stale provenance.
+
+#### `authoring_run_input_provenance` — Frozen run input
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Auto-increment |
+| `RunId` | TEXT | Owning authoring run |
+| `Source` | TEXT | Source name (`jira` for Jira processors) |
+| `LatestSuccessfulRefreshAt` | TEXT? | Complete-corpus upstream refresh coordinate, or null |
+| `ContentRevision` | INTEGER? | Common stable source generation, or null |
+| `CapturedAt` | TEXT | Run creation time |
+
+The authoring store writes the logical one-row-per-run/source provenance set in
+the same immediate transaction as `authoring_runs` and
+`authoring_run_items`. For Jira, the refresh is the maximum project-specific
+candidate value only when every selected ticket has one, and the content
+revision is retained only when every selected ticket shares it. `CapturedAt`
+is run provenance, not a source-freshness fallback. Legacy Jira runs are seeded
+with null source coordinates.
+
+### Preparer public snapshot schema v2
+
+Preparer schema v2 extends the unchanged v1 table catalog:
+
+| Table | v2 addition |
+|-------|-------------|
+| `authoring_run_input_provenance` | Provenance rows for every run contributing a retained receipt-backed ticket |
+| `prepared_ticket_hydration` | `Assignee`, `SourceProject`, `SourceLastSuccessfulRefreshAt`, and `SourceContentRevision` |
+| `prepared_jira_hydration` | `Assignee` for related Jira projections |
+| `prepared_ticket_in_person_requesters` | New normalized `(RowId, TicketKey, DisplayName)` rows |
+
+The sanitizer selects one catalog by configured schema version and derives
+descriptor counts from that same catalog. It removes requester rows outside
+the retained ticket set and provenance outside contributing runs. The
+checked-in Preparer writer emits v2; the discussion publisher accepts v1 and
+v2, treating v1 freshness, Assignee, and requester data as unavailable.
+Planner and Tickets for Applying remain on the separate Planner snapshot v1
+catalog.
+
+### Discussion renderer schema v1
+
+After it validates a Preparer v1 or v2 pair, the publisher creates a new
+filtered SQLite database from scratch. Renderer version 1 is independent of
+Preparer snapshot version 2 and contains only these browser-facing tables:
+
+| Table | Key columns and purpose |
+|-------|-------------------------|
+| `site_metadata` | One row keyed by `RendererSchemaVersion`; stores `BaseTitle`, qualified `SiteName`, nullable Jira refresh, and resolved filters |
+| `tickets` | One row per case-insensitive ticket key with display metadata, summaries, proposals, rationale, and request/resolution content |
+| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`; display names only |
+| `ticket_facets` | `(TicketKey, Dimension, ValueKey)` normalized across `project`, `wg`, `type`, `artifact`, `page`, `impact`, and `spec`, including the `__unknown__` machine key |
+| `summary_sources` | `(TicketKey, SummaryKind, SourceKey)` for unique `linked-jira`, `related-jira`, and `related-zulip` adjacent links |
+| `related_items` | `(TicketKey, Kind, ItemKey, LinkTypeKey)` for the broader related-context display |
+| `topics` | Authored discussion topic metadata and stable render hints |
+| `topic_groups` | Ordered groups within a topic |
+| `topic_members` | Ordered grouped/ungrouped ticket membership and display columns |
+
+`site-manifest.json` reports these renderer table counts, its schema version,
+the stable base `title`, and optional `displayTitle` and Jira refresh. The
+browser queries this database only; processor ledger and persistence tables
+are not shipped as its contract. No live Jira, Orchestrator, or processor
+connection is needed after publication.
+
+For schema-v2 input, renderer construction requires exactly one accepted
+authoring coordinate for every retained ticket. Zero or multiple matches are
+structural validation errors and abort publication before this database is
+created. With valid structure, missing or null run provenance and incomplete
+parent project/revision/watermark coordinates leave the Jira refresh null and
+the display title unsuffixed.
 
 ---
 

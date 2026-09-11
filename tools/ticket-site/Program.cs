@@ -12,7 +12,8 @@ internal sealed record TicketSiteCliTestHooks(
 
 public static class Program
 {
-    private const string DefaultTitle = "Ticket Site";
+    private const string DefaultDiscussionTitle = "Tickets for Discussion";
+    private const string DefaultApplyingTitle = "Ticket Site";
     private const string DefaultOutSubpath = "cache/jira-ticket-site";
 
     private static readonly JsonSerializerOptions JsonOptions =
@@ -80,6 +81,10 @@ public static class Program
         TicketSiteKind siteKind = options.PreparerSnapshotSupplied
             ? TicketSiteKind.Discussion
             : TicketSiteKind.Applying;
+        string title = options.Title ??
+            (siteKind == TicketSiteKind.Discussion
+                ? DefaultDiscussionTitle
+                : DefaultApplyingTitle);
         string serviceName = options.PreparerSnapshotSupplied
             ? "Preparer"
             : "Planner";
@@ -146,7 +151,7 @@ public static class Program
                     pair,
                     siteKind,
                     outputRoot,
-                    options.Title,
+                    title,
                     new TicketSiteFilters(
                         options.FilterSpec,
                         options.FilterProject,
@@ -434,7 +439,7 @@ public static class Program
         bool plannerSnapshotSupplied = false;
         string? snapshotDescriptor = null;
         string? outPath = null;
-        string title = DefaultTitle;
+        string? title = null;
         string? filterSpec = null;
         string? filterProject = null;
         string? filterWg = null;
@@ -559,7 +564,7 @@ public static class Program
             false,
             null,
             null,
-            DefaultTitle,
+            null,
             null,
             null,
             null,
@@ -578,7 +583,8 @@ public static class Program
         writer.WriteLine("  --planner-snapshot <path>  Validated immutable Planner snapshot. Builds applying/.");
         writer.WriteLine("  --snapshot-descriptor <path> Trusted descriptor JSON required with a snapshot.");
         writer.WriteLine("  --out <path>           Output root (default: ./cache/jira-ticket-site).");
-        writer.WriteLine($"  --title <string>       Site title (default: \"{DefaultTitle}\").");
+        writer.WriteLine(
+            $"  --title <string>       Site base title (defaults: Preparer \"{DefaultDiscussionTitle}\"; Planner \"{DefaultApplyingTitle}\").");
         writer.WriteLine("  --spec <name>          Filter tickets by hydrated specification.");
         writer.WriteLine("  --project <key>        Filter by Jira project key.");
         writer.WriteLine("  --wg <name|code>       Filter by workgroup (name, code, or clean name).");

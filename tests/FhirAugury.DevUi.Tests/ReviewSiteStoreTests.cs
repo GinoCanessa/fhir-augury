@@ -288,6 +288,99 @@ public sealed class ReviewSiteStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ReconstructsDiscussionManifestWithPresentationFields()
+    {
+        ReviewSiteStore first = CreateStore();
+        first.EnsureRoots();
+        ReviewSiteCoordinates coordinates =
+            first.GetCoordinates("prepare", "run-10");
+        VerifiedAuthoringSnapshotPair pair =
+            await CreateVerifiedPairAsync(
+                coordinates.SnapshotPairDirectory,
+                "Preparer",
+                "run-10",
+                schemaVersion: 2);
+        DateTimeOffset sourceRefresh =
+            new(2026, 9, 8, 5, 0, 0, TimeSpan.Zero);
+        await WriteSiteAsync(
+            coordinates,
+            pair,
+            displayTitle:
+                "Tickets for Discussion - Built September 08, 2026",
+            jiraSourceLastSuccessfulRefreshAt: sourceRefresh,
+            rendererSchemaVersion: 1);
+
+        ReviewSiteStore restarted = CreateStore();
+        ReviewSitePublication? publication =
+            await restarted.TryReconstructAsync(
+                "prepare",
+                "run-10");
+
+        Assert.NotNull(publication);
+        Assert.True(publication.Reconstructed);
+        Assert.Equal(
+            coordinates.Workflow.SiteTitle,
+            publication.Manifest.Title);
+        Assert.Equal(
+            "Tickets for Discussion - Built September 08, 2026",
+            publication.Manifest.DisplayTitle);
+        Assert.Equal(
+            sourceRefresh,
+            publication.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal(
+            1,
+            publication.Manifest.RendererSchemaVersion);
+        using ReviewSiteFileProvider provider = new(restarted);
+        Assert.True(
+            provider.GetFileInfo(
+                    "/prepare/run-10/discussion/index.html")
+                .Exists);
+    }
+
+    [Fact]
+    public async Task RejectsDiscussionManifestWhenDisplayTitleReplacesStableTitle()
+    {
+        ReviewSiteStore store = CreateStore();
+        store.EnsureRoots();
+        ReviewSiteCoordinates coordinates =
+            store.GetCoordinates("prepare", "run-11");
+        VerifiedAuthoringSnapshotPair pair =
+            await CreateVerifiedPairAsync(
+                coordinates.SnapshotPairDirectory,
+                "Preparer",
+                "run-11",
+                schemaVersion: 2);
+        string displayTitle =
+            "Tickets for Discussion - Built September 08, 2026";
+        await WriteSiteAsync(
+            coordinates,
+            pair,
+            stableTitle: displayTitle,
+            displayTitle: displayTitle,
+            jiraSourceLastSuccessfulRefreshAt:
+                new DateTimeOffset(
+                    2026,
+                    9,
+                    8,
+                    5,
+                    0,
+                    0,
+                    TimeSpan.Zero),
+            rendererSchemaVersion: 1);
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => store.TryReconstructAsync(
+                    "prepare",
+                    "run-11"));
+
+        Assert.Contains(
+            "workflow-bound snapshot",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DoesNotScanForManifestOutsideExactSubSite()
     {
         ReviewSiteStore store = CreateStore();
@@ -361,7 +454,8 @@ public sealed class ReviewSiteStoreTests : IDisposable
         CreateVerifiedPairAsync(
             string directory,
             string serviceName,
-            string runId)
+            string runId,
+            int schemaVersion = 1)
     {
         Directory.CreateDirectory(directory);
         string databaseFileName = "snapshot.db";
@@ -375,7 +469,7 @@ public sealed class ReviewSiteStoreTests : IDisposable
             $"snapshot-{runId}",
             7,
             4,
-            1,
+            schemaVersion,
             databaseSha,
             databaseBytes.LongLength,
             2,
@@ -419,7 +513,11 @@ public sealed class ReviewSiteStoreTests : IDisposable
     private static async Task WriteSiteAsync(
         ReviewSiteCoordinates coordinates,
         VerifiedAuthoringSnapshotPair pair,
-        string? outputPath = null)
+        string? outputPath = null,
+        string? stableTitle = null,
+        string? displayTitle = null,
+        DateTimeOffset? jiraSourceLastSuccessfulRefreshAt = null,
+        int? rendererSchemaVersion = null)
     {
         Directory.CreateDirectory(
             coordinates.SiteDirectory);
@@ -442,11 +540,14 @@ public sealed class ReviewSiteStoreTests : IDisposable
             pair.Descriptor.ReceiptCount,
             pair.Descriptor.TableCounts,
             new TicketSiteManifestFilters(null, null, null),
-            coordinates.Workflow.SiteTitle,
+            stableTitle ?? coordinates.Workflow.SiteTitle,
             "assets-v1",
             "build-v1",
             outputPath ?? coordinates.SiteDirectory,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            displayTitle,
+            jiraSourceLastSuccessfulRefreshAt,
+            rendererSchemaVersion);
         await File.WriteAllTextAsync(
             coordinates.SiteManifestPath,
             TicketSiteManifest.ToSummaryJson(manifest));

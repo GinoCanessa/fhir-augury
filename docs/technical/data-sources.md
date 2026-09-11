@@ -35,7 +35,7 @@ contract for the Orchestrator:
 | Endpoint | Description |
 |----------|-------------|
 | `Search` | FTS5 full-text search within the source, returns scored results with snippets |
-| `GetItem` | Retrieve a single item by ID |
+| `GetItem` | Retrieve a single item by ID. Jira adds optional source-read provenance and display-name-only people. |
 | `ListItems` | List items with optional filters and pagination |
 | `GetRelated` | Find related items within the source |
 | `GetSnapshot` | Point-in-time snapshot of an item |
@@ -69,6 +69,7 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `QueryIssues` | Arbitrary JQL-like query |
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
+| `ListLocalProcessingTickets` | Page processor candidates with the Jira source generation represented by the page |
 
 ### Zulip Endpoints
 
@@ -197,15 +198,23 @@ mode is used; otherwise Cookie mode.
 **Data model:**
 
 - `JiraIssueRecord` — Issue key, title, description, status, priority, 32+
-  fields including HL7 custom fields and parsed vote components
+  fields including HL7 custom fields and parsed vote components; reporter and
+  assignee user IDs bind public display names to the actual Jira identities
 - `JiraCommentRecord` — Comment author, body, body plain text, timestamps (IssueKey FK)
+- `JiraUserRecord` — Jira username plus display name and an
+  `HasExplicitDisplayName` eligibility flag; username-derived placeholders are
+  never public people data
+- `JiraSourceStateRecord` — Singleton content revision and
+  mutation-in-progress fence for consistent source reads
 
 16 HL7-specific custom fields are mapped to domain properties (e.g.,
 `customfield_11302` → Specification, `customfield_11400` → WorkGroup).
 
 **Database tables:** `jira_issues` (Key unique, 32+ columns),
 `jira_comments` (IssueKey FK), `jira_issue_related` (related issue keys),
-`jira_issue_labels` (issue-to-label junction), `jira_index_workgroups`,
+`jira_issue_labels` (issue-to-label junction), `jira_users`,
+`jira_issue_inpersons` (issue-to-requester junction), `jira_source_state`,
+`jira_index_workgroups`,
 `jira_index_specifications`, `jira_index_ballots`, `jira_index_labels`,
 `jira_index_types`, `jira_index_priorities`, `jira_index_statuses`,
 `jira_index_resolutions` (index/lookup tables), `jira_issues_fts` (FTS5),
@@ -217,6 +226,44 @@ mode is used; otherwise Cookie mode.
 **Pagination:** Offset-based (`startAt` vs `total`).
 
 **Special feature:** Also supports XML RSS export parsing via `JiraXmlParser`.
+
+#### Source-owned Jira provenance
+
+Jira source freshness and local read consistency are deliberately separate:
+
+- Every known Jira project has a nullable latest-successful upstream
+  watermark. Only an error-free `full` or `incremental` ingestion can advance
+  it to that run's completion time. `completed_with_errors`, thrown failures,
+  cache preload, and rebuild preserve the prior value. A database rebuild
+  restores known project values and never infers freshness from cache
+  filenames or replay time.
+- The singleton `jira_source_state` row carries a monotonic
+  `ContentRevision`, `MutationInProgress`, and `UpdatedAt`. Every source
+  mutation advances/fences this generation, including local-processing status
+  changes. This revision answers "which local content generation was read";
+  the project watermark answers "when was upstream Jira last refreshed."
+- Jira item reads and local-processing list/count reads capture their result
+  plus a `SourceReadProvenance` in one SQLite read transaction. The envelope
+  contains `Source`, `ContentRevision`, `IsStable`, and
+  `ProjectLastSuccessfulRefreshAt`. A read during a mutation is reported as
+  unstable rather than presented as a consistent generation.
+
+Paged processor discovery requires every page to be stable and to carry the
+same content revision and project watermarks. It restarts the whole sequence
+for at most three passes when those coordinates change, then retains the
+tickets but suppresses provenance rather than claiming a mixed generation.
+Each candidate is stamped only with the watermark for its own project.
+
+#### Display-name-only Jira people
+
+`GET /api/v1/items/{key}` adds an `ItemPeopleResponse` containing nullable
+Reporter and Assignee names plus a deterministic `InPersonRequesters` list.
+Names are resolved only through the exact Jira user identity with
+`HasExplicitDisplayName = 1`. The requester list is trimmed, case-insensitively
+deduplicated, and sorted. Usernames, email addresses, and Jira user IDs never
+cross this structured contract; old rows remain ineligible until reingestion
+supplies an authenticated display name. The existing string metadata remains
+a separate compatibility surface and is not used by Preparer hydration.
 
 ---
 

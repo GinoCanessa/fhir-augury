@@ -1,5 +1,6 @@
 using FhirAugury.Publishing.Tickets;
 using FhirAugury.Publishing.Tickets.Tests;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 namespace FhirAugury.Tools.TicketSite.Tests;
 
@@ -18,7 +19,9 @@ public sealed class SiteBuildManifestTests : IDisposable
     public async Task PreparerInvocationWritesCompatibleSummaryAndChooser()
     {
         TicketSnapshotFixture snapshot =
-            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV2.Version);
         string output = Path.Combine(_root, "site");
 
         (int exit, string stdout, string stderr) =
@@ -38,7 +41,27 @@ public sealed class SiteBuildManifestTests : IDisposable
             "discussion",
             TicketSiteManifest.FileName));
         Assert.Equal(snapshot.Descriptor.SnapshotId, manifest.SnapshotId);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV2.Version,
+            manifest.SnapshotSchemaVersion);
         Assert.Equal("Discussion tickets", manifest.Title);
+        Assert.Equal(
+            "Discussion tickets - Built September 08, 2026 " +
+            "(filtered: spec=FHIR, project=FHIR, wg=FHIR Infrastructure)",
+            manifest.DisplayTitle);
+        Assert.Equal(
+            new DateTimeOffset(
+                2026,
+                9,
+                8,
+                5,
+                0,
+                0,
+                TimeSpan.Zero),
+            manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal(1, manifest.RendererSchemaVersion);
+        Assert.Contains("site_metadata", manifest.TableCounts.Keys);
+        Assert.Contains("ticket_people", manifest.TableCounts.Keys);
         Assert.Contains(
             snapshot.Descriptor.SnapshotId,
             stdout,
@@ -48,6 +71,13 @@ public sealed class SiteBuildManifestTests : IDisposable
             stdout,
             StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(output, "index.html")));
+        string chooser = await File.ReadAllTextAsync(
+            Path.Combine(output, "index.html"));
+        Assert.Contains(
+            "Discussion tickets - Built September 08, 2026 " +
+            "(filtered: spec=FHIR, project=FHIR, wg=FHIR Infrastructure)",
+            chooser,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -64,6 +94,15 @@ public sealed class SiteBuildManifestTests : IDisposable
                 "--out", output);
 
         Assert.True(exit == 0, stderr);
+        TicketSiteManifest manifest = TicketSiteManifest.Read(Path.Combine(
+            output,
+            "applying",
+            TicketSiteManifest.FileName));
+        Assert.Equal("Ticket Site", manifest.Title);
+        Assert.Equal(1, manifest.SnapshotSchemaVersion);
+        Assert.Null(manifest.DisplayTitle);
+        Assert.Null(manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Null(manifest.RendererSchemaVersion);
         Assert.Contains(
             snapshot.Descriptor.SnapshotId,
             stdout,

@@ -7,7 +7,7 @@ internal sealed record CliOptions(
     bool PlannerSnapshotSupplied,
     string? SnapshotDescriptorPath,
     string? OutPath,
-    string Title,
+    string? Title,
     string? FilterSpec,
     string? FilterProject,
     string? FilterWorkGroup,

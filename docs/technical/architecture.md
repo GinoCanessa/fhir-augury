@@ -85,11 +85,11 @@ Ports (HTTP only):
 | **Parsing.Fhir** | `FhirAugury.Parsing.Fhir` | FHIR XML/JSON parsing library — StructureDefinitions, canonical artifacts (CodeSystem, ValueSet, etc.), Bundles, artifact classification |
 | **Parsing.Fsh** | `FhirAugury.Parsing.Fsh` | FSH (FHIR Shorthand) parsing library — Profile, Extension, Resource, Logical, CodeSystem, ValueSet, Instance definitions; sushi-config.yaml parsing |
 | **Orchestrator** | `FhirAugury.Orchestrator` | Central coordinator — unified search, cross-references, related items, health monitoring |
-| **Processing.Common** | `FhirAugury.Processing.Common` | Durable runs/items/attempts/receipts, operation tokens, retry, mutation fencing, one-way cutover, finalization stages, and snapshot descriptors |
-| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira candidate discovery and frozen source revisions, processor worker dispatch, callback handling, and final source-revision guards |
+| **Processing.Common** | `FhirAugury.Processing.Common` | Durable runs/items/attempts/receipts, atomic run-input provenance, operation tokens, retry, mutation fencing, one-way cutover, finalization stages, and snapshot descriptors |
+| **Processing.Jira.Common** | `FhirAugury.Processing.Jira.Common` | Jira candidate discovery with stable source-generation provenance, frozen source revisions, processor worker dispatch, callback handling, and final source-revision guards |
 | **Processing.Client** | `FhirAugury.Processing.Client` | Reusable Orchestrator-based outer run-control client and workflow-bound verified snapshot-pair boundary; deliberately has no worker submit API or operation-token constant |
-| **Publishing.Tickets** | `FhirAugury.Publishing.Tickets` | In-process immutable-snapshot discussion/applying publisher shared by the Dev UI and thin `ticket-site` adapter |
-| **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — owns ticket-preparation runs, hydration, grouping, receipts, and discussion snapshots |
+| **Publishing.Tickets** | `FhirAugury.Publishing.Tickets` | In-process immutable-snapshot discussion/applying publisher; adapts Preparer v1/v2 snapshots to discussion renderer schema v1 and is shared by the Dev UI and thin `ticket-site` adapter |
+| **Processor.Jira.Fhir.Preparer** | `FhirAugury.Processor.Jira.Fhir.Preparer` | Preparer processor (port 5171) — owns ticket-preparation runs, hydration, grouping, receipts, and schema-v2 discussion snapshots |
 | **Processor.Jira.Fhir.Planner** | `FhirAugury.Processor.Jira.Fhir.Planner` | Planner processor (port 5172) — owns planning runs, grouping, receipts, applying snapshots, and the Applier compatibility projection |
 | **Processor.Jira.Fhir.Applier** | `FhirAugury.Processor.Jira.Fhir.Applier` | Applier processor (port 5173) — auto-discovers completed plans, applies each in a git worktree, push API on demand |
 | **Processor.GitHub.Fhir.BallotNotes** | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | BallotNotes processor (port 5174) — owns immutable hydration executions, note-authoring runs, receipts, maintenance batches, and snapshots |
@@ -167,6 +167,15 @@ ingestion pipeline):
 Each service has its own SQLite database (WAL mode, FTS5 virtual tables) and
 file-system response cache. Services expose HTTP API controllers for both
 common operations (search, get item, ingestion) and source-specific endpoints.
+
+Source.Jira additionally owns two distinct provenance coordinates. A
+project-scoped successful-refresh watermark advances only after an error-free
+upstream full or incremental ingestion; partial/error outcomes and cache
+rebuilds preserve it. A separate monotonic content revision plus
+mutation-in-progress fence identifies the local database generation. Item and
+local-processing responses capture data, project watermarks, and that revision
+inside one SQLite read transaction, so consumers never treat a freshness
+timestamp as a consistency token.
 
 At startup, each service registers an `AuxiliaryDatabase` singleton that loads
 optional external stop words, lemmatization data, and FHIR vocabulary from
@@ -249,35 +258,44 @@ snapshot descriptors.
 
 `FhirAugury.Processing.Jira.Common` builds on that substrate for Jira-backed
 processors. It discovers candidates through Source.Jira or the Orchestrator,
-freezes exact source revisions into a run, launches workers without shell
-expansion, supplies callback capabilities through the worker environment, and
-performs a final source-revision check inside the transaction that completes an
-initial revalidation run. Concrete Preparer and Planner services are the only
-writers of their domain databases and own their hydration and grouping stages.
+requires paged discovery to represent one stable Jira content revision,
+freezes exact source revisions and source-refresh provenance into a run,
+launches workers without shell expansion, supplies callback capabilities
+through the worker environment, and performs a final source-revision check
+inside the transaction that completes an initial revalidation run. Concrete
+Preparer and Planner services are the only writers of their domain databases
+and own their hydration and grouping stages.
 
 The run-backed data flow is:
 
 1. A client starts a scheduled or explicit run through the Dev UI, typed CLI,
    or Orchestrator proxy.
-2. The processor freezes item membership/revisions and leaves the run queued.
-   The shared scheduler reconciles source state and acquires the mutation fence
-   for the oldest eligible run.
+2. The processor freezes item membership/revisions and writes one Jira
+   `authoring_run_input_provenance` row in the same transaction as the run and
+   items. The shared scheduler then reconciles source state and acquires the
+   mutation fence for the oldest eligible run.
 3. The scheduler dispatches workers, automatically retries unpersisted errors
    after the configured minimum delay, and marks the item superseded when its
    total attempt budget is exhausted.
 4. Workers submit typed results through operation-scoped callbacks.
 5. The processor atomically persists the domain result and receipt, then
-   completes required post-persistence work such as ticket hydration.
+   completes required post-persistence work such as ticket hydration. Preparer
+   hydration freezes the parent Jira read coordinate and safe display-name-only
+   people.
 6. After every item is complete or superseded, fenced finalization refreshes
    shared catalogs, performs grouping, and creates a sanitized immutable
-   snapshot. Completion releases the fence before the oldest queued successor
-   can activate.
+   snapshot. Preparer emits schema v2; Planner continues to emit schema v1.
+   Completion releases the fence before the oldest queued successor can
+   activate.
 7. `FhirAugury.Processing.Client` downloads a workflow/service-bound pair
    directory and writes `verified-pair.json` last after validating coordinates,
    filenames, length, and digests.
 8. The Dev UI invokes `FhirAugury.Publishing.Tickets` in-process, or the
-   `ticket-site` adapter invokes the same publisher headlessly. Publication is
-   outside processor state and writes `site-manifest.json`.
+   `ticket-site` adapter invokes the same publisher headlessly. Discussion
+   publication validates Preparer schema v1 or v2 and projects a fresh
+   renderer-schema-v1 database; Applying validates Planner schema v1 through
+   its existing path. Publication is outside processor state and writes
+   `site-manifest.json`.
 
 There are four concrete processors:
 
@@ -297,6 +315,43 @@ There are four concrete processors:
 
 For operator instructions (kick-off curl, monitoring, output locations), see the
 [processors runbook](processors.md).
+
+### Discussion snapshot and renderer boundaries
+
+Run-input provenance describes the exact Jira corpus admitted to authoring.
+Each selected source ticket carries its project watermark and stable content
+revision. A Jira run stores the maximum project refresh only when every
+selected ticket has one, and stores a content revision only when every ticket
+shares it; otherwise the corresponding value is null. `CapturedAt` is the run
+creation time and is never substituted for source freshness. Existing or
+in-flight legacy runs receive a conservative null provenance row.
+
+Preparer public snapshot schema v2 extends, rather than changes, v1. It adds
+the contributing runs' input provenance, parent hydration source coordinates,
+Assignee values, and normalized in-person requester rows. The checked-in
+Preparer writer emits v2. The publisher remains reader-compatible with v1,
+where those additions are unavailable, while Planner and Tickets for Applying
+remain on their v1 snapshot contract.
+
+For schema-v2 input, the discussion publisher first requires every retained
+ticket to have exactly one accepted authoring coordinate. Zero or multiple
+matches are invalid snapshot structure and fail publication. After that
+structural check, it computes the displayed Jira date only when both the run
+and parent hydration carry complete stable Jira provenance, displaying the
+latest successful upstream refresh across those complete coordinates. Any v1
+input or structurally valid v2 corpus with missing, null, unstable, or
+partially bound freshness receives no date rather than a publication or
+authoring timestamp.
+
+After validating the immutable pair, publication creates a separate discussion
+renderer-schema-v1 database from scratch. That compact schema owns site
+metadata, tickets, people, facets, summary sources, related context, and
+topic/group projections. The browser reads only this generated database and
+static assets; it does not query processor persistence tables or call Jira,
+the Orchestrator, or a processor. Discussion HTML supplies trusted embedded
+SQL.js WebAssembly bytes for direct `file://` initialization while retaining
+the emitted asset for hosted compatibility. This adapter is the boundary that
+lets processor snapshots and browser queries evolve independently.
 
 ### Operations workspace and local artifacts
 

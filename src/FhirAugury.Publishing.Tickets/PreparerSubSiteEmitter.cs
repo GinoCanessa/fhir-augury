@@ -18,6 +18,7 @@ internal static class PreparerSubSiteEmitter
     private const string DiscussionPrefix = "web-assets/discussion/";
     private const string SharedPrefix = "web-assets/shared/";
     private const string TemplateName = "web-assets/discussion/index.template.html";
+    private const string SqlWasmName = "web-assets/shared/sql-wasm.wasm";
     private const string TitleMarker = "<!-- __TITLE__ -->";
     private const string DbBlobMarker = "<!-- __DB_BLOB__ -->";
     private const string PresentationMarker = "<!-- __PRESENTATION__ -->";
@@ -51,7 +52,15 @@ internal static class PreparerSubSiteEmitter
         ct.ThrowIfCancellationRequested();
         string base64 = Convert.ToBase64String(compressed);
         ct.ThrowIfCancellationRequested();
-        string blobScript = $"<script>window.__DB__='{base64}';window.__DBGZ__=1;</script>";
+        byte[] sqlWasmBytes = await ReadEmbeddedResourceBytesAsync(
+            asm,
+            SqlWasmName,
+            ct).ConfigureAwait(false);
+        string sqlWasmBase64 = Convert.ToBase64String(sqlWasmBytes);
+        ct.ThrowIfCancellationRequested();
+        string blobScript =
+            $"<script>window.__DB__='{base64}';window.__DBGZ__=1;" +
+            $"window.__SQL_WASM__='{sqlWasmBase64}';</script>";
         string presentationScript =
             "<script id=\"site-presentation\" type=\"application/json\">" +
             TicketSitePresentationJson.Serialize(presentation) +
@@ -105,6 +114,19 @@ internal static class PreparerSubSiteEmitter
                 await stream.CopyToAsync(fs, ct).ConfigureAwait(false);
             }
         }
+    }
+
+    private static async Task<byte[]> ReadEmbeddedResourceBytesAsync(
+        Assembly assembly,
+        string name,
+        CancellationToken ct)
+    {
+        using Stream stream = assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException(
+                $"Missing embedded resource: {name}");
+        using MemoryStream output = new();
+        await stream.CopyToAsync(output, ct).ConfigureAwait(false);
+        return output.ToArray();
     }
 
     private static async Task<byte[]> GzipBytesAsync(

@@ -20,7 +20,46 @@ pair downloaded after the run completes.
 
 Each durable pair contains the descriptor, database, and
 `verified-pair.json`. Each published discussion sub-site contains
-`site-manifest.json`. The live processor database is not a site input.
+`site-manifest.json`. The checked-in Preparer default emits public snapshot
+schema v2; the publisher also accepts legacy schema-v1 discussion pairs. The
+live processor database is not a site input.
+
+## Reading the generated site
+
+The default visible title is
+`Tickets for Discussion - Built <Month dd, yyyy>` when the schema-v2 snapshot
+can prove Jira provenance for the complete retained corpus. `Built` means the
+latest successful upstream Jira refresh represented by every retained
+ticket's accepted authoring run and stable parent-ticket hydration. The date is
+formatted from the frozen UTC value. It is **not** the authoring completion,
+snapshot creation, or publication date.
+
+For schema-v2 input, each retained ticket must have exactly one accepted
+authoring coordinate. Zero or multiple matches are structural validation
+errors that abort publication rather than a reason to hide the date. After
+that check passes, the publisher omits the suffix rather than substitute
+another timestamp when a migrated legacy run has null provenance, a source
+read was unstable, or any run or parent freshness coordinate is missing,
+null, or partially bound. Schema-v1 input is also unsuffixed. An explicit
+`ticket-site --title` remains the base title; Discussion appends the freshness
+suffix and then any filter suffix. This does not affect Tickets for Applying,
+whose Planner snapshot and renderer path remain on schema v1.
+
+Ticket pages use only public, snapshot-resident context:
+
+- Reporter and Assignee use Jira-authenticated display names and remain
+  visible as an em dash when unavailable. In-person requesters appear only
+  when at least one safe display name exists.
+- Standalone `FHIR-<number>` keys in summary prose link to canonical Jira in a
+  new tab. Linked/related Jira summaries and related Zulip summaries place
+  deduplicated source lists beside the text; GitHub summaries do not gain
+  links.
+- The browser reads a publication-owned renderer-schema-v1 database projected
+  from the verified snapshot. It never reads processor tables and makes no
+  live Jira, Orchestrator, or Preparer request, so the complete output remains
+  usable through `file://` or ordinary static hosting. Discussion HTML embeds
+  the trusted SQL.js WebAssembly bytes used for direct-file initialization and
+  retains the standalone WebAssembly asset for hosted compatibility.
 
 ## Prerequisites
 
@@ -199,12 +238,13 @@ dotnet run --project tools\ticket-site -- `
   --preparer-snapshot "<snapshotPath>" `
   --snapshot-descriptor "<descriptorPath>" `
   --out cache\jira-ticket-site `
-  --title "Tickets for Discussion" `
   --force
 ```
 
-Open `cache\jira-ticket-site\index.html` and choose **Tickets for Discussion**.
-The discussion sub-site records its immutable inputs in
+Open `cache\jira-ticket-site\index.html` and choose the discussion entry. Its
+label includes the frozen Jira date when provenance is complete. The
+discussion sub-site records the stable base title, optional display title and
+source refresh, source snapshot identity, and renderer schema version in
 `discussion\site-manifest.json`.
 
 ## Failure boundaries

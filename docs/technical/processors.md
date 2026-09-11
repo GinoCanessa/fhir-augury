@@ -148,6 +148,24 @@ sets the legacy-compatible `runId` when one related run is known. Capacity,
 revision-collision, and initial-revalidation conflicts therefore give clients
 authoritative navigation coordinates without prose parsing.
 
+Jira discovery also freezes source provenance independently of the per-ticket
+revision used for stale-work detection. Every paged read must report a stable,
+unchanged Jira content revision; the client restarts the whole pagination
+sequence up to three times on a mutation or mismatch, then suppresses
+provenance if it still cannot prove one generation. Each cached candidate
+stores only its own project's successful-refresh watermark and the common
+content revision, overwriting old values with null when a later read cannot
+prove them.
+
+Run creation writes one `authoring_run_input_provenance` row for source `jira`
+inside the same transaction as the run and items. Its
+`LatestSuccessfulRefreshAt` is the maximum candidate watermark only when every
+selected ticket has one. Its `ContentRevision` is retained only when all
+selected tickets share the same stable revision. `CapturedAt` records run
+creation and is not source freshness. Exact replay keeps the already-frozen
+row; new and replacement runs derive a new row. Migrated legacy Jira runs are
+seeded with null coordinates rather than current source state.
+
 ### Finalization and snapshots
 
 For Preparer and Planner, post-persistence item processing completes hydration
@@ -168,6 +186,33 @@ Normal runs produce:
 
 `databaseOnly:true` is the sole explicit snapshot/site opt-out and completes as
 `completed-database-only`.
+
+The public snapshot schema is processor-specific. Preparer now writes
+discussion snapshot **v2**, which extends the immutable v1 catalog with
+contributing-run input provenance, parent Jira hydration provenance, Assignee
+fields, and normalized in-person requester rows. Its sanitizer keeps
+provenance for every run contributing a retained receipt-backed ticket. The
+ticket publisher accepts both Preparer v1 and v2, adapting v1 additions to
+unavailable. Planner continues to write applying snapshot **v1**, and the
+Tickets for Applying publication path accepts only that v1 contract.
+
+Discussion publication does not expose either processor schema directly to the
+browser. It validates the verified Preparer pair and projects a fresh
+**renderer schema v1** database containing only presentation metadata,
+tickets, people, normalized facets, summary sources, related context, and
+topic/group membership. Applying continues through its existing Planner-v1
+path. Both generated sites are static artifacts with no live source,
+Orchestrator, or processor dependency.
+
+For a v2 discussion corpus, every retained ticket must first resolve to
+exactly one accepted authoring coordinate. Zero or multiple matches are
+invalid snapshot structure and abort publication. With that structural
+requirement satisfied, the visible `Built` date is the latest successful
+upstream Jira refresh across the run and stable parent hydration freshness
+coordinates for every retained ticket. Missing or null run provenance,
+missing/null/partially bound parent project/revision/watermark coordinates, or
+v1 input leave the title unsuffixed. Authoring completion, snapshot creation,
+and site generation are never fallbacks.
 
 Item-level supersession does not supersede the run. When every item is either
 `complete` or `superseded`, normal fenced finalization still runs—even if every
@@ -190,8 +235,11 @@ processor kind `jira-fhir`.
 `FhirAugury.Publishing.Tickets` accepts only a durable verified pair and checks
 the public snapshot schema before rendering. The Dev UI invokes it in-process;
 `ticket-site` is a thin CLI adapter over the same publisher. Each sub-site
-writes the exact filename `site-manifest.json`. Neither publisher accepts a
-live processor database.
+writes the exact filename `site-manifest.json`. Discussion manifests retain a
+stable base `Title` and add optional display title, Jira refresh, and renderer
+schema fields; Dev UI reconstruction validates the stable title while
+preserving those additions. Neither publisher accepts a live processor
+database.
 
 ### Failure boundaries
 
@@ -276,6 +324,11 @@ dotnet run --project tools\ticket-site -- `
   --force
 ```
 
+The checked-in Preparer configuration writes snapshot schema v2. The shared
+publisher remains able to publish older v1 pairs, but only v2 can carry the
+complete Jira freshness and people contract. The omitted `ticket-site` title
+for this input is `Tickets for Discussion`.
+
 Grouping is part of finalization. To intentionally refresh all current
 grouping partitions later, use the processor-owned maintenance endpoint:
 
@@ -317,6 +370,10 @@ dotnet run --project tools\ticket-site -- `
   --out cache\jira-ticket-site `
   --force
 ```
+
+Planner and Tickets for Applying intentionally remain on snapshot schema v1.
+The omitted `ticket-site` title for Planner input remains the existing
+`Ticket Site`; Discussion freshness qualification does not apply.
 
 Grouping maintenance:
 

@@ -90,6 +90,18 @@ public sealed class TicketSitePublisherTests : IDisposable
             "<script id=\"site-presentation\" type=\"application/json\">",
             html,
             StringComparison.Ordinal);
+        byte[] embeddedWasm = await ReadEmbeddedResourceBytesAsync(
+            "web-assets/shared/sql-wasm.wasm");
+        Assert.Equal(embeddedWasm, ExtractEmbeddedWasm(html));
+        string emittedWasmPath = Path.Combine(
+            output,
+            "discussion",
+            "assets",
+            "sql-wasm.wasm");
+        Assert.True(File.Exists(emittedWasmPath));
+        Assert.Equal(
+            embeddedWasm,
+            await File.ReadAllBytesAsync(emittedWasmPath));
         string script = await File.ReadAllTextAsync(Path.Combine(
             output,
             "discussion",
@@ -103,6 +115,11 @@ public sealed class TicketSitePublisherTests : IDisposable
             "jira_processing_source_tickets",
             script,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "wasmBinary: wasmBinary",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains("locateFile:", script, StringComparison.Ordinal);
         Assert.Contains("FROM ticket_facets", script, StringComparison.Ordinal);
         AssertFacetHashContract(script);
         AssertCopyForAiContract(script);
@@ -1526,6 +1543,29 @@ public sealed class TicketSitePublisherTests : IDisposable
                 $"Missing embedded resource '{name}'.");
         using StreamReader reader = new(stream);
         return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<byte[]> ReadEmbeddedResourceBytesAsync(
+        string name)
+    {
+        Assembly assembly = typeof(TicketSitePublisher).Assembly;
+        await using Stream stream = assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException(
+                $"Missing embedded resource '{name}'.");
+        using MemoryStream output = new();
+        await stream.CopyToAsync(output);
+        return output.ToArray();
+    }
+
+    private static byte[] ExtractEmbeddedWasm(string html)
+    {
+        const string marker = "window.__SQL_WASM__='";
+        int start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "Embedded SQL.js WASM marker was not found.");
+        start += marker.Length;
+        int end = html.IndexOf('\'', start);
+        Assert.True(end > start, "Embedded SQL.js WASM payload was not found.");
+        return Convert.FromBase64String(html[start..end]);
     }
 
     private static async Task<byte[]> ExtractEmbeddedDatabaseAsync(string html)

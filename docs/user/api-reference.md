@@ -204,6 +204,40 @@ comments, and markdown snapshot.
 
 **Example:** `GET /api/v1/content/item/jira/FHIR-43499?includeComments=true&includeSnapshot=true`
 
+Jira item responses add two optional `ItemResponse` members. Other sources and
+older payloads may omit them:
+
+```jsonc
+{
+  "source": "jira",
+  "id": "FHIR-43499",
+  "title": "...",
+  "provenance": {
+    "source": "jira",
+    "contentRevision": 1842,
+    "isStable": true,
+    "projectLastSuccessfulRefreshAt": {
+      "FHIR": "2026-09-08T05:00:00+00:00"
+    }
+  },
+  "people": {
+    "reporter": "Ada Lovelace",
+    "assignee": null,
+    "inPersonRequesters": [
+      "Grace Hopper"
+    ]
+  }
+}
+```
+
+`contentRevision` identifies the local Jira database generation and
+`isStable:false` means the read occurred while that generation was being
+mutated. Project timestamps are the latest proven error-free upstream Jira
+full/incremental refreshes, not cache rebuild or response times. `people`
+contains only Jira-authenticated display names; it never adds username, email,
+or user ID fields. The requester list is case-insensitively deduplicated and
+deterministically ordered.
+
 ### Ingestion
 
 #### `POST /api/v1/ingest/trigger`
@@ -264,6 +298,7 @@ Examples:
 | `POST` | `/api/v1/jira/query` | Structured Jira issue query |
 | `POST` | `/api/v1/jira/ingest?jira-project=FHIR` | Trigger Jira ingest scoped to one project |
 | `GET`  | `/api/v1/jira/work-groups` | List HL7 work groups |
+| `POST` | `/api/v1/jira/local-processing/tickets?type=fhir` | Page local-processing candidates with source provenance |
 | `POST` | `/api/v1/zulip/query` | Structured Zulip query |
 | `GET`  | `/api/v1/zulip/streams` | List Zulip streams |
 | `GET`  | `/api/v1/zulip/items/{id}/comments` | Always returns `[]` (shape-parity stub) |
@@ -514,6 +549,70 @@ the `reindex` verb for this operation; the wire path remains
 Receives `PeerIngestionNotification` from the orchestrator after another
 source's ingestion run completes; triggers a cross-reference re-scan
 against the newly updated peer. Tagged `ingestion-notifications`.
+
+---
+
+## Jira Service HTTP API
+
+**Base URL:** `http://localhost:5160/api/v1`
+
+The direct Jira routes below are also available through the typed Orchestrator
+proxy under `http://localhost:5150/api/v1/jira`. The proxy preserves the
+additive response fields.
+
+### Jira item provenance and people
+
+#### `GET /api/v1/items/{key}`
+
+Returns the common `ItemResponse` plus the Jira `provenance` and `people`
+objects documented under [Orchestrator Items](#items). The issue row, optional
+comments, people, project watermark, and content-generation fence are read in
+one SQLite transaction. Legacy string metadata remains for compatibility;
+consumers needing public person data should use the structured `people` object.
+
+### Local-processing candidates
+
+#### `POST /api/v1/local-processing/tickets?type=fhir`
+
+Returns one filtered page and its unpaged total with a provenance envelope
+captured in the same read transaction:
+
+```jsonc
+{
+  "results": [
+    {
+      "key": "FHIR-43499",
+      "projectKey": "FHIR",
+      "title": "...",
+      "type": "Change Request",
+      "status": "Triaged",
+      "priority": "Medium",
+      "workGroup": "FHIR Infrastructure",
+      "specification": "FHIR Core (FHIR)",
+      "url": "https://jira.hl7.org/browse/FHIR-43499",
+      "updatedAt": "2026-09-07T12:00:00+00:00"
+    }
+  ],
+  "limit": 500,
+  "offset": 0,
+  "total": 1,
+  "provenance": {
+    "source": "jira",
+    "contentRevision": 1842,
+    "isStable": true,
+    "projectLastSuccessfulRefreshAt": {
+      "FHIR": "2026-09-08T05:00:00+00:00"
+    }
+  }
+}
+```
+
+`type` selects `fhir`, `pss`, `baldef`, or `ballot`; omitted means `fhir`.
+The request body is `JiraLocalProcessingListRequest` (filters plus `limit` and
+`offset`). A client consuming multiple pages must require stable matching
+content revisions and project watermark values across the complete sequence.
+The shipped Jira processor client retries the whole sequence up to three
+passes and suppresses provenance if no stable generation can be proven.
 
 ---
 

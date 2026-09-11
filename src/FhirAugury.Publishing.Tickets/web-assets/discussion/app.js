@@ -55,6 +55,15 @@
     return value;
   }
 
+  function decodeBase64(value) {
+    var binary = atob(value);
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index++) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
   function loadFacetCatalog() {
     var rows = query(
       'SELECT DISTINCT Dimension, ValueKey, DisplayValue, SortKey, IsUnknown ' +
@@ -148,12 +157,20 @@
         var assetVersion = typeof window.__ASSET_VERSION__ === 'string'
           ? window.__ASSET_VERSION__
           : '';
+        var encodedWasm = typeof window.__SQL_WASM__ === 'string'
+          ? window.__SQL_WASM__
+          : '';
+        if (!encodedWasm) {
+          throw new Error('The embedded SQL.js WebAssembly is missing.');
+        }
+        var wasmBinary = decodeBase64(encodedWasm);
         // initSqlJs is provided by the classic sql-wasm.js asset.
         var SQL = await initSqlJs({
           locateFile: function (fileName) {
             return 'assets/' + fileName +
               (assetVersion ? '?v=' + encodeURIComponent(assetVersion) : '');
-          }
+          },
+          wasmBinary: wasmBinary
         });
         var encodedDatabase = typeof window.__DB__ === 'string'
           ? window.__DB__
@@ -161,11 +178,7 @@
         if (!encodedDatabase) {
           throw new Error('The embedded discussion database is missing.');
         }
-        var binary = atob(encodedDatabase);
-        var bytes = new Uint8Array(binary.length);
-        for (var index = 0; index < binary.length; index++) {
-          bytes[index] = binary.charCodeAt(index);
-        }
+        var bytes = decodeBase64(encodedDatabase);
         if (window.__DBGZ__) {
           if (typeof DecompressionStream !== 'function') {
             throw new Error(

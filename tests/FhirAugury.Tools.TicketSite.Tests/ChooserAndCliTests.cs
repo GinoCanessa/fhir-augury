@@ -1,3 +1,4 @@
+using FhirAugury.Publishing.Tickets;
 using FhirAugury.Publishing.Tickets.Tests;
 
 namespace FhirAugury.Tools.TicketSite.Tests;
@@ -63,6 +64,112 @@ public sealed class ChooserAndCliTests
         foreach (string flag in flags)
         {
             Assert.Contains(flag, output, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task OmittedPreparerTitleUsesDiscussionBaseButPlannerKeepsTicketSite()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-default-titles-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture preparer =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string preparerOutput = Path.Combine(root, "preparer-site");
+
+            (int preparerExit, _, string preparerError) = await RunAsync(
+                "--preparer-snapshot", preparer.DatabasePath,
+                "--snapshot-descriptor", preparer.DescriptorPath,
+                "--out", preparerOutput);
+
+            Assert.True(preparerExit == 0, preparerError);
+            TicketSiteManifest preparerManifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    preparerOutput,
+                    "discussion",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("Tickets for Discussion", preparerManifest.Title);
+            Assert.Equal(
+                "Tickets for Discussion",
+                preparerManifest.DisplayTitle);
+            Assert.Null(
+                preparerManifest.JiraSourceLastSuccessfulRefreshAt);
+            string chooser = await File.ReadAllTextAsync(
+                Path.Combine(preparerOutput, "index.html"));
+            Assert.Contains(
+                "Tickets for Discussion",
+                chooser,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "Built",
+                chooser,
+                StringComparison.Ordinal);
+
+            TicketSnapshotFixture planner =
+                await TicketSnapshotFixture.CreatePlannerAsync(root);
+            string plannerOutput = Path.Combine(root, "planner-site");
+
+            (int plannerExit, _, string plannerError) = await RunAsync(
+                "--planner-snapshot", planner.DatabasePath,
+                "--snapshot-descriptor", planner.DescriptorPath,
+                "--out", plannerOutput);
+
+            Assert.True(plannerExit == 0, plannerError);
+            TicketSiteManifest plannerManifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    plannerOutput,
+                    "applying",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("Ticket Site", plannerManifest.Title);
+            Assert.Null(plannerManifest.DisplayTitle);
+            Assert.Null(
+                plannerManifest.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Null(plannerManifest.RendererSchemaVersion);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task ExplicitPreparerTitleRemainsBaseTitle()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-explicit-title-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(
+                    root,
+                    schemaVersion: 2);
+            string output = Path.Combine(root, "site");
+
+            (int exit, _, string error) = await RunAsync(
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
+                "--title", "FHIR review");
+
+            Assert.True(exit == 0, error);
+            TicketSiteManifest manifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    output,
+                    "discussion",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("FHIR review", manifest.Title);
+            Assert.Equal(
+                "FHIR review - Built September 08, 2026",
+                manifest.DisplayTitle);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
         }
     }
 
