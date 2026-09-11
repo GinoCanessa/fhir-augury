@@ -37,6 +37,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "alice");
         Assert.NotNull(record);
         Assert.Equal("Alice A", record.DisplayName);
+        Assert.True(record.HasAccountUsername);
         Assert.True(record.HasExplicitDisplayName);
         Assert.Equal(id.Value, record.Id);
     }
@@ -89,6 +90,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "alice");
         Assert.NotNull(record);
         Assert.Equal("alice", record.DisplayName);
+        Assert.True(record.HasAccountUsername);
         Assert.False(record.HasExplicitDisplayName);
     }
 
@@ -103,6 +105,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "Alice A");
         Assert.NotNull(record);
         Assert.Equal("Alice A", record.DisplayName);
+        Assert.False(record.HasAccountUsername);
         Assert.True(record.HasExplicitDisplayName);
     }
 
@@ -117,6 +120,7 @@ public class JiraUserMapperTests : IDisposable
         JiraUserRecord? record = JiraUserRecord.SelectSingle(conn, Username: "Bob B");
         Assert.NotNull(record);
         Assert.Equal("Bob B", record.DisplayName);
+        Assert.False(record.HasAccountUsername);
         Assert.True(record.HasExplicitDisplayName);
     }
 
@@ -217,6 +221,108 @@ public class JiraUserMapperTests : IDisposable
         Assert.Equal(placeholderId, upgradedId);
         JiraUserRecord record = Assert.Single(JiraUserRecord.SelectList(conn));
         Assert.Equal("Alice A", record.DisplayName);
+        Assert.True(record.HasAccountUsername);
+        Assert.True(record.HasExplicitDisplayName);
+    }
+
+    [Fact]
+    public void ResolveUser_IdentifierValuedDisplayNameIsIneligibleAndUnsafeReplacementDemotes()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+
+        int? id = _mapper.ResolveUser(conn, "alice.account", "ALICE.ACCOUNT");
+        JiraUserRecord accountValued = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.Equal(id, accountValued.Id);
+        Assert.True(accountValued.HasAccountUsername);
+        Assert.False(accountValued.HasExplicitDisplayName);
+
+        _mapper.ResolveUser(conn, "alice.account", "Alice Example");
+        JiraUserRecord safe = Assert.Single(JiraUserRecord.SelectList(conn));
+        Assert.Equal("Alice Example", safe.DisplayName);
+        Assert.True(safe.HasExplicitDisplayName);
+
+        _mapper.ResolveUser(
+            conn,
+            "alice.account",
+            "Alice Example <alice@example.org>");
+        JiraUserRecord emailValued = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.Equal(
+            "Alice Example <alice@example.org>",
+            emailValued.DisplayName);
+        Assert.False(emailValued.HasExplicitDisplayName);
+
+        _mapper.ResolveUser(conn, "alice.account", null);
+        JiraUserRecord absentDisplayName = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.Equal(
+            "Alice Example <alice@example.org>",
+            absentDisplayName.DisplayName);
+        Assert.False(absentDisplayName.HasExplicitDisplayName);
+
+        _mapper.ResolveUser(conn, "alice.account", "Alice Example");
+        JiraUserRecord restored = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.True(restored.HasExplicitDisplayName);
+    }
+
+    [Theory]
+    [InlineData("alice@example.org")]
+    [InlineData("Alice <alice@example.org>")]
+    public void ResolveUser_EmailValuedDisplayNameIsIneligible(
+        string displayName)
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+
+        _mapper.ResolveUser(conn, "alice.account", displayName);
+
+        JiraUserRecord record = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.Equal(displayName, record.DisplayName);
+        Assert.False(record.HasExplicitDisplayName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResolveUser_AccountOriginUpgradeReevaluatesCachedAndUncachedRows(
+        bool clearCache)
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        int? displayOnlyId = _mapper.ResolveUser(conn, null, "alice");
+
+        JiraUserRecord displayOnly = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.False(displayOnly.HasAccountUsername);
+        Assert.True(displayOnly.HasExplicitDisplayName);
+
+        if (clearCache)
+        {
+            _mapper.ClearCache();
+        }
+
+        int? accountId = _mapper.ResolveUser(conn, "alice", null);
+
+        Assert.Equal(displayOnlyId, accountId);
+        JiraUserRecord upgraded = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.True(upgraded.HasAccountUsername);
+        Assert.False(upgraded.HasExplicitDisplayName);
+    }
+
+    [Fact]
+    public void ResolveUser_AbsentDisplayNamePreservesSafeProvenDisplayName()
+    {
+        using SqliteConnection conn = _db.OpenConnection();
+        _mapper.ResolveUser(conn, "alice.account", "Alice Example");
+
+        _mapper.ResolveUser(conn, "alice.account", null);
+
+        JiraUserRecord record = Assert.Single(
+            JiraUserRecord.SelectList(conn));
+        Assert.Equal("Alice Example", record.DisplayName);
+        Assert.True(record.HasAccountUsername);
         Assert.True(record.HasExplicitDisplayName);
     }
 
@@ -229,6 +335,7 @@ public class JiraUserMapperTests : IDisposable
             Id = JiraUserRecord.GetIndex(),
             Username = "legacy",
             DisplayName = "Legacy User",
+            HasAccountUsername = true,
             HasExplicitDisplayName = false,
         };
         JiraUserRecord.Insert(conn, legacy);
@@ -237,6 +344,7 @@ public class JiraUserMapperTests : IDisposable
 
         Assert.Equal(legacy.Id, id);
         JiraUserRecord upgraded = Assert.Single(JiraUserRecord.SelectList(conn));
+        Assert.True(upgraded.HasAccountUsername);
         Assert.True(upgraded.HasExplicitDisplayName);
     }
 }

@@ -1,6 +1,7 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -74,7 +75,11 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         ItemPeopleResponse people = new(
             ResolveExplicitDisplayName(connection, issue.ReporterUserId),
             ResolveExplicitDisplayName(connection, issue.AssigneeUserId),
-            ReadInPersonRequesters(connection, key));
+            ReadInPersonRequesters(connection, key))
+        {
+            PublicDisplayNamePolicyVersion =
+                PublicDisplayNamePolicy.CurrentVersion,
+        };
         SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
             connection,
             [issue.ProjectKey]);
@@ -278,7 +283,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
 
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT DisplayName
+            SELECT Username, HasAccountUsername, DisplayName
             FROM jira_users
             WHERE Id = @userId
               AND HasExplicitDisplayName = 1
@@ -286,7 +291,18 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             LIMIT 1
             """;
         command.Parameters.AddWithValue("@userId", userId.Value);
-        return (command.ExecuteScalar() as string)?.Trim();
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        string username = reader.GetString(0);
+        bool hasAccountUsername = reader.GetBoolean(1);
+        string displayName = reader.GetString(2);
+        return PublicDisplayNamePolicy.Normalize(
+            displayName,
+            hasAccountUsername ? username : null);
     }
 
     private static IReadOnlyList<string> ReadInPersonRequesters(
@@ -295,7 +311,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
     {
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT u.DisplayName
+            SELECT u.Username, u.HasAccountUsername, u.DisplayName
             FROM jira_issue_inpersons AS requester
             INNER JOIN jira_users AS u ON u.Id = requester.UserId
             WHERE requester.IssueKey = @issueKey
@@ -310,13 +326,24 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         using SqliteDataReader reader = command.ExecuteReader();
         while (reader.Read())
         {
-            string displayName = reader.GetString(0).Trim();
-            if (seen.Add(displayName))
+            string username = reader.GetString(0);
+            bool hasAccountUsername = reader.GetBoolean(1);
+            string? displayName = PublicDisplayNamePolicy.Normalize(
+                reader.GetString(2),
+                hasAccountUsername ? username : null);
+            if (displayName is not null && seen.Add(displayName))
             {
                 displayNames.Add(displayName);
             }
         }
 
+        displayNames.Sort(static (left, right) =>
+        {
+            int result = StringComparer.OrdinalIgnoreCase.Compare(left, right);
+            return result != 0
+                ? result
+                : StringComparer.Ordinal.Compare(left, right);
+        });
         return displayNames;
     }
 }

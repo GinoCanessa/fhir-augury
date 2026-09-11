@@ -108,7 +108,7 @@ public class JiraDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void MigrateSchema_ExistingUsersRemainIneligibleUntilReingested()
+    public void MigrateSchema_TreatsExistingUsernameOriginsAsAccountBacked()
     {
         using (SqliteConnection connection = _db.OpenConnection())
         {
@@ -130,6 +130,7 @@ public class JiraDatabaseTests : IDisposable
 
         using SqliteConnection check = _db.OpenConnection();
         JiraUserRecord user = Assert.Single(JiraUserRecord.SelectList(check));
+        Assert.True(user.HasAccountUsername);
         Assert.False(user.HasExplicitDisplayName);
     }
 

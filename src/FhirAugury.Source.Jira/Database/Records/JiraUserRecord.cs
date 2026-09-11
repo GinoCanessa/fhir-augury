@@ -16,9 +16,15 @@ public partial record class JiraUserRecord
     public required string DisplayName { get; set; }
 
     /// <summary>
+    /// True when <see cref="Username"/> is a Jira account identifier rather
+    /// than the synthetic key used for a display-name-only row.
+    /// </summary>
+    public bool HasAccountUsername { get; set; }
+
+    /// <summary>
     /// True only when Jira, or an explicitly display-name-only caller,
-    /// supplied <see cref="DisplayName"/>. Username-derived placeholders are
-    /// not eligible for public people projections.
+    /// supplied a policy-safe <see cref="DisplayName"/>. Username-derived or
+    /// identifier-valued strings are not eligible for public projections.
     /// </summary>
     public bool HasExplicitDisplayName { get; set; }
 }

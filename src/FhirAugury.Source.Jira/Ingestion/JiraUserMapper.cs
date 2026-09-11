@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 
@@ -25,26 +26,22 @@ public class JiraUserMapper
         if (username is null && displayName is null)
             return null;
 
+        bool hasAccountUsername = username is not null;
+
         // Use username as primary key; fall back to displayName as synthetic username
         string effectiveUsername = username ?? displayName!;
 
         // Check in-memory cache first
         if (_usernameToId.TryGetValue(effectiveUsername, out int cachedId))
         {
-            if (displayName is null ||
-                (_displayNameToId.TryGetValue(displayName, out int displayId) &&
-                 displayId == cachedId))
-            {
-                return cachedId;
-            }
-
-            // A later source response can upgrade a username-only placeholder
-            // without requiring the mapper cache to be cleared.
             JiraUserRecord? cached = JiraUserRecord.SelectSingle(conn, Id: cachedId);
             if (cached is not null)
             {
-                PromoteExplicitDisplayName(conn, cached, displayName);
-                _displayNameToId[displayName] = cachedId;
+                ApplyObservation(
+                    conn,
+                    cached,
+                    hasAccountUsername,
+                    displayName);
                 return cachedId;
             }
 
@@ -55,14 +52,13 @@ public class JiraUserMapper
         JiraUserRecord? existing = JiraUserRecord.SelectSingle(conn, Username: effectiveUsername);
         if (existing is not null)
         {
-            if (displayName is not null)
-            {
-                PromoteExplicitDisplayName(conn, existing, displayName);
-            }
+            ApplyObservation(
+                conn,
+                existing,
+                hasAccountUsername,
+                displayName);
 
             _usernameToId[effectiveUsername] = existing.Id;
-            if (displayName is not null)
-                _displayNameToId[displayName] = existing.Id;
             return existing.Id;
         }
 
@@ -72,7 +68,11 @@ public class JiraUserMapper
             Id = JiraUserRecord.GetIndex(),
             Username = effectiveUsername,
             DisplayName = displayName ?? effectiveUsername,
-            HasExplicitDisplayName = displayName is not null,
+            HasAccountUsername = hasAccountUsername,
+            HasExplicitDisplayName = displayName is not null
+                && PublicDisplayNamePolicy.Normalize(
+                    displayName,
+                    hasAccountUsername ? effectiveUsername : null) is not null,
         };
         JiraUserRecord.Insert(conn, newUser, ignoreDuplicates: true);
 
@@ -99,7 +99,11 @@ public class JiraUserMapper
             JiraUserRecord? cached = JiraUserRecord.SelectSingle(conn, Id: cachedId);
             if (cached is not null)
             {
-                PromoteExplicitDisplayName(conn, cached, displayName);
+                ApplyObservation(
+                    conn,
+                    cached,
+                    hasAccountUsername: false,
+                    displayName);
                 return cachedId;
             }
 
@@ -113,7 +117,11 @@ public class JiraUserMapper
         if (matches.Count > 0)
         {
             JiraUserRecord chosen = matches.OrderBy(u => u.Id).First();
-            PromoteExplicitDisplayName(conn, chosen, displayName);
+            ApplyObservation(
+                conn,
+                chosen,
+                hasAccountUsername: false,
+                displayName);
             _displayNameToId[displayName] = chosen.Id;
             _usernameToId[chosen.Username] = chosen.Id;
             return chosen.Id;
@@ -129,26 +137,63 @@ public class JiraUserMapper
         _displayNameToId.Clear();
     }
 
-    private void PromoteExplicitDisplayName(
+    private void ApplyObservation(
         SqliteConnection conn,
         JiraUserRecord user,
-        string displayName)
+        bool hasAccountUsername,
+        string? displayName)
     {
-        if (user.HasExplicitDisplayName &&
-            string.Equals(user.DisplayName, displayName, StringComparison.Ordinal))
+        bool changed = false;
+        bool accountOriginUpgraded =
+            hasAccountUsername && !user.HasAccountUsername;
+        if (accountOriginUpgraded)
         {
-            return;
+            user.HasAccountUsername = true;
+            changed = true;
         }
 
-        if (_displayNameToId.TryGetValue(user.DisplayName, out int mappedId) &&
-            mappedId == user.Id)
+        if (displayName is not null)
         {
-            _displayNameToId.Remove(user.DisplayName);
+            if (!string.Equals(
+                    user.DisplayName,
+                    displayName,
+                    StringComparison.Ordinal))
+            {
+                if (_displayNameToId.TryGetValue(
+                        user.DisplayName,
+                        out int mappedId)
+                    && mappedId == user.Id)
+                {
+                    _displayNameToId.Remove(user.DisplayName);
+                }
+
+                user.DisplayName = displayName;
+                changed = true;
+            }
+
+            bool isEligible = PublicDisplayNamePolicy.Normalize(
+                displayName,
+                user.HasAccountUsername ? user.Username : null) is not null;
+            if (user.HasExplicitDisplayName != isEligible)
+            {
+                user.HasExplicitDisplayName = isEligible;
+                changed = true;
+            }
+
+            _displayNameToId[displayName] = user.Id;
+        }
+        else if (accountOriginUpgraded && user.HasExplicitDisplayName
+                 && PublicDisplayNamePolicy.Normalize(
+                     user.DisplayName,
+                     user.Username) is null)
+        {
+            user.HasExplicitDisplayName = false;
+            changed = true;
         }
 
-        user.DisplayName = displayName;
-        user.HasExplicitDisplayName = true;
-        JiraUserRecord.Update(conn, user);
-        _displayNameToId[displayName] = user.Id;
+        if (changed)
+        {
+            JiraUserRecord.Update(conn, user);
+        }
     }
 }

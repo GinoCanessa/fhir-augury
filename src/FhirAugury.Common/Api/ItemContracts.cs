@@ -17,7 +17,10 @@ public record SourceReadProvenance
 public record ItemPeopleResponse(
     string? Reporter,
     string? Assignee,
-    IReadOnlyList<string> InPersonRequesters);
+    IReadOnlyList<string> InPersonRequesters)
+{
+    public int? PublicDisplayNamePolicyVersion { get; init; }
+}
 
 /// <summary>Full item detail from a source service.</summary>
 public record ItemResponse

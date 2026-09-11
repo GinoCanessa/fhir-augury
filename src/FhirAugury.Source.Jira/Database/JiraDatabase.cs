@@ -90,6 +90,11 @@ public class JiraDatabase : SourceDatabase
             "jira_users",
             "HasExplicitDisplayName",
             "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(
+            connection,
+            "jira_users",
+            "HasAccountUsername",
+            "INTEGER NOT NULL DEFAULT 1");
         foreach (string table in new[]
                  {
                      "jira_issues",

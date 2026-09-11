@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Caching;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Controllers;
@@ -173,6 +174,9 @@ public class ItemsControllerTests : IDisposable
         Assert.Equal("Reporter Name", response.People.Reporter);
         Assert.Equal("Assignee Name", response.People.Assignee);
         Assert.Equal(["Amy", "Zoe"], response.People.InPersonRequesters);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            response.People.PublicDisplayNamePolicyVersion);
 
         Assert.NotNull(response.Provenance);
         Assert.Equal("jira", response.Provenance.Source);
@@ -218,6 +222,9 @@ public class ItemsControllerTests : IDisposable
         Assert.Null(response.People.Reporter);
         Assert.Null(response.People.Assignee);
         Assert.Empty(response.People.InPersonRequesters);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            response.People.PublicDisplayNamePolicyVersion);
 
         // The established metadata keys remain available for old clients;
         // structured hydration does not use them.
@@ -270,6 +277,85 @@ public class ItemsControllerTests : IDisposable
         Assert.Equal("Current Assignee", response.People.Assignee);
         Assert.Equal("Shared Name", response.Metadata!["reporter"]);
         Assert.Equal("Legacy Assignee", response.Metadata["assignee"]);
+    }
+
+    [Fact]
+    public void GetItem_ExplicitIdentifierValuedDisplayNamesAreSuppressed()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            JiraUserRecord reporter = InsertUser(
+                connection,
+                "reporter.account",
+                "REPORTER.ACCOUNT",
+                isExplicit: true);
+            JiraUserRecord assignee = InsertUser(
+                connection,
+                "assignee.account",
+                "Assignee Name <assignee@example.org>",
+                isExplicit: true);
+            JiraUserRecord accountRequester = InsertUser(
+                connection,
+                "requester.account",
+                "Requester.Account",
+                isExplicit: true);
+            JiraUserRecord emailRequester = InsertUser(
+                connection,
+                "requester-private-id",
+                "requester@example.org",
+                isExplicit: true);
+            JiraUserRecord safeRequester = InsertUser(
+                connection,
+                "safe-requester-id",
+                "Safe Requester",
+                isExplicit: true);
+            JiraUserRecord displayOnlyRequester = InsertUser(
+                connection,
+                "Display Only Requester",
+                "Display Only Requester",
+                isExplicit: true,
+                hasAccountUsername: false);
+
+            JiraIssueRecord issue = NewIssue("FHIR-560", record =>
+            {
+                record.Reporter = reporter.DisplayName;
+                record.ReporterUserId = reporter.Id;
+                record.Assignee = assignee.DisplayName;
+                record.AssigneeUserId = assignee.Id;
+            });
+            JiraIssueRecord.Insert(connection, issue);
+            InsertRequester(connection, issue.Key, accountRequester.Id);
+            InsertRequester(connection, issue.Key, emailRequester.Id);
+            InsertRequester(connection, issue.Key, safeRequester.Id);
+            InsertRequester(connection, issue.Key, displayOnlyRequester.Id);
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(
+            _controller.GetItem(
+                "FHIR-560",
+                includeContent: false,
+                includeComments: false));
+        ItemResponse response = Assert.IsType<ItemResponse>(ok.Value);
+
+        Assert.NotNull(response.People);
+        Assert.Null(response.People.Reporter);
+        Assert.Null(response.People.Assignee);
+        Assert.Equal(
+            ["Display Only Requester", "Safe Requester"],
+            response.People.InPersonRequesters);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            response.People.PublicDisplayNamePolicyVersion);
+
+        string peopleJson = JsonSerializer.Serialize(response.People);
+        Assert.DoesNotContain(
+            "reporter.account",
+            peopleJson,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "example.org",
+            peopleJson,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -386,13 +472,15 @@ public class ItemsControllerTests : IDisposable
         SqliteConnection connection,
         string username,
         string displayName,
-        bool isExplicit)
+        bool isExplicit,
+        bool hasAccountUsername = true)
     {
         JiraUserRecord user = new()
         {
             Id = JiraUserRecord.GetIndex(),
             Username = username,
             DisplayName = displayName,
+            HasAccountUsername = hasAccountUsername,
             HasExplicitDisplayName = isExplicit,
         };
         JiraUserRecord.Insert(connection, user);
