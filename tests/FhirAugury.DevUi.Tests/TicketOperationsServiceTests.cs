@@ -668,6 +668,331 @@ public sealed class TicketOperationsServiceTests : IDisposable
             (await first).Disposition);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublicationRefreshStartsForLegacyOrDegradedDiscussionSite(
+        bool legacyManifest)
+    {
+        FakeAuthoringClient authoring = new();
+        authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(RunResponse(
+                canRetry: false,
+                canSupersede: false,
+                completed: true));
+        AuthoringRunResponse refreshRun = RunResponse(
+            canRetry: false,
+            canSupersede: false,
+            completed: false,
+            statusOverride: "queued",
+            purpose: "publication-refresh",
+            sourceRunId: "run-1");
+        refreshRun = refreshRun with
+        {
+            Run = refreshRun.Run with { RunId = "refresh-run" },
+            Items = refreshRun.Items
+                .Select(item => item with
+                {
+                    RunId = "refresh-run",
+                })
+                .ToArray(),
+        };
+        authoring.RefreshHandler = (serviceName, sourceRunId, _) =>
+        {
+            Assert.Equal("Preparer", serviceName);
+            Assert.Equal("run-1", sourceRunId);
+            return Task.FromResult(refreshRun);
+        };
+        FakeSiteStore store =
+            CreatePublishedStore(
+                legacyManifest
+                    ? null
+                    : DegradedReadiness());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result =
+            await service.RefreshPublicationAsync(
+                "PREPARE",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            result.Disposition);
+        Assert.Same(refreshRun, result.Run);
+        Assert.Equal("refresh-run", result.RefreshRunId);
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(1, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.Equal(
+            ("Preparer", "run-1"),
+            Assert.Single(authoring.RefreshRequests));
+        Assert.Equal(
+            ("prepare", "run-1"),
+            Assert.Single(store.Reconstructions));
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("database-only")]
+    [InlineData("superseded")]
+    [InlineData("already-refresh")]
+    public async Task PublicationRefreshRevalidatesUnsafeSourceRun(
+        string sourceState)
+    {
+        FakeAuthoringClient authoring = new();
+        authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(sourceState switch
+            {
+                "active" => RunResponse(
+                    canRetry: false,
+                    canSupersede: false,
+                    statusOverride: "running"),
+                "database-only" => RunResponse(
+                    canRetry: false,
+                    canSupersede: false,
+                    completed: true,
+                    databaseOnly: true),
+                "superseded" => RunResponse(
+                    canRetry: false,
+                    canSupersede: false,
+                    completed: true,
+                    statusOverride: "superseded"),
+                "already-refresh" => RunResponse(
+                    canRetry: false,
+                    canSupersede: false,
+                    completed: true,
+                    purpose: "publication-refresh",
+                    sourceRunId: "older-run"),
+                _ => throw new InvalidOperationException(
+                    $"Unknown source state '{sourceState}'."),
+            });
+        FakeSiteStore store =
+            CreatePublishedStore(DegradedReadiness());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result =
+            await service.RefreshPublicationAsync(
+                "prepare",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.NotAllowed,
+            result.Disposition);
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.ListCalls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshRejectsPlannerBeforeReadingRunOrSite()
+    {
+        FakeAuthoringClient authoring = new();
+        FakeSiteStore store = new(
+            _root,
+            new TicketWorkflowCatalog());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result =
+            await service.RefreshPublicationAsync(
+                "plan",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.NotAllowed,
+            result.Disposition);
+        Assert.Equal(0, authoring.GetCalls);
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Empty(store.Reconstructions);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublicationRefreshRequiresExistingUnreadySite(
+        bool existingReadySite)
+    {
+        FakeAuthoringClient authoring = new();
+        FakeSiteStore store = new(
+            _root,
+            new TicketWorkflowCatalog());
+        if (existingReadySite)
+        {
+            store.Publication = CreatePublication(
+                store,
+                ReadyReadiness());
+        }
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result =
+            await service.RefreshPublicationAsync(
+                "prepare",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.NotAllowed,
+            result.Disposition);
+        Assert.Equal(0, authoring.GetCalls);
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.ListCalls);
+    }
+
+    [Fact]
+    public async Task AmbiguousPublicationRefreshUsesReadOnlyLineageReconciliation()
+    {
+        FakeAuthoringClient authoring = new();
+        authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(RunResponse(
+                canRetry: false,
+                canSupersede: false,
+                completed: true));
+        authoring.RefreshHandler = (_, sourceRunId, _) =>
+            Task.FromException<AuthoringRunResponse>(
+                new AuthoringMutationOutcomeUnknownException(
+                    "publication-refresh",
+                    "Preparer",
+                    sourceRunId,
+                    null,
+                    new IOException("response lost")));
+        authoring.ListHandler = (serviceName, limit, _) =>
+        {
+            Assert.Equal("Preparer", serviceName);
+            Assert.Equal(20, limit);
+            return Task.FromResult(new AuthoringRunListResponse(
+            [
+                RunStatus(
+                    "matching-refresh",
+                    "queued",
+                    _now.AddSeconds(1),
+                    terminal: false,
+                    purpose: "publication-refresh",
+                    sourceRunId: "run-1"),
+                RunStatus(
+                    "old-refresh",
+                    "completed",
+                    _now.AddSeconds(-1),
+                    terminal: true,
+                    purpose: "publication-refresh",
+                    sourceRunId: "run-1"),
+                RunStatus(
+                    "wrong-purpose",
+                    "queued",
+                    _now.AddSeconds(1),
+                    terminal: false,
+                    purpose: "authoring",
+                    sourceRunId: "run-1"),
+                RunStatus(
+                    "wrong-source",
+                    "queued",
+                    _now.AddSeconds(1),
+                    terminal: false,
+                    purpose: "publication-refresh",
+                    sourceRunId: "other-run"),
+            ],
+            Truncated: false));
+        };
+        FakeSiteStore store =
+            CreatePublishedStore(DegradedReadiness());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result =
+            await service.RefreshPublicationAsync(
+                "prepare",
+                "run-1");
+        TicketPublicationRefreshResult blocked =
+            await service.RefreshPublicationAsync(
+                "PREPARE",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.OutcomeUnknown,
+            result.Disposition);
+        Assert.Equal(
+            TicketReconciliationOutcome.Succeeded,
+            result.Reconciliation?.Outcome);
+        Assert.Equal(
+            "matching-refresh",
+            Assert.Single(result.Candidates).RunId);
+        Assert.Null(result.Run);
+        Assert.Same(result, blocked);
+        Assert.True(
+            service.RequiresUnknownPublicationRefreshReview(
+                "prepare",
+                "run-1"));
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(1, authoring.RefreshCalls);
+        Assert.Equal(1, authoring.ListCalls);
+
+        service.AcknowledgeUnknownPublicationRefreshReview(
+            "prepare",
+            "run-1");
+        Assert.False(
+            service.RequiresUnknownPublicationRefreshReview(
+                "prepare",
+                "run-1"));
+    }
+
+    [Fact]
+    public async Task CanceledPublicationRefreshReconciliationKeepsReviewGate()
+    {
+        FakeAuthoringClient authoring = new();
+        using CancellationTokenSource cancellation = new();
+        authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(RunResponse(
+                canRetry: false,
+                canSupersede: false,
+                completed: true));
+        authoring.RefreshHandler = (_, sourceRunId, _) =>
+        {
+            cancellation.Cancel();
+            return Task.FromException<AuthoringRunResponse>(
+                new AuthoringMutationOutcomeUnknownException(
+                    "publication-refresh",
+                    "Preparer",
+                    sourceRunId,
+                    null,
+                    new IOException("response lost")));
+        };
+        authoring.ListHandler = (_, _, ct) =>
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(
+                new AuthoringRunListResponse([], false));
+        };
+        FakeSiteStore store =
+            CreatePublishedStore(DegradedReadiness());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.RefreshPublicationAsync(
+                "prepare",
+                "run-1",
+                cancellation.Token));
+        TicketPublicationRefreshResult blocked =
+            await service.RefreshPublicationAsync(
+                "prepare",
+                "run-1");
+
+        Assert.Equal(
+            TicketOperationDisposition.OutcomeUnknown,
+            blocked.Disposition);
+        Assert.Equal(
+            TicketReconciliationOutcome.Failed,
+            blocked.Reconciliation?.Outcome);
+        Assert.True(
+            service.RequiresUnknownPublicationRefreshReview(
+                "prepare",
+                "run-1"));
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(1, authoring.RefreshCalls);
+        Assert.Equal(1, authoring.ListCalls);
+    }
+
     [Fact]
     public async Task PublicationFailureRetainsAndReusesVerifiedPair()
     {
@@ -982,19 +1307,24 @@ public sealed class TicketOperationsServiceTests : IDisposable
         bool canRetry,
         bool canSupersede,
         bool completed = false,
-        bool databaseOnly = false)
+        bool databaseOnly = false,
+        string? statusOverride = null,
+        string? purpose = null,
+        string? sourceRunId = null)
     {
-        string status = completed
+        string status = statusOverride ?? (completed
             ? databaseOnly
                 ? "completed-database-only"
                 : "completed"
-            : "error";
+            : "error");
         AuthoringRunStatus run = RunStatus(
             "run-1",
             status,
             _now.AddMinutes(-1),
             completed,
-            databaseOnly);
+            databaseOnly,
+            purpose: purpose,
+            sourceRunId: sourceRunId);
         AuthoringRunItemStatus item = new(
             "item-1",
             "run-1",
@@ -1022,7 +1352,9 @@ public sealed class TicketOperationsServiceTests : IDisposable
         string status,
         DateTimeOffset createdAt,
         bool terminal,
-        bool databaseOnly = false) => new(
+        bool databaseOnly = false,
+        string? purpose = null,
+        string? sourceRunId = null) => new(
             runId,
             "jira-fhir",
             1,
@@ -1038,7 +1370,81 @@ public sealed class TicketOperationsServiceTests : IDisposable
             RetryableErrorItems: status == "error" ? 1 : 0,
             State: new AuthoringRunStateInfo(
                 terminal,
-                status == "error"));
+                status == "error"),
+            Purpose: purpose,
+            SourceRunId: sourceRunId);
+
+    private FakeSiteStore CreatePublishedStore(
+        DiscussionPublicationReadiness? readiness)
+    {
+        FakeSiteStore store = new(
+            _root,
+            new TicketWorkflowCatalog());
+        store.Publication = CreatePublication(
+            store,
+            readiness);
+        return store;
+    }
+
+    private static ReviewSitePublication CreatePublication(
+        FakeSiteStore store,
+        DiscussionPublicationReadiness? readiness)
+    {
+        ReviewSiteCoordinates coordinates =
+            store.GetCoordinates("prepare", "run-1");
+        TicketSiteManifest manifest = new(
+            "preparer",
+            "jira-fhir",
+            "run-1",
+            "snapshot-1",
+            1,
+            1,
+            3,
+            "snapshot-sha",
+            1,
+            "embedded-sha",
+            1,
+            1,
+            1,
+            new Dictionary<string, long>(),
+            new TicketSiteManifestFilters(null, null, null),
+            coordinates.Workflow.SiteTitle,
+            "assets",
+            "build",
+            coordinates.SiteDirectory,
+            DateTimeOffset.Parse("2026-09-14T00:00:00Z"),
+            RendererSchemaVersion: 2,
+            DiscussionReadiness: readiness);
+        return new ReviewSitePublication(
+            coordinates,
+            manifest,
+            Reconstructed: true);
+    }
+
+    private static DiscussionPublicationReadiness DegradedReadiness() =>
+        new(
+            IsReady: false,
+            DiscussionPublicationReadinessEvidence.OrdinarySnapshot,
+            JiraSourceContentRevision: null,
+            PublicDisplayNamePolicyVersion: null,
+            [
+                new DiscussionPublicationReadinessReason(
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingOrdinaryProvenance,
+                    "Complete receipt-backed Jira source provenance is unavailable."),
+                new DiscussionPublicationReadinessReason(
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingPeoplePolicyProof,
+                    "Current public-display-name policy proof is unavailable for one or more tickets."),
+            ]);
+
+    private static DiscussionPublicationReadiness ReadyReadiness() =>
+        new(
+            IsReady: true,
+            DiscussionPublicationReadinessEvidence.PublicationRefresh,
+            JiraSourceContentRevision: 42,
+            PublicDisplayNamePolicyVersion: 1,
+            []);
 
     private static async Task<VerifiedAuthoringSnapshotPair>
         CreateVerifiedPairAsync(
@@ -1164,6 +1570,15 @@ public sealed class TicketOperationsServiceTests : IDisposable
             string,
             string,
             CancellationToken,
+            Task<AuthoringRunResponse>> RefreshHandler { get; set; } =
+            (_, _, _) => Task.FromException<AuthoringRunResponse>(
+                new InvalidOperationException(
+                    "Publication refresh handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
             Task<AuthoringRunResponse>> GetHandler { get; set; } =
             (_, _, _) => Task.FromException<AuthoringRunResponse>(
                 new InvalidOperationException(
@@ -1209,6 +1624,8 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public int ListCalls { get; private set; }
 
+        public int RefreshCalls { get; private set; }
+
         public int GetCalls { get; private set; }
 
         public int RetryCalls { get; private set; }
@@ -1218,6 +1635,9 @@ public sealed class TicketOperationsServiceTests : IDisposable
         public int DownloadCalls { get; private set; }
 
         public object? LastStartRequest { get; private set; }
+
+        public List<(string Service, string SourceRunId)>
+            RefreshRequests { get; } = [];
 
         public Task<AuthoringStartResult> StartAsync<TRequest>(
             string serviceName,
@@ -1234,9 +1654,15 @@ public sealed class TicketOperationsServiceTests : IDisposable
             StartPublicationRefreshAsync(
                 string serviceName,
                 string sourceRunId,
-                CancellationToken ct) =>
-            throw new NotSupportedException(
-                "Publication refresh handler was not configured.");
+                CancellationToken ct)
+        {
+            RefreshCalls++;
+            RefreshRequests.Add((serviceName, sourceRunId));
+            return RefreshHandler(
+                serviceName,
+                sourceRunId,
+                ct);
+        }
 
         public Task<AuthoringRunListResponse> ListAsync(
             string serviceName,

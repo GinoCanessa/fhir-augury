@@ -5,6 +5,7 @@ using FhirAugury.DevUi.Models;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Publishing.Tickets;
 using Microsoft.Extensions.Options;
@@ -28,6 +29,11 @@ public sealed class TicketOperationsService : IDisposable
         UnknownStartReview> _unknownStarts =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly object _unknownStartsLock = new();
+    private readonly Dictionary<
+        PublicationRefreshReviewKey,
+        TicketPublicationRefreshResult>
+        _unknownPublicationRefreshes = [];
+    private readonly object _unknownPublicationRefreshesLock = new();
     private bool _disposed;
 
     public TicketOperationsService(
@@ -291,6 +297,48 @@ public sealed class TicketOperationsService : IDisposable
         }
     }
 
+    public TicketPublicationRefreshResult?
+        GetUnknownPublicationRefreshReview(
+            string workflow,
+            string sourceRunId)
+    {
+        TicketWorkflowDefinition definition =
+            _catalog.Get(workflow);
+        return TryGetUnknownPublicationRefreshReview(
+            definition,
+            sourceRunId,
+            out TicketPublicationRefreshResult review)
+            ? review
+            : null;
+    }
+
+    public bool RequiresUnknownPublicationRefreshReview(
+        string workflow,
+        string sourceRunId)
+    {
+        TicketWorkflowDefinition definition =
+            _catalog.Get(workflow);
+        return TryGetUnknownPublicationRefreshReview(
+            definition,
+            sourceRunId,
+            out _);
+    }
+
+    public void AcknowledgeUnknownPublicationRefreshReview(
+        string workflow,
+        string sourceRunId)
+    {
+        TicketWorkflowDefinition definition =
+            _catalog.Get(workflow);
+        lock (_unknownPublicationRefreshesLock)
+        {
+            _unknownPublicationRefreshes.Remove(
+                new PublicationRefreshReviewKey(
+                    definition.RouteKey,
+                    sourceRunId));
+        }
+    }
+
     public Task<TicketItemMutationResult> RetryItemAsync(
         string workflow,
         string runId,
@@ -328,6 +376,248 @@ public sealed class TicketOperationsService : IDisposable
             itemId,
             reason.Trim(),
             ct);
+    }
+
+    public async Task<TicketPublicationRefreshResult>
+        RefreshPublicationAsync(
+            string workflow,
+            string sourceRunId,
+            CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        TicketWorkflowDefinition definition =
+            _catalog.Get(workflow);
+        if (TryGetUnknownPublicationRefreshReview(
+                definition,
+                sourceRunId,
+                out TicketPublicationRefreshResult pendingReview))
+        {
+            return pendingReview;
+        }
+        if (!await _mutationGate.WaitAsync(0, ct))
+        {
+            return new TicketPublicationRefreshResult(
+                TicketOperationDisposition.Busy,
+                definition,
+                sourceRunId,
+                Message:
+                    "Another mutation is already in progress in this UI circuit.");
+        }
+
+        try
+        {
+            ThrowIfDisposed();
+            if (TryGetUnknownPublicationRefreshReview(
+                    definition,
+                    sourceRunId,
+                    out pendingReview))
+            {
+                return pendingReview;
+            }
+
+            if (definition.SiteKind != TicketSiteKind.Discussion ||
+                !string.Equals(
+                    definition.ProcessingServiceName,
+                    "Preparer",
+                    StringComparison.Ordinal))
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.NotAllowed,
+                    definition,
+                    sourceRunId,
+                    Message:
+                        "Publication refresh is available only for the Prepare workflow.");
+            }
+
+            ReviewSitePublication? publication =
+                await _siteStore.TryReconstructAsync(
+                    definition.RouteKey,
+                    sourceRunId,
+                    ct);
+            if (publication is null)
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.NotAllowed,
+                    definition,
+                    sourceRunId,
+                    Message:
+                        "No existing Discussion publication needs repair. Generate the first review site from this run instead.");
+            }
+            if (publication.Manifest.DiscussionReadiness?.IsReady == true)
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.NotAllowed,
+                    definition,
+                    sourceRunId,
+                    Message:
+                        "The existing Discussion publication already has verified freshness and trusted-people evidence.");
+            }
+
+            AuthoringRunResponse latest =
+                await _authoringClient.GetAsync(
+                    definition.ProcessingServiceName,
+                    sourceRunId,
+                    ct);
+            if (string.Equals(
+                    latest.Run.Purpose,
+                    PreparedTicketPublicationContract
+                        .PublicationRefreshPurpose,
+                    StringComparison.Ordinal))
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.NotAllowed,
+                    definition,
+                    sourceRunId,
+                    Message:
+                        "A publication-refresh run cannot be used as another refresh source.");
+            }
+
+            ProcessorRunOutcome processorOutcome =
+                _outcomeClassifier.ClassifyProcessor(latest.Run);
+            string? ineligibleReason = processorOutcome switch
+            {
+                ProcessorRunOutcome.Active or
+                ProcessorRunOutcome.RecoverableError =>
+                    "Publication refresh requires a terminal source run.",
+                ProcessorRunOutcome.CompletedDatabaseOnly =>
+                    "A database-only run has no immutable snapshot to refresh.",
+                ProcessorRunOutcome.Superseded =>
+                    "A superseded run cannot be used as a publication-refresh source.",
+                ProcessorRunOutcome.Completed or
+                ProcessorRunOutcome.CompletedWithSupersededItems
+                    when !latest.Run.DatabaseOnly => null,
+                _ =>
+                    "Publication refresh requires a completed snapshot-producing source run.",
+            };
+            if (ineligibleReason is not null)
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.NotAllowed,
+                    definition,
+                    sourceRunId,
+                    Message: ineligibleReason);
+            }
+
+            DateTimeOffset submissionBegan =
+                _timeProvider.GetUtcNow();
+            try
+            {
+                AuthoringRunResponse refreshRun =
+                    await _authoringClient
+                        .StartPublicationRefreshAsync(
+                            definition.ProcessingServiceName,
+                            sourceRunId,
+                            ct);
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.Succeeded,
+                    definition,
+                    sourceRunId,
+                    refreshRun,
+                    Message:
+                        "Publication refresh started. Follow the returned run before publishing its verified snapshot pair.");
+            }
+            catch (AuthoringControlException ex)
+                when (ex.StatusCode == HttpStatusCode.Conflict)
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.Conflict,
+                    definition,
+                    sourceRunId,
+                    RelatedRunIds: ex.RelatedRunIds,
+                    Message: ex.Detail ?? ex.Message);
+            }
+            catch (AuthoringMutationOutcomeUnknownException ex)
+            {
+                TicketPublicationRefreshResult reconciliation =
+                    new(
+                        TicketOperationDisposition.OutcomeUnknown,
+                        definition,
+                        sourceRunId,
+                        Message:
+                            "Refresh outcome unknown. Read reconciliation is still pending; explicit operator review is required before trying again.",
+                        Reconciliation: new TicketReconciliation(
+                            TicketReconciliationOutcome.Pending));
+                SetUnknownPublicationRefreshReview(
+                    definition,
+                    sourceRunId,
+                    reconciliation);
+                try
+                {
+                    reconciliation =
+                        await ReconcilePublicationRefreshAsync(
+                            definition,
+                            sourceRunId,
+                            submissionBegan,
+                            ct);
+                    SetUnknownPublicationRefreshReview(
+                        definition,
+                        sourceRunId,
+                        reconciliation);
+                }
+                catch (OperationCanceledException cancellation)
+                    when (ct.IsCancellationRequested)
+                {
+                    SetUnknownPublicationRefreshReview(
+                        definition,
+                        sourceRunId,
+                        new TicketPublicationRefreshResult(
+                            TicketOperationDisposition.OutcomeUnknown,
+                            definition,
+                            sourceRunId,
+                            Message:
+                                "Refresh outcome unknown. The mutation was not replayed, read reconciliation was canceled, and explicit operator review is required before trying again.",
+                            Reconciliation:
+                                new TicketReconciliation(
+                                    TicketReconciliationOutcome.Failed,
+                                    cancellation.Message)));
+                    throw;
+                }
+                _logger.LogWarning(
+                    ex,
+                    "Publication refresh outcome is unknown for {ProcessingService}/{SourceRunId}; the mutation was not replayed and reconciliation found {CandidateCount} candidates",
+                    definition.ProcessingServiceName,
+                    sourceRunId,
+                    reconciliation.Candidates.Count);
+                return reconciliation;
+            }
+            catch (AuthoringControlException ex)
+            {
+                return new TicketPublicationRefreshResult(
+                    TicketOperationDisposition.Failed,
+                    definition,
+                    sourceRunId,
+                    RelatedRunIds: ex.RelatedRunIds,
+                    Message: ex.Detail ?? ex.Message);
+            }
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (
+            ex is AuthoringControlException or
+                HttpRequestException or IOException or
+                InvalidOperationException or
+                UnauthorizedAccessException or JsonException or
+                NotSupportedException or ArgumentException or
+                TimeoutException or OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Publication refresh could not be started for {Workflow}/{SourceRunId}",
+                definition.RouteKey,
+                sourceRunId);
+            return new TicketPublicationRefreshResult(
+                TicketOperationDisposition.Failed,
+                definition,
+                sourceRunId,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _mutationGate.Release();
+        }
     }
 
     public async Task<TicketPublicationResult> PublishAsync(
@@ -463,6 +753,83 @@ public sealed class TicketOperationsService : IDisposable
         finally
         {
             _mutationGate.Release();
+        }
+    }
+
+    private async Task<TicketPublicationRefreshResult>
+        ReconcilePublicationRefreshAsync(
+            TicketWorkflowDefinition workflow,
+            string sourceRunId,
+            DateTimeOffset submissionBegan,
+            CancellationToken ct)
+    {
+        try
+        {
+            AuthoringRunListResponse list =
+                await _authoringClient.ListAsync(
+                    workflow.ProcessingServiceName,
+                    _options.RecentRunLimit,
+                    ct);
+            IReadOnlyList<AuthoringRunStatus> candidates =
+                Array.AsReadOnly(
+                    list.Runs
+                        .Where(run =>
+                            run.CreatedAt >= submissionBegan &&
+                            string.Equals(
+                                run.Purpose,
+                                PreparedTicketPublicationContract
+                                    .PublicationRefreshPurpose,
+                                StringComparison.Ordinal) &&
+                            string.Equals(
+                                run.SourceRunId,
+                                sourceRunId,
+                                StringComparison.Ordinal))
+                        .ToArray());
+            string message = candidates.Count switch
+            {
+                0 =>
+                    "Refresh outcome unknown. The mutation was not replayed, and no matching refresh run was found in the bounded recent-run read. Operator review is required before trying again.",
+                1 =>
+                    "Refresh outcome unknown. The mutation was not replayed; review the single matching refresh run before continuing.",
+                _ =>
+                    "Refresh outcome unknown. The mutation was not replayed, and multiple matching refresh runs require operator review.",
+            };
+            if (list.Truncated)
+            {
+                message +=
+                    " The recent-run response was truncated.";
+            }
+            return new TicketPublicationRefreshResult(
+                TicketOperationDisposition.OutcomeUnknown,
+                workflow,
+                sourceRunId,
+                InspectionCandidates: candidates,
+                Message: message,
+                Reconciliation: new TicketReconciliation(
+                    TicketReconciliationOutcome.Succeeded));
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (
+            IsReadReconciliationFailure(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not reconcile publication refresh for {ProcessingService}/{SourceRunId}",
+                workflow.ProcessingServiceName,
+                sourceRunId);
+            return new TicketPublicationRefreshResult(
+                TicketOperationDisposition.OutcomeUnknown,
+                workflow,
+                sourceRunId,
+                Message:
+                    "Refresh outcome unknown. The mutation was not replayed, read reconciliation failed, and operator review is required before trying again.",
+                Reconciliation: new TicketReconciliation(
+                    TicketReconciliationOutcome.Failed,
+                    ex.Message));
         }
     }
 
@@ -753,6 +1120,35 @@ public sealed class TicketOperationsService : IDisposable
         }
     }
 
+    private bool TryGetUnknownPublicationRefreshReview(
+        TicketWorkflowDefinition workflow,
+        string sourceRunId,
+        out TicketPublicationRefreshResult review)
+    {
+        lock (_unknownPublicationRefreshesLock)
+        {
+            return _unknownPublicationRefreshes.TryGetValue(
+                new PublicationRefreshReviewKey(
+                    workflow.RouteKey,
+                    sourceRunId),
+                out review!);
+        }
+    }
+
+    private void SetUnknownPublicationRefreshReview(
+        TicketWorkflowDefinition workflow,
+        string sourceRunId,
+        TicketPublicationRefreshResult review)
+    {
+        lock (_unknownPublicationRefreshesLock)
+        {
+            _unknownPublicationRefreshes[
+                new PublicationRefreshReviewKey(
+                    workflow.RouteKey,
+                    sourceRunId)] = review;
+        }
+    }
+
     private TicketStartResult CreateUnknownStartResult(
         TicketWorkflowDefinition workflow,
         JiraTicketKeyParseResult? parsedKeys,
@@ -825,6 +1221,10 @@ public sealed class TicketOperationsService : IDisposable
     private sealed record UnknownStartReview(
         IReadOnlyList<AuthoringRunStatus> Candidates,
         TicketReconciliation Reconciliation);
+
+    private readonly record struct PublicationRefreshReviewKey(
+        string Workflow,
+        string SourceRunId);
 
     private sealed record RunReconciliation(
         AuthoringRunResponse? Run,

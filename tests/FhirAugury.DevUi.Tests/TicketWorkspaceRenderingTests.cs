@@ -11,6 +11,7 @@ using FhirAugury.DevUi.Models;
 using FhirAugury.DevUi.Services;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Publishing.Tickets;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Web;
@@ -594,6 +595,451 @@ public sealed class TicketWorkspaceRenderingTests
             mutation.StartAsync(new("prepare", TicketSelectionMode.Configured)));
     }
 
+    [Fact]
+    public async Task PublicationPanelUsesStructuredReadinessToGateRefresh()
+    {
+        await using Fixture fixture = new();
+        TicketWorkflowDefinition prepare =
+            fixture.Catalog.Get("prepare");
+        AuthoringRunStatus sourceRun =
+            Run("source-run", "completed", terminal: true);
+        DiscussionPublicationReadiness degraded = new(
+            IsReady: false,
+            Evidence:
+                DiscussionPublicationReadinessEvidence.OrdinarySnapshot,
+            JiraSourceContentRevision: null,
+            PublicDisplayNamePolicyVersion: null,
+            Reasons:
+            [
+                new DiscussionPublicationReadinessReason(
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingOrdinaryProvenance,
+                    "Complete receipt-backed Jira source provenance is unavailable."),
+                new DiscussionPublicationReadinessReason(
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingPeoplePolicyProof,
+                    "Current public-display-name policy proof is unavailable for one or more tickets."),
+            ]);
+        string degradedHtml =
+            await fixture.RenderHtmlAsync<PublicationPanel>(
+                Parameters((
+                    nameof(PublicationPanel.Details),
+                    Details(
+                        prepare,
+                        sourceRun,
+                        Publication(
+                            prepare,
+                            sourceRun,
+                            degraded)))));
+
+        Assert.Contains(
+            "Publication readiness is degraded.",
+            degradedHtml);
+        Assert.Contains(
+            DiscussionPublicationReadinessReasonCodes
+                .MissingOrdinaryProvenance,
+            degradedHtml);
+        Assert.Contains(
+            "Complete receipt-backed Jira source provenance is unavailable.",
+            degradedHtml);
+        Assert.Contains(
+            DiscussionPublicationReadinessReasonCodes
+                .MissingPeoplePolicyProof,
+            degradedHtml);
+        Assert.Contains(
+            "Refresh publication data and snapshot",
+            degradedHtml);
+        Assert.DoesNotContain("Regenerate review site", degradedHtml);
+        Assert.DoesNotContain("Reporter", degradedHtml);
+
+        string legacyHtml =
+            await fixture.RenderHtmlAsync<PublicationPanel>(
+                Parameters((
+                    nameof(PublicationPanel.Details),
+                    Details(
+                        prepare,
+                        sourceRun,
+                        Publication(
+                            prepare,
+                            sourceRun,
+                            readiness: null)))));
+        Assert.Contains(
+            "legacy manifest predates structured readiness evidence",
+            legacyHtml);
+        Assert.Contains(
+            "Refresh publication data and snapshot",
+            legacyHtml);
+
+        DiscussionPublicationReadiness ready = degraded with
+        {
+            IsReady = true,
+            Evidence =
+                DiscussionPublicationReadinessEvidence.PublicationRefresh,
+            JiraSourceContentRevision = 42,
+            PublicDisplayNamePolicyVersion = 1,
+            Reasons = [],
+        };
+        string readyHtml =
+            await fixture.RenderHtmlAsync<PublicationPanel>(
+                Parameters((
+                    nameof(PublicationPanel.Details),
+                    Details(
+                        prepare,
+                        sourceRun,
+                        Publication(
+                            prepare,
+                            sourceRun,
+                            ready)))));
+        Assert.Contains(
+            "Publication readiness is verified.",
+            readyHtml);
+        Assert.Contains("Regenerate review site", readyHtml);
+        Assert.DoesNotContain(
+            "Refresh publication data and snapshot",
+            readyHtml);
+
+        string firstPublicationHtml =
+            await fixture.RenderHtmlAsync<PublicationPanel>(
+                Parameters((
+                    nameof(PublicationPanel.Details),
+                    Details(
+                        prepare,
+                        sourceRun,
+                        publication: null))));
+        Assert.Contains(
+            "Generate review site",
+            firstPublicationHtml);
+        Assert.DoesNotContain(
+            "Refresh publication data and snapshot",
+            firstPublicationHtml);
+
+        AuthoringRunStatus refreshRun = sourceRun with
+        {
+            Purpose = "publication-refresh",
+            SourceRunId = "older-source",
+        };
+        string refreshSourceHtml =
+            await fixture.RenderHtmlAsync<PublicationPanel>(
+                Parameters((
+                    nameof(PublicationPanel.Details),
+                    Details(
+                        prepare,
+                        refreshRun,
+                        Publication(
+                            prepare,
+                            refreshRun,
+                            degraded)))));
+        Assert.DoesNotContain(
+            "Refresh publication data and snapshot",
+            refreshSourceHtml);
+
+        (TicketWorkflowDefinition Workflow, AuthoringRunStatus Run)[]
+            ineligibleSources =
+            [
+                (
+                    prepare,
+                    Run("active-run", "running", terminal: false)),
+                (
+                    prepare,
+                    Run(
+                        "database-run",
+                        "completed-database-only",
+                        terminal: true) with
+                    {
+                        DatabaseOnly = true,
+                    }),
+                (
+                    fixture.Catalog.Get("plan"),
+                    Run("planner-run", "completed", terminal: true)),
+            ];
+        foreach ((TicketWorkflowDefinition workflow, AuthoringRunStatus run)
+            in ineligibleSources)
+        {
+            string html =
+                await fixture.RenderHtmlAsync<PublicationPanel>(
+                    Parameters((
+                        nameof(PublicationPanel.Details),
+                        Details(
+                            workflow,
+                            run,
+                            Publication(
+                                workflow,
+                                run,
+                                degraded)))));
+            Assert.DoesNotContain(
+                "Refresh publication data and snapshot",
+                html);
+        }
+    }
+
+    [Fact]
+    public async Task TicketRunDetailNavigatesToReturnedPublicationRefreshRun()
+    {
+        await using Fixture fixture = new();
+        TicketWorkflowDefinition prepare =
+            fixture.Catalog.Get("prepare");
+        AuthoringRunStatus sourceRun =
+            Run("source-run", "completed", terminal: true);
+        fixture.ReviewSites.Publication = Publication(
+            prepare,
+            sourceRun,
+            DegradedReadiness());
+        fixture.Authoring.GetHandler = (_, runId, _) =>
+        {
+            Assert.Equal("source-run", runId);
+            return Task.FromResult(
+                new AuthoringRunResponse(sourceRun, []));
+        };
+        AuthoringRunStatus refreshRun = Run(
+            "refresh-run",
+            "queued",
+            terminal: false) with
+        {
+            Purpose = "publication-refresh",
+            SourceRunId = "source-run",
+        };
+        fixture.Authoring.RefreshHandler =
+            (serviceName, sourceRunId, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("source-run", sourceRunId);
+                return Task.FromResult(
+                    new AuthoringRunResponse(refreshRun, []));
+            };
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "source-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.WaitForAsync(
+            page.Id,
+            markup => markup.Html.Contains(
+                "Refresh publication data and snapshot",
+                StringComparison.Ordinal));
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Refresh publication data and snapshot");
+
+        Assert.Equal(
+            "/operations/prepare/refresh-run",
+            fixture.Navigation.Destination);
+        Assert.Equal(2, fixture.Authoring.GetCalls);
+        Assert.Equal(1, fixture.Authoring.RefreshCalls);
+        Assert.Equal(
+            ("Preparer", "source-run"),
+            Assert.Single(fixture.Authoring.RefreshRequests));
+    }
+
+    [Fact]
+    public async Task TicketRunDetailRestoresAmbiguousRefreshReviewOnRemount()
+    {
+        await using Fixture fixture = new();
+        TicketWorkflowDefinition prepare =
+            fixture.Catalog.Get("prepare");
+        AuthoringRunStatus sourceRun =
+            Run("source-run", "completed", terminal: true);
+        fixture.ReviewSites.Publication = Publication(
+            prepare,
+            sourceRun,
+            DegradedReadiness());
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(
+                new AuthoringRunResponse(sourceRun, []));
+        fixture.Authoring.RefreshHandler =
+            (_, sourceRunId, _) =>
+                Task.FromException<AuthoringRunResponse>(
+                    new AuthoringMutationOutcomeUnknownException(
+                        "publication-refresh",
+                        "Preparer",
+                        sourceRunId,
+                        null,
+                        new IOException("response lost")));
+        fixture.InitialPreparer.Response.SetResult(
+            new AuthoringRunListResponse(
+            [
+                Run(
+                    "candidate-refresh",
+                    "queued",
+                    terminal: false) with
+                {
+                    CreatedAt = ReadTime.AddSeconds(1),
+                    Purpose = "publication-refresh",
+                    SourceRunId = "source-run",
+                },
+                Run(
+                    "unrelated",
+                    "queued",
+                    terminal: false) with
+                {
+                    CreatedAt = ReadTime.AddSeconds(1),
+                    Purpose = "authoring",
+                },
+            ],
+            Truncated: false));
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "source-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.WaitForAsync(
+            page.Id,
+            markup => markup.Html.Contains(
+                "Refresh publication data and snapshot",
+                StringComparison.Ordinal));
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Refresh publication data and snapshot");
+        Markup reconciled = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            markup => markup.Html.Contains(
+                "/operations/prepare/candidate-refresh",
+                StringComparison.Ordinal));
+
+        Assert.Contains(
+            "Publication refresh outcome unknown.",
+            reconciled.Html);
+        Assert.Contains("candidate-refresh", reconciled.Html);
+        Assert.DoesNotContain(
+            "/operations/prepare/unrelated",
+            reconciled.Html);
+        Assert.Null(fixture.Navigation.Destination);
+        Assert.Equal(1, fixture.Authoring.RefreshCalls);
+        Assert.Single(fixture.Authoring.ListRequests);
+
+        TicketOperationsService operations =
+            Assert.Single(fixture.Mutations);
+        Assert.True(
+            operations.RequiresUnknownPublicationRefreshReview(
+                "prepare",
+                "source-run"));
+        await fixture.Renderer.RemoveAsync(page.Id);
+
+        Mounted<TicketRunDetail> remounted =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "PREPARE"),
+                    (nameof(TicketRunDetail.RunId), "source-run")));
+        await remounted.Rendering.WaitAsync(HangGuard);
+        Markup restored = await fixture.Renderer.WaitForAsync(
+            remounted.Id,
+            markup => markup.Html.Contains(
+                "/operations/prepare/candidate-refresh",
+                StringComparison.Ordinal));
+
+        Assert.Same(
+            operations,
+            fixture.Circuit.ServiceProvider
+                .GetRequiredService<TicketOperationsService>());
+        Assert.True(
+            restored.Button(
+                "Refresh publication data and snapshot").Disabled);
+        await fixture.Renderer.ClickAsync(
+            remounted.Id,
+            "Refresh publication data and snapshot");
+        Assert.Equal(1, fixture.Authoring.RefreshCalls);
+        Assert.Single(fixture.Authoring.ListRequests);
+
+        await fixture.Renderer.ClickAsync(
+            remounted.Id,
+            "I inspected the refresh result; allow another refresh");
+        Assert.False(
+            operations.RequiresUnknownPublicationRefreshReview(
+                "prepare",
+                "source-run"));
+        Assert.False(
+            (await fixture.Renderer.MarkupAsync(remounted.Id))
+                .Button(
+                    "Refresh publication data and snapshot")
+                .Disabled);
+    }
+
+    private static TicketRunDetails Details(
+        TicketWorkflowDefinition workflow,
+        AuthoringRunStatus run,
+        ReviewSitePublication? publication)
+    {
+        AuthoringRunResponse response = new(run, []);
+        return new TicketRunDetails(
+            workflow,
+            response,
+            new RunOutcomeClassifier().Classify(
+                run,
+                publication),
+            publication);
+    }
+
+    private static ReviewSitePublication Publication(
+        TicketWorkflowDefinition workflow,
+        AuthoringRunStatus run,
+        DiscussionPublicationReadiness? readiness)
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "fhir-augury-rendering",
+            workflow.RouteKey,
+            run.RunId);
+        string siteDirectory =
+            Path.Combine(root, workflow.SiteFolder);
+        ReviewSiteCoordinates coordinates = new(
+            workflow,
+            run.RunId,
+            Path.Combine(root, "pair"),
+            root,
+            siteDirectory,
+            Path.Combine(
+                siteDirectory,
+                TicketSiteManifest.FileName),
+            $"/review-sites/{workflow.RouteKey}/{run.RunId}/{workflow.SiteFolder}/");
+        TicketSiteManifest manifest = new(
+            "preparer",
+            run.ProcessorKind,
+            run.RunId,
+            "snapshot-1",
+            run.AuthoringEpoch,
+            1,
+            3,
+            "snapshot-sha",
+            1,
+            "embedded-sha",
+            1,
+            1,
+            1,
+            new Dictionary<string, long>(),
+            new TicketSiteManifestFilters(null, null, null),
+            workflow.SiteTitle,
+            "assets",
+            "build",
+            coordinates.SiteDirectory,
+            ReadTime,
+            RendererSchemaVersion: 2,
+            DiscussionReadiness: readiness);
+        return new ReviewSitePublication(
+            coordinates,
+            manifest,
+            Reconstructed: true);
+    }
+
+    private static DiscussionPublicationReadiness DegradedReadiness() =>
+        new(
+            IsReady: false,
+            Evidence:
+                DiscussionPublicationReadinessEvidence.OrdinarySnapshot,
+            JiraSourceContentRevision: null,
+            PublicDisplayNamePolicyVersion: null,
+            Reasons:
+            [
+                new DiscussionPublicationReadinessReason(
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingOrdinaryProvenance,
+                    "Complete receipt-backed Jira source provenance is unavailable."),
+            ]);
+
     private static ParameterView Parameters(params (string Name, object? Value)[] values) =>
         ParameterView.FromDictionary(values.ToDictionary(value => value.Name, value => value.Value));
 
@@ -816,6 +1262,8 @@ public sealed class TicketWorkspaceRenderingTests
     private sealed class FakeAuthoringClient(ConcurrentQueue<string> unexpected) : IAuthoringControlClient
     {
         private int _startCalls;
+        private int _getCalls;
+        private int _refreshCalls;
 
         public ReadQueue<AuthoringRunListResponse> Preparer { get; } = new(unexpected, "Preparer history");
 
@@ -825,8 +1273,27 @@ public sealed class TicketWorkspaceRenderingTests
 
         public int StartCalls => Volatile.Read(ref _startCalls);
 
+        public int GetCalls => Volatile.Read(ref _getCalls);
+
+        public int RefreshCalls => Volatile.Read(ref _refreshCalls);
+
         public Func<string, object?, CancellationToken, Task<AuthoringStartResult>> StartHandler { get; set; } =
             (_, _, _) => Task.FromResult(new AuthoringStartResult(null));
+
+        public Func<string, string, CancellationToken, Task<AuthoringRunResponse>>
+            GetHandler { get; set; } =
+                (_, _, _) => Task.FromException<AuthoringRunResponse>(
+                    new InvalidOperationException(
+                        "Detail handler was not configured."));
+
+        public Func<string, string, CancellationToken, Task<AuthoringRunResponse>>
+            RefreshHandler { get; set; } =
+                (_, _, _) => Task.FromException<AuthoringRunResponse>(
+                    new InvalidOperationException(
+                        "Publication refresh handler was not configured."));
+
+        public ConcurrentQueue<(string Service, string SourceRunId)>
+            RefreshRequests { get; } = new();
 
         public Task<AuthoringRunListResponse> ListAsync(string serviceName, int? limit, CancellationToken ct)
         {
@@ -848,11 +1315,23 @@ public sealed class TicketWorkspaceRenderingTests
         }
 
         public Task<AuthoringRunResponse> StartPublicationRefreshAsync(
-            string serviceName, string sourceRunId, CancellationToken ct) =>
-            throw Unexpected("publication refresh");
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+        {
+            Interlocked.Increment(ref _refreshCalls);
+            RefreshRequests.Enqueue((serviceName, sourceRunId));
+            return RefreshHandler(serviceName, sourceRunId, ct);
+        }
 
-        public Task<AuthoringRunResponse> GetAsync(string serviceName, string runId, CancellationToken ct) =>
-            throw Unexpected("detail");
+        public Task<AuthoringRunResponse> GetAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+        {
+            Interlocked.Increment(ref _getCalls);
+            return GetHandler(serviceName, runId, ct);
+        }
 
         public Task<AuthoringRetryResponse> RetryAsync(
             string serviceName, string runId, string itemId, CancellationToken ct) =>
@@ -885,6 +1364,7 @@ public sealed class TicketWorkspaceRenderingTests
             Directory.CreateDirectory(_directory);
             Authoring = new(_unexpected);
             Readiness = new(_unexpected);
+            ReviewSites = new();
             InitialPreparer = Authoring.Preparer.Enqueue();
             InitialPlanner = Authoring.Planner.Enqueue();
             InitialReadiness = Readiness.Cached.Enqueue();
@@ -898,6 +1378,7 @@ public sealed class TicketWorkspaceRenderingTests
             _registrations = services.ToArray();
             services.AddSingleton<IAuthoringControlClient>(Authoring);
             services.AddSingleton<IOrchestratorReadinessClient>(Readiness);
+            services.AddSingleton<IReviewSiteStore>(ReviewSites);
             services.AddSingleton<NavigationManager>(Navigation);
             services.AddSingleton<TimeProvider>(new FixedTimeProvider());
             services.AddScoped<PageScopeProbe>();
@@ -933,6 +1414,8 @@ public sealed class TicketWorkspaceRenderingTests
         public FakeAuthoringClient Authoring { get; }
 
         public FakeReadinessClient Readiness { get; }
+
+        public FakeReviewSiteStore ReviewSites { get; }
 
         public ControlledRead<AuthoringRunListResponse> InitialPreparer { get; }
 
@@ -979,6 +1462,61 @@ public sealed class TicketWorkspaceRenderingTests
             Assert.Empty(Renderer.Errors);
             Assert.Empty(_unexpected);
         }
+    }
+
+    private sealed class FakeReviewSiteStore : IReviewSiteStore
+    {
+        public ReviewSitePublication? Publication { get; set; }
+
+        public int ReconstructionCalls { get; private set; }
+
+        public void EnsureRoots()
+        {
+        }
+
+        public ReviewSiteCoordinates GetCoordinates(
+            string workflow,
+            string runId) =>
+            throw new NotSupportedException(
+                "The rendering fixture does not publish review sites.");
+
+        public void RevalidateForPublication(
+            ReviewSiteCoordinates coordinates) =>
+            throw new NotSupportedException(
+                "The rendering fixture does not publish review sites.");
+
+        public Task<VerifiedAuthoringSnapshotPair?>
+            TryOpenVerifiedPairAsync(
+                ReviewSiteCoordinates coordinates,
+                CancellationToken ct = default) =>
+            throw new NotSupportedException(
+                "The rendering fixture does not download review snapshots.");
+
+        public Task<ReviewSitePublication?> TryReconstructAsync(
+            string workflow,
+            string runId,
+            CancellationToken ct = default)
+        {
+            ReconstructionCalls++;
+            if (Publication is not null)
+            {
+                Assert.Equal(
+                    Publication.Coordinates.Workflow.RouteKey,
+                    workflow);
+                Assert.Equal(
+                    Publication.Coordinates.RunId,
+                    runId);
+            }
+            return Task.FromResult(Publication);
+        }
+
+        public Task<ReviewSitePublication>
+            ValidatePublishedSiteAsync(
+                ReviewSiteCoordinates coordinates,
+                VerifiedAuthoringSnapshotPair pair,
+                CancellationToken ct = default) =>
+            throw new NotSupportedException(
+                "The rendering fixture does not publish review sites.");
     }
 
     private sealed record Element(

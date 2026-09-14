@@ -23,6 +23,15 @@ internal sealed record AuthoringSubmitResponse(
 internal sealed record AuthoringNoCandidatesResponse(
     string Status = "no-candidates");
 
+internal sealed record AuthoringPublicationRefreshReconciliationResponse(
+    string Outcome,
+    string SourceRunId,
+    string Reconciliation,
+    IReadOnlyList<AuthoringRunStatus> Candidates,
+    bool ListTruncated,
+    string Message,
+    string? Error = null);
+
 internal sealed record AuthoringWorkerContext(
     string RunId,
     string ItemId,
@@ -89,6 +98,32 @@ internal sealed class AuthoringHttpClient : IDisposable
                 serviceName,
                 runId,
                 ct));
+    }
+
+    public async Task<AuthoringRunEnvelope>
+        StartPublicationRefreshAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return ToEnvelope(
+            await _controlClient.StartPublicationRefreshAsync(
+                serviceName,
+                sourceRunId,
+                ct));
+    }
+
+    public Task<AuthoringRunListResponse> ListAsync(
+        string serviceName,
+        int? limit,
+        CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.ListAsync(
+            serviceName,
+            limit,
+            ct);
     }
 
     public async Task<AuthoringRetryResponse> RetryAsync(

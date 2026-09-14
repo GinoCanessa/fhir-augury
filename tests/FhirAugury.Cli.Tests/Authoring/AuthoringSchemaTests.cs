@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using FhirAugury.Cli.Dispatch;
 using FhirAugury.Cli.Schemas;
@@ -35,6 +36,20 @@ public sealed class AuthoringSchemaTests
         string authoringSchema = System.Text.Json.JsonSerializer.Serialize(
             SchemaGenerator.GenerateForCommand("prepared-ticket-authoring"));
         Assert.Contains("observedSourceRevision", authoringSchema);
+        Assert.Contains("\"refresh-publication\"", authoringSchema);
+        Assert.Contains("source run identifier", authoringSchema);
+        Assert.Contains("outcome-unknown", authoringSchema);
+        Assert.Contains("\"candidates\"", authoringSchema);
+        Assert.DoesNotContain(
+            "\"refresh-publication\"",
+            System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(
+                    "planned-ticket-authoring")));
+        Assert.DoesNotContain(
+            "\"refresh-publication\"",
+            System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(
+                    "ballot-note-authoring")));
         Assert.DoesNotContain(
             "commands/prepared-ticket-write",
             SchemaGenerator.GenerateForCommand("prepared-ticket-write").Keys);
@@ -47,6 +62,33 @@ public sealed class AuthoringSchemaTests
             Assert.Contains("\"reason\"", schema);
             Assert.Contains("Required non-blank reason", schema);
         }
+    }
+
+    [Fact]
+    public void PublicationRefreshSchemaAllowsSerializedNullError()
+    {
+        JsonElement schema = JsonSerializer.SerializeToElement(
+            SchemaGenerator.GenerateForCommand(
+                "prepared-ticket-authoring"),
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy =
+                    JsonNamingPolicy.CamelCase,
+            });
+        JsonElement errorTypes = schema
+            .GetProperty(
+                "commands/prepared-ticket-authoring")
+            .GetProperty("outputSchema")
+            .GetProperty("properties")
+            .GetProperty("error")
+            .GetProperty("type");
+
+        Assert.Equal(
+            ["string", "null"],
+            errorTypes
+                .EnumerateArray()
+                .Select(type => type.GetString()!)
+                .ToArray());
     }
 
     [Fact]

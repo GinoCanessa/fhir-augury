@@ -522,6 +522,10 @@ public abstract class AuthoringCommandRequest : CliRequest
     [JsonPropertyName("action")]
     public string Action { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The selected run. For prepared-ticket-authoring
+    /// refresh-publication, this is the source run to repair.
+    /// </summary>
     [JsonPropertyName("runId")]
     public string? RunId { get; set; }
 

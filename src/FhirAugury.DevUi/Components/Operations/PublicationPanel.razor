@@ -1,3 +1,6 @@
+@using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts
+@using FhirAugury.Publishing.Tickets
+
 <section class="operation-panel publication-panel"
          aria-labelledby="@HeadingId">
     <div class="operation-panel__heading">
@@ -104,6 +107,57 @@
         </div>
     }
 
+    @if (Publication is ReviewSitePublication discussionPublication &&
+        Details.Workflow.SiteKind == TicketSiteKind.Discussion)
+    {
+        DiscussionPublicationReadiness? readiness =
+            discussionPublication.Manifest.DiscussionReadiness;
+        @if (readiness is null)
+        {
+            <div class="callout callout--warning publication-readiness-evidence">
+                <i class="bi bi-exclamation-circle-fill"
+                   aria-hidden="true"></i>
+                <div>
+                    <strong>Publication readiness is not recorded.</strong>
+                    This legacy manifest predates structured readiness
+                    evidence, so Jira freshness and trusted people cannot be
+                    verified from the publication.
+                </div>
+            </div>
+        }
+        else if (readiness.IsReady)
+        {
+            <div class="publication-readiness publication-readiness--full publication-readiness-evidence">
+                <i class="bi bi-shield-check" aria-hidden="true"></i>
+                <div>
+                    <strong>Publication readiness is verified.</strong>
+                    Evidence: <code>@readiness.Evidence</code>.
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="callout callout--warning publication-readiness-evidence">
+                <i class="bi bi-exclamation-circle-fill"
+                   aria-hidden="true"></i>
+                <div>
+                    <strong>Publication readiness is degraded.</strong>
+                    Jira freshness or trusted-people evidence is unavailable:
+                    <ul class="mb-0">
+                        @foreach (DiscussionPublicationReadinessReason reason
+                            in readiness.Reasons)
+                        {
+                            <li>
+                                <code>@reason.Code</code>:
+                                @reason.Message
+                            </li>
+                        }
+                    </ul>
+                </div>
+            </div>
+        }
+    }
+
     @if (LastResult?.Disposition ==
         TicketOperationDisposition.Failed)
     {
@@ -162,7 +216,33 @@
         </div>
     }
 
-    @if (CanPublish)
+    @if (CanRefreshPublication)
+    {
+        <div class="publication-panel__actions">
+            <button class="btn btn-primary"
+                    type="button"
+                    disabled="@(Busy || Refreshing || Disabled || RefreshDisabled)"
+                    @onclick="RefreshPublicationAsync">
+                @if (Refreshing)
+                {
+                    <span class="spinner-border spinner-border-sm"
+                          aria-hidden="true"></span>
+                    <span>Starting publication refresh…</span>
+                }
+                else
+                {
+                    <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+                    <span>Refresh publication data and snapshot</span>
+                }
+            </button>
+            <p class="form-text mb-0">
+                This starts one linked Preparer maintenance run. It does not
+                replay authoring or grouping; publish the returned run's
+                verified pair as a separate step.
+            </p>
+        </div>
+    }
+    else if (CanPublish)
     {
         <div class="publication-panel__actions">
             <button @ref="_primaryAction"
@@ -277,10 +357,19 @@
     public bool Busy { get; set; }
 
     [Parameter]
+    public bool Refreshing { get; set; }
+
+    [Parameter]
     public bool Disabled { get; set; }
 
     [Parameter]
+    public bool RefreshDisabled { get; set; }
+
+    [Parameter]
     public EventCallback<bool> OnPublish { get; set; }
+
+    [Parameter]
+    public EventCallback OnRefreshPublication { get; set; }
 
     private readonly string _id =
         Guid.NewGuid().ToString("N");
@@ -318,6 +407,20 @@
             ProcessorRunOutcome.CompletedWithSupersededItems &&
         !Details.Response.Run.DatabaseOnly;
 
+    private bool CanRefreshPublication =>
+        Details.Workflow.SiteKind == TicketSiteKind.Discussion &&
+        string.Equals(
+            Details.Workflow.ProcessingServiceName,
+            "Preparer",
+            StringComparison.Ordinal) &&
+        Publication is ReviewSitePublication publication &&
+        publication.Manifest.DiscussionReadiness?.IsReady != true &&
+        CanPublish &&
+        !string.Equals(
+            Details.Response.Run.Purpose,
+            PreparedTicketPublicationContract.PublicationRefreshPurpose,
+            StringComparison.Ordinal);
+
     private bool HasReconstructionFailure =>
         !string.IsNullOrWhiteSpace(
             Details.PublicationError);
@@ -335,6 +438,10 @@
     {
         get
         {
+            if (Refreshing)
+            {
+                return "refreshing";
+            }
             if (Busy)
             {
                 return "publishing";
@@ -363,6 +470,7 @@
     private string PublicationLabel =>
         PublicationStatus switch
         {
+            "refreshing" => "Starting refresh",
             "publishing" => "Generating",
             "failed" => "Publication failed",
             "warning" => "Not started",
@@ -416,6 +524,9 @@
 
     private Task PublishPrimaryAsync() =>
         OnPublish.InvokeAsync(Publication is not null);
+
+    private Task RefreshPublicationAsync() =>
+        OnRefreshPublication.InvokeAsync();
 
     private Task BeginReplacementAsync()
     {

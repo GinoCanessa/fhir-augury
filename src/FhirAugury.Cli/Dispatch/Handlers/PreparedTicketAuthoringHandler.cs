@@ -1,16 +1,21 @@
 using FhirAugury.Cli.Models;
+using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
 namespace FhirAugury.Cli.Dispatch.Handlers;
 
 public static class PreparedTicketAuthoringHandler
 {
+    private const int RefreshReconciliationRunLimit = 20;
+
     public static async Task<object> HandleAsync(
         PreparedTicketAuthoringRequest request,
         string orchestratorAddress,
         CancellationToken ct,
-        HttpMessageHandler? handler = null)
+        HttpMessageHandler? handler = null,
+        TimeProvider? timeProvider = null)
     {
         using AuthoringHttpClient client =
             new(orchestratorAddress, handler);
@@ -44,9 +49,113 @@ public static class PreparedTicketAuthoringHandler
                 Required(request.SnapshotPath, "snapshotPath"),
                 request.DescriptorPath,
                 ct),
+            "refresh-publication" =>
+                await RefreshPublicationAsync(
+                    request,
+                    client,
+                    timeProvider ?? TimeProvider.System,
+                    ct),
             _ => throw new ArgumentException(
-                "Action must be start, status, retry, supersede, submit, or snapshot."),
+                "Action must be start, status, retry, supersede, submit, snapshot, or refresh-publication."),
         };
+    }
+
+    private static async Task<object> RefreshPublicationAsync(
+        PreparedTicketAuthoringRequest request,
+        AuthoringHttpClient client,
+        TimeProvider timeProvider,
+        CancellationToken ct)
+    {
+        string sourceRunId = Required(request.RunId, "runId");
+        DateTimeOffset submissionBegan =
+            timeProvider.GetUtcNow();
+        try
+        {
+            return await client.StartPublicationRefreshAsync(
+                "Preparer",
+                sourceRunId,
+                ct);
+        }
+        catch (AuthoringMutationOutcomeUnknownException)
+        {
+            return await ReconcilePublicationRefreshAsync(
+                client,
+                sourceRunId,
+                submissionBegan,
+                ct);
+        }
+    }
+
+    private static async Task<object>
+        ReconcilePublicationRefreshAsync(
+            AuthoringHttpClient client,
+            string sourceRunId,
+            DateTimeOffset submissionBegan,
+            CancellationToken ct)
+    {
+        try
+        {
+            AuthoringRunListResponse list =
+                await client.ListAsync(
+                    "Preparer",
+                    RefreshReconciliationRunLimit,
+                    ct);
+            IReadOnlyList<AuthoringRunStatus> candidates =
+                Array.AsReadOnly(
+                    list.Runs
+                        .Where(run =>
+                            run.CreatedAt >= submissionBegan &&
+                            string.Equals(
+                                run.Purpose,
+                                PreparedTicketPublicationContract
+                                    .PublicationRefreshPurpose,
+                                StringComparison.Ordinal) &&
+                            string.Equals(
+                                run.SourceRunId,
+                                sourceRunId,
+                                StringComparison.Ordinal))
+                        .ToArray());
+            string message = candidates.Count switch
+            {
+                0 =>
+                    "The refresh POST was not replayed, and no matching run was found. Review Preparer runs before trying again.",
+                1 =>
+                    "The refresh POST was not replayed. Select the single matching candidate run before continuing with status, snapshot download, and site generation.",
+                _ =>
+                    "The refresh POST was not replayed. Multiple matching candidate runs require operator review before continuing.",
+            };
+            if (list.Truncated)
+            {
+                message +=
+                    " The bounded recent-run response was truncated.";
+            }
+            return new AuthoringPublicationRefreshReconciliationResponse(
+                "outcome-unknown",
+                sourceRunId,
+                "succeeded",
+                candidates,
+                list.Truncated,
+                message);
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (
+            ex is HttpRequestException or IOException or
+                InvalidOperationException or TimeoutException or
+                OperationCanceledException)
+        {
+            return new AuthoringPublicationRefreshReconciliationResponse(
+                "outcome-unknown",
+                sourceRunId,
+                "failed",
+                [],
+                ListTruncated: false,
+                "The refresh POST was not replayed, but read reconciliation failed. Review Preparer runs before trying again.",
+                ex.Message);
+        }
     }
 
     private static async Task<object> SubmitAsync(

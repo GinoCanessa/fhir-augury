@@ -3,6 +3,7 @@
 @inject TicketOperationsService Operations
 @inject TicketWorkflowCatalog Catalog
 @inject IServiceProvider Services
+@inject NavigationManager Navigation
 
 <PageTitle>@(_details is null ? "Ticket run" : $"{_details.Workflow.DisplayName} {_details.Response.Run.RunId}") — FHIR Augury Dev UI</PageTitle>
 
@@ -109,7 +110,7 @@ else if (_details is not null)
             <button @ref="_refreshButton"
                     class="btn btn-outline-primary"
                     type="button"
-                    disabled="@_manualRefreshing"
+                    disabled="@(_manualRefreshing || _refreshingPublication)"
                     @onclick="RefreshNowAsync">
                 @if (_manualRefreshing)
                 {
@@ -150,6 +151,10 @@ else if (_details is not null)
         else if (_publishing)
         {
             <span>Generating the run-scoped review site.</span>
+        }
+        else if (_refreshingPublication)
+        {
+            <span>Starting one linked publication-refresh run.</span>
         }
     </div>
 
@@ -227,6 +232,93 @@ else if (_details is not null)
         </div>
     }
 
+    @if (_lastPublicationRefresh is not null ||
+        _publicationRefreshException is not null)
+    {
+        <div class="alert @PublicationRefreshAlertClass"
+             role="@PublicationRefreshRole"
+             aria-live="polite">
+            <div>
+                <strong>@PublicationRefreshHeading</strong>
+                @if (_lastPublicationRefresh is
+                    TicketPublicationRefreshResult refreshResult)
+                {
+                    @if (refreshResult.Message is string message)
+                    {
+                        <span class="d-block">@message</span>
+                    }
+                    @if (refreshResult.Reconciliation?.Outcome ==
+                        TicketReconciliationOutcome.Failed)
+                    {
+                        <span class="d-block mt-1">
+                            Read reconciliation failed:
+                            @refreshResult.Reconciliation.Error
+                        </span>
+                    }
+                    @if (refreshResult.Candidates is
+                        { Count: > 0 } candidates)
+                    {
+                        <span class="d-block mt-2">
+                            Matching publication-refresh runs:
+                        </span>
+                        <ul class="mb-0">
+                            @foreach (AuthoringRunStatus candidate in candidates)
+                            {
+                                <li>
+                                    <a href="@RunUrl(
+                                        refreshResult.Workflow,
+                                        candidate.RunId)">
+                                        @candidate.RunId
+                                    </a>
+                                    <span>
+                                        — created
+                                        <time datetime="@candidate.CreatedAt.ToString("O")">
+                                            @candidate.CreatedAt.LocalDateTime.ToString("g")
+                                        </time>
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    @if (refreshResult.ConflictingRunIds is
+                        { Count: > 0 } conflicts)
+                    {
+                        <span class="d-block mt-2">Related runs:</span>
+                        <ul class="mb-0">
+                            @foreach (string conflict in conflicts)
+                            {
+                                <li>
+                                    <a href="@RunUrl(
+                                        refreshResult.Workflow,
+                                        conflict)">
+                                        @conflict
+                                    </a>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    @if (refreshResult.Disposition ==
+                        TicketOperationDisposition.OutcomeUnknown)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <button class="btn btn-sm btn-warning"
+                                    type="button"
+                                    @onclick="AcknowledgeUnknownPublicationRefresh">
+                                I inspected the refresh result; allow another refresh
+                            </button>
+                        </div>
+                    }
+                }
+                @if (_publicationRefreshException is not null)
+                {
+                    <span class="d-block">
+                        @_publicationRefreshException
+                    </span>
+                }
+            </div>
+        </div>
+    }
+
     <div class="run-summary-grid">
         <RunLifecycleTimeline Run="@run" />
         <RunProgressSummary Details="@_details" />
@@ -235,15 +327,19 @@ else if (_details is not null)
     <RunItemsTable Items="@_details.Response.Items"
                    BusyItemId="@_busyItemId"
                    BusyAction="@_busyAction"
-                   Disabled="@_publishing"
+                   Disabled="@(_publishing || _refreshingPublication)"
                    OnRetry="RetryItemAsync"
                    OnSupersede="SupersedeItemAsync" />
 
     <PublicationPanel Details="@_details"
                       LastResult="@_lastPublication"
                       Busy="@_publishing"
+                      Refreshing="@_refreshingPublication"
                       Disabled="@(_busyItemId is not null)"
-                      OnPublish="PublishAsync" />
+                      RefreshDisabled="@(_lastPublicationRefresh?.Disposition ==
+                          TicketOperationDisposition.OutcomeUnknown)"
+                      OnPublish="PublishAsync"
+                      OnRefreshPublication="RefreshPublicationAsync" />
 }
 
 @code {
@@ -259,11 +355,13 @@ else if (_details is not null)
     private CancellationTokenSource? _routeLifetime;
     private TicketItemMutationResult? _lastMutation;
     private TicketPublicationResult? _lastPublication;
+    private TicketPublicationRefreshResult? _lastPublicationRefresh;
     private ElementReference _refreshButton;
     private string? _coordinate;
     private string? _loadError;
     private string? _pollError;
     private string? _mutationException;
+    private string? _publicationRefreshException;
     private string? _actionRefreshError;
     private string? _busyItemId;
     private string? _busyAction;
@@ -273,6 +371,7 @@ else if (_details is not null)
     private bool _focusRefreshAfterSupersession;
     private bool _manualRefreshing;
     private bool _publishing;
+    private bool _refreshingPublication;
     private bool _sessionStarted;
     private bool _disposed;
 
@@ -330,6 +429,46 @@ else if (_details is not null)
             ? "Supersession"
             : "Retry";
 
+    private string PublicationRefreshAlertClass =>
+        _publicationRefreshException is not null
+            ? "alert-danger"
+            : _lastPublicationRefresh?.Disposition switch
+            {
+                TicketOperationDisposition.Conflict =>
+                    "alert-warning",
+                TicketOperationDisposition.NotAllowed =>
+                    "alert-warning",
+                TicketOperationDisposition.Busy =>
+                    "alert-warning",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "alert-warning",
+                _ => "alert-danger",
+            };
+
+    private string PublicationRefreshRole =>
+        _publicationRefreshException is not null ||
+        _lastPublicationRefresh?.Disposition is
+            TicketOperationDisposition.OutcomeUnknown or
+            TicketOperationDisposition.Failed
+            ? "alert"
+            : "status";
+
+    private string PublicationRefreshHeading =>
+        _publicationRefreshException is not null
+            ? "Publication refresh failed."
+            : _lastPublicationRefresh?.Disposition switch
+            {
+                TicketOperationDisposition.Conflict =>
+                    "Publication refresh was rejected because processor state changed.",
+                TicketOperationDisposition.NotAllowed =>
+                    "Publication refresh is no longer allowed.",
+                TicketOperationDisposition.Busy =>
+                    "Another mutation is already in progress.",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "Publication refresh outcome unknown.",
+                _ => "Publication refresh failed.",
+            };
+
     protected override async Task OnParametersSetAsync()
     {
         string coordinate = $"{Workflow}\n{RunId}";
@@ -377,6 +516,10 @@ else if (_details is not null)
         }
 
         _definition = definition;
+        _lastPublicationRefresh =
+            Operations.GetUnknownPublicationRefreshReview(
+                definition.RouteKey,
+                RunId);
         await StartPollingAsync(
             definition.RouteKey,
             RunId,
@@ -388,9 +531,11 @@ else if (_details is not null)
         _details = null;
         _lastMutation = null;
         _lastPublication = null;
+        _lastPublicationRefresh = null;
         _loadError = null;
         _pollError = null;
         _mutationException = null;
+        _publicationRefreshException = null;
         _actionRefreshError = null;
         _busyItemId = null;
         _busyAction = null;
@@ -399,6 +544,7 @@ else if (_details is not null)
         _focusRefreshAfterSupersession = false;
         _manualRefreshing = false;
         _publishing = false;
+        _refreshingPublication = false;
         _sessionStarted = false;
     }
 
@@ -572,7 +718,8 @@ else if (_details is not null)
     {
         if (_definition is null ||
             _busyItemId is not null ||
-            _publishing)
+            _publishing ||
+            _refreshingPublication)
         {
             return;
         }
@@ -658,6 +805,7 @@ else if (_details is not null)
     {
         if (_definition is null ||
             _publishing ||
+            _refreshingPublication ||
             _busyItemId is not null)
         {
             return;
@@ -703,6 +851,77 @@ else if (_details is not null)
             StateHasChanged();
         }
     }
+
+    private async Task RefreshPublicationAsync()
+    {
+        if (_definition is null ||
+            _refreshingPublication ||
+            _publishing ||
+            _busyItemId is not null ||
+            _lastPublicationRefresh?.Disposition ==
+                TicketOperationDisposition.OutcomeUnknown)
+        {
+            return;
+        }
+
+        _refreshingPublication = true;
+        _lastPublicationRefresh = null;
+        _publicationRefreshException = null;
+        StateHasChanged();
+        try
+        {
+            TicketPublicationRefreshResult result =
+                await Operations.RefreshPublicationAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastPublicationRefresh = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                AuthoringRunResponse refreshRun = result.Run ??
+                    throw new InvalidOperationException(
+                        "The successful publication refresh did not return its run coordinates.");
+                Navigation.NavigateTo(
+                    RunUrl(
+                        result.Workflow,
+                        refreshRun.Run.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private void AcknowledgeUnknownPublicationRefresh()
+    {
+        if (_definition is null)
+        {
+            return;
+        }
+
+        Operations.AcknowledgeUnknownPublicationRefreshReview(
+            _definition.RouteKey,
+            RunId);
+        _lastPublicationRefresh = null;
+        _publicationRefreshException = null;
+    }
+
+    private static string RunUrl(
+        TicketWorkflowDefinition workflow,
+        string runId) =>
+        $"/operations/{Uri.EscapeDataString(workflow.RouteKey)}/{Uri.EscapeDataString(runId)}";
 
     private bool IsCurrent(int generation) =>
         !_disposed && generation == _generation;

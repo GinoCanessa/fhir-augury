@@ -641,9 +641,10 @@ public static class SchemaGenerator
         ),
         ["prepared-ticket-authoring"] = AuthoringSchema(
             "prepared-ticket-authoring",
-            "Typed Preparer run control, worker submission, retry, supersession, and snapshot download",
+            "Typed Preparer run control, publication refresh, worker submission, retry, supersession, and snapshot download",
             "ticketKeys",
-            "PreparedTicketPayload"),
+            "PreparedTicketPayload",
+            supportsPublicationRefresh: true),
         ["planned-ticket-authoring"] = AuthoringSchema(
             "planned-ticket-authoring",
             "Typed Planner run control, worker submission, retry, supersession, and snapshot download",
@@ -679,8 +680,75 @@ public static class SchemaGenerator
         string command,
         string description,
         string selectionProperty,
-        string submissionType) =>
-        new(
+        string submissionType,
+        bool supportsPublicationRefresh = false)
+    {
+        string[] actions = supportsPublicationRefresh
+            ? [
+                "start",
+                "status",
+                "retry",
+                "supersede",
+                "submit",
+                "snapshot",
+                "refresh-publication",
+            ]
+            : [
+                "start",
+                "status",
+                "retry",
+                "supersede",
+                "submit",
+                "snapshot",
+            ];
+        string runIdDescription = supportsPublicationRefresh
+            ? "Run identifier for status, retry, supersede, or snapshot; source run identifier for refresh-publication"
+            : "Run identifier for status, retry, supersede, or snapshot";
+        object outputSchema = supportsPublicationRefresh
+            ? new
+            {
+                type = "object",
+                description = "Typed run, retry, supersede, receipt, snapshot, or publication-refresh result for the selected action",
+                properties = new Dictionary<string, object>
+                {
+                    ["run"] = Prop(
+                        "object",
+                        "Returned refresh run coordinates when refresh-publication succeeds"),
+                    ["items"] = ArrayProp(
+                        "object",
+                        "Returned refresh run items when refresh-publication succeeds"),
+                    ["outcome"] = Prop(
+                        "string",
+                        "outcome-unknown when refresh transport did not establish whether the POST succeeded"),
+                    ["sourceRunId"] = Prop(
+                        "string",
+                        "Source Preparer run selected for refresh-publication"),
+                    ["reconciliation"] = Prop(
+                        "string",
+                        "succeeded or failed for the single bounded read-only reconciliation"),
+                    ["candidates"] = ArrayProp(
+                        "object",
+                        "Matching publication-refresh runs created after submission; select the single reconciled run before continuing"),
+                    ["listTruncated"] = Prop(
+                        "boolean",
+                        "Whether the bounded recent-run response was truncated"),
+                    ["message"] = Prop(
+                        "string",
+                        "Operator guidance for an unknown refresh outcome"),
+                    ["error"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Read-reconciliation error when reconciliation failed; null after a successful reconciliation",
+                    },
+                },
+            }
+            : new
+            {
+                type = "object",
+                description = "Typed run, retry, supersede, receipt, or snapshot result for the selected action",
+            };
+        return new CommandSchema(
             description,
             InputSchema(["command", "action"], new()
             {
@@ -688,7 +756,7 @@ public static class SchemaGenerator
                 ["action"] = new
                 {
                     type = "string",
-                    enumValues = new[] { "start", "status", "retry", "supersede", "submit", "snapshot" },
+                    enumValues = actions,
                     description = "Authoring action",
                 },
                 [selectionProperty] = ArrayProp(
@@ -702,7 +770,7 @@ public static class SchemaGenerator
                     false),
                 ["runId"] = Prop(
                     "string",
-                    "Run identifier for status, retry, supersede, or snapshot"),
+                    runIdDescription),
                 ["itemId"] = Prop(
                     "string",
                     "Run item identifier for retry or supersede"),
@@ -725,11 +793,8 @@ public static class SchemaGenerator
                     "string",
                     "Exact Jira updatedAt or BallotNotes evidence revision actually observed by a worker submit"),
             }),
-            new
-            {
-                type = "object",
-                description = "Typed run, retry, supersede, receipt, or snapshot result for the selected action",
-            });
+            outputSchema);
+    }
 
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);
 }

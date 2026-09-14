@@ -167,3 +167,23 @@ public sealed record TicketPublicationResult(
     bool VerifiedPairAvailable,
     string? Message = null,
     IReadOnlyList<string>? Warnings = null);
+
+public sealed record TicketPublicationRefreshResult(
+    TicketOperationDisposition Disposition,
+    TicketWorkflowDefinition Workflow,
+    string SourceRunId,
+    AuthoringRunResponse? Run = null,
+    IReadOnlyList<string>? RelatedRunIds = null,
+    IReadOnlyList<AuthoringRunStatus>? InspectionCandidates = null,
+    string? Message = null,
+    TicketReconciliation? Reconciliation = null)
+{
+    public string? RefreshRunId =>
+        Run?.Run.RunId;
+
+    public IReadOnlyList<string> ConflictingRunIds =>
+        RelatedRunIds ?? [];
+
+    public IReadOnlyList<AuthoringRunStatus> Candidates =>
+        InspectionCandidates ?? [];
+}

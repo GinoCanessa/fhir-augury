@@ -12,6 +12,12 @@ namespace FhirAugury.Cli.Tests.Authoring;
 [Collection(AuthoringEnvironmentCollection.Name)]
 public sealed class PreparedTicketAuthoringHandlerTests
 {
+    private static readonly JsonSerializerOptions CliJsonOptions =
+        new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        };
+
     [Fact]
     public async Task StartUsesTypedOrchestratorRoute()
     {
@@ -79,6 +85,173 @@ public sealed class PreparedTicketAuthoringHandlerTests
 
         Assert.Equal("start", error.Operation);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task RefreshPublicationUsesTypedOrchestratorRoute()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs/source-run/publication-refresh",
+                request.RequestUri!.AbsolutePath);
+            Assert.Null(request.Content);
+            return Task.FromResult(
+                DelegateHttpHandler.Json(
+                    RunEnvelope(
+                        "refresh-run",
+                        purpose: "publication-refresh",
+                        sourceRunId: "source-run")));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "refresh-publication",
+                RunId = "source-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        AuthoringRunEnvelope run =
+            Assert.IsType<AuthoringRunEnvelope>(result);
+        Assert.Equal("refresh-run", run.Run.RunId);
+        Assert.Equal("publication-refresh", run.Run.Purpose);
+        Assert.Equal("source-run", run.Run.SourceRunId);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task UnknownRefreshOutcomeReturnsReadOnlyCandidatesWithoutReplay()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DateTimeOffset submission =
+            DateTimeOffset.Parse("2026-09-14T12:00:00Z");
+        DelegateHttpHandler handler = new((request, call, _) =>
+        {
+            if (call == 1)
+            {
+                Assert.Equal(HttpMethod.Post, request.Method);
+                Assert.Equal(
+                    "/api/v1/processing-services/Preparer/authoring/runs/source-run/publication-refresh",
+                    request.RequestUri!.AbsolutePath);
+                throw new HttpRequestException("response lost");
+            }
+
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs?limit=20",
+                request.RequestUri!.PathAndQuery);
+            return Task.FromResult(DelegateHttpHandler.Json(
+                new AuthoringRunListResponse(
+                [
+                    RunStatus(
+                        "matching-refresh",
+                        submission.AddSeconds(1),
+                        "publication-refresh",
+                        "source-run"),
+                    RunStatus(
+                        "old-refresh",
+                        submission.AddSeconds(-1),
+                        "publication-refresh",
+                        "source-run"),
+                    RunStatus(
+                        "wrong-purpose",
+                        submission.AddSeconds(1),
+                        "authoring",
+                        "source-run"),
+                    RunStatus(
+                        "wrong-source",
+                        submission.AddSeconds(1),
+                        "publication-refresh",
+                        "other-run"),
+                ],
+                Truncated: false)));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "refresh-publication",
+                RunId = "source-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler,
+            new FixedTimeProvider(submission));
+
+        AuthoringPublicationRefreshReconciliationResponse reconciliation =
+            Assert.IsType<
+                AuthoringPublicationRefreshReconciliationResponse>(
+                result);
+        Assert.Equal("outcome-unknown", reconciliation.Outcome);
+        Assert.Equal("succeeded", reconciliation.Reconciliation);
+        Assert.Equal("source-run", reconciliation.SourceRunId);
+        Assert.Equal(
+            "matching-refresh",
+            Assert.Single(reconciliation.Candidates).RunId);
+        Assert.False(reconciliation.ListTruncated);
+        Assert.Null(reconciliation.Error);
+        Assert.Contains(
+            "Select the single matching candidate run",
+            reconciliation.Message);
+        JsonElement serialized =
+            JsonSerializer.SerializeToElement(
+                result,
+                CliJsonOptions);
+        Assert.Equal(
+            JsonValueKind.Null,
+            serialized.GetProperty("error").ValueKind);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Fact]
+    public async Task UnknownRefreshOutcomeSerializesFailedReconciliationError()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, call, _) =>
+        {
+            if (call == 1)
+            {
+                Assert.Equal(HttpMethod.Post, request.Method);
+                throw new HttpRequestException("response lost");
+            }
+
+            Assert.Equal(HttpMethod.Get, request.Method);
+            throw new InvalidOperationException(
+                "run list unavailable");
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "refresh-publication",
+                RunId = "source-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        AuthoringPublicationRefreshReconciliationResponse reconciliation =
+            Assert.IsType<
+                AuthoringPublicationRefreshReconciliationResponse>(
+                result);
+        Assert.Equal("failed", reconciliation.Reconciliation);
+        Assert.Empty(reconciliation.Candidates);
+        Assert.Equal(
+            "run list unavailable",
+            reconciliation.Error);
+        JsonElement serialized =
+            JsonSerializer.SerializeToElement(
+                result,
+                CliJsonOptions);
+        Assert.Equal(
+            "run list unavailable",
+            serialized.GetProperty("error").GetString());
+        Assert.Equal(2, handler.Calls);
     }
 
     [Fact]
@@ -363,10 +536,13 @@ public sealed class PreparedTicketAuthoringHandlerTests
         RecommendationJustification = "Because",
     };
 
-    private static object RunEnvelope() => new
+    private static object RunEnvelope(
+        string runId = "run-1",
+        string? purpose = null,
+        string? sourceRunId = null) => new
     {
         run = new AuthoringRunStatus(
-            "run-1",
+            runId,
             "jira-fhir",
             1,
             "queued",
@@ -377,12 +553,14 @@ public sealed class PreparedTicketAuthoringHandlerTests
             DateTimeOffset.Parse("2026-09-04T00:00:00Z"),
             null,
             null,
-            null),
+            null,
+            Purpose: purpose,
+            SourceRunId: sourceRunId),
         items = new[]
         {
             new AuthoringRunItemStatus(
                 "item-1",
-                "run-1",
+                runId,
                 "FHIR-1",
                 "jira-ticket",
                 "revision-1",
@@ -396,4 +574,33 @@ public sealed class PreparedTicketAuthoringHandlerTests
                 null),
         },
     };
+
+    private static AuthoringRunStatus RunStatus(
+        string runId,
+        DateTimeOffset createdAt,
+        string purpose,
+        string sourceRunId) => new(
+            runId,
+            "jira-fhir",
+            1,
+            "queued",
+            false,
+            1,
+            1,
+            0,
+            createdAt,
+            null,
+            null,
+            null,
+            State: new AuthoringRunStateInfo(
+                IsTerminal: false,
+                IsRecoverable: false),
+            Purpose: purpose,
+            SourceRunId: sourceRunId);
+
+    private sealed class FixedTimeProvider(
+        DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 }
