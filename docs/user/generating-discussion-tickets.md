@@ -67,12 +67,20 @@ Ticket pages use only public, snapshot-resident context:
 
 ## Prerequisites
 
-- `source-jira` (`:5160`) and the Orchestrator (`:5150`) are healthy.
-- `processor-jira-fhir-preparer` (`:5171`) is started. Under Aspire it uses
+- For starting a preparation run, `source-jira` (`:5160`) and the
+  Orchestrator (`:5150`) are healthy.
+- `processor-jira-fhir-preparer` (`:5171`) is started, healthy, and reports
+  processing as running, not paused or unobserved. Under Aspire it uses
   explicit start.
 - For the UI flow, start the explicit `devui` resource (`:5210`) in Aspire.
 - For the headless flow, `fhir-augury-cli` is installed, or use
   `dotnet run --project src\FhirAugury.Cli --` in place of the executable.
+
+Planner may remain offline. Planned tickets, Planner run history, and Planner
+snapshots are not prerequisites for preparation or Discussion publication.
+Opening the workspace does not require existing preparation history either;
+publication still requires a completed, snapshot-producing Preparer run and
+its verified snapshot pair.
 
 ```powershell
 fhir-augury-cli --json '{"command":"services","action":"status"}'
@@ -84,6 +92,13 @@ UI reports readiness evidence and directs you back to Aspire for resource
 problems; it does not control the AppHost.
 
 ## Dev UI flow
+
+The workspace renders both **Prepare tickets** and **Plan tickets** cards,
+including **Start a run** and **Open by run ID**, immediately. Once the page
+becomes interactive, preparation history, planning history, and readiness load
+independently. Preparation results appear when their own read completes, even
+while Planner is pending or unavailable. A readiness or history failure has
+its own diagnostic rather than hiding the other observations or navigation.
 
 1. Open `http://localhost:5210`, choose **Prepare tickets**, and select
    **Start a run**.
@@ -103,16 +118,58 @@ problems; it does not control the AppHost.
    `allowedActions.canSupersede` is true and requires confirmation plus a
    non-empty reason; the processor permits it only for an eligible current
    error without an accepted receipt.
-6. After `completed`, review full versus partial success and every superseded
-   ticket, then choose **Generate review site**. Open the exact run site at
+6. After a snapshot-producing run reaches `completed`, review full versus
+   partial success and every superseded ticket, then choose **Generate review
+   site**. Open the exact run site at
    `/review-sites/prepare/<runId>/discussion/`.
 
-The overview obtains ordinary active/recovering and recent terminal runs from
-the processor on every load, returning 20 by default and prioritizing
-non-terminal work. Maintenance, initial-revalidation, and legacy unmarked rows
-are intentionally absent; `truncated:true` means older history exists. **Open
-by run ID** always uses authoritative detail and remains available for a known
-run outside that bounded list.
+Each page visit independently requests each processor's ordinary
+active/recovering and recent terminal runs, up to 20 by default and
+prioritizing non-terminal work. Maintenance, initial-revalidation, and legacy
+unmarked rows are intentionally absent; `truncated:true` means older history
+exists. **Open by run ID** always uses authoritative detail and remains
+available while history or readiness is pending or unsuccessful, including for
+a known run outside that bounded list.
+
+Before the first successful history read, counts are unknown. Only a current
+successful read can show **No active runs** or **No recent completed runs**;
+a successful zero-length list is genuinely empty history. **Run history is
+unavailable** indicates a transient HTTP, transport, or timeout problem.
+**Run history read failed** identifies other errors, such as authentication,
+authorization, routing/configuration, or an invalid response. Neither failure
+means there are no runs, and an HTTP error alone does not prove an Aspire
+resource is stopped.
+
+Refreshing retains the last successful history, counts, and links, labeled
+**Stale history** with the original last-successful-read time. They remain
+visible while refreshing or after an unsuccessful refresh; a successful
+refresh replaces them. If that previous list was empty, the card says
+**Previously observed empty history; current run counts are unknown**, not
+that the current history is empty.
+
+**Refresh history** affects only that workflow's history and is disabled only
+while its own read is in flight. The header's **Refresh and recheck** schedules
+idle histories and an explicit readiness refresh without waiting for Planner
+history to finish. Requests coalesce per observation: another request for an
+already-running history or readiness read uses that attempt, without queuing a
+second one. Typed run IDs remain in their cards across these updates.
+
+On `/operations/prepare/new`, both the review summary and submission require
+a current successful readiness read with no required-service blockers, a valid
+selection, no submission already in progress, and no outstanding unknown-start
+review. Readiness loading or rechecking, an unavailable/failed read, and a
+successful report containing blockers all prevent starting. Missing, disabled,
+unobserved, or unhealthy required services, or paused Preparer processing,
+remain blockers. A previous ready result is stale while a recheck is in
+progress or after it fails; it never supplies a current **Ready to start**
+badge or permission to submit. Resolve genuine required service problems in
+Aspire and recheck.
+
+**Recheck readiness** on the start form and the readiness part of **Refresh and
+recheck** use the Orchestrator's existing all-services refresh. When scheduled,
+that refresh may still wait on optional service probes, including an offline
+Planner. This does not make Planner or planned data a Discussion prerequisite
+and does not block Home's independent history and navigation.
 
 If transport fails after a start, retry, or supersede may have reached the
 processor, the UI labels the outcome unknown and never replays the mutation.
@@ -121,10 +178,14 @@ explicit review before another submission. A `409` after an item action also
 refreshes the run because server-advertised actions are hints and the processor
 rechecks eligibility atomically.
 
-The Dev UI reuses an existing verified pair or downloads one into its private
-run directory, then invokes the shared publisher in-process. Processor success
-and site-publication success are separate. A publication failure retains the
-pair, leaves receipts and run state unchanged, and retries publication only.
+An empty or unavailable history is not publication input. **Generate review
+site** checks authoritative completion of a snapshot-producing Preparer run and
+requires a verified pair bound to that workflow and run. Database-only runs or
+missing, invalid, or mismatched pairs cannot be published. The Dev UI reuses an
+existing verified pair or downloads one into its private run directory, then
+invokes the shared publisher in-process. Processor success and site-publication
+success are separate. A publication failure retains the pair, leaves receipts
+and run state unchanged, and retries publication only.
 Pairs and run sites under ignored `cache\` are retained indefinitely in this
 release; remove old workflow/run directories manually only while the Dev UI is
 stopped. Generated JavaScript is served from the Dev UI origin, which is a

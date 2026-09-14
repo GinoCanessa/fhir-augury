@@ -362,19 +362,97 @@ lets processor snapshots and browser queries evolve independently.
    server-advertised item actions, and snapshot download; and
 3. `ITicketSitePublisher` for immutable-pair publication.
 
-The overview reads processor-owned ordinary runs on every load. The bounded
-list puts active/recoverable runs first and reports truncation; exact run detail
-is always addressable by
-`/operations/{prepare|plan}/{runId}`. Run status `error` is recoverable and
-non-terminal, so polling continues until processor-provided
-`state.isTerminal` becomes true.
+Display reads are separate from authoritative actions. The transient,
+stateless `TicketWorkspaceReader` adapts existing Orchestrator-mediated clients
+into typed outcomes for one workflow's bounded history or a readiness report
+projected across the workflow catalog. It neither caches results nor performs
+mutations. All remote reads and controls still go through the Orchestrator,
+never directly to a source or processor database or service.
+
+Home renders catalog-backed workflow cards, **Start a run**, and **Open by run
+ID** synchronously, with no HTTP reads during prerender. It creates and owns an
+`AsyncServiceScope`, resolves a transient `TicketWorkspaceSession` inside it,
+and starts observation reads once after the first interactive render. The
+session owns one readiness observation and a history observation per canonical
+workflow route. Initial readiness uses the existing cached-status GET; every
+read completes independently, with no readiness or cross-workflow completion
+barrier. Preparer history can be displayed while Planner remains unresolved.
+
+Observations explicitly distinguish `Pending`, `Loading`, `Succeeded`,
+`Unavailable`, and `Failed`. A successful zero-length history is genuinely
+empty; a missing or unsuccessful response is not. Refreshing or failing a read
+retains the last successful history and its original success time, explicitly
+labeled stale, including a previously empty list whose current counts are now
+unknown. Only `Succeeded` is current successful evidence. Read-completion
+timestamps do not replace Orchestrator `LastCheckedAt` or service probe times.
+There is no freshness TTL, durable workspace cache, or circuit-wide history
+cache.
+
+The session serializes state transitions, not HTTP work, and publishes
+immutable, revisioned workspace snapshots by updating only the affected slot.
+It allows at most one in-flight read per observation. **Refresh history**
+targets that history alone; **Refresh and recheck** schedules idle histories
+and explicit readiness refresh independently. Duplicate requests coalesce with
+the in-flight attempt without queuing another, including an explicit readiness
+refresh requested during an initial readiness read. No global busy gate,
+workspace polling, or outer retry layer is added.
+
+Home passes observations to presentational `WorkflowCard` and
+`ReadinessObservationPanel` components. Cards are keyed by canonical workflow
+route, preserving typed run IDs across unrelated updates. Session notifications
+run outside state locks without holding up read completion; Home checks page
+identity, disposal, and revision inside its renderer dispatcher callback.
+Navigation detaches notifications and asynchronously disposes the page-owned
+scope, canceling and observing its reads. Caller cancellation is not an outage,
+and obsolete results cannot update the disposed page. Returning creates a fresh
+session rather than reusing circuit-retained display state.
+
+`ReadinessObservationPanel` delegates to `ReadinessStrip` only for a current
+successful read; retained stale readiness never displays a current ready badge.
+The start page uses the same reader and observation semantics without history
+reads. Both its review summary and submit handler require a current successful,
+ready result, no readiness read/recheck in flight, a valid reviewed selection,
+no submission in progress, and no outstanding unknown-start review. A
+successful readiness read can still contain genuine required-service blockers.
+Preparation requires configured, enabled, and observed healthy Orchestrator,
+Preparer, and Jira services, including a running Preparer processing lifecycle.
+Paused or unobserved processing blocks starting. Planner, planned tickets,
+Planner history, and Planner snapshots are not Discussion prerequisites.
+Explicit readiness rechecks still call the all-services
+`POST /api/v1/services/refresh` endpoint and may wait on optional probes,
+including Planner; this does not delay the independent Home history reads.
+
+`TicketOperationsService` remains circuit-scoped, outside Home's child scope,
+owning authoritative detail/actions, the mutation gate, unknown-outcome
+reconciliation, and publication. Stale display history is never authoritative
+run detail, reconciliation input, readiness permission, or publication input.
+Reconciliation retains its own direct authoring-client list/detail reads.
+The bounded display list puts active/recoverable ordinary runs first and
+reports truncation; **Open by run ID** remains available independently of
+history and readiness. Exact detail is always addressable by
+`/operations/{prepare|plan}/{runId}`. Selected-run polling through
+`RunPollingSession` remains sequential until processor-provided
+`state.isTerminal` is true; run status `error` is recoverable and non-terminal.
+
+**Generate review site** still requires authoritative completion of a
+snapshot-producing run and a verified snapshot pair bound to its service,
+workflow, run, and approved cache directory. For Discussion, detail and snapshot
+reads select Preparer only; neither Planner data nor a successful workspace
+history read is required. Empty history cannot substitute for a verified
+Preparer pair. Database-only runs and missing, invalid, or mismatched pairs do
+not authorize publication. The UI reuses or downloads the pair and invokes the
+shared publisher in-process; publication failure retains the pair without
+changing receipts or run state.
 
 Mutating outer calls are single-attempt. A response lost after start, retry, or
 supersede is an outcome-unknown condition: the UI serializes further
 mutations, performs only list/detail reconciliation reads, and never replays
-the request. The processor's `allowedActions` values are display capabilities,
+the request. An ambiguous start requires explicit review before another
+submission. The processor's `allowedActions` values are display capabilities,
 not authorization snapshots; mutation-fence, receipt, state, and attempt checks
-run again inside the processor transaction.
+run again inside the processor transaction. Aspire remains responsible for
+resource start/stop, logs, and traces; workspace refresh does not control the
+AppHost.
 
 The AppHost configures two ignored, non-overlapping children beneath
 repository `cache\`:
