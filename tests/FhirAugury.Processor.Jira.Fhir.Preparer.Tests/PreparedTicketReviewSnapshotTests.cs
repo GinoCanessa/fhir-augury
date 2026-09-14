@@ -31,6 +31,105 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 public sealed class PreparedTicketReviewSnapshotTests
 {
     [Fact]
+    public void PublicationContractFingerprintsAreCanonicalAndVersioned()
+    {
+        PreparedTicketPublicationCorpusItem[] corpus =
+        [
+            new(
+                "FHIR-10",
+                "receipt-a",
+                "item-a",
+                "run-a",
+                "ticket",
+                "rev-a"),
+            new(
+                "BALLOT-7",
+                "receipt-b",
+                "item-b",
+                "run-b",
+                "ticket",
+                "rev-b"),
+        ];
+        const string expectedCorpus =
+            "33d5fd635c5c11f6a09e1e42ae8bbb7cc13d2c55cf57e522d063e8078bc3eb28";
+        Assert.Equal(
+            expectedCorpus,
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                corpus));
+        Assert.Equal(
+            expectedCorpus,
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                corpus.Reverse()));
+
+        PreparedTicketGroupingPayload grouping = new()
+        {
+            WorkGroupClean = "FHIRInfrastructure",
+            WorkGroupDisplay = "FHIR Infrastructure",
+            Specification = "FHIR",
+            Type = "Change Request",
+            Topics =
+            [
+                new PreparedTicketTopicPayload
+                {
+                    ShortDescription = "Align the renderer",
+                    LongerDescription =
+                        "Keep one canonical grouping graph.",
+                    RenderOrderHint = 3,
+                    LinkedTicketGroups =
+                    [
+                        new PreparedTicketTopicGroupPayload
+                        {
+                            FirstTicketKey = "FHIR-10",
+                            Rationale = "Discuss together.",
+                            Members =
+                            [
+                                new()
+                                {
+                                    TicketKey = "BALLOT-7",
+                                    Order = 1,
+                                },
+                                new()
+                                {
+                                    TicketKey = "FHIR-10",
+                                    Order = 0,
+                                },
+                            ],
+                        },
+                    ],
+                    RemainingTicketKeys = [],
+                },
+            ],
+        };
+        const string expectedOutput =
+            "4d074b51c17e2a81e187ff226b637b90c908246d111f60ce8c5ec881cf8338f8";
+        Assert.Equal(
+            expectedOutput,
+            PreparedTicketPublicationContract
+                .ComputeGroupingPartitionFingerprint(grouping));
+
+        string aggregate =
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+            [
+                new PreparedTicketPublicationGroupingPartition(
+                    "FHIRInfrastructure\u001fFHIR\u001fChange Request",
+                    expectedOutput),
+            ]);
+        Assert.Equal(
+            "380409171000bf647b7c626e6366c7360eae7ebe34785da77c23967afdb1852b",
+            aggregate);
+
+        Assert.Throws<NotSupportedException>(
+            () => PreparedTicketPublicationContract
+                .ComputeCorpusFingerprint(corpus, contractVersion: 99));
+        Assert.NotEqual(
+            expectedCorpus,
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                corpus.Select(item => item.TicketKey == "FHIR-10"
+                    ? item with { ExpectedSourceRevision = "rev-changed" }
+                    : item)));
+    }
+
+    [Fact]
     public async Task FinalizeRun_ProducesSecretFreeCanonicalSnapshot()
     {
         using Fixture fixture = new();

@@ -1,4 +1,4 @@
-// Tickets for Discussion SPA. The browser reads only renderer schema v1.
+// Tickets for Discussion SPA. The browser reads only renderer schema v2.
 (function () {
   'use strict';
 
@@ -8,49 +8,33 @@
   var currentExport = null;
   var inRunKeys = Object.create(null);
 
-  var filterableDimensions = [
-    'spec',
-    'project',
-    'wg',
-    'type',
-    'artifact',
-    'page',
-    'impact'
-  ];
+  var filterableDimensions = [];
   var generationDimensions = ['spec', 'project', 'wg'];
-  var rendererDimensions = {
-    spec: 'spec',
-    project: 'project',
-    wg: 'wg',
-    type: 'type',
-    artifact: 'artifact',
-    page: 'page',
-    impact: 'impact'
-  };
-  var facetKeyParameters = {
-    spec: 'specKey',
-    project: 'projectKey',
-    wg: 'wgKey',
-    type: 'typeKey',
-    artifact: 'artifactKey',
-    page: 'pageKey',
-    impact: 'impactKey'
-  };
+  var rendererDimensions = Object.create(null);
+  var facetKeyParameters = Object.create(null);
   var generationChips = {};
-  var activeChips = {};
+  var activeChips = Object.freeze({});
+  var facetDimensions = Object.freeze([]);
+  var facetDimensionsByKey = Object.create(null);
   var facetCatalog = Object.create(null);
+  var Crosscuts = Object.create(null);
+  var landingCrosscutOrder = Object.freeze([]);
 
   function parsePresentation() {
     var element = document.getElementById('site-presentation');
     if (!element) throw new Error('Discussion presentation data is missing.');
     var value = JSON.parse(element.textContent || '');
-    if (!value || value.rendererSchemaVersion !== 1 ||
+    if (!value || value.rendererSchemaVersion !== 2 ||
         typeof value.siteName !== 'string' ||
         typeof value.baseTitle !== 'string') {
       throw new Error('Discussion presentation data is invalid.');
     }
     if (!value.filters || typeof value.filters !== 'object') {
       value.filters = {};
+    }
+    if (!value.readiness || typeof value.readiness !== 'object' ||
+        !Array.isArray(value.readiness.reasons)) {
+      throw new Error('Discussion publication readiness is missing.');
     }
     return value;
   }
@@ -65,6 +49,41 @@
   }
 
   function loadFacetCatalog() {
+    var dimensionRows = query(
+      'SELECT Dimension, Route, Label, SortOrder, ShowInList ' +
+      'FROM facet_dimensions ORDER BY SortOrder',
+      null).rows;
+    var dimensions = [];
+    var routes = [];
+    for (var dimensionIndex = 0;
+      dimensionIndex < dimensionRows.length;
+      dimensionIndex++) {
+      var dimensionRow = dimensionRows[dimensionIndex];
+      var dimensionKey = String(dimensionRow.Dimension);
+      var definition = Object.freeze({
+        dimension: dimensionKey,
+        route: String(dimensionRow.Route),
+        label: String(dimensionRow.Label),
+        sortOrder: Number(dimensionRow.SortOrder),
+        showInList: Number(dimensionRow.ShowInList) === 1
+      });
+      dimensions.push(definition);
+      facetDimensionsByKey[dimensionKey] = definition;
+      rendererDimensions[dimensionKey] = dimensionKey;
+      facetKeyParameters[dimensionKey] = dimensionKey + 'Key';
+      Crosscuts[definition.route] = Object.freeze({
+        pageTitle: 'By ' + definition.label.toLowerCase(),
+        columnLabel: definition.label,
+        dimension: dimensionKey
+      });
+      routes.push(definition.route);
+    }
+    facetDimensions = Object.freeze(dimensions);
+    filterableDimensions = Object.freeze(dimensions.map(function (value) {
+      return value.dimension;
+    }));
+    landingCrosscutOrder = Object.freeze(routes);
+
     var rows = query(
       'SELECT DISTINCT Dimension, ValueKey, DisplayValue, SortKey, IsUnknown ' +
       'FROM ticket_facets ' +
@@ -190,16 +209,19 @@
         }
         db = new SQL.Database(bytes);
 
+        loadFacetCatalog();
         var metadata = query(
           'SELECT RendererSchemaVersion, BaseTitle, SiteName, ' +
-          'JiraSourceLastSuccessfulRefreshAt, FilterSpecification, ' +
+          'JiraSourceLastSuccessfulRefreshAt, ReadinessJson, FilterSpecification, ' +
           'FilterProject, FilterWorkGroup FROM site_metadata',
           null).rows;
         if (metadata.length !== 1 ||
             Number(metadata[0].RendererSchemaVersion) !==
               Number(presentation.rendererSchemaVersion) ||
             String(metadata[0].BaseTitle) !== presentation.baseTitle ||
-            String(metadata[0].SiteName) !== presentation.siteName) {
+            String(metadata[0].SiteName) !== presentation.siteName ||
+            JSON.stringify(JSON.parse(String(metadata[0].ReadinessJson))) !==
+              JSON.stringify(presentation.readiness)) {
           throw new Error(
             'The embedded discussion database does not match its presentation.');
         }
@@ -208,8 +230,8 @@
         for (var keyIndex = 0; keyIndex < keyRows.length; keyIndex++) {
           inRunKeys[String(keyRows[keyIndex].Key).toLowerCase()] = true;
         }
-        loadFacetCatalog();
         seedGenerationChips();
+        exposeRuntimeTestHook();
       } catch (error) {
         renderError(main, 'Failed to load database: ' + error.message);
         return;
@@ -280,7 +302,7 @@
     for (var dimension in generationChips) {
       result[dimension] = generationChips[dimension].slice();
     }
-    if (!queryPart) return result;
+    if (!queryPart) return freezeFacetState(result);
 
     var parameters = new URLSearchParams(queryPart);
     for (var index = 0; index < filterableDimensions.length; index++) {
@@ -312,7 +334,26 @@
       }
       if (existing.length > 0) result[currentDimension] = existing;
     }
-    return result;
+    return freezeFacetState(result);
+  }
+
+  function parseFacetStateFromHash(hash) {
+    var stripped = String(hash || '#/').replace(/^#\/?/, '');
+    var queryIndex = stripped.indexOf('?');
+    return parseChipsFromQuery(
+      queryIndex >= 0 ? stripped.slice(queryIndex + 1) : '');
+  }
+
+  function freezeFacetState(state) {
+    var frozen = {};
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var dimension = filterableDimensions[index];
+      var values = state[dimension] || [];
+      if (values.length > 0) {
+        frozen[dimension] = Object.freeze(values.slice());
+      }
+    }
+    return Object.freeze(frozen);
   }
 
   function containsCaseInsensitive(values, candidate) {
@@ -332,7 +373,7 @@
       });
       if (values.length > 0) result[dimension] = values;
     }
-    return result;
+    return freezeFacetState(result);
   }
 
   function buildChipQuerySuffix(chips) {
@@ -363,10 +404,29 @@
     window.location.hash = '#/' + pathPart + buildChipQuerySuffix(chips);
   }
 
+  function withFacetSelection(dimension, valueKey, state) {
+    var current = state || activeChips;
+    var next = {};
+    for (var index = 0; index < filterableDimensions.length; index++) {
+      var currentDimension = filterableDimensions[index];
+      if (current[currentDimension]) {
+        next[currentDimension] = current[currentDimension].slice();
+      }
+    }
+    next[dimension] = [valueKey];
+    return freezeFacetState(next);
+  }
+
+  function facetSelectionHash(dimension, valueKey, state) {
+    return '#/list' + buildChipQuerySuffix(
+      withFacetSelection(dimension, valueKey, state));
+  }
+
   function openFacetList(dimension, valueKey) {
-    var chips = getInPageChips();
-    chips[dimension] = [valueKey];
-    window.location.hash = '#/list' + buildChipQuerySuffix(chips);
+    window.location.hash = facetSelectionHash(
+      dimension,
+      valueKey,
+      getInPageChips());
   }
 
   function redirectToFacetList(dimension, rawValue) {
@@ -376,7 +436,11 @@
   }
 
   function removeChipValue(dimension, valueKey) {
-    var chips = getInPageChips();
+    var current = getInPageChips();
+    var chips = {};
+    for (var currentDimension in current) {
+      chips[currentDimension] = current[currentDimension].slice();
+    }
     var normalized = String(valueKey).toLowerCase();
     var remaining = (chips[dimension] || []).filter(function (value) {
       return String(value).toLowerCase() !== normalized;
@@ -487,50 +551,127 @@
     for (var key in source) target[key] = source[key];
   }
 
-  var Crosscuts = {
-    'by-workgroup': {
-      pageTitle: 'By workgroup',
-      columnLabel: 'Workgroup',
-      dimension: 'wg'
-    },
-    'by-type': {
-      pageTitle: 'By type',
-      columnLabel: 'Type',
-      dimension: 'type'
-    },
-    'by-artifact': {
-      pageTitle: 'By artifact',
-      columnLabel: 'Artifact',
-      dimension: 'artifact'
-    },
-    'by-page': {
-      pageTitle: 'By page',
-      columnLabel: 'Page',
-      dimension: 'page'
-    },
-    'by-impact': {
-      pageTitle: 'By impact',
-      columnLabel: 'Impact',
-      dimension: 'impact'
-    },
-    'by-specification': {
-      pageTitle: 'By specification',
-      columnLabel: 'Specification',
-      dimension: 'spec'
+  function readTicketListRows(ticketKeys) {
+    var rows = query(
+      'SELECT Key, Title, Status, RequestSummary AS SearchBody ' +
+      'FROM tickets WHERE Key IN (' + ticketKeys.sql + ') ' +
+      'ORDER BY Key COLLATE NOCASE',
+      ticketKeys.params).rows;
+    var facets = query(
+      'SELECT TicketKey, Dimension, ValueKey, DisplayValue, SortKey, ' +
+      'IsUnknown FROM ticket_facets WHERE TicketKey IN (' +
+      ticketKeys.sql + ') ORDER BY TicketKey COLLATE NOCASE, Dimension, ' +
+      'IsUnknown, SortKey, DisplayValue COLLATE NOCASE, ValueKey',
+      ticketKeys.params).rows;
+    var byTicket = Object.create(null);
+    for (var facetIndex = 0; facetIndex < facets.length; facetIndex++) {
+      var facet = facets[facetIndex];
+      var ticketKey = String(facet.TicketKey).toLowerCase();
+      if (!byTicket[ticketKey]) byTicket[ticketKey] = Object.create(null);
+      var dimension = String(facet.Dimension);
+      if (!byTicket[ticketKey][dimension]) {
+        byTicket[ticketKey][dimension] = [];
+      }
+      byTicket[ticketKey][dimension].push(facet);
     }
-  };
-  var landingCrosscutOrder = [
-    'by-workgroup',
-    'by-type',
-    'by-artifact',
-    'by-page',
-    'by-impact',
-    'by-specification'
-  ];
+    for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      rows[rowIndex].Facets =
+        byTicket[String(rows[rowIndex].Key).toLowerCase()] ||
+        Object.create(null);
+    }
+    return rows;
+  }
+
+  function visibleListFacetDimensions(state) {
+    var selected = state || activeChips;
+    return facetDimensions.filter(function (definition) {
+      return definition.showInList &&
+        !(selected[definition.dimension] || []).length;
+    });
+  }
+
+  function createTicketListColumns() {
+    var columns = [
+      {
+        key: 'key',
+        label: 'Key',
+        value: function (row) { return row.Key; },
+        compare: 'natural',
+        render: function (row) {
+          return el('a', {
+            href: '#/ticket/' + encodeURIComponent(String(row.Key)) +
+              currentHashSuffix()
+          }, String(row.Key));
+        }
+      },
+      {
+        key: 'title',
+        label: 'Title',
+        value: function (row) { return row.Title; }
+      },
+      {
+        key: 'status',
+        label: 'Status',
+        value: function (row) { return displayValue(row.Status); }
+      }
+    ];
+    var definitions = visibleListFacetDimensions();
+    for (var index = 0; index < definitions.length; index++) {
+      (function (definition) {
+        columns.push({
+          key: 'facet-' + definition.dimension,
+          label: definition.label,
+          value: function (row) {
+            return facetValues(row, definition.dimension)
+              .map(function (facet) {
+                return String(facet.DisplayValue);
+              })
+              .join(' · ');
+          },
+          render: function (row) {
+            return renderTicketFacetCell(row, definition);
+          }
+        });
+      })(definitions[index]);
+    }
+    return columns;
+  }
+
+  function facetValues(row, dimension) {
+    return row.Facets && row.Facets[dimension]
+      ? row.Facets[dimension]
+      : [];
+  }
+
+  function renderTicketFacetCell(row, definition) {
+    var values = facetValues(row, definition.dimension);
+    var container = el('span', { class: 'ticket-facet-values' });
+    for (var index = 0; index < values.length; index++) {
+      if (index > 0) {
+        container.appendChild(document.createTextNode(' · '));
+      }
+      var value = values[index];
+      var button = el('button', {
+        type: 'button',
+        class: 'ticket-facet-value'
+      }, String(value.DisplayValue));
+      (function (dimension, valueKey) {
+        button.addEventListener('click', function () {
+          window.location.hash = facetSelectionHash(
+            dimension,
+            valueKey,
+            getInPageChips());
+        });
+      })(definition.dimension, String(value.ValueKey));
+      container.appendChild(button);
+    }
+    return container;
+  }
 
   var Views = {
     landing: function (main) {
       renderChipBanner(main);
+      renderReadiness(main);
       var ticketKeys = buildTicketKeysSubquery([]);
       var totalRows = query(
         'SELECT COUNT(*) AS Count FROM (' + ticketKeys.sql + ')',
@@ -588,12 +729,7 @@
           ? 'Filtered tickets: ' + chipsSubject()
           : 'All prepared tickets');
       var ticketKeys = buildTicketKeysSubquery([]);
-      var rows = query(
-        'SELECT Key, Title, WorkGroup, Status, Type, ProposalAImpact, ' +
-        'ProposalBImpact, RequestSummary AS SearchBody FROM tickets ' +
-        'WHERE Key IN (' + ticketKeys.sql + ') ' +
-        'ORDER BY Key COLLATE NOCASE',
-        ticketKeys.params).rows;
+      var rows = readTicketListRows(ticketKeys);
 
       main.appendChild(el(
         'h2',
@@ -619,57 +755,18 @@
       var table = components.createSortableTable({
         rows: rows,
         initialSort: { key: 'key', direction: 'ascending' },
+        className: 'ticket-list-table',
         ariaLabel: 'Prepared tickets',
-        columns: [
-          {
-            key: 'key',
-            label: 'Key',
-            value: function (row) { return row.Key; },
-            compare: 'natural',
-            render: function (row) {
-              return el('a', {
-                href: '#/ticket/' + encodeURIComponent(String(row.Key)) +
-                  currentHashSuffix()
-              }, String(row.Key));
-            }
-          },
-          {
-            key: 'title',
-            label: 'Title',
-            value: function (row) { return row.Title; }
-          },
-          {
-            key: 'workgroup',
-            label: 'Workgroup',
-            value: function (row) { return displayValue(row.WorkGroup); }
-          },
-          {
-            key: 'status',
-            label: 'Status',
-            value: function (row) { return displayValue(row.Status); }
-          },
-          {
-            key: 'type',
-            label: 'Type',
-            value: function (row) { return displayValue(row.Type); }
-          },
-          {
-            key: 'impact-a',
-            label: 'Impact A',
-            value: function (row) {
-              return displayValue(row.ProposalAImpact);
-            }
-          },
-          {
-            key: 'impact-b',
-            label: 'Impact B',
-            value: function (row) {
-              return displayValue(row.ProposalBImpact);
-            }
-          }
-        ]
+        columns: createTicketListColumns()
       });
-      main.appendChild(table.element);
+      var tableRegion = el('div', {
+        class: 'table-overflow ticket-list-overflow',
+        role: 'region',
+        tabindex: '0',
+        'aria-label': 'Prepared ticket table'
+      });
+      tableRegion.appendChild(table.element);
+      main.appendChild(tableRegion);
 
       var debounce = 0;
       input.addEventListener('input', function () {
@@ -960,7 +1057,8 @@
       renderChipBanner(main);
 
       var people = query(
-        'SELECT Role, DisplayName, OrderInRole FROM ticket_people ' +
+        'SELECT Role, DisplayName, Availability, UnavailableReason, ' +
+        'OrderInRole FROM ticket_people ' +
         'WHERE TicketKey = $key ORDER BY Role, OrderInRole',
         { $key: ticket.Key }).rows;
       var reporter = null;
@@ -968,8 +1066,8 @@
       var requesters = [];
       for (var personIndex = 0; personIndex < people.length; personIndex++) {
         var person = people[personIndex];
-        if (person.Role === 'reporter') reporter = person.DisplayName;
-        else if (person.Role === 'assignee') assignee = person.DisplayName;
+        if (person.Role === 'reporter') reporter = person;
+        else if (person.Role === 'assignee') assignee = person;
         else if (person.Role === 'in-person-requester' &&
                  person.DisplayName) {
           requesters.push(String(person.DisplayName));
@@ -1001,8 +1099,14 @@
       appendDefinition(definitions, 'Change category', ticket.ChangeCategory);
       appendDefinition(definitions, 'Impact', ticket.Impact);
       appendDefinition(definitions, 'Comments', ticket.CommentCount);
-      appendDefinition(definitions, 'Reporter', reporter);
-      appendDefinition(definitions, 'Assignee', assignee);
+      appendDefinition(
+        definitions,
+        'Reporter',
+        renderPersonAvailability(reporter));
+      appendDefinition(
+        definitions,
+        'Assignee',
+        renderPersonAvailability(assignee));
       if (requesters.length > 0) {
         var requesterList = el('ul', { class: 'people-list' });
         for (var requesterIndex = 0;
@@ -1164,12 +1268,11 @@
     }
   };
 
-  function buildCrosscutSection(route) {
-    var config = Crosscuts[route];
-    var ticketKeys = buildTicketKeysSubquery([config.dimension]);
-    var parameters = { $dimension: rendererDimensions[config.dimension] };
+  function readCrosscutRows(dimension) {
+    var ticketKeys = buildTicketKeysSubquery([dimension]);
+    var parameters = { $dimension: rendererDimensions[dimension] };
     mergeParameters(parameters, ticketKeys.params);
-    var rows = query(
+    return query(
       'SELECT f.ValueKey, MIN(f.DisplayValue) AS DisplayValue, ' +
       'MIN(f.SortKey) AS SortKey, MAX(f.IsUnknown) AS IsUnknown, ' +
       'COUNT(DISTINCT f.TicketKey) AS Count ' +
@@ -1179,6 +1282,11 @@
       'GROUP BY f.ValueKey ' +
       'ORDER BY IsUnknown, SortKey, DisplayValue COLLATE NOCASE, ValueKey',
       parameters).rows;
+  }
+
+  function buildCrosscutSection(route) {
+    var config = Crosscuts[route];
+    var rows = readCrosscutRows(config.dimension);
     var section = el('section', { class: 'crosscut-card' });
     if (rows.length === 0) {
       section.appendChild(el('p', { class: 'muted' }, 'No data.'));
@@ -1214,7 +1322,8 @@
           key: 'count',
           label: 'Count',
           value: function (row) { return row.Count; },
-          compare: 'numeric'
+          compare: 'numeric',
+          className: 'count-column'
         }
       ]
     });
@@ -1259,6 +1368,52 @@
     table.appendChild(tbody);
     region.appendChild(table);
     return region;
+  }
+
+  function renderReadiness(main) {
+    var readiness = presentation.readiness;
+    if (!readiness || readiness.isReady) return;
+    var notice = el('section', {
+      class: 'readiness-notice',
+      role: 'status'
+    });
+    notice.appendChild(el(
+      'h2',
+      null,
+      'Publication data is degraded'));
+    var list = el('ul');
+    for (var index = 0; index < readiness.reasons.length; index++) {
+      var reason = readiness.reasons[index];
+      list.appendChild(el(
+        'li',
+        null,
+        String(reason.message || reason.code || 'Unavailable evidence')));
+    }
+    notice.appendChild(list);
+    main.appendChild(notice);
+  }
+
+  function readinessReasonMessage(code) {
+    var reasons = presentation.readiness &&
+      presentation.readiness.reasons || [];
+    for (var index = 0; index < reasons.length; index++) {
+      if (String(reasons[index].code) === String(code)) {
+        return String(reasons[index].message || reasons[index].code);
+      }
+    }
+    return 'Publication data is unavailable (' + String(code || 'unknown') +
+      ').';
+  }
+
+  function renderPersonAvailability(person) {
+    if (!person || person.Availability !== 'available') {
+      return readinessReasonMessage(
+        person && person.UnavailableReason);
+    }
+    return person.DisplayName == null ||
+      String(person.DisplayName).trim() === ''
+      ? 'Not provided'
+      : String(person.DisplayName);
   }
 
   function appendDefinition(list, label, value) {
@@ -1449,7 +1604,7 @@
     var hasTail = Array.isArray(tail) && tail.length > 0;
     var parts = [
       { label: 'Chooser', href: '../index.html' },
-      { label: 'Discussion', href: hasTail ? '#/' : null }
+      { label: presentation.siteName, href: hasTail ? '#/' : null }
     ];
     if (hasTail) {
       for (var index = 0; index < tail.length; index++) {
@@ -1827,6 +1982,31 @@
       return detail;
     }
     return label + ' · ' + detail;
+  }
+
+  function exposeRuntimeTestHook() {
+    if (typeof window.__DISCUSSION_TEST_HOOK__ !== 'function') return;
+    window.__DISCUSSION_TEST_HOOK__(Object.freeze({
+      query: query,
+      parseFacetStateFromHash: parseFacetStateFromHash,
+      withFacetSelection: withFacetSelection,
+      facetSelectionHash: facetSelectionHash,
+      readCrosscutRows: readCrosscutRows,
+      visibleListFacetDimensions: visibleListFacetDimensions,
+      renderPersonAvailability: renderPersonAvailability,
+      setFacetState: function (hash) {
+        activeChips = parseFacetStateFromHash(hash);
+        return activeChips;
+      },
+      readTicketListRows: function () {
+        return readTicketListRows(buildTicketKeysSubquery([]));
+      },
+      ticketListColumnKeys: function () {
+        return createTicketListColumns().map(function (column) {
+          return column.key;
+        });
+      }
+    }));
   }
 
   if (document.readyState === 'loading') {

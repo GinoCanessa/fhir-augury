@@ -115,7 +115,121 @@ internal sealed class TicketSnapshotFixture
             Descriptor.TableCounts,
             Descriptor.CreatedAt,
             itemCount: 1,
-            receiptCount: 2);
+            receiptCount: 2,
+            publicationProof: Descriptor.PublicationProof);
+        await WriteDescriptorAsync(DescriptorPath, Descriptor);
+    }
+
+    public async Task AttachValidPublicationRefreshProofAsync(
+        DateTimeOffset sourceRefresh,
+        long sourceContentRevision)
+    {
+        if (Descriptor.SchemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new InvalidOperationException(
+                "Publication-refresh proof fixtures require snapshot schema v3.");
+        }
+
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadAsync(
+                DatabasePath);
+        string sourceRunId = Descriptor.RunId;
+        string refreshRunId = $"refresh-{Guid.NewGuid():N}";
+        string refreshItemPrefix = $"refresh-item-{Guid.NewGuid():N}-";
+        await using (SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                    TotalItems, CreatedAt, StartedAt, CompletedAt, SnapshotId)
+                SELECT @refreshRunId, ProcessorKind, AuthoringEpoch,
+                       'finalizing', 0,
+                       (SELECT COUNT(*) FROM prepared_tickets),
+                       @createdAt, @createdAt, NULL, @snapshotId
+                FROM authoring_runs
+                WHERE Id = @sourceRunId;
+
+                INSERT INTO authoring_run_items(
+                    Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision,
+                    Status, AcceptedReceiptId, AttemptCount, CreatedAt,
+                    StartedAt, CompletedAt)
+                SELECT @refreshItemPrefix || item.Id, @refreshRunId,
+                       item.BusinessKey,
+                       'maintenance:' || @refreshRunId || ':' || item.ItemKind,
+                       item.ExpectedSourceRevision, 'complete',
+                       item.AcceptedReceiptId, 0, @createdAt, @createdAt,
+                       @createdAt
+                FROM authoring_run_items item
+                INNER JOIN authoring_result_receipts receipt
+                    ON receipt.Id = item.AcceptedReceiptId
+                   AND receipt.RunId = item.RunId
+                   AND receipt.RunItemId = item.Id
+                INNER JOIN prepared_tickets ticket
+                    ON ticket.Key = item.BusinessKey COLLATE NOCASE;
+
+                UPDATE authoring_snapshot_provenance
+                SET RunId = @refreshRunId,
+                    ItemCount = (
+                        SELECT COUNT(*)
+                        FROM authoring_run_items
+                        WHERE RunId = @refreshRunId
+                    );
+                """,
+                ("@refreshRunId", refreshRunId),
+                ("@sourceRunId", sourceRunId),
+                ("@refreshItemPrefix", refreshItemPrefix),
+                ("@createdAt", Descriptor.CreatedAt.ToString("O")),
+                ("@snapshotId", Descriptor.SnapshotId));
+            await connection.CloseAsync();
+        }
+
+        AuthoringSnapshotPublicationProof proof = new(
+            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationContract.PublicationRefreshPurpose,
+            sourceRunId,
+            PreparedTicketPublicationContract.JiraSourceName,
+            sourceRefresh.ToUniversalTime(),
+            sourceContentRevision,
+            PublicDisplayNamePolicy.CurrentVersion,
+            fingerprints.Corpus,
+            fingerprints.Grouping,
+            Descriptor.CreatedAt.ToUniversalTime());
+        int itemCount;
+        await using (SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Mode=ReadOnly;Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT COUNT(*) FROM authoring_run_items WHERE RunId = @runId";
+            command.Parameters.AddWithValue("@runId", refreshRunId);
+            itemCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+        }
+        Descriptor = await CreateDescriptorAsync(
+            DatabasePath,
+            refreshRunId,
+            Descriptor.SnapshotId,
+            Descriptor.Sequence,
+            Descriptor.SchemaVersion,
+            Descriptor.TableCounts,
+            Descriptor.CreatedAt,
+            itemCount,
+            Descriptor.ReceiptCount,
+            proof);
+        await WriteDescriptorAsync(DescriptorPath, Descriptor);
+    }
+
+    public async Task SetPublicationProofAsync(
+        AuthoringSnapshotPublicationProof? proof)
+    {
+        Descriptor = Descriptor with
+        {
+            PublicationProof = proof,
+        };
         await WriteDescriptorAsync(DescriptorPath, Descriptor);
     }
 
@@ -228,7 +342,7 @@ internal sealed class TicketSnapshotFixture
                 'jira-1', 'FHIR-1001', 'FHIR-1001', 'Snapshot title', 'Open',
                 'Change Request', 'Self priority', 'Self resolution',
                 'self resolution plain', 'FHIR Infrastructure',
-                'FHIRInfrastructure', 'Self specification',
+                'FHIRInfrastructure', 'FHIR',
                 'https://jira.hl7.org/browse/FHIR-1001', 'Legacy Reporter',
                 'Legacy Assignee', @createdAt, 'resolved',
                 @peoplePolicyVersion);
@@ -303,7 +417,7 @@ internal sealed class TicketSnapshotFixture
                     'Change Request', 'Self CDS priority',
                     'Self CDS resolution', 'self CDS resolution plain',
                     'Clinical Decision Support', 'ClinicalDecisionSupport',
-                    'Self CDS specification',
+                    'CDS Hooks',
                     'https://jira.hl7.org/browse/CDS-2001', @createdAt,
                     'resolved', @peoplePolicyVersion);
                 INSERT INTO prepared_ticket_partition_receipts(
@@ -373,7 +487,7 @@ internal sealed class TicketSnapshotFixture
                 """
                 UPDATE prepared_tickets
                 SET RequestSummary =
-                        'Request FHIR-1002; embedded XFHIR-1003 stays text',
+                    'Request FHIR-1002 and BALLOT-12',
                     CommentSummary =
                         'Comment FHIR-1004 and FHIR-1005suffix stays text',
                     LinkedTicketSummary = 'Linked FHIR-2002',
@@ -407,7 +521,8 @@ internal sealed class TicketSnapshotFixture
                 VALUES
                     ('related-jira-1', 'FHIR-1001', 'FHIR-2002', 'linked', 'linked why'),
                     ('related-jira-2', 'FHIR-1001', 'fhir-2002', 'LINKED', 'duplicate'),
-                    ('related-jira-3', 'FHIR-1001', 'FHIR-2002', 'related', 'related why');
+                    ('related-jira-3', 'FHIR-1001', 'FHIR-2002', 'related', 'related why'),
+                    ('related-jira-4', 'FHIR-1001', 'BALLOT-77', 'related', 'ballot why');
                 INSERT INTO prepared_jira_hydration(
                     Id, TicketKey, JiraKey, Title, Status, Type, Resolution,
                     Url, Reporter, Assignee, HydratedAt, HydrationStatus,
@@ -736,7 +851,8 @@ internal sealed class TicketSnapshotFixture
         IReadOnlyDictionary<string, long> counts,
         DateTimeOffset createdAt,
         int itemCount,
-        int receiptCount)
+        int receiptCount,
+        AuthoringSnapshotPublicationProof? publicationProof = null)
         => new(
             "jira-fhir",
             runId,
@@ -750,7 +866,8 @@ internal sealed class TicketSnapshotFixture
             receiptCount,
             counts,
             Path.GetFileName(databasePath),
-            createdAt);
+            createdAt,
+            publicationProof);
 
     private static async Task<string> ComputeHashAsync(string path)
     {

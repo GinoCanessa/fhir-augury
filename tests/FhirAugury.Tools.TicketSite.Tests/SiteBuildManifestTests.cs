@@ -59,7 +59,14 @@ public sealed class SiteBuildManifestTests : IDisposable
                 0,
                 TimeSpan.Zero),
             manifest.JiraSourceLastSuccessfulRefreshAt);
-        Assert.Equal(1, manifest.RendererSchemaVersion);
+        Assert.Equal(2, manifest.RendererSchemaVersion);
+        Assert.NotNull(manifest.DiscussionReadiness);
+        Assert.False(manifest.DiscussionReadiness.IsReady);
+        Assert.Contains(
+            manifest.DiscussionReadiness.Reasons,
+            reason => reason.Code ==
+                DiscussionPublicationReadinessReasonCodes
+                    .LegacySnapshotSchema);
         Assert.Contains("site_metadata", manifest.TableCounts.Keys);
         Assert.Contains("ticket_people", manifest.TableCounts.Keys);
         Assert.Contains(

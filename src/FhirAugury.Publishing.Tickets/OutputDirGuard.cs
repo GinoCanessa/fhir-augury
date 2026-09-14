@@ -219,6 +219,9 @@ internal static class OutputDirGuard
         actual.JiraSourceLastSuccessfulRefreshAt ==
             expected.JiraSourceLastSuccessfulRefreshAt &&
         actual.RendererSchemaVersion == expected.RendererSchemaVersion &&
+        ReadinessMatches(
+            actual.DiscussionReadiness,
+            expected.DiscussionReadiness) &&
         actual.TableCounts.Count == expected.TableCounts.Count &&
         actual.TableCounts.All(pair =>
             expected.TableCounts.TryGetValue(pair.Key, out long value) &&
@@ -341,7 +344,8 @@ internal static class OutputDirGuard
         }
 
         if (expected.RendererSchemaVersion is not int rendererSchemaVersion ||
-            string.IsNullOrWhiteSpace(expected.DisplayTitle))
+            string.IsNullOrWhiteSpace(expected.DisplayTitle) ||
+            expected.DiscussionReadiness is null)
         {
             throw new InvalidOperationException(
                 "Staged preparer manifest is missing discussion presentation metadata.");
@@ -354,11 +358,20 @@ internal static class OutputDirGuard
             new ResolvedFilters(
                 expected.Filters.Spec,
                 expected.Filters.Project,
-                expected.Filters.Wg));
+                expected.Filters.Wg),
+            expected.DiscussionReadiness);
         TicketSitePresentation injectedPresentation =
             ReadInjectedPresentation(html);
-        if (validation.Presentation != manifestPresentation ||
-            injectedPresentation != manifestPresentation)
+        string expectedPresentationJson =
+            TicketSitePresentationJson.Serialize(manifestPresentation);
+        if (!string.Equals(
+                TicketSitePresentationJson.Serialize(validation.Presentation),
+                expectedPresentationJson,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                TicketSitePresentationJson.Serialize(injectedPresentation),
+                expectedPresentationJson,
+                StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 "Staged preparer presentation does not match its renderer database and manifest.");
@@ -381,6 +394,16 @@ internal static class OutputDirGuard
         }
         EnsureTableCountsMatch(kind, actualCounts, expectedCounts);
     }
+
+    private static bool ReadinessMatches(
+        DiscussionPublicationReadiness? actual,
+        DiscussionPublicationReadiness? expected)
+        => actual is null || expected is null
+            ? actual is null && expected is null
+            : string.Equals(
+                TicketSitePresentationJson.Serialize(actual),
+                TicketSitePresentationJson.Serialize(expected),
+                StringComparison.Ordinal);
 
     private static void EnsureTableCountsMatch(
         string kind,

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
 
@@ -93,6 +94,41 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             Assert.Equal(
                 "Tickets for Discussion",
                 validation.Presentation.SiteName);
+            Assert.False(validation.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                [
+                    DiscussionPublicationReadinessReasonCodes
+                        .LegacySnapshotSchema,
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingOrdinaryProvenance,
+                    DiscussionPublicationReadinessReasonCodes
+                        .MissingPeoplePolicyProof,
+                ],
+                validation.Presentation.Readiness.Reasons
+                    .Select(reason => reason.Code));
+            Assert.Equal(
+                7,
+                await ScalarAsync<long>(
+                    built.TempDbPath,
+                    "SELECT COUNT(*) FROM facet_dimensions"));
+            Assert.Equal(
+                ["project", "wg", "type", "artifact", "page", "impact", "spec"],
+                await ReadStringsAsync(
+                    built.TempDbPath,
+                    """
+                    SELECT Dimension
+                    FROM facet_dimensions
+                    ORDER BY SortOrder
+                    """));
+            Assert.Equal(
+                "by-project",
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT Route
+                    FROM facet_dimensions
+                    WHERE Dimension = 'project'
+                    """));
             Assert.Equal(
                 DiscussionRendererSchema.Tables
                     .Select(table => table.Name)
@@ -187,6 +223,16 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     built.TempDbPath,
                     """
                     SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'reporter'
+                    """));
+            Assert.Equal(
+                DiscussionRendererSchema.PersonUnavailable,
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT Availability
                     FROM ticket_people
                     WHERE TicketKey = 'FHIR-1001'
                       AND Role = 'reporter'
@@ -289,7 +335,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     """));
 
             Assert.Equal(
-                3,
+                4,
                 await ScalarAsync<long>(
                     built.TempDbPath,
                     "SELECT COUNT(*) FROM summary_sources"));
@@ -301,6 +347,15 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     SELECT Url
                     FROM summary_sources
                     WHERE SummaryKind = 'linked-jira'
+                    """));
+            Assert.Equal(
+                "https://jira.hl7.org/browse/BALLOT-77",
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT Url
+                    FROM summary_sources
+                    WHERE SourceKey = 'BALLOT-77'
                     """));
             Assert.Equal(
                 "FHIR \u203a Ticket discussion",
@@ -338,6 +393,151 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     FROM topic_members
                     ORDER BY OrderInContainer
                     """));
+        }
+
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task RefreshProofQualifiesFrozenSourceEvidenceAndFingerprints()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        DateTimeOffset frozenRefresh =
+            new(2026, 9, 14, 16, 45, 0, TimeSpan.Zero);
+        await fixture.AttachValidPublicationRefreshProofAsync(
+            frozenRefresh,
+            sourceContentRevision: 4242);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.True(built.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence.PublicationRefresh,
+                built.Presentation.Readiness.Evidence);
+            Assert.Equal(
+                4242,
+                built.Presentation.Readiness.JiraSourceContentRevision);
+            Assert.Equal(
+                frozenRefresh,
+                built.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Empty(built.Presentation.Readiness.Reasons);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath,
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        await fixture.SetPublicationProofAsync(
+            proof with
+            {
+                GroupingFingerprint = new string('0', 64),
+            });
+        DiscussionSiteDatabaseBuilder.BuildResult degraded =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.False(degraded.Presentation.Readiness.IsReady);
+            Assert.Null(
+                degraded.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Contains(
+                degraded.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidRefreshProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(degraded.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task RefreshProofRejectsUnreceiptedLiveTopicPartition()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                includeSecondTicket: true,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version,
+                useMultipleRuns: true);
+        await fixture.AttachValidPublicationRefreshProofAsync(
+            new DateTimeOffset(2026, 9, 14, 16, 45, 0, TimeSpan.Zero),
+            sourceContentRevision: 4242);
+        await ExecuteAsync(
+            fixture.DatabasePath,
+            """
+            INSERT INTO prepared_ticket_topics(
+                RowId, Id, WorkGroupClean, WorkGroupDisplay, Specification,
+                Type, ShortDescription, LongerDescription,
+                RenderOrderHint, SavedAt)
+            VALUES(
+                9001, 'topic-without-receipt', 'PatientAdministration',
+                'Patient Administration', 'FHIR', 'Change Request',
+                'Unreceipted live topic', 'Must invalidate publication proof',
+                1, '2026-09-14T16:45:00.0000000+00:00');
+            INSERT INTO prepared_ticket_topic_members(
+                RowId, Id, TopicRowId, TopicGroupRowId, TicketKey,
+                OrderInContainer)
+            VALUES(
+                9001, 'unreceipted-member-1', 9001, NULL, 'FHIR-1001', 0);
+            INSERT INTO prepared_ticket_topic_members(
+                RowId, Id, TopicRowId, TopicGroupRowId, TicketKey,
+                OrderInContainer)
+            VALUES(
+                9002, 'unreceipted-member-2', 9001, NULL, 'CDS-2001', 1);
+            """);
+        await fixture.RefreshDescriptorHashAsync();
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.Equal(
+                1,
+                await ScalarAsync<long>(
+                    built.TempDbPath,
+                    """
+                    SELECT COUNT(*)
+                    FROM topics
+                    WHERE Id = 'topic-without-receipt'
+                    """));
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Null(
+                built.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Contains(
+                built.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidRefreshProof);
         }
         finally
         {
@@ -388,6 +588,16 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     built.TempDbPath,
                     """
                     SELECT DisplayName
+                    FROM ticket_people
+                    WHERE TicketKey = 'FHIR-1001'
+                      AND Role = 'reporter'
+                    """));
+            Assert.Equal(
+                DiscussionRendererSchema.PersonAvailable,
+                await ScalarAsync<string>(
+                    built.TempDbPath,
+                    """
+                    SELECT Availability
                     FROM ticket_people
                     WHERE TicketKey = 'FHIR-1001'
                       AND Role = 'reporter'
@@ -859,6 +1069,29 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                 filters);
         try
         {
+            await ExecuteAsync(
+                built.TempDbPath,
+                """
+                UPDATE facet_dimensions
+                SET Route = 'not-the-catalog-route'
+                WHERE Dimension = 'impact';
+                """);
+            InvalidOperationException catalogException =
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => DiscussionSiteDatabaseValidator.ValidateAsync(
+                        built.TempDbPath));
+            Assert.Contains(
+                "facet dimension",
+                catalogException.Message,
+                StringComparison.OrdinalIgnoreCase);
+            await ExecuteAsync(
+                built.TempDbPath,
+                """
+                UPDATE facet_dimensions
+                SET Route = 'by-impact'
+                WHERE Dimension = 'impact';
+                """);
+
             await ExecuteAsync(
                 built.TempDbPath,
                 $"""

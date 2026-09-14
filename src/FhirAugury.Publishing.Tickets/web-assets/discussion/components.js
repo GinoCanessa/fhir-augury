@@ -64,7 +64,8 @@
       var column = columns[index];
       var th = document.createElement('th');
       th.scope = 'col';
-      th.className = 'sortable';
+      th.className = 'sortable' +
+        (column.className ? ' ' + column.className : '');
       th.setAttribute('aria-sort', 'none');
 
       var button = document.createElement('button');
@@ -198,7 +199,7 @@
 
   function appendJiraLinkedText(parent, value) {
     var text = asText(value);
-    var pattern = /FHIR-[0-9]+/g;
+    var pattern = /[A-Za-z][A-Za-z0-9]*-[0-9]+/g;
     var cursor = 0;
     var match;
     while ((match = pattern.exec(text)) !== null) {
@@ -212,8 +213,9 @@
         parent.appendChild(document.createTextNode(text.slice(cursor, start)));
       }
       var anchor = document.createElement('a');
+      var canonicalKey = match[0].toUpperCase();
       anchor.href = 'https://jira.hl7.org/browse/' +
-        encodeURIComponent(match[0]);
+        encodeURIComponent(canonicalKey);
       anchor.target = '_blank';
       anchor.rel = 'noopener noreferrer';
       anchor.textContent = match[0];

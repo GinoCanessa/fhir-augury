@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using FhirAugury.Common.Api;
 
 namespace FhirAugury.Common.Text;
 
@@ -96,7 +97,13 @@ public static partial class JiraTicketExtractor
         // Pass 1: URL matches (canonical PREFIX-N already in capture group)
         foreach (Match match in UnifiedUrlPattern().Matches(text))
         {
-            string jiraKey = match.Groups[1].Value.ToUpperInvariant();
+            if (!JiraIssueKey.TryParse(
+                match.Groups[1].Value,
+                out JiraIssueKey? parsedKey))
+            {
+                continue;
+            }
+            string jiraKey = parsedKey.Value;
             RecordNumber(jiraKey, seenNumbers);
             if (seen.Add(jiraKey))
                 results.Add(new JiraTicketMatch(jiraKey, jiraKey, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
@@ -123,7 +130,13 @@ public static partial class JiraTicketExtractor
             if (int.TryParse(number, out int parsedNumber))
                 seenNumbers.Add(parsedNumber);
 
-            string jiraKey = $"{canonicalPrefix}-{number}";
+            if (!JiraIssueKey.TryParse(
+                $"{canonicalPrefix}-{number}",
+                out JiraIssueKey? parsedKey))
+            {
+                continue;
+            }
+            string jiraKey = parsedKey.Value;
             if (seen.Add(jiraKey))
                 results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
         }
@@ -145,7 +158,13 @@ public static partial class JiraTicketExtractor
                 {
                     if (value < project.Lower || value > project.Upper) continue;
 
-                    string jiraKey = $"{project.ProjectKey.ToUpperInvariant()}-{value}";
+                    if (!JiraIssueKey.TryParse(
+                        $"{project.ProjectKey}-{value}",
+                        out JiraIssueKey? parsedKey))
+                    {
+                        break;
+                    }
+                    string jiraKey = parsedKey.Value;
                     if (seen.Add(jiraKey))
                         results.Add(new JiraTicketMatch(jiraKey, match.Value, CrossRefPatterns.GetSurroundingText(text, match.Index, 160)));
                     break;

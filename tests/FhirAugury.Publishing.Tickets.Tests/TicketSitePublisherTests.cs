@@ -66,6 +66,13 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Equal(
             DiscussionRendererSchema.Version,
             result.Manifest.RendererSchemaVersion);
+        Assert.NotNull(result.Manifest.DiscussionReadiness);
+        Assert.False(result.Manifest.DiscussionReadiness.IsReady);
+        Assert.Contains(
+            result.Manifest.DiscussionReadiness.Reasons,
+            reason => reason.Code ==
+                DiscussionPublicationReadinessReasonCodes
+                    .MissingOrdinaryProvenance);
         Assert.Equal(1, result.Manifest.IncludedItemCount);
         Assert.Equal(1, result.Manifest.TableCounts["tickets"]);
         Assert.DoesNotContain(
@@ -77,6 +84,12 @@ public sealed class TicketSitePublisherTests : IDisposable
             TicketSiteManifest.FileName)));
         Assert.True(File.Exists(Path.Combine(output, "index.html")));
         Assert.False(Directory.Exists(Path.Combine(output, "applying")));
+        string chooser = await File.ReadAllTextAsync(
+            Path.Combine(output, "index.html"));
+        Assert.Contains(
+            "Publication readiness: degraded",
+            chooser,
+            StringComparison.Ordinal);
         string html = await File.ReadAllTextAsync(Path.Combine(
             output,
             "discussion",
@@ -407,6 +420,72 @@ public sealed class TicketSitePublisherTests : IDisposable
     }
 
     [Fact]
+    public async Task PublisherValidatesRefreshProofAgainstPublishedCorpus()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        DateTimeOffset frozenRefresh =
+            new(2026, 9, 14, 17, 15, 0, TimeSpan.Zero);
+        await fixture.AttachValidPublicationRefreshProofAsync(
+            frozenRefresh,
+            sourceContentRevision: 9001);
+        VerifiedAuthoringSnapshotPair pair =
+            await fixture.CreateVerifiedPairAsync("Preparer");
+
+        TicketSitePublishResult ready =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    pair,
+                    TicketSiteKind.Discussion,
+                    Path.Combine(_root, "refresh-proof-ready"),
+                    "Tickets"));
+        Assert.True(ready.Manifest.DiscussionReadiness?.IsReady);
+        Assert.Equal(
+            9001,
+            ready.Manifest.DiscussionReadiness
+                ?.JiraSourceContentRevision);
+        Assert.Equal(
+            frozenRefresh,
+            ready.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.DoesNotContain(
+            ready.Warnings,
+            warning => warning.Contains(
+                "readiness is degraded",
+                StringComparison.Ordinal));
+
+        VerifiedAuthoringSnapshotPair drifted =
+            await MutateAndReverifyAsync(
+                pair,
+                """
+                UPDATE authoring_run_items
+                SET ItemKind = 'changed-ticket-kind'
+                WHERE ItemKind = 'ticket';
+                """);
+        TicketSitePublishResult degraded =
+            await new TicketSitePublisher().PublishAsync(
+                new TicketSitePublishRequest(
+                    drifted,
+                    TicketSiteKind.Discussion,
+                    Path.Combine(_root, "refresh-proof-drifted"),
+                    "Tickets"));
+        Assert.False(degraded.Manifest.DiscussionReadiness?.IsReady);
+        Assert.Null(degraded.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Contains(
+            degraded.Manifest.DiscussionReadiness!.Reasons,
+            reason => reason.Code ==
+                DiscussionPublicationReadinessReasonCodes
+                    .InvalidRefreshProof);
+        Assert.Contains(
+            degraded.Warnings,
+            warning => warning.Contains(
+                DiscussionPublicationReadinessReasonCodes
+                    .InvalidRefreshProof,
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PublishesApplyingSiteFromVerifiedPair()
     {
         TicketSnapshotFixture fixture =
@@ -713,6 +792,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.True(oldManifest.Remove("displayTitle"));
         Assert.True(oldManifest.Remove("jiraSourceLastSuccessfulRefreshAt"));
         Assert.True(oldManifest.Remove("rendererSchemaVersion"));
+        Assert.True(oldManifest.Remove("discussionReadiness"));
         await File.WriteAllTextAsync(
             discussionManifestPath,
             oldManifest.ToJsonString(JsonOptions));
@@ -721,6 +801,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Null(deserializedOldManifest.DisplayTitle);
         Assert.Null(deserializedOldManifest.JiraSourceLastSuccessfulRefreshAt);
         Assert.Null(deserializedOldManifest.RendererSchemaVersion);
+        Assert.Null(deserializedOldManifest.DiscussionReadiness);
         await new TicketSitePublisher().PublishAsync(
             new TicketSitePublishRequest(
                 plannerPair,
@@ -788,7 +869,11 @@ public sealed class TicketSitePublisherTests : IDisposable
             componentsScript,
             StringComparison.Ordinal);
         Assert.Contains(
-            "/FHIR-[0-9]+/g",
+            "/[A-Za-z][A-Za-z0-9]*-[0-9]+/g",
+            componentsScript,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "canonicalKey = match[0].toUpperCase()",
             componentsScript,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -803,6 +888,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         foreach (string rendererTable in new[]
         {
             "site_metadata",
+            "facet_dimensions",
             "tickets",
             "ticket_people",
             "ticket_facets",
@@ -852,6 +938,15 @@ public sealed class TicketSitePublisherTests : IDisposable
             StringComparison.Ordinal);
         Assert.Contains(
             "overflow-x: auto",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(".count-column", stylesheet, StringComparison.Ordinal);
+        Assert.Contains(
+            "white-space: nowrap",
+            stylesheet,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "min-inline-size:",
             stylesheet,
             StringComparison.Ordinal);
     }
@@ -1814,20 +1909,14 @@ public sealed class TicketSitePublisherTests : IDisposable
 
     private static void AssertFacetHashContract(string script)
     {
-        foreach (string parameter in new[]
-        {
-            "spec: 'specKey'",
-            "project: 'projectKey'",
-            "wg: 'wgKey'",
-            "type: 'typeKey'",
-            "artifact: 'artifactKey'",
-            "page: 'pageKey'",
-            "impact: 'impactKey'",
-        })
-        {
-            Assert.Contains(parameter, script, StringComparison.Ordinal);
-        }
-
+        Assert.Contains(
+            "FROM facet_dimensions ORDER BY SortOrder",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "facetKeyParameters[dimensionKey] = dimensionKey + 'Key';",
+            script,
+            StringComparison.Ordinal);
         Assert.Contains(
             "parameters.getAll(facetKeyParameters[currentDimension])",
             script,
@@ -1854,6 +1943,22 @@ public sealed class TicketSitePublisherTests : IDisposable
             StringComparison.Ordinal);
         Assert.Contains(
             "removeChipValue(capturedDimension, capturedValueKey);",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "function withFacetSelection(dimension, valueKey, state)",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "return Object.freeze(frozen);",
+            script,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "visibleListFacetDimensions",
+            script,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "var Crosscuts = {",
             script,
             StringComparison.Ordinal);
     }

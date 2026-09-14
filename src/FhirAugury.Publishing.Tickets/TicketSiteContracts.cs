@@ -78,10 +78,21 @@ internal static class TicketSitePresentationJson
     public static string Serialize(TicketSitePresentation presentation)
         => JsonSerializer.Serialize(presentation, SerializerOptions);
 
+    public static string Serialize(DiscussionPublicationReadiness readiness)
+        => JsonSerializer.Serialize(readiness, SerializerOptions);
+
     public static TicketSitePresentation Deserialize(string json)
         => JsonSerializer.Deserialize<TicketSitePresentation>(
             json,
             SerializerOptions)
         ?? throw new InvalidOperationException(
             "The discussion presentation payload is empty.");
+
+    public static DiscussionPublicationReadiness DeserializeReadiness(
+        string json)
+        => JsonSerializer.Deserialize<DiscussionPublicationReadiness>(
+            json,
+            SerializerOptions)
+        ?? throw new InvalidOperationException(
+            "The discussion publication-readiness payload is empty.");
 }

@@ -16,8 +16,8 @@ public static partial class ValueFormatDetector
         if (string.IsNullOrWhiteSpace(value))
             return null;
 
-        // Jira key: FHIR-50783, GF-1234 (uppercase project + dash + digits)
-        if (JiraKeyRegex().IsMatch(value))
+        // Jira key: FHIR-50783, BALLOT-1234 (project + dash + digits)
+        if (JiraIssueKey.TryParse(value, out _))
             return SourceSystems.Jira;
 
         // GitHub issue: owner/repo#42
@@ -51,7 +51,8 @@ public static partial class ValueFormatDetector
     /// <summary>
     /// Returns true if the value matches a Jira key pattern.
     /// </summary>
-    public static bool IsJiraKey(string value) => JiraKeyRegex().IsMatch(value);
+    public static bool IsJiraKey(string value)
+        => JiraIssueKey.TryParse(value, out _);
 
     /// <summary>
     /// Returns true if the value matches a GitHub issue pattern (owner/repo#N).
@@ -84,9 +85,6 @@ public static partial class ValueFormatDetector
         issueNumber = 0;
         return false;
     }
-
-    [GeneratedRegex(@"^[A-Z][A-Z0-9]+-\d+$")]
-    private static partial Regex JiraKeyRegex();
 
     [GeneratedRegex(@"^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)#(\d+)$")]
     private static partial Regex GitHubIssueRegex();

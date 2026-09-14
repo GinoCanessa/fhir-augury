@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Publishing.Tickets;
@@ -14,6 +16,27 @@ internal sealed record DiscussionSiteProjection(
 internal readonly record struct DiscussionSourceCapabilities(
     bool HasSourceProvenance,
     bool HasTrustedPeople);
+
+public sealed record PreparedTicketPublicationFingerprints(
+    string Corpus,
+    string Grouping);
+
+public static class PreparedTicketPublicationFingerprintReader
+{
+    public static Task<PreparedTicketPublicationFingerprints> ReadAsync(
+        string sourceDatabasePath,
+        int contractVersion =
+            PreparedTicketPublicationContract.CurrentVersion,
+        CancellationToken ct = default)
+        => DiscussionSiteDatabaseBuilder.ComputePublicationFingerprintsAsync(
+            sourceDatabasePath,
+            contractVersion,
+            ct);
+}
+
+internal readonly record struct DiscussionOrdinaryProvenance(
+    bool IsComplete,
+    DateTimeOffset? LastSuccessfulRefreshAt);
 
 internal static class DiscussionSiteDatabaseBuilder
 {
@@ -33,9 +56,9 @@ internal static class DiscussionSiteDatabaseBuilder
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        return BuildAsync(
+        return BuildAsyncCore(
             sourceDatabasePath,
-            descriptor.SchemaVersion,
+            descriptor,
             baseTitle,
             filters,
             ct);
@@ -54,7 +77,29 @@ internal static class DiscussionSiteDatabaseBuilder
             baseTitle,
             filters,
             ct).ConfigureAwait(false);
+        return await BuildProjectionAsync(projection, ct).ConfigureAwait(false);
+    }
 
+    private static async Task<BuildResult> BuildAsyncCore(
+        string sourceDatabasePath,
+        AuthoringSnapshotDescriptor descriptor,
+        string baseTitle,
+        ResolvedFilters filters,
+        CancellationToken ct)
+    {
+        DiscussionSiteProjection projection = await CreateProjectionAsync(
+            sourceDatabasePath,
+            descriptor,
+            baseTitle,
+            filters,
+            ct).ConfigureAwait(false);
+        return await BuildProjectionAsync(projection, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<BuildResult> BuildProjectionAsync(
+        DiscussionSiteProjection projection,
+        CancellationToken ct)
+    {
         string tempPath = Path.GetTempFileName();
         try
         {
@@ -108,6 +153,38 @@ internal static class DiscussionSiteDatabaseBuilder
         string baseTitle,
         ResolvedFilters filters,
         CancellationToken ct)
+        => await CreateProjectionAsync(
+            sourceDatabasePath,
+            sourceSchemaVersion,
+            descriptor: null,
+            baseTitle,
+            filters,
+            ct).ConfigureAwait(false);
+
+    internal static async Task<DiscussionSiteProjection> CreateProjectionAsync(
+        string sourceDatabasePath,
+        AuthoringSnapshotDescriptor descriptor,
+        string baseTitle,
+        ResolvedFilters filters,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return await CreateProjectionAsync(
+            sourceDatabasePath,
+            descriptor.SchemaVersion,
+            descriptor,
+            baseTitle,
+            filters,
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task<DiscussionSiteProjection> CreateProjectionAsync(
+        string sourceDatabasePath,
+        int sourceSchemaVersion,
+        AuthoringSnapshotDescriptor? descriptor,
+        string baseTitle,
+        ResolvedFilters filters,
+        CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDatabasePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(baseTitle);
@@ -139,16 +216,20 @@ internal static class DiscussionSiteDatabaseBuilder
                     ct).ConfigureAwait(false));
         }
 
-        DateTimeOffset? freshness = await ReadCorpusFreshnessAsync(
-            source,
-            tickets,
-            capabilities,
-            ct).ConfigureAwait(false);
+        (DateTimeOffset? freshness, DiscussionPublicationReadiness readiness) =
+            await ReadPublicationReadinessAsync(
+                source,
+                sourceSchemaVersion,
+                descriptor,
+                tickets,
+                capabilities,
+                ct).ConfigureAwait(false);
         TicketSitePresentation presentation =
             TicketSitePresentation.CreateDiscussion(
                 baseTitle,
                 freshness,
-                filters);
+                filters,
+                readiness);
 
         Dictionary<string, List<object?[]>> rows =
             DiscussionRendererSchema.Tables.ToDictionary(
@@ -163,10 +244,23 @@ internal static class DiscussionSiteDatabaseBuilder
             presentation.JiraSourceLastSuccessfulRefreshAt?.ToString(
                 "O",
                 CultureInfo.InvariantCulture),
+            TicketSitePresentationJson.Serialize(presentation.Readiness),
             filters.Specification,
             filters.Project,
             filters.WorkGroup,
         ]);
+        foreach (DiscussionFacetDimension dimension in
+                 DiscussionFacetCatalog.Dimensions)
+        {
+            rows["facet_dimensions"].Add(
+            [
+                dimension.Dimension,
+                dimension.Route,
+                dimension.Label,
+                dimension.SortOrder,
+                dimension.ShowInList ? 1 : 0,
+            ]);
+        }
 
         Dictionary<string, SourceTicket> ticketByKey = tickets.ToDictionary(
             ticket => ticket.Key,
@@ -415,6 +509,8 @@ internal static class DiscussionSiteDatabaseBuilder
             Assignee = NormalizeTrustedDisplayName(
                 ReadNullableString(reader, 36),
                 ReadNullableInt64(reader, 37)),
+            PublicDisplayNamePolicyVersion =
+                ReadNullableInt64(reader, 37),
             SourceProject = ReadNullableString(reader, 38),
             SourceLastSuccessfulRefreshAt = ReadNullableString(reader, 39),
             SourceContentRevision = ReadNullableInt64(reader, 40),
@@ -432,7 +528,267 @@ internal static class DiscussionSiteDatabaseBuilder
         return ticket;
     }
 
-    private static async Task<DateTimeOffset?> ReadCorpusFreshnessAsync(
+    private static async Task<(
+        DateTimeOffset? Freshness,
+        DiscussionPublicationReadiness Readiness)>
+        ReadPublicationReadinessAsync(
+            SqliteConnection source,
+            int sourceSchemaVersion,
+            AuthoringSnapshotDescriptor? descriptor,
+            IReadOnlyList<SourceTicket> tickets,
+            DiscussionSourceCapabilities capabilities,
+            CancellationToken ct)
+    {
+        List<string> reasonCodes = [];
+        bool currentPeoplePolicy =
+            capabilities.HasTrustedPeople &&
+            tickets.All(ticket =>
+                ticket.PublicDisplayNamePolicyVersion ==
+                    PublicDisplayNamePolicy.CurrentVersion) &&
+            await HasCurrentPeoplePolicyForTicketsAsync(
+                source,
+                tickets,
+                ct).ConfigureAwait(false);
+        if (sourceSchemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            reasonCodes.Add(
+                DiscussionPublicationReadinessReasonCodes
+                    .LegacySnapshotSchema);
+        }
+        if (!currentPeoplePolicy)
+        {
+            reasonCodes.Add(
+                DiscussionPublicationReadinessReasonCodes
+                    .MissingPeoplePolicyProof);
+        }
+
+        if (descriptor?.PublicationProof is
+            AuthoringSnapshotPublicationProof proof)
+        {
+            bool valid = await IsValidRefreshProofAsync(
+                source,
+                descriptor,
+                proof,
+                currentPeoplePolicy,
+                ct).ConfigureAwait(false);
+            if (!valid)
+            {
+                reasonCodes.Add(
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidRefreshProof);
+            }
+
+            DiscussionPublicationReadiness readiness =
+                DiscussionPublicationReadiness.Create(
+                    DiscussionPublicationReadinessEvidence.PublicationRefresh,
+                    valid ? proof.SourceContentRevision : null,
+                    currentPeoplePolicy
+                        ? PublicDisplayNamePolicy.CurrentVersion
+                        : null,
+                    reasonCodes);
+            return (
+                valid
+                    ? proof.SourceLastSuccessfulRefreshAt.ToUniversalTime()
+                    : null,
+                readiness);
+        }
+
+        DiscussionOrdinaryProvenance ordinary =
+            await ReadOrdinaryProvenanceAsync(
+                source,
+                tickets,
+                capabilities,
+                ct).ConfigureAwait(false);
+        if (!ordinary.IsComplete)
+        {
+            reasonCodes.Add(
+                DiscussionPublicationReadinessReasonCodes
+                    .MissingOrdinaryProvenance);
+        }
+        return (
+            ordinary.LastSuccessfulRefreshAt,
+            DiscussionPublicationReadiness.Create(
+                DiscussionPublicationReadinessEvidence.OrdinarySnapshot,
+                jiraSourceContentRevision: null,
+                currentPeoplePolicy
+                    ? PublicDisplayNamePolicy.CurrentVersion
+                    : null,
+                reasonCodes));
+    }
+
+    private static async Task<bool> IsValidRefreshProofAsync(
+        SqliteConnection source,
+        AuthoringSnapshotDescriptor descriptor,
+        AuthoringSnapshotPublicationProof proof,
+        bool currentPeoplePolicy,
+        CancellationToken ct)
+    {
+        try
+        {
+            PreparedTicketPublicationContract.EnsureSupportedVersion(
+                proof.ContractVersion);
+            if (descriptor.SchemaVersion !=
+                    PreparedTicketSnapshotSchemaV3.Version ||
+                !string.Equals(
+                    descriptor.ProcessorKind,
+                    PreparedTicketSnapshotSchemaV3.ProcessorKind,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .PublicationRefreshPurpose,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.SourceName,
+                    PreparedTicketPublicationContract.JiraSourceName,
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(proof.SourceRunId) ||
+                string.Equals(
+                    proof.SourceRunId,
+                    descriptor.RunId,
+                    StringComparison.Ordinal) ||
+                proof.SourceLastSuccessfulRefreshAt.Offset != TimeSpan.Zero ||
+                proof.CapturedAt.Offset != TimeSpan.Zero ||
+                proof.SourceContentRevision < 0 ||
+                proof.PublicDisplayNamePolicyVersion !=
+                    PublicDisplayNamePolicy.CurrentVersion ||
+                !currentPeoplePolicy ||
+                !await HasCurrentPeoplePolicyForEntireCorpusAsync(
+                    source,
+                    ct).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            long matchingRuns = await ScalarInt64Async(
+                source,
+                """
+                SELECT COUNT(*)
+                FROM authoring_runs
+                WHERE ProcessorKind = @processorKind
+                  AND Id IN (@descriptorRunId, @sourceRunId)
+                """,
+                ct,
+                ("@processorKind", descriptor.ProcessorKind),
+                ("@descriptorRunId", descriptor.RunId),
+                ("@sourceRunId", proof.SourceRunId))
+                .ConfigureAwait(false);
+            if (matchingRuns != 2)
+            {
+                return false;
+            }
+
+            PreparedTicketPublicationFingerprints fingerprints =
+                await ComputePublicationFingerprintsAsync(
+                    source,
+                    proof.ContractVersion,
+                    ct).ConfigureAwait(false);
+            return string.Equals(
+                       proof.CorpusFingerprint,
+                       fingerprints.Corpus,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       proof.GroupingFingerprint,
+                       fingerprints.Grouping,
+                       StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or
+            NotSupportedException or FormatException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool>
+        HasCurrentPeoplePolicyForEntireCorpusAsync(
+            SqliteConnection source,
+            CancellationToken ct)
+    {
+        long invalidRows = await ScalarInt64Async(
+            source,
+            """
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM prepared_tickets ticket
+                    LEFT JOIN prepared_ticket_hydration parent
+                        ON parent.TicketKey = ticket.Key COLLATE NOCASE
+                    WHERE parent.TicketKey IS NULL
+                       OR parent.PublicDisplayNamePolicyVersion <> @policy
+                       OR parent.PublicDisplayNamePolicyVersion IS NULL
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM prepared_tickets ticket
+                    LEFT JOIN prepared_jira_hydration self
+                        ON self.TicketKey = ticket.Key COLLATE NOCASE
+                       AND self.JiraKey = self.TicketKey COLLATE NOCASE
+                    WHERE self.TicketKey IS NULL
+                       OR self.PublicDisplayNamePolicyVersion <> @policy
+                       OR self.PublicDisplayNamePolicyVersion IS NULL
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM prepared_ticket_in_person_requesters
+                    WHERE PublicDisplayNamePolicyVersion <> @policy
+                       OR PublicDisplayNamePolicyVersion IS NULL
+                )
+            """,
+            ct,
+            ("@policy", PublicDisplayNamePolicy.CurrentVersion))
+            .ConfigureAwait(false);
+        return invalidRows == 0;
+    }
+
+    private static async Task<bool> HasCurrentPeoplePolicyForTicketsAsync(
+        SqliteConnection source,
+        IReadOnlyList<SourceTicket> tickets,
+        CancellationToken ct)
+    {
+        foreach (SourceTicket ticket in tickets)
+        {
+            long invalidRows = await ScalarInt64Async(
+                source,
+                """
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM prepared_jira_hydration
+                        WHERE TicketKey = @ticketKey COLLATE NOCASE
+                          AND JiraKey = TicketKey COLLATE NOCASE
+                          AND (
+                              PublicDisplayNamePolicyVersion <> @policy
+                              OR PublicDisplayNamePolicyVersion IS NULL
+                          )
+                    )
+                    +
+                    (
+                        SELECT COUNT(*)
+                        FROM prepared_ticket_in_person_requesters
+                        WHERE TicketKey = @ticketKey COLLATE NOCASE
+                          AND (
+                              PublicDisplayNamePolicyVersion <> @policy
+                              OR PublicDisplayNamePolicyVersion IS NULL
+                          )
+                    )
+                """,
+                ct,
+                ("@ticketKey", ticket.Key),
+                ("@policy", PublicDisplayNamePolicy.CurrentVersion))
+                .ConfigureAwait(false);
+            if (invalidRows != 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static async Task<DiscussionOrdinaryProvenance>
+        ReadOrdinaryProvenanceAsync(
         SqliteConnection source,
         IReadOnlyList<SourceTicket> tickets,
         DiscussionSourceCapabilities capabilities,
@@ -441,7 +797,9 @@ internal static class DiscussionSiteDatabaseBuilder
         if (!capabilities.HasSourceProvenance ||
             tickets.Count == 0)
         {
-            return null;
+            return new DiscussionOrdinaryProvenance(
+                IsComplete: false,
+                LastSuccessfulRefreshAt: null);
         }
 
         bool complete = true;
@@ -520,7 +878,9 @@ internal static class DiscussionSiteDatabaseBuilder
                 stableAuthoringRefresh.ToUniversalTime());
         }
 
-        return complete ? maximum : null;
+        return new DiscussionOrdinaryProvenance(
+            complete,
+            complete ? maximum : null);
     }
 
     private static async Task<IReadOnlyList<string>> ReadAcceptedRunIdsAsync(
@@ -560,6 +920,527 @@ internal static class DiscussionSiteDatabaseBuilder
             runIds.Add(reader.GetString(0));
         }
         return runIds;
+    }
+
+    internal static async Task<PreparedTicketPublicationFingerprints>
+        ComputePublicationFingerprintsAsync(
+            string sourceDatabasePath,
+            int contractVersion =
+                PreparedTicketPublicationContract.CurrentVersion,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDatabasePath);
+        await using SqliteConnection source = OpenReadOnly(sourceDatabasePath);
+        await source.OpenAsync(ct).ConfigureAwait(false);
+        return await ComputePublicationFingerprintsAsync(
+            source,
+            contractVersion,
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task<PreparedTicketPublicationFingerprints>
+        ComputePublicationFingerprintsAsync(
+            SqliteConnection source,
+            int contractVersion,
+            CancellationToken ct)
+    {
+        IReadOnlyList<PreparedTicketPublicationCorpusItem> corpus =
+            await ReadPublicationCorpusAsync(source, ct).ConfigureAwait(false);
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition> grouping =
+            await ReadGroupingFingerprintsAsync(
+                source,
+                contractVersion,
+                ct).ConfigureAwait(false);
+        return new PreparedTicketPublicationFingerprints(
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                corpus,
+                contractVersion),
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                grouping,
+                contractVersion));
+    }
+
+    private static async Task<
+        IReadOnlyList<PreparedTicketPublicationCorpusItem>>
+        ReadPublicationCorpusAsync(
+            SqliteConnection source,
+            CancellationToken ct)
+    {
+        List<PreparedTicketPublicationCorpusItem> items = [];
+        await using SqliteCommand command = source.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ticket.Key, receipt.Id, item.Id, item.RunId,
+                   item.ItemKind, item.ExpectedSourceRevision
+            FROM prepared_tickets ticket
+            INNER JOIN authoring_run_items item
+                ON item.BusinessKey = ticket.Key COLLATE NOCASE
+               AND item.AcceptedReceiptId IS NOT NULL
+               AND LOWER(item.Status) IN ('complete','superseded')
+            INNER JOIN authoring_result_receipts receipt
+                ON receipt.Id = item.AcceptedReceiptId
+               AND receipt.RunId = item.RunId
+               AND receipt.RunItemId = item.Id
+               AND receipt.BusinessKey = item.BusinessKey COLLATE NOCASE
+               AND receipt.ExpectedSourceRevision =
+                   item.ExpectedSourceRevision
+               AND receipt.ObservedSourceRevision =
+                   receipt.ExpectedSourceRevision
+            INNER JOIN authoring_runs run
+                ON run.Id = item.RunId
+               AND run.ProcessorKind = 'jira-fhir'
+               AND run.AuthoringEpoch = receipt.AuthoringEpoch
+            ORDER BY ticket.Key COLLATE NOCASE, ticket.Key,
+                     receipt.Id, item.Id, item.RunId
+            """;
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            items.Add(
+                new PreparedTicketPublicationCorpusItem(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetString(5)));
+        }
+
+        long ticketCount = await ScalarInt64Async(
+            source,
+            "SELECT COUNT(*) FROM prepared_tickets",
+            ct).ConfigureAwait(false);
+        if (items.Count != ticketCount ||
+            items.Select(item => item.TicketKey)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() != items.Count)
+        {
+            throw new InvalidOperationException(
+                "The prepared-ticket publication corpus is not bound one-to-one to accepted receipts.");
+        }
+        return items.AsReadOnly();
+    }
+
+    private static async Task<
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition>>
+        ReadGroupingFingerprintsAsync(
+            SqliteConnection source,
+            int contractVersion,
+            CancellationToken ct)
+    {
+        HashSet<GroupingPartitionCoordinate> receiptPartitions = [];
+        await using (SqliteCommand command = source.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT PartitionKey
+                FROM prepared_ticket_partition_receipts
+                ORDER BY PersistedAt DESC, RunId DESC, StageId DESC,
+                         PartitionKey
+                """;
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                receiptPartitions.Add(
+                    ParseGroupingPartitionKey(reader.GetString(0)));
+            }
+        }
+
+        HashSet<GroupingPartitionCoordinate> currentPartitions =
+            await ReadCurrentGroupingPartitionsAsync(
+                source,
+                ct).ConfigureAwait(false);
+        if (!receiptPartitions.SetEquals(currentPartitions))
+        {
+            throw new InvalidOperationException(
+                "Prepared-ticket retained partition receipts do not exactly cover the current grouping partitions.");
+        }
+
+        List<PreparedTicketPublicationGroupingPartition> fingerprints = [];
+        foreach (GroupingPartitionCoordinate partition in currentPartitions
+            .OrderBy(FormatGroupingPartitionKey, StringComparer.Ordinal))
+        {
+            string partitionKey = FormatGroupingPartitionKey(partition);
+            PreparedTicketGroupingPayload payload =
+                await ReadGroupingPartitionAsync(
+                    source,
+                    partitionKey,
+                    ct).ConfigureAwait(false);
+            fingerprints.Add(
+                new PreparedTicketPublicationGroupingPartition(
+                    partitionKey,
+                    PreparedTicketPublicationContract
+                        .ComputeGroupingPartitionFingerprint(
+                            payload,
+                            contractVersion)));
+        }
+        return fingerprints.AsReadOnly();
+    }
+
+    private static async Task<HashSet<GroupingPartitionCoordinate>>
+        ReadCurrentGroupingPartitionsAsync(
+            SqliteConnection source,
+            CancellationToken ct)
+    {
+        HashSet<GroupingPartitionCoordinate> partitions = [];
+        await using (SqliteCommand command = source.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT self.WorkGroupClean,
+                       self.Specification,
+                       self.Type
+                FROM prepared_tickets ticket
+                INNER JOIN prepared_jira_hydration self
+                    ON self.TicketKey = ticket.Key COLLATE NOCASE
+                   AND self.JiraKey = self.TicketKey COLLATE NOCASE
+                ORDER BY ticket.Key COLLATE NOCASE, ticket.Key
+                """;
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                string? workGroupClean = ReadNullableString(reader, 0);
+                string? type = ReadNullableString(reader, 2);
+                if (string.IsNullOrWhiteSpace(workGroupClean) ||
+                    string.IsNullOrWhiteSpace(type))
+                {
+                    continue;
+                }
+                partitions.Add(
+                    new GroupingPartitionCoordinate(
+                        workGroupClean.Trim(),
+                        NormalizeGroupingPartitionValue(
+                            ReadNullableString(reader, 1),
+                            "Unspecified"),
+                        type.Trim()));
+            }
+        }
+
+        await using (SqliteCommand command = source.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT DISTINCT WorkGroupClean, Specification, Type
+                FROM prepared_ticket_topics
+                ORDER BY WorkGroupClean, Specification, Type
+                """;
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                string workGroupClean = reader.GetString(0);
+                string specification = reader.GetString(1);
+                string type = reader.GetString(2);
+                if (string.IsNullOrWhiteSpace(workGroupClean) ||
+                    string.IsNullOrWhiteSpace(type))
+                {
+                    throw new InvalidOperationException(
+                        "Prepared-ticket grouping output contains an invalid partition coordinate.");
+                }
+                partitions.Add(
+                    new GroupingPartitionCoordinate(
+                        workGroupClean.Trim(),
+                        NormalizeGroupingPartitionValue(
+                            specification,
+                            "Unspecified"),
+                        type.Trim()));
+            }
+        }
+        return partitions;
+    }
+
+    private static GroupingPartitionCoordinate ParseGroupingPartitionKey(
+        string partitionKey)
+    {
+        string[] coordinates = partitionKey.Split('\u001f');
+        if (coordinates.Length != 3)
+        {
+            coordinates = partitionKey.Split('|');
+        }
+        if (coordinates.Length != 3 ||
+            coordinates.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidOperationException(
+                $"Prepared-ticket grouping partition key '{partitionKey}' is invalid.");
+        }
+        return new GroupingPartitionCoordinate(
+            coordinates[0].Trim(),
+            coordinates[1].Trim(),
+            coordinates[2].Trim());
+    }
+
+    private static string FormatGroupingPartitionKey(
+        GroupingPartitionCoordinate partition)
+        => string.Join(
+            "\u001f",
+            partition.WorkGroupClean,
+            partition.Specification,
+            partition.Type);
+
+    private static string NormalizeGroupingPartitionValue(
+        string? value,
+        string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static async Task<PreparedTicketGroupingPayload>
+        ReadGroupingPartitionAsync(
+            SqliteConnection source,
+            string partitionKey,
+            CancellationToken ct)
+    {
+        GroupingPartitionCoordinate partition =
+            ParseGroupingPartitionKey(partitionKey);
+        string workGroupClean = partition.WorkGroupClean;
+        string specification = partition.Specification;
+        string type = partition.Type;
+        List<GroupingTopicRow> topicRows = [];
+        await using (SqliteCommand command = source.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT RowId, WorkGroupDisplay, ShortDescription,
+                       LongerDescription, RenderOrderHint
+                FROM prepared_ticket_topics
+                WHERE WorkGroupClean = @workGroupClean
+                  AND Specification = @specification
+                  AND Type = @type
+                ORDER BY RowId
+                """;
+            command.Parameters.AddWithValue(
+                "@workGroupClean",
+                workGroupClean);
+            command.Parameters.AddWithValue(
+                "@specification",
+                specification);
+            command.Parameters.AddWithValue("@type", type);
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                topicRows.Add(
+                    new GroupingTopicRow(
+                        reader.GetInt64(0),
+                        reader.GetString(1),
+                        reader.GetString(2),
+                        ReadNullableString(reader, 3),
+                        ReadNullableInt64(reader, 4)));
+            }
+        }
+
+        string workGroupDisplay = topicRows.Count > 0
+            ? topicRows[0].WorkGroupDisplay
+            : await ReadPartitionWorkGroupDisplayAsync(
+                source,
+                workGroupClean,
+                specification,
+                type,
+                ct).ConfigureAwait(false);
+        if (topicRows.Any(topic => !string.Equals(
+            topic.WorkGroupDisplay,
+            workGroupDisplay,
+            StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                $"Prepared-ticket grouping partition '{partitionKey}' has inconsistent workgroup display values.");
+        }
+
+        PreparedTicketGroupingPayload payload = new()
+        {
+            WorkGroupClean = workGroupClean,
+            WorkGroupDisplay = workGroupDisplay,
+            Specification = specification,
+            Type = type,
+            Topics = [],
+        };
+        foreach (GroupingTopicRow topicRow in topicRows)
+        {
+            PreparedTicketTopicPayload topic = new()
+            {
+                ShortDescription = topicRow.ShortDescription,
+                LongerDescription = topicRow.LongerDescription ??
+                    string.Empty,
+                RenderOrderHint = topicRow.RenderOrderHint is null
+                    ? null
+                    : checked((int)topicRow.RenderOrderHint.Value),
+                LinkedTicketGroups = [],
+                RemainingTicketKeys = [],
+            };
+
+            List<GroupingGroupRow> groups = [];
+            await using (SqliteCommand command = source.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT RowId, FirstTicketKey, Rationale, OrderInTopic
+                    FROM prepared_ticket_topic_groups
+                    WHERE TopicRowId = @topicRowId
+                    ORDER BY OrderInTopic, RowId
+                    """;
+                command.Parameters.AddWithValue(
+                    "@topicRowId",
+                    topicRow.RowId);
+                await using SqliteDataReader reader =
+                    await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    groups.Add(
+                        new GroupingGroupRow(
+                            reader.GetInt64(0),
+                            reader.GetString(1),
+                            ReadNullableString(reader, 2) ?? string.Empty,
+                            reader.GetInt64(3)));
+                }
+            }
+            for (int groupIndex = 0;
+                 groupIndex < groups.Count;
+                 groupIndex++)
+            {
+                GroupingGroupRow groupRow = groups[groupIndex];
+                if (groupRow.OrderInTopic != groupIndex)
+                {
+                    throw new InvalidOperationException(
+                        $"Prepared-ticket grouping topic {topicRow.RowId} has non-canonical group order.");
+                }
+                PreparedTicketTopicGroupPayload group = new()
+                {
+                    FirstTicketKey = groupRow.FirstTicketKey,
+                    Rationale = groupRow.Rationale,
+                    Members = [],
+                };
+                await using SqliteCommand command = source.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT TicketKey, OrderInContainer
+                    FROM prepared_ticket_topic_members
+                    WHERE TopicRowId = @topicRowId
+                      AND TopicGroupRowId = @groupRowId
+                    ORDER BY OrderInContainer, TicketKey COLLATE NOCASE,
+                             TicketKey
+                    """;
+                command.Parameters.AddWithValue(
+                    "@topicRowId",
+                    topicRow.RowId);
+                command.Parameters.AddWithValue(
+                    "@groupRowId",
+                    groupRow.RowId);
+                await using SqliteDataReader reader =
+                    await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    group.Members.Add(
+                        new PreparedTicketTopicGroupMemberPayload
+                        {
+                            TicketKey = reader.GetString(0),
+                            Order = checked((int)reader.GetInt64(1)),
+                        });
+                }
+                topic.LinkedTicketGroups.Add(group);
+            }
+
+            await using (SqliteCommand command = source.CreateCommand())
+            {
+                command.CommandText =
+                    """
+                    SELECT TicketKey, OrderInContainer
+                    FROM prepared_ticket_topic_members
+                    WHERE TopicRowId = @topicRowId
+                      AND TopicGroupRowId IS NULL
+                    ORDER BY OrderInContainer, TicketKey COLLATE NOCASE,
+                             TicketKey
+                    """;
+                command.Parameters.AddWithValue(
+                    "@topicRowId",
+                    topicRow.RowId);
+                await using SqliteDataReader reader =
+                    await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                int expectedOrder = 0;
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    if (reader.GetInt64(1) != expectedOrder++)
+                    {
+                        throw new InvalidOperationException(
+                            $"Prepared-ticket grouping topic {topicRow.RowId} has non-canonical ungrouped member order.");
+                    }
+                    topic.RemainingTicketKeys.Add(reader.GetString(0));
+                }
+            }
+
+            long orphanMembers = await ScalarInt64Async(
+                source,
+                """
+                SELECT COUNT(*)
+                FROM prepared_ticket_topic_members member
+                LEFT JOIN prepared_ticket_topic_groups grouping
+                    ON grouping.RowId = member.TopicGroupRowId
+                   AND grouping.TopicRowId = member.TopicRowId
+                WHERE member.TopicRowId = @topicRowId
+                  AND member.TopicGroupRowId IS NOT NULL
+                  AND grouping.RowId IS NULL
+                """,
+                ct,
+                ("@topicRowId", topicRow.RowId)).ConfigureAwait(false);
+            if (orphanMembers != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Prepared-ticket grouping topic {topicRow.RowId} has orphaned group members.");
+            }
+            payload.Topics.Add(topic);
+        }
+        return payload;
+    }
+
+    private static async Task<string> ReadPartitionWorkGroupDisplayAsync(
+        SqliteConnection source,
+        string workGroupClean,
+        string specification,
+        string type,
+        CancellationToken ct)
+    {
+        List<string> values = [];
+        await using SqliteCommand command = source.CreateCommand();
+        command.CommandText =
+            """
+            SELECT DISTINCT TRIM(self.WorkGroup)
+            FROM prepared_tickets ticket
+            INNER JOIN prepared_jira_hydration self
+                ON self.TicketKey = ticket.Key COLLATE NOCASE
+               AND self.JiraKey = self.TicketKey COLLATE NOCASE
+            WHERE self.WorkGroupClean = @workGroupClean
+              AND COALESCE(
+                    NULLIF(TRIM(self.Specification), ''),
+                    'Unspecified') = @specification
+              AND self.Type = @type
+              AND NULLIF(TRIM(self.WorkGroup), '') IS NOT NULL
+            ORDER BY TRIM(self.WorkGroup)
+            """;
+        command.Parameters.AddWithValue(
+            "@workGroupClean",
+            workGroupClean);
+        command.Parameters.AddWithValue(
+            "@specification",
+            specification);
+        command.Parameters.AddWithValue("@type", type);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            values.Add(reader.GetString(0));
+        }
+        if (values.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"Prepared-ticket grouping partition '{FormatPartitionKey(workGroupClean, specification, type)}' has no unique workgroup display value.");
+        }
+        return values[0];
+
+        static string FormatPartitionKey(
+            string workGroup,
+            string spec,
+            string ticketType)
+            => string.Join("\u001f", workGroup, spec, ticketType);
     }
 
     private static async Task ProjectPeopleAsync(
@@ -619,11 +1500,24 @@ internal static class DiscussionSiteDatabaseBuilder
                 PublicDisplayNamePolicy.Normalize(ticket.Reporter);
             string? assignee =
                 PublicDisplayNamePolicy.Normalize(ticket.Assignee);
+            bool peopleAvailable =
+                capabilities.HasTrustedPeople &&
+                ticket.PublicDisplayNamePolicyVersion ==
+                    PublicDisplayNamePolicy.CurrentVersion;
+            string availability = peopleAvailable
+                ? DiscussionRendererSchema.PersonAvailable
+                : DiscussionRendererSchema.PersonUnavailable;
+            string? unavailableReason = peopleAvailable
+                ? null
+                : DiscussionPublicationReadinessReasonCodes
+                    .MissingPeoplePolicyProof;
             destination.Add(
             [
                 ticket.Key,
                 "reporter",
                 reporter,
+                availability,
+                unavailableReason,
                 DiscussionRendererSchema.NormalizeSortKey(reporter),
                 0,
             ]);
@@ -632,6 +1526,8 @@ internal static class DiscussionSiteDatabaseBuilder
                 ticket.Key,
                 "assignee",
                 assignee,
+                availability,
+                unavailableReason,
                 DiscussionRendererSchema.NormalizeSortKey(assignee),
                 0,
             ]);
@@ -651,6 +1547,8 @@ internal static class DiscussionSiteDatabaseBuilder
                     ticket.Key,
                     "in-person-requester",
                     displayName,
+                    DiscussionRendererSchema.PersonAvailable,
+                    null,
                     DiscussionRendererSchema.NormalizeSortKey(displayName),
                     index,
                 ]);
@@ -679,25 +1577,29 @@ internal static class DiscussionSiteDatabaseBuilder
 
         foreach (SourceTicket ticket in tickets)
         {
-            AddFacetRows(destination, ticket.Key, "project", [ticket.Project]);
-            AddFacetRows(destination, ticket.Key, "wg", [ticket.WorkGroup]);
-            AddFacetRows(destination, ticket.Key, "type", [ticket.Type]);
-            AddFacetRows(
-                destination,
-                ticket.Key,
-                "artifact",
-                artifacts.GetValueOrDefault(ticket.Key, []));
-            AddFacetRows(
-                destination,
-                ticket.Key,
-                "page",
-                pages.GetValueOrDefault(ticket.Key, []));
-            AddFacetRows(
-                destination,
-                ticket.Key,
-                "impact",
-                [ticket.ProposalAImpact, ticket.ProposalBImpact]);
-            AddFacetRows(destination, ticket.Key, "spec", [ticket.Specification]);
+            foreach (DiscussionFacetDimension dimension in
+                     DiscussionFacetCatalog.Dimensions)
+            {
+                IEnumerable<string?> values = dimension.Dimension switch
+                {
+                    "project" => [ticket.Project],
+                    "wg" => [ticket.WorkGroup],
+                    "type" => [ticket.Type],
+                    "artifact" =>
+                        artifacts.GetValueOrDefault(ticket.Key, []),
+                    "page" => pages.GetValueOrDefault(ticket.Key, []),
+                    "impact" =>
+                        [ticket.ProposalAImpact, ticket.ProposalBImpact],
+                    "spec" => [ticket.Specification],
+                    _ => throw new InvalidOperationException(
+                        $"Unsupported discussion facet dimension '{dimension.Dimension}'."),
+                };
+                AddFacetRows(
+                    destination,
+                    ticket.Key,
+                    dimension.Dimension,
+                    values);
+            }
         }
     }
 
@@ -746,6 +1648,11 @@ internal static class DiscussionSiteDatabaseBuilder
         string dimension,
         IEnumerable<string?> values)
     {
+        if (!DiscussionFacetCatalog.TryGet(dimension, out _))
+        {
+            throw new InvalidOperationException(
+                $"Discussion projection produced uncatalogued facet dimension '{dimension}'.");
+        }
         DiscussionFacetValue[] normalized = values
             .Select(DiscussionRendererSchema.NormalizeFacetValue)
             .OrderBy(value => value.ValueKey, StringComparer.OrdinalIgnoreCase)
@@ -1720,12 +2627,12 @@ internal static class DiscussionSiteDatabaseBuilder
 
     private static string? JiraUrl(string key, string? hydratedUrl)
     {
-        if (!DiscussionRendererSchema.IsValidFhirJiraKey(key))
+        if (!JiraIssueKey.TryParse(key, out JiraIssueKey? jiraKey))
         {
             return null;
         }
         return SafeUrl(hydratedUrl) ??
-            $"https://jira.hl7.org/browse/{key.Trim().ToUpperInvariant()}";
+            jiraKey.BrowseUrl;
     }
 
     private static string? SafeUrl(string? value)
@@ -1830,6 +2737,23 @@ internal static class DiscussionSiteDatabaseBuilder
             ? null
             : reader.GetInt64(ordinal) != 0;
 
+    private static async Task<long> ScalarInt64Async(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken ct,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
+            CultureInfo.InvariantCulture);
+    }
+
     private static SqliteConnection OpenReadOnly(string databasePath)
         => new(new SqliteConnectionStringBuilder
         {
@@ -1890,6 +2814,7 @@ internal static class DiscussionSiteDatabaseBuilder
         public string? ProposalCJustification { get; init; }
         public string? Reporter { get; init; }
         public string? Assignee { get; init; }
+        public long? PublicDisplayNamePolicyVersion { get; init; }
         public string? SourceProject { get; init; }
         public string? SourceLastSuccessfulRefreshAt { get; init; }
         public long? SourceContentRevision { get; init; }
@@ -1969,6 +2894,24 @@ internal static class DiscussionSiteDatabaseBuilder
         string? Url,
         string? HydrationStatus,
         string? HydrationReason);
+
+    private sealed record GroupingTopicRow(
+        long RowId,
+        string WorkGroupDisplay,
+        string ShortDescription,
+        string? LongerDescription,
+        long? RenderOrderHint);
+
+    private sealed record GroupingGroupRow(
+        long RowId,
+        string FirstTicketKey,
+        string Rationale,
+        long OrderInTopic);
+
+    private sealed record GroupingPartitionCoordinate(
+        string WorkGroupClean,
+        string Specification,
+        string Type);
 
     private sealed record SourceTopic(
         long RowId,

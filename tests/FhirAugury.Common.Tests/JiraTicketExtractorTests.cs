@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 
 namespace FhirAugury.Common.Tests;
@@ -364,6 +365,20 @@ public class JiraTicketExtractorTests
 
         Assert.Single(results);
         Assert.Equal(expectedKey, results[0].JiraKey);
+    }
+
+    [Fact]
+    public void ExtractTickets_NormalizesKnownCanonicalKeyThroughSharedPolicy()
+    {
+        List<JiraTicketMatch> results =
+            JiraTicketExtractor.ExtractTickets("See ballot-0042");
+
+        JiraTicketMatch result = Assert.Single(results);
+        Assert.Equal("BALLOT-0042", result.JiraKey);
+        Assert.Equal("ballot-0042", result.OriginalLiteral);
+        Assert.True(
+            JiraIssueKey.TryParse(result.JiraKey, out JiraIssueKey? parsed));
+        Assert.Equal(result.JiraKey, parsed.Value);
     }
 
     // ── Validation Filter Scoping ────────────────────────────────────

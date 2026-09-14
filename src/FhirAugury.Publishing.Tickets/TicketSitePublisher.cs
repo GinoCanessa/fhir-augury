@@ -123,11 +123,16 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                         await ValidateDiscussionRendererBytesAsync(
                             capturedRendererBytes,
                             privateSnapshot.Path,
-                            validation.Descriptor.SchemaVersion,
+                            validation.Descriptor,
                             request.Title,
                             filters,
                             ct).ConfigureAwait(false);
-                if (rendererValidation.Presentation != built.Presentation)
+                if (!string.Equals(
+                    TicketSitePresentationJson.Serialize(
+                        rendererValidation.Presentation),
+                    TicketSitePresentationJson.Serialize(
+                        built.Presentation),
+                    StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException(
                         "Discussion renderer presentation changed during validation.");
@@ -137,6 +142,17 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                     built.SurvivingTicketCount,
                     rendererValidation.TableCounts,
                     rendererValidation.Presentation);
+                if (!rendererValidation.Presentation.Readiness.IsReady)
+                {
+                    RecordWarning(
+                        warnings,
+                        "Warning: discussion publication readiness is degraded: " +
+                        string.Join(
+                            ", ",
+                            rendererValidation.Presentation.Readiness.Reasons
+                                .Select(reason => reason.Code)) +
+                        ".");
+                }
             }
             else
             {
@@ -529,7 +545,7 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
         ValidateDiscussionRendererBytesAsync(
             byte[] databaseBytes,
             string sourceDatabasePath,
-            int sourceSchemaVersion,
+            FhirAugury.Processing.Contracts.AuthoringSnapshotDescriptor descriptor,
             string baseTitle,
             ResolvedFilters filters,
             CancellationToken ct)
@@ -557,7 +573,7 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                 return await DiscussionSiteDatabaseValidator.ValidateAsync(
                     validationPath,
                     sourceDatabasePath,
-                    sourceSchemaVersion,
+                    descriptor,
                     baseTitle,
                     filters,
                     ct).ConfigureAwait(false);

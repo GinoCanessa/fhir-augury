@@ -21,6 +21,14 @@ internal static class ChooserPageEmitter
     private const string DiscussionLabelMarker = "<!-- __DISCUSSION_LABEL__ -->";
     private const string AssetVersionMarker = "__ASSET_VERSION__";
     private const string DefaultDiscussionLabel = "Tickets for Discussion";
+    private const string DiscussionBlurb =
+        "Review what the preparer agent proposed for upcoming WG calls.";
+    private const string DiscussionBlurbMarkup =
+        "<div class=\"card-blurb\">" + DiscussionBlurb + "</div>";
+
+    private sealed record DiscussionChooserState(
+        string Label,
+        DiscussionPublicationReadiness? Readiness);
 
     public static async Task EmitAsync(
         string rootOut,
@@ -33,9 +41,10 @@ internal static class ChooserPageEmitter
 
         bool discussionLive = File.Exists(Path.Combine(rootOut, PreparerSubSiteEmitter.SubSiteFolder, "index.html"));
         bool applyingLive = File.Exists(Path.Combine(rootOut, PlannerSubSiteEmitter.SubSiteFolder, "index.html"));
-        string discussionLabel = discussionLive
-            ? await ReadDiscussionLabelAsync(rootOut, ct).ConfigureAwait(false)
-            : DefaultDiscussionLabel;
+        DiscussionChooserState discussion = discussionLive
+            ? await ReadDiscussionStateAsync(rootOut, ct)
+                .ConfigureAwait(false)
+            : new(DefaultDiscussionLabel, null);
 
         Assembly asm = typeof(ChooserPageEmitter).Assembly;
         string template = await ReadEmbeddedAsync(asm, TemplateName, ct)
@@ -48,7 +57,11 @@ internal static class ChooserPageEmitter
             .Replace(ApplyingStateMarker, applyingLive ? "live" : "missing", StringComparison.Ordinal)
             .Replace(
                 DiscussionLabelMarker,
-                WebUtility.HtmlEncode(discussionLabel),
+                WebUtility.HtmlEncode(discussion.Label),
+                StringComparison.Ordinal)
+            .Replace(
+                DiscussionBlurbMarkup,
+                BuildDiscussionBlurb(discussion.Readiness),
                 StringComparison.Ordinal)
             .Replace(
                 AssetVersionMarker,
@@ -91,7 +104,7 @@ internal static class ChooserPageEmitter
         return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
     }
 
-    private static async Task<string> ReadDiscussionLabelAsync(
+    private static async Task<DiscussionChooserState> ReadDiscussionStateAsync(
         string rootOut,
         CancellationToken ct)
     {
@@ -101,7 +114,7 @@ internal static class ChooserPageEmitter
             TicketSiteManifest.FileName);
         if (!File.Exists(manifestPath))
         {
-            return DefaultDiscussionLabel;
+            return new(DefaultDiscussionLabel, null);
         }
 
         try
@@ -109,16 +122,42 @@ internal static class ChooserPageEmitter
             TicketSiteManifest manifest =
                 await TicketSiteManifest.ReadAsync(manifestPath, ct)
                     .ConfigureAwait(false);
-            return string.IsNullOrWhiteSpace(manifest.DisplayTitle)
-                ? DefaultDiscussionLabel
-                : manifest.DisplayTitle;
+            return new(
+                string.IsNullOrWhiteSpace(manifest.DisplayTitle)
+                    ? DefaultDiscussionLabel
+                    : manifest.DisplayTitle,
+                manifest.DiscussionReadiness);
         }
         catch (Exception ex) when (
             ex is JsonException or IOException or UnauthorizedAccessException or
             InvalidOperationException or NotSupportedException)
         {
-            return DefaultDiscussionLabel;
+            return new(DefaultDiscussionLabel, null);
         }
+    }
+
+    private static string BuildDiscussionBlurb(
+        DiscussionPublicationReadiness? readiness)
+    {
+        if (readiness is null)
+        {
+            return DiscussionBlurbMarkup;
+        }
+
+        string status = readiness.IsReady
+            ? "Publication readiness: ready."
+            : "Publication readiness: degraded (" +
+              string.Join(
+                  ", ",
+                  (readiness.Reasons ??
+                   Array.Empty<DiscussionPublicationReadinessReason>())
+                      .Select(reason => reason.Code)) +
+              ").";
+        return "<div class=\"card-blurb\">" +
+            DiscussionBlurb +
+            " " +
+            WebUtility.HtmlEncode(status) +
+            "</div>";
     }
 
     private static void TryDelete(string path)

@@ -1,400 +1,10 @@
 using System.Globalization;
 using System.Text;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Publishing.Tickets;
-
-internal sealed record DiscussionRendererTable(
-    string Name,
-    string CreateSql,
-    IReadOnlyList<string> Columns,
-    IReadOnlyList<string> KeyColumns);
-
-internal sealed record DiscussionRendererIndex(
-    string Name,
-    string CreateSql);
-
-internal readonly record struct DiscussionFacetValue(
-    string ValueKey,
-    string DisplayValue,
-    string SortKey,
-    long IsUnknown);
-
-internal static class DiscussionRendererSchema
-{
-    public const int Version = 1;
-    public const string UnknownValueKey = "__unknown__";
-    public const string UnknownDisplayValue = "(unknown)";
-    public const string NamedValueKeyPrefix = "value:";
-
-    public static IReadOnlyList<DiscussionRendererTable> Tables { get; } =
-    [
-        new(
-            "site_metadata",
-            """
-            CREATE TABLE site_metadata(
-                RendererSchemaVersion INTEGER PRIMARY KEY CHECK(RendererSchemaVersion = 1),
-                BaseTitle TEXT NOT NULL,
-                SiteName TEXT NOT NULL,
-                JiraSourceLastSuccessfulRefreshAt TEXT NULL,
-                FilterSpecification TEXT NULL,
-                FilterProject TEXT NULL,
-                FilterWorkGroup TEXT NULL
-            )
-            """,
-            [
-                "RendererSchemaVersion",
-                "BaseTitle",
-                "SiteName",
-                "JiraSourceLastSuccessfulRefreshAt",
-                "FilterSpecification",
-                "FilterProject",
-                "FilterWorkGroup",
-            ],
-            ["RendererSchemaVersion"]),
-        new(
-            "tickets",
-            """
-            CREATE TABLE tickets(
-                Key TEXT PRIMARY KEY COLLATE NOCASE,
-                Title TEXT NOT NULL,
-                Project TEXT NOT NULL,
-                WorkGroup TEXT NULL,
-                Status TEXT NULL,
-                Type TEXT NULL,
-                Specification TEXT NULL,
-                Priority TEXT NULL,
-                Resolution TEXT NULL,
-                RaisedInVersion TEXT NULL,
-                SelectedBallot TEXT NULL,
-                ChangeCategory TEXT NULL,
-                Impact TEXT NULL,
-                CommentCount INTEGER NULL,
-                Recommendation TEXT NULL,
-                RecommendationJustification TEXT NULL,
-                SavedAt TEXT NULL,
-                RequestHtml TEXT NULL,
-                RequestPlain TEXT NULL,
-                ResolutionHtml TEXT NULL,
-                ResolutionPlain TEXT NULL,
-                RequestSummary TEXT NULL,
-                CommentSummary TEXT NULL,
-                LinkedTicketSummary TEXT NULL,
-                RelatedTicketSummary TEXT NULL,
-                RelatedZulipSummary TEXT NULL,
-                RelatedGitHubSummary TEXT NULL,
-                ExistingProposed TEXT NULL,
-                ProposalA TEXT NULL,
-                ProposalAJustification TEXT NULL,
-                ProposalAImpact TEXT NULL,
-                ProposalB TEXT NULL,
-                ProposalBJustification TEXT NULL,
-                ProposalBImpact TEXT NULL,
-                ProposalC TEXT NULL,
-                ProposalCJustification TEXT NULL
-            )
-            """,
-            [
-                "Key",
-                "Title",
-                "Project",
-                "WorkGroup",
-                "Status",
-                "Type",
-                "Specification",
-                "Priority",
-                "Resolution",
-                "RaisedInVersion",
-                "SelectedBallot",
-                "ChangeCategory",
-                "Impact",
-                "CommentCount",
-                "Recommendation",
-                "RecommendationJustification",
-                "SavedAt",
-                "RequestHtml",
-                "RequestPlain",
-                "ResolutionHtml",
-                "ResolutionPlain",
-                "RequestSummary",
-                "CommentSummary",
-                "LinkedTicketSummary",
-                "RelatedTicketSummary",
-                "RelatedZulipSummary",
-                "RelatedGitHubSummary",
-                "ExistingProposed",
-                "ProposalA",
-                "ProposalAJustification",
-                "ProposalAImpact",
-                "ProposalB",
-                "ProposalBJustification",
-                "ProposalBImpact",
-                "ProposalC",
-                "ProposalCJustification",
-            ],
-            ["Key"]),
-        new(
-            "ticket_people",
-            """
-            CREATE TABLE ticket_people(
-                TicketKey TEXT NOT NULL COLLATE NOCASE,
-                Role TEXT NOT NULL CHECK(Role IN ('reporter','assignee','in-person-requester')),
-                DisplayName TEXT NULL,
-                SortKey TEXT NOT NULL,
-                OrderInRole INTEGER NOT NULL,
-                PRIMARY KEY(TicketKey, Role, OrderInRole)
-            )
-            """,
-            ["TicketKey", "Role", "DisplayName", "SortKey", "OrderInRole"],
-            ["TicketKey", "Role", "OrderInRole"]),
-        new(
-            "ticket_facets",
-            """
-            CREATE TABLE ticket_facets(
-                TicketKey TEXT NOT NULL COLLATE NOCASE,
-                Dimension TEXT NOT NULL CHECK(Dimension IN ('project','wg','type','artifact','page','impact','spec')),
-                ValueKey TEXT NOT NULL COLLATE NOCASE,
-                DisplayValue TEXT NOT NULL,
-                SortKey TEXT NOT NULL,
-                IsUnknown INTEGER NOT NULL CHECK(IsUnknown IN (0,1)),
-                PRIMARY KEY(TicketKey, Dimension, ValueKey)
-            )
-            """,
-            [
-                "TicketKey",
-                "Dimension",
-                "ValueKey",
-                "DisplayValue",
-                "SortKey",
-                "IsUnknown",
-            ],
-            ["TicketKey", "Dimension", "ValueKey"]),
-        new(
-            "summary_sources",
-            """
-            CREATE TABLE summary_sources(
-                TicketKey TEXT NOT NULL COLLATE NOCASE,
-                SummaryKind TEXT NOT NULL CHECK(SummaryKind IN ('linked-jira','related-jira','related-zulip')),
-                SourceKey TEXT NOT NULL COLLATE NOCASE,
-                Label TEXT NOT NULL,
-                Url TEXT NULL,
-                SortKey TEXT NOT NULL,
-                PRIMARY KEY(TicketKey, SummaryKind, SourceKey)
-            )
-            """,
-            ["TicketKey", "SummaryKind", "SourceKey", "Label", "Url", "SortKey"],
-            ["TicketKey", "SummaryKind", "SourceKey"]),
-        new(
-            "related_items",
-            """
-            CREATE TABLE related_items(
-                TicketKey TEXT NOT NULL COLLATE NOCASE,
-                Kind TEXT NOT NULL CHECK(Kind IN ('repo','jira','zulip','github','jira-xref')),
-                ItemKey TEXT NOT NULL COLLATE NOCASE,
-                LinkType TEXT NULL,
-                LinkTypeKey TEXT NOT NULL,
-                Label TEXT NOT NULL,
-                Url TEXT NULL,
-                Detail TEXT NULL,
-                Justification TEXT NULL,
-                HydrationStatus TEXT NULL,
-                HydrationReason TEXT NULL,
-                SortKey TEXT NOT NULL,
-                PRIMARY KEY(TicketKey, Kind, ItemKey, LinkTypeKey)
-            )
-            """,
-            [
-                "TicketKey",
-                "Kind",
-                "ItemKey",
-                "LinkType",
-                "LinkTypeKey",
-                "Label",
-                "Url",
-                "Detail",
-                "Justification",
-                "HydrationStatus",
-                "HydrationReason",
-                "SortKey",
-            ],
-            ["TicketKey", "Kind", "ItemKey", "LinkTypeKey"]),
-        new(
-            "topics",
-            """
-            CREATE TABLE topics(
-                RowId INTEGER PRIMARY KEY,
-                Id TEXT NOT NULL UNIQUE,
-                WorkGroupClean TEXT NOT NULL,
-                WorkGroupDisplay TEXT NOT NULL,
-                Specification TEXT NOT NULL,
-                Type TEXT NOT NULL,
-                ShortDescription TEXT NOT NULL,
-                LongerDescription TEXT NULL,
-                RenderOrderHint INTEGER NULL
-            )
-            """,
-            [
-                "RowId",
-                "Id",
-                "WorkGroupClean",
-                "WorkGroupDisplay",
-                "Specification",
-                "Type",
-                "ShortDescription",
-                "LongerDescription",
-                "RenderOrderHint",
-            ],
-            ["RowId"]),
-        new(
-            "topic_groups",
-            """
-            CREATE TABLE topic_groups(
-                RowId INTEGER PRIMARY KEY,
-                Id TEXT NOT NULL UNIQUE,
-                TopicRowId INTEGER NOT NULL,
-                FirstTicketKey TEXT NOT NULL COLLATE NOCASE,
-                Rationale TEXT NULL,
-                OrderInTopic INTEGER NOT NULL
-            )
-            """,
-            [
-                "RowId",
-                "Id",
-                "TopicRowId",
-                "FirstTicketKey",
-                "Rationale",
-                "OrderInTopic",
-            ],
-            ["RowId"]),
-        new(
-            "topic_members",
-            """
-            CREATE TABLE topic_members(
-                TopicRowId INTEGER NOT NULL,
-                TopicGroupRowId INTEGER NULL,
-                TicketKey TEXT NOT NULL COLLATE NOCASE,
-                Title TEXT NOT NULL,
-                Status TEXT NULL,
-                Type TEXT NULL,
-                OrderInContainer INTEGER NOT NULL,
-                PRIMARY KEY(TopicRowId, TicketKey)
-            )
-            """,
-            [
-                "TopicRowId",
-                "TopicGroupRowId",
-                "TicketKey",
-                "Title",
-                "Status",
-                "Type",
-                "OrderInContainer",
-            ],
-            ["TopicRowId", "TicketKey"]),
-    ];
-
-    public static IReadOnlyList<DiscussionRendererIndex> Indexes { get; } =
-    [
-        new(
-            "ix_ticket_facets_sort",
-            """
-            CREATE INDEX ix_ticket_facets_sort
-            ON ticket_facets(Dimension, IsUnknown, SortKey, DisplayValue)
-            """),
-        new(
-            "ix_ticket_facets_lookup",
-            """
-            CREATE INDEX ix_ticket_facets_lookup
-            ON ticket_facets(Dimension, ValueKey, TicketKey)
-            """),
-        new(
-            "ix_topic_members_group_order",
-            """
-            CREATE INDEX ix_topic_members_group_order
-            ON topic_members(TopicGroupRowId, OrderInContainer)
-            """),
-        new(
-            "ix_topic_members_ticket",
-            """
-            CREATE INDEX ix_topic_members_ticket
-            ON topic_members(TicketKey, TopicRowId)
-            """),
-    ];
-
-    public static async Task CreateAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        CancellationToken ct)
-    {
-        foreach (DiscussionRendererTable table in Tables)
-        {
-            await ExecuteAsync(connection, transaction, table.CreateSql, ct)
-                .ConfigureAwait(false);
-        }
-        foreach (DiscussionRendererIndex index in Indexes)
-        {
-            await ExecuteAsync(connection, transaction, index.CreateSql, ct)
-                .ConfigureAwait(false);
-        }
-    }
-
-    public static DiscussionFacetValue NormalizeFacetValue(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return new DiscussionFacetValue(
-                UnknownValueKey,
-                UnknownDisplayValue,
-                NormalizeSortKey(UnknownDisplayValue),
-                1);
-        }
-
-        string display = value.Trim();
-        return new DiscussionFacetValue(
-            $"{NamedValueKeyPrefix}{display}",
-            display,
-            NormalizeSortKey(display),
-            0);
-    }
-
-    public static string NormalizeSortKey(string? value)
-        => string.IsNullOrWhiteSpace(value)
-            ? string.Empty
-            : value.Trim().ToUpperInvariant();
-
-    public static string NormalizeLinkTypeKey(string? value)
-        => string.IsNullOrWhiteSpace(value)
-            ? string.Empty
-            : value.Trim().ToUpperInvariant();
-
-    public static bool IsValidFhirJiraKey(string value)
-    {
-        const string prefix = "FHIR-";
-        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
-            value.Length == prefix.Length)
-        {
-            return false;
-        }
-        return value.AsSpan(prefix.Length).IndexOfAnyExceptInRange('0', '9') < 0;
-    }
-
-    public static bool IsSafeExternalUrl(string? value)
-        => !string.IsNullOrWhiteSpace(value) &&
-           Uri.TryCreate(value.Trim(), UriKind.Absolute, out Uri? uri) &&
-           (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp);
-
-    private static async Task ExecuteAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string sql,
-        CancellationToken ct)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = sql;
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-    }
-}
 
 internal static class DiscussionSiteDatabaseValidator
 {
@@ -407,16 +17,9 @@ internal static class DiscussionSiteDatabaseValidator
         };
 
     private static readonly HashSet<string> AllowedFacetDimensions =
-        new(StringComparer.Ordinal)
-        {
-            "project",
-            "wg",
-            "type",
-            "artifact",
-            "page",
-            "impact",
-            "spec",
-        };
+        DiscussionFacetCatalog.Dimensions
+            .Select(value => value.Dimension)
+            .ToHashSet(StringComparer.Ordinal);
 
     private static readonly HashSet<string> AllowedSummaryKinds =
         new(StringComparer.Ordinal)
@@ -470,7 +73,10 @@ internal static class DiscussionSiteDatabaseValidator
         TicketSitePresentation presentation =
             await ValidateMetadataAsync(connection, ct).ConfigureAwait(false);
         await ValidateTicketsAsync(connection, ct).ConfigureAwait(false);
-        await ValidatePeopleAsync(connection, ct).ConfigureAwait(false);
+        await ValidatePeopleAsync(connection, presentation, ct)
+            .ConfigureAwait(false);
+        await ValidateFacetDimensionsAsync(connection, ct)
+            .ConfigureAwait(false);
         await ValidateFacetsAsync(connection, presentation.Filters, ct)
             .ConfigureAwait(false);
         await ValidateRelatedItemsAsync(connection, ct).ConfigureAwait(false);
@@ -501,6 +107,17 @@ internal static class DiscussionSiteDatabaseValidator
 
         await using SqliteConnection connection = OpenReadOnly(databasePath);
         await connection.OpenAsync(ct).ConfigureAwait(false);
+        await ValidateProjectionAsync(connection, expected, ct)
+            .ConfigureAwait(false);
+
+        return result;
+    }
+
+    private static async Task ValidateProjectionAsync(
+        SqliteConnection connection,
+        DiscussionSiteProjection expected,
+        CancellationToken ct)
+    {
         foreach (DiscussionRendererTable table in DiscussionRendererSchema.Tables)
         {
             IReadOnlyList<string> expectedRows =
@@ -519,7 +136,31 @@ internal static class DiscussionSiteDatabaseValidator
                     $"Renderer table '{table.Name}' does not match the immutable source projection.");
             }
         }
+    }
 
+    public static async Task<ValidationResult> ValidateAsync(
+        string databasePath,
+        string sourceDatabasePath,
+        FhirAugury.Processing.Contracts.AuthoringSnapshotDescriptor descriptor,
+        string baseTitle,
+        ResolvedFilters filters,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ValidationResult result =
+            await ValidateAsync(databasePath, ct).ConfigureAwait(false);
+        DiscussionSiteProjection expected =
+            await DiscussionSiteDatabaseBuilder.CreateProjectionAsync(
+                sourceDatabasePath,
+                descriptor,
+                baseTitle,
+                filters,
+                ct).ConfigureAwait(false);
+
+        await using SqliteConnection connection = OpenReadOnly(databasePath);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await ValidateProjectionAsync(connection, expected, ct)
+            .ConfigureAwait(false);
         return result;
     }
 
@@ -632,6 +273,7 @@ internal static class DiscussionSiteDatabaseValidator
             """
             SELECT RendererSchemaVersion, BaseTitle, SiteName,
                    JiraSourceLastSuccessfulRefreshAt,
+                   ReadinessJson,
                    FilterSpecification, FilterProject, FilterWorkGroup
             FROM site_metadata
             """,
@@ -668,18 +310,103 @@ internal static class DiscussionSiteDatabaseValidator
             }
         }
 
+        string readinessJson = RequireString(
+            row[4],
+            "site_metadata.ReadinessJson");
+        DiscussionPublicationReadiness readiness;
+        try
+        {
+            readiness =
+                TicketSitePresentationJson.DeserializeReadiness(readinessJson);
+        }
+        catch (Exception exception) when (
+            exception is System.Text.Json.JsonException or
+            InvalidOperationException or NotSupportedException)
+        {
+            throw new InvalidOperationException(
+                "Renderer publication-readiness metadata is invalid.",
+                exception);
+        }
+        ValidateReadiness(readiness, refresh);
+        if (!string.Equals(
+            readinessJson,
+            TicketSitePresentationJson.Serialize(readiness),
+            StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Renderer publication-readiness metadata is not canonical.");
+        }
+
         ResolvedFilters filters = new(
-            OptionalNonWhiteSpace(row[4], "site_metadata.FilterSpecification"),
-            OptionalNonWhiteSpace(row[5], "site_metadata.FilterProject"),
-            OptionalNonWhiteSpace(row[6], "site_metadata.FilterWorkGroup"));
+            OptionalNonWhiteSpace(row[5], "site_metadata.FilterSpecification"),
+            OptionalNonWhiteSpace(row[6], "site_metadata.FilterProject"),
+            OptionalNonWhiteSpace(row[7], "site_metadata.FilterWorkGroup"));
         TicketSitePresentation expected =
-            TicketSitePresentation.CreateDiscussion(baseTitle, refresh, filters);
+            TicketSitePresentation.CreateDiscussion(
+                baseTitle,
+                refresh,
+                filters,
+                readiness);
         if (!string.Equals(siteName, expected.SiteName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 "Renderer site name does not match its provenance and filter metadata.");
         }
         return expected;
+    }
+
+    private static void ValidateReadiness(
+        DiscussionPublicationReadiness readiness,
+        DateTimeOffset? refresh)
+    {
+        if (readiness.Reasons is null ||
+            readiness.Reasons.Select(reason => reason.Code)
+                .Distinct(StringComparer.Ordinal)
+                .Count() != readiness.Reasons.Count ||
+            readiness.Evidence is not
+                DiscussionPublicationReadinessEvidence.OrdinarySnapshot and not
+                DiscussionPublicationReadinessEvidence.PublicationRefresh ||
+            readiness.PublicDisplayNamePolicyVersion is not null and not
+                PublicDisplayNamePolicy.CurrentVersion ||
+            readiness.JiraSourceContentRevision is < 0)
+        {
+            throw new InvalidOperationException(
+                "Renderer publication-readiness metadata is inconsistent.");
+        }
+
+        DiscussionPublicationReadiness canonical;
+        try
+        {
+            canonical = DiscussionPublicationReadiness.Create(
+                readiness.Evidence,
+                readiness.JiraSourceContentRevision,
+                readiness.PublicDisplayNamePolicyVersion,
+                readiness.Reasons.Select(reason => reason.Code));
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new InvalidOperationException(
+                "Renderer publication-readiness metadata has an unknown reason code.",
+                exception);
+        }
+
+        if (!string.Equals(
+                TicketSitePresentationJson.Serialize(readiness),
+                TicketSitePresentationJson.Serialize(canonical),
+                StringComparison.Ordinal) ||
+            readiness.IsReady != (readiness.Reasons.Count == 0) ||
+            readiness.IsReady &&
+            readiness.PublicDisplayNamePolicyVersion !=
+                PublicDisplayNamePolicy.CurrentVersion ||
+            readiness.Evidence ==
+                DiscussionPublicationReadinessEvidence.PublicationRefresh &&
+            readiness.IsReady &&
+            (refresh is null ||
+             readiness.JiraSourceContentRevision is null))
+        {
+            throw new InvalidOperationException(
+                "Renderer publication-readiness metadata is inconsistent.");
+        }
     }
 
     private static async Task ValidateTicketsAsync(
@@ -713,6 +440,7 @@ internal static class DiscussionSiteDatabaseValidator
 
     private static async Task ValidatePeopleAsync(
         SqliteConnection connection,
+        TicketSitePresentation presentation,
         CancellationToken ct)
     {
         List<Dictionary<string, object?>> tickets =
@@ -722,7 +450,8 @@ internal static class DiscussionSiteDatabaseValidator
             await QueryNamedAsync(
                 connection,
                 """
-                SELECT TicketKey, Role, DisplayName, SortKey, OrderInRole
+                SELECT TicketKey, Role, DisplayName, Availability,
+                       UnavailableReason, SortKey, OrderInRole
                 FROM ticket_people
                 ORDER BY TicketKey COLLATE NOCASE, Role, OrderInRole
                 """,
@@ -747,7 +476,39 @@ internal static class DiscussionSiteDatabaseValidator
 
             long order = ReadInt64(row, "OrderInRole");
             string? displayName = ReadNullableString(row, "DisplayName");
+            string availability =
+                ReadRequiredString(row, "Availability");
+            string? unavailableReason =
+                ReadNullableString(row, "UnavailableReason");
             string sortKey = ReadRequiredString(row, "SortKey", allowEmpty: true);
+            if (availability == DiscussionRendererSchema.PersonAvailable)
+            {
+                if (unavailableReason is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Renderer available person row for '{ticketKey}' has an unavailable reason.");
+                }
+            }
+            else if (availability ==
+                     DiscussionRendererSchema.PersonUnavailable)
+            {
+                if (displayName is not null ||
+                    string.IsNullOrWhiteSpace(unavailableReason) ||
+                    !presentation.Readiness.Reasons.Any(reason =>
+                        string.Equals(
+                            reason.Code,
+                            unavailableReason,
+                            StringComparison.Ordinal)))
+                {
+                    throw new InvalidOperationException(
+                        $"Renderer unavailable person row for '{ticketKey}' has invalid readiness evidence.");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"Renderer person row for '{ticketKey}' has invalid availability '{availability}'.");
+            }
             if (role is "reporter" or "assignee")
             {
                 if (order != 0)
@@ -756,7 +517,9 @@ internal static class DiscussionSiteDatabaseValidator
                         $"Renderer {role} row for '{ticketKey}' must have order zero.");
                 }
             }
-            else if (displayName is null || string.IsNullOrWhiteSpace(displayName))
+            else if (displayName is null ||
+                     string.IsNullOrWhiteSpace(displayName) ||
+                     availability != DiscussionRendererSchema.PersonAvailable)
             {
                 throw new InvalidOperationException(
                     $"Renderer requester row for '{ticketKey}' requires a display name.");
@@ -861,6 +624,7 @@ internal static class DiscussionSiteDatabaseValidator
                 throw new InvalidOperationException(
                     $"Renderer facet references missing ticket '{ticketKey}'.");
             }
+
             if (!AllowedFacetDimensions.Contains(dimension))
             {
                 throw new InvalidOperationException(
@@ -977,6 +741,52 @@ internal static class DiscussionSiteDatabaseValidator
         }
     }
 
+    private static async Task ValidateFacetDimensionsAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        IReadOnlyList<IReadOnlyList<object?>> rows = await QueryAsync(
+            connection,
+            """
+            SELECT Dimension, Route, Label, SortOrder, ShowInList
+            FROM facet_dimensions
+            ORDER BY SortOrder
+            """,
+            ct).ConfigureAwait(false);
+        if (rows.Count != DiscussionFacetCatalog.Dimensions.Count)
+        {
+            throw new InvalidOperationException(
+                "Renderer facet-dimension catalog is incomplete.");
+        }
+
+        for (int index = 0; index < rows.Count; index++)
+        {
+            DiscussionFacetDimension expected =
+                DiscussionFacetCatalog.Dimensions[index];
+            IReadOnlyList<object?> actual = rows[index];
+            if (!string.Equals(
+                    RequireString(actual[0], "facet_dimensions.Dimension"),
+                    expected.Dimension,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    RequireString(actual[1], "facet_dimensions.Route"),
+                    expected.Route,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    RequireString(actual[2], "facet_dimensions.Label"),
+                    expected.Label,
+                    StringComparison.Ordinal) ||
+                Convert.ToInt64(actual[3], CultureInfo.InvariantCulture) !=
+                    expected.SortOrder ||
+                Convert.ToInt64(actual[4], CultureInfo.InvariantCulture) !=
+                    (expected.ShowInList ? 1 : 0))
+            {
+                throw new InvalidOperationException(
+                    $"Renderer facet dimension at order {index} does not match the catalog.");
+            }
+        }
+    }
+
     private static async Task ValidateRelatedItemsAsync(
         SqliteConnection connection,
         CancellationToken ct)
@@ -1062,6 +872,16 @@ internal static class DiscussionSiteDatabaseValidator
             {
                 throw new InvalidOperationException(
                     "Renderer GitHub related items must not expose URLs.");
+            }
+            if (kind is "jira" or "jira-xref")
+            {
+                bool validJiraKey =
+                    JiraIssueKey.TryParse(itemKey, out _);
+                if (validJiraKey != (url is not null))
+                {
+                    throw new InvalidOperationException(
+                        $"Renderer Jira related item '{itemKey}' has inconsistent canonical-link evidence.");
+                }
             }
 
             string? hydrationStatus = ReadNullableString(row, "HydrationStatus");
@@ -1149,17 +969,17 @@ internal static class DiscussionSiteDatabaseValidator
             }
             if (summaryKind is "linked-jira" or "related-jira")
             {
-                if (DiscussionRendererSchema.IsValidFhirJiraKey(sourceKey) &&
+                if (JiraIssueKey.TryParse(sourceKey, out _) &&
                     url is null)
                 {
                     throw new InvalidOperationException(
-                        $"Renderer FHIR Jira summary source '{sourceKey}' requires a URL.");
+                        $"Renderer Jira summary source '{sourceKey}' requires a URL.");
                 }
-                if (!DiscussionRendererSchema.IsValidFhirJiraKey(sourceKey) &&
+                if (!JiraIssueKey.TryParse(sourceKey, out _) &&
                     url is not null)
                 {
                     throw new InvalidOperationException(
-                        $"Renderer non-FHIR Jira summary source '{sourceKey}' must remain plain text.");
+                        $"Renderer invalid Jira summary source '{sourceKey}' must remain plain text.");
                 }
             }
         }
