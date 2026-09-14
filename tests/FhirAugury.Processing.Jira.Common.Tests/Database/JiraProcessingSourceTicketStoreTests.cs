@@ -5,6 +5,7 @@ using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -16,6 +17,54 @@ namespace FhirAugury.Processing.Jira.Common.Tests.Database;
 
 public class JiraProcessingSourceTicketStoreTests
 {
+    [Fact]
+    public void SourceRevision_UsesTimestampOrCanonicalFieldHash()
+    {
+        JiraProcessingSourceTicketRecord timestamped = new()
+        {
+            Id = "source-1",
+            Key = "FHIR-123",
+            Title = "Title",
+            Project = "FHIR",
+            Status = "Triaged",
+            WorkGroup = "FHIR-I",
+            Type = "Change Request",
+            Specification = "FHIR",
+            SourceTicketShape = "fhir",
+            LastSyncedAt = DateTimeOffset.UtcNow,
+            LastUpdated = new DateTimeOffset(
+                2026,
+                9,
+                14,
+                12,
+                34,
+                56,
+                TimeSpan.FromHours(-5)),
+        };
+
+        Assert.Equal(
+            "2026-09-14T12:34:56.0000000-05:00",
+            JiraSourceRevision.Compute(timestamped));
+        Assert.Equal(
+            JiraSourceRevision.Compute(timestamped),
+            JiraProcessingSourceTicketStore.GetSourceRevision(timestamped));
+
+        timestamped.LastUpdated = null;
+        Assert.Equal(
+            "5a78e63020f4973af8a2441e608d011161e7de642d353ba2e4078046dea575e0",
+            JiraSourceRevision.Compute(timestamped));
+        Assert.Equal(
+            JiraSourceRevision.Compute(timestamped),
+            JiraSourceRevision.Compute(
+                updatedAt: null,
+                timestamped.Key,
+                timestamped.Title,
+                timestamped.Status,
+                timestamped.WorkGroup,
+                timestamped.Type,
+                timestamped.Specification));
+    }
+
     [Fact]
     public async Task Upsert_InsertsNewSourceTicket()
     {

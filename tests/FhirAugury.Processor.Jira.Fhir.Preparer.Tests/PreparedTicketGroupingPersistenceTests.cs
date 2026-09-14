@@ -2,8 +2,10 @@ using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -427,11 +429,14 @@ public sealed class PreparedTicketGroupingPersistenceTests
             WorkGroupClean,
             Specification,
             Type);
+        PreparedTicketRunPartition partition = Assert.Single(
+            await database.Database.GetRunPartitionsAsync(run.Id));
+        string inputFingerprint = partition.InputFingerprint;
         AuthoringRunStageRecord stage = await authoringStore.EnsureRunStageAsync(
             run.Id,
             "grouping",
             partitionKey,
-            "fingerprint-1");
+            inputFingerprint);
         AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
             await authoringStore.TryStartRunStageAsync(stage.Id));
 
@@ -445,7 +450,7 @@ public sealed class PreparedTicketGroupingPersistenceTests
                 run.Id,
                 stage.Id,
                 lease.LeaseId,
-                "fingerprint-1"));
+                inputFingerprint));
 
         PreparedTicketGroupingSaveResult result =
             await database.Database.SaveGroupingForRunAsync(
@@ -453,10 +458,31 @@ public sealed class PreparedTicketGroupingPersistenceTests
                 run.Id,
                 stage.Id,
                 lease.LeaseId,
-                "fingerprint-1");
+                inputFingerprint);
 
         Assert.Equal(1, result.TopicRows);
         Assert.Equal(1, Count(database, "prepared_ticket_partition_receipts"));
+        string expectedOutputFingerprint =
+            PreparedTicketPublicationContract
+                .ComputeGroupingOutputFingerprint(SamplePayload());
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT OutputFingerprint
+                FROM prepared_ticket_partition_receipts
+                WHERE RunId = @runId AND PartitionKey = @partitionKey
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            command.Parameters.AddWithValue(
+                "@partitionKey",
+                partitionKey);
+            Assert.Equal(
+                expectedOutputFingerprint,
+                command.ExecuteScalar());
+        }
         PreparedTicketGroupingPayload replacement = SamplePayload();
         replacement.Topics = [];
         await Assert.ThrowsAsync<AuthoringConflictException>(
@@ -465,8 +491,95 @@ public sealed class PreparedTicketGroupingPersistenceTests
                 run.Id,
                 stage.Id,
                 "stale-lease",
-                "fingerprint-1"));
+                inputFingerprint));
         Assert.Equal(1, Count(database, "prepared_ticket_topics"));
+
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE prepared_ticket_partition_receipts
+                SET OutputFingerprint = NULL
+                WHERE RunId = @runId AND PartitionKey = @partitionKey
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            command.Parameters.AddWithValue(
+                "@partitionKey",
+                partition.PartitionKey);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+        await authoringStore.ReleaseMutationFenceAsync(
+            "jira-fhir",
+            run.Id);
+        string refreshRunId = Guid.NewGuid().ToString("N");
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                    SourceRunId, DatabaseOnly, TotalItems,
+                    CreatedAt, StartedAt)
+                SELECT @refreshRunId, ProcessorKind, AuthoringEpoch,
+                       'running', 'publication-refresh', Id, 0, 1,
+                       @createdAt, @createdAt
+                FROM authoring_runs WHERE Id = @sourceRunId;
+                INSERT INTO authoring_mutation_fences(
+                    ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(
+                    'jira-fhir', @refreshRunId, @fenceLeaseId,
+                    @createdAt);
+                """;
+            command.Parameters.AddWithValue(
+                "@refreshRunId",
+                refreshRunId);
+            command.Parameters.AddWithValue("@sourceRunId", run.Id);
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue(
+                "@fenceLeaseId",
+                Guid.NewGuid().ToString("N"));
+            command.ExecuteNonQuery();
+        }
+        AuthoringRunStageRecord certificationStage =
+            await authoringStore.EnsureRunStageAsync(
+                refreshRunId,
+                PreparerDatabase.GroupingCertificationStageName,
+                partition.PartitionKey,
+                partition.InputFingerprint);
+        AuthoringRunStageLease certificationLease =
+            Assert.IsType<AuthoringRunStageLease>(
+                await authoringStore.TryStartRunStageAsync(
+                    certificationStage.Id));
+
+        PreparedTicketGroupingCertificationEvidence evidence =
+            await database.Database.CertifyGroupingPartitionAsync(
+                refreshRunId,
+                certificationLease,
+                partition);
+
+        Assert.True(evidence.IsLegacyCertification);
+        Assert.Equal(run.Id, evidence.SourceReceipt.RunId);
+        Assert.Equal(stage.Id, evidence.SourceReceipt.StageId);
+        Assert.Equal(
+            partition.InputFingerprint,
+            evidence.SourceReceipt.InputFingerprint);
+        Assert.Equal(expectedOutputFingerprint, evidence.OutputFingerprint);
+        PreparedTicketPartitionCertificationRecord certification =
+            Assert.IsType<PreparedTicketPartitionCertificationRecord>(
+                await database.Database.GetPartitionCertificationAsync(
+                    refreshRunId,
+                    partition.PartitionKey));
+        Assert.Equal(run.Id, certification.SourceRunId);
+        Assert.Equal(stage.Id, certification.SourceStageId);
+        Assert.Equal(
+            expectedOutputFingerprint,
+            certification.OutputFingerprint);
     }
 
     private static PreparedTicketGroupingPayload SamplePayload() => new()

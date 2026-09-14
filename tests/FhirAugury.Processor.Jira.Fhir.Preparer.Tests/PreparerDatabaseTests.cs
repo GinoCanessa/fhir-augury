@@ -10,6 +10,7 @@ using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,6 +41,22 @@ public sealed class PreparerDatabaseTests
             "prepared_ticket_in_person_requesters"));
         Assert.True(Exists(database, "table", "prepared_ticket_authoring_state"));
         Assert.True(Exists(database, "table", "prepared_ticket_partition_receipts"));
+        Assert.True(Exists(
+            database,
+            "table",
+            "prepared_ticket_publication_refresh_receipts"));
+        Assert.True(Exists(
+            database,
+            "table",
+            "prepared_ticket_partition_certifications"));
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_publication_refresh_receipts",
+            ["RunId", "StageId"]));
+        Assert.True(HasUniqueIndexOverColumns(
+            database,
+            "prepared_ticket_partition_certifications",
+            ["RunId", "PartitionKey"]));
     }
 
     [Fact]
@@ -111,6 +128,220 @@ public sealed class PreparerDatabaseTests
         Assert.False(await store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
         await database.Database.ReleaseMaintenanceLeaseAsync(lease);
         Assert.True(await store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
+    }
+
+    [Fact]
+    public async Task PublicationRefresh_UpdatesOnlyAllowlistedMetadataAndReusesReceipt()
+    {
+        using TestDatabase database = CreateDatabase();
+        PublicationRefreshContext context =
+            await CreatePublicationRefreshContextAsync(
+                database,
+                "FHIR-701");
+        string protectedBefore = ReadProtectedPublicationState(database);
+        DateTimeOffset refreshAt =
+            new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset hydratedAt =
+            new(2026, 9, 14, 13, 0, 0, TimeSpan.Zero);
+        PreparedTicketPublicationMetadata metadata = new(
+            "FHIR-701",
+            "revision-FHIR-701",
+            "  Current Reporter ",
+            "Current Assignee",
+            [" Requester B ", "requester b", "Requester A"],
+            "fhir",
+            refreshAt,
+            701,
+            true,
+            PublicDisplayNamePolicy.CurrentVersion,
+            hydratedAt);
+
+        PreparedTicketPublicationRefreshReceiptRecord receipt =
+            await database.Database.ApplyPublicationMetadataAsync(
+                context.RefreshRunId,
+                context.Lease,
+                context.InputFingerprint,
+                context.Inventory,
+                [metadata]);
+
+        Assert.Equal(
+            context.Inventory.CorpusFingerprint,
+            receipt.CorpusFingerprint);
+        Assert.Equal(701, receipt.SourceContentRevision);
+        Assert.Equal(refreshAt, receipt.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            receipt.PublicDisplayNamePolicyVersion);
+        Assert.Equal(protectedBefore, ReadProtectedPublicationState(database));
+
+        PreparedTicketHydrationReadModel hydration =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-701"));
+        Assert.Equal("Current Reporter", hydration.Parent!.Reporter);
+        Assert.Equal("Current Assignee", hydration.Parent.Assignee);
+        Assert.Equal("FHIR", hydration.Parent.SourceProject);
+        Assert.Equal(refreshAt, hydration.Parent.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(701, hydration.Parent.SourceContentRevision);
+        Assert.Equal(hydratedAt, hydration.Parent.HydratedAt);
+        Assert.Equal("resolved", hydration.Parent.HydrationStatus);
+        Assert.Null(hydration.Parent.HydrationReason);
+        Assert.Equal(
+            ["Requester A", "Requester B"],
+            hydration.InPersonRequesters
+                .Select(row => row.DisplayName)
+                .ToArray());
+        PreparedJiraHydrationRow self = Assert.Single(
+            hydration.JiraRows,
+            row => row.JiraKey == row.TicketKey);
+        Assert.Equal("Current Reporter", self.Reporter);
+        Assert.Equal("Current Assignee", self.Assignee);
+
+        AuthoringConflictException fullHydrationBlocked =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Database.SaveHydrationAsync(
+                    SampleBatch("FHIR-701", "FHIR-701")));
+        Assert.Equal(
+            AuthoringConflictCode.MutationFenceUnavailable,
+            fullHydrationBlocked.Code);
+
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT LatestSuccessfulRefreshAt, ContentRevision
+                FROM authoring_run_input_provenance
+                WHERE RunId = @runId AND Source = 'jira'
+                """;
+            command.Parameters.AddWithValue(
+                "@runId",
+                context.SourceRunId);
+            using SqliteDataReader historical = command.ExecuteReader();
+            Assert.True(historical.Read());
+            Assert.Equal(
+                "2001-01-01T00:00:00.0000000+00:00",
+                historical.GetString(0));
+            Assert.Equal(1, historical.GetInt64(1));
+            Assert.False(historical.Read());
+            historical.Close();
+
+            command.Parameters.Clear();
+            command.CommandText =
+                """
+                SELECT LatestSuccessfulRefreshAt, ContentRevision
+                FROM authoring_run_input_provenance
+                WHERE RunId = @runId AND Source = 'jira'
+                """;
+            command.Parameters.AddWithValue(
+                "@runId",
+                context.RefreshRunId);
+            using SqliteDataReader refreshed = command.ExecuteReader();
+            Assert.True(refreshed.Read());
+            Assert.Equal(refreshAt, DateTimeOffset.Parse(refreshed.GetString(0)));
+            Assert.Equal(701, refreshed.GetInt64(1));
+            Assert.False(refreshed.Read());
+        }
+
+        PreparedTicketPublicationMetadata retry = metadata with
+        {
+            Reporter = "Must Not Replace",
+            HydratedAt = hydratedAt.AddHours(1),
+        };
+        AuthoringRunStageLease reclaimedLease =
+            Assert.IsType<AuthoringRunStageLease>(
+                await new AuthoringRunStore(database.Database)
+                    .TryStartRunStageAsync(
+                        context.Lease.StageId,
+                        orphanedAfter: TimeSpan.FromSeconds(1),
+                        now: DateTimeOffset.UtcNow.AddMinutes(1)));
+        PreparedTicketPublicationRefreshReceiptRecord retried =
+            await database.Database.ApplyPublicationMetadataAsync(
+                context.RefreshRunId,
+                reclaimedLease,
+                context.InputFingerprint,
+                context.Inventory,
+                [retry]);
+        Assert.Equal(receipt.RowId, retried.RowId);
+        hydration = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-701"));
+        Assert.Equal("Current Reporter", hydration.Parent!.Reporter);
+        Assert.Equal(hydratedAt, hydration.Parent.HydratedAt);
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_refresh_receipts"));
+    }
+
+    [Fact]
+    public async Task PublicationRefresh_RejectsChangedOrMixedSourceWithoutMutation()
+    {
+        using TestDatabase database = CreateDatabase();
+        PublicationRefreshContext context =
+            await CreatePublicationRefreshContextAsync(
+                database,
+                "FHIR-702",
+                "FHIR-703");
+        string protectedBefore = ReadProtectedPublicationState(database);
+        string publicationBefore = ReadPublicationFields(database);
+        DateTimeOffset refreshAt =
+            new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+
+        AuthoringConflictException changed =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Database.ApplyPublicationMetadataAsync(
+                    context.RefreshRunId,
+                    context.Lease,
+                    context.InputFingerprint,
+                    context.Inventory,
+                    [
+                        PublicationMetadata(
+                            "FHIR-702",
+                            "changed-revision",
+                            702,
+                            refreshAt),
+                        PublicationMetadata(
+                            "FHIR-703",
+                            "revision-FHIR-703",
+                            702,
+                            refreshAt),
+                    ]));
+        Assert.Equal(
+            AuthoringConflictCode.SourceRevisionMismatch,
+            changed.Code);
+        Assert.Equal(protectedBefore, ReadProtectedPublicationState(database));
+        Assert.Equal(publicationBefore, ReadPublicationFields(database));
+
+        AuthoringConflictException mixed =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Database.ApplyPublicationMetadataAsync(
+                    context.RefreshRunId,
+                    context.Lease,
+                    context.InputFingerprint,
+                    context.Inventory,
+                    [
+                        PublicationMetadata(
+                            "FHIR-702",
+                            "revision-FHIR-702",
+                            702,
+                            refreshAt),
+                        PublicationMetadata(
+                            "FHIR-703",
+                            "revision-FHIR-703",
+                            703,
+                            refreshAt),
+                    ]));
+        Assert.Equal(
+            AuthoringConflictCode.SourceRevisionMismatch,
+            mixed.Code);
+        Assert.Equal(protectedBefore, ReadProtectedPublicationState(database));
+        Assert.Equal(publicationBefore, ReadPublicationFields(database));
+        Assert.Equal(
+            0,
+            Count(
+                database,
+                "prepared_ticket_publication_refresh_receipts"));
     }
 
     [Fact]
@@ -1520,6 +1751,351 @@ public sealed class PreparerDatabaseTests
         Assert.Null(provenance.LatestSuccessfulRefreshAt);
         Assert.Null(provenance.ContentRevision);
     }
+
+    private static async Task<PublicationRefreshContext>
+        CreatePublicationRefreshContextAsync(
+            TestDatabase database,
+            params string[] ticketKeys)
+    {
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        AuthoringRunRecord sourceRun = await store.CreateRunAsync(
+            "jira-fhir",
+            ticketKeys.Select(key =>
+                new AuthoringRunItemDefinition(
+                    key,
+                    "fhir",
+                    $"revision-{key}")).ToArray());
+        Assert.True(await store.TryAcquireMutationFenceAsync(
+            "jira-fhir",
+            sourceRun.Id));
+
+        IReadOnlyList<AuthoringRunItemRecord> items =
+            await store.GetRunItemsAsync(sourceRun.Id);
+        foreach (AuthoringRunItemRecord item in items)
+        {
+            AuthoringOperationClaim claim =
+                Assert.IsType<AuthoringOperationClaim>(
+                    await store.ClaimItemAsync(
+                        sourceRun.Id,
+                        item.Id));
+            PreparedTicketPayload payload = SamplePayload(item.BusinessKey);
+            string contentHash =
+                FhirAugury.Processor.Jira.Fhir.Preparer.Api
+                    .PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+            AuthoringReceiptAcceptance accepted =
+                await store.AcceptResultAsync(
+                    new AuthoringResultSubmission(
+                        sourceRun.Id,
+                        item.Id,
+                        claim.OperationId,
+                        item.ExpectedSourceRevision,
+                        contentHash),
+                    claim.OperationToken,
+                    (connection, ct) =>
+                        database.Database
+                            .SavePreparedTicketForAuthoringAsync(
+                                connection,
+                                payload,
+                                contentHash,
+                                sourceRun.Id,
+                                item.Id,
+                                claim.OperationId,
+                                ct));
+            await store.MarkItemCompleteAsync(
+                item.Id,
+                accepted.Receipt.ReceiptId);
+
+            DateTimeOffset oldHydratedAt =
+                new(2002, 2, 2, 0, 0, 0, TimeSpan.Zero);
+            PreparedTicketHydrationBatch batch =
+                SampleBatch(item.BusinessKey, item.BusinessKey);
+            await database.Database.SaveHydrationAsync(
+                batch with
+                {
+                    Parent = batch.Parent with
+                    {
+                        Reporter = "Legacy Reporter",
+                        Assignee = "Legacy Assignee",
+                        SourceProject = "LEGACY",
+                        SourceLastSuccessfulRefreshAt =
+                            oldHydratedAt.AddDays(-1),
+                        SourceContentRevision = 2,
+                        HydratedAt = oldHydratedAt,
+                        HydrationStatus = "unresolved",
+                        HydrationReason = "legacy publication metadata",
+                        PublicDisplayNamePolicyVersion =
+                            PublicDisplayNamePolicy.CurrentVersion,
+                    },
+                    JiraRows =
+                    [
+                        batch.JiraRows[0] with
+                        {
+                            Reporter = "Legacy Reporter",
+                            Assignee = "Legacy Assignee",
+                            PublicDisplayNamePolicyVersion =
+                                PublicDisplayNamePolicy.CurrentVersion,
+                        },
+                        SampleJiraRow(
+                            item.BusinessKey,
+                            "FHIR-999",
+                            oldHydratedAt),
+                    ],
+                    InPersonRequesters =
+                    [
+                        new PreparedTicketInPersonRequesterRow(
+                            item.BusinessKey,
+                            "Legacy Requester",
+                            PublicDisplayNamePolicy.CurrentVersion),
+                    ],
+                });
+        }
+
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO authoring_run_input_provenance(
+                    RunId, Source, LatestSuccessfulRefreshAt,
+                    ContentRevision, CapturedAt)
+                VALUES(
+                    @runId, 'jira',
+                    '2001-01-01T00:00:00.0000000+00:00', 1,
+                    '2001-01-01T00:00:00.0000000+00:00')
+                """;
+            command.Parameters.AddWithValue("@runId", sourceRun.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        await store.ReleaseMutationFenceAsync("jira-fhir", sourceRun.Id);
+
+        PreparedTicketPublicationRefreshInventory inventory =
+            await database.Database.GetPublicationRefreshInventoryAsync();
+        Assert.Equal(ticketKeys.Length, inventory.Candidates.Count);
+        Assert.All(
+            inventory.Candidates,
+            candidate => Assert.Equal("fhir", candidate.ItemKind));
+
+        string refreshRunId = Guid.NewGuid().ToString("N");
+        DateTimeOffset createdAt = DateTimeOffset.UtcNow;
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                    SourceRunId, DatabaseOnly, TotalItems,
+                    CreatedAt, StartedAt)
+                SELECT @refreshRunId, ProcessorKind, AuthoringEpoch,
+                       'running', 'publication-refresh', Id, 0,
+                       @totalItems, @createdAt, @createdAt
+                FROM authoring_runs
+                WHERE Id = @sourceRunId;
+
+                INSERT INTO authoring_run_items(
+                    Id, RunId, BusinessKey, ItemKind,
+                    ExpectedSourceRevision, Status, AcceptedReceiptId,
+                    AttemptCount, CreatedAt, CompletedAt)
+                SELECT @itemPrefix || Id, @refreshRunId, BusinessKey,
+                       'maintenance:' || @refreshRunId || ':' || ItemKind,
+                       ExpectedSourceRevision, 'complete',
+                       AcceptedReceiptId, 0, @createdAt, @createdAt
+                FROM authoring_run_items
+                WHERE RunId = @sourceRunId;
+
+                INSERT INTO authoring_mutation_fences(
+                    ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(
+                    'jira-fhir', @refreshRunId, @fenceLeaseId, @createdAt);
+                """;
+            command.Parameters.AddWithValue(
+                "@refreshRunId",
+                refreshRunId);
+            command.Parameters.AddWithValue(
+                "@sourceRunId",
+                sourceRun.Id);
+            command.Parameters.AddWithValue(
+                "@totalItems",
+                ticketKeys.Length);
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                createdAt.ToString("O"));
+            command.Parameters.AddWithValue(
+                "@itemPrefix",
+                $"refresh-{refreshRunId}-");
+            command.Parameters.AddWithValue(
+                "@fenceLeaseId",
+                Guid.NewGuid().ToString("N"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        string inputFingerprint =
+            PreparedTicketPublicationContract
+                .ComputePublicationRefreshInputFingerprint(
+                    sourceRun.Id,
+                    inventory.Candidates.Select(candidate =>
+                        candidate.ToPublicationCorpusItem()));
+        AuthoringRunStageRecord stage = await store.EnsureRunStageAsync(
+            refreshRunId,
+            PreparerDatabase.PublicationMetadataStageName,
+            string.Empty,
+            inputFingerprint);
+        AuthoringRunStageLease lease =
+            Assert.IsType<AuthoringRunStageLease>(
+                await store.TryStartRunStageAsync(stage.Id));
+        return new PublicationRefreshContext(
+            sourceRun.Id,
+            refreshRunId,
+            inventory,
+            inputFingerprint,
+            lease);
+    }
+
+    private static PreparedTicketPublicationMetadata PublicationMetadata(
+        string ticketKey,
+        string sourceRevision,
+        long contentRevision,
+        DateTimeOffset refreshAt)
+        => new(
+            ticketKey,
+            sourceRevision,
+            $"Reporter {ticketKey}",
+            $"Assignee {ticketKey}",
+            [$"Requester {ticketKey}"],
+            ticketKey[..ticketKey.IndexOf('-', StringComparison.Ordinal)],
+            refreshAt,
+            contentRevision,
+            true,
+            PublicDisplayNamePolicy.CurrentVersion,
+            refreshAt.AddMinutes(1));
+
+    private static string ReadProtectedPublicationState(
+        TestDatabase database)
+    {
+        string[] queries =
+        [
+            "SELECT * FROM prepared_tickets ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_repos ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_related_jira ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_related_zulip ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_related_github ORDER BY RowId",
+            """
+            SELECT RowId, Id, TicketKey, Priority, Resolution,
+                   ResolutionDescriptionPlain, Specification,
+                   RaisedInVersion, SelectedBallot, ChangeCategory,
+                   Impact, Labels, CommentCount, DescriptionPlain,
+                   DescriptionHtml, ResolutionDescriptionHtml, CreatedAt,
+                   RelatedArtifactsRaw, RelatedPagesRaw
+            FROM prepared_ticket_hydration ORDER BY RowId
+            """,
+            """
+            SELECT RowId, Id, TicketKey, JiraKey, Title, Status, Type,
+                   Priority, Resolution, ResolutionDescriptionPlain,
+                   WorkGroup, WorkGroupClean, Specification, UpdatedAt,
+                   Url, DescriptionHtml, ResolutionDescriptionHtml,
+                   CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw,
+                   HydratedAt, HydrationStatus, HydrationReason
+            FROM prepared_jira_hydration ORDER BY RowId
+            """,
+            "SELECT * FROM prepared_zulip_hydration ORDER BY RowId",
+            "SELECT * FROM prepared_github_hydration ORDER BY RowId",
+            "SELECT * FROM prepared_repo_hydration ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_jira_xref ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_jira_content ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_artifacts ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_pages ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_topics ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_topic_groups ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_topic_members ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_authoring_state ORDER BY TicketKey",
+            "SELECT * FROM authoring_result_receipts ORDER BY RowId",
+            "SELECT * FROM prepared_ticket_partition_receipts ORDER BY RunId, PartitionKey",
+        ];
+        using SqliteConnection connection =
+            database.Database.OpenConnection();
+        return string.Join(
+            "\n--query--\n",
+            queries.Select(query => DumpRows(connection, query)));
+    }
+
+    private static string ReadPublicationFields(TestDatabase database)
+    {
+        string[] queries =
+        [
+            """
+            SELECT TicketKey, Reporter, Assignee,
+                   PublicDisplayNamePolicyVersion, SourceProject,
+                   SourceLastSuccessfulRefreshAt, SourceContentRevision,
+                   HydratedAt, HydrationStatus, HydrationReason
+            FROM prepared_ticket_hydration ORDER BY TicketKey
+            """,
+            """
+            SELECT TicketKey, JiraKey, Reporter, Assignee,
+                   PublicDisplayNamePolicyVersion
+            FROM prepared_jira_hydration
+            ORDER BY TicketKey, JiraKey
+            """,
+            """
+            SELECT TicketKey, DisplayName, PublicDisplayNamePolicyVersion
+            FROM prepared_ticket_in_person_requesters
+            ORDER BY TicketKey, DisplayName
+            """,
+            """
+            SELECT RunId, Source, LatestSuccessfulRefreshAt,
+                   ContentRevision, CapturedAt
+            FROM authoring_run_input_provenance
+            ORDER BY RunId, Source, RowId
+            """,
+        ];
+        using SqliteConnection connection =
+            database.Database.OpenConnection();
+        return string.Join(
+            "\n--query--\n",
+            queries.Select(query => DumpRows(connection, query)));
+    }
+
+    private static string DumpRows(
+        SqliteConnection connection,
+        string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<string> rows = [];
+        while (reader.Read())
+        {
+            string[] values = new string[reader.FieldCount];
+            for (int index = 0; index < reader.FieldCount; index++)
+            {
+                values[index] = reader.IsDBNull(index)
+                    ? "<null>"
+                    : Convert.ToString(
+                        reader.GetValue(index),
+                        System.Globalization.CultureInfo.InvariantCulture)
+                        ?? string.Empty;
+            }
+            rows.Add(string.Join("\u001f", values));
+        }
+        return string.Join("\n", rows);
+    }
+
+    private sealed record PublicationRefreshContext(
+        string SourceRunId,
+        string RefreshRunId,
+        PreparedTicketPublicationRefreshInventory Inventory,
+        string InputFingerprint,
+        AuthoringRunStageLease Lease);
 
     private static JiraIssueSummaryEntry SourceTicket(string key)
         => new()

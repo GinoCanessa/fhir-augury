@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FhirAugury.Common;
 using FhirAugury.Common.Text;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +26,132 @@ public class OrchestratorHydrationFetcher(
     // (e.g. structured logging at fetch boundaries) can land without
     // a ctor change for all callers.
     private readonly ILogger _logger = logger;
+
+    public virtual async Task<PublicationMetadataFetchResult>
+        FetchPublicationMetadataAsync(
+            string ticketKey,
+            DateTimeOffset hydratedAt,
+            CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ticketKey);
+        string path =
+            $"api/v1/jira/items/{Uri.EscapeDataString(ticketKey)}";
+        FetchResult<OrchestratorItemResponse> result =
+            await GetJsonAsync<OrchestratorItemResponse>(path, ct);
+        if (result.Value is null)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                result.StatusCode == HttpStatusCode.NotFound
+                    ? PublicationMetadataFetchFailureReason.TicketNotFound
+                    : PublicationMetadataFetchFailureReason.SourceUnavailable,
+                result.Reason ?? "empty response");
+        }
+
+        OrchestratorItemResponse item = result.Value;
+        if (string.IsNullOrWhiteSpace(item.Id) ||
+            !string.Equals(
+                item.Id,
+                ticketKey,
+                StringComparison.OrdinalIgnoreCase) ||
+            item.Title is null)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.InvalidResponse,
+                "The Jira item response did not identify the requested ticket.");
+        }
+
+        OrchestratorItemPeopleResponse? people = item.People;
+        if (people?.PublicDisplayNamePolicyVersion !=
+            PublicDisplayNamePolicy.CurrentVersion)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.PeoplePolicyNotCurrent,
+                "The Jira item response did not carry the current public display-name policy.");
+        }
+
+        OrchestratorSourceReadProvenance? provenance = item.Provenance;
+        if (provenance is null ||
+            !string.Equals(
+                provenance.Source,
+                "jira",
+                StringComparison.OrdinalIgnoreCase) ||
+            provenance.ContentRevision is null)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.MissingSourceProvenance,
+                "The Jira item response did not carry complete source provenance.");
+        }
+        if (provenance.IsStable != true)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.UnstableSource,
+                "The Jira item response was not read from a stable source generation.",
+                sourceIsStable: false);
+        }
+
+        int separator = ticketKey.IndexOf('-', StringComparison.Ordinal);
+        if (separator <= 0 ||
+            provenance.ProjectLastSuccessfulRefreshAt is null)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.MissingProjectProvenance,
+                "The Jira item response did not carry project refresh provenance.",
+                sourceIsStable: true);
+        }
+
+        string expectedProject = ticketKey[..separator];
+        KeyValuePair<string, DateTimeOffset?> projectCoordinate =
+            provenance.ProjectLastSuccessfulRefreshAt.FirstOrDefault(
+                pair => string.Equals(
+                    pair.Key,
+                    expectedProject,
+                    StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(projectCoordinate.Key) ||
+            projectCoordinate.Value is null)
+        {
+            return PublicationFailure(
+                ticketKey,
+                hydratedAt,
+                PublicationMetadataFetchFailureReason.MissingProjectProvenance,
+                $"The Jira item response did not carry a successful refresh for project '{expectedProject}'.",
+                sourceIsStable: true);
+        }
+
+        Dictionary<string, string> metadata = item.Metadata ?? [];
+        string observedSourceRevision = JiraSourceRevision.Compute(
+            item.UpdatedAt,
+            item.Id,
+            item.Title,
+            metadata.GetValueOrDefault("status"),
+            metadata.GetValueOrDefault("work_group"),
+            metadata.GetValueOrDefault("type"),
+            metadata.GetValueOrDefault("specification"));
+        return new PublicationMetadataFetchResult(
+            ticketKey,
+            hydratedAt,
+            observedSourceRevision,
+            NormalizeDisplayName(people.Reporter),
+            NormalizeDisplayName(people.Assignee),
+            NormalizeDisplayNames(people.InPersonRequesters),
+            projectCoordinate.Key,
+            projectCoordinate.Value,
+            provenance.ContentRevision,
+            true,
+            PublicDisplayNamePolicy.CurrentVersion,
+            Failure: null);
+    }
 
     public virtual async Task<(HydrationTicketRow Parent, List<HydrationJiraXrefRow> XrefRows)> FetchParentAsync(
         string ticketKey, DateTimeOffset hydratedAt, CancellationToken ct)
@@ -382,7 +510,10 @@ public class OrchestratorHydrationFetcher(
                 sourceName: "orchestrator");
             if (!response.IsSuccessStatusCode)
             {
-                return new FetchResult<T>(null, $"orchestrator {(int)response.StatusCode}");
+                return new FetchResult<T>(
+                    null,
+                    $"orchestrator {(int)response.StatusCode}",
+                    response.StatusCode);
             }
 
             T? value = await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct);
@@ -396,7 +527,10 @@ public class OrchestratorHydrationFetcher(
         }
         catch (HttpRequestException ex) when (ex.StatusCode is { } statusCode && HttpRetryHelper.IsAuthFailure(statusCode))
         {
-            return new FetchResult<T>(null, $"orchestrator {(int)statusCode}");
+            return new FetchResult<T>(
+                null,
+                $"orchestrator {(int)statusCode}",
+                statusCode);
         }
         catch (HttpRequestException ex)
         {
@@ -481,5 +615,28 @@ public class OrchestratorHydrationFetcher(
                 .ThenBy(value => value, StringComparer.Ordinal)
                 .ToArray();
 
-    private readonly record struct FetchResult<T>(T? Value, string? Reason) where T : class;
+    private static PublicationMetadataFetchResult PublicationFailure(
+        string ticketKey,
+        DateTimeOffset hydratedAt,
+        PublicationMetadataFetchFailureReason reason,
+        string detail,
+        bool? sourceIsStable = null)
+        => new(
+            ticketKey,
+            hydratedAt,
+            ObservedSourceRevision: null,
+            Reporter: null,
+            Assignee: null,
+            InPersonRequesters: [],
+            SourceProject: null,
+            SourceLastSuccessfulRefreshAt: null,
+            SourceContentRevision: null,
+            SourceIsStable: sourceIsStable,
+            PublicDisplayNamePolicyVersion: null,
+            Failure: new PublicationMetadataFetchFailure(reason, detail));
+
+    private readonly record struct FetchResult<T>(
+        T? Value,
+        string? Reason,
+        HttpStatusCode? StatusCode = null) where T : class;
 }

@@ -121,6 +121,42 @@ public sealed record HydrationWorkGroupRow(
     string NameClean,
     DateTimeOffset UpdatedAt);
 
+public enum PublicationMetadataFetchFailureReason
+{
+    SourceUnavailable,
+    TicketNotFound,
+    InvalidResponse,
+    MissingSourceProvenance,
+    UnstableSource,
+    MissingProjectProvenance,
+    PeoplePolicyNotCurrent,
+}
+
+public sealed record PublicationMetadataFetchFailure(
+    PublicationMetadataFetchFailureReason Reason,
+    string Detail);
+
+/// <summary>
+/// Publication-safe subset of one Jira item response. A successful result
+/// carries no authored or structural hydration fields.
+/// </summary>
+public sealed record PublicationMetadataFetchResult(
+    string TicketKey,
+    DateTimeOffset HydratedAt,
+    string? ObservedSourceRevision,
+    string? Reporter,
+    string? Assignee,
+    IReadOnlyList<string> InPersonRequesters,
+    string? SourceProject,
+    DateTimeOffset? SourceLastSuccessfulRefreshAt,
+    long? SourceContentRevision,
+    bool? SourceIsStable,
+    int? PublicDisplayNamePolicyVersion,
+    PublicationMetadataFetchFailure? Failure)
+{
+    public bool IsSuccess => Failure is null;
+}
+
 public sealed record HydrationBatch(
     string TicketKey,
     HydrationTicketRow Parent,

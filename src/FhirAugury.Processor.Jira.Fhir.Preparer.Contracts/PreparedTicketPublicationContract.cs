@@ -40,6 +40,25 @@ public static class PreparedTicketPublicationContract
         int contractVersion = CurrentVersion)
         => ComputeSha256(SerializeCorpus(items, contractVersion));
 
+    public static string ComputePublicationRefreshInputFingerprint(
+        string sourceRunId,
+        IEnumerable<PreparedTicketPublicationCorpusItem> items,
+        int contractVersion = CurrentVersion)
+        => ComputeSha256(
+            SerializePublicationRefreshInput(
+                sourceRunId,
+                items,
+                contractVersion));
+
+    public static string ComputeRefreshInputFingerprint(
+        string sourceRunId,
+        IEnumerable<PreparedTicketPublicationCorpusItem> items,
+        int contractVersion = CurrentVersion)
+        => ComputePublicationRefreshInputFingerprint(
+            sourceRunId,
+            items,
+            contractVersion);
+
     public static string ComputeGroupingPartitionFingerprint(
         PreparedTicketGroupingPayload partition,
         int contractVersion = CurrentVersion)
@@ -47,6 +66,11 @@ public static class PreparedTicketPublicationContract
         ArgumentNullException.ThrowIfNull(partition);
         return ComputeGroupingFingerprint([partition], contractVersion);
     }
+
+    public static string ComputeGroupingOutputFingerprint(
+        PreparedTicketGroupingPayload partition,
+        int contractVersion = CurrentVersion)
+        => ComputeGroupingPartitionFingerprint(partition, contractVersion);
 
     public static string ComputeGroupingFingerprint(
         IEnumerable<PreparedTicketGroupingPayload> partitions,
@@ -108,6 +132,31 @@ public static class PreparedTicketPublicationContract
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return output.ToArray();
+    }
+
+    public static byte[] SerializePublicationRefreshInput(
+        string sourceRunId,
+        IEnumerable<PreparedTicketPublicationCorpusItem> items,
+        int contractVersion = CurrentVersion)
+    {
+        EnsureSupportedVersion(contractVersion);
+        RequireValue(sourceRunId, nameof(sourceRunId));
+        ArgumentNullException.ThrowIfNull(items);
+        string corpusFingerprint = ComputeCorpusFingerprint(
+            items,
+            contractVersion);
+
+        using MemoryStream output = new();
+        using (Utf8JsonWriter writer = CreateWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("contractVersion", contractVersion);
+            writer.WriteString("purpose", PublicationRefreshPurpose);
+            writer.WriteString("sourceRunId", sourceRunId);
+            writer.WriteString("corpusFingerprint", corpusFingerprint);
             writer.WriteEndObject();
         }
         return output.ToArray();

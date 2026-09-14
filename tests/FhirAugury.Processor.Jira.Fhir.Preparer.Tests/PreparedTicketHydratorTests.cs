@@ -16,6 +16,172 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 public sealed class PreparedTicketHydratorTests
 {
     [Fact]
+    public async Task FetchPublicationMetadata_ReadsOnlyStableTrustedJiraFields()
+    {
+        FakeHandler handler = new();
+        DateTimeOffset hydratedAt =
+            new(2026, 9, 14, 14, 0, 0, TimeSpan.Zero);
+        DateTimeOffset updatedAt =
+            new(2026, 9, 13, 9, 30, 0, TimeSpan.FromHours(-5));
+        DateTimeOffset refreshAt =
+            new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-901",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                    ["description_plain"] = "must not escape",
+                },
+                title: "Publication ticket",
+                url: "https://jira/browse/FHIR-901",
+                people: new
+                {
+                    reporter = "  Ada Example ",
+                    assignee = "private@example.org",
+                    inPersonRequesters = new[]
+                    {
+                        " Zoë Example ",
+                        "zoë example",
+                        "unsafe@example.org",
+                    },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 91,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = refreshAt,
+                        },
+                },
+                updatedAt: updatedAt,
+                id: "FHIR-901"));
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("http://localhost/"),
+            },
+            NullLogger.Instance);
+
+        PublicationMetadataFetchResult result =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-901",
+                hydratedAt,
+                CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Failure);
+        Assert.Equal(
+            "2026-09-13T09:30:00.0000000-05:00",
+            result.ObservedSourceRevision);
+        Assert.Equal("Ada Example", result.Reporter);
+        Assert.Null(result.Assignee);
+        Assert.Equal(["Zoë Example"], result.InPersonRequesters);
+        Assert.Equal("FHIR", result.SourceProject);
+        Assert.Equal(refreshAt, result.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(91, result.SourceContentRevision);
+        Assert.True(result.SourceIsStable);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            result.PublicDisplayNamePolicyVersion);
+        Assert.Equal(
+            ["/api/v1/jira/items/FHIR-901"],
+            handler.RequestedPathsAndQueries);
+    }
+
+    [Fact]
+    public async Task FetchPublicationMetadata_RejectsUnstableOrUntrustedResponses()
+    {
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-902",
+            JsonMetadata(
+                [],
+                title: "Unstable",
+                url: "https://jira/browse/FHIR-902",
+                people: PeoplePayload(
+                    "present",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 92,
+                    isStable = false,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                },
+                id: "FHIR-902"));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-903",
+            JsonMetadata(
+                [],
+                title: "Untrusted",
+                url: "https://jira/browse/FHIR-903",
+                people: PeoplePayload("missing", null),
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 92,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                },
+                id: "FHIR-903"));
+        handler.AddStatusResponse(
+            "/api/v1/jira/items/FHIR-904",
+            HttpStatusCode.NotFound);
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("http://localhost/"),
+            },
+            NullLogger.Instance);
+
+        PublicationMetadataFetchResult unstable =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-902",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        PublicationMetadataFetchResult untrusted =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-903",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        PublicationMetadataFetchResult missing =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-904",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
+        Assert.False(unstable.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.UnstableSource,
+            unstable.Failure!.Reason);
+        Assert.False(untrusted.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.PeoplePolicyNotCurrent,
+            untrusted.Failure!.Reason);
+        Assert.False(missing.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.TicketNotFound,
+            missing.Failure!.Reason);
+    }
+
+    [Fact]
     public async Task HydrateWithResult_HappyPath_ReturnsPersistedBatch()
     {
         using TestDatabase database = CreateDatabase();
@@ -807,15 +973,18 @@ public sealed class PreparedTicketHydratorTests
         string url,
         string? content = null,
         object? people = null,
-        object? provenance = null)
+        object? provenance = null,
+        DateTimeOffset? updatedAt = null,
+        string id = "x")
     {
         var payload = new
         {
-            id = "x",
+            id,
             title,
             content,
             url,
             createdAt = "2026-04-01T00:00:00Z",
+            updatedAt,
             metadata,
             people,
             provenance,

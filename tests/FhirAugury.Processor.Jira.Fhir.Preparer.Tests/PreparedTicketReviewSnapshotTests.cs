@@ -60,6 +60,20 @@ public sealed class PreparedTicketReviewSnapshotTests
             expectedCorpus,
             PreparedTicketPublicationContract.ComputeCorpusFingerprint(
                 corpus.Reverse()));
+        const string expectedRefreshInput =
+            "913e617484f73490a51c69b21db3c28a577d450ecb65884755eb85e3b1d1fe87";
+        Assert.Equal(
+            expectedRefreshInput,
+            PreparedTicketPublicationContract
+                .ComputePublicationRefreshInputFingerprint(
+                    "source-run",
+                    corpus));
+        Assert.Equal(
+            expectedRefreshInput,
+            PreparedTicketPublicationContract
+                .ComputePublicationRefreshInputFingerprint(
+                    "source-run",
+                    corpus.Reverse()));
 
         PreparedTicketGroupingPayload grouping = new()
         {

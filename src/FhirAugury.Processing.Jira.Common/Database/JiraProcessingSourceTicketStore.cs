@@ -7,6 +7,7 @@ using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -438,23 +439,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     }
 
     public static string GetSourceRevision(JiraProcessingSourceTicketRecord ticket)
-    {
-        ArgumentNullException.ThrowIfNull(ticket);
-        if (ticket.LastUpdated is not null)
-        {
-            return ticket.LastUpdated.Value.ToString("O", CultureInfo.InvariantCulture);
-        }
-
-        return AuthoringResultHasher.HashNormalizedUtf8(
-            string.Join(
-                "\n",
-                ticket.Key,
-                ticket.Title,
-                ticket.Status,
-                ticket.WorkGroup,
-                ticket.Type,
-                ticket.Specification));
-    }
+        => JiraSourceRevision.Compute(ticket);
 
     public static async Task EnsureCurrentSourceRevisionAsync(
         SqliteConnection connection,
