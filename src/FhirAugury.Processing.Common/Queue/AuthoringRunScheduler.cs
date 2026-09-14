@@ -9,6 +9,25 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Common.Queue;
 
+public sealed class AuthoringRunSchedulerWakeSignal
+{
+    private readonly SemaphoreSlim _signal = new(0, 1);
+
+    public void Signal()
+    {
+        try
+        {
+            _signal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+        }
+    }
+
+    internal Task WaitAsync(CancellationToken ct)
+        => _signal.WaitAsync(ct);
+}
+
 public class AuthoringRunScheduler<TItem>(
     AuthoringRunStore store,
     IAuthoringRunLifecycleAdapter adapter,
@@ -16,18 +35,25 @@ public class AuthoringRunScheduler<TItem>(
     AuthoringQueueRunner<TItem> runner,
     ProcessingLifecycleService lifecycle,
     IOptions<ProcessingServiceOptions> optionsAccessor,
-    ILogger<AuthoringRunScheduler<TItem>> logger)
+    ILogger<AuthoringRunScheduler<TItem>> logger,
+    AuthoringRunSchedulerWakeSignal? wakeSignal = null)
     : BackgroundService
 {
     private readonly ProcessingServiceOptions _options = optionsAccessor.Value;
     private readonly TimeSpan _syncSchedule = ParsePositiveTimeSpan(
         optionsAccessor.Value.SyncSchedule,
         nameof(ProcessingServiceOptions.SyncSchedule));
+    private readonly AuthoringRunSchedulerWakeSignal _wakeSignal =
+        wakeSignal ?? new AuthoringRunSchedulerWakeSignal();
 
     protected virtual DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 
     protected virtual Task DelayAsync(TimeSpan delay, CancellationToken ct)
         => Task.Delay(delay, ct);
+
+    public void Wake() => _wakeSignal.Signal();
+
+    public void SignalWake() => Wake();
 
     public async Task<TimeSpan> RunCycleAsync(CancellationToken ct = default)
     {
@@ -163,33 +189,19 @@ public class AuthoringRunScheduler<TItem>(
             return;
         }
 
-        Task? completion = runner.GetInFlightCompletionTask();
-        if (completion is null)
-        {
-            await SafeDelayAsync(wait, stoppingToken);
-            return;
-        }
-
-        using CancellationTokenSource delayCancellation =
+        using CancellationTokenSource waitCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        Task delay = DelayAsync(wait, delayCancellation.Token);
-        Task winner = await Task.WhenAny(completion, delay);
-        if (winner == completion)
+        Task delay = DelayAsync(wait, waitCancellation.Token);
+        Task wake = _wakeSignal.WaitAsync(waitCancellation.Token);
+        Task? completion = runner.GetInFlightCompletionTask();
+        Task winner = completion is null
+            ? await Task.WhenAny(delay, wake)
+            : await Task.WhenAny(completion, delay, wake);
+        if (!stoppingToken.IsCancellationRequested)
         {
-            await delayCancellation.CancelAsync();
+            await waitCancellation.CancelAsync();
         }
         await IgnoreExpectedCancellationAsync(winner, stoppingToken);
-    }
-
-    private async Task SafeDelayAsync(TimeSpan wait, CancellationToken ct)
-    {
-        try
-        {
-            await DelayAsync(wait, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-        }
     }
 
     private static async Task IgnoreExpectedCancellationAsync(

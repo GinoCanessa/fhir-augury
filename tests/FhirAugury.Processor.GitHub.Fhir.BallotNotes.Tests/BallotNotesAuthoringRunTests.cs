@@ -89,6 +89,10 @@ public sealed class BallotNotesAuthoringRunTests
 
         AuthoringRunItemRecord item = Assert.Single(creation.Items);
         Assert.Equal(execution.Id, creation.Execution.Id);
+        Assert.Equal(
+            AuthoringRunPurposeValues.Authoring,
+            creation.Run.Purpose);
+        Assert.Null(creation.Run.SourceRunId);
         Assert.Equal("note-a", item.BusinessKey);
         Assert.Equal(
             fixture.Database.GetHydrationExecutionItems(execution.Id)

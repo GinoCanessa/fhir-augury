@@ -28,6 +28,16 @@ public sealed class AuthoringRunStoreTests
         AuthoringRunItemRecord item = Assert.Single(await database.Store.GetRunItemsAsync(run.Id));
 
         Assert.Equal(1, run.AuthoringEpoch);
+        Assert.Equal(AuthoringRunPurposeValues.Authoring, run.Purpose);
+        Assert.Null(run.SourceRunId);
+        Assert.Equal(
+            "'authoring'",
+            database.Scalar<string>(
+                """
+                SELECT dflt_value
+                FROM pragma_table_info('authoring_runs')
+                WHERE name = 'Purpose'
+                """));
         Assert.Equal("FHIR-1", item.BusinessKey);
         Assert.Equal("revision-1", item.ExpectedSourceRevision);
         Assert.Equal(AuthoringStatusValues.Items.Pending, item.Status);
@@ -174,8 +184,10 @@ public sealed class AuthoringRunStoreTests
             await database.Store.ListOperatorRunsAsync("test");
 
         Assert.False(result.Truncated);
-        Assert.Equal([active.Id, terminal.Id], result.Runs.Select(run => run.Run.Id));
-        AuthoringOperatorRunSummary summary = result.Runs[0];
+        Assert.Equal(
+            [maintenance.Id, active.Id, terminal.Id],
+            result.Runs.Select(run => run.Run.Id));
+        AuthoringOperatorRunSummary summary = result.Runs[1];
         Assert.Equal(1, summary.CompletedItems);
         Assert.Equal(1, summary.RetryableErrorItems);
         Assert.Equal(1, summary.SupersededItems);
@@ -185,7 +197,9 @@ public sealed class AuthoringRunStoreTests
         Assert.DoesNotContain(
             result.Runs,
             run => run.Run.Id is "legacy-null-marker" or "initial-revalidation");
-        Assert.DoesNotContain(result.Runs, run => run.Run.Id == maintenance.Id);
+        Assert.Equal(
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            result.Runs[0].Run.Purpose);
         Assert.Null(legacy.RequestJson);
         Assert.Null(revalidation.RequestJson);
     }
@@ -501,6 +515,10 @@ public sealed class AuthoringRunStoreTests
             await database.Store.GetRunItemsAsync(maintenance.Id));
 
         Assert.True(maintenance.DatabaseOnly);
+        Assert.Equal(
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            maintenance.Purpose);
+        Assert.Null(maintenance.SourceRunId);
         Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
         Assert.Equal(receipt.Receipt.ReceiptId, item.AcceptedReceiptId);
         Assert.Equal(
@@ -508,6 +526,265 @@ public sealed class AuthoringRunStoreTests
             database.Scalar<int>(
                 "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunId = @runId",
                 ("@runId", maintenance.Id)));
+    }
+
+    [Fact]
+    public async Task PublicationRefreshRecordsPurposeAndSourceLineage()
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+
+        AuthoringRunRecord refresh =
+            await database.Store.CreateMaintenanceRunAsync(
+                "test",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        source.Item.BusinessKey,
+                        source.Item.ItemKind,
+                        source.Item.ExpectedSourceRevision,
+                        source.Receipt.ReceiptId),
+                ],
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId: source.Run.Id);
+        AuthoringRunItemRecord refreshItem = Assert.Single(
+            await database.Store.GetRunItemsAsync(refresh.Id));
+
+        Assert.Equal(
+            AuthoringRunPurposeValues.PublicationRefresh,
+            refresh.Purpose);
+        Assert.Equal(source.Run.Id, refresh.SourceRunId);
+        Assert.False(refresh.DatabaseOnly);
+        Assert.Equal(AuthoringStatusValues.Items.Complete, refreshItem.Status);
+        Assert.Equal(source.Receipt.ReceiptId, refreshItem.AcceptedReceiptId);
+        Assert.StartsWith(
+            $"maintenance:{refresh.Id}:",
+            refreshItem.ItemKind,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            0,
+            database.Scalar<int>(
+                "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunId = @runId",
+                ("@runId", refresh.Id)));
+
+        AuthoringOperatorRunList listed =
+            await database.Store.ListOperatorRunsAsync("test");
+        Assert.Contains(listed.Runs, value => value.Run.Id == refresh.Id);
+        AuthoringRunControlStatus status =
+            await new AuthoringRunControlService(
+                database.Store,
+                database.RetryPolicy).GetStatusAsync("test", refresh.Id);
+        Assert.Equal(
+            AuthoringRunPurposeValues.PublicationRefresh,
+            status.Run.Purpose);
+        Assert.Equal(source.Run.Id, status.Run.SourceRunId);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshRejectsInvalidPurposeAndLineage()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        AuthoringRunRecord activeSource = await database.Store.CreateRunAsync(
+            "test",
+            [new("FHIR-1", "ticket", "revision-1")]);
+        AuthoringMaintenanceRunItem[] items =
+        [
+            new("FHIR-1", "ticket", "revision-1", "receipt-1"),
+        ];
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                items,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                items,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId: "missing"));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                items,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId: activeSource.Id));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                items,
+                AuthoringRunPurposeValues.GroupingMaintenance,
+                databaseOnly: false));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                items,
+                AuthoringRunPurposeValues.Authoring,
+                databaseOnly: true));
+
+        Assert.Equal(
+            1,
+            database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+    }
+
+    [Fact]
+    public async Task SnapshotPublicationProofRoundTripsThroughRecovery()
+    {
+        using AuthoringTestDatabase database = new();
+        DateTimeOffset sourceRefresh =
+            new(2026, 9, 14, 10, 30, 0, TimeSpan.Zero);
+        DateTimeOffset capturedAt = sourceRefresh.AddMinutes(5);
+        AuthoringSnapshotPublicationProof proof = new(
+            1,
+            AuthoringRunPurposeValues.PublicationRefresh,
+            "source-run",
+            "jira",
+            sourceRefresh,
+            42,
+            1,
+            "corpus-fingerprint",
+            "grouping-fingerprint",
+            capturedAt);
+        ReadySourceRun source =
+            await CreateReadySourceRunAsync(database, proof);
+
+        Assert.Equal(proof, source.Descriptor.PublicationProof);
+        AuthoringReviewSnapshotRecord record = Assert.Single(
+            await database.Store.GetSnapshotRecordsAsync(),
+            value => value.Id == source.Descriptor.SnapshotId);
+        Assert.NotNull(record.PublicationProofJson);
+
+        database.Execute(
+            """
+            UPDATE authoring_review_snapshots
+            SET Status = @status
+            WHERE Id = @snapshotId
+            """,
+            ("@status", AuthoringStatusValues.Snapshots.Promoted),
+            ("@snapshotId", source.Descriptor.SnapshotId));
+
+        SnapshotReconciliationResult result = Assert.Single(
+            await new SqliteReviewSnapshotReconciler(
+                database.Store).ReconcileAsync(),
+            value => value.SnapshotId == source.Descriptor.SnapshotId);
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready, result.Status);
+        AuthoringSnapshotDescriptor recovered =
+            Assert.IsType<AuthoringSnapshotDescriptor>(
+                await database.Store.GetSnapshotDescriptorAsync(
+                    source.Descriptor.SnapshotId));
+        Assert.Equal(proof, recovered.PublicationProof);
+
+        string snapshotPath = Path.Combine(
+            Path.GetDirectoryName(database.DatabasePath)!,
+            "snapshots",
+            recovered.FileName);
+        using SqliteConnection snapshot = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = snapshotPath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString());
+        snapshot.Open();
+        using SqliteCommand proofColumn = snapshot.CreateCommand();
+        proofColumn.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM pragma_table_info('authoring_snapshot_provenance')
+            WHERE name = 'PublicationProofJson'
+            """;
+        Assert.Equal(0, Convert.ToInt32(proofColumn.ExecuteScalar()));
+    }
+
+    [Fact]
+    public async Task LegacyMaintenanceMigrationIsConservative()
+    {
+        using AuthoringTestDatabase database = new();
+        await database.ActivateAsync();
+        string createdAt =
+            new DateTimeOffset(2026, 9, 14, 12, 0, 0, TimeSpan.Zero)
+                .ToString("O");
+        DropIndexesForColumns(
+            database,
+            "authoring_runs",
+            ["Purpose", "SourceRunId"]);
+        database.Execute(
+            """
+            INSERT INTO authoring_runs(
+                Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                DatabaseOnly, TotalItems, CreatedAt)
+            VALUES
+                ('legacy-maintenance', 'test', 1, 'running', 'authoring',
+                 1, 1, @createdAt),
+                ('ambiguous-database-only', 'test', 1, 'running', 'authoring',
+                 1, 1, @createdAt),
+                ('revalidation-current', 'test', 1, 'running', 'authoring',
+                 0, 1, @createdAt),
+                ('revalidation-previous', 'test', 1, 'superseded', 'authoring',
+                 0, 1, @createdAt);
+
+            INSERT INTO authoring_run_items(
+                Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision,
+                Status, AcceptedReceiptId, AttemptCount, CreatedAt, CompletedAt)
+            VALUES
+                ('maintenance-item', 'legacy-maintenance', 'FHIR-1',
+                 'maintenance:legacy-maintenance:ticket', 'revision-1',
+                 'complete', 'receipt-1', 0, @createdAt, @createdAt),
+                ('ambiguous-item', 'ambiguous-database-only', 'FHIR-2',
+                 'ticket', 'revision-2', 'complete', 'receipt-2', 0,
+                 @createdAt, @createdAt),
+                ('current-item', 'revalidation-current', 'FHIR-3',
+                 'ticket', 'revision-3', 'pending', NULL, 0, @createdAt, NULL),
+                ('previous-item', 'revalidation-previous', 'FHIR-4',
+                 'ticket', 'revision-4', 'superseded', NULL, 0,
+                 @createdAt, @createdAt);
+
+            INSERT INTO authoring_revalidation_lineage(RunId, PreviousRunId)
+            VALUES('revalidation-current', 'revalidation-previous');
+
+            UPDATE authoring_processor_modes
+            SET RevalidationRequired = 1,
+                RevalidationRunId = 'revalidation-current'
+            WHERE ProcessorKind = 'test';
+
+            ALTER TABLE authoring_runs DROP COLUMN SourceRunId;
+            ALTER TABLE authoring_runs DROP COLUMN Purpose;
+            ALTER TABLE authoring_review_snapshots
+                DROP COLUMN PublicationProofJson;
+            """,
+            ("@createdAt", createdAt));
+
+        database.Store.Initialize();
+        database.Store.Initialize();
+
+        Assert.Equal(
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            (await database.Store.GetRunAsync("legacy-maintenance"))!.Purpose);
+        Assert.Equal(
+            AuthoringRunPurposeValues.Authoring,
+            (await database.Store.GetRunAsync(
+                "ambiguous-database-only"))!.Purpose);
+        Assert.Equal(
+            AuthoringRunPurposeValues.InitialRevalidation,
+            (await database.Store.GetRunAsync(
+                "revalidation-current"))!.Purpose);
+        Assert.Equal(
+            AuthoringRunPurposeValues.InitialRevalidation,
+            (await database.Store.GetRunAsync(
+                "revalidation-previous"))!.Purpose);
+        Assert.Equal(
+            1,
+            database.Scalar<int>(
+                """
+                SELECT COUNT(*)
+                FROM pragma_table_info('authoring_review_snapshots')
+                WHERE name = 'PublicationProofJson'
+                """));
     }
 
     [Fact]
@@ -1192,6 +1469,106 @@ public sealed class AuthoringRunStoreTests
             Assert.Single(
                 await database.Store.GetRunInputProvenanceAsync(first.Id))
                 .ContentRevision);
+    }
+
+    private static async Task<ReadySourceRun> CreateReadySourceRunAsync(
+        AuthoringTestDatabase database,
+        AuthoringSnapshotPublicationProof? publicationProof = null)
+    {
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync(databaseOnly: false);
+        AuthoringOperationClaim claim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await database.Store.ClaimItemAsync(run.Id, item.Id));
+        AuthoringReceiptAcceptance receipt =
+            await database.Store.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    item.ExpectedSourceRevision,
+                    AuthoringResultHasher.HashNormalizedUtf8("payload")),
+                claim.OperationToken);
+        await database.Store.MarkItemCompleteAsync(
+            item.Id,
+            receipt.Receipt.ReceiptId);
+        await database.Store.MarkRunFinalizingAsync(run.Id);
+        string outputDirectory = Path.Combine(
+            Path.GetDirectoryName(database.DatabasePath)!,
+            "snapshots");
+        AuthoringSnapshotDescriptor descriptor =
+            await new SqliteReviewSnapshotWriter(
+                database.OpenConnection,
+                database.Store).WriteAsync(
+                new SqliteReviewSnapshotRequest(
+                    "test",
+                    run.Id,
+                    outputDirectory,
+                    1,
+                    1,
+                    1,
+                    new Dictionary<string, long>(),
+                    AuthoringSnapshotSanitizer.CreateCore(),
+                    publicationProof));
+        await database.Store.CompleteRunAsync(
+            run.Id,
+            descriptor.SnapshotId);
+        return new ReadySourceRun(
+            (await database.Store.GetRunAsync(run.Id))!,
+            item,
+            receipt.Receipt,
+            descriptor);
+    }
+
+    private sealed record ReadySourceRun(
+        AuthoringRunRecord Run,
+        AuthoringRunItemRecord Item,
+        AuthoringResultReceipt Receipt,
+        AuthoringSnapshotDescriptor Descriptor);
+
+    private static void DropIndexesForColumns(
+        AuthoringTestDatabase database,
+        string tableName,
+        IReadOnlyCollection<string> columns)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        List<string> tableIndexes = [];
+        using (SqliteCommand list = connection.CreateCommand())
+        {
+            list.CommandText = $"PRAGMA index_list('{tableName}')";
+            using SqliteDataReader indexReader = list.ExecuteReader();
+            while (indexReader.Read())
+            {
+                tableIndexes.Add(indexReader.GetString(1));
+            }
+        }
+
+        List<string> indexes = [];
+        foreach (string indexName in tableIndexes)
+        {
+            using SqliteCommand info = connection.CreateCommand();
+            info.CommandText =
+                $"PRAGMA index_info('{indexName.Replace("'", "''", StringComparison.Ordinal)}')";
+            using SqliteDataReader columnReader = info.ExecuteReader();
+            while (columnReader.Read())
+            {
+                if (columns.Contains(
+                        columnReader.GetString(2),
+                        StringComparer.OrdinalIgnoreCase))
+                {
+                    indexes.Add(indexName);
+                    break;
+                }
+            }
+        }
+
+        foreach (string indexName in indexes)
+        {
+            using SqliteCommand drop = connection.CreateCommand();
+            drop.CommandText =
+                $"DROP INDEX \"{indexName.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+            drop.ExecuteNonQuery();
+        }
     }
 
     private static void MarkAsInitialRevalidation(

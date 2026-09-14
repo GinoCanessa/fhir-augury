@@ -32,6 +32,10 @@ public sealed class AuthoringCutoverCoordinatorTests
         AuthoringRunRecord run =
             (await database.Store.GetRunAsync(active.RevalidationRunId!))!;
         Assert.False(run.DatabaseOnly);
+        Assert.Equal(
+            AuthoringRunPurposeValues.InitialRevalidation,
+            run.Purpose);
+        Assert.Null(run.SourceRunId);
         AuthoringRunItemRecord item = Assert.Single(
             await database.Store.GetRunItemsAsync(run.Id));
         Assert.Equal("revision-1", item.ExpectedSourceRevision);
@@ -309,6 +313,10 @@ public sealed class AuthoringCutoverCoordinatorTests
                     new("FHIR-2", "ticket", "revision-3"),
                 ]);
 
+        Assert.Equal(
+            AuthoringRunPurposeValues.InitialRevalidation,
+            replacement.Purpose);
+        Assert.Null(replacement.SourceRunId);
         Assert.Equal(
             AuthoringStatusValues.Runs.Superseded,
             (await database.Store.GetRunAsync(firstRunId))!.Status);

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Contracts;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processing.Common.Database;
@@ -122,6 +123,14 @@ public sealed class SqliteReviewSnapshotReconciler(AuthoringRunStore store)
     {
         try
         {
+            if (record.PublicationProofJson is not null &&
+                JsonSerializer.Deserialize<AuthoringSnapshotPublicationProof>(
+                    record.PublicationProofJson,
+                    JsonSerializerOptions.Web) is null)
+            {
+                return "Snapshot publication proof is empty.";
+            }
+
             await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
             {
                 DataSource = record.Path,

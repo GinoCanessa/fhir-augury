@@ -66,7 +66,9 @@ public sealed record AuthoringRunStatus(
     string? Error,
     int RetryableErrorItems = 0,
     int SupersededItems = 0,
-    AuthoringRunStateInfo? State = null);
+    AuthoringRunStateInfo? State = null,
+    string? Purpose = null,
+    string? SourceRunId = null);
 
 public sealed record AuthoringRunItemStatus(
     string ItemId,
@@ -152,6 +154,18 @@ public sealed record AuthoringRunStageReceipt(
     int MemberRows,
     DateTimeOffset PersistedAt);
 
+public sealed record AuthoringSnapshotPublicationProof(
+    int ContractVersion,
+    string Purpose,
+    string SourceRunId,
+    string SourceName,
+    DateTimeOffset SourceLastSuccessfulRefreshAt,
+    long SourceContentRevision,
+    int PublicDisplayNamePolicyVersion,
+    string CorpusFingerprint,
+    string GroupingFingerprint,
+    DateTimeOffset CapturedAt);
+
 public sealed record AuthoringSnapshotDescriptor(
     string ProcessorKind,
     string RunId,
@@ -165,4 +179,5 @@ public sealed record AuthoringSnapshotDescriptor(
     int ReceiptCount,
     IReadOnlyDictionary<string, long> TableCounts,
     string FileName,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AuthoringSnapshotPublicationProof? PublicationProof = null);

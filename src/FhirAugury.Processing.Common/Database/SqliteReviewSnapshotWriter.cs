@@ -15,7 +15,8 @@ public sealed record SqliteReviewSnapshotRequest(
     int ItemCount,
     int ReceiptCount,
     IReadOnlyDictionary<string, long> TableCounts,
-    AuthoringSnapshotSanitizer Sanitizer);
+    AuthoringSnapshotSanitizer Sanitizer,
+    AuthoringSnapshotPublicationProof? PublicationProof = null);
 
 public sealed class SqliteReviewSnapshotWriter(
     Func<SqliteConnection> openSourceConnection,
@@ -49,7 +50,8 @@ public sealed class SqliteReviewSnapshotWriter(
             request.ItemCount,
             request.ReceiptCount,
             request.TableCounts,
-            ct: ct);
+            ct: ct,
+            publicationProof: request.PublicationProof);
 
         try
         {

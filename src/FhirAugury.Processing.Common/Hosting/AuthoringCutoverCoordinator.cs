@@ -267,17 +267,18 @@ public sealed class AuthoringCutoverCoordinator(
             connection,
             """
             INSERT INTO authoring_runs(
-                Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                TotalItems, CreatedAt, StartedAt)
+                Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt)
             VALUES(
-                @id, @processorKind, @epoch, @status, 0, @totalItems,
-                @createdAt, @startedAt)
+                @id, @processorKind, @epoch, @status, @purpose,
+                NULL, 0, @totalItems, @createdAt, @startedAt)
             """,
             ct,
             ("@id", runId),
             ("@processorKind", processorKind),
             ("@epoch", epoch),
             ("@status", AuthoringStatusValues.Runs.Running),
+            ("@purpose", AuthoringRunPurposeValues.InitialRevalidation),
             ("@totalItems", items.Count),
             ("@createdAt", Format(now)),
             ("@startedAt", Format(now)));

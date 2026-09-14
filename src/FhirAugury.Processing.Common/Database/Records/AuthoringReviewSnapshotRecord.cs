@@ -28,6 +28,7 @@ public partial record class AuthoringReviewSnapshotRecord
     public int ItemCount { get; set; }
     public int ReceiptCount { get; set; }
     public required string TableCountsJson { get; set; }
+    public string? PublicationProofJson { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? FinalizedAt { get; set; }
     public string? Error { get; set; }

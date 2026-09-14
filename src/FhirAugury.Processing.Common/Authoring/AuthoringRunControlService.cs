@@ -129,7 +129,9 @@ public sealed class AuthoringRunControlService(
             run.Error,
             retryableErrorItems,
             supersededItems,
-            ToState(run.Status, nextAutomaticRecoveryAt));
+            ToState(run.Status, nextAutomaticRecoveryAt),
+            run.Purpose,
+            run.SourceRunId);
 
     private AuthoringRunItemStatus ToStatus(
         AuthoringRunItemRecord item,

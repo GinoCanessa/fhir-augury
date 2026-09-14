@@ -84,6 +84,42 @@ public sealed class AuthoringRunStore
             "PostPersistenceLeaseAcquiredAt",
             "TEXT NULL");
 
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_runs",
+            "Purpose",
+            "TEXT NOT NULL DEFAULT 'authoring'");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_runs",
+            "SourceRunId",
+            "TEXT NULL");
+        using (SqliteCommand createRuns = connection.CreateCommand())
+        {
+            // The generator cannot express SQL defaults. Create the fresh-table
+            // shape here so older writers may continue omitting Purpose.
+            createRuns.CommandText =
+                """
+                CREATE TABLE IF NOT EXISTS authoring_runs (
+                    RowId INTEGER UNIQUE PRIMARY KEY NOT NULL,
+                    Id TEXT UNIQUE NOT NULL,
+                    ProcessorKind TEXT NOT NULL,
+                    AuthoringEpoch INTEGER NOT NULL,
+                    Status TEXT NOT NULL,
+                    Purpose TEXT NOT NULL DEFAULT 'authoring',
+                    SourceRunId TEXT,
+                    DatabaseOnly INTEGER NOT NULL,
+                    TotalItems INTEGER NOT NULL,
+                    CreatedAt TEXT NOT NULL,
+                    StartedAt TEXT,
+                    CompletedAt TEXT,
+                    Error TEXT,
+                    SnapshotId TEXT,
+                    RequestJson TEXT
+                )
+                """;
+            createRuns.ExecuteNonQuery();
+        }
         AuthoringRunRecord.CreateTable(connection);
         SqliteSchemaHelpers.AddColumnIfMissing(
             connection,
@@ -97,6 +133,11 @@ public sealed class AuthoringRunStore
         AuthoringResultReceiptRecord.CreateTable(connection);
         AuthoringMutationFenceRecord.CreateTable(connection);
         AuthoringProcessorModeRecord.CreateTable(connection);
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "authoring_review_snapshots",
+            "PublicationProofJson",
+            "TEXT NULL");
         AuthoringReviewSnapshotRecord.CreateTable(connection);
         using (SqliteCommand lineage = connection.CreateCommand())
         {
@@ -108,6 +149,65 @@ public sealed class AuthoringRunStore
                 );
                 """;
             lineage.ExecuteNonQuery();
+        }
+
+        using (SqliteCommand backfillMaintenancePurpose = connection.CreateCommand())
+        {
+            backfillMaintenancePurpose.CommandText =
+                """
+                UPDATE authoring_runs AS run
+                SET Purpose = @groupingMaintenance
+                WHERE run.Purpose = @authoring
+                  AND run.DatabaseOnly = 1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM authoring_run_items item
+                      WHERE item.RunId = run.Id)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM authoring_run_items item
+                      WHERE item.RunId = run.Id
+                        AND (
+                            item.Status <> @complete
+                            OR item.ItemKind NOT LIKE 'maintenance:%'))
+                """;
+            backfillMaintenancePurpose.Parameters.AddWithValue(
+                "@groupingMaintenance",
+                AuthoringRunPurposeValues.GroupingMaintenance);
+            backfillMaintenancePurpose.Parameters.AddWithValue(
+                "@authoring",
+                AuthoringRunPurposeValues.Authoring);
+            backfillMaintenancePurpose.Parameters.AddWithValue(
+                "@complete",
+                AuthoringStatusValues.Items.Complete);
+            backfillMaintenancePurpose.ExecuteNonQuery();
+        }
+
+        using (SqliteCommand backfillRevalidationPurpose = connection.CreateCommand())
+        {
+            backfillRevalidationPurpose.CommandText =
+                """
+                UPDATE authoring_runs AS run
+                SET Purpose = @initialRevalidation
+                WHERE run.Purpose = @authoring
+                  AND (
+                      EXISTS (
+                          SELECT 1
+                          FROM authoring_processor_modes mode
+                          WHERE mode.RevalidationRunId = run.Id)
+                      OR EXISTS (
+                          SELECT 1
+                          FROM authoring_revalidation_lineage lineage
+                          WHERE lineage.RunId = run.Id
+                             OR lineage.PreviousRunId = run.Id))
+                """;
+            backfillRevalidationPurpose.Parameters.AddWithValue(
+                "@initialRevalidation",
+                AuthoringRunPurposeValues.InitialRevalidation);
+            backfillRevalidationPurpose.Parameters.AddWithValue(
+                "@authoring",
+                AuthoringRunPurposeValues.Authoring);
+            backfillRevalidationPurpose.ExecuteNonQuery();
         }
 
         using (SqliteCommand dropIdentityIndexes = connection.CreateCommand())
@@ -336,17 +436,20 @@ public sealed class AuthoringRunStore
                 connection,
                 """
                 INSERT INTO authoring_runs
-                    (Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                     TotalItems, CreatedAt, RequestJson)
+                    (Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                     SourceRunId, DatabaseOnly, TotalItems, CreatedAt,
+                     RequestJson)
                 VALUES
-                    (@id, @processorKind, @epoch, @status, @databaseOnly,
-                     @totalItems, @createdAt, @requestJson)
+                    (@id, @processorKind, @epoch, @status, @purpose,
+                     NULL, @databaseOnly, @totalItems, @createdAt,
+                     @requestJson)
                 """,
                 ct,
                 ("@id", id),
                 ("@processorKind", processorKind),
                 ("@epoch", mode.Epoch),
                 ("@status", AuthoringStatusValues.Runs.Queued),
+                ("@purpose", AuthoringRunPurposeValues.Authoring),
                 ("@databaseOnly", databaseOnly),
                 ("@totalItems", items.Count),
                 ("@createdAt", Format(timestamp)),
@@ -399,6 +502,27 @@ public sealed class AuthoringRunStore
             processorKind,
             (_, _) => Task.FromResult<IReadOnlyList<AuthoringMaintenanceRunItem>>(
                 items.ToArray()),
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            databaseOnly: true,
+            sourceRunId: null,
+            now: now,
+            ct: ct);
+
+    public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
+        string processorKind,
+        IReadOnlyCollection<AuthoringMaintenanceRunItem> items,
+        string purpose,
+        bool databaseOnly,
+        string? sourceRunId = null,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+        => await CreateMaintenanceRunAsync(
+            processorKind,
+            (_, _) => Task.FromResult<IReadOnlyList<AuthoringMaintenanceRunItem>>(
+                items.ToArray()),
+            purpose,
+            databaseOnly,
+            sourceRunId,
             now,
             ct);
 
@@ -410,9 +534,68 @@ public sealed class AuthoringRunStore
             Task<IReadOnlyList<AuthoringMaintenanceRunItem>>> itemFactory,
         DateTimeOffset? now = null,
         CancellationToken ct = default)
+        => await CreateMaintenanceRunAsync(
+            processorKind,
+            itemFactory,
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            databaseOnly: true,
+            sourceRunId: null,
+            now: now,
+            ct: ct);
+
+    public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
+        string processorKind,
+        Func<
+            SqliteConnection,
+            CancellationToken,
+            Task<IReadOnlyList<AuthoringMaintenanceRunItem>>> itemFactory,
+        string purpose,
+        bool databaseOnly,
+        string? sourceRunId = null,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
         ArgumentNullException.ThrowIfNull(itemFactory);
+        AuthoringRunPurposeValues.EnsureValid(purpose);
+        if (!AuthoringRunPurposeValues.IsMaintenance(purpose))
+        {
+            throw new ArgumentException(
+                $"Purpose '{purpose}' is not a maintenance run purpose.",
+                nameof(purpose));
+        }
+        if (string.Equals(
+                purpose,
+                AuthoringRunPurposeValues.GroupingMaintenance,
+                StringComparison.Ordinal) &&
+            !databaseOnly)
+        {
+            throw new ArgumentException(
+                "Grouping maintenance runs must be database-only.",
+                nameof(databaseOnly));
+        }
+        if (string.Equals(
+                purpose,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                StringComparison.Ordinal))
+        {
+            if (databaseOnly)
+            {
+                throw new ArgumentException(
+                    "Publication refresh runs must produce a snapshot.",
+                    nameof(databaseOnly));
+            }
+            if (string.IsNullOrWhiteSpace(sourceRunId))
+            {
+                throw new ArgumentException(
+                    "Publication refresh runs require a source run.",
+                    nameof(sourceRunId));
+            }
+        }
+        else if (sourceRunId is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        }
 
         DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
         string runId = Guid.NewGuid().ToString("N");
@@ -430,7 +613,7 @@ public sealed class AuthoringRunStore
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.RevalidationRequired,
-                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before grouping maintenance.",
+                    $"Initial revalidation run '{mode.RevalidationRunId}' must complete before maintenance work.",
                     mode.RevalidationRunId is null
                         ? null
                         : [mode.RevalidationRunId]);
@@ -449,23 +632,38 @@ public sealed class AuthoringRunStore
                         $"Mutating run '{activeRunId}' is already active.");
                 }
             }
+            await ValidateMaintenanceSourceAsync(
+                connection,
+                processorKind,
+                purpose,
+                sourceRunId,
+                ct);
             IReadOnlyList<AuthoringMaintenanceRunItem> items =
                 await itemFactory(connection, ct);
             if (items.Count == 0)
             {
                 throw new ArgumentException(
-                    "A grouping maintenance run requires at least one current receipt-backed item.",
+                    "A maintenance run requires at least one current receipt-backed item.",
                     nameof(itemFactory));
+            }
+            foreach (AuthoringMaintenanceRunItem item in items)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(item.BusinessKey);
+                ArgumentException.ThrowIfNullOrWhiteSpace(item.ItemKind);
+                ArgumentException.ThrowIfNullOrWhiteSpace(
+                    item.ExpectedSourceRevision);
+                ArgumentException.ThrowIfNullOrWhiteSpace(item.ReceiptId);
             }
 
             await ExecuteAsync(
                 connection,
                 """
                 INSERT INTO authoring_runs(
-                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                    TotalItems, CreatedAt, StartedAt)
+                    Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                    SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt)
                 VALUES(
-                    @id, @processorKind, @epoch, @status, 1,
+                    @id, @processorKind, @epoch, @status, @purpose,
+                    @sourceRunId, @databaseOnly,
                     @totalItems, @createdAt, @startedAt)
                 """,
                 ct,
@@ -473,6 +671,9 @@ public sealed class AuthoringRunStore
                 ("@processorKind", processorKind),
                 ("@epoch", mode.Epoch),
                 ("@status", AuthoringStatusValues.Runs.Running),
+                ("@purpose", purpose),
+                ("@sourceRunId", sourceRunId),
+                ("@databaseOnly", databaseOnly),
                 ("@totalItems", items.Count),
                 ("@createdAt", Format(timestamp)),
                 ("@startedAt", Format(timestamp)));
@@ -633,12 +834,14 @@ public sealed class AuthoringRunStore
                 """
                 UPDATE authoring_runs
                 SET Status = @status,
+                    Purpose = @purpose,
                     CompletedAt = @completedAt,
                     Error = @error
                 WHERE Id = @runId
                 """,
                 ct,
                 ("@status", AuthoringStatusValues.Runs.Superseded),
+                ("@purpose", AuthoringRunPurposeValues.InitialRevalidation),
                 ("@completedAt", Format(timestamp)),
                 ("@error", "Initial revalidation source revisions changed."),
                 ("@runId", expectedRunId));
@@ -656,10 +859,11 @@ public sealed class AuthoringRunStore
                 connection,
                 """
                 INSERT INTO authoring_runs(
-                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                    TotalItems, CreatedAt, StartedAt)
+                    Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                    SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt)
                 VALUES(
-                    @id, @processorKind, @epoch, @status, 0,
+                    @id, @processorKind, @epoch, @status, @purpose,
+                    NULL, 0,
                     @totalItems, @createdAt, @startedAt)
                 """,
                 ct,
@@ -667,6 +871,7 @@ public sealed class AuthoringRunStore
                 ("@processorKind", processorKind),
                 ("@epoch", mode.Epoch),
                 ("@status", AuthoringStatusValues.Runs.Running),
+                ("@purpose", AuthoringRunPurposeValues.InitialRevalidation),
                 ("@totalItems", items.Count),
                 ("@createdAt", Format(timestamp)),
                 ("@startedAt", Format(timestamp)));
@@ -850,6 +1055,7 @@ public sealed class AuthoringRunStore
                 SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status,
                        DatabaseOnly, TotalItems, CreatedAt, StartedAt,
                        CompletedAt, Error, SnapshotId, RequestJson,
+                       Purpose, SourceRunId,
                        CASE
                            WHEN Status IN (@queued, @running, @finalizing, @runError)
                                THEN 0
@@ -857,13 +1063,16 @@ public sealed class AuthoringRunStore
                        END AS Priority
                 FROM authoring_runs
                 WHERE ProcessorKind = @processorKind
-                  AND RequestJson IS NOT NULL
+                  AND (
+                      RequestJson IS NOT NULL
+                      OR Purpose NOT IN (@authoring, @initialRevalidation))
                 ORDER BY Priority, CreatedAt DESC, RowId DESC
                 LIMIT @candidateLimit
             )
             SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                    r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
                    r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                   r.Purpose, r.SourceRunId,
                    SUM(CASE WHEN i.Status = @complete THEN 1 ELSE 0 END),
                    SUM(CASE WHEN i.Status = @itemError THEN 1 ELSE 0 END),
                    SUM(CASE WHEN i.Status = @superseded THEN 1 ELSE 0 END),
@@ -881,6 +1090,7 @@ public sealed class AuthoringRunStore
             GROUP BY r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                      r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
                      r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                     r.Purpose, r.SourceRunId,
                      r.Priority
             ORDER BY r.Priority, r.CreatedAt DESC, r.RowId DESC
             """;
@@ -889,6 +1099,12 @@ public sealed class AuthoringRunStore
         command.Parameters.AddWithValue("@running", AuthoringStatusValues.Runs.Running);
         command.Parameters.AddWithValue("@finalizing", AuthoringStatusValues.Runs.Finalizing);
         command.Parameters.AddWithValue("@runError", AuthoringStatusValues.Runs.Error);
+        command.Parameters.AddWithValue(
+            "@authoring",
+            AuthoringRunPurposeValues.Authoring);
+        command.Parameters.AddWithValue(
+            "@initialRevalidation",
+            AuthoringRunPurposeValues.InitialRevalidation);
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
         command.Parameters.AddWithValue("@itemError", AuthoringStatusValues.Items.Error);
         command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
@@ -899,12 +1115,12 @@ public sealed class AuthoringRunStore
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
-            DateTimeOffset? errorCompletedAt = ReadNullableDate(reader, 16);
+            DateTimeOffset? errorCompletedAt = ReadNullableDate(reader, 18);
             runs.Add(new AuthoringOperatorRunSummary(
                 ReadRun(reader),
-                reader.GetInt32(13),
-                reader.GetInt32(14),
                 reader.GetInt32(15),
+                reader.GetInt32(16),
+                reader.GetInt32(17),
                 errorCompletedAt is null
                     ? null
                     : _retryPolicy.GetNextAutomaticRetryAt(
@@ -951,7 +1167,8 @@ public sealed class AuthoringRunStore
             """
             SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                    r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
-                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson
+                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                   r.Purpose, r.SourceRunId
             FROM authoring_mutation_fences f
             INNER JOIN authoring_runs r ON r.Id = f.RunId
             WHERE f.ProcessorKind = @processorKind
@@ -973,7 +1190,7 @@ public sealed class AuthoringRunStore
             """
             SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
                    TotalItems, CreatedAt, StartedAt, CompletedAt, Error, SnapshotId,
-                   RequestJson
+                   RequestJson, Purpose, SourceRunId
             FROM authoring_runs
             WHERE ProcessorKind = @processorKind AND Status = @status
             ORDER BY CreatedAt, RowId
@@ -996,7 +1213,8 @@ public sealed class AuthoringRunStore
             """
             SELECT r.RowId, r.Id, r.ProcessorKind, r.AuthoringEpoch, r.Status,
                    r.DatabaseOnly, r.TotalItems, r.CreatedAt, r.StartedAt,
-                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson
+                   r.CompletedAt, r.Error, r.SnapshotId, r.RequestJson,
+                   r.Purpose, r.SourceRunId
             FROM authoring_runs r
             WHERE r.ProcessorKind = @processorKind
               AND r.Status IN (@running, @finalizing, @error)
@@ -2871,7 +3089,8 @@ public sealed class AuthoringRunStore
         int receiptCount,
         IReadOnlyDictionary<string, long> tableCounts,
         DateTimeOffset? now = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        AuthoringSnapshotPublicationProof? publicationProof = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tempPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
@@ -2907,16 +3126,23 @@ public sealed class AuthoringRunStore
             long sequence = await GetNextSnapshotSequenceAsync(connection, processorKind, ct);
             string id = Guid.NewGuid().ToString("N");
             string countsJson = JsonSerializer.Serialize(tableCounts);
+            string? publicationProofJson = publicationProof is null
+                ? null
+                : JsonSerializer.Serialize(
+                    publicationProof,
+                    JsonSerializerOptions.Web);
 
             await ExecuteAsync(
                 connection,
                 """
                 INSERT INTO authoring_review_snapshots
                     (Id, ProcessorKind, RunId, AuthoringEpoch, Sequence, SchemaVersion, Status,
-                     TempPath, Path, SizeBytes, ItemCount, ReceiptCount, TableCountsJson, CreatedAt)
+                     TempPath, Path, SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
+                     PublicationProofJson, CreatedAt)
                 VALUES
                     (@id, @processorKind, @runId, @authoringEpoch, @sequence, @schemaVersion, @status,
-                     @tempPath, @path, 0, @itemCount, @receiptCount, @tableCountsJson, @createdAt)
+                     @tempPath, @path, 0, @itemCount, @receiptCount, @tableCountsJson,
+                     @publicationProofJson, @createdAt)
                 """,
                 ct,
                 ("@id", id),
@@ -2931,6 +3157,7 @@ public sealed class AuthoringRunStore
                 ("@itemCount", itemCount),
                 ("@receiptCount", receiptCount),
                 ("@tableCountsJson", countsJson),
+                ("@publicationProofJson", publicationProofJson),
                 ("@createdAt", Format(timestamp)));
 
             AuthoringReviewSnapshotRecord record = await ReadSnapshotAsync(connection, id, ct)
@@ -3084,7 +3311,7 @@ public sealed class AuthoringRunStore
             """
             SELECT RowId, Id, ProcessorKind, RunId, AuthoringEpoch, Sequence, SchemaVersion, Status,
                    TempPath, Path, ChecksumSha256, SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
-                   CreatedAt, FinalizedAt, Error
+                   CreatedAt, FinalizedAt, Error, PublicationProofJson
             FROM authoring_review_snapshots
             ORDER BY ProcessorKind, Sequence
             """;
@@ -3269,6 +3496,73 @@ public sealed class AuthoringRunStore
         {
             await RollbackAsync(connection);
             throw;
+        }
+    }
+
+    private static async Task ValidateMaintenanceSourceAsync(
+        SqliteConnection connection,
+        string processorKind,
+        string purpose,
+        string? sourceRunId,
+        CancellationToken ct)
+    {
+        if (sourceRunId is null)
+        {
+            return;
+        }
+
+        AuthoringRunRecord sourceRun =
+            await ReadRunAsync(connection, sourceRunId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Source authoring run '{sourceRunId}' was not found.");
+        if (!string.Equals(
+                sourceRun.ProcessorKind,
+                processorKind,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Source authoring run '{sourceRunId}' belongs to processor '{sourceRun.ProcessorKind}', not '{processorKind}'.",
+                nameof(sourceRunId));
+        }
+        if (!string.Equals(
+                purpose,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!string.Equals(
+                sourceRun.Status,
+                AuthoringStatusValues.Runs.Completed,
+                StringComparison.Ordinal) ||
+            sourceRun.DatabaseOnly ||
+            string.IsNullOrWhiteSpace(sourceRun.SnapshotId))
+        {
+            throw new ArgumentException(
+                $"Source authoring run '{sourceRunId}' is not a completed snapshot-producing run.",
+                nameof(sourceRunId));
+        }
+
+        AuthoringReviewSnapshotRecord? snapshot =
+            await ReadSnapshotAsync(connection, sourceRun.SnapshotId, ct);
+        if (snapshot is null ||
+            !string.Equals(
+                snapshot.ProcessorKind,
+                processorKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                snapshot.RunId,
+                sourceRunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                snapshot.Status,
+                AuthoringStatusValues.Snapshots.Ready,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(snapshot.ChecksumSha256))
+        {
+            throw new ArgumentException(
+                $"Source authoring run '{sourceRunId}' does not have a ready snapshot descriptor.",
+                nameof(sourceRunId));
         }
     }
 
@@ -3457,7 +3751,8 @@ public sealed class AuthoringRunStore
         command.CommandText =
             """
             SELECT RowId, Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly, TotalItems,
-                   CreatedAt, StartedAt, CompletedAt, Error, SnapshotId, RequestJson
+                   CreatedAt, StartedAt, CompletedAt, Error, SnapshotId, RequestJson,
+                   Purpose, SourceRunId
             FROM authoring_runs
             WHERE Id = @runId
             """;
@@ -3525,6 +3820,8 @@ public sealed class AuthoringRunStore
             Error = ReadNullableString(reader, 10),
             SnapshotId = ReadNullableString(reader, 11),
             RequestJson = ReadNullableString(reader, 12),
+            Purpose = reader.GetString(13),
+            SourceRunId = ReadNullableString(reader, 14),
         };
 
     private static async Task<AuthoringRunItemRecord?> ReadRunItemAsync(
@@ -3689,7 +3986,7 @@ public sealed class AuthoringRunStore
             """
             SELECT RowId, Id, ProcessorKind, RunId, AuthoringEpoch, Sequence, SchemaVersion, Status,
                    TempPath, Path, ChecksumSha256, SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
-                   CreatedAt, FinalizedAt, Error
+                   CreatedAt, FinalizedAt, Error, PublicationProofJson
             FROM authoring_review_snapshots
             WHERE Id = @snapshotId
             """;
@@ -3719,6 +4016,7 @@ public sealed class AuthoringRunStore
             CreatedAt = ParseDate(reader.GetString(15)),
             FinalizedAt = ReadNullableDate(reader, 16),
             Error = ReadNullableString(reader, 17),
+            PublicationProofJson = ReadNullableString(reader, 18),
         };
 
     private static AuthoringResultReceipt ToContract(AuthoringResultReceiptRecord receipt)
@@ -3750,7 +4048,14 @@ public sealed class AuthoringRunStore
             JsonSerializer.Deserialize<Dictionary<string, long>>(record.TableCountsJson)
                 ?? new Dictionary<string, long>(StringComparer.Ordinal),
             System.IO.Path.GetFileName(record.Path),
-            record.CreatedAt);
+            record.CreatedAt,
+            record.PublicationProofJson is null
+                ? null
+                : JsonSerializer.Deserialize<AuthoringSnapshotPublicationProof>(
+                    record.PublicationProofJson,
+                    JsonSerializerOptions.Web)
+                    ?? throw new InvalidOperationException(
+                        $"Snapshot '{record.Id}' has an empty publication proof."));
 
     internal static async Task InsertRunInputProvenanceAsync(
         SqliteConnection connection,

@@ -14,6 +14,16 @@ public sealed class AuthoringRunFinalizerTests
         using AuthoringTestDatabase database = new();
         (AuthoringRunRecord run, _) = await PrepareCompletedItemAsync(database, databaseOnly: true);
         int stageRuns = 0;
+        int snapshotRuns = 0;
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Purpose = @purpose,
+                SourceRunId = 'source-run'
+            WHERE Id = @runId
+            """,
+            ("@purpose", AuthoringRunPurposeValues.PublicationRefresh),
+            ("@runId", run.Id));
         AuthoringRunFinalizer finalizer = new(database.Store);
 
         AuthoringSnapshotDescriptor? descriptor = await finalizer.FinalizeAsync(
@@ -28,10 +38,18 @@ public sealed class AuthoringRunFinalizerTests
                         stageRuns++;
                         return Task.CompletedTask;
                     }),
-            ]);
+            ],
+            _ =>
+            {
+                snapshotRuns++;
+                return Task.FromException<AuthoringSnapshotDescriptor>(
+                    new InvalidOperationException(
+                        "Database-only runs must not invoke the snapshot factory."));
+            });
 
         Assert.Null(descriptor);
         Assert.Equal(1, stageRuns);
+        Assert.Equal(0, snapshotRuns);
         Assert.Equal(
             AuthoringStatusValues.Runs.CompletedDatabaseOnly,
             (await database.Store.GetRunAsync(run.Id))!.Status);

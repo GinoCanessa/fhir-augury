@@ -340,6 +340,70 @@ public sealed class AuthoringRunSchedulerTests
     }
 
     [Fact]
+    public async Task WakeFinalizesDurableMaintenanceWithoutWaitingOrDuplicating()
+    {
+        ProcessingServiceOptions options = CreateOptions();
+        AuthoringRunSchedulerWakeSignal wakeSignal = new();
+        using SchedulerFixture fixture = new(
+            options,
+            delay: (_, ct) => Task.Delay(Timeout.InfiniteTimeSpan, ct),
+            wakeSignal: wakeSignal);
+        (AuthoringRunRecord sourceRun, AuthoringRunItemRecord sourceItem) =
+            await fixture.Database.CreateRunningRunAsync(databaseOnly: true);
+        AuthoringOperationClaim claim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await fixture.Database.Store.ClaimItemAsync(
+                    sourceRun.Id,
+                    sourceItem.Id));
+        AuthoringReceiptAcceptance receipt =
+            await fixture.Database.Store.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    sourceRun.Id,
+                    sourceItem.Id,
+                    claim.OperationId,
+                    sourceItem.ExpectedSourceRevision,
+                    AuthoringResultHasher.HashNormalizedUtf8("payload")),
+                claim.OperationToken);
+        await fixture.Database.Store.MarkItemCompleteAsync(
+            sourceItem.Id,
+            receipt.Receipt.ReceiptId);
+        await fixture.Database.Store.MarkRunFinalizingAsync(sourceRun.Id);
+        await fixture.Database.Store.CompleteRunAsync(
+            sourceRun.Id,
+            snapshotId: null);
+
+        TimeSpan scheduledWait = await fixture.Scheduler.RunCycleAsync();
+        Assert.Equal(TimeSpan.FromMinutes(5), scheduledWait);
+        Task waiting =
+            fixture.Scheduler.WaitForWakeForTestAsync(scheduledWait);
+        AuthoringRunRecord maintenance =
+            await fixture.Database.Store.CreateMaintenanceRunAsync(
+                "test",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        sourceItem.BusinessKey,
+                        sourceItem.ItemKind,
+                        sourceItem.ExpectedSourceRevision,
+                        receipt.Receipt.ReceiptId),
+                ],
+                AuthoringRunPurposeValues.GroupingMaintenance,
+                databaseOnly: true);
+
+        wakeSignal.Signal();
+        wakeSignal.Signal();
+        await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(TimeSpan.Zero, await fixture.Scheduler.RunCycleAsync());
+        Assert.Equal(
+            AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.Database.Store.GetRunAsync(maintenance.Id))!.Status);
+        Assert.Equal(1, fixture.Finalization.FinalizeCount);
+
+        await fixture.Scheduler.RunCycleAsync();
+        Assert.Equal(1, fixture.Finalization.FinalizeCount);
+    }
+
+    [Fact]
     public async Task FinalizationRetry_FromRunErrorCompletesNormally()
     {
         ProcessingServiceOptions options = CreateOptions();
@@ -406,7 +470,8 @@ public sealed class AuthoringRunSchedulerTests
         public SchedulerFixture(
             ProcessingServiceOptions options,
             Func<TestItem, AuthoringQueueClaim, Task<AuthoringWorkResult>>? handler = null,
-            Func<TimeSpan, CancellationToken, Task>? delay = null)
+            Func<TimeSpan, CancellationToken, Task>? delay = null,
+            AuthoringRunSchedulerWakeSignal? wakeSignal = null)
         {
             Database = new AuthoringTestDatabase(options);
             Lifecycle = new ProcessingLifecycleService(Options.Create(options));
@@ -429,7 +494,8 @@ public sealed class AuthoringRunSchedulerTests
                 Lifecycle,
                 Options.Create(options),
                 () => Now,
-                delay ?? Task.Delay);
+                delay ?? Task.Delay,
+                wakeSignal);
         }
 
         public AuthoringTestDatabase Database { get; }
@@ -664,7 +730,8 @@ public sealed class AuthoringRunSchedulerTests
         ProcessingLifecycleService lifecycle,
         IOptions<ProcessingServiceOptions> options,
         Func<DateTimeOffset> utcNow,
-        Func<TimeSpan, CancellationToken, Task> delay)
+        Func<TimeSpan, CancellationToken, Task> delay,
+        AuthoringRunSchedulerWakeSignal? wakeSignal)
         : AuthoringRunScheduler<TestItem>(
             store,
             adapter,
@@ -672,7 +739,8 @@ public sealed class AuthoringRunSchedulerTests
             runner,
             lifecycle,
             options,
-            NullLogger<AuthoringRunScheduler<TestItem>>.Instance)
+            NullLogger<AuthoringRunScheduler<TestItem>>.Instance,
+            wakeSignal)
     {
         protected override DateTimeOffset UtcNow => utcNow();
 

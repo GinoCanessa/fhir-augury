@@ -38,11 +38,16 @@ public sealed class PlannedTicketRunPostProcessor(
             await authoringStore.GetProcessorModeAsync(
                 coordinator.ProcessorKind,
                 ct);
-        bool initialRevalidation = mode.RevalidationRequired &&
+        bool activeRevalidationCoordinate = mode.RevalidationRequired &&
             string.Equals(
                 mode.RevalidationRunId,
                 runId,
                 StringComparison.Ordinal);
+        bool initialRevalidation = activeRevalidationCoordinate &&
+            run.Purpose is
+                AuthoringRunPurposeValues.InitialRevalidation or
+                AuthoringRunPurposeValues.Authoring;
+        bool groupingMaintenance = !RequiresWorkGroupCatalog(run.Purpose);
         if (initialRevalidation &&
             await coordinator.SupersedeStaleItemsAsync(runId, ct))
         {
@@ -90,23 +95,26 @@ public sealed class PlannedTicketRunPostProcessor(
                         retirementFingerprint,
                         cancellationToken)));
         }
-        stages.Add(
-            new(
-                "workgroup-catalog",
-                "",
-                AuthoringResultHasher.HashNormalizedUtf8("workgroup-catalog-v1"),
-                async (lease, cancellationToken) =>
-                {
-                    IReadOnlyList<HydrationWorkGroupRow> workGroups =
-                        await workGroupFetcher.FetchAsync(cancellationToken);
-                    await database.SaveWorkGroupCatalogForRunAsync(
-                        workGroups,
-                        runId,
-                        lease.StageId,
-                        lease.LeaseId,
-                        AuthoringResultHasher.HashNormalizedUtf8("workgroup-catalog-v1"),
-                        cancellationToken);
-                }));
+        if (!groupingMaintenance)
+        {
+            stages.Add(
+                new(
+                    "workgroup-catalog",
+                    "",
+                    AuthoringResultHasher.HashNormalizedUtf8("workgroup-catalog-v1"),
+                    async (lease, cancellationToken) =>
+                    {
+                        IReadOnlyList<HydrationWorkGroupRow> workGroups =
+                            await workGroupFetcher.FetchAsync(cancellationToken);
+                        await database.SaveWorkGroupCatalogForRunAsync(
+                            workGroups,
+                            runId,
+                            lease.StageId,
+                            lease.LeaseId,
+                            AuthoringResultHasher.HashNormalizedUtf8("workgroup-catalog-v1"),
+                            cancellationToken);
+                    }));
+        }
         stages.AddRange(partitions.Select(partition => new AuthoringFinalizationStage(
             "grouping",
             partition.PartitionKey,
@@ -192,6 +200,12 @@ public sealed class PlannedTicketRunPostProcessor(
         string runId,
         CancellationToken ct)
         => _ = await FinalizeRunAsync(runId, ct);
+
+    internal static bool RequiresWorkGroupCatalog(string purpose)
+        => !string.Equals(
+            purpose,
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            StringComparison.Ordinal);
 }
 
 public interface IPlannedTicketGroupingDispatcher

@@ -30,6 +30,8 @@ public sealed class PreparedTicketGroupingMaintenanceService(
                     database.GetGroupingMaintenanceItemsAsync(
                         connection,
                         token),
+                AuthoringRunPurposeValues.GroupingMaintenance,
+                databaseOnly: true,
                 ct: ct);
         }
         else
@@ -37,7 +39,7 @@ public sealed class PreparedTicketGroupingMaintenanceService(
             run = await store.GetRunAsync(runId, ct)
                 ?? throw new KeyNotFoundException(
                     $"Grouping maintenance run '{runId}' was not found.");
-            if (!run.DatabaseOnly)
+            if (!IsGroupingMaintenanceRun(run))
             {
                 throw new ArgumentException(
                     $"Run '{run.Id}' is not a grouping maintenance run.",
@@ -60,5 +62,14 @@ public sealed class PreparedTicketGroupingMaintenanceService(
             completed.Id,
             completed.Status,
             completed.TotalItems);
+    }
+
+    internal static bool IsGroupingMaintenanceRun(AuthoringRunRecord run)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        return string.Equals(
+            run.Purpose,
+            AuthoringRunPurposeValues.GroupingMaintenance,
+            StringComparison.Ordinal);
     }
 }
