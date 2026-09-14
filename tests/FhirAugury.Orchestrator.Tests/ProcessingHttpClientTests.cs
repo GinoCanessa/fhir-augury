@@ -121,6 +121,38 @@ public class ProcessingHttpClientTests
     }
 
     [Fact]
+    public async Task PublicationRefresh_ForwardsExactPathAndRewritesLocation()
+    {
+        RecordingHandler handler = new();
+        ProcessingHttpClient client = CreateClient(handler);
+
+        ProcessingProxyResponse response =
+            await client.StartPublicationRefreshAsync(
+                "Preparer",
+                "source-run",
+                CancellationToken.None);
+        JsonElement body = JsonDocument.Parse(response.Content).RootElement;
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", response.ContentType);
+        Assert.Equal("refresh-run", body.GetProperty("run").GetProperty("runId").GetString());
+        Assert.Equal(
+            "publication-refresh",
+            body.GetProperty("run").GetProperty("purpose").GetString());
+        Assert.Equal(
+            "source-run",
+            body.GetProperty("run").GetProperty("sourceRunId").GetString());
+        Assert.Equal("5", response.RetryAfter);
+        Assert.Equal(
+            "/api/v1/processing-services/Preparer/authoring/runs/refresh-run",
+            response.Location);
+        Assert.Equal(
+            ["POST /processing/authoring/runs/source-run/publication-refresh"],
+            handler.Requests);
+        Assert.Empty(handler.Bodies);
+    }
+
+    [Fact]
     public async Task SnapshotBytes_AreStreamedWithConditionalHeadersAndDisposed()
     {
         RecordingHandler handler = new();
@@ -257,6 +289,7 @@ public class ProcessingHttpClientTests
         public List<string> ClientNames { get; } = [];
         public List<string> Paths { get; } = [];
         public List<string> RequestTargets { get; } = [];
+        public List<string> Requests { get; } = [];
         public List<string> Bodies { get; } = [];
         public Dictionary<string, string> SnapshotRequestHeaders { get; } =
             new(StringComparer.OrdinalIgnoreCase);
@@ -267,6 +300,8 @@ public class ProcessingHttpClientTests
             string path = request.RequestUri?.AbsolutePath ?? "";
             Paths.Add(path);
             RequestTargets.Add(request.RequestUri?.PathAndQuery ?? "");
+            Requests.Add(
+                $"{request.Method} {request.RequestUri?.PathAndQuery}");
             if (request.Content is not null)
             {
                 Bodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
@@ -284,6 +319,8 @@ public class ProcessingHttpClientTests
                 "/api/v1/health" => @"{""status"":""ok"",""version"":null,""uptimeSeconds"":1,""message"":null}",
                 "/processing/authoring/runs" => RunEnvelope,
                 "/processing/authoring/runs/run-1" => RunEnvelope,
+                "/processing/authoring/runs/source-run/publication-refresh" =>
+                    RefreshRunEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -295,6 +332,8 @@ public class ProcessingHttpClientTests
             HttpStatusCode status = path == "/processing/authoring/runs" &&
                 request.Method == HttpMethod.Post
                 ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/source-run/publication-refresh"
+                    ? HttpStatusCode.Accepted
                 : path.EndsWith("/supersede", StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
                 : path.EndsWith("/snapshot/bytes", StringComparison.Ordinal)
@@ -350,6 +389,15 @@ public class ProcessingHttpClientTests
                     "/processing/authoring/runs/run-1",
                     UriKind.Relative);
             }
+            if (path == "/processing/authoring/runs/source-run/publication-refresh")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/refresh-run",
+                    UriKind.Relative);
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(5));
+            }
             if (path.EndsWith("/retry", StringComparison.Ordinal))
             {
                 response.Headers.RetryAfter =
@@ -367,6 +415,9 @@ public class ProcessingHttpClientTests
 
         private const string RunEnvelope =
             """{"run":{"runId":"run-1","processorKind":"jira-fhir","authoringEpoch":1,"status":"running","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null},"items":[{"itemId":"item-1","runId":"run-1","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"pending","currentOperationId":null,"acceptedReceiptId":null,"attemptCount":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null}]}""";
+
+        private const string RefreshRunEnvelope =
+            """{"run":{"runId":"refresh-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"queued","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-refresh","sourceRunId":"source-run"},"items":[{"itemId":"item-1","runId":"refresh-run","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"completed","currentOperationId":null,"acceptedReceiptId":"receipt-1","attemptCount":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":"2026-09-14T00:00:00Z","error":null}]}""";
     }
 
     private sealed class TrackingStream(byte[] buffer) : MemoryStream(buffer)

@@ -102,6 +102,17 @@ public class ProcessingHttpClient
             request,
             ct);
 
+    public Task<ProcessingProxyResponse> StartPublicationRefreshAsync(
+        string name,
+        string sourceRunId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(sourceRunId)}/publication-refresh",
+            body: null,
+            ct);
+
     public Task<ProcessingProxyResponse> GetAuthoringRunAsync(
         string name,
         string runId,

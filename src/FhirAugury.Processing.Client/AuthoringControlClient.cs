@@ -25,6 +25,11 @@ public interface IAuthoringControlClient
         TRequest request,
         CancellationToken ct);
 
+    Task<AuthoringRunResponse> StartPublicationRefreshAsync(
+        string serviceName,
+        string sourceRunId,
+        CancellationToken ct);
+
     Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
         int? limit,
@@ -58,6 +63,8 @@ public interface IAuthoringControlClient
 public sealed class AuthoringControlClient : IAuthoringControlClient
 {
     private const int DefaultStreamRetries = 3;
+    private const string PublicationRefreshPurpose =
+        "publication-refresh";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
@@ -136,6 +143,57 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             path);
         ValidateRunResponse(run);
         return new AuthoringStartResult(run);
+    }
+
+    public async Task<AuthoringRunResponse>
+        StartPublicationRefreshAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(sourceRunId)}/publication-refresh";
+        MutationResponse raw = await SendMutationAsync(
+            PublicationRefreshPurpose,
+            service,
+            sourceRunId,
+            itemId: null,
+            path,
+            body: null,
+            ct);
+        AuthoringRunResponse response =
+            Deserialize<AuthoringRunResponse>(raw.Content, path);
+        ValidateRunResponse(response);
+        if (!string.Equals(
+                response.Run.Purpose,
+                PublicationRefreshPurpose,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication refresh response purpose '{response.Run.Purpose}' does not match '{PublicationRefreshPurpose}'.");
+        }
+        if (!string.Equals(
+                response.Run.SourceRunId,
+                sourceRunId,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication refresh response source run '{response.Run.SourceRunId}' does not match requested run '{sourceRunId}'.");
+        }
+
+        string expectedProcessorKind =
+            AuthoringServiceBinding.GetProcessorKind(service);
+        if (!string.Equals(
+                response.Run.ProcessorKind,
+                expectedProcessorKind,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication refresh response processor '{response.Run.ProcessorKind}' does not match authoring service '{service}'.");
+        }
+        return response;
     }
 
     public async Task<AuthoringRunListResponse> ListAsync(
@@ -772,13 +830,16 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         AuthoringRunResponse response,
         string? expectedRunId = null)
     {
-        if (string.IsNullOrWhiteSpace(response.Run.RunId) ||
+        if (response.Run is null ||
+            response.Items is null ||
+            string.IsNullOrWhiteSpace(response.Run.RunId) ||
             expectedRunId is not null &&
             !string.Equals(
                 response.Run.RunId,
                 expectedRunId,
                 StringComparison.Ordinal) ||
             response.Items.Any(item =>
+                string.IsNullOrWhiteSpace(item.ItemId) ||
                 !string.Equals(
                     item.RunId,
                     response.Run.RunId,

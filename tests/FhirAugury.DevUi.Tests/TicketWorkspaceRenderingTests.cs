@@ -847,6 +847,10 @@ public sealed class TicketWorkspaceRenderingTests
             return StartHandler(serviceName, request, ct);
         }
 
+        public Task<AuthoringRunResponse> StartPublicationRefreshAsync(
+            string serviceName, string sourceRunId, CancellationToken ct) =>
+            throw Unexpected("publication refresh");
+
         public Task<AuthoringRunResponse> GetAsync(string serviceName, string runId, CancellationToken ct) =>
             throw Unexpected("detail");
 

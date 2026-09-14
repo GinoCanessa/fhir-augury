@@ -1230,6 +1230,14 @@ public sealed class TicketOperationsServiceTests : IDisposable
             return StartHandler(serviceName, request!, ct);
         }
 
+        public Task<AuthoringRunResponse>
+            StartPublicationRefreshAsync(
+                string serviceName,
+                string sourceRunId,
+                CancellationToken ct) =>
+            throw new NotSupportedException(
+                "Publication refresh handler was not configured.");
+
         public Task<AuthoringRunListResponse> ListAsync(
             string serviceName,
             int? limit,

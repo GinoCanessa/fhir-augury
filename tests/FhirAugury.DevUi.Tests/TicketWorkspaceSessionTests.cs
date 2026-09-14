@@ -1230,6 +1230,11 @@ public sealed class TicketWorkspaceSessionTests
             string serviceName, TRequest request, CancellationToken ct) =>
             throw new NotSupportedException("A workspace must not start a run.");
 
+        public Task<AuthoringRunResponse> StartPublicationRefreshAsync(
+            string serviceName, string sourceRunId, CancellationToken ct) =>
+            throw new NotSupportedException(
+                "A workspace must not start a publication refresh.");
+
         public Task<AuthoringRunResponse> GetAsync(
             string serviceName, string runId, CancellationToken ct) =>
             throw new NotSupportedException("A workspace must not open a run.");

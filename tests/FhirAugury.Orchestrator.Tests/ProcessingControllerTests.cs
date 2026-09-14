@@ -105,6 +105,65 @@ public class ProcessingControllerTests
     }
 
     [Fact]
+    public async Task PublicationRefresh_PreservesAcceptedBodyAndHeaders()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+
+        ContentResult result = Assert.IsType<ContentResult>(
+            await controller.StartPublicationRefresh(
+                "Planner",
+                "source-run",
+                CancellationToken.None));
+        JsonElement body = JsonDocument.Parse(result.Content!).RootElement;
+
+        Assert.Equal(StatusCodes.Status202Accepted, result.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", result.ContentType);
+        Assert.Equal(
+            "refresh-run",
+            body.GetProperty("run").GetProperty("runId").GetString());
+        Assert.Equal(
+            "publication-refresh",
+            body.GetProperty("run").GetProperty("purpose").GetString());
+        Assert.Equal(
+            "source-run",
+            body.GetProperty("run").GetProperty("sourceRunId").GetString());
+        Assert.Equal(
+            "/api/v1/processing-services/Planner/authoring/runs/refresh-run",
+            controller.Response.Headers.Location.ToString());
+        Assert.Equal(
+            "5",
+            controller.Response.Headers.RetryAfter.ToString());
+    }
+
+    [Fact]
+    public async Task PublicationRefresh_PreservesStructuredConflict()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+
+        ContentResult result = Assert.IsType<ContentResult>(
+            await controller.StartPublicationRefresh(
+                "Planner",
+                "busy-run",
+                CancellationToken.None));
+        JsonElement body = JsonDocument.Parse(result.Content!).RootElement;
+
+        Assert.Equal(StatusCodes.Status409Conflict, result.StatusCode);
+        Assert.Equal("application/json; charset=utf-8", result.ContentType);
+        Assert.Equal(
+            "mutation-fence-unavailable",
+            body.GetProperty("error").GetString());
+        Assert.Equal(
+            "active-run",
+            body.GetProperty("conflictingRunIds")[0].GetString());
+        Assert.Equal(
+            "13",
+            controller.Response.Headers.RetryAfter.ToString());
+        Assert.Equal(
+            string.Empty,
+            controller.Response.Headers.Location.ToString());
+    }
+
+    [Fact]
     public async Task SnapshotBytes_PreservesNotModifiedWithoutWritingBody()
     {
         ProcessingController controller = CreateController(
@@ -148,8 +207,13 @@ public class ProcessingControllerTests
         ProcessingController controller = CreateController(enabled: false);
 
         IActionResult result = await controller.GetStatus("Planner", CancellationToken.None);
+        IActionResult refresh = await controller.StartPublicationRefresh(
+            "Planner",
+            "source-run",
+            CancellationToken.None);
 
         Assert.IsType<NotFoundObjectResult>(result);
+        Assert.IsType<NotFoundObjectResult>(refresh);
     }
 
     private static ProcessingController CreateController(
@@ -209,6 +273,10 @@ public class ProcessingControllerTests
                 "/api/v1/health" => @"{""status"":""ok"",""version"":null,""uptimeSeconds"":1,""message"":null}",
                 "/processing/authoring/runs" => RunEnvelope,
                 "/processing/authoring/runs/run-1" => RunEnvelope,
+                "/processing/authoring/runs/source-run/publication-refresh" =>
+                    RefreshRunEnvelope,
+                "/processing/authoring/runs/busy-run/publication-refresh" =>
+                    """{"error":"mutation-fence-unavailable","detail":"Another mutation is active.","conflictingRunIds":["active-run"],"runId":"active-run"}""",
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -220,6 +288,10 @@ public class ProcessingControllerTests
             HttpStatusCode status = path == "/processing/authoring/runs" &&
                 request.Method == HttpMethod.Post
                 ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/source-run/publication-refresh"
+                    ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/busy-run/publication-refresh"
+                    ? HttpStatusCode.Conflict
                 : path.EndsWith("/supersede", StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
                 : path.EndsWith("/snapshot/bytes", StringComparison.Ordinal)
@@ -255,6 +327,21 @@ public class ProcessingControllerTests
                     "/processing/authoring/runs/run-1",
                     UriKind.Relative);
             }
+            if (path == "/processing/authoring/runs/source-run/publication-refresh")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/refresh-run",
+                    UriKind.Relative);
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(5));
+            }
+            if (path == "/processing/authoring/runs/busy-run/publication-refresh")
+            {
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(13));
+            }
             if (path.EndsWith("/snapshot/bytes", StringComparison.Ordinal))
             {
                 response.Content.Headers.ContentType =
@@ -271,5 +358,8 @@ public class ProcessingControllerTests
 
         private const string RunEnvelope =
             """{"run":{"runId":"run-1","processorKind":"jira-fhir","authoringEpoch":1,"status":"running","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null},"items":[{"itemId":"item-1","runId":"run-1","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"pending","currentOperationId":null,"acceptedReceiptId":null,"attemptCount":0,"createdAt":"2026-09-04T00:00:00Z","startedAt":null,"completedAt":null,"error":null}]}""";
+
+        private const string RefreshRunEnvelope =
+            """{"run":{"runId":"refresh-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"queued","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-refresh","sourceRunId":"source-run"},"items":[{"itemId":"item-1","runId":"refresh-run","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"completed","currentOperationId":null,"acceptedReceiptId":"receipt-1","attemptCount":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":"2026-09-14T00:00:00Z","error":null}]}""";
     }
 }

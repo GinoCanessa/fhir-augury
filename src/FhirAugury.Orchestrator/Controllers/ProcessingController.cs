@@ -120,6 +120,24 @@ public class ProcessingController(
             await processingHttpClient.CreateAuthoringRunAsync(name, request, ct));
     }
 
+    [HttpPost("{name}/authoring/runs/{sourceRunId}/publication-refresh")]
+    public async Task<IActionResult> StartPublicationRefresh(
+        string name,
+        string sourceRunId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.StartPublicationRefreshAsync(
+                name,
+                sourceRunId,
+                ct));
+    }
+
     [HttpGet("{name}/authoring/runs/{runId}")]
     public async Task<IActionResult> GetAuthoringRun(
         string name,

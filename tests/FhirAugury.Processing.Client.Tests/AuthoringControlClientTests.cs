@@ -123,6 +123,215 @@ public sealed class AuthoringControlClientTests
     }
 
     [Fact]
+    public async Task PublicationRefreshUsesTypedOrchestratorRoute()
+    {
+        List<string> targets = [];
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            targets.Add(
+                $"{request.Method} {request.RequestUri!.PathAndQuery}");
+            Assert.Null(request.Content);
+            return Task.FromResult(
+                DelegateHttpHandler.Json(
+                    PublicationRefreshResponse(),
+                    HttpStatusCode.Accepted));
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringRunResponse response =
+            await client.StartPublicationRefreshAsync(
+                "preparer",
+                "source-run",
+                CancellationToken.None);
+
+        Assert.Equal("refresh-run", response.Run.RunId);
+        Assert.Equal("publication-refresh", response.Run.Purpose);
+        Assert.Equal("source-run", response.Run.SourceRunId);
+        Assert.Equal("refresh-run", Assert.Single(response.Items).RunId);
+        Assert.Equal(
+            ["POST /api/v1/processing-services/Preparer/authoring/runs/source-run/publication-refresh"],
+            targets);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("purpose")]
+    [InlineData("source-run")]
+    [InlineData("run")]
+    [InlineData("item")]
+    [InlineData("processor")]
+    public async Task PublicationRefreshValidatesResponseCoordinatesAndService(
+        string invalidField)
+    {
+        AuthoringRunResponse response = PublicationRefreshResponse();
+        response = invalidField switch
+        {
+            "purpose" => response with
+            {
+                Run = response.Run with { Purpose = "authoring" },
+            },
+            "source-run" => response with
+            {
+                Run = response.Run with { SourceRunId = "other-run" },
+            },
+            "run" => response with
+            {
+                Run = response.Run with { RunId = "" },
+            },
+            "item" => response with
+            {
+                Items =
+                [
+                    response.Items[0] with { RunId = "other-run" },
+                ],
+            },
+            "processor" => response with
+            {
+                Run = response.Run with
+                {
+                    ProcessorKind = "github-fhir-ballot-notes",
+                },
+            },
+            _ => throw new UnreachableException(),
+        };
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(
+                DelegateHttpHandler.Json(
+                    response,
+                    HttpStatusCode.Accepted)));
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.StartPublicationRefreshAsync(
+                "Preparer",
+                "source-run",
+                CancellationToken.None));
+
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshStructuredConflictRetainsCoordinates()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+        {
+            HttpResponseMessage response = DelegateHttpHandler.Json(
+                new AuthoringConflictResponse(
+                    "mutation-fence-unavailable",
+                    "Another mutation is active.",
+                    ["active-run"],
+                    "active-run"),
+                HttpStatusCode.Conflict);
+            response.Headers.RetryAfter =
+                new RetryConditionHeaderValue(
+                    TimeSpan.FromSeconds(13));
+            return Task.FromResult(response);
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(
+                () => client.StartPublicationRefreshAsync(
+                    "Preparer",
+                    "source-run",
+                    CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+        Assert.Equal("mutation-fence-unavailable", error.ErrorCode);
+        Assert.Equal("Another mutation is active.", error.Detail);
+        Assert.Equal(["active-run"], error.RelatedRunIds);
+        Assert.Equal(TimeSpan.FromSeconds(13), error.RetryAfter);
+        Assert.Equal("13", error.RetryAfterHeader);
+        Assert.Equal(
+            "api/v1/processing-services/Preparer/authoring/runs/source-run/publication-refresh",
+            error.Endpoint);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshCallerCancellationIsNotReclassified()
+    {
+        DelegateHttpHandler handler = new(
+            async (_, _, ct) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                throw new UnreachableException();
+            });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(
+                handler,
+                maxReadRetries: 3);
+        using CancellationTokenSource cancellation =
+            new(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.StartPublicationRefreshAsync(
+                "Preparer",
+                "source-run",
+                cancellation.Token));
+
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshTransportLossIsNotReplayed()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            throw new HttpRequestException("response lost"));
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(
+                handler,
+                maxReadRetries: 3);
+
+        AuthoringMutationOutcomeUnknownException error =
+            await Assert.ThrowsAsync<
+                AuthoringMutationOutcomeUnknownException>(
+                () => client.StartPublicationRefreshAsync(
+                    "Preparer",
+                    "source-run",
+                    CancellationToken.None));
+
+        Assert.Equal("publication-refresh", error.Operation);
+        Assert.Equal("Preparer", error.ServiceName);
+        Assert.Equal("source-run", error.RunId);
+        Assert.Null(error.ItemId);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshResponseBodyLossIsNotReplayed()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.Accepted)
+                {
+                    Content = new StreamContent(
+                        new InterruptedReadStream()),
+                }));
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(
+                handler,
+                maxReadRetries: 3);
+
+        AuthoringMutationOutcomeUnknownException error =
+            await Assert.ThrowsAsync<
+                AuthoringMutationOutcomeUnknownException>(
+                () => client.StartPublicationRefreshAsync(
+                    "Preparer",
+                    "source-run",
+                    CancellationToken.None));
+
+        Assert.Equal("publication-refresh", error.Operation);
+        Assert.Equal("Preparer", error.ServiceName);
+        Assert.Equal("source-run", error.RunId);
+        Assert.Null(error.ItemId);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
     public async Task IdempotentReadRetriesTransientResponse()
     {
         DelegateHttpHandler handler = new((_, call, _) =>
@@ -326,6 +535,20 @@ public sealed class AuthoringControlClientTests
 
     private static async Task<object?> AsTask<T>(Task<T> task)
         => await task;
+
+    private static AuthoringRunResponse PublicationRefreshResponse()
+    {
+        AuthoringRunResponse response =
+            AuthoringClientTestData.RunResponse("refresh-run");
+        return response with
+        {
+            Run = response.Run with
+            {
+                Purpose = "publication-refresh",
+                SourceRunId = "source-run",
+            },
+        };
+    }
 
     private sealed class InterruptedReadStream : Stream
     {
