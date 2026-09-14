@@ -345,6 +345,74 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
+    public async Task PublicationRefresh_MaintenanceItemsAndReceiptRecoverFromDurableState()
+    {
+        using TestDatabase database = CreateDatabase();
+        PublicationRefreshContext context =
+            await CreatePublicationRefreshContextAsync(
+                database,
+                "FHIR-704");
+        IReadOnlyList<AuthoringMaintenanceRunItem> maintenanceItems;
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        {
+            maintenanceItems =
+                await PreparerDatabase
+                    .GetPublicationRefreshMaintenanceItemsAsync(
+                        connection);
+        }
+
+        AuthoringMaintenanceRunItem maintenanceItem =
+            Assert.Single(maintenanceItems);
+        PreparedTicketPublicationRefreshCandidate candidate =
+            Assert.Single(context.Inventory.Candidates);
+        Assert.Equal(candidate.TicketKey, maintenanceItem.BusinessKey);
+        Assert.Equal(candidate.ItemKind, maintenanceItem.ItemKind);
+        Assert.Equal(
+            candidate.ExpectedSourceRevision,
+            maintenanceItem.ExpectedSourceRevision);
+        Assert.Equal(candidate.ReceiptId, maintenanceItem.ReceiptId);
+
+        PreparedTicketPublicationRefreshReceiptRecord applied =
+            await database.Database.ApplyPublicationMetadataAsync(
+                context.RefreshRunId,
+                context.Lease,
+                context.InputFingerprint,
+                context.Inventory,
+                [
+                    PublicationMetadata(
+                        "FHIR-704",
+                        "revision-FHIR-704",
+                        704,
+                        new DateTimeOffset(
+                            2026,
+                            9,
+                            14,
+                            12,
+                            0,
+                            0,
+                            TimeSpan.Zero)),
+                ]);
+
+        using PreparerDatabase reopened = new(
+            database.Database.DatabasePath,
+            NullLogger<PreparerDatabase>.Instance);
+        reopened.Initialize();
+        PreparedTicketPublicationRefreshReceiptRecord recovered =
+            Assert.IsType<PreparedTicketPublicationRefreshReceiptRecord>(
+                await reopened.GetMatchingPublicationRefreshReceiptAsync(
+                    context.RefreshRunId,
+                    context.Lease.StageId,
+                    context.InputFingerprint,
+                    context.Inventory.CorpusFingerprint));
+        Assert.Equal(applied.RowId, recovered.RowId);
+        Assert.Equal(applied.AppliedAt, recovered.AppliedAt);
+        Assert.Equal(
+            applied.SourceContentRevision,
+            recovered.SourceContentRevision);
+    }
+
+    [Fact]
     public void Initialize_CreatesGroupingTablesAndIndexes()
     {
         using TestDatabase database = CreateDatabase();

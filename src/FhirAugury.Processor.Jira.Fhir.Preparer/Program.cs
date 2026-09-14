@@ -94,6 +94,35 @@ builder.Services.AddHttpClient<OrchestratorWorkGroupCatalogFetcher>((sp, client)
         : processingOptions.OrchestratorAddress;
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
+builder.Services.AddHttpClient(
+    PreparedTicketPublicationRefreshService.HttpClientName,
+    (sp, client) =>
+    {
+        ProcessingServiceOptions processingOptions =
+            sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+        JiraProcessingOptions jiraOptions =
+            sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+        string address =
+            !string.IsNullOrWhiteSpace(
+                processingOptions.OrchestratorAddress)
+                ? processingOptions.OrchestratorAddress
+                : !string.IsNullOrWhiteSpace(
+                    jiraOptions.OrchestratorAddress)
+                    ? jiraOptions.OrchestratorAddress
+                    : jiraOptions.JiraSourceAddress;
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            address = "http://localhost";
+        }
+        client.BaseAddress = new Uri(
+            address.EndsWith('/') ? address : address + "/");
+    });
+builder.Services.AddSingleton(sp =>
+    new OrchestratorHydrationFetcher(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient(
+            PreparedTicketPublicationRefreshService.HttpClientName),
+        sp.GetRequiredService<
+            ILogger<OrchestratorHydrationFetcher>>()));
 
 builder.Services.AddHttpClient<SpecificationBackfillService>((sp, client) =>
 {
@@ -134,6 +163,12 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, PreviewPreparedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<AuthoringRunSchedulerWakeSignal>();
+builder.Services.AddSingleton<
+    IPreparedTicketPublicationRefreshInterruptionHook,
+    NoOpPreparedTicketPublicationRefreshInterruptionHook>();
+builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
+builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
 builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();
 builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
@@ -143,6 +178,20 @@ builder.Services.AddHostedService(sp =>
     sp.GetRequiredService<AuthoringRunScheduler<JiraAuthoringWorkItem>>());
 
 WebApplication app = builder.Build();
+
+string? configuredSnapshotSchemaVersion =
+    app.Configuration[
+        $"{PreparerServiceOptions.SectionName}:SnapshotSchemaVersion"];
+object effectiveSnapshotSchemaVersion =
+    int.TryParse(
+        configuredSnapshotSchemaVersion,
+        out int parsedSnapshotSchemaVersion)
+        ? parsedSnapshotSchemaVersion
+        : (object?)configuredSnapshotSchemaVersion ??
+          new PreparerServiceOptions().SnapshotSchemaVersion;
+app.Logger.LogInformation(
+    "Effective Preparer snapshot schema version is {SnapshotSchemaVersion}",
+    effectiveSnapshotSchemaVersion);
 
 PreparerDatabase preparerDatabase =
     app.Services.GetRequiredService<PreparerDatabase>();

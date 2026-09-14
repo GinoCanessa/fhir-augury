@@ -1462,9 +1462,13 @@ public sealed class PreparedTicketReviewSnapshotTests
                 SET RevalidationRequired = 1,
                     RevalidationRunId = @runId
                 WHERE ProcessorKind = 'jira-fhir'
+                ;
+                UPDATE authoring_runs
+                SET Purpose = 'initial-revalidation'
+                WHERE Id = @runId
                 """;
             command.Parameters.AddWithValue("@runId", runId);
-            Assert.Equal(1, command.ExecuteNonQuery());
+            Assert.Equal(2, command.ExecuteNonQuery());
         }
 
         public async Task AdvanceSourceRevisionAsync(CancellationToken ct)

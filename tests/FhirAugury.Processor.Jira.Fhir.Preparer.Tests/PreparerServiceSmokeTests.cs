@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Api;
@@ -8,6 +9,8 @@ using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
@@ -68,6 +71,43 @@ public sealed class PreparerServiceSmokeTests
     }
 
     [Fact]
+    public async Task PublicationRefreshEndpointAndServicesAreRegistered()
+    {
+        using TestApp app = new();
+        HttpClient client = app.Factory.CreateClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/processing/authoring/runs/missing/publication-refresh",
+            null);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        PreparedTicketPublicationRefreshFailure? failure =
+            await response.Content.ReadFromJsonAsync<
+                PreparedTicketPublicationRefreshFailure>();
+        Assert.NotNull(failure);
+        Assert.Equal(
+            PreparedTicketPublicationRefreshFailureCodes
+                .SourceRunNotFound,
+            failure.Error);
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketPublicationRefreshService>());
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketSnapshotMaterializer>());
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                AuthoringRunSchedulerWakeSignal>());
+        PreparedTicketRunPostProcessor postProcessor =
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketRunPostProcessor>();
+        Assert.Same(
+            postProcessor,
+            app.Factory.Services.GetRequiredService<
+                IAuthoringRunFinalizationStrategy>());
+    }
+
+    [Fact]
     public async Task PreparedTicketsApi_CanQueryPersistedRows()
     {
         using TestApp app = new();
@@ -110,6 +150,7 @@ public sealed class PreparerServiceSmokeTests
         Dictionary<string, string?> config = new()
         {
             ["Processing:DatabasePath"] = dbPath,
+            ["Processing:SnapshotSchemaVersion"] = "3",
             ["Processing:StartProcessingOnStartup"] = "false",
             ["Processing:ActivateRunBackedAuthoring"] = "false",
             ["Processing:Hydration:BackfillOnStartup"] = "true",
@@ -182,6 +223,7 @@ public sealed class PreparerServiceSmokeTests
             Dictionary<string, string?> config = new()
             {
                 ["Processing:DatabasePath"] = DatabasePath,
+                ["Processing:SnapshotSchemaVersion"] = "3",
                 ["Processing:StartProcessingOnStartup"] = "false",
                 ["Processing:ActivateRunBackedAuthoring"] = "false",
                 ["Processing:Hydration:BackfillOnStartup"] = "false",

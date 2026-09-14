@@ -1071,6 +1071,22 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             CancellationToken ct = default)
         => (await GetPublicationRefreshInventoryAsync(ct)).Candidates;
 
+    public static async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
+        GetPublicationRefreshMaintenanceItemsAsync(
+            SqliteConnection connection,
+            CancellationToken ct = default)
+    {
+        PreparedTicketPublicationRefreshInventory inventory =
+            await ReadPublicationRefreshInventoryAsync(connection, ct);
+        return inventory.Candidates
+            .Select(candidate => new AuthoringMaintenanceRunItem(
+                candidate.TicketKey,
+                candidate.ItemKind,
+                candidate.ExpectedSourceRevision,
+                candidate.ReceiptId))
+            .ToArray();
+    }
+
     public static async Task<PreparedTicketPublicationRefreshInventory>
         ReadPublicationRefreshInventoryAsync(
             SqliteConnection connection,
@@ -2579,6 +2595,205 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             runId,
             partitionKey,
             ct);
+    }
+
+    public async Task<
+        IReadOnlyList<PreparedTicketGroupingCertificationEvidence>>
+        GetPublicationGroupingCertificationsAsync(
+            string runId,
+            IReadOnlyList<PreparedTicketRunPartition> partitions,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentNullException.ThrowIfNull(partitions);
+        if (partitions
+            .Select(partition => partition.PartitionKey)
+            .Distinct(StringComparer.Ordinal)
+            .Count() != partitions.Count)
+        {
+            throw new ArgumentException(
+                "Publication grouping partitions must be unique.",
+                nameof(partitions));
+        }
+
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            _ = await ReadPublicationRefreshSourceRunIdAsync(
+                connection,
+                runId,
+                ct);
+            await CreateCurrentSnapshotReceiptBackedTicketsAsync(
+                connection,
+                ct);
+
+            List<PreparedTicketGroupingCertificationEvidence> evidence =
+                new(partitions.Count);
+            foreach (PreparedTicketRunPartition partition in partitions
+                         .OrderBy(
+                             value => value.PartitionKey,
+                             StringComparer.Ordinal))
+            {
+                string expectedPartitionKey = GetPartitionKey(
+                    partition.WorkGroupClean,
+                    partition.Specification,
+                    partition.Type);
+                if (!string.Equals(
+                        expectedPartitionKey,
+                        partition.PartitionKey,
+                        StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        "The grouping partition key does not match its coordinates.",
+                        nameof(partitions));
+                }
+
+                string? stageId;
+                DateTimeOffset stageCompletedAt;
+                await using (SqliteCommand stageCommand =
+                             connection.CreateCommand())
+                {
+                    stageCommand.CommandText =
+                        """
+                        SELECT Id, CompletedAt
+                        FROM authoring_run_stages
+                        WHERE RunId = @runId
+                          AND StageName = @stageName
+                          AND PartitionKey = @partitionKey
+                          AND InputFingerprint = @inputFingerprint
+                          AND Status = @complete
+                        """;
+                    stageCommand.Parameters.AddWithValue("@runId", runId);
+                    stageCommand.Parameters.AddWithValue(
+                        "@stageName",
+                        GroupingCertificationStageName);
+                    stageCommand.Parameters.AddWithValue(
+                        "@partitionKey",
+                        partition.PartitionKey);
+                    stageCommand.Parameters.AddWithValue(
+                        "@inputFingerprint",
+                        partition.InputFingerprint);
+                    stageCommand.Parameters.AddWithValue(
+                        "@complete",
+                        AuthoringStatusValues.Stages.Complete);
+                    await using SqliteDataReader stageReader =
+                        await stageCommand.ExecuteReaderAsync(ct);
+                    if (!await stageReader.ReadAsync(ct) ||
+                        stageReader.IsDBNull(1))
+                    {
+                        throw new InvalidOperationException(
+                            $"Grouping partition '{partition.PartitionKey}' has no completed publication certification stage.");
+                    }
+                    stageId = stageReader.GetString(0);
+                    stageCompletedAt =
+                        ParseDate(stageReader.GetString(1));
+                    if (await stageReader.ReadAsync(ct))
+                    {
+                        throw new InvalidOperationException(
+                            $"Grouping partition '{partition.PartitionKey}' has ambiguous publication certification stages.");
+                    }
+                }
+
+                IReadOnlyList<(string Key, string ReceiptId)> currentMembers =
+                    await ReadCurrentPartitionMembersAsync(
+                        connection,
+                        partition.WorkGroupClean,
+                        partition.Specification,
+                        partition.Type,
+                        ct);
+                string currentInputFingerprint =
+                    AuthoringResultHasher.HashNormalizedUtf8(
+                        string.Join(
+                            "\n",
+                            currentMembers.Select(member =>
+                                $"{member.Key}:{member.ReceiptId}")));
+                if (!string.Equals(
+                        currentInputFingerprint,
+                        partition.InputFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StageFingerprintMismatch,
+                        $"Grouping partition '{partition.PartitionKey}' changed after publication certification.");
+                }
+
+                PreparedTicketGroupingReceiptCoordinate sourceReceipt =
+                    await ReadLatestGroupingReceiptAsync(
+                        connection,
+                        partition.PartitionKey,
+                        ct)
+                    ?? throw new InvalidOperationException(
+                        $"Grouping partition '{partition.PartitionKey}' has no retained source receipt.");
+                if (!string.Equals(
+                        sourceReceipt.InputFingerprint,
+                        partition.InputFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StageFingerprintMismatch,
+                        $"Grouping receipt for partition '{partition.PartitionKey}' does not match the current accepted corpus.");
+                }
+
+                string outputFingerprint =
+                    await ComputeGroupingOutputFingerprintAsync(
+                        connection,
+                        partition.PartitionKey,
+                        ct);
+                bool legacyCertification =
+                    sourceReceipt.OutputFingerprint is null;
+                DateTimeOffset certifiedAt = stageCompletedAt;
+                if (legacyCertification)
+                {
+                    PreparedTicketPartitionCertificationRecord
+                        certification =
+                            await ReadPartitionCertificationAsync(
+                                connection,
+                                runId,
+                                partition.PartitionKey,
+                                ct)
+                            ?? throw new InvalidOperationException(
+                                $"Legacy grouping partition '{partition.PartitionKey}' has no durable publication certification.");
+                    EnsureMatchingPartitionCertification(
+                        certification,
+                        stageId,
+                        partition,
+                        sourceReceipt,
+                        outputFingerprint);
+                    certifiedAt = certification.CertifiedAt;
+                }
+                else if (!string.Equals(
+                             sourceReceipt.OutputFingerprint,
+                             outputFingerprint,
+                             StringComparison.Ordinal))
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StageFingerprintMismatch,
+                        $"Grouping output for partition '{partition.PartitionKey}' no longer matches its source receipt.");
+                }
+
+                evidence.Add(
+                    new PreparedTicketGroupingCertificationEvidence(
+                        runId,
+                        partition.PartitionKey,
+                        partition.InputFingerprint,
+                        outputFingerprint,
+                        sourceReceipt,
+                        legacyCertification,
+                        certifiedAt));
+            }
+
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return evidence.AsReadOnly();
+        }
+        catch
+        {
+            await ExecuteRawAsync(
+                connection,
+                "ROLLBACK",
+                CancellationToken.None);
+            throw;
+        }
     }
 
     public async Task CertifyExistingGroupingAsync(

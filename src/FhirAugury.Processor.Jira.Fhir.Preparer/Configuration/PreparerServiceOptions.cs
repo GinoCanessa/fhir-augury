@@ -1,5 +1,6 @@
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 
@@ -20,6 +21,7 @@ public sealed class PreparerServiceOptions : ProcessingServiceOptions
         Ports.Http = 5171;
         OrchestratorAddress = "http://localhost:5150";
         SnapshotDirectory = "./data/snapshots/preparer";
+        SnapshotSchemaVersion = PreparedTicketSnapshotSchemaV3.Version;
     }
 
     public HydrationOptions Hydration { get; set; } = new();
@@ -34,6 +36,13 @@ public sealed class PreparerServiceOptions : ProcessingServiceOptions
         foreach (string error in Hydration.Validate())
         {
             yield return error;
+        }
+
+        if (SnapshotSchemaVersion !=
+            PreparedTicketSnapshotSchemaV3.Version)
+        {
+            yield return
+                $"SnapshotSchemaVersion must be {PreparedTicketSnapshotSchemaV3.Version} for the Preparer service.";
         }
     }
 }

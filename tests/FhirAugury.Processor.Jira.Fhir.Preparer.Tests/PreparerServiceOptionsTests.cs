@@ -1,5 +1,6 @@
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -21,6 +22,9 @@ public sealed class PreparerServiceOptionsTests
             PreparerJiraProcessingDefaults.AuthoringAgentCliCommand,
             jira.AuthoringAgentCliCommand);
         Assert.Equal("./data/snapshots/preparer", processing.SnapshotDirectory);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            processing.SnapshotSchemaVersion);
         Assert.Empty(
             PreparerJiraProcessingDefaults.ValidateAuthoringCommand(
                 PreparerJiraProcessingDefaults.AuthoringAgentCliCommand));
@@ -129,5 +133,24 @@ public sealed class PreparerServiceOptionsTests
         List<string> errors = processing.Validate().ToList();
 
         Assert.Contains(errors, error => error.Contains("MaxParallelism", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void Validate_RejectsAnySnapshotSchemaOtherThanV3(
+        int schemaVersion)
+    {
+        PreparerServiceOptions processing = new()
+        {
+            SnapshotSchemaVersion = schemaVersion,
+        };
+
+        Assert.Contains(
+            processing.Validate(),
+            error => error.Contains(
+                "SnapshotSchemaVersion must be 3",
+                StringComparison.Ordinal));
     }
 }

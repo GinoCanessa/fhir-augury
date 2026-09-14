@@ -3,6 +3,7 @@ using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
@@ -14,6 +15,10 @@ public sealed class PreparedTicketSnapshotSanitizer
     private readonly bool _retainsInputProvenance;
     private readonly bool _retainsInPersonRequesters;
     private readonly bool _enforcesTrustedPeople;
+    private readonly string? _sourceRunId;
+    private readonly IReadOnlyList<
+        PreparedTicketGroupingCertificationEvidence>?
+        _groupingCertifications;
 
     public PreparedTicketSnapshotSanitizer(
         string runId,
@@ -26,10 +31,39 @@ public sealed class PreparedTicketSnapshotSanitizer
 
     internal PreparedTicketSnapshotSanitizer(
         string runId,
-        AuthoringSnapshotSchemaCatalog catalog)
+        AuthoringSnapshotSchemaCatalog catalog,
+        string? sourceRunId = null,
+        IReadOnlyList<PreparedTicketGroupingCertificationEvidence>?
+            groupingCertifications = null)
         : base(catalog)
     {
         _runId = runId;
+        _sourceRunId = sourceRunId;
+        _groupingCertifications = groupingCertifications?.ToArray();
+        if (_groupingCertifications is not null)
+        {
+            if (string.IsNullOrWhiteSpace(_sourceRunId))
+            {
+                throw new ArgumentException(
+                    "Refresh snapshot grouping certifications require a source run.",
+                    nameof(sourceRunId));
+            }
+            if (_groupingCertifications.Any(certification =>
+                    !string.Equals(
+                        certification.RefreshRunId,
+                        runId,
+                        StringComparison.Ordinal)) ||
+                _groupingCertifications
+                    .Select(certification =>
+                        certification.PartitionKey)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() != _groupingCertifications.Count)
+            {
+                throw new ArgumentException(
+                    "Refresh snapshot grouping certifications do not match the snapshot run.",
+                    nameof(groupingCertifications));
+            }
+        }
         _retainsInputProvenance = catalog.Tables.Any(
             table => string.Equals(
                 table.Name,
@@ -137,11 +171,7 @@ public sealed class PreparedTicketSnapshotSanitizer
             );
             """,
             ct);
-        await ExecuteAsync(
-            connection,
-            "DELETE FROM prepared_ticket_partition_receipts WHERE RunId <> @runId",
-            ct,
-            ("@runId", _runId));
+        await RetainPartitionReceiptsAsync(connection, ct);
         await ExecuteAsync(
             connection,
             $"""
@@ -166,19 +196,56 @@ public sealed class PreparedTicketSnapshotSanitizer
             """,
             ct,
             ("@runId", _runId));
-
-        if (_retainsInputProvenance)
+        if (_sourceRunId is not null)
         {
             await ExecuteAsync(
                 connection,
-                $"""
-                CREATE TEMP TABLE contributing_snapshot_runs AS
+                """
+                INSERT OR IGNORE INTO retained_snapshot_runs(RunId)
+                VALUES(@sourceRunId)
+                """,
+                ct,
+                ("@sourceRunId", _sourceRunId));
+        }
+        if (_groupingCertifications is not null)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT OR IGNORE INTO retained_snapshot_runs(RunId)
                 SELECT DISTINCT RunId
-                FROM {PreparerDatabase.CurrentSnapshotReceiptBackedTicketsTable};
-                DELETE FROM authoring_run_input_provenance
-                WHERE RunId NOT IN (SELECT RunId FROM contributing_snapshot_runs);
+                FROM retained_snapshot_partition_receipts
                 """,
                 ct);
+        }
+
+        if (_retainsInputProvenance)
+        {
+            if (_groupingCertifications is null)
+            {
+                await ExecuteAsync(
+                    connection,
+                    $"""
+                    CREATE TEMP TABLE contributing_snapshot_runs AS
+                    SELECT DISTINCT RunId
+                    FROM {PreparerDatabase.CurrentSnapshotReceiptBackedTicketsTable};
+                    DELETE FROM authoring_run_input_provenance
+                    WHERE RunId NOT IN (SELECT RunId FROM contributing_snapshot_runs);
+                    """,
+                    ct);
+            }
+            else
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    DELETE FROM authoring_run_input_provenance
+                    WHERE RunId NOT IN (
+                        SELECT RunId FROM retained_snapshot_runs
+                    )
+                    """,
+                    ct);
+            }
         }
 
         await ExecuteAsync(
@@ -194,6 +261,78 @@ public sealed class PreparedTicketSnapshotSanitizer
             ct);
 
         await base.SanitizeAsync(connection, ct);
+    }
+
+    private async Task RetainPartitionReceiptsAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        if (_groupingCertifications is null)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                DELETE FROM prepared_ticket_partition_receipts
+                WHERE RunId <> @runId
+                """,
+                ct,
+                ("@runId", _runId));
+            return;
+        }
+
+        await ExecuteAsync(
+            connection,
+            """
+            CREATE TEMP TABLE retained_snapshot_partition_receipts(
+                RunId TEXT NOT NULL,
+                StageId TEXT NOT NULL,
+                PartitionKey TEXT NOT NULL,
+                InputFingerprint TEXT NOT NULL,
+                PRIMARY KEY(
+                    RunId,
+                    StageId,
+                    PartitionKey,
+                    InputFingerprint)
+            )
+            """,
+            ct);
+        foreach (PreparedTicketGroupingCertificationEvidence certification in
+                 _groupingCertifications)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO retained_snapshot_partition_receipts(
+                    RunId, StageId, PartitionKey, InputFingerprint)
+                VALUES(
+                    @runId, @stageId, @partitionKey, @inputFingerprint)
+                """,
+                ct,
+                ("@runId", certification.SourceReceipt.RunId),
+                ("@stageId", certification.SourceReceipt.StageId),
+                ("@partitionKey",
+                    certification.SourceReceipt.PartitionKey),
+                ("@inputFingerprint",
+                    certification.SourceReceipt.InputFingerprint));
+        }
+        await ExecuteAsync(
+            connection,
+            """
+            DELETE FROM prepared_ticket_partition_receipts
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM retained_snapshot_partition_receipts retained
+                WHERE retained.RunId =
+                          prepared_ticket_partition_receipts.RunId
+                  AND retained.StageId =
+                          prepared_ticket_partition_receipts.StageId
+                  AND retained.PartitionKey =
+                          prepared_ticket_partition_receipts.PartitionKey
+                  AND retained.InputFingerprint =
+                          prepared_ticket_partition_receipts.InputFingerprint
+            )
+            """,
+            ct);
     }
 
     private static async Task SanitizeTrustedPeopleAsync(
