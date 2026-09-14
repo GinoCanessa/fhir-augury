@@ -1,7 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
-using FhirAugury.Common.Api;
 using FhirAugury.DevUi.Configuration;
 using FhirAugury.DevUi.Models;
 using FhirAugury.DevUi.Services;
@@ -140,22 +139,39 @@ public sealed class TicketOperationsServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task OverviewReadsBothProcessorOwnedListsOnEveryLoad()
+    public async Task PreparedRunOpenDoesNotReadPlannerOrOverview()
     {
-        FakeAuthoringClient authoring = new();
-        FakeReadinessClient readiness = new();
+        AuthoringRunResponse authoritative = RunResponse(
+            canRetry: false,
+            canSupersede: false,
+            completed: true);
+        FakeAuthoringClient authoring = new()
+        {
+            PreparedOnlyRunId = "run-1",
+            GetHandler = (_, _, _) => Task.FromResult(authoritative),
+        };
+        FakeSiteStore store = new(_root, new TicketWorkflowCatalog())
+        {
+            PreparedOnlyRunId = "run-1",
+        };
         using TicketOperationsService service =
-            CreateService(authoring, readiness);
+            CreateService(authoring, siteStore: store);
+        using CancellationTokenSource cancellation = new();
 
-        TicketOperationsOverview first =
-            await service.GetOverviewAsync();
-        TicketOperationsOverview second =
-            await service.GetOverviewAsync();
+        TicketRunDetails details = await service.OpenRunAsync(
+            "PREPARE", "run-1", cancellation.Token);
 
-        Assert.Equal(2, first.Workflows.Count);
-        Assert.Equal(2, second.Workflows.Count);
-        Assert.Equal(4, authoring.ListCalls);
-        Assert.Equal(2, readiness.GetCalls);
+        Assert.Same(authoritative, details.Response);
+        Assert.Equal("prepare", details.Workflow.RouteKey);
+        Assert.Equal(TicketSiteKind.Discussion, details.Workflow.SiteKind);
+        Assert.Equal(ProcessorRunOutcome.Completed, details.Outcome.Processor);
+        Assert.Equal(
+            ("Preparer", "run-1", cancellation.Token),
+            Assert.Single(authoring.DetailRequests));
+        Assert.Equal(("prepare", "run-1"), Assert.Single(store.Reconstructions));
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.Equal(0, authoring.DownloadCalls);
+        Assert.Equal(0, store.PairReads);
     }
 
     [Fact]
@@ -224,8 +240,11 @@ public sealed class TicketOperationsServiceTests : IDisposable
                     null,
                     null,
                     new IOException("response lost")));
-        authoring.ListHandler = (_, _, _) =>
-            Task.FromResult(new AuthoringRunListResponse(
+        authoring.ListHandler = (serviceName, limit, _) =>
+        {
+            Assert.Equal("Preparer", serviceName);
+            Assert.Equal(20, limit);
+            return Task.FromResult(new AuthoringRunListResponse(
             [
                 RunStatus(
                     "new-run",
@@ -239,6 +258,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
                     terminal: true),
             ],
             false));
+        };
         using TicketOperationsService service =
             CreateService(authoring);
 
@@ -651,7 +671,10 @@ public sealed class TicketOperationsServiceTests : IDisposable
     [Fact]
     public async Task PublicationFailureRetainsAndReusesVerifiedPair()
     {
-        FakeAuthoringClient authoring = new();
+        FakeAuthoringClient authoring = new()
+        {
+            PreparedOnlyRunId = "run-1",
+        };
         authoring.GetHandler = (_, _, _) =>
             Task.FromResult(RunResponse(
                 canRetry: false,
@@ -659,9 +682,13 @@ public sealed class TicketOperationsServiceTests : IDisposable
                 completed: true));
         FakeSiteStore store = new(
             _root,
-            new TicketWorkflowCatalog());
+            new TicketWorkflowCatalog())
+        {
+            PreparedOnlyRunId = "run-1",
+        };
         ReviewSiteCoordinates coordinates =
             store.GetCoordinates("prepare", "run-1");
+        authoring.PreparedOnlyPairDirectory = coordinates.SnapshotPairDirectory;
         VerifiedAuthoringSnapshotPair pair =
             await CreateVerifiedPairAsync(
                 coordinates.SnapshotPairDirectory,
@@ -719,12 +746,186 @@ public sealed class TicketOperationsServiceTests : IDisposable
             retried.Disposition);
         Assert.Equal(1, authoring.DownloadCalls);
         Assert.Equal(2, publisher.Calls);
+        Assert.Equal(2, authoring.GetCalls);
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.All(publisher.Requests, request =>
+        {
+            Assert.Same(pair, request.SnapshotPair);
+            Assert.Equal(TicketSiteKind.Discussion, request.SiteKind);
+            Assert.Equal(coordinates.SiteRoot, request.OutputRoot);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparedPublicationUsesOnlyVerifiedPreparerCoordinates(bool cached)
+    {
+        FakeSiteStore store = new(_root, new TicketWorkflowCatalog())
+        {
+            PreparedOnlyRunId = "run-1",
+        };
+        ReviewSiteCoordinates coordinates = store.GetCoordinates("prepare", "run-1");
+        VerifiedAuthoringSnapshotPair pair = await CreateVerifiedPairAsync(
+            coordinates.SnapshotPairDirectory, "Preparer", "run-1");
+        FakeAuthoringClient authoring = new()
+        {
+            PreparedOnlyRunId = "run-1",
+            PreparedOnlyPairDirectory = coordinates.SnapshotPairDirectory,
+            GetHandler = (_, _, _) => Task.FromResult(RunResponse(
+                canRetry: false, canSupersede: false, completed: true)),
+            DownloadHandler = (_, _, _, _) => Task.FromResult(pair),
+        };
+        store.Pair = cached ? pair : null;
+        TicketSiteManifest manifest = Manifest(coordinates, pair);
+        store.Publication = new(coordinates, manifest, Reconstructed: false);
+        FakePublisher publisher = new()
+        {
+            Handler = (_, _) => Task.FromResult(new TicketSitePublishResult(
+                TicketSitePublishOutcome.Published,
+                manifest,
+                coordinates.SiteRoot,
+                coordinates.SiteDirectory,
+                TicketSiteFilters.None,
+                [])),
+        };
+        using TicketOperationsService service = CreateService(
+            authoring, siteStore: store, publisher: publisher);
+        using CancellationTokenSource cancellation = new();
+
+        TicketPublicationResult result = await service.PublishAsync(
+            "PREPARE", "run-1", ct: cancellation.Token);
+
+        Assert.Equal(TicketOperationDisposition.Succeeded, result.Disposition);
+        Assert.True(result.VerifiedPairAvailable);
+        Assert.Same(store.Publication, result.Publication);
+        Assert.Equal("/review-sites/prepare/run-1/discussion/", result.Publication?.Coordinates.SiteUrl);
+        Assert.Equal(
+            ("Preparer", "run-1", cancellation.Token),
+            Assert.Single(authoring.DetailRequests));
+        Assert.Equal(cached ? 0 : 1, authoring.DownloadCalls);
+        if (!cached)
+        {
+            Assert.Equal(
+                ("Preparer", "run-1", coordinates.SnapshotPairDirectory, cancellation.Token),
+                Assert.Single(authoring.DownloadRequests));
+        }
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.Empty(store.Reconstructions);
+        Assert.Equal(1, store.PairReads);
+        Assert.Equal(2, store.Revalidations);
+        Assert.Equal(1, store.Validations);
+        TicketSitePublishRequest request = Assert.Single(publisher.Requests);
+        Assert.Same(pair, request.SnapshotPair);
+        Assert.Equal(TicketSiteKind.Discussion, request.SiteKind);
+        Assert.Equal("Tickets for Discussion", request.Title);
+        Assert.Equal(coordinates.SiteRoot, request.OutputRoot);
+        Assert.Equal(TicketSiteFilters.None, request.Filters);
+        Assert.False(request.Force);
+    }
+
+    [Theory]
+    [InlineData("incomplete", false)]
+    [InlineData("missing-snapshot", false)]
+    [InlineData("download-failed", false)]
+    [InlineData("missing-file", false)]
+    [InlineData("missing-file", true)]
+    [InlineData("invalid-digest", false)]
+    [InlineData("invalid-digest", true)]
+    [InlineData("wrong-service", false)]
+    [InlineData("wrong-service", true)]
+    [InlineData("wrong-run", false)]
+    [InlineData("wrong-run", true)]
+    [InlineData("wrong-directory", false)]
+    [InlineData("wrong-directory", true)]
+    public async Task PublicationRejectsIncompleteMissingInvalidOrMismatchedSnapshot(
+        string problem,
+        bool cached)
+    {
+        FakeSiteStore store = new(_root, new TicketWorkflowCatalog())
+        {
+            PreparedOnlyRunId = "run-1",
+        };
+        ReviewSiteCoordinates coordinates = store.GetCoordinates("prepare", "run-1");
+        FakeAuthoringClient authoring = new()
+        {
+            PreparedOnlyRunId = "run-1",
+            PreparedOnlyPairDirectory = coordinates.SnapshotPairDirectory,
+            GetHandler = (_, _, _) => Task.FromResult(RunResponse(
+                canRetry: false,
+                canSupersede: false,
+                completed: problem != "incomplete")),
+        };
+        if (problem is "missing-snapshot" or "download-failed")
+        {
+            Exception failure = problem == "missing-snapshot"
+                ? new AuthoringControlException(
+                    HttpStatusCode.NotFound, "snapshot-missing", "No snapshot is available.")
+                : new HttpRequestException(
+                    "Snapshot download failed.", null, HttpStatusCode.ServiceUnavailable);
+            authoring.DownloadHandler = (_, _, _, _) =>
+                Task.FromException<VerifiedAuthoringSnapshotPair>(failure);
+        }
+        else if (problem != "incomplete")
+        {
+            string directory = problem == "wrong-directory"
+                ? Path.Combine(_root, "unapproved-pair")
+                : coordinates.SnapshotPairDirectory;
+            VerifiedAuthoringSnapshotPair pair = await CreateVerifiedPairAsync(
+                directory,
+                problem == "wrong-service" ? "Planner" : "Preparer",
+                problem == "wrong-run" ? "another-run" : "run-1");
+            if (problem == "missing-file")
+            {
+                File.Delete(pair.DatabasePath);
+            }
+            else if (problem == "invalid-digest")
+            {
+                await File.WriteAllBytesAsync(pair.DatabasePath, "modified snapshot"u8.ToArray());
+            }
+
+            Task<VerifiedAuthoringSnapshotPair> ReadPair(CancellationToken ct) =>
+                problem is "missing-file" or "invalid-digest"
+                    ? new AuthoringSnapshotPairVerifier().VerifyReadyPairAsync(
+                        "Preparer", "run-1", directory, ct)
+                    : Task.FromResult(pair);
+            if (cached)
+            {
+                store.PairHandler = async (_, ct) => await ReadPair(ct);
+            }
+            else
+            {
+                authoring.DownloadHandler = (_, _, _, ct) => ReadPair(ct);
+            }
+        }
+        FakePublisher publisher = new();
+        using TicketOperationsService service = CreateService(
+            authoring, siteStore: store, publisher: publisher);
+
+        TicketPublicationResult result = await service.PublishAsync("prepare", "run-1");
+
+        Assert.Equal(
+            problem == "incomplete"
+                ? TicketOperationDisposition.NotAllowed
+                : TicketOperationDisposition.Failed,
+            result.Disposition);
+        Assert.Null(result.Publication);
+        Assert.Equal(problem.StartsWith("wrong-", StringComparison.Ordinal), result.VerifiedPairAvailable);
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.Equal(problem == "incomplete" || cached ? 0 : 1, authoring.DownloadCalls);
+        Assert.Equal(problem == "incomplete" ? 0 : 1, store.PairReads);
+        Assert.Equal(0, store.Validations);
+        Assert.Equal(0, publisher.Calls);
     }
 
     [Fact]
     public async Task DatabaseOnlyCompletionCannotDownloadOrPublish()
     {
-        FakeAuthoringClient authoring = new();
+        FakeAuthoringClient authoring = new()
+        {
+            PreparedOnlyRunId = "run-1",
+        };
         authoring.GetHandler = (_, _, _) =>
             Task.FromResult(RunResponse(
                 canRetry: false,
@@ -747,11 +948,11 @@ public sealed class TicketOperationsServiceTests : IDisposable
             result.Disposition);
         Assert.Equal(0, authoring.DownloadCalls);
         Assert.Equal(0, publisher.Calls);
+        Assert.Equal(0, authoring.ListCalls);
     }
 
     private TicketOperationsService CreateService(
         FakeAuthoringClient authoring,
-        FakeReadinessClient? readiness = null,
         IReviewSiteStore? siteStore = null,
         ITicketSitePublisher? publisher = null)
     {
@@ -767,12 +968,10 @@ public sealed class TicketOperationsServiceTests : IDisposable
         };
         return new TicketOperationsService(
             authoring,
-            readiness ?? new FakeReadinessClient(),
             siteStore ?? new FakeSiteStore(_root, catalog),
             publisher ?? new FakePublisher(),
             catalog,
             new JiraTicketKeyParser(),
-            new ReadinessEvaluator(),
             new RunOutcomeClassifier(),
             Options.Create(options),
             new FixedTimeProvider(_now),
@@ -932,74 +1131,19 @@ public sealed class TicketOperationsServiceTests : IDisposable
         public override DateTimeOffset GetUtcNow() => now;
     }
 
-    private sealed class FakeReadinessClient
-        : IOrchestratorReadinessClient
-    {
-        public int GetCalls { get; private set; }
-
-        public int RefreshCalls { get; private set; }
-
-        public Task<ServicesStatusResponse> GetAsync(
-            CancellationToken ct = default)
-        {
-            GetCalls++;
-            return Task.FromResult(Response());
-        }
-
-        public Task<ServicesStatusResponse> RefreshAsync(
-            CancellationToken ct = default)
-        {
-            RefreshCalls++;
-            return Task.FromResult(Response());
-        }
-
-        private static ServicesStatusResponse Response()
-        {
-            DateTimeOffset checkedAt =
-                DateTimeOffset.UtcNow;
-            return new ServicesStatusResponse(
-            [
-                Health(
-                    "Orchestrator",
-                    "orchestrator",
-                    checkedAt),
-                Health(
-                    "Preparer",
-                    "processing",
-                    checkedAt,
-                    ["Jira"]),
-                Health(
-                    "Planner",
-                    "processing",
-                    checkedAt,
-                    ["Jira", "GitHub"]),
-                Health("Jira", "source", checkedAt),
-                Health("GitHub", "source", checkedAt),
-            ],
-            checkedAt);
-        }
-
-        private static ServiceHealthInfo Health(
-            string name,
-            string kind,
-            DateTimeOffset checkedAt,
-            List<string>? required = null) => new()
-            {
-                Name = name,
-                ServiceKind = kind,
-                Status = "healthy",
-                Enabled = true,
-                Configured = true,
-                CheckedAt = checkedAt,
-                ProcessingIsRunning =
-                    kind == "processing" ? true : null,
-                RequiredServices = required ?? [],
-            };
-    }
-
     private sealed class FakeAuthoringClient
         : IAuthoringControlClient
     {
+        public string? PreparedOnlyRunId { get; init; }
+
+        public string? PreparedOnlyPairDirectory { get; set; }
+
+        public List<(string Service, string RunId, CancellationToken Token)>
+            DetailRequests { get; } = [];
+
+        public List<(string Service, string RunId, string Directory, CancellationToken Token)>
+            DownloadRequests { get; } = [];
+
         public Func<
             string,
             object,
@@ -1081,6 +1225,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             CancellationToken ct)
         {
             StartCalls++;
+            Assert.Null(PreparedOnlyRunId);
             LastStartRequest = request;
             return StartHandler(serviceName, request!, ct);
         }
@@ -1091,6 +1236,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             CancellationToken ct)
         {
             ListCalls++;
+            Assert.Null(PreparedOnlyRunId);
             return ListHandler(serviceName, limit, ct);
         }
 
@@ -1100,6 +1246,8 @@ public sealed class TicketOperationsServiceTests : IDisposable
             CancellationToken ct)
         {
             GetCalls++;
+            DetailRequests.Add((serviceName, runId, ct));
+            AssertPreparedCoordinates(serviceName, runId);
             return GetHandler(serviceName, runId, ct);
         }
 
@@ -1110,6 +1258,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             CancellationToken ct)
         {
             RetryCalls++;
+            Assert.Null(PreparedOnlyRunId);
             return RetryHandler(
                 serviceName,
                 runId,
@@ -1125,6 +1274,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             CancellationToken ct)
         {
             SupersedeCalls++;
+            Assert.Null(PreparedOnlyRunId);
             return SupersedeHandler(
                 serviceName,
                 runId,
@@ -1141,11 +1291,28 @@ public sealed class TicketOperationsServiceTests : IDisposable
                 CancellationToken ct)
         {
             DownloadCalls++;
+            DownloadRequests.Add((serviceName, runId, pairDirectory, ct));
+            AssertPreparedCoordinates(serviceName, runId);
+            if (PreparedOnlyRunId is not null)
+            {
+                Assert.True(DevUiPathGuard.PathsEqual(
+                    Assert.IsType<string>(PreparedOnlyPairDirectory),
+                    pairDirectory));
+            }
             return DownloadHandler(
                 serviceName,
                 runId,
                 pairDirectory,
                 ct);
+        }
+
+        private void AssertPreparedCoordinates(string serviceName, string runId)
+        {
+            if (PreparedOnlyRunId is not null)
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal(PreparedOnlyRunId, runId);
+            }
         }
     }
 
@@ -1161,11 +1328,14 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public int Calls { get; private set; }
 
+        public List<TicketSitePublishRequest> Requests { get; } = [];
+
         public Task<TicketSitePublishResult> PublishAsync(
             TicketSitePublishRequest request,
             CancellationToken ct = default)
         {
             Calls++;
+            Requests.Add(request);
             return Handler(request, ct);
         }
     }
@@ -1174,11 +1344,24 @@ public sealed class TicketOperationsServiceTests : IDisposable
         string root,
         TicketWorkflowCatalog catalog) : IReviewSiteStore
     {
+        public string? PreparedOnlyRunId { get; init; }
+
         public VerifiedAuthoringSnapshotPair? Pair { get; set; }
+
+        public Func<ReviewSiteCoordinates, CancellationToken,
+            Task<VerifiedAuthoringSnapshotPair?>>? PairHandler { get; set; }
 
         public ReviewSitePublication? Publication { get; set; }
 
         public Exception? ReconstructionException { get; set; }
+
+        public List<(string Workflow, string RunId)> Reconstructions { get; } = [];
+
+        public int PairReads { get; private set; }
+
+        public int Revalidations { get; private set; }
+
+        public int Validations { get; private set; }
 
         public void EnsureRoots()
         {
@@ -1188,6 +1371,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             string workflow,
             string runId)
         {
+            AssertPreparedRoute(workflow, runId);
             TicketWorkflowDefinition definition =
                 catalog.Get(workflow);
             string pairDirectory = Path.Combine(
@@ -1217,31 +1401,63 @@ public sealed class TicketOperationsServiceTests : IDisposable
         public void RevalidateForPublication(
             ReviewSiteCoordinates coordinates)
         {
+            Revalidations++;
+            AssertPreparedRoute(coordinates.Workflow.RouteKey, coordinates.RunId);
         }
 
         public Task<VerifiedAuthoringSnapshotPair?>
             TryOpenVerifiedPairAsync(
                 ReviewSiteCoordinates coordinates,
-                CancellationToken ct = default) =>
-            Task.FromResult(Pair);
+                CancellationToken ct = default)
+        {
+            PairReads++;
+            AssertPreparedRoute(coordinates.Workflow.RouteKey, coordinates.RunId);
+            return PairHandler is null
+                ? Task.FromResult(Pair)
+                : PairHandler(coordinates, ct);
+        }
 
         public Task<ReviewSitePublication?> TryReconstructAsync(
             string workflow,
             string runId,
-            CancellationToken ct = default) =>
-            ReconstructionException is null
+            CancellationToken ct = default)
+        {
+            Reconstructions.Add((workflow, runId));
+            AssertPreparedRoute(workflow, runId);
+            return ReconstructionException is null
                 ? Task.FromResult(Publication)
                 : Task.FromException<ReviewSitePublication?>(
                     ReconstructionException);
+        }
 
         public Task<ReviewSitePublication>
             ValidatePublishedSiteAsync(
                 ReviewSiteCoordinates coordinates,
                 VerifiedAuthoringSnapshotPair pair,
-                CancellationToken ct = default) =>
-            Task.FromResult(
+                CancellationToken ct = default)
+        {
+            Validations++;
+            AssertPreparedRoute(coordinates.Workflow.RouteKey, coordinates.RunId);
+            if (PreparedOnlyRunId is not null)
+            {
+                Assert.Equal("Preparer", pair.ServiceName);
+                Assert.Equal(PreparedOnlyRunId, pair.RunId);
+                Assert.True(DevUiPathGuard.PathsEqual(
+                    coordinates.SnapshotPairDirectory, pair.DirectoryPath));
+            }
+            return Task.FromResult(
                 Publication ??
                 throw new InvalidOperationException(
                     "Publication was not configured."));
+        }
+
+        private void AssertPreparedRoute(string workflow, string runId)
+        {
+            if (PreparedOnlyRunId is not null)
+            {
+                Assert.Equal("prepare", workflow);
+                Assert.Equal(PreparedOnlyRunId, runId);
+            }
+        }
     }
 }

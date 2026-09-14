@@ -5,33 +5,109 @@
     <header class="workflow-card__header">
         <div>
             <p class="workflow-card__eyebrow">
-                @Overview.Workflow.ProcessingServiceName processor
+                @Workflow.ProcessingServiceName processor
             </p>
             <h2 id="@HeadingId" class="h3 mb-1">
-                @Overview.Workflow.DisplayName
+                @Workflow.DisplayName
             </h2>
             <p class="text-body-secondary mb-0">
                 @WorkflowDescription
             </p>
         </div>
         <a class="btn btn-primary"
-           href="@($"/operations/{Overview.Workflow.RouteKey}/new")">
+           href="@($"/operations/{Workflow.RouteKey}/new")">
             <i class="bi bi-play-circle-fill" aria-hidden="true"></i>
             Start a run
         </a>
     </header>
 
-    @if (!Overview.Readiness.CanStart)
+    @if (Readiness.CurrentValue is TicketWorkflowReadiness currentReadiness)
     {
-        <div class="workflow-card__warning">
-            <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+        @if (!currentReadiness.CanStart)
+        {
+            <div class="workflow-card__warning">
+                <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+                <span>
+                    Starting is currently blocked by
+                    @currentReadiness.Blockers.Count readiness
+                    @(currentReadiness.Blockers.Count == 1 ? "check" : "checks").
+                    You can still inspect an existing run.
+                </span>
+            </div>
+        }
+    }
+    else
+    {
+        <p class="workflow-card__warning">
+            Current start readiness is not available. Check readiness on the
+            start form; you can still inspect an existing run.
+        </p>
+    }
+
+    <div class="workflow-card__section-heading">
+        <h3 class="h6 mb-0">Run history</h3>
+        <button class="btn btn-sm btn-outline-primary"
+                type="button"
+                aria-label="@($"Refresh {Workflow.DisplayName.ToLowerInvariant()} history")"
+                disabled="@History.IsLoading"
+                @onclick="OnRefresh">
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            Refresh history
+        </button>
+    </div>
+
+    @if (!History.HasLastSuccess &&
+        History.Phase is WorkspaceObservationPhase.Pending or WorkspaceObservationPhase.Loading)
+    {
+        <div class="loading-state loading-state--compact" role="status">
+            @if (History.IsLoading)
+            {
+                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            }
             <span>
-                Starting is currently blocked by
-                @Overview.Readiness.Blockers.Count readiness
-                @(Overview.Readiness.Blockers.Count == 1 ? "check" : "checks").
-                You can still inspect an existing run.
+                @(History.IsLoading
+                    ? $"Loading {Workflow.ProcessingServiceName} run history."
+                    : "Run history has not been read yet.")
+                Counts are unknown.
             </span>
         </div>
+    }
+
+    @if (History.Failure is WorkspaceReadFailure failure)
+    {
+        <div class="alert @(failure.IsUnavailable ? "alert-warning" : "alert-danger")"
+             role="alert">
+            <strong>
+                @(failure.IsUnavailable
+                    ? "Run history is unavailable."
+                    : "Run history read failed.")
+            </strong>
+            <span class="d-block">@failure.Message</span>
+        </div>
+    }
+
+    @if (History.LastSucceededAt is DateTimeOffset succeededAt)
+    {
+        <p class="text-body-secondary small">
+            Last successful history read
+            <time datetime="@succeededAt.ToString("O")">
+                @succeededAt.LocalDateTime.ToString("g")
+            </time>.
+            @if (History.IsStale)
+            {
+                <strong>
+                    Stale history — @(History.IsLoading ? "refreshing." : "the latest read did not succeed.")
+                </strong>
+                <span>Counts and links below are from that previous read.</span>
+            }
+        </p>
+    }
+
+    @if (History.IsStale && History.LastSuccessfulValue?.Runs.Count == 0)
+    {
+        <p class="empty-state">
+            Previously observed empty history; current run counts are unknown.
+        </p>
     }
 
     <div class="workflow-card__runs">
@@ -40,11 +116,19 @@
                 <h3 id="@ActiveHeadingId" class="h6 mb-0">
                     Active and recovering
                 </h3>
-                <span class="count-badge">@ActiveRuns.Count</span>
+                <span class="count-badge">@(History.HasLastSuccess ? ActiveRuns.Count.ToString() : "Unknown")</span>
             </div>
-            @if (ActiveRuns.Count == 0)
+            @if (!History.HasLastSuccess)
             {
-                <p class="empty-state">No active runs.</p>
+                <p class="empty-state">Active runs are unknown.</p>
+            }
+            else if (ActiveRuns.Count == 0)
+            {
+                <p class="empty-state">
+                    @(History.IsCurrentSuccess
+                        ? "No active runs."
+                        : "Previously observed no active runs.")
+                </p>
             }
             else
             {
@@ -85,11 +169,19 @@
                 <h3 id="@RecentHeadingId" class="h6 mb-0">
                     Recent completed runs
                 </h3>
-                <span class="count-badge">@TerminalRuns.Count</span>
+                <span class="count-badge">@(History.HasLastSuccess ? TerminalRuns.Count.ToString() : "Unknown")</span>
             </div>
-            @if (TerminalRuns.Count == 0)
+            @if (!History.HasLastSuccess)
             {
-                <p class="empty-state">No recent completed runs.</p>
+                <p class="empty-state">Recent completed runs are unknown.</p>
+            }
+            else if (TerminalRuns.Count == 0)
+            {
+                <p class="empty-state">
+                    @(History.IsCurrentSuccess
+                        ? "No recent completed runs."
+                        : "Previously observed no recent completed runs.")
+                </p>
             }
             else
             {
@@ -122,7 +214,7 @@
                     }
                 </ul>
             }
-            @if (Overview.Runs.Truncated)
+            @if (History.LastSuccessfulValue?.Truncated == true)
             {
                 <p class="text-body-secondary small mt-2 mb-0">
                     Only the newest bounded history is shown. Open a known
@@ -168,13 +260,24 @@
 
 @code {
     [Parameter, EditorRequired]
-    public WorkflowRunOverview Overview { get; set; } = null!;
+    public TicketWorkflowDefinition Workflow { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public WorkspaceObservation<AuthoringRunListResponse> History { get; set; } =
+        WorkspaceObservation<AuthoringRunListResponse>.Pending;
+
+    [Parameter, EditorRequired]
+    public WorkspaceObservation<TicketWorkflowReadiness> Readiness { get; set; } =
+        WorkspaceObservation<TicketWorkflowReadiness>.Pending;
+
+    [Parameter]
+    public EventCallback OnRefresh { get; set; }
 
     private string _runId = "";
     private bool _openAttempted;
 
     private string HeadingId =>
-        $"workflow-{Overview.Workflow.RouteKey}";
+        $"workflow-{Workflow.RouteKey}";
 
     private string ActiveHeadingId =>
         $"{HeadingId}-active";
@@ -189,22 +292,22 @@
         $"{OpenRunInputId}-help";
 
     private IReadOnlyList<AuthoringRunStatus> ActiveRuns =>
-        Overview.Runs.Runs
+        History.LastSuccessfulValue?.Runs
             .Where(run => run.State?.IsTerminal == false)
-            .ToArray();
+            .ToArray() ?? [];
 
     private IReadOnlyList<AuthoringRunStatus> TerminalRuns =>
-        Overview.Runs.Runs
+        History.LastSuccessfulValue?.Runs
             .Where(run => run.State?.IsTerminal != false)
-            .ToArray();
+            .ToArray() ?? [];
 
     private string WorkflowDescription =>
-        Overview.Workflow.RouteKey == "prepare"
+        Workflow.RouteKey == "prepare"
             ? "Build discussion-ready ticket snapshots and a review site."
             : "Build application plans and an applying review site.";
 
     private string RunUrl(string runId) =>
-        $"/operations/{Overview.Workflow.RouteKey}/{Uri.EscapeDataString(runId)}";
+        $"/operations/{Workflow.RouteKey}/{Uri.EscapeDataString(runId)}";
 
     private void OpenRun()
     {

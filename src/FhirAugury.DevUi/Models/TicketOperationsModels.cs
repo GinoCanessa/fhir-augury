@@ -110,15 +110,6 @@ public sealed record TicketRunDetails(
     ReviewSitePublication? Publication,
     string? PublicationError = null);
 
-public sealed record WorkflowRunOverview(
-    TicketWorkflowDefinition Workflow,
-    TicketWorkflowReadiness Readiness,
-    AuthoringRunListResponse Runs);
-
-public sealed record TicketOperationsOverview(
-    ServicesStatusResponse Services,
-    IReadOnlyList<WorkflowRunOverview> Workflows);
-
 public enum TicketOperationDisposition
 {
     Succeeded,

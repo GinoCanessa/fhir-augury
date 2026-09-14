@@ -1,9 +1,11 @@
 @page "/operations/{workflow}/new"
 @implements IDisposable
 @inject TicketOperationsService Operations
+@inject TicketWorkspaceReader WorkspaceReader
 @inject TicketWorkflowCatalog Catalog
 @inject JiraTicketKeyParser TicketKeyParser
 @inject NavigationManager Navigation
+@inject TimeProvider Clock
 
 <PageTitle>@(_definition?.DisplayName ?? "Ticket operation") — FHIR Augury Dev UI</PageTitle>
 
@@ -41,9 +43,9 @@ else
         </div>
         <button class="btn btn-outline-primary"
                 type="button"
-                disabled="@_loadingReadiness"
+                disabled="@_readiness.IsLoading"
                 @onclick="RefreshReadinessAsync">
-            @if (_loadingReadiness)
+            @if (_readiness.IsLoading)
             {
                 <span class="spinner-border spinner-border-sm"
                       aria-hidden="true"></span>
@@ -69,26 +71,12 @@ else
         </li>
     </ol>
 
-    @if (_readinessError is not null)
-    {
-        <div class="alert alert-danger" role="alert">
-            <strong>Readiness could not be loaded.</strong>
-            @_readinessError
-        </div>
-    }
-
-    @if (_readiness is not null)
-    {
-        <ReadinessStrip Readiness="@_readiness" />
-    }
-    else if (_loadingReadiness)
-    {
-        <div class="loading-state loading-state--compact" role="status">
-            <span class="spinner-border spinner-border-sm"
-                  aria-hidden="true"></span>
-            <span>Loading readiness observations…</span>
-        </div>
-    }
+    <ReadinessObservationPanel Workflow="@_definition"
+                               Observation="@_readiness" />
+    <p class="form-text">
+        An explicit recheck waits for the Orchestrator’s all-services
+        observation, including optional services.
+    </p>
 
     <div class="operation-announcer"
          aria-live="polite"
@@ -463,7 +451,7 @@ else
                     <div>
                         <dt>Readiness</dt>
                         <dd>
-                            @if (_readiness?.CanStart == true)
+                            @if (CanSubmit)
                             {
                                 <StatusIndicator Status="ready"
                                                  Label="Ready to start" />
@@ -471,22 +459,22 @@ else
                             else
                             {
                                 <StatusIndicator Status="warning"
-                                                 Label="@($"{_readiness?.Blockers.Count ?? 1} blocking observation(s)")" />
+                                                 Label="@SubmissionStatus" />
                             }
                         </dd>
                     </div>
                 </dl>
 
-                @if (_readiness is null ||
-                    !_readiness.CanStart)
+                @if (!CanSubmit && !_submitting)
                 {
                     <div class="validation-summary" role="alert">
                         <strong>The run cannot be submitted yet.</strong>
-                        @if (_readiness is not null)
+                        @if (_readiness.CurrentValue is TicketWorkflowReadiness currentReadiness &&
+                            !currentReadiness.CanStart)
                         {
                             <ul>
                                 @foreach (ServiceReadinessObservation blocker
-                                    in _readiness.Blockers)
+                                    in currentReadiness.Blockers)
                                 {
                                     <li>
                                         <strong>@blocker.Name:</strong>
@@ -494,10 +482,25 @@ else
                                     </li>
                                 }
                             </ul>
+                            <p class="mb-0">
+                                Resolve these resources in Aspire and recheck.
+                            </p>
                         }
-                        <p class="mb-0">
-                            Resolve these resources in Aspire and recheck.
-                        </p>
+                        else
+                        {
+                            <p class="mb-0">@SubmissionStatus</p>
+                        }
+                        @if (!SelectionIsValid)
+                        {
+                            <p class="mb-0">Go back and correct the ticket selection.</p>
+                        }
+                        @if (_unknownReviewRequired)
+                        {
+                            <p class="mb-0">
+                                Inspect and acknowledge the previous unknown
+                                outcome before allowing another start.
+                            </p>
+                        }
                     </div>
                 }
 
@@ -559,32 +562,57 @@ else
 
     private readonly CancellationTokenSource _lifetime = new();
     private TicketWorkflowDefinition? _definition;
-    private TicketWorkflowReadiness? _readiness;
+    private WorkspaceObservation<TicketWorkflowReadiness> _readiness =
+        WorkspaceObservation<TicketWorkflowReadiness>.Pending;
+    private ReadinessAttempt? _readinessAttempt;
     private JiraTicketKeyParseResult _parsedKeys = new([], []);
     private TicketStartResult? _result;
     private string? _loadedWorkflow;
-    private string? _readinessError;
     private string _explicitKeys = "";
     private TicketSelectionMode _selectionMode =
         TicketSelectionMode.Configured;
     private int _step = 1;
     private int _loadGeneration;
     private bool _databaseOnly;
-    private bool _loadingReadiness;
     private bool _selectionValidationAttempted;
     private bool _submitting;
     private bool _unknownReviewRequired;
+    private bool _disposed;
 
     private bool SelectionIsValid =>
         _selectionMode == TicketSelectionMode.Configured ||
         _parsedKeys.IsValid;
 
     private bool CanSubmit =>
+        !_disposed &&
         _step == 2 &&
         SelectionIsValid &&
-        _readiness?.CanStart == true &&
+        _readiness.IsCurrentSuccess &&
+        _readiness.CurrentValue?.CanStart == true &&
+        !_readiness.IsLoading &&
+        _readinessAttempt is null &&
         !_submitting &&
         !_unknownReviewRequired;
+
+    private string SubmissionStatus =>
+        _readiness.Phase switch
+        {
+            WorkspaceObservationPhase.Pending or WorkspaceObservationPhase.Loading =>
+                "Wait for a current successful readiness read before starting.",
+            WorkspaceObservationPhase.Unavailable or WorkspaceObservationPhase.Failed =>
+                "Readiness must be successfully rechecked before starting.",
+            _ when _readiness.CurrentValue?.CanStart != true =>
+                $"{_readiness.CurrentValue?.Blockers.Count ?? 1} blocking observation(s)",
+            _ when _readinessAttempt is not null =>
+                "Wait for the readiness read to finish.",
+            _ when _submitting =>
+                "Submitting one start request. Do not resubmit.",
+            _ when _unknownReviewRequired =>
+                "The previous unknown start outcome requires review.",
+            _ when !SelectionIsValid =>
+                "The ticket selection must be corrected.",
+            _ => "Review the request before starting.",
+        };
 
     private bool ExplicitInputInvalid =>
         _selectionValidationAttempted &&
@@ -632,20 +660,27 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        bool knownWorkflow = Catalog.TryGet(
+            Workflow,
+            out TicketWorkflowDefinition definition);
+        string routeKey = knownWorkflow ? definition.RouteKey : Workflow;
         if (string.Equals(
             _loadedWorkflow,
-            Workflow,
+            routeKey,
             StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
-        _loadedWorkflow = Workflow;
+        _loadedWorkflow = routeKey;
         _loadGeneration++;
+        CancelReadiness();
         ResetForm();
-        if (!Catalog.TryGet(
-            Workflow,
-            out TicketWorkflowDefinition definition))
+        if (!knownWorkflow)
         {
             _definition = null;
             return;
@@ -655,17 +690,14 @@ else
         _unknownReviewRequired =
             Operations.RequiresUnknownStartReview(
                 definition.RouteKey);
-        await LoadReadinessAsync(
-            refresh: false,
-            _loadGeneration);
+        await LoadReadinessAsync(refresh: false);
     }
 
     private void ResetForm()
     {
-        _readiness = null;
+        _readiness = WorkspaceObservation<TicketWorkflowReadiness>.Pending;
         _parsedKeys = new([], []);
         _result = null;
-        _readinessError = null;
         _explicitKeys = "";
         _selectionMode = TicketSelectionMode.Configured;
         _step = 1;
@@ -676,52 +708,74 @@ else
     }
 
     private Task RefreshReadinessAsync() =>
-        LoadReadinessAsync(
-            refresh: true,
-            _loadGeneration);
+        LoadReadinessAsync(refresh: true);
 
-    private async Task LoadReadinessAsync(
-        bool refresh,
-        int generation)
+    private Task LoadReadinessAsync(bool refresh)
     {
-        if (_definition is null)
+        if (_disposed || _definition is null)
         {
-            return;
+            return Task.CompletedTask;
+        }
+        if (_readinessAttempt is ReadinessAttempt current)
+        {
+            return current.Completion;
         }
 
-        _loadingReadiness = true;
-        _readinessError = null;
-        string routeKey = _definition.RouteKey;
+        ReadinessAttempt attempt = new(
+            _definition.RouteKey,
+            _loadGeneration,
+            CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token));
+        _readinessAttempt = attempt;
+        _readiness = _readiness.Begin(Clock.GetUtcNow());
+        attempt.Completion = ReadReadinessAsync(attempt, refresh);
+        return attempt.Completion;
+    }
+
+    private async Task ReadReadinessAsync(
+        ReadinessAttempt attempt,
+        bool refresh)
+    {
         try
         {
-            TicketWorkflowReadiness readiness =
-                await Operations.GetReadinessAsync(
-                    routeKey,
+            WorkspaceReadOutcome<TicketWorkspaceReadiness> outcome =
+                await WorkspaceReader.ReadReadinessAsync(
                     refresh,
-                    _lifetime.Token);
-            if (generation == _loadGeneration)
+                    attempt.Token);
+            if (IsCurrent(attempt))
             {
-                _readiness = readiness;
+                _readiness = _readiness.Complete(
+                    outcome.Select(report => report.Workflows[attempt.Workflow]),
+                    Clock.GetUtcNow());
             }
         }
         catch (OperationCanceledException)
-            when (_lifetime.IsCancellationRequested)
+            when (attempt.Token.IsCancellationRequested)
         {
-        }
-        catch (Exception ex)
-        {
-            if (generation == _loadGeneration)
-            {
-                _readinessError = ex.Message;
-            }
         }
         finally
         {
-            if (generation == _loadGeneration)
+            if (IsCurrent(attempt))
             {
-                _loadingReadiness = false;
+                _readinessAttempt = null;
             }
+            attempt.Cancellation.Dispose();
         }
+    }
+
+    private bool IsCurrent(ReadinessAttempt attempt) =>
+        !_disposed &&
+        attempt.Generation == _loadGeneration &&
+        ReferenceEquals(_readinessAttempt, attempt) &&
+        string.Equals(
+            _definition?.RouteKey,
+            attempt.Workflow,
+            StringComparison.Ordinal);
+
+    private void CancelReadiness()
+    {
+        ReadinessAttempt? attempt = _readinessAttempt;
+        _readinessAttempt = null;
+        attempt?.Cancellation.Cancel();
     }
 
     private void SetSelectionMode(TicketSelectionMode mode)
@@ -827,7 +881,30 @@ else
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        _loadGeneration++;
+        CancelReadiness();
         _lifetime.Cancel();
         _lifetime.Dispose();
+    }
+
+    private sealed class ReadinessAttempt(
+        string workflow,
+        int generation,
+        CancellationTokenSource cancellation)
+    {
+        public string Workflow { get; } = workflow;
+
+        public int Generation { get; } = generation;
+
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public CancellationToken Token { get; } = cancellation.Token;
+
+        public Task Completion { get; set; } = Task.CompletedTask;
     }
 }

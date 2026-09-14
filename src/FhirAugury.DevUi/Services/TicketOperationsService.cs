@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text.Json;
-using FhirAugury.Common.Api;
 using FhirAugury.DevUi.Configuration;
 using FhirAugury.DevUi.Models;
 using FhirAugury.Processing.Client;
@@ -15,12 +14,10 @@ namespace FhirAugury.DevUi.Services;
 public sealed class TicketOperationsService : IDisposable
 {
     private readonly IAuthoringControlClient _authoringClient;
-    private readonly IOrchestratorReadinessClient _readinessClient;
     private readonly IReviewSiteStore _siteStore;
     private readonly ITicketSitePublisher _publisher;
     private readonly TicketWorkflowCatalog _catalog;
     private readonly JiraTicketKeyParser _ticketKeyParser;
-    private readonly ReadinessEvaluator _readinessEvaluator;
     private readonly RunOutcomeClassifier _outcomeClassifier;
     private readonly DevUiOptions _options;
     private readonly TimeProvider _timeProvider;
@@ -35,12 +32,10 @@ public sealed class TicketOperationsService : IDisposable
 
     public TicketOperationsService(
         IAuthoringControlClient authoringClient,
-        IOrchestratorReadinessClient readinessClient,
         IReviewSiteStore siteStore,
         ITicketSitePublisher publisher,
         TicketWorkflowCatalog catalog,
         JiraTicketKeyParser ticketKeyParser,
-        ReadinessEvaluator readinessEvaluator,
         RunOutcomeClassifier outcomeClassifier,
         IOptions<DevUiOptions> options,
         TimeProvider timeProvider,
@@ -48,8 +43,6 @@ public sealed class TicketOperationsService : IDisposable
     {
         _authoringClient = authoringClient ??
             throw new ArgumentNullException(nameof(authoringClient));
-        _readinessClient = readinessClient ??
-            throw new ArgumentNullException(nameof(readinessClient));
         _siteStore = siteStore ??
             throw new ArgumentNullException(nameof(siteStore));
         _publisher = publisher ??
@@ -58,8 +51,6 @@ public sealed class TicketOperationsService : IDisposable
             throw new ArgumentNullException(nameof(catalog));
         _ticketKeyParser = ticketKeyParser ??
             throw new ArgumentNullException(nameof(ticketKeyParser));
-        _readinessEvaluator = readinessEvaluator ??
-            throw new ArgumentNullException(nameof(readinessEvaluator));
         _outcomeClassifier = outcomeClassifier ??
             throw new ArgumentNullException(nameof(outcomeClassifier));
         _options = options.Value;
@@ -67,72 +58,6 @@ public sealed class TicketOperationsService : IDisposable
             throw new ArgumentNullException(nameof(timeProvider));
         _logger = logger ??
             throw new ArgumentNullException(nameof(logger));
-    }
-
-    public async Task<TicketOperationsOverview> GetOverviewAsync(
-        bool refreshReadiness = false,
-        CancellationToken ct = default)
-    {
-        ThrowIfDisposed();
-        ServicesStatusResponse services = refreshReadiness
-            ? await _readinessClient.RefreshAsync(ct)
-            : await _readinessClient.GetAsync(ct);
-        Task<AuthoringRunListResponse>[] listTasks =
-            _catalog.Workflows
-                .Select(workflow => _authoringClient.ListAsync(
-                    workflow.ProcessingServiceName,
-                    _options.RecentRunLimit,
-                    ct))
-                .ToArray();
-        AuthoringRunListResponse[] lists =
-            await Task.WhenAll(listTasks);
-
-        List<WorkflowRunOverview> workflows = [];
-        for (int index = 0;
-             index < _catalog.Workflows.Count;
-             index++)
-        {
-            TicketWorkflowDefinition workflow =
-                _catalog.Workflows[index];
-            workflows.Add(new WorkflowRunOverview(
-                workflow,
-                _readinessEvaluator.Evaluate(
-                    services,
-                    workflow),
-                lists[index]));
-        }
-        return new TicketOperationsOverview(
-            services,
-            Array.AsReadOnly(workflows.ToArray()));
-    }
-
-    public async Task<TicketWorkflowReadiness> GetReadinessAsync(
-        string workflow,
-        bool refresh = false,
-        CancellationToken ct = default)
-    {
-        ThrowIfDisposed();
-        TicketWorkflowDefinition definition =
-            _catalog.Get(workflow);
-        ServicesStatusResponse services = refresh
-            ? await _readinessClient.RefreshAsync(ct)
-            : await _readinessClient.GetAsync(ct);
-        return _readinessEvaluator.Evaluate(
-            services,
-            definition);
-    }
-
-    public Task<AuthoringRunListResponse> ListRunsAsync(
-        string workflow,
-        CancellationToken ct = default)
-    {
-        ThrowIfDisposed();
-        TicketWorkflowDefinition definition =
-            _catalog.Get(workflow);
-        return _authoringClient.ListAsync(
-            definition.ProcessingServiceName,
-            _options.RecentRunLimit,
-            ct);
     }
 
     public async Task<TicketRunDetails> OpenRunAsync(

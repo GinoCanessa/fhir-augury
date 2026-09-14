@@ -122,6 +122,8 @@ public static class DevUiServiceCollectionExtensions
             provider.GetRequiredService<ReviewSiteStore>());
         services.AddSingleton(TimeProvider.System);
         services.AddTransient<RunPollingSession>();
+        services.AddTransient<TicketWorkspaceReader>();
+        services.AddTransient<TicketWorkspaceSession>();
         services.AddScoped<TicketOperationsService>();
         return services;
     }

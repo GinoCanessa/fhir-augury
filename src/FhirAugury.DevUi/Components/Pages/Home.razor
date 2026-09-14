@@ -1,6 +1,8 @@
 @page "/"
-@implements IDisposable
-@inject TicketOperationsService Operations
+@implements IAsyncDisposable
+@inject IServiceScopeFactory ScopeFactory
+@inject TicketWorkflowCatalog Catalog
+@inject ILogger<Home> Logger
 
 <PageTitle>Operations — FHIR Augury Dev UI</PageTitle>
 
@@ -15,9 +17,8 @@
     </div>
     <button class="btn btn-outline-primary"
             type="button"
-            disabled="@_loading"
-            @onclick="RecheckAsync">
-        @if (_loading && _overview is not null)
+            @onclick="RefreshAll">
+        @if (InProgressCount > 0)
         {
             <span class="spinner-border spinner-border-sm"
                   aria-hidden="true"></span>
@@ -42,155 +43,183 @@
 <div class="operation-announcer"
      aria-live="polite"
      aria-atomic="true">
-    @if (_loading)
+    @if (InProgressCount > 0)
     {
         <span>
-            @(_overview is null
-                ? "Loading operations and service observations."
-                : "Refreshing operations and rechecking service observations.")
+            Workspace observations are in progress.
+            Available history and navigation remain usable.
         </span>
     }
-    else if (_refreshedAt is DateTimeOffset refreshedAt)
+    @if (FailureCount > 0)
     {
         <span>
-            Operations refreshed
-            <time datetime="@refreshedAt.ToString("O")">
-                @refreshedAt.LocalDateTime.ToString("T")
-            </time>.
+            @FailureCount workspace observation(s) failed or are unavailable.
+            Retained history is labeled as stale.
+        </span>
+    }
+    else if (InProgressCount == 0)
+    {
+        <span>
+            All workspace observations have completed.
+            Check workflow readiness before starting a run.
         </span>
     }
 </div>
 
-@if (_overview is null && _loading)
-{
-    <div class="loading-state" role="status">
-        <span class="spinner-border" aria-hidden="true"></span>
-        <span>Loading operations workspace…</span>
-    </div>
-}
-else if (_error is not null && _overview is null)
-{
-    <div class="alert alert-danger" role="alert">
-        <i class="bi bi-exclamation-octagon-fill" aria-hidden="true"></i>
+<section class="overview-section"
+         aria-labelledby="readiness-heading">
+    <div class="section-heading">
         <div>
-            <strong>Operations could not be loaded.</strong>
-            <span class="d-block">@_error</span>
+            <p class="section-heading__eyebrow">Current observations</p>
+            <h2 id="readiness-heading">Workflow readiness</h2>
         </div>
+        <p>
+            Readiness is evidence from the Orchestrator, not a resource
+            lifecycle control.
+        </p>
     </div>
-    <button class="btn btn-primary"
-            type="button"
-            @onclick="LoadAsync">
-        <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-        Try again
-    </button>
-}
-else if (_overview is not null)
-{
-    @if (_error is not null)
-    {
-        <div class="alert alert-warning" role="alert">
-            <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
-            <div>
-                <strong>The latest recheck failed.</strong>
-                The previously loaded run information remains visible.
-                <span class="d-block">@_error</span>
-            </div>
-        </div>
-    }
+    <div class="readiness-grid">
+        @foreach (TicketWorkflowDefinition workflow in Catalog.Workflows)
+        {
+            <ReadinessObservationPanel @key="workflow.RouteKey"
+                                       Workflow="@workflow"
+                                       Observation="@_snapshot.ReadinessFor(workflow.RouteKey)" />
+        }
+    </div>
+</section>
 
-    <section class="overview-section"
-             aria-labelledby="readiness-heading">
-        <div class="section-heading">
-            <div>
-                <p class="section-heading__eyebrow">Current observations</p>
-                <h2 id="readiness-heading">Workflow readiness</h2>
-            </div>
-            <p>
-                Readiness is evidence from the Orchestrator, not a resource
-                lifecycle control.
-            </p>
+<section class="overview-section"
+         aria-labelledby="workflows-heading">
+    <div class="section-heading">
+        <div>
+            <p class="section-heading__eyebrow">Choose a task</p>
+            <h2 id="workflows-heading">Ticket workflows</h2>
         </div>
-        <div class="readiness-grid">
-            @foreach (WorkflowRunOverview workflow in _overview.Workflows)
-            {
-                <ReadinessStrip Readiness="@workflow.Readiness" />
-            }
-        </div>
-    </section>
-
-    <section class="overview-section"
-             aria-labelledby="workflows-heading">
-        <div class="section-heading">
-            <div>
-                <p class="section-heading__eyebrow">Choose a task</p>
-                <h2 id="workflows-heading">Ticket workflows</h2>
-            </div>
-            <p>
-                Active and recovering runs appear before recent terminal
-                history.
-            </p>
-        </div>
-        <div class="workflow-grid">
-            @foreach (WorkflowRunOverview workflow in _overview.Workflows)
-            {
-                <WorkflowCard Overview="@workflow" />
-            }
-        </div>
-    </section>
-}
+        <p>
+            Active and recovering runs appear before recent terminal
+            history. Each history can be refreshed independently.
+        </p>
+    </div>
+    <div class="workflow-grid">
+        @foreach (TicketWorkflowDefinition workflow in Catalog.Workflows)
+        {
+            <WorkflowCard @key="workflow.RouteKey"
+                          Workflow="@workflow"
+                          History="@_snapshot.Workflows[workflow.RouteKey].History"
+                          Readiness="@_snapshot.ReadinessFor(workflow.RouteKey)"
+                          OnRefresh="@(() => RefreshHistory(workflow.RouteKey))" />
+        }
+    </div>
+</section>
 
 @code {
-    private readonly CancellationTokenSource _lifetime = new();
-    private TicketOperationsOverview? _overview;
-    private string? _error;
-    private bool _loading = true;
-    private DateTimeOffset? _refreshedAt;
+    private AsyncServiceScope? _scope;
+    private TicketWorkspaceSession? _session;
+    private TicketWorkspaceSnapshot _snapshot = null!;
+    private Func<TicketWorkspaceSnapshot, Task>? _changed;
+    private bool _started;
+    private bool _disposed;
 
-    protected override Task OnInitializedAsync() =>
-        LoadOverviewAsync(refreshReadiness: false);
+    private IEnumerable<WorkspaceObservationPhase> Phases =>
+        _snapshot.Workflows.Values
+            .Select(workspace => workspace.History.Phase)
+            .Append(_snapshot.Readiness.Phase);
 
-    private Task LoadAsync() =>
-        LoadOverviewAsync(refreshReadiness: false);
+    private int InProgressCount =>
+        Phases.Count(phase => phase is
+            WorkspaceObservationPhase.Pending or
+            WorkspaceObservationPhase.Loading);
 
-    private Task RecheckAsync() =>
-        LoadOverviewAsync(refreshReadiness: true);
+    private int FailureCount =>
+        Phases.Count(phase => phase is
+            WorkspaceObservationPhase.Unavailable or
+            WorkspaceObservationPhase.Failed);
 
-    private async Task LoadOverviewAsync(
-        bool refreshReadiness)
+    protected override void OnInitialized()
     {
-        if (_loading && _overview is not null)
-        {
-            return;
-        }
+        AsyncServiceScope scope = ScopeFactory.CreateAsyncScope();
+        _scope = scope;
+        _session = scope.ServiceProvider
+            .GetRequiredService<TicketWorkspaceSession>();
+        _snapshot = _session.Snapshot;
+    }
 
-        _loading = true;
-        _error = null;
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_started && !_disposed &&
+            _session is TicketWorkspaceSession session)
+        {
+            _started = true;
+            _changed = snapshot => ApplySnapshotAsync(session, snapshot);
+            session.Changed += _changed;
+            session.Start();
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task ApplySnapshotAsync(
+        TicketWorkspaceSession session,
+        TicketWorkspaceSnapshot snapshot)
+    {
         try
         {
-            TicketOperationsOverview overview =
-                await Operations.GetOverviewAsync(
-                    refreshReadiness,
-                    _lifetime.Token);
-            _overview = overview;
-            _refreshedAt = DateTimeOffset.Now;
-        }
-        catch (OperationCanceledException)
-            when (_lifetime.IsCancellationRequested)
-        {
+            await InvokeAsync(() =>
+            {
+                if (_disposed || !ReferenceEquals(_session, session) ||
+                    snapshot.Revision <= _snapshot.Revision)
+                {
+                    return;
+                }
+                _snapshot = snapshot;
+                StateHasChanged();
+            });
         }
         catch (Exception ex)
         {
-            _error = ex.Message;
-        }
-        finally
-        {
-            _loading = false;
+            Logger.LogError(
+                ex,
+                "Could not render workspace revision {Revision}",
+                snapshot.Revision);
         }
     }
 
-    public void Dispose()
+    private void RefreshAll()
     {
-        _lifetime.Cancel();
-        _lifetime.Dispose();
+        if (!_disposed)
+        {
+            _session?.RefreshAll();
+        }
+    }
+
+    private void RefreshHistory(string workflow)
+    {
+        if (!_disposed)
+        {
+            _session?.RefreshHistory(workflow);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        TicketWorkspaceSession? session = _session;
+        Func<TicketWorkspaceSnapshot, Task>? changed = _changed;
+        AsyncServiceScope? scope = _scope;
+        _session = null;
+        _changed = null;
+        _scope = null;
+
+        if (session is not null && changed is not null)
+        {
+            session.Changed -= changed;
+        }
+        if (scope is AsyncServiceScope ownedScope)
+        {
+            await ownedScope.DisposeAsync();
+        }
     }
 }

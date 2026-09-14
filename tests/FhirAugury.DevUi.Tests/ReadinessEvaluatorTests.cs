@@ -10,6 +10,117 @@ public sealed class ReadinessEvaluatorTests
 {
     private readonly TicketWorkflowDefinition _planner =
         new TicketWorkflowCatalog().Get("plan");
+    private readonly TicketWorkflowDefinition _preparer =
+        new TicketWorkflowCatalog().Get("prepare");
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void PreparerDoesNotRequirePlannerOrGitHub(
+        bool observeUnavailablePlanner,
+        bool observeUnavailableGitHub)
+    {
+        DateTimeOffset checkedAt =
+            new(2026, 9, 10, 12, 0, 0, TimeSpan.Zero);
+        List<ServiceHealthInfo> services = PreparationServices(checkedAt);
+        if (observeUnavailablePlanner)
+        {
+            services.Add(Service(
+                "Planner", "processing", "unavailable", checkedAt,
+                ["Jira", "GitHub"]) with
+            {
+                ProcessingIsRunning = false,
+            });
+        }
+        if (observeUnavailableGitHub)
+        {
+            services.Add(Service("GitHub", "source", "unavailable", checkedAt));
+        }
+
+        TicketWorkflowReadiness readiness = new ReadinessEvaluator().Evaluate(
+            new ServicesStatusResponse(services, checkedAt),
+            _preparer);
+
+        Assert.True(readiness.CanStart);
+        Assert.Empty(readiness.Blockers);
+        Assert.Equal("Jira", Assert.Single(readiness.RequiredServices).Name);
+        Assert.Equal(ServiceReadinessState.Ready, readiness.Orchestrator.State);
+        Assert.Equal(ServiceReadinessState.Ready, readiness.Processor.State);
+        Assert.Equal(checkedAt, readiness.CheckedAt);
+        Assert.DoesNotContain(readiness.RequiredServices,
+            observation => observation.Name is "Planner" or "GitHub");
+    }
+
+    [Theory]
+    [InlineData("Orchestrator", "missing", ServiceReadinessState.NotObserved)]
+    [InlineData("Orchestrator", "unavailable", ServiceReadinessState.Unavailable)]
+    [InlineData("Orchestrator", "degraded", ServiceReadinessState.Degraded)]
+    [InlineData("Orchestrator", "disabled", ServiceReadinessState.Disabled)]
+    [InlineData("Orchestrator", "not-configured", ServiceReadinessState.Disabled)]
+    [InlineData("Orchestrator", "unobserved", ServiceReadinessState.NotObserved)]
+    [InlineData("Preparer", "missing", ServiceReadinessState.NotObserved)]
+    [InlineData("Preparer", "unavailable", ServiceReadinessState.Unavailable)]
+    [InlineData("Preparer", "degraded", ServiceReadinessState.Degraded)]
+    [InlineData("Preparer", "disabled", ServiceReadinessState.Disabled)]
+    [InlineData("Preparer", "not-configured", ServiceReadinessState.Disabled)]
+    [InlineData("Preparer", "unobserved", ServiceReadinessState.NotObserved)]
+    [InlineData("Preparer", "paused", ServiceReadinessState.Degraded)]
+    [InlineData("Preparer", "lifecycle-unobserved", ServiceReadinessState.NotObserved)]
+    [InlineData("Jira", "missing", ServiceReadinessState.NotObserved)]
+    [InlineData("Jira", "unavailable", ServiceReadinessState.Unavailable)]
+    [InlineData("Jira", "degraded", ServiceReadinessState.Degraded)]
+    [InlineData("Jira", "disabled", ServiceReadinessState.Disabled)]
+    [InlineData("Jira", "not-configured", ServiceReadinessState.Disabled)]
+    [InlineData("Jira", "unobserved", ServiceReadinessState.NotObserved)]
+    public void PreparerRequiresObservedRunningProcessorOrchestratorAndJira(
+        string serviceName,
+        string problem,
+        ServiceReadinessState expected)
+    {
+        DateTimeOffset checkedAt =
+            new(2026, 9, 10, 12, 0, 0, TimeSpan.Zero);
+        List<ServiceHealthInfo> services = PreparationServices(checkedAt);
+        int index = services.FindIndex(service => service.Name == serviceName);
+        ServiceHealthInfo service = services[index];
+        if (problem == "missing")
+        {
+            services.RemoveAt(index);
+        }
+        else
+        {
+            services[index] = problem switch
+            {
+                "disabled" => service with { Enabled = false },
+                "not-configured" => service with { Configured = false },
+                "unobserved" => service with { CheckedAt = null, Status = "unobserved" },
+                "paused" => service with { ProcessingIsRunning = false, ProcessingStatus = "paused" },
+                "lifecycle-unobserved" => service with { ProcessingIsRunning = null },
+                _ => service with { Status = problem },
+            };
+        }
+
+        TicketWorkflowReadiness readiness = new ReadinessEvaluator().Evaluate(
+            new ServicesStatusResponse(services, checkedAt),
+            _preparer);
+
+        Assert.False(readiness.CanStart);
+        ServiceReadinessObservation blocker = Assert.Single(readiness.Blockers);
+        Assert.Equal(serviceName, blocker.Name);
+        Assert.Equal(expected, blocker.State);
+        Assert.Equal("Jira", Assert.Single(readiness.RequiredServices).Name);
+        Assert.DoesNotContain(readiness.Blockers,
+            observation => observation.Name is "Planner" or "GitHub");
+        if (problem == "paused")
+        {
+            Assert.Contains("paused", blocker.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        if (problem == "lifecycle-unobserved")
+        {
+            Assert.Contains("lifecycle was not observed", blocker.Message, StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
     [Fact]
     public void HealthyProcessorAndDependenciesAreReady()
@@ -328,6 +439,14 @@ public sealed class ReadinessEvaluatorTests
                 kind == "processing" ? true : null,
             RequiredServices = requiredServices ?? [],
         };
+
+    private static List<ServiceHealthInfo> PreparationServices(DateTimeOffset checkedAt) =>
+    [
+        Service("Orchestrator", "orchestrator", "healthy", checkedAt),
+        Service("Preparer", "processing", "healthy", checkedAt,
+            TicketWorkflowDependencyCatalog.GetRequiredServices("Preparer").ToList()),
+        Service("Jira", "source", "healthy", checkedAt),
+    ];
 
     private sealed class DelegateHandler(
         Func<HttpRequestMessage, HttpResponseMessage> handler)
