@@ -289,6 +289,19 @@ public static class OrchestratorCatalog
             Description: "Starts a frozen processor-owned authoring run."),
 
         new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-refresh",
+            DisplayName: "Start Publication Refresh",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-refresh",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("sourceRunId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
             Id: "processing.authoring.status",
             DisplayName: "Authoring Run Status",
             Group: "Processing",

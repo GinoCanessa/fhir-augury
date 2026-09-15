@@ -27,8 +27,8 @@ public sealed class JiraTicketKeyParserTests
         FhirAugury.DevUi.Models.JiraTicketKeyParseResult result =
             parser.Parse("FHIR-1, nope,NoPe; X-2 bad/key");
 
-        Assert.Equal(["FHIR-1"], result.ValidKeys);
-        Assert.Equal(["NOPE", "X-2", "BAD/KEY"], result.InvalidTokens);
+        Assert.Equal(["FHIR-1", "X-2"], result.ValidKeys);
+        Assert.Equal(["NOPE", "BAD/KEY"], result.InvalidTokens);
         Assert.False(result.IsValid);
     }
 

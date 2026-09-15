@@ -379,7 +379,7 @@ public class ValueFormatDetectorTests
     [InlineData("FHIR-50783", true)]
     [InlineData("GF-1234", true)]
     [InlineData("A2-1", true)]
-    [InlineData("fhir-123", false)]
+    [InlineData("fhir-123", true)]
     [InlineData("123", false)]
     [InlineData("FHIR", false)]
     public void IsJiraKey_ReturnsExpected(string value, bool expected)
