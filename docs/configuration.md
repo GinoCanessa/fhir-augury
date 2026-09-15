@@ -631,9 +631,10 @@ manual retry may bypass that wait but never expands the total attempt budget.
 
 Planner's checked-in `SnapshotSchemaVersion` is `1`. Preparer uses the same
 shape but omits the `Planner` block and sets `SnapshotSchemaVersion` to `3`.
-These defaults are intentionally processor-specific: Discussion has a
-reader-compatible v3 contract for provenance and policy-marked public people,
-while Applying remains on Planner v1.
+These settings are intentionally processor-specific: the current Preparer host
+**requires** public snapshot schema v3 for provenance and policy-marked public
+people, while Applying remains on Planner v1. Preparer v1/v2 are publisher and
+test compatibility inputs only; they are not supported producer settings.
 
 ```json
 {
@@ -696,7 +697,7 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
 | `Processing.AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
 | `Processing.SnapshotDirectory` | string | per-processor | Directory owned by the processor for immutable review snapshots |
-| `Processing.SnapshotSchemaVersion` | int | Preparer: `3`; Planner: `1` | Public snapshot schema written by that processor. The ticket publisher reads exact Preparer v1/v2/v3 catalogs for Discussion, treats v1/v2 people as unavailable, and reads only Planner v1 for Applying. |
+| `Processing.SnapshotSchemaVersion` | int | Preparer: `3`; Planner: `1` | Public snapshot schema written by that processor. Preparer startup accepts only `3`; the ticket publisher can still read exact legacy Preparer v1/v2 pairs for degraded Discussion compatibility and treats their people as unavailable. Planner writes and publishes only v1 for Applying. |
 | `Processing.ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot creation/promotion/recording |
 | `Processing.ActivateRunBackedAuthoring` | bool | `true` in Preparer/Planner | Perform the one-way legacy cutover and require initial revalidation |
 | `Processing.PreCutoverBackupPath` | string | per-processor | Verified rollback backup required when activation is enabled |
@@ -714,6 +715,32 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.Planner.RepoFilters` | string[]? | `null` | Planner-only exact `owner/repo` allow-list passed to `ticket-plan` via `{repoFilters}` (null = no restriction) |
 | `Processing.Hydration.BackfillOnStartup` | bool | `true` | Backfill hydrated evidence for existing output on boot |
 | `Processing.Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+### Preparer schema-v3 effective-configuration preflight
+
+Run this preflight before ordinary Preparer snapshot production and before
+`refresh-publication`. A current binary can still receive a stale value from
+an ignored or process-level override even though checked-in
+`appsettings.json` says `3`.
+
+1. Inspect the Preparer content root's gitignored
+   `appsettings.local.json` for `Processing:SnapshotSchemaVersion`.
+2. Inspect the process and Aspire resource environment for the exact variable
+   `FHIR_AUGURY_PREPARER_Processing__SnapshotSchemaVersion`. The service
+   prefix is `FHIR_AUGURY_PREPARER_`; `Processing__SnapshotSchemaVersion` is
+   the nested key after that prefix.
+3. Remove the stale override or correct the existing ignored/environment
+   value to `3`. Do not add or commit a local override as part of the repair.
+4. Restart the Preparer and confirm its startup log reports
+   `Effective Preparer snapshot schema version is 3` before attempting the
+   refresh.
+
+The strongly typed options validator rejects any effective value other than
+`3` with `SnapshotSchemaVersion must be 3 for the Preparer service.` Correct
+the local/environment configuration rather than weakening validation.
+Successful legacy publication does not prove that the running producer is
+configured safely: v1/v2 remain readable only so existing immutable pairs can
+render with degraded readiness, and those pairs are never upgraded in place.
 
 > For the operational flow (kick-off curl, monitoring, output locations), see the
 > [processors runbook](technical/processors.md).

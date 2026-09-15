@@ -275,8 +275,8 @@ Three typed command families control processor-owned authoring runs:
 | `planned-ticket-authoring` | Planner | [Generating Application Tickets](generating-application-tickets.md) |
 | `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
 
-Each family registers the same six actions, with command-specific start and
-worker-submission fields:
+All three families register six shared actions. The Preparer additionally
+registers `refresh-publication`, for seven exact action values:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
 |--------|---------------------------------|------------------------|
@@ -286,6 +286,11 @@ worker-submission fields:
 | `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one current error terminal and non-authored only when status advertises `allowedActions.canSupersede`. Never infer the reason or use this for a receipt-backed item. |
 | `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
 | `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
+| `refresh-publication` (Preparer only) | `runId` | Start one metadata-only repair from the completed snapshot-producing source run named by `runId`. Returns a new run with `purpose:"publication-refresh"` and `sourceRunId` equal to the request coordinate. It reuses accepted receipts, does not replay authoring or grouping, and produces a separate snapshot. |
+
+The exact Preparer action set is `start`, `status`, `retry`, `supersede`,
+`submit`, `snapshot`, and `refresh-publication`. Planner and BallotNotes do not
+accept `refresh-publication`.
 
 Start selectors are not interchangeable:
 
@@ -298,7 +303,9 @@ Start selectors are not interchangeable:
 Authoring responses use several identifiers for distinct purposes:
 
 - `runId` is the frozen run coordinate used by `status`, `retry`,
-  `supersede`, and `snapshot`.
+  `supersede`, and `snapshot`. For Preparer `refresh-publication`, it instead
+  selects the completed source run; the response supplies a different run ID
+  for subsequent status and snapshot actions.
 - `itemId` identifies one item inside a run and is the outer retry/supersede
   coordinate.
 - `operationId` correlates a processor-launched worker operation and its
@@ -326,12 +333,15 @@ Minimal outer-control examples:
 
 // Download the verified snapshot pair
 { "command": "prepared-ticket-authoring", "action": "snapshot", "runId": "<runId>", "snapshotPath": "cache\\authoring-snapshots\\preparer\\<runId>\\" }
+
+// Start metadata-only publication repair from a completed source run
+{ "command": "prepared-ticket-authoring", "action": "refresh-publication", "runId": "<sourceRunId>" }
 ```
 
 Automatic retry is processor-owned. Outer automation should normally keep
 polling instead of issuing `retry`; use immediate retry only as an explicit
-operator choice, and do not replay either mutating action after an ambiguous
-transport failure.
+operator choice. Never replay `start`, `retry`, `supersede`, or
+`refresh-publication` after an ambiguous transport failure.
 
 Run status `error` is recoverable and non-terminal. Continue polling whenever
 `state.isTerminal` is false (`queued`, `running`, `finalizing`, or `error`).
@@ -346,15 +356,17 @@ The Preparer has an active-run capacity of one. `queued`, `running`,
 Its normalized start request is stored with the run so a restart resumes the
 same run rather than reconstructing a second one.
 
-For Preparer and Planner only, the Orchestrator exposes a bounded ordinary-run
+For Preparer and Planner only, the Orchestrator exposes a bounded operator-run
 list at
 `GET /api/v1/processing-services/{name}/authoring/runs?limit=N`, with active
 and recovering runs first, terminal history newest first, and
-`truncated:true` when older rows were omitted. The current CLI command families
-preserve their six existing actions rather than adding a seventh list action;
-use the Dev UI operations overview for guided history, or the HTTP route for a
-headless list. Exact CLI `status` remains the escape hatch when a run ID is
-known.
+`truncated:true` when older rows were omitted. Purpose-marked maintenance runs,
+including `publication-refresh`, are also visible even without an ordinary
+start request so clients can reconcile by `purpose` and `sourceRunId`.
+Initial-revalidation and legacy unmarked rows remain omitted. There is no
+`list` action in any authoring command family; use the Dev UI operations
+overview for guided history, or the HTTP route for a headless list. Exact CLI
+`status` remains the escape hatch when a run ID is known.
 
 Preparer and Planner create/retry/supersede conflicts may include
 `conflictingRunIds` and the legacy-compatible single `runId` as authoritative
@@ -369,6 +381,72 @@ In status responses, `failedItems` remains the aggregate,
 `completed-database-only` remains lifecycle success even when superseded items
 make the result partial; continue snapshot/site publication from accepted
 results while surfacing each superseded item and reason.
+
+Run status also exposes optional additive `purpose` and `sourceRunId`.
+A successful `refresh-publication` response uses the ordinary typed shape:
+
+```jsonc
+{
+  "run": {
+    "runId": "<refreshRunId>",
+    "status": "running",
+    "databaseOnly": false,
+    "purpose": "publication-refresh",
+    "sourceRunId": "<sourceRunId>"
+  },
+  "items": [
+    {
+      "runId": "<refreshRunId>",
+      "status": "complete",
+      "acceptedReceiptId": "<retainedReceiptId>",
+      "attemptCount": 0
+    }
+  ]
+}
+```
+
+Admission requires `runId` to identify a completed, non-database-only Preparer
+run with a ready snapshot descriptor. That source run supplies lineage only:
+the new refresh run snapshots the current accepted receipt-backed corpus,
+which may differ from the source run's original membership.
+
+Follow `<refreshRunId>` with `status`. After it reaches `completed`, use that
+same new ID with `snapshot`, then publish the returned verified pair
+separately. `refresh-publication` uses only `runId`; omit `databaseOnly`,
+ticket selection, callback payload, and unrelated fields because they do not
+alter this operation. If accepted Jira revisions change or the metadata read
+spans more than one Jira content revision, the new run becomes terminal
+`superseded`, has no snapshot, and its `error` states that ordinary
+re-authoring is required.
+
+Transport or response-body loss returns a successful CLI envelope whose
+command data is an explicit unknown-outcome result, rather than replaying the
+POST:
+
+```jsonc
+{
+  "outcome": "outcome-unknown",
+  "sourceRunId": "<sourceRunId>",
+  "reconciliation": "succeeded",
+  "candidates": [
+    {
+      "runId": "<candidateRefreshRunId>",
+      "purpose": "publication-refresh",
+      "sourceRunId": "<sourceRunId>"
+    }
+  ],
+  "listTruncated": false,
+  "message": "The refresh POST was not replayed. Select the single matching candidate run before continuing with status, snapshot download, and site generation.",
+  "error": null
+}
+```
+
+The CLI performs exactly one bounded read-only list with `limit=20`, filters to
+runs created since submission with matching purpose and source lineage, and
+sets `reconciliation` to `failed` with an empty candidate list and non-null
+`error` if that read fails. Zero, one, or multiple candidates require operator
+review; a single candidate is not selected automatically. `listTruncated:true`
+means the bounded result cannot prove that all candidates were seen.
 
 Do not copy `submit` into an outer control script. For exhaustive request and
 response shapes, run `fhir-augury --help <command>` or export them with

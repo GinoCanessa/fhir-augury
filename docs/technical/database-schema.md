@@ -20,7 +20,7 @@ browser database:
 | **Orchestrator** | `orchestrator.db` | Cross-reference links, cross-ref scan state |
 | **Preparer** | `processor.jira.fhir.preparer.db` | Private preparation runs, receipts, hydration, grouping, and snapshot source state |
 | **Planner** | `processor.jira.fhir.planner.db` | Private planning runs, receipts, grouping, and Applier compatibility state |
-| **Discussion publication** | Embedded generated SQLite | Renderer-schema-v1 projection; not durable service state |
+| **Discussion publication** | Embedded generated SQLite | Discussion renderer schema-v2 projection; not durable service state |
 
 Source databases use:
 
@@ -824,6 +824,49 @@ revision is retained only when every selected ticket shares it. `CapturedAt`
 is run provenance, not a source-freshness fallback. Legacy Jira runs are seeded
 with null source coordinates.
 
+### Live run lineage and snapshot publication proof
+
+Run purpose and repair lineage are additive live-state fields:
+
+| Table | Column | Type | Description |
+|-------|--------|------|-------------|
+| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, or `publication-refresh` |
+| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for a publication refresh |
+| `authoring_review_snapshots` | `PublicationProofJson` | TEXT? | Canonical serialized publication proof retained with snapshot lifecycle state and recovery |
+
+Startup adds the missing columns without replacing the live table or any
+immutable snapshot. Existing rows initially receive the `authoring` default;
+the migration then conservatively marks only recognizable database-only
+maintenance rows as `grouping-maintenance` and known revalidation lineage as
+`initial-revalidation`. Ambiguous historical rows remain `authoring`. New
+`publication-refresh` rows are snapshot-producing, have a distinct run ID,
+and point `SourceRunId` at a completed Preparer run whose snapshot record is
+ready.
+
+The immutable JSON snapshot descriptor exposes the optional
+`publicationProof` object:
+
+| Field | Meaning |
+|-------|---------|
+| `contractVersion` | Canonical Preparer publication-proof contract version |
+| `purpose` | Exact value `publication-refresh` |
+| `sourceRunId` | Operator-selected completed source run |
+| `sourceName` | Exact source value `jira` |
+| `sourceLastSuccessfulRefreshAt` | Frozen canonical UTC upstream-success watermark |
+| `sourceContentRevision` | One stable Jira content generation shared by the repaired corpus |
+| `publicDisplayNamePolicyVersion` | Current public people-policy version |
+| `corpusFingerprint` | Canonical accepted receipt/item/source-revision membership |
+| `groupingFingerprint` | Canonical output fingerprints for all retained grouping partitions |
+| `capturedAt` | Canonical UTC time after all proof-bearing stages completed |
+
+`PublicationProofJson` lets snapshot promotion/reconciliation restore the same
+descriptor proof after interruption. It is deliberately not added to the
+public snapshot's `authoring_snapshot_provenance` table. Likewise, the live
+`Purpose` and `SourceRunId` columns are not added to the schema-v3
+`authoring_runs` snapshot projection. The descriptor is the publication-proof
+boundary, so schema v3 remains an additive people-policy revision of the v2
+snapshot catalog rather than a copy of every live maintenance table.
+
 ### Preparer public snapshot schemas v2 and v3
 
 Preparer schema v2 extends the unchanged v1 table catalog:
@@ -853,44 +896,122 @@ The sanitizer selects one catalog by configured schema version and derives
 descriptor counts from that same catalog. It removes requester rows outside
 the retained ticket set and provenance outside contributing runs. The
 checked-in Preparer writer emits v3; the discussion publisher accepts exact
-v1, v2, and v3 catalogs. V1 and v2 remain usable for freshness and source data
-available in their catalogs, but their unversioned people values are always
-treated as unavailable. Planner and Tickets for Applying remain on the
-separate Planner snapshot v1 catalog.
+v1, v2, and v3 catalogs. The current Preparer host requires v3. V1 and v2
+remain usable for freshness and source data available in their catalogs, but
+their unversioned people values are always treated as unavailable. Planner and
+Tickets for Applying remain on the separate Planner snapshot v1 catalog.
 
-### Discussion renderer schema v1
+### Preparer publication-refresh live state
+
+Metadata-only refresh adds two Preparer-owned live tables and one nullable
+grouping-receipt field. They support recovery and proof construction; none is
+copied into the public schema-v3 snapshot.
+
+The existing `prepared_ticket_partition_receipts` table gains nullable
+`OutputFingerprint TEXT`. New grouping writes bind their semantic
+topics/groups/members output to that receipt. A null value identifies a legacy
+receipt whose output must instead be bound by the certification table below.
+
+#### `prepared_ticket_publication_refresh_receipts`
+
+One row is written atomically with a successful publication metadata update.
+The unique live key is `(RunId, StageId)`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT | Owning `publication-refresh` run |
+| `StageId` | TEXT | Owning `publication-metadata` stage |
+| `InputFingerprint` | TEXT | Source-run plus accepted-corpus stage input |
+| `CorpusFingerprint` | TEXT | Canonical current accepted receipt-backed corpus |
+| `SourceLastSuccessfulRefreshAt` | TEXT | Maximum proven project watermark in the coherent read |
+| `SourceContentRevision` | INTEGER | One stable Jira content generation shared by every ticket |
+| `PublicDisplayNamePolicyVersion` | INTEGER | Policy version proved by every fetched ticket |
+| `AppliedAt` | TEXT | UTC metadata transaction time |
+
+The same transaction allowlists updates to parent
+`prepared_ticket_hydration` publication fields, the matching self row in
+`prepared_jira_hydration`, normalized
+`prepared_ticket_in_person_requesters`, and the refresh run's
+`authoring_run_input_provenance` row. It does not modify authored ticket
+payloads, accepted receipts, contributing runs' frozen input provenance,
+non-self related hydration, topics, groups, or members. A retry that finds a
+matching receipt completes the stage without a second source fetch or update.
+
+#### `prepared_ticket_partition_certifications`
+
+A refresh never reruns grouping. Each `grouping-certification` stage validates
+the current partition membership and output against its latest retained source
+receipt. New `prepared_ticket_partition_receipts` rows carry nullable
+`OutputFingerprint`; when it is present, it must match the current semantic
+grouping output. A legacy null fingerprint is bound by a certification row
+whose unique live key is `(RunId, PartitionKey)`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT | Refresh run performing certification |
+| `StageId` | TEXT | Refresh `grouping-certification` stage |
+| `PartitionKey` | TEXT | Certified grouping partition |
+| `InputFingerprint` | TEXT | Current accepted partition membership |
+| `SourceRunId` | TEXT | Run owning the retained grouping receipt |
+| `SourceStageId` | TEXT | Stage owning the retained grouping receipt |
+| `SourceInputFingerprint` | TEXT | Input fingerprint on that source receipt |
+| `OutputFingerprint` | TEXT | Canonical fingerprint of current topics/groups/members |
+| `CertifiedAt` | TEXT | UTC certification time |
+
+The descriptor-level grouping fingerprint is calculated from every
+stage-verified partition/output pair, whether a current receipt proves it
+directly or a legacy receipt needs a certification row. The source receipts
+remain intact and attributable to their original runs.
+
+### Discussion renderer schema v2
 
 After it validates a Preparer v1, v2, or v3 pair, the publisher creates a new
-filtered SQLite database from scratch. Renderer version 1 is independent of
+filtered SQLite database from scratch. Renderer version 2 is independent of
 the Preparer snapshot version and contains only these browser-facing tables:
 
 | Table | Key columns and purpose |
 |-------|-------------------------|
-| `site_metadata` | One row keyed by `RendererSchemaVersion`; stores `BaseTitle`, qualified `SiteName`, nullable Jira refresh, and resolved filters |
+| `site_metadata` | One row keyed by `RendererSchemaVersion = 2`; stores `BaseTitle`, qualified `SiteName`, nullable Jira refresh, canonical `ReadinessJson`, and resolved filters |
+| `facet_dimensions` | Publication-owned catalog of `Dimension`, hash `Route`, label, order, and list visibility |
 | `tickets` | One row per case-insensitive ticket key with display metadata, summaries, proposals, rationale, and request/resolution content |
-| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`; only exact-current-policy, context-free-safe v3 display names are non-null |
-| `ticket_facets` | `(TicketKey, Dimension, ValueKey)` normalized across `project`, `wg`, `type`, `artifact`, `page`, `impact`, and `spec`, including the `__unknown__` machine key |
-| `summary_sources` | `(TicketKey, SummaryKind, SourceKey)` for unique `linked-jira`, `related-jira`, and `related-zulip` adjacent links |
-| `related_items` | `(TicketKey, Kind, ItemKey, LinkTypeKey)` for the broader related-context display |
+| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`, with `Availability` and structured `UnavailableReason`; only exact-current-policy, context-free-safe v3 display names are non-null |
+| `ticket_facets` | `(TicketKey, Dimension, ValueKey)` plus display/sort values, normalized across `project`, `wg`, `type`, `artifact`, `page`, `impact`, and `spec`, including the `__unknown__` machine key |
+| `summary_sources` | `(TicketKey, SummaryKind, SourceKey)` for unique `linked-jira`, `related-jira`, and `related-zulip` adjacent links, including safe canonical URLs where available |
+| `related_items` | `(TicketKey, Kind, ItemKey, LinkTypeKey)` for broader related context, labels, safe URLs, detail, justification, and hydration state |
 | `topics` | Authored discussion topic metadata and stable render hints |
 | `topic_groups` | Ordered groups within a topic |
 | `topic_members` | Ordered grouped/ungrouped ticket membership and display columns |
 
-`site-manifest.json` reports these renderer table counts, its schema version,
-the stable base `title`, and optional `displayTitle` and Jira refresh. The
-browser queries this database only; processor ledger and persistence tables
-are not shipped as its contract. No live Jira, Orchestrator, or processor
-connection is needed after publication.
+`site-manifest.json` reports these renderer table counts, renderer schema
+version, stable base `title`, `displayTitle`, optional Jira refresh, and
+structured `discussionReadiness`. Readiness carries `isReady`, evidence
+(`ordinary-snapshot` or `publication-refresh`), optional Jira content revision
+and public people-policy version, and ordered reason objects. Reason codes are
+`legacy-snapshot-schema`, `missing-ordinary-provenance`,
+`invalid-refresh-proof`, and `missing-people-policy-proof`.
+
+Preparer v1 and v2 remain readable but always produce degraded readiness and
+cannot populate trusted people. An unavailable Reporter or Assignee row carries
+the readiness reason; `Not provided` is reserved for an exact-current-policy
+v3 row whose value is legitimately absent. The publisher never migrates the
+input pair in place. The browser queries the renderer database only; processor
+ledger and persistence tables are not shipped as its contract. No live Jira,
+Orchestrator, or processor connection is needed after publication.
 
 For schema-v2 or schema-v3 input, renderer construction requires exactly one
 accepted authoring coordinate for every retained ticket. Zero or multiple
 matches are structural validation errors and abort publication before this
 database is created. With valid structure, missing or null run provenance and
 incomplete parent project/revision/watermark coordinates leave the Jira refresh
-null and the display title unsuffixed. Schema-v1 and schema-v2 people are never
-copied into `ticket_people`; schema-v3 values are independently checked for
-the current marker and public value safety during projection and renderer
-validation.
+null and the display title unsuffixed. A schema-v3 descriptor carrying
+`publicationProof` instead qualifies freshness only when its source lineage,
+current-policy evidence, corpus fingerprint, and grouping fingerprint all
+match the retained snapshot; a mismatch produces `invalid-refresh-proof` and
+no freshness date. Schema-v1 and schema-v2 people are never copied into
+`ticket_people`; schema-v3 values are independently checked for the current
+marker and public value safety during projection and renderer validation.
 
 ---
 

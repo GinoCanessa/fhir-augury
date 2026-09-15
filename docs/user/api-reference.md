@@ -341,7 +341,8 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/start` | Start queue processing |
 | `POST` | `/api/v1/processing-services/{name}/stop` | Stop queue processing |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
-| `GET` | `/api/v1/processing-services/{name}/authoring/runs?limit=N` | List bounded ordinary operator runs (Preparer and Planner only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs?limit=N` | List bounded operator-visible runs (Preparer and Planner only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked metadata-only Discussion publication refresh (Preparer only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
@@ -366,11 +367,14 @@ body, content type, status code, and `Retry-After`; it does not interpret the
 reason, attempt count, receipt state, or processor-owned lifecycle.
 
 For Preparer and Planner, the run collection defaults to 20 entries and accepts
-`limit` from 1 through 100. It selects at most `limit + 1` ordinary Jira
-authoring runs before item aggregation, prioritizes `queued`, `running`,
+`limit` from 1 through 100. It selects at most `limit + 1` operator-visible
+runs before item aggregation, prioritizes `queued`, `running`,
 `finalizing`, and recoverable `error` runs, then orders terminal history newest
-first. Initial revalidation, maintenance, and legacy rows without the durable
-ordinary-run request marker are omitted. The response is:
+first. Ordinary runs require their durable request marker. Purpose-marked
+maintenance runs, including `grouping-maintenance` and
+`publication-refresh`, are also visible without that marker so clients can
+reconcile by `purpose` and `sourceRunId`. Initial revalidation and legacy
+unmarked authoring rows are omitted. The response is:
 
 ```jsonc
 {
@@ -390,6 +394,12 @@ Run status appends processor-owned state:
   `failed` status.
 - `state.nextAutomaticRecoveryAt` describes the next run-level recovery time
   when known.
+- `purpose` is an additive value such as `authoring`,
+  `initial-revalidation`, `grouping-maintenance`, or
+  `publication-refresh`.
+- `sourceRunId` is additive maintenance lineage. For a
+  `publication-refresh`, it identifies the completed run selected by the
+  operator; the refresh itself has a different `runId`.
 
 Items retain the legacy `error` field and append `currentError`,
 `supersessionReason`, and processor-computed `allowedActions`.
@@ -420,10 +430,97 @@ BallotNotes retains its existing conflict bodies with `error` and optional
 `detail`; clients must not require `conflictingRunIds` or `runId` from that
 processor.
 
-Outer-control clients do not replay start, retry, or supersede after transport
-loss because the processor may have committed the mutation. The Dev UI
-reports **outcome unknown** and reconciles through list/detail reads. Reads and
-snapshot downloads may use transient retry.
+#### Preparer Discussion publication refresh
+
+Use the bodyless proxied mutation:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/publication-refresh
+```
+
+`sourceRunId` must name a completed, non-database-only Preparer run with a
+ready snapshot. The selected run is lineage, not a request to rewrite its
+snapshot or replay its item membership. The Preparer creates a new
+snapshot-producing maintenance run over the current accepted receipt-backed
+corpus, reuses every accepted receipt, and returns `202 Accepted`:
+
+```jsonc
+{
+  "run": {
+    "runId": "<refreshRunId>",
+    "processorKind": "jira-fhir",
+    "status": "running",
+    "databaseOnly": false,
+    "purpose": "publication-refresh",
+    "sourceRunId": "<sourceRunId>",
+    "state": {
+      "isTerminal": false,
+      "isRecoverable": false
+    }
+  },
+  "items": [
+    {
+      "runId": "<refreshRunId>",
+      "businessKey": "FHIR-123",
+      "status": "complete",
+      "acceptedReceiptId": "<retainedReceiptId>",
+      "attemptCount": 0
+    }
+  ]
+}
+```
+
+The response `Location` is
+`/api/v1/processing-services/Preparer/authoring/runs/{refreshRunId}`.
+The Orchestrator preserves the processor body, status, `Location`, and
+`Retry-After`; it sends no request body and does not perform the repair itself.
+The direct Preparer route is
+`POST /processing/authoring/runs/{sourceRunId}/publication-refresh`, whose
+direct `Location` is
+`/processing/authoring/runs/{refreshRunId}`. The Orchestrator rewrites that
+location to the proxied status route above.
+
+Immediate rejection uses the typed fields `error`, optional `detail`,
+`conflictingRunIds`, and the legacy-compatible single `runId` when one related
+run is known:
+
+| Status | Stable `error` | Meaning |
+|--------|----------------|---------|
+| `400` | `invalid-source-run` | The coordinate is not a completed snapshot-producing Preparer run or its ready descriptor is invalid |
+| `404` | `source-run-not-found` | No source run exists at that coordinate |
+| `409` | `authoring-not-activated`, `cutover-in-progress`, or `revalidation-required` | Run-backed authoring is not ready for maintenance |
+| `409` | `mutation-fence-unavailable` | Another fenced mutation is active; related run coordinates are returned when known |
+| `409` | `run-not-active`, `source-revision-mismatch`, or `stage-fingerprint-mismatch` | Processor state no longer permits the requested maintenance start |
+
+After acceptance, poll the returned run through the ordinary status route.
+Finalization performs publication metadata reads/updates, existing grouping
+certification, and snapshot materialization; it launches no authoring or
+grouping worker. Transient source and stage failures can appear as recoverable
+run `error` with `state.isTerminal:false`. A durable metadata apply receipt
+makes recovery after the metadata commit idempotent, and snapshot
+reconciliation preserves the same proof-bearing snapshot after interrupted
+promotion.
+
+A missing ticket, per-ticket revision mismatch, or mixed Jira content
+generation terminally changes the refresh run to `superseded`, releases its
+mutation fence, creates no snapshot, and records that ordinary re-authoring is
+required. The old pair/site remains unchanged and available, but cannot prove
+the changed source is current; there is no override or partial refresh. Run
+error text contains stable stage failure codes such as
+`source-unavailable`, `ticket-not-found`, `invalid-source-response`,
+`missing-source-provenance`, `unstable-source`,
+`missing-project-provenance`, `people-policy-not-current`,
+`source-revision-mismatch`, and `source-generation-conflict`.
+
+Outer-control clients do not replay start, retry, supersede, or
+publication-refresh after transport loss because the processor may have
+committed the mutation. For an unknown refresh outcome, issue one bounded
+read-only
+`GET /api/v1/processing-services/Preparer/authoring/runs?limit=20` and inspect
+runs created since submission whose `purpose` is `publication-refresh` and
+whose `sourceRunId` matches. Zero, one, or multiple candidates require
+operator review, and `truncated:true` must be surfaced. Reads and snapshot
+downloads may use transient retry.
 
 Snapshot bytes are streamed through the Orchestrator rather than buffered as a
 complete SQLite file. Range and conditional request headers are forwarded, and
@@ -752,14 +849,16 @@ Processing.Common surface:
 
 ### Preparer and Planner authoring runs
 
-Preparer and Planner expose the same direct control family under
-`/api/v1/processing/authoring/runs`:
+Preparer and Planner expose the common direct control family under
+`/api/v1/processing/authoring/runs`. Preparer additionally exposes the
+unversioned publication-refresh route shown below:
 
 | Method | Route | Purpose |
 |--------|-------|---------|
 | `POST` | `/api/v1/processing/authoring/runs` | Create a frozen run |
-| `GET` | `/api/v1/processing/authoring/runs?limit=N` | List bounded ordinary operator runs |
+| `GET` | `/api/v1/processing/authoring/runs?limit=N` | List bounded operator-visible runs |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked Preparer metadata-only publication refresh (Preparer only) |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |

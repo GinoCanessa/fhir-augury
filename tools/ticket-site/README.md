@@ -1,9 +1,11 @@
 # ticket-site
 
-`ticket-site` is the thin command-line adapter over
+`ticket-site` is the offline, network-independent command-line adapter over
 `FhirAugury.Publishing.Tickets`. It renders a static review site from one
-verified Preparer or Planner snapshot pair. It never opens a live processor
-database, contacts Jira, or owns processor completion state.
+supplied, verified Preparer or Planner snapshot pair. It never opens a live
+processor database, downloads a snapshot, starts a publication refresh,
+contacts the Preparer, Planner, Orchestrator, or Jira, or owns processor
+completion state.
 
 ## Usage
 
@@ -41,25 +43,34 @@ Exactly one snapshot option is required. The descriptor filename, checksum,
 processor kind, service/workflow binding, schema, counts, provenance, and
 monotonic sequence are validated before publication.
 
-For a provenance-complete schema-v2 Preparer snapshot, the discussion display
-title appends the latest successful upstream Jira refresh represented anywhere
-in the retained corpus, for example
-`Tickets for Discussion - Built September 08, 2026`. In schema v2, every
-retained ticket must resolve to exactly one accepted authoring coordinate.
-Zero or multiple matches are invalid snapshot structure and abort publication;
-they are not treated as unavailable freshness. Once that structure is valid,
-the publisher requires both run provenance and parent-ticket hydration to
-carry stable Jira freshness coordinates and uses the latest complete value.
-`Built` therefore describes Jira input freshness, not the authoring
-completion, snapshot creation, or site publication time.
+Preparer snapshot schema and Discussion renderer schema are independent
+contracts. The current safe public processor output is **Preparer snapshot
+schema v3**. The adapter validates that immutable input, then creates a
+publication-owned **Discussion renderer schema v2** browser database. A
+renderer version never changes the supplied snapshot in place.
 
-An old schema-v1 snapshot or a structurally valid v2 corpus with missing, null,
-unstable, or partially bound freshness coordinates deliberately produces the
-unsuffixed base title. An explicit `--title` remains that stable base; the
-discussion freshness suffix and then any existing filter suffix are added only
-to the display title. Applying remains unchanged: Planner snapshots stay on
-schema v1, receive no freshness suffix, and retain `Ticket Site` as the
-omitted-title CLI default.
+For a provenance-complete schema-v2 or schema-v3 Preparer snapshot, the
+discussion display title appends the latest successful upstream Jira refresh
+represented anywhere in the retained corpus, for example
+`Tickets for Discussion - Built September 08, 2026`. Every retained ticket in
+either schema must resolve to exactly one accepted authoring coordinate. Zero
+or multiple matches are invalid snapshot structure and abort publication; they
+are not treated as unavailable freshness. Once that structure is valid, the
+publisher requires both run provenance and parent-ticket hydration to carry
+stable Jira freshness coordinates and uses the latest complete value. `Built`
+therefore describes Jira input freshness, not authoring completion, snapshot
+creation, or site publication time.
+
+Legacy Preparer schema-v1 and schema-v2 snapshots remain readable
+compatibility inputs, but every generated publication reports degraded
+readiness and exposes no trusted people from them. Schema v2 can still qualify
+the `Built` date when its ordinary provenance is complete; schema v1 and
+otherwise incomplete provenance use the unsuffixed base title. The legacy
+pair is never upgraded or edited. An explicit `--title` remains the stable
+base; the freshness suffix and then any filter suffix are added only to the
+display title. Applying remains unchanged: Planner snapshots stay on schema
+v1, receive no freshness suffix, and retain `Ticket Site` as the omitted-title
+CLI default.
 
 When the two paths name files in a durable pair directory, the adapter verifies
 the directory's `verified-pair.json`. For legacy loose-file input, it captures
@@ -78,21 +89,29 @@ the staged directory publisher. A failed or older build cannot replace a valid
 newer site. The Dev UI invokes this same publisher in-process; it does not
 spawn `ticket-site`.
 
-Discussion publication accepts immutable Preparer snapshot schemas v1 and v2
-and projects either into a newly created **renderer schema v1** SQLite
-database. Old v1 input maps new people and freshness data to unavailable; the
-browser never queries processor persistence tables. Applying continues to
-consume Planner snapshot schema v1 through its existing path.
+Discussion publication accepts immutable Preparer snapshot schemas v1, v2,
+and v3 and projects each into a newly created **renderer schema v2** SQLite
+database. Its `ReadinessJson` and the manifest's structured
+`discussionReadiness` carry the same `isReady`, `evidence`, optional source
+revision and people-policy coordinates, and machine-readable reasons. Legacy
+input includes
+`legacy-snapshot-schema` and `missing-people-policy-proof`; missing ordinary
+provenance or an invalid refresh proof adds its corresponding reason. Reporter
+and Assignee are rendered with that unavailability reason when policy proof is
+missing. `Not provided` is reserved for a policy-qualified v3 value that is
+legitimately absent. The browser never queries processor persistence tables.
+Applying continues to consume Planner snapshot schema v1 through its existing
+path.
 
 The output contains the selected sub-site, an embedded SQLite database, the
 exact manifest name `site-manifest.json`, ownership metadata, and a chooser
 page when either sub-site exists. For Discussion, manifest `title` remains the
-stable base used by workflow validation, while optional `displayTitle`,
-`jiraSourceLastSuccessfulRefreshAt`, and `rendererSchemaVersion` fields carry
-the presentation contract. `tableCounts` describes the embedded renderer
-database, not the canonical Preparer snapshot. The remaining fields record
-source snapshot identity and digest, included counts, filters, renderer assets
-version, build identity, and output path.
+stable base used by workflow validation, while `displayTitle`,
+`jiraSourceLastSuccessfulRefreshAt`, `rendererSchemaVersion`, and
+`discussionReadiness` carry the presentation contract. `tableCounts`
+describes the embedded renderer database, not the canonical Preparer snapshot.
+The remaining fields record source snapshot identity and digest, included
+counts, filters, renderer assets version, build identity, and output path.
 
 The command-line default remains `cache\jira-ticket-site`. The Dev UI instead
 uses one output root per workflow/run:
@@ -108,6 +127,15 @@ local Dev UI origin. Their corresponding verified pairs stay under the private
 `cache\devui-authoring-snapshots\` root. A publication failure does not alter
 processor state or accepted receipts; retain the pair and rerun only
 publication.
+
+Publication repair happens before this adapter is invoked. Use the Dev UI,
+typed CLI, or HTTP API to create and complete a linked Preparer
+`publication-refresh` run, download that new run's verified pair, and then
+supply the pair to `ticket-site`. The adapter renders exactly that pair and
+publishes files locally; it does not call the Preparer, Orchestrator, or Jira
+to validate, refresh, or supplement its contents. Legacy loose-file arguments
+remain a compatibility entry point only because the adapter first captures
+them into an immutable, service-bound verified pair.
 
 ## Static hosting
 

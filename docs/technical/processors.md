@@ -68,6 +68,13 @@ A run freezes its item membership and expected source/evidence revisions.
 Typical run states are `queued`, `running`, `finalizing`, `completed`,
 `completed-database-only`, `error`, and `superseded`.
 
+Run status also carries additive lineage fields. `purpose` is one of
+`authoring`, `initial-revalidation`, `grouping-maintenance`, or
+`publication-refresh`; `sourceRunId` is populated when a maintenance run is
+linked to an earlier run. A publication repair therefore has its own `runId`,
+`purpose:"publication-refresh"`, and the selected snapshot-producing run in
+`sourceRunId`.
+
 The processor appends `state` to each operator run:
 
 | Run status | `state.isTerminal` | `state.isRecoverable` | Polling |
@@ -113,7 +120,7 @@ terminal non-authored outcomes. `retryableErrorItems` reports the former and
 
 ### Discovery, actions, and conflicts
 
-Preparer and Planner expose ordinary operator history directly at
+Preparer and Planner expose operator history directly at
 `GET /api/v1/processing/authoring/runs?limit=N` and through the Orchestrator at
 `GET /api/v1/processing-services/{Preparer|Planner}/authoring/runs?limit=N`.
 The default is 20 and the accepted range is 1 through 100. The store first
@@ -121,11 +128,14 @@ selects at most `limit + 1` candidate run IDs, then aggregates items only for
 that bounded set. Non-terminal `queued`, `running`, `finalizing`, and `error`
 runs sort before terminal runs; each group is newest first.
 
-Only ordinary Jira authoring runs with a durable normalized start request are
-listed. Initial revalidation, grouping maintenance, and legacy null-marker
-runs remain available by exact ID but are intentionally absent. The response
-contains `runs` and `truncated`; use exact detail as the escape hatch for a
-known older run.
+Ordinary Jira authoring runs with a durable normalized start request are
+listed, as are purpose-marked maintenance runs. In particular, a
+`publication-refresh` remains visible even though it has no ordinary
+`RequestJson`, allowing clients to reconcile an ambiguous POST by `purpose`
+and `sourceRunId`. Purpose-marked `grouping-maintenance` runs are visible too.
+Initial revalidation and legacy unmarked authoring rows remain available by
+exact ID but are intentionally absent. The response contains `runs` and
+`truncated`; use exact detail as the escape hatch for a known older run.
 
 Detail appends these item fields while preserving legacy `error`:
 
@@ -201,11 +211,24 @@ Tickets for Applying publication path accepts only that v1 contract.
 
 Discussion publication does not expose either processor schema directly to the
 browser. It validates the verified Preparer pair and projects a fresh
-**renderer schema v1** database containing only presentation metadata,
-tickets, people, normalized facets, summary sources, related context, and
-topic/group membership. Applying continues through its existing Planner-v1
-path. Both generated sites are static artifacts with no live source,
-Orchestrator, or processor dependency.
+**Discussion renderer schema v2** database containing only presentation
+metadata and readiness, the facet catalog, tickets, people availability,
+normalized facets, summary sources, related context, and topic/group
+membership. Preparer snapshot schema v3 and Discussion renderer schema v2 are
+separate versioned contracts; neither version implies the other. Applying
+continues through its existing Planner-v1 path. Both generated sites are
+static artifacts with no live source, Orchestrator, or processor dependency.
+
+Every new Discussion manifest carries `discussionReadiness`. Its `evidence`
+is `ordinary-snapshot` or `publication-refresh`, and its reason codes can
+include `legacy-snapshot-schema`, `missing-ordinary-provenance`,
+`invalid-refresh-proof`, and `missing-people-policy-proof`. Preparer v1 and v2
+pairs remain readable but always produce degraded readiness and never expose
+trusted people; they are not rewritten. A v2 pair can still provide a
+qualified `Built` date when its ordinary freshness provenance is complete.
+Only v3 can carry the current public-display-name policy proof. In renderer
+v2, a missing legacy proof displays its explicit unavailability reason, while
+`Not provided` means a policy-qualified v3 role is legitimately empty.
 
 For a v2 or v3 discussion corpus, every retained ticket must first resolve to
 exactly one accepted authoring coordinate. Zero or multiple matches are
@@ -239,10 +262,10 @@ processor kind `jira-fhir`.
 the public snapshot schema before rendering. The Dev UI invokes it in-process;
 `ticket-site` is a thin CLI adapter over the same publisher. Each sub-site
 writes the exact filename `site-manifest.json`. Discussion manifests retain a
-stable base `Title` and add optional display title, Jira refresh, and renderer
-schema fields; Dev UI reconstruction validates the stable title while
-preserving those additions. Neither publisher accepts a live processor
-database.
+stable base `title` and add display title, optional Jira refresh, renderer
+schema, and structured readiness fields; Dev UI reconstruction validates the
+stable title while preserving those additions. Neither publisher accepts a
+live processor database.
 
 ### Failure boundaries
 
@@ -259,10 +282,81 @@ database.
 - **Source revision change:** stale work is superseded or the initial
   revalidation run is atomically replaced. The gate is not cleared by stale
   work.
-- **Ambiguous outer mutation:** start, immediate retry, and supersede are
-  single-attempt. If transport is lost after the server may have received the
-  request, report **outcome unknown**, never replay, and reconcile only through
-  list/detail reads. A new start requires explicit operator review first.
+- **Ambiguous outer mutation:** start, immediate retry, supersede, and
+  publication refresh are single-attempt. If transport is lost after the
+  server may have received the request, report **outcome unknown**, never
+  replay, and reconcile only through list/detail reads. Repeating the mutation
+  requires explicit operator review first.
+
+### Metadata-only Discussion publication refresh
+
+A publication refresh repairs publication evidence without replaying authored
+work. Its source coordinate must be a completed, non-database-only Preparer run
+with a ready snapshot. The source run establishes operator lineage; it does
+not freeze the old snapshot's membership as the repair corpus. At admission,
+the Preparer enumerates the **current accepted receipt-backed corpus**, creates
+a new snapshot-producing run with `purpose:"publication-refresh"` and
+`sourceRunId` set to the selected run, reuses each accepted receipt on a
+completed maintenance item, acquires the mutation fence, and wakes the
+scheduler. The start request does not fetch Jira publication metadata; that
+work runs under the durable finalization stage. No authoring attempt or worker
+callback is created.
+
+Fenced finalization performs these steps:
+
+1. Re-read the current accepted corpus and require it to match the refresh
+   run's receipt, item, expected-revision, and input-fingerprint coordinates.
+2. In the `publication-metadata` stage, read each current ticket through the
+   Orchestrator. Every response must be stable, match that ticket's accepted
+   Jira revision, carry the current public-display-name policy, and share one
+   Jira content revision across the corpus.
+3. In one allowlisted transaction, update only parent/self publication
+   metadata and requester rows, write the refresh run's Jira input provenance,
+   and insert a durable metadata apply receipt. Historical contributing runs'
+   `authoring_run_input_provenance` rows remain frozen.
+4. In `grouping-certification` stages, verify current grouping output against
+   retained source grouping receipts. Receipts with an existing output
+   fingerprint are reused directly; legacy receipts are bound to the current
+   output by a separate durable certification. Grouping is never dispatched or
+   recomputed.
+5. Emit a new Preparer schema-v3 snapshot and descriptor. Its
+   `publicationProof` binds publication contract version, purpose, source run,
+   Jira freshness/content revision, people-policy version, corpus fingerprint,
+   grouping fingerprint, and capture time. The new snapshot has its own
+   `runId`, `snapshotId`, and monotonic sequence.
+
+Authored payloads, accepted receipts, historical input provenance, topic
+grouping, and source grouping receipts are not rewritten by this flow. After
+the refresh run reaches `completed`, download that run's verified pair and
+publish its Discussion site as a separate client-side operation. The prior
+pair and site remain usable until the replacement publication is independently
+accepted.
+
+Stage and snapshot recovery stay on the same refresh run. If the process stops
+after the metadata transaction but before stage completion, retry consumes the
+durable apply receipt and does not fetch or apply source metadata again. If
+snapshot promotion is interrupted, snapshot reconciliation resumes or reuses
+the same immutable proof and ready snapshot coordinate rather than creating a
+different repair generation. Other transient stage failures leave the run in
+recoverable `error` for scheduler-owned retry.
+
+A missing ticket, changed accepted Jira revision, or mixed Jira content
+generation is intentionally different: the refresh run becomes terminal
+`superseded`, records that ordinary re-authoring is required, releases the
+mutation fence, writes no metadata apply receipt for the rejected generation,
+and produces no snapshot. There is no override and no partial metadata apply;
+start an ordinary Preparer authoring run against the changed source instead.
+
+The refresh POST is another non-replayed outer mutation. On transport or
+response-body loss, Dev UI and CLI clients issue one bounded read-only run-list
+request and filter runs created since submission by
+`purpose:"publication-refresh"` and matching `sourceRunId`. Zero, one, or
+multiple candidates all require operator review; a truncated list is reported.
+The Dev UI retains an outcome-unknown review gate and disables another refresh
+until the operator acknowledges the candidates. The CLI returns
+`outcome:"outcome-unknown"`, `reconciliation`, `candidates`,
+`listTruncated`, `message`, and nullable `error`. Neither client repeats the
+POST.
 
 Processor completion and site-publication completion are separate axes.
 Accepted receipts and a terminal processor result remain valid when local site
@@ -315,9 +409,15 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status"
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"refresh-publication","runId":"<sourceRunId>"}'
 ```
 
-Publish:
+`refresh-publication` uses `runId` as the completed source-run coordinate. On
+success, follow the returned new run ID with `status`, then use that new ID for
+`snapshot` and site publication. Do not use a refresh run as the source of
+another refresh.
+
+Publish a downloaded verified pair:
 
 ```powershell
 dotnet run --project tools\ticket-site -- `
@@ -327,11 +427,22 @@ dotnet run --project tools\ticket-site -- `
   --force
 ```
 
-The checked-in Preparer configuration writes snapshot schema v3. The shared
-publisher remains able to publish older v1 and v2 pairs for their source and
-freshness data, but people are unavailable for both older versions. Only v3
-carries the explicit policy proof required for public people. The omitted
-`ticket-site` title for this input is `Tickets for Discussion`.
+The current Preparer host **requires** snapshot schema v3; v1 and v2 are
+publisher/test compatibility inputs, not selectable producer modes. Before an
+authoring rollout or publication refresh, inspect the Preparer's ignored
+`appsettings.local.json` and process/Aspire environment for an old
+`Processing:SnapshotSchemaVersion` override, including
+`FHIR_AUGURY_PREPARER_Processing__SnapshotSchemaVersion`. Remove or correct
+the stale ignored/environment value so the effective value is `3`; do not add
+or commit a local override as part of the repair. Start the service and confirm
+its log reports `Effective Preparer snapshot schema version is 3`. Startup
+rejects any other effective value.
+
+The shared publisher remains able to publish older v1 and v2 pairs for
+compatible source and freshness data, but their readiness is degraded and
+people are unavailable. Only v3 carries the explicit policy proof required for
+public people. The omitted `ticket-site` title for this input is
+`Tickets for Discussion`.
 
 Grouping is part of finalization. To intentionally refresh all current
 grouping partitions later, use the processor-owned maintenance endpoint:
