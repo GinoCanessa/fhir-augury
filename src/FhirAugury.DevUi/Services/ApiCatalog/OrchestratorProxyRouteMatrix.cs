@@ -261,7 +261,7 @@ public static class OrchestratorProxyRouteMatrix
                 "items.comments", "items.links",
                 "messages.get", "messages.list", "messages.by-user",
                 "streams.list", "streams.get", "streams.update", "streams.topics",
-                "threads.get", "threads.snapshot", "query.flexible",
+                "references.resolve", "threads.get", "threads.snapshot", "query.flexible",
             ],
             OrchestratorProxyRouteDisposition.TypedSourceProxy);
 

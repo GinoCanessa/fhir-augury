@@ -26,7 +26,8 @@ public static class ZulipCatalog
                 HttpMethod.Get, "api/v1/items/{id}",
                 [
                     new ApiParameter("id", ApiParameterKind.Path, Required: true,
-                        Placeholder: "<streamId>:<topic>"),
+                        Placeholder: "123456789", ValueType: ApiParameterValueType.Int,
+                        HelpText: "Public numeric Zulip message ID. Use Resolve reference for a legacy streamName:topic association."),
                     new ApiParameter("includeContent", ApiParameterKind.Query, Required: false,
                         ValueType: ApiParameterValueType.Bool),
                 ]),
@@ -104,6 +105,16 @@ public static class ZulipCatalog
                     new ApiParameter("offset", ApiParameterKind.Query, Required: false, DefaultValue: "0",
                         ValueType: ApiParameterValueType.Int),
                 ]),
+
+            // References
+            new ApiEndpointDescriptor("references.resolve", "Resolve reference", "References",
+                HttpMethod.Get, "api/v1/references/resolve",
+                [
+                    new ApiParameter("reference", ApiParameterKind.Query, Required: true,
+                        Placeholder: "123456789 or implementers:topic",
+                        HelpText: "Original accepted numeric message ID or streamName:topic; reserved characters belong in this query value."),
+                ],
+                Description: "Read-only resolution against indexed source context. Never fetches or ingests upstream data; unindexed or ambiguous references are explicit failures."),
 
             // Threads
             new ApiEndpointDescriptor("threads.get", "Get thread", "Threads",

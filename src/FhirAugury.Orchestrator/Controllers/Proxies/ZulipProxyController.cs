@@ -194,6 +194,15 @@ public class ZulipProxyController(SourceHttpClient httpClient) : ControllerBase
         [FromQuery] int? limit, [FromQuery] int? offset, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "streams/topics", Request, ct);
 
+    // ── References ───────────────────────────────────────────────────────
+
+    /// <summary>Resolve an accepted message ID or legacy thread reference from indexed context.</summary>
+    /// <param name="reference">Original numeric message ID or streamName:topic reference.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("references/resolve")]
+    public Task<IActionResult> ResolveReference([FromQuery] string? reference, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "references/resolve", Request, ct);
+
     // ── Threads ──────────────────────────────────────────────────────────
 
     /// <summary>Get the messages in a (stream, topic) thread.</summary>

@@ -270,6 +270,37 @@ public class OrchestratorCatalogParityTests
         }
     }
 
+    [Theory]
+    [InlineData("321987")]
+    [InlineData("fhir/infrastructure-wg:entry/request: réponse 100% & 漢字")]
+    [InlineData("fhir:core:literal %2F / 🩺")]
+    public void Zulip_reference_resolution_uses_encoded_gateway_query(string reference)
+    {
+        ApiEndpointDescriptor descriptor = FindSource("zulip", "references.resolve");
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?>
+        {
+            ["reference"] = reference,
+        });
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal($"{Base}/api/v1/zulip/references/resolve?reference={Uri.EscapeDataString(reference)}", request.Url);
+        Assert.Contains("unindexed or ambiguous", descriptor.Description);
+        Assert.False(descriptor.Destructive);
+    }
+
+    [Fact]
+    public void Zulip_item_guidance_uses_public_numeric_message_id_not_thread_shape()
+    {
+        ApiEndpointDescriptor descriptor = FindSource("zulip", "items.get");
+        ApiParameter id = Assert.Single(descriptor.Parameters, parameter => parameter.Name == "id");
+
+        Assert.Equal(ApiParameterValueType.Int, id.ValueType);
+        Assert.Equal("123456789", id.Placeholder);
+        Assert.Contains("numeric Zulip message ID", id.HelpText);
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?> { ["id"] = "321987" });
+        Assert.Equal($"{Base}/api/v1/zulip/items/321987", request.Url);
+    }
+
     private static ApiEndpointDescriptor Find(string id) =>
         OrchestratorCatalog.Build().Single(e => e.Id == id);
 

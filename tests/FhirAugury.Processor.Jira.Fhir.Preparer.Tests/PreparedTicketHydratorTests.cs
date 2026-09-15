@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
@@ -9,12 +10,15 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
 public sealed class PreparedTicketHydratorTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     [Fact]
     public async Task FetchPublicationMetadata_ReadsOnlyStableTrustedJiraFields()
     {
@@ -315,8 +319,8 @@ public sealed class PreparedTicketHydratorTests
                 publicDisplayNamePolicyVersion =
                     PublicDisplayNamePolicy.CurrentVersion,
             }));
-        handler.AddJsonResponse("/api/v1/zulip/threads",
-            """{"streamId":42,"stream":"fhir/infrastructure-wg","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("fhir/infrastructure-wg:ballot"), JsonOptions));
         handler.AddJsonResponse("/api/v1/github/items/HL7/fhir%2342",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -369,10 +373,11 @@ public sealed class PreparedTicketHydratorTests
         Assert.Single(read.ZulipRows);
         Assert.Equal(42, read.ZulipRows[0].StreamId);
         Assert.Equal(3, read.ZulipRows[0].MessageCount);
+        Assert.Equal("fhir/infrastructure-wg:ballot", read.ZulipRows[0].ZulipThreadId);
+        Assert.Equal("resolved", read.ZulipRows[0].HydrationStatus);
+        Assert.True(ZulipReferenceHydrationReason.Read(read.ZulipRows[0].HydrationReason).HasSourceBacking);
         Assert.Contains(handler.RequestedPathsAndQueries,
-            p => p.StartsWith("/api/v1/zulip/threads?", StringComparison.Ordinal)
-                && p.Contains("streamName=fhir%2Finfrastructure-wg", StringComparison.Ordinal)
-                && p.Contains("topic=ballot", StringComparison.Ordinal));
+            p => p == "/api/v1/zulip/references/resolve?reference=fhir%2Finfrastructure-wg%3Aballot");
         Assert.Single(read.GitHubRows);
         Assert.Equal("HL7", read.GitHubRows[0].Owner);
         Assert.Equal("fhir", read.GitHubRows[0].Repo);
@@ -755,6 +760,12 @@ public sealed class PreparedTicketHydratorTests
 
         FakeHandler handler = new();
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-103", JsonMetadata([], title: "p", url: "x"));
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(new ZulipReferenceResolutionResponse
+            {
+                Reference = "no-colon-here",
+                Outcome = ZulipReferenceLookupOutcome.UnsupportedReference,
+            }, JsonOptions), HttpStatusCode.BadRequest);
 
         PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
         await hydrator.HydrateAsync("FHIR-103", CancellationToken.None);
@@ -763,7 +774,145 @@ public sealed class PreparedTicketHydratorTests
         Assert.NotNull(read);
         Assert.Single(read!.ZulipRows);
         Assert.Equal("unresolved", read.ZulipRows[0].HydrationStatus);
-        Assert.Equal("malformed thread id", read.ZulipRows[0].HydrationReason);
+        Assert.Equal("no-colon-here", read.ZulipRows[0].ZulipThreadId);
+        Assert.Equal(ZulipReferenceLookupOutcome.UnsupportedReference, ReadZulipOutcome(read.ZulipRows[0]).LatestOutcome);
+        Assert.False(ZulipReferenceHydrationReason.Read(read.ZulipRows[0].HydrationReason).HasSourceBacking);
+        Assert.Contains("/api/v1/zulip/references/resolve?reference=no-colon-here", handler.RequestedPathsAndQueries);
+    }
+
+    [Theory]
+    [InlineData("321987", "fhir/infrastructure-wg", "ballot")]
+    [InlineData("000321987", "fhir/infrastructure-wg", "ballot")]
+    [InlineData(" 321987 ", "fhir/infrastructure-wg", "ballot")]
+    [InlineData("fhir:core:entry/request: réponse %2F 🩺", "fhir:core", "entry/request: réponse %2F 🩺")]
+    public async Task Hydrate_ZulipResolution_PreservesAcceptedReferenceAndAnalysis(string reference, string stream, string topic)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-120", zulipThread: reference);
+        AcceptedZulipState before = ReadAcceptedZulipState(database.Database, "FHIR-120");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-120", JsonMetadata([], "parent", "https://jira/browse/FHIR-120"));
+        ZulipReferenceResolutionResponse response = ZulipResolution(reference, stream, topic);
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve", JsonSerializer.Serialize(response, JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-120", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-120"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal(reference, row.ZulipThreadId);
+        Assert.Equal(stream, row.StreamName);
+        Assert.Equal(topic, row.Topic);
+        Assert.Equal(response.Url, row.Url);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Equal(42, row.StreamId);
+        Assert.Equal(response.FirstMessageAt, row.FirstMessageAt);
+        Assert.Equal(response.LastMessageAt, row.LastMessageAt);
+        Assert.Equal(ZulipReferenceBacking.TypedResolver, ReadZulipOutcome(row).Backing);
+        Assert.Equal(before, ReadAcceptedZulipState(database.Database, "FHIR-120"));
+        Assert.Equal(reference, before.Reference);
+        Assert.Equal(
+            $"/api/v1/zulip/references/resolve?reference={Uri.EscapeDataString(reference)}",
+            Assert.Single(handler.RequestedPathsAndQueries, path => path.StartsWith("/api/v1/zulip/", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("not-found", ZulipReferenceLookupOutcome.NotFound)]
+    [InlineData("auth", ZulipReferenceLookupOutcome.AuthenticationFailed)]
+    [InlineData("transient", ZulipReferenceLookupOutcome.TransientFailure)]
+    [InlineData("timeout", ZulipReferenceLookupOutcome.Timeout)]
+    [InlineData("invalid-json", ZulipReferenceLookupOutcome.InvalidJson)]
+    [InlineData("empty", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    [InlineData("mismatched", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    [InlineData("zero-messages", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    public async Task Hydrate_ZulipFailure_PersistsSpecificUnresolvedAssociation(string fixture, ZulipReferenceLookupOutcome expected)
+    {
+        const string path = "/api/v1/zulip/references/resolve";
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-121", zulipThread: "321987");
+        AcceptedZulipState before = ReadAcceptedZulipState(database.Database, "FHIR-121");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-121", JsonMetadata([], "parent", "https://jira/browse/FHIR-121"));
+        switch (fixture)
+        {
+            case "not-found": handler.AddStatusResponse(path, HttpStatusCode.NotFound); break;
+            case "auth": handler.AddStatusResponse(path, HttpStatusCode.Forbidden); break;
+            case "transient": handler.AddStatusResponse(path, HttpStatusCode.ServiceUnavailable, TimeSpan.Zero); break;
+            case "timeout": handler.AddExceptionResponse(path, new OperationCanceledException("scripted timeout")); break;
+            case "invalid-json": handler.AddJsonResponse(path, "{"); break;
+            case "empty": handler.AddJsonResponse(path, "{}"); break;
+            case "mismatched": handler.AddJsonResponse(path, JsonSerializer.Serialize(ZulipResolution("321988"), JsonOptions)); break;
+            case "zero-messages": handler.AddJsonResponse(path,
+                JsonSerializer.Serialize(ZulipResolution("321987") with { MessageCount = 0 }, JsonOptions)); break;
+            default: throw new InvalidOperationException(fixture);
+        }
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-121", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-121"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("321987", row.ZulipThreadId);
+        Assert.Equal("unresolved", row.HydrationStatus);
+        Assert.Equal(expected, ReadZulipOutcome(row).LatestOutcome);
+        Assert.Equal(ZulipReferenceBacking.None, ReadZulipOutcome(row).Backing);
+        Assert.Null(row.Url);
+        Assert.Equal("resolved", read.Parent!.HydrationStatus);
+        Assert.Equal(before, ReadAcceptedZulipState(database.Database, "FHIR-121"));
+    }
+
+    [Fact]
+    public async Task Hydrate_ZulipTransient503_RetriesThenPersistsResolution()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-122", zulipThread: "321987");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-122", JsonMetadata([], "parent", "https://jira/browse/FHIR-122"));
+        handler.AddStatusResponse("/api/v1/zulip/references/resolve", HttpStatusCode.ServiceUnavailable, TimeSpan.Zero);
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("321987"), JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-122", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-122"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Equal(ZulipReferenceLookupOutcome.Resolved, ReadZulipOutcome(row).LatestOutcome);
+        Assert.Equal(2, handler.RequestedPaths.Count(path => path == "/api/v1/zulip/references/resolve"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hydrate_ZulipBackingDoesNotDependOnOptionalDetails(bool invalidTimestamp)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-123", zulipThread: "321987");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-123", JsonMetadata([], "parent", "https://jira/browse/FHIR-123"));
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("321987") with
+            {
+                MessageCount = null,
+                FirstMessageAt = null,
+                LastMessageAt = null,
+                FirstMessageExcerpt = null,
+                Diagnostics = invalidTimestamp ? [ZulipReferenceDiagnosticCode.InvalidTimestamp] : [],
+            }, JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-123", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-123"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Null(row.MessageCount);
+        Assert.Null(row.FirstMessageAt);
+        Assert.Null(row.LastMessageAt);
+        Assert.EndsWith("/near/321987", row.Url);
+        Assert.True(ZulipReferenceHydrationReason.Read(row.HydrationReason).HasSourceBacking);
+        Assert.Equal(invalidTimestamp ? [ZulipReferenceDiagnosticCode.InvalidTimestamp] : [], ReadZulipOutcome(row).Diagnostics);
     }
 
     [Fact]
@@ -936,6 +1085,49 @@ public sealed class PreparedTicketHydratorTests
         return new PreparedTicketHydrator(client, database.Database, NullLogger<PreparedTicketHydrator>.Instance);
     }
 
+    private static ZulipReferenceResolutionResponse ZulipResolution(
+        string reference, string stream = "fhir/infrastructure-wg", string topic = "ballot")
+    {
+        bool isMessage = ZulipReferenceContract.TryGetMessageId(reference, out int messageId);
+        string url = $"https://chat.example.com/#narrow/stream/{Uri.EscapeDataString(stream)}/topic/{Uri.EscapeDataString(topic)}";
+        return new ZulipReferenceResolutionResponse
+        {
+            Reference = reference,
+            Outcome = ZulipReferenceLookupOutcome.Resolved,
+            Kind = isMessage ? ZulipReferenceKind.Message : ZulipReferenceKind.Thread,
+            MessageId = isMessage ? messageId : null,
+            StreamId = 42,
+            StreamName = stream,
+            Topic = topic,
+            Url = isMessage ? $"{url}/near/{messageId}" : url,
+            MessageCount = 3,
+            FirstMessageAt = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero),
+            LastMessageAt = new DateTimeOffset(2026, 5, 2, 0, 0, 0, TimeSpan.Zero),
+            FirstMessageExcerpt = "hello",
+        };
+    }
+
+    private static ZulipReferenceHydrationOutcome ReadZulipOutcome(PreparedZulipHydrationRow row) =>
+        Assert.IsType<ZulipReferenceHydrationOutcome>(ZulipReferenceHydrationReason.Read(row.HydrationReason).Metadata);
+
+    private static AcceptedZulipState ReadAcceptedZulipState(PreparerDatabase database, string ticketKey)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        using SqliteCommand command = new("""
+            SELECT r.Id, r.ZulipThreadId, r.Justification, t.RelatedZulipSummary, t.ProposalA
+            FROM prepared_ticket_related_zulip r JOIN prepared_tickets t ON t.Key = r.TicketKey
+            WHERE r.TicketKey = @key
+            """, connection);
+        command.Parameters.AddWithValue("@key", ticketKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        AcceptedZulipState state = new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+        Assert.False(reader.Read());
+        return state;
+    }
+
+    private sealed record AcceptedZulipState(string Id, string Reference, string Justification, string Summary, string Proposal);
+
     private static async Task SeedAgentRowsAsync(TestDatabase database, string ticketKey, string? jiraKey = null, string? zulipThread = null, string? githubItem = null, string? repo = null)
     {
         PreparedTicketPayload payload = new()
@@ -1037,8 +1229,8 @@ public sealed class PreparedTicketHydratorTests
         public List<string> RequestedPaths { get; } = [];
         public List<string> RequestedPathsAndQueries { get; } = [];
 
-        public void AddJsonResponse(string path, string json)
-            => AddResponse(path, new ScriptedResponse(HttpStatusCode.OK, json, null, null));
+        public void AddJsonResponse(string path, string json, HttpStatusCode statusCode = HttpStatusCode.OK)
+            => AddResponse(path, new ScriptedResponse(statusCode, json, null, null));
 
         public void AddStatusResponse(string path, HttpStatusCode statusCode, TimeSpan? retryAfter = null)
             => AddResponse(path, new ScriptedResponse(statusCode, null, null, retryAfter));

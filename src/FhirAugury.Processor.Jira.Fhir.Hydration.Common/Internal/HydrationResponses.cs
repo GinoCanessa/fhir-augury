@@ -33,18 +33,6 @@ internal sealed record OrchestratorItemPeopleResponse
     public int? PublicDisplayNamePolicyVersion { get; init; }
 }
 
-internal sealed record OrchestratorZulipThreadResponse
-{
-    public int? StreamId { get; init; }
-    public string? Stream { get; init; }
-    public string? Topic { get; init; }
-    public string? Url { get; init; }
-    public int? MessageCount { get; init; }
-    public DateTimeOffset? FirstMessageAt { get; init; }
-    public DateTimeOffset? LastMessageAt { get; init; }
-    public string? FirstMessageExcerpt { get; init; }
-}
-
 internal sealed record OrchestratorGitHubRepoResponse
 {
     public string? FullName { get; init; }

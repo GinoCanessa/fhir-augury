@@ -191,6 +191,24 @@ public class OrchestratorSourceProxyParityTests
         Assert.Contains("preview", route.GatewayDescriptor.Description!, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Zulip_reference_resolution_has_one_read_only_typed_proxy_disposition()
+    {
+        OrchestratorProxyRoute route = Assert.Single(OrchestratorProxyRouteMatrix.GetRoutes("zulip"),
+            route => route.SourceDescriptor.Id == "references.resolve");
+
+        Assert.Equal(HttpMethod.Get, route.SourceDescriptor.Method);
+        Assert.Equal(OrchestratorProxyRouteDisposition.TypedSourceProxy, route.Disposition);
+        Assert.Equal("api/v1/references/resolve", route.SourceDescriptor.PathTemplate);
+        Assert.Equal("api/v1/zulip/references/resolve", route.GatewayDescriptor.PathTemplate);
+        Assert.False(route.GatewayDescriptor.Destructive);
+        ApiParameter reference = Assert.Single(route.GatewayDescriptor.Parameters);
+        Assert.Equal("reference", reference.Name);
+        Assert.Equal(ApiParameterKind.Query, reference.Kind);
+        Assert.True(reference.Required);
+        Assert.Contains("Never fetches or ingests", route.GatewayDescriptor.Description);
+    }
+
     [Theory]
     [MemberData(nameof(Sources))]
     public void Source_tab_descriptors_build_on_the_orchestrator_origin(

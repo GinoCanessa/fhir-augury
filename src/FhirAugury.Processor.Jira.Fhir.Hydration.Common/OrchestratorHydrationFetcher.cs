@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FhirAugury.Common;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common.Internal;
@@ -12,9 +13,9 @@ namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 /// <summary>
 /// HTTP-only fetcher that hits the orchestrator's typed proxies and
 /// returns neutral <see cref="HydrationBatch"/> row records. Knows
-/// nothing about any concrete database type; never throws except for
-/// <see cref="OperationCanceledException"/> (per-entity failures are
-/// surfaced as <c>unresolved</c> rows).
+/// nothing about any concrete database type. Expected transport failures are
+/// surfaced as <c>unresolved</c> rows; caller cancellation and programming
+/// errors propagate to the coordinator.
 /// </summary>
 public class OrchestratorHydrationFetcher(
     HttpClient httpClient,
@@ -22,9 +23,6 @@ public class OrchestratorHydrationFetcher(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    // Unused today, but stored so that future per-fetch diagnostics
-    // (e.g. structured logging at fetch boundaries) can land without
-    // a ctor change for all callers.
     private readonly ILogger _logger = logger;
 
     public virtual async Task<PublicationMetadataFetchResult>
@@ -319,61 +317,128 @@ public class OrchestratorHydrationFetcher(
 
     public virtual async Task<HydrationZulipRow> FetchZulipAsync(string ticketKey, string threadId, DateTimeOffset hydratedAt, CancellationToken ct)
     {
-        string[] parts = threadId.Split(':', 2);
-        if (parts.Length != 2 || string.IsNullOrEmpty(parts[0]) || string.IsNullOrEmpty(parts[1]))
+        ct.ThrowIfCancellationRequested();
+        string path = $"api/v1/zulip/references/resolve?reference={Uri.EscapeDataString(threadId)}";
+        ZulipFetchResult result = await GetZulipReferenceAsync(path, threadId, ct);
+        ct.ThrowIfCancellationRequested();
+        if (result.Outcome != ZulipReferenceLookupOutcome.Resolved || result.Diagnostics.Count > 0)
         {
-            return new HydrationZulipRow(
-                TicketKey: ticketKey,
-                ZulipThreadId: threadId,
-                StreamId: null,
-                StreamName: null,
-                Topic: null,
-                MessageCount: null,
-                FirstMessageAt: null,
-                LastMessageAt: null,
-                FirstMessageExcerpt: null,
-                Url: null,
-                HydratedAt: hydratedAt,
-                HydrationStatus: "unresolved",
-                HydrationReason: "malformed thread id");
+            _logger.LogWarning(
+                "Zulip reference lookup outcome {Outcome}; HTTP {StatusCode}; diagnostics {DiagnosticCodes}",
+                result.Outcome, (int?)result.StatusCode, string.Join(",", result.Diagnostics));
         }
 
-        string streamName = parts[0];
-        string topic = parts[1];
-        string path = $"api/v1/zulip/threads?streamName={Uri.EscapeDataString(streamName)}&topic={Uri.EscapeDataString(topic)}";
-        FetchResult<OrchestratorZulipThreadResponse> result = await GetJsonAsync<OrchestratorZulipThreadResponse>(path, ct);
-        if (result.Reason is not null || result.Value is null)
-        {
-            return new HydrationZulipRow(
-                TicketKey: ticketKey,
-                ZulipThreadId: threadId,
-                StreamId: null,
-                StreamName: streamName,
-                Topic: topic,
-                MessageCount: null,
-                FirstMessageAt: null,
-                LastMessageAt: null,
-                FirstMessageExcerpt: null,
-                Url: null,
-                HydratedAt: hydratedAt,
-                HydrationStatus: "unresolved",
-                HydrationReason: result.Reason ?? "empty response");
-        }
-
+        ZulipReferenceResolutionResponse? value = result.Value;
         return new HydrationZulipRow(
             TicketKey: ticketKey,
             ZulipThreadId: threadId,
-            StreamId: result.Value.StreamId,
-            StreamName: result.Value.Stream ?? streamName,
-            Topic: result.Value.Topic ?? topic,
-            MessageCount: result.Value.MessageCount,
-            FirstMessageAt: result.Value.FirstMessageAt,
-            LastMessageAt: result.Value.LastMessageAt,
-            FirstMessageExcerpt: result.Value.FirstMessageExcerpt,
-            Url: result.Value.Url,
+            StreamId: value?.StreamId,
+            StreamName: value?.StreamName,
+            Topic: value?.Topic,
+            MessageCount: value?.MessageCount,
+            FirstMessageAt: value?.FirstMessageAt?.ToUniversalTime(),
+            LastMessageAt: value?.LastMessageAt?.ToUniversalTime(),
+            FirstMessageExcerpt: value?.FirstMessageExcerpt,
+            Url: value?.Url,
             HydratedAt: hydratedAt,
-            HydrationStatus: "resolved",
-            HydrationReason: null);
+            HydrationStatus: value is null ? "unresolved" : "resolved",
+            HydrationReason: ZulipReferenceHydrationReason.Serialize(new ZulipReferenceHydrationOutcome
+            {
+                Backing = value is null ? ZulipReferenceBacking.None : ZulipReferenceBacking.TypedResolver,
+                LatestOutcome = result.Outcome,
+                Diagnostics = result.Diagnostics,
+            }));
+    }
+
+    private async Task<ZulipFetchResult> GetZulipReferenceAsync(string path, string reference, CancellationToken ct)
+    {
+        try
+        {
+            using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
+                httpClient, path, ct, sourceName: "orchestrator");
+            if (!response.IsSuccessStatusCode)
+            {
+                // HTTP failures remain failures even if an intermediary supplies
+                // HTML, an empty body, or an unrelated JSON error document.
+                ZulipFetchResult failure = ZulipHttpFailure(response.StatusCode);
+                if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Conflict or HttpStatusCode.ServiceUnavailable
+                    && response.Content.Headers.ContentLength != 0)
+                {
+                    try
+                    {
+                        ZulipReferenceResolutionResponse? error =
+                            await response.Content.ReadFromJsonAsync<ZulipReferenceResolutionResponse>(JsonOptions, ct);
+                        if (IsSourceResolutionFailure(error, reference, response.StatusCode))
+                            return new(null, error!.Outcome!.Value, error.Diagnostics, response.StatusCode);
+                    }
+                    catch (JsonException)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+                }
+                return failure;
+            }
+
+            if (response.StatusCode == HttpStatusCode.NoContent || response.Content.Headers.ContentLength == 0)
+                return new(null, ZulipReferenceLookupOutcome.InvalidEnvelope, [], response.StatusCode);
+
+            ZulipReferenceResolutionResponse? value =
+                await response.Content.ReadFromJsonAsync<ZulipReferenceResolutionResponse>(JsonOptions, ct);
+            if (value is null || !ZulipReferenceContract.IsCoherentResolution(value, reference))
+                return new(null, ZulipReferenceLookupOutcome.InvalidEnvelope, [], response.StatusCode);
+
+            return new(value, ZulipReferenceLookupOutcome.Resolved, value.Diagnostics, response.StatusCode);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return new(null, ZulipReferenceLookupOutcome.Timeout, []);
+        }
+        catch (HttpRequestException ex)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ex.StatusCode is { } status
+                ? ZulipHttpFailure(status)
+                : new(null, ZulipReferenceLookupOutcome.SourceUnavailable, []);
+        }
+        catch (IOException)
+        {
+            ct.ThrowIfCancellationRequested();
+            return new(null, ZulipReferenceLookupOutcome.SourceUnavailable, []);
+        }
+        catch (JsonException)
+        {
+            ct.ThrowIfCancellationRequested();
+            return new(null, ZulipReferenceLookupOutcome.InvalidJson, []);
+        }
+    }
+
+    private static bool IsSourceResolutionFailure(
+        ZulipReferenceResolutionResponse? response, string reference, HttpStatusCode status) =>
+        response is not null
+        && string.Equals(response.Reference, reference, StringComparison.Ordinal)
+        && response.Outcome is ZulipReferenceLookupOutcome.InvalidReference
+            or ZulipReferenceLookupOutcome.UnsupportedReference
+            or ZulipReferenceLookupOutcome.AmbiguousReference
+            or ZulipReferenceLookupOutcome.InvalidSourceContext
+            or ZulipReferenceLookupOutcome.SourceUnavailable
+        && ZulipReferenceContract.HttpStatus(response.Outcome.Value) == (int)status
+        && response.Kind is null && response.Url is null && response.MessageId is null
+        && response.StreamId is null && response.StreamName is null && response.Topic is null
+        && response.MessageCount is null && response.FirstMessageExcerpt is null
+        && response.FirstMessageAt is null && response.LastMessageAt is null
+        && response.Diagnostics is not null && response.Diagnostics.All(Enum.IsDefined);
+
+    private static ZulipFetchResult ZulipHttpFailure(HttpStatusCode status)
+    {
+        ZulipReferenceLookupOutcome outcome = status switch
+        {
+            HttpStatusCode.NotFound or HttpStatusCode.Gone => ZulipReferenceLookupOutcome.NotFound,
+            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => ZulipReferenceLookupOutcome.AuthenticationFailed,
+            HttpStatusCode.BadRequest => ZulipReferenceLookupOutcome.InvalidReference,
+            _ when HttpRetryHelper.IsTransient(status) || (int)status >= 500 => ZulipReferenceLookupOutcome.TransientFailure,
+            _ => ZulipReferenceLookupOutcome.HttpFailure,
+        };
+        return new(null, outcome, [], status);
     }
 
     public virtual async Task<HydrationGitHubRow> FetchGitHubAsync(string ticketKey, string itemId, DateTimeOffset hydratedAt, CancellationToken ct)
@@ -639,4 +704,10 @@ public class OrchestratorHydrationFetcher(
         T? Value,
         string? Reason,
         HttpStatusCode? StatusCode = null) where T : class;
+
+    private readonly record struct ZulipFetchResult(
+        ZulipReferenceResolutionResponse? Value,
+        ZulipReferenceLookupOutcome Outcome,
+        IReadOnlyList<ZulipReferenceDiagnosticCode> Diagnostics,
+        HttpStatusCode? StatusCode = null);
 }

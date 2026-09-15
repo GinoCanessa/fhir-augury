@@ -6,6 +6,7 @@ using FhirAugury.Common.Database.Records;
 using FhirAugury.Common.Text;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Database;
+using FhirAugury.Source.Zulip.Queries;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 
@@ -14,7 +15,7 @@ namespace FhirAugury.Source.Zulip.Controllers;
 internal static class ZulipUrlHelper
 {
     internal static string BuildMessageUrl(ZulipServiceOptions options, string streamName, string topic, int messageId) =>
-        $"{options.BaseUrl}/#narrow/stream/{Uri.EscapeDataString(streamName)}/topic/{Uri.EscapeDataString(topic)}/near/{messageId}";
+        ZulipReferenceResolver.BuildMessageUrl(options, streamName, topic, messageId);
 
     internal static string BuildThreadMarkdownSnapshot(SqliteConnection connection, string streamName, string topic)
     {
@@ -48,14 +49,8 @@ internal static class ZulipUrlHelper
         return sb.ToString();
     }
 
-    internal static DateTimeOffset? ParseTimestamp(SqliteDataReader reader, int ordinal)
-    {
-        if (reader.IsDBNull(ordinal)) return null;
-        string str = reader.GetString(ordinal);
-        return DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset dt)
-            ? dt
-            : null;
-    }
+    internal static DateTimeOffset? ParseTimestamp(SqliteDataReader reader, int ordinal) =>
+        ZulipReferenceResolver.ParseTimestamp(reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal));
 
     internal static FindRelatedResponse GetCrossSourceRelated(string seedSource, string seedId, int? limit, ZulipDatabase db, ZulipServiceOptions options)
     {
