@@ -7,6 +7,7 @@ using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
@@ -1538,10 +1539,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             string observedRevision =
                 AuthoringSourceRevision.CanonicalizeTimestamp(
                     row.ObservedSourceRevision);
-            if (!string.Equals(
+            if (!JiraSourceRevision.AreEquivalent(
                     expectedRevision,
-                    observedRevision,
-                    StringComparison.Ordinal))
+                    observedRevision))
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.SourceRevisionMismatch,

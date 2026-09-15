@@ -253,10 +253,9 @@ public sealed class PreparedTicketPublicationRefreshService(
             string observedRevision =
                 AuthoringSourceRevision.CanonicalizeTimestamp(
                     result.ObservedSourceRevision);
-            if (!string.Equals(
+            if (!JiraSourceRevision.AreEquivalent(
                     expectedRevision,
-                    observedRevision,
-                    StringComparison.Ordinal))
+                    observedRevision))
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.SourceRevisionMismatch,

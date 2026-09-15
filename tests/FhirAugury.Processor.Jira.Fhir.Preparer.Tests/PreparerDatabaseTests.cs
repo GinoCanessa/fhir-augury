@@ -275,12 +275,76 @@ public sealed class PreparerDatabaseTests
     }
 
     [Fact]
-    public async Task PublicationRefresh_RejectsChangedOrMixedSourceWithoutMutation()
+    public async Task PublicationRefresh_AcceptsEquivalentTimestampOffsets()
     {
+        const string frozenRevision =
+            "2025-07-17T16:12:12.0000000-05:00";
         using TestDatabase database = CreateDatabase();
         PublicationRefreshContext context =
             await CreatePublicationRefreshContextAsync(
                 database,
+                _ => frozenRevision,
+                "FHIR-10028");
+        string protectedBefore = ReadProtectedPublicationState(database);
+        PreparedTicketPublicationRefreshCandidate frozenCandidate =
+            Assert.Single(context.Inventory.Candidates);
+        Assert.Equal(
+            frozenRevision,
+            frozenCandidate.ExpectedSourceRevision);
+
+        PreparedTicketPublicationRefreshReceiptRecord receipt =
+            await database.Database.ApplyPublicationMetadataAsync(
+                context.RefreshRunId,
+                context.Lease,
+                context.InputFingerprint,
+                context.Inventory,
+                [
+                    PublicationMetadata(
+                        "FHIR-10028",
+                        "2025-07-17T21:12:12.0000000+00:00",
+                        10028,
+                        new DateTimeOffset(
+                            2026,
+                            9,
+                            14,
+                            12,
+                            0,
+                            0,
+                            TimeSpan.Zero)),
+                ]);
+
+        Assert.Equal(
+            context.Inventory.CorpusFingerprint,
+            receipt.CorpusFingerprint);
+        Assert.Equal(10028, receipt.SourceContentRevision);
+        Assert.Equal(protectedBefore, ReadProtectedPublicationState(database));
+        PreparedTicketPublicationRefreshInventory current =
+            await database.Database.GetPublicationRefreshInventoryAsync();
+        Assert.Equal(
+            context.Inventory.CorpusFingerprint,
+            current.CorpusFingerprint);
+        Assert.Equal(
+            frozenRevision,
+            Assert.Single(current.Candidates).ExpectedSourceRevision);
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_refresh_receipts"));
+    }
+
+    [Fact]
+    public async Task PublicationRefresh_RejectsChangedOrMixedSourceWithoutMutation()
+    {
+        const string frozenRevision =
+            "2025-07-17T16:12:12.0000000-05:00";
+        const string equivalentObservedRevision =
+            "2025-07-17T21:12:12.0000000+00:00";
+        using TestDatabase database = CreateDatabase();
+        PublicationRefreshContext context =
+            await CreatePublicationRefreshContextAsync(
+                database,
+                _ => frozenRevision,
                 "FHIR-702",
                 "FHIR-703");
         string protectedBefore = ReadProtectedPublicationState(database);
@@ -298,12 +362,12 @@ public sealed class PreparerDatabaseTests
                     [
                         PublicationMetadata(
                             "FHIR-702",
-                            "changed-revision",
+                            "2025-07-17T21:12:13.0000000+00:00",
                             702,
                             refreshAt),
                         PublicationMetadata(
                             "FHIR-703",
-                            "revision-FHIR-703",
+                            equivalentObservedRevision,
                             702,
                             refreshAt),
                     ]));
@@ -323,12 +387,12 @@ public sealed class PreparerDatabaseTests
                     [
                         PublicationMetadata(
                             "FHIR-702",
-                            "revision-FHIR-702",
+                            equivalentObservedRevision,
                             702,
                             refreshAt),
                         PublicationMetadata(
                             "FHIR-703",
-                            "revision-FHIR-703",
+                            equivalentObservedRevision,
                             703,
                             refreshAt),
                     ]));
@@ -1820,9 +1884,19 @@ public sealed class PreparerDatabaseTests
         Assert.Null(provenance.ContentRevision);
     }
 
+    private static Task<PublicationRefreshContext>
+        CreatePublicationRefreshContextAsync(
+            TestDatabase database,
+            params string[] ticketKeys)
+        => CreatePublicationRefreshContextAsync(
+            database,
+            key => $"revision-{key}",
+            ticketKeys);
+
     private static async Task<PublicationRefreshContext>
         CreatePublicationRefreshContextAsync(
             TestDatabase database,
+            Func<string, string> sourceRevisionFactory,
             params string[] ticketKeys)
     {
         AuthoringRunStore store = new(database.Database);
@@ -1841,7 +1915,7 @@ public sealed class PreparerDatabaseTests
                 new AuthoringRunItemDefinition(
                     key,
                     "fhir",
-                    $"revision-{key}")).ToArray());
+                    sourceRevisionFactory(key))).ToArray());
         Assert.True(await store.TryAcquireMutationFenceAsync(
             "jira-fhir",
             sourceRun.Id));

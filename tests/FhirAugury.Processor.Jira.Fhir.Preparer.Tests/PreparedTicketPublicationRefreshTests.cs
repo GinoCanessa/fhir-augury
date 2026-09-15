@@ -272,6 +272,110 @@ public sealed class PreparedTicketPublicationRefreshTests
     }
 
     [Fact]
+    public async Task EquivalentOffsetRefreshPreservesFrozenRevisionCoordinates()
+    {
+        const string ticketKey = "FHIR-10028";
+        const string frozenRevision =
+            "2025-07-17T16:12:12.0000000-05:00";
+        const string observedRevision =
+            "2025-07-17T21:12:12.0000000+00:00";
+        using Fixture fixture = new();
+        SourceResult source = await fixture.CreateSourceRunAtAsync(
+            new DateTimeOffset(
+                2025,
+                7,
+                17,
+                16,
+                12,
+                12,
+                TimeSpan.FromHours(-5)),
+            ticketKey);
+        Assert.Equal(
+            frozenRevision,
+            source.ExpectedRevisions[ticketKey]);
+
+        (
+            string ReceiptId,
+            string ItemExpectedRevision,
+            string ReceiptExpectedRevision,
+            string ReceiptObservedRevision) frozenCoordinates;
+        using (SqliteConnection connection =
+               fixture.Database.OpenConnection())
+        {
+            frozenCoordinates = ReadAcceptedRevisionCoordinates(
+                connection,
+                source.Run.Id,
+                ticketKey);
+        }
+        Assert.Equal(
+            (
+                source.ReceiptIds[ticketKey],
+                frozenRevision,
+                frozenRevision,
+                frozenRevision),
+            frozenCoordinates);
+
+        MetadataFetcher fetcher =
+            MetadataFetcher.For(source.ExpectedRevisions);
+        fetcher.ObservedRevisions[ticketKey] = observedRevision;
+        PreparedTicketPublicationRefreshService service =
+            fixture.CreateRefreshService(fetcher);
+        PreparedTicketPublicationRefreshResult started =
+            await service.StartAsync(source.Run.Id);
+
+        AuthoringSnapshotDescriptor descriptor =
+            Assert.IsType<AuthoringSnapshotDescriptor>(
+                await fixture.CreatePostProcessor(service)
+                    .FinalizeRunAsync(started.Run.RunId));
+
+        Assert.Equal(1, fetcher.CallCount);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            descriptor.SchemaVersion);
+        Assert.NotNull(descriptor.PublicationProof);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Completed,
+            (await fixture.Store.GetRunAsync(started.Run.RunId))!.Status);
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(
+            1,
+            fixture.CountLive(
+                "prepared_ticket_publication_refresh_receipts"));
+
+        using (SqliteConnection connection =
+               fixture.Database.OpenConnection())
+        {
+            Assert.Equal(
+                frozenCoordinates,
+                ReadAcceptedRevisionCoordinates(
+                    connection,
+                    source.Run.Id,
+                    ticketKey));
+            Assert.Equal(
+                frozenRevision,
+                ReadRunItemExpectedRevision(
+                    connection,
+                    started.Run.RunId,
+                    ticketKey));
+        }
+
+        using SqliteConnection snapshot = OpenReadOnly(
+            Path.Combine(fixture.SnapshotDirectory, descriptor.FileName));
+        Assert.Equal(
+            frozenCoordinates,
+            ReadAcceptedRevisionCoordinates(
+                snapshot,
+                source.Run.Id,
+                ticketKey));
+        Assert.Equal(
+            frozenRevision,
+            ReadRunItemExpectedRevision(
+                snapshot,
+                started.Run.RunId,
+                ticketKey));
+    }
+
+    [Fact]
     public async Task SnapshotRetainsNonContributingSourceRunLineage()
     {
         using Fixture fixture = new();
@@ -335,7 +439,8 @@ public sealed class PreparedTicketPublicationRefreshTests
         SourceResult source = await fixture.CreateSourceRunAsync("FHIR-710");
         MetadataFetcher fetcher =
             MetadataFetcher.For(source.ExpectedRevisions);
-        fetcher.ObservedRevisions["FHIR-710"] = "changed";
+        fetcher.ObservedRevisions["FHIR-710"] =
+            "2026-09-01T00:00:01.0000000+00:00";
         PreparedTicketPublicationRefreshService service =
             fixture.CreateRefreshService(fetcher);
         PreparedTicketPublicationRefreshResult started =
@@ -598,6 +703,63 @@ public sealed class PreparedTicketPublicationRefreshTests
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = sql;
         return Convert.ToString(command.ExecuteScalar())!;
+    }
+
+    private static (
+        string ReceiptId,
+        string ItemExpectedRevision,
+        string ReceiptExpectedRevision,
+        string ReceiptObservedRevision) ReadAcceptedRevisionCoordinates(
+            SqliteConnection connection,
+            string runId,
+            string ticketKey)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT receipt.Id, item.ExpectedSourceRevision,
+                   receipt.ExpectedSourceRevision,
+                   receipt.ObservedSourceRevision
+            FROM authoring_run_items item
+            INNER JOIN authoring_result_receipts receipt
+                ON receipt.Id = item.AcceptedReceiptId
+            WHERE item.RunId = @runId
+              AND item.BusinessKey = @ticketKey COLLATE NOCASE
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        (
+            string ReceiptId,
+            string ItemExpectedRevision,
+            string ReceiptExpectedRevision,
+            string ReceiptObservedRevision) result =
+            (
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3));
+        Assert.False(reader.Read());
+        return result;
+    }
+
+    private static string ReadRunItemExpectedRevision(
+        SqliteConnection connection,
+        string runId,
+        string ticketKey)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ExpectedSourceRevision
+            FROM authoring_run_items
+            WHERE RunId = @runId
+              AND BusinessKey = @ticketKey COLLATE NOCASE
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        return Assert.IsType<string>(command.ExecuteScalar());
     }
 
     private sealed record SourceResult(

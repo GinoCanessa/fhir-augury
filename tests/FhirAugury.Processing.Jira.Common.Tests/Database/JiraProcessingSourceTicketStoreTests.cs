@@ -65,6 +65,43 @@ public class JiraProcessingSourceTicketStoreTests
                 timestamped.Specification));
     }
 
+    [Theory]
+    [InlineData(
+        "2025-07-17T16:12:12-05:00",
+        "2025-07-17T21:12:12+00:00",
+        true)]
+    [InlineData(
+        "2025-07-17T16:12:12.1234567-05:00",
+        "2025-07-17T21:12:12.1234567Z",
+        true)]
+    [InlineData(
+        "2025-07-17T16:12:12-05:00",
+        "2025-07-17T21:12:13+00:00",
+        false)]
+    [InlineData(
+        "5a78e63020f4973af8a2441e608d011161e7de642d353ba2e4078046dea575e0",
+        "5a78e63020f4973af8a2441e608d011161e7de642d353ba2e4078046dea575e0",
+        true)]
+    [InlineData(
+        "5a78e63020f4973af8a2441e608d011161e7de642d353ba2e4078046dea575e0",
+        "6b89f74131f5a84bf9b3552f719e122272f8f753e464cb3f518156817b686f1a",
+        false)]
+    [InlineData("malformed-revision", "malformed-revision", true)]
+    [InlineData("malformed-revision", "MALFORMED-REVISION", false)]
+    [InlineData(
+        "07/17/2025 16:12:12 -05:00",
+        "07/17/2025 21:12:12 +00:00",
+        false)]
+    public void SourceRevision_EquivalenceComparesOnlyIsoTimestampsByInstant(
+        string expected,
+        string observed,
+        bool equivalent)
+    {
+        Assert.Equal(
+            equivalent,
+            JiraSourceRevision.AreEquivalent(expected, observed));
+    }
+
     [Fact]
     public async Task Upsert_InsertsNewSourceTicket()
     {

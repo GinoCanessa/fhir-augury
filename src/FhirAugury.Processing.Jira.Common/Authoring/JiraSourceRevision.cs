@@ -1,5 +1,6 @@
 using System.Globalization;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 
 namespace FhirAugury.Processing.Jira.Common.Authoring;
@@ -63,4 +64,41 @@ public static class JiraSourceRevision
             workGroup,
             type,
             specification);
+
+    public static bool AreEquivalent(
+        string expected,
+        string observed)
+    {
+        if (string.Equals(
+                expected,
+                observed,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return TryParseIsoTimestamp(expected, out DateTimeOffset expectedAt) &&
+            TryParseIsoTimestamp(observed, out DateTimeOffset observedAt) &&
+            expectedAt.UtcDateTime == observedAt.UtcDateTime;
+    }
+
+    private static bool TryParseIsoTimestamp(
+        string? revision,
+        out DateTimeOffset timestamp)
+    {
+        timestamp = default;
+        if (string.IsNullOrWhiteSpace(revision))
+        {
+            return false;
+        }
+
+        string canonicalRevision =
+            AuthoringSourceRevision.CanonicalizeTimestamp(revision);
+        return DateTimeOffset.TryParseExact(
+            canonicalRevision,
+            "O",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out timestamp);
+    }
 }
