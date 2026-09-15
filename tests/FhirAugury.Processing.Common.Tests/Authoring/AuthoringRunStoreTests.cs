@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
@@ -519,6 +520,7 @@ public sealed class AuthoringRunStoreTests
             AuthoringRunPurposeValues.GroupingMaintenance,
             maintenance.Purpose);
         Assert.Null(maintenance.SourceRunId);
+        Assert.Null(maintenance.RequestJson);
         Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
         Assert.Equal(receipt.Receipt.ReceiptId, item.AcceptedReceiptId);
         Assert.Equal(
@@ -555,6 +557,7 @@ public sealed class AuthoringRunStoreTests
             refresh.Purpose);
         Assert.Equal(source.Run.Id, refresh.SourceRunId);
         Assert.False(refresh.DatabaseOnly);
+        Assert.Null(refresh.RequestJson);
         Assert.Equal(AuthoringStatusValues.Items.Complete, refreshItem.Status);
         Assert.Equal(source.Receipt.ReceiptId, refreshItem.AcceptedReceiptId);
         Assert.StartsWith(
@@ -578,6 +581,289 @@ public sealed class AuthoringRunStoreTests
             AuthoringRunPurposeValues.PublicationRefresh,
             status.Run.Purpose);
         Assert.Equal(source.Run.Id, status.Run.SourceRunId);
+        Assert.Null(status.Run.CorpusComparison);
+    }
+
+    [Fact]
+    public async Task MaintenanceSelectionPersistsRequestItemsAndFenceBeforeStageRegistration()
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+        const string privateInput = """{ "additionalTicketKeys": [], "privateAuthoredValue": "  do not project\nthis  " }""";
+        AuthoringRunCorpusComparison comparison = new(source.Descriptor.SnapshotId, 1, 1, 0);
+        AuthoringMaintenanceRunRequest request = new(1, "publication-enrichment", 1, comparison, privateInput);
+        string json = request.Serialize();
+        bool factoryCalled = false;
+
+        AuthoringRunRecord run = await database.Store.CreateMaintenanceRunAsync(
+            "test",
+            async (connection, ct) =>
+            {
+                factoryCalled = true;
+                await using SqliteCommand command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT BusinessKey, ItemKind, ExpectedSourceRevision, AcceptedReceiptId
+                    FROM authoring_run_items WHERE Id = @itemId
+                    """;
+                command.Parameters.AddWithValue("@itemId", source.Item.Id);
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+                Assert.True(await reader.ReadAsync(ct));
+                return new AuthoringMaintenanceRunSelection(
+                    [new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3))],
+                    json);
+            },
+            AuthoringRunPurposeValues.PublicationRefresh,
+            databaseOnly: false,
+            sourceRunId: source.Run.Id);
+
+        Assert.True(factoryCalled);
+        Assert.Equal(json, run.RequestJson);
+        AuthoringRunStore restartedStore = new(database.OpenConnection);
+        AuthoringRunRecord durable = Assert.IsType<AuthoringRunRecord>(
+            await restartedStore.GetRunAsync(run.Id));
+        Assert.Equal(json, durable.RequestJson);
+        Assert.Equal(
+            privateInput,
+            Assert.IsType<AuthoringMaintenanceRunRequest>(
+                AuthoringMaintenanceRunRequest.Parse(durable.RequestJson)).RecipeInputJson);
+        Assert.Equal(run.Id, (await restartedStore.GetFencedRunAsync("test"))!.Id);
+        AuthoringRunItemRecord item = Assert.Single(await restartedStore.GetRunItemsAsync(run.Id));
+        Assert.Equal(source.Receipt.ReceiptId, item.AcceptedReceiptId);
+        Assert.Equal(source.Item.ExpectedSourceRevision, item.ExpectedSourceRevision);
+        Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
+        Assert.Equal(0, database.Scalar<int>(
+            "SELECT COUNT(*) FROM authoring_run_stages WHERE RunId = @runId", ("@runId", run.Id)));
+        Assert.Equal(0, database.Scalar<int>(
+            "SELECT COUNT(*) FROM authoring_run_attempts WHERE RunId = @runId", ("@runId", run.Id)));
+
+        AuthoringRunControlService control = new(restartedStore, database.RetryPolicy);
+        AuthoringRunControlStatus status = await control.GetStatusAsync("test", run.Id);
+        Assert.Equal(comparison, status.Run.CorpusComparison);
+        AuthoringRunStatus listed = Assert.Single(
+            (await control.ListAsync("test")).Runs, value => value.RunId == run.Id);
+        Assert.Equal(comparison, listed.CorpusComparison);
+        string responseJson = JsonSerializer.Serialize(
+            new AuthoringRunResponse(status.Run, status.Items), JsonSerializerOptions.Web);
+        Assert.Contains("\"corpusComparison\"", responseJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("privateAuthoredValue", responseJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("recipeInput", responseJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("publication-enrichment", responseJson, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MaintenanceSelectionFailureRollsBackFactoryWritesRequestItemsRunAndFence(bool failFactory)
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+        string json = new AuthoringMaintenanceRunRequest(
+            1, "publication-enrichment", 1,
+            new(source.Descriptor.SnapshotId, 1, 1, 0), "{}").Serialize();
+        async Task<AuthoringMaintenanceRunSelection> SelectAsync(SqliteConnection connection, CancellationToken ct)
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO authoring_run_input_provenance(RunId, Source, CapturedAt)
+                VALUES('factory-side-effect', 'jira', '2026-09-15T12:00:00.0000000+00:00')
+                """;
+            await command.ExecuteNonQueryAsync(ct);
+            if (failFactory)
+            {
+                throw new InvalidOperationException("Factory failed before returning selection.");
+            }
+            AuthoringMaintenanceRunItem item = new(
+                source.Item.BusinessKey, source.Item.ItemKind,
+                source.Item.ExpectedSourceRevision, source.Receipt.ReceiptId);
+            return new([item, item], json);
+        }
+
+        Task<AuthoringRunRecord> CreateAsync() => database.Store.CreateMaintenanceRunAsync(
+            "test", SelectAsync, AuthoringRunPurposeValues.PublicationRefresh,
+            databaseOnly: false, sourceRunId: source.Run.Id);
+        if (failFactory)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(CreateAsync);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<SqliteException>(CreateAsync);
+        }
+        Assert.Equal(1, database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(1, database.Scalar<int>("SELECT COUNT(*) FROM authoring_run_items"));
+        Assert.Equal(0, database.Scalar<int>(
+            "SELECT COUNT(*) FROM authoring_run_input_provenance WHERE RunId = 'factory-side-effect'"));
+        Assert.Equal(0, database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs WHERE RequestJson IS NOT NULL"));
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("{")]
+    [InlineData("""{"contractVersion":2,"recipeName":"publication-enrichment","recipeVersion":1,"corpusComparison":null,"recipeInputJson":"{}"}""")]
+    [InlineData("""{"contractVersion":1,"recipeName":"publication-enrichment","recipeVersion":1,"corpusComparison":null,"recipeInputJson":"null"}""")]
+    [InlineData("""{"contractVersion":1,"contractVersion":1,"recipeName":"publication-enrichment","recipeVersion":1,"corpusComparison":null,"recipeInputJson":"{}"}""")]
+    public async Task NonNullInvalidMaintenanceMetadataNeverSelectsLegacy(string json)
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+        Exception? error = await Record.ExceptionAsync(() =>
+            database.Store.CreateMaintenanceRunAsync(
+                "test",
+                (_, _) => Task.FromResult(new AuthoringMaintenanceRunSelection(
+                    [new(source.Item.BusinessKey, source.Item.ItemKind, source.Item.ExpectedSourceRevision, source.Receipt.ReceiptId)],
+                    json)),
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId: source.Run.Id));
+        Assert.NotNull(error);
+        Assert.True(error is JsonException or ArgumentException or NotSupportedException);
+        Assert.Throws(error.GetType(), () =>
+            AuthoringMaintenanceRunRequest.ReadCorpusComparison(json));
+        Assert.Equal(1, database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("{")]
+    [InlineData("""{"contractVersion":2,"recipeName":"private-recipe","recipeVersion":1,"corpusComparison":{"sourceSnapshotId":"source-snapshot","sourceExportedTicketCount":1,"currentAcceptedTicketCount":1,"additionalTicketCount":0},"recipeInputJson":"{\"privateAuthoredValue\":\"do not project\"}"}""")]
+    [InlineData("""{"contractVersion":1,"recipeName":"private-recipe","recipeVersion":1,"corpusComparison":{"sourceSnapshotId":"source-snapshot","sourceExportedTicketCount":1,"currentAcceptedTicketCount":2,"additionalTicketCount":0},"recipeInputJson":"{\"privateAuthoredValue\":\"do not project\"}"}""")]
+    [InlineData("""{"contractVersion":1,"recipeName":"private-recipe","recipeVersion":1,"corpusComparison":null,"recipeInputJson":"{\"privateAuthoredValue\":\"do not project\"}","privateAuthoredValue":"do not project"}""")]
+    public async Task MaintenanceStatusDistinguishesInvalidMetadataFromLegacyWithoutWriting(string? json)
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+        AuthoringRunRecord run = await database.Store.CreateMaintenanceRunAsync(
+            "test",
+            [new(source.Item.BusinessKey, source.Item.ItemKind, source.Item.ExpectedSourceRevision, source.Receipt.ReceiptId)],
+            AuthoringRunPurposeValues.PublicationRefresh,
+            databaseOnly: false,
+            sourceRunId: source.Run.Id);
+        AuthoringRunStore readOnlyStore = CreateReadOnlyRunStore(database);
+        AuthoringRunControlService control = new(readOnlyStore, database.RetryPolicy);
+        AuthoringRunControlStatus baseline = await control.GetStatusAsync("test", run.Id);
+
+        foreach (string? storedError in new string?[] { null, "Existing run failure." })
+        {
+            database.Execute(
+                "UPDATE authoring_runs SET RequestJson = @json, Error = @error WHERE Id = @runId",
+                ("@json", json), ("@error", storedError), ("@runId", run.Id));
+            AuthoringRunRecord stored = Assert.IsType<AuthoringRunRecord>(
+                await readOnlyStore.GetRunAsync(run.Id));
+
+            AuthoringRunControlStatus status = await control.GetStatusAsync("test", run.Id);
+            AuthoringRunListResponse list = await control.ListAsync("test");
+            AuthoringRunStatus listed = Assert.Single(list.Runs, value => value.RunId == run.Id);
+
+            const string metadataError =
+                "Maintenance request metadata is invalid or unsupported; corpus comparison is unavailable.";
+            string? expectedError = json is null
+                ? storedError
+                : storedError is null ? metadataError : $"{storedError} {metadataError}";
+            Assert.Equal(baseline.Run with { Error = expectedError }, status.Run);
+            Assert.Null(status.Run.CorpusComparison);
+            Assert.Equal(status.Run, listed);
+            Assert.Equal(baseline.Items, status.Items);
+            Assert.Equal(stored, await readOnlyStore.GetRunAsync(run.Id));
+
+            foreach (string responseJson in new[]
+            {
+                JsonSerializer.Serialize(
+                    new AuthoringRunResponse(status.Run, status.Items), JsonSerializerOptions.Web),
+                JsonSerializer.Serialize(list, JsonSerializerOptions.Web),
+            })
+            {
+                Assert.DoesNotContain("privateAuthoredValue", responseJson, StringComparison.Ordinal);
+                Assert.DoesNotContain("do not project", responseJson, StringComparison.Ordinal);
+                Assert.DoesNotContain("recipeInput", responseJson, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("private-recipe", responseJson, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("publication-enrichment", 99, null)]
+    [InlineData("publication-enrichment", 99, "Existing run failure.")]
+    [InlineData("unknown-recipe", 1, null)]
+    [InlineData("unknown-recipe", 1, "Existing run failure.")]
+    public async Task UnknownRecipeRemainsInspectableButCannotExecute(
+        string recipeName,
+        int recipeVersion,
+        string? storedError)
+    {
+        using AuthoringTestDatabase database = new();
+        ReadySourceRun source = await CreateReadySourceRunAsync(database);
+        AuthoringRunCorpusComparison comparison = new(source.Descriptor.SnapshotId, 1, 1, 0);
+        string json = new AuthoringMaintenanceRunRequest(
+            1, recipeName, recipeVersion, comparison,
+            """{"unknownPrivateVersion":42,"privateAuthoredValue":"do not project"}""").Serialize();
+        AuthoringRunRecord run = await database.Store.CreateMaintenanceRunAsync(
+            "test",
+            (_, _) => Task.FromResult(new AuthoringMaintenanceRunSelection(
+                [new(source.Item.BusinessKey, source.Item.ItemKind, source.Item.ExpectedSourceRevision, source.Receipt.ReceiptId)],
+                json)),
+            AuthoringRunPurposeValues.PublicationRefresh,
+            databaseOnly: false,
+            sourceRunId: source.Run.Id);
+        AuthoringMaintenanceRunRequest parsed = Assert.IsType<AuthoringMaintenanceRunRequest>(
+            AuthoringMaintenanceRunRequest.Parse(run.RequestJson));
+        Assert.Throws<NotSupportedException>(() => parsed.EnsureRecipe("publication-enrichment", 1));
+        Assert.Equal(comparison, AuthoringMaintenanceRunRequest.ReadCorpusComparison(json));
+        database.Execute(
+            "UPDATE authoring_runs SET Error = @error WHERE Id = @runId",
+            ("@error", storedError), ("@runId", run.Id));
+        AuthoringRunStore readOnlyStore = CreateReadOnlyRunStore(database);
+        AuthoringRunRecord stored = Assert.IsType<AuthoringRunRecord>(
+            await readOnlyStore.GetRunAsync(run.Id));
+        AuthoringRunControlService control = new(readOnlyStore, database.RetryPolicy);
+        AuthoringRunControlStatus status = await control.GetStatusAsync("test", run.Id);
+        AuthoringRunListResponse list = await control.ListAsync("test");
+        AuthoringRunStatus listed = Assert.Single(list.Runs, value => value.RunId == run.Id);
+
+        Assert.Equal(comparison, status.Run.CorpusComparison);
+        Assert.Equal(storedError, status.Run.Error);
+        Assert.Equal(run.Status, status.Run.Status);
+        Assert.Equal(status.Run, listed);
+        Assert.Equal(stored, await readOnlyStore.GetRunAsync(run.Id));
+        foreach (string responseJson in new[]
+        {
+            JsonSerializer.Serialize(
+                new AuthoringRunResponse(status.Run, status.Items), JsonSerializerOptions.Web),
+            JsonSerializer.Serialize(list, JsonSerializerOptions.Web),
+        })
+        {
+            Assert.DoesNotContain("unknownPrivateVersion", responseJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("privateAuthoredValue", responseJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("do not project", responseJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("recipeInput", responseJson, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(recipeName, responseJson, StringComparison.Ordinal);
+        }
+        Assert.Null(AuthoringMaintenanceRunRequest.Parse(null));
+        Assert.Null(AuthoringMaintenanceRunRequest.ReadCorpusComparison(null));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 1)]
+    [InlineData(0, -1, 0)]
+    [InlineData(1, 0, -1)]
+    [InlineData(1, 3, 1)]
+    [InlineData(int.MaxValue, 0, 1)]
+    public void CorpusComparisonRejectsNegativeInconsistentAndOverflowingCounts(int source, int current, int additional)
+    {
+        AuthoringRunCorpusComparison comparison = new("snapshot", source, current, additional);
+        Assert.ThrowsAny<ArgumentException>(() => comparison.Validate());
+        AuthoringMaintenanceRunRequest request = new(1, "publication-enrichment", 1, comparison, "{}");
+        Assert.ThrowsAny<ArgumentException>(() => request.Serialize());
+        Assert.ThrowsAny<ArgumentException>(() => AuthoringMaintenanceRunRequest.ReadCorpusComparison(
+            JsonSerializer.Serialize(request, JsonSerializerOptions.Web)));
     }
 
     [Fact]
@@ -1470,6 +1756,19 @@ public sealed class AuthoringRunStoreTests
                 await database.Store.GetRunInputProvenanceAsync(first.Id))
                 .ContentRevision);
     }
+
+    private static AuthoringRunStore CreateReadOnlyRunStore(AuthoringTestDatabase database)
+        => new(() =>
+        {
+            SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = database.DatabasePath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString());
+            connection.Open();
+            return connection;
+        }, retryPolicy: database.RetryPolicy);
 
     private static async Task<ReadySourceRun> CreateReadySourceRunAsync(
         AuthoringTestDatabase database,

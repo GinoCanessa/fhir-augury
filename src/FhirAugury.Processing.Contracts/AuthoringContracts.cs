@@ -51,6 +51,27 @@ public sealed record AuthoringRunStateInfo(
     bool IsRecoverable,
     DateTimeOffset? NextAutomaticRecoveryAt = null);
 
+public sealed record AuthoringRunCorpusComparison(
+    string SourceSnapshotId,
+    int SourceExportedTicketCount,
+    int CurrentAcceptedTicketCount,
+    int AdditionalTicketCount)
+{
+    public void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(SourceSnapshotId);
+        ArgumentOutOfRangeException.ThrowIfNegative(SourceExportedTicketCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(CurrentAcceptedTicketCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(AdditionalTicketCount);
+        if ((long)SourceExportedTicketCount + AdditionalTicketCount !=
+            CurrentAcceptedTicketCount)
+        {
+            throw new ArgumentException(
+                "The source and additional ticket counts must equal the current accepted ticket count.");
+        }
+    }
+}
+
 public sealed record AuthoringRunStatus(
     string RunId,
     string ProcessorKind,
@@ -68,7 +89,8 @@ public sealed record AuthoringRunStatus(
     int SupersededItems = 0,
     AuthoringRunStateInfo? State = null,
     string? Purpose = null,
-    string? SourceRunId = null);
+    string? SourceRunId = null,
+    AuthoringRunCorpusComparison? CorpusComparison = null);
 
 public sealed record AuthoringRunItemStatus(
     string ItemId,

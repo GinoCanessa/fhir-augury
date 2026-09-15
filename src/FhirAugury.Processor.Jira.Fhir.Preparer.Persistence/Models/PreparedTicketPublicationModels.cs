@@ -1,4 +1,5 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processing.Contracts;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -53,3 +54,37 @@ public sealed record PreparedTicketGroupingCertificationEvidence(
     PreparedTicketGroupingReceiptCoordinate SourceReceipt,
     bool IsLegacyCertification,
     DateTimeOffset CertifiedAt);
+
+public sealed record PreparedTicketPublicationProtectedGrouping(
+    string PartitionKey,
+    IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+    IReadOnlyList<PreparedTicketPublicationProtectedRow> Rows,
+    PreparedTicketPublicationProtectedGroupingFingerprint Fingerprint);
+
+public sealed record PreparedTicketPublicationProtectedInventory(
+    int SchemaVersion,
+    IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+    IReadOnlyList<PreparedTicketPublicationProtectedRow> Rows,
+    IReadOnlyList<PreparedTicketPublicationProtectedGrouping> Grouping,
+    IReadOnlyList<PreparedTicketPublicationZulipReference> ZulipReferences)
+{
+    public string CorpusFingerprint =>
+        PreparedTicketPublicationContract.ComputeCorpusFingerprint(Corpus);
+
+    public string ProtectedContentFingerprint =>
+        PreparedTicketPublicationEnrichmentContract.ComputeProtectedContentFingerprint(Rows);
+
+    public string RetainedGroupingFingerprint =>
+        PreparedTicketPublicationEnrichmentContract.ComputeRetainedGroupingFingerprint(
+            Grouping.Select(partition => partition.Fingerprint));
+}
+
+public sealed record PreparedTicketPublicationPreservationComparison(
+    AuthoringRunCorpusComparison CorpusComparison,
+    IReadOnlyList<string> AdditionalTicketKeys,
+    IReadOnlyList<string> AdditionalGroupingPartitions,
+    PreparedTicketPublicationProtectedInventory CurrentInventory);
+
+public sealed record PreparedTicketPublicationBaseline(
+    PreparedTicketPublicationEnrichmentSource Source,
+    PreparedTicketPublicationProtectedInventory Inventory);

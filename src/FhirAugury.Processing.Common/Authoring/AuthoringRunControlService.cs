@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
@@ -114,7 +115,26 @@ public sealed class AuthoringRunControlService(
         int retryableErrorItems,
         int supersededItems,
         DateTimeOffset? nextAutomaticRecoveryAt)
-        => new(
+    {
+        AuthoringRunCorpusComparison? corpusComparison = null;
+        string? error = run.Error;
+        if (AuthoringRunPurposeValues.IsMaintenance(run.Purpose))
+        {
+            try
+            {
+                corpusComparison = AuthoringMaintenanceRunRequest.ReadCorpusComparison(
+                    run.RequestJson);
+            }
+            catch (Exception ex) when (
+                ex is JsonException or ArgumentException or NotSupportedException)
+            {
+                const string metadataError =
+                    "Maintenance request metadata is invalid or unsupported; corpus comparison is unavailable.";
+                error = error is null ? metadataError : $"{error} {metadataError}";
+            }
+        }
+
+        return new AuthoringRunStatus(
             run.Id,
             run.ProcessorKind,
             run.AuthoringEpoch,
@@ -126,12 +146,14 @@ public sealed class AuthoringRunControlService(
             run.CreatedAt,
             run.StartedAt,
             run.CompletedAt,
-            run.Error,
+            error,
             retryableErrorItems,
             supersededItems,
             ToState(run.Status, nextAutomaticRecoveryAt),
             run.Purpose,
-            run.SourceRunId);
+            run.SourceRunId,
+            corpusComparison);
+    }
 
     private AuthoringRunItemStatus ToStatus(
         AuthoringRunItemRecord item,

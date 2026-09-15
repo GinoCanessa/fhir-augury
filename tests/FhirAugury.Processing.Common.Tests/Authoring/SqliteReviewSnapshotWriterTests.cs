@@ -310,6 +310,205 @@ public sealed class SqliteReviewSnapshotWriterTests
                 result.Status == AuthoringStatusValues.Snapshots.Error);
     }
 
+    [Fact]
+    public async Task ValidatorDoesNotPromoteOrCleanUpInterruptedSnapshots()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, _) = await PrepareCompletedItemAsync(database);
+        string path = Path.Combine(Path.GetDirectoryName(database.DatabasePath)!, "promoted.db");
+        AuthoringReviewSnapshotRecord record = await database.Store.BeginSnapshotAsync(
+            "test", run.Id, 1, path + ".tmp", path, 1, 1, new Dictionary<string, long>());
+        CreateValidSqliteFile(path, record);
+        File.WriteAllText(record.TempPath, "private staging marker");
+        string before = await SqliteReviewSnapshotWriter.ComputeSha256Async(path);
+
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(record);
+
+        Assert.True(validation.IsValid, validation.Error);
+        Assert.Equal(before, validation.ChecksumSha256);
+        Assert.Equal(new FileInfo(path).Length, validation.SizeBytes);
+        Assert.Equal(before, await SqliteReviewSnapshotWriter.ComputeSha256Async(path));
+        AuthoringReviewSnapshotRecord unchanged = Assert.Single(await database.Store.GetSnapshotRecordsAsync());
+        Assert.Equal(AuthoringStatusValues.Snapshots.Creating, unchanged.Status);
+        Assert.Null(unchanged.ChecksumSha256);
+        Assert.True(File.Exists(record.TempPath));
+        Assert.False((await SqliteReviewSnapshotValidator.ValidateAsync(record, requireReady: true)).IsValid);
+        Assert.True(File.Exists(record.TempPath));
+    }
+
+    [Fact]
+    public async Task ValidatorAcceptsOnlyMatchingCopiesAndUsesReadOnlyQueryOnlyConnections()
+    {
+        using AuthoringTestDatabase database = new();
+        AuthoringReviewSnapshotRecord record = await CreateReadySnapshotAsync(database);
+        string copy = Path.Combine(Path.GetDirectoryName(database.DatabasePath)!, "private-copy.db");
+        File.Copy(record.Path, copy);
+        string before = await SqliteReviewSnapshotWriter.ComputeSha256Async(record.Path);
+
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(record, copy, requireReady: true);
+        Assert.True(validation.IsValid, validation.Error);
+        Assert.Equal(before, validation.ChecksumSha256);
+        await using (SqliteConnection connection = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(copy))
+        {
+            Assert.Equal(1, Scalar<int>(connection, "PRAGMA query_only"));
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM public_domain";
+            await Assert.ThrowsAsync<SqliteException>(() => command.ExecuteNonQueryAsync());
+            command.CommandText = "CREATE TEMP TABLE cannot_write(Value TEXT)";
+            await Assert.ThrowsAsync<SqliteException>(() => command.ExecuteNonQueryAsync());
+        }
+        Assert.Equal(before, await SqliteReviewSnapshotWriter.ComputeSha256Async(record.Path));
+        Assert.Equal(before, await SqliteReviewSnapshotWriter.ComputeSha256Async(copy));
+        Assert.False(File.Exists(copy + "-wal"));
+        Assert.False(File.Exists(copy + "-shm"));
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready,
+            Assert.Single(await database.Store.GetSnapshotRecordsAsync()).Status);
+    }
+
+    [Theory]
+    [InlineData("service")]
+    [InlineData("run")]
+    [InlineData("id")]
+    [InlineData("epoch")]
+    [InlineData("sequence")]
+    [InlineData("schema")]
+    [InlineData("items")]
+    [InlineData("receipts")]
+    [InlineData("size")]
+    [InlineData("digest")]
+    [InlineData("created")]
+    [InlineData("missing-digest")]
+    public async Task ValidatorRefusesMismatchedTrustedCoordinatesWithoutUpdatingStore(string coordinate)
+    {
+        using AuthoringTestDatabase database = new();
+        AuthoringReviewSnapshotRecord record = await CreateReadySnapshotAsync(database);
+        AuthoringReviewSnapshotRecord mismatched = coordinate switch
+        {
+            "service" => record with { ProcessorKind = "other" },
+            "run" => record with { RunId = "other" },
+            "id" => record with { Id = "other" },
+            "epoch" => record with { AuthoringEpoch = record.AuthoringEpoch + 1 },
+            "sequence" => record with { Sequence = record.Sequence + 1 },
+            "schema" => record with { SchemaVersion = record.SchemaVersion + 1 },
+            "items" => record with { ItemCount = record.ItemCount + 1 },
+            "receipts" => record with { ReceiptCount = record.ReceiptCount + 1 },
+            "size" => record with { SizeBytes = record.SizeBytes + 1 },
+            "digest" => record with { ChecksumSha256 = new string('0', 64) },
+            "created" => record with { CreatedAt = record.CreatedAt.AddTicks(1) },
+            "missing-digest" => record with { ChecksumSha256 = null },
+            _ => throw new InvalidOperationException("Unknown coordinate."),
+        };
+
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(mismatched, requireReady: true);
+
+        Assert.False(validation.IsValid);
+        Assert.NotNull(validation.Error);
+        Assert.Equal(record.ChecksumSha256, await SqliteReviewSnapshotWriter.ComputeSha256Async(record.Path));
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready,
+            Assert.Single(await database.Store.GetSnapshotRecordsAsync()).Status);
+    }
+
+    [Theory]
+    [InlineData("count")]
+    [InlineData("duplicate-provenance")]
+    [InlineData("malformed-counts")]
+    [InlineData("null-counts")]
+    [InlineData("negative-counts")]
+    [InlineData("duplicate-counts")]
+    [InlineData("corrupt-file")]
+    [InlineData("sidecar")]
+    [InlineData("missing-file")]
+    public async Task ValidatorRejectsCorruptionAndActualCountDriftWithoutReconciliation(string damage)
+    {
+        using AuthoringTestDatabase database = new();
+        AuthoringReviewSnapshotRecord record = await CreateReadySnapshotAsync(database);
+        string countsJson = damage switch
+        {
+            "count" => """{"public_domain":2}""",
+            "malformed-counts" => "{",
+            "null-counts" => "null",
+            "negative-counts" => """{"public_domain":-1}""",
+            "duplicate-counts" => """{"public_domain":1,"public_domain":1}""",
+            _ => record.TableCountsJson,
+        };
+        if (damage is "corrupt-file")
+        {
+            File.WriteAllText(record.Path, "not sqlite");
+        }
+        else if (damage is "sidecar")
+        {
+            File.WriteAllText(record.Path + "-wal", "untrusted sidecar");
+        }
+        else if (damage is "missing-file")
+        {
+            File.Delete(record.Path);
+        }
+        else
+        {
+            using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = record.Path,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString());
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = damage == "duplicate-provenance"
+                ? "INSERT INTO authoring_snapshot_provenance SELECT * FROM authoring_snapshot_provenance"
+                : "UPDATE authoring_snapshot_provenance SET TableCountsJson = @counts";
+            command.Parameters.AddWithValue("@counts", countsJson);
+            command.ExecuteNonQuery();
+        }
+        AuthoringReviewSnapshotRecord expected = damage == "missing-file" ? record : record with
+        {
+            TableCountsJson = countsJson,
+            ChecksumSha256 = await SqliteReviewSnapshotWriter.ComputeSha256Async(record.Path),
+            SizeBytes = new FileInfo(record.Path).Length,
+        };
+
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(expected, requireReady: true);
+
+        Assert.False(validation.IsValid);
+        Assert.NotNull(validation.Error);
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready,
+            Assert.Single(await database.Store.GetSnapshotRecordsAsync()).Status);
+        if (damage != "missing-file")
+        {
+            Assert.Equal(expected.ChecksumSha256, await SqliteReviewSnapshotWriter.ComputeSha256Async(record.Path));
+        }
+    }
+
+    [Fact]
+    public async Task ValidatorPreservesCancellation()
+    {
+        using AuthoringTestDatabase database = new();
+        AuthoringReviewSnapshotRecord record = await CreateReadySnapshotAsync(database);
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            SqliteReviewSnapshotValidator.ValidateAsync(record, ct: cancellation.Token));
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready,
+            Assert.Single(await database.Store.GetSnapshotRecordsAsync()).Status);
+    }
+
+    private static async Task<AuthoringReviewSnapshotRecord> CreateReadySnapshotAsync(
+        AuthoringTestDatabase database)
+    {
+        (AuthoringRunRecord run, _) = await PrepareCompletedItemAsync(database);
+        database.Execute("CREATE TABLE public_domain(Value TEXT); INSERT INTO public_domain VALUES ('original');");
+        string directory = Path.Combine(Path.GetDirectoryName(database.DatabasePath)!, "snapshots");
+        await new SqliteReviewSnapshotWriter(database.OpenConnection, database.Store).WriteAsync(
+            new SqliteReviewSnapshotRequest(
+                "test", run.Id, directory, 1, 1, 1,
+                new Dictionary<string, long> { ["public_domain"] = 1 },
+                AuthoringSnapshotSanitizer.CreateCore([new("public_domain")])));
+        return Assert.Single(await database.Store.GetSnapshotRecordsAsync());
+    }
+
     private static async Task<(AuthoringRunRecord Run, AuthoringRunItemRecord Item)> PrepareCompletedItemAsync(
         AuthoringTestDatabase database)
     {

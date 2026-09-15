@@ -16,6 +16,10 @@ public sealed record AuthoringMaintenanceRunItem(
     string ExpectedSourceRevision,
     string ReceiptId);
 
+public sealed record AuthoringMaintenanceRunSelection(
+    IReadOnlyList<AuthoringMaintenanceRunItem> Items,
+    string? RequestJson);
+
 public sealed record AuthoringErrorReconciliationResult(
     int RetriedItems,
     int ResumedReceiptItems,
@@ -555,8 +559,34 @@ public sealed class AuthoringRunStore
         DateTimeOffset? now = null,
         CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
         ArgumentNullException.ThrowIfNull(itemFactory);
+        return await CreateMaintenanceRunAsync(
+            processorKind,
+            async (connection, cancellationToken) =>
+                new AuthoringMaintenanceRunSelection(
+                    await itemFactory(connection, cancellationToken),
+                    RequestJson: null),
+            purpose,
+            databaseOnly,
+            sourceRunId,
+            now,
+            ct);
+    }
+
+    public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
+        string processorKind,
+        Func<
+            SqliteConnection,
+            CancellationToken,
+            Task<AuthoringMaintenanceRunSelection>> selectionFactory,
+        string purpose,
+        bool databaseOnly,
+        string? sourceRunId = null,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        ArgumentNullException.ThrowIfNull(selectionFactory);
         AuthoringRunPurposeValues.EnsureValid(purpose);
         if (!AuthoringRunPurposeValues.IsMaintenance(purpose))
         {
@@ -638,13 +668,17 @@ public sealed class AuthoringRunStore
                 purpose,
                 sourceRunId,
                 ct);
-            IReadOnlyList<AuthoringMaintenanceRunItem> items =
-                await itemFactory(connection, ct);
+            AuthoringMaintenanceRunSelection selection =
+                await selectionFactory(connection, ct);
+            ArgumentNullException.ThrowIfNull(selection);
+            IReadOnlyList<AuthoringMaintenanceRunItem> items = selection.Items;
+            ArgumentNullException.ThrowIfNull(items);
+            _ = AuthoringMaintenanceRunRequest.Parse(selection.RequestJson);
             if (items.Count == 0)
             {
                 throw new ArgumentException(
                     "A maintenance run requires at least one current receipt-backed item.",
-                    nameof(itemFactory));
+                    nameof(selectionFactory));
             }
             foreach (AuthoringMaintenanceRunItem item in items)
             {
@@ -660,11 +694,12 @@ public sealed class AuthoringRunStore
                 """
                 INSERT INTO authoring_runs(
                     Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
-                    SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt)
+                    SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt,
+                    RequestJson)
                 VALUES(
                     @id, @processorKind, @epoch, @status, @purpose,
                     @sourceRunId, @databaseOnly,
-                    @totalItems, @createdAt, @startedAt)
+                    @totalItems, @createdAt, @startedAt, @requestJson)
                 """,
                 ct,
                 ("@id", runId),
@@ -676,7 +711,8 @@ public sealed class AuthoringRunStore
                 ("@databaseOnly", databaseOnly),
                 ("@totalItems", items.Count),
                 ("@createdAt", Format(timestamp)),
-                ("@startedAt", Format(timestamp)));
+                ("@startedAt", Format(timestamp)),
+                ("@requestJson", selection.RequestJson));
             await ExecuteAsync(
                 connection,
                 """
