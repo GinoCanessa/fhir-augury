@@ -247,6 +247,29 @@ public class OrchestratorCatalogParityTests
         Assert.Equal("content-item", itemOperation!.OperationId);
     }
 
+    [Theory]
+    [InlineData("preview")]
+    [InlineData("apply")]
+    public void Jira_public_people_maintenance_uses_gateway_and_documents_deliberate_prerequisites(string operation)
+    {
+        ApiEndpointDescriptor descriptor = FindSource("jira", $"public-people.{operation}");
+        string body = operation == "preview"
+            ? """{"keys":["FHIR-1"],"evidenceMode":"cache-only"}"""
+            : """{"previewToken":"opaque-token","acknowledgeSharedUserImpact":true}""";
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?> { ["body"] = body });
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal($"{Base}/api/v1/jira/public-people/{operation}", request.Url);
+        Assert.Equal(operation == "apply", descriptor.Destructive);
+        Assert.Contains(operation == "preview" ? "authentication" : "fresh preview", descriptor.Description!);
+        Assert.Single(descriptor.Parameters);
+        Assert.Equal(ApiParameterKind.Body, descriptor.Parameters[0].Kind);
+        if (operation == "preview")
+        {
+            Assert.Contains("cache-only", descriptor.Parameters[0].DefaultValue);
+            Assert.Contains("never fetches", descriptor.Parameters[0].HelpText);
+        }
+    }
+
     private static ApiEndpointDescriptor Find(string id) =>
         OrchestratorCatalog.Build().Single(e => e.Id == id);
 

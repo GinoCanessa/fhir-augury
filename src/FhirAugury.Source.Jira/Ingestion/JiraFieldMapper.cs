@@ -9,6 +9,96 @@ namespace FhirAugury.Source.Jira.Ingestion;
 /// <summary>Maps Jira REST API JSON responses to database records.</summary>
 public static class JiraFieldMapper
 {
+    /// <summary>Raw maintenance evidence; deliberately separate from MapBase's defaults.</summary>
+    internal static IReadOnlyList<JiraPeopleObservation> ReadPublicPeopleObservations(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Invalid Jira evidence envelope.");
+        JsonElement[] issues;
+        if (root.TryGetProperty("issues", out JsonElement array))
+        {
+            if (array.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("Invalid Jira evidence envelope.");
+            issues = array.EnumerateArray().ToArray();
+        }
+        else
+        {
+            issues = [root];
+        }
+
+        List<JiraPeopleObservation> result = [];
+        foreach (JsonElement issue in issues)
+        {
+            if (issue.ValueKind != JsonValueKind.Object || HasDuplicateProperties(issue)
+                || !issue.TryGetProperty("fields", out JsonElement fields)
+                || fields.ValueKind != JsonValueKind.Object || HasDuplicateProperties(fields))
+                throw new InvalidDataException("Invalid Jira evidence envelope.");
+            result.Add(new(
+                ExplicitString(issue, "key"),
+                ExplicitString(fields, "updated"),
+                ReadPublicPerson(fields, "reporter"),
+                ReadPublicPerson(fields, "assignee"),
+                ReadPublicRequesters(fields)));
+        }
+        return result;
+    }
+
+    private static string? ExplicitString(JsonElement value, string property) =>
+        value.TryGetProperty(property, out JsonElement member) && member.ValueKind == JsonValueKind.String
+            ? member.GetString() : null;
+
+    private static bool HasDuplicateProperties(JsonElement value) =>
+        value.EnumerateObject().Select(property => property.Name).Distinct(StringComparer.Ordinal).Count()
+            != value.EnumerateObject().Count();
+
+    private static JiraPersonObservation ReadPublicPerson(JsonElement fields, string property) =>
+        fields.TryGetProperty(property, out JsonElement value)
+            ? ReadPublicPerson(value)
+            : new(JiraPeopleFieldState.Missing);
+
+    private static JiraPersonObservation ReadPublicPerson(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Null) return new(JiraPeopleFieldState.Absent);
+        if (value.ValueKind != JsonValueKind.Object || HasDuplicateProperties(value))
+            return new(JiraPeopleFieldState.Malformed);
+
+        List<string> identities = [];
+        foreach (string field in new[] { "name", "key", "accountId" })
+        {
+            if (!value.TryGetProperty(field, out JsonElement identity) || identity.ValueKind == JsonValueKind.Null)
+                continue;
+            if (identity.ValueKind != JsonValueKind.String)
+                return new(JiraPeopleFieldState.Malformed);
+            identities.Add(identity.GetString() ?? "");
+        }
+        if (identities.Distinct(StringComparer.Ordinal).Count() > 1)
+            return new(JiraPeopleFieldState.IdentityConflict);
+        if (value.TryGetProperty("displayName", out JsonElement name)
+            && name.ValueKind is not (JsonValueKind.Null or JsonValueKind.String))
+            return new(JiraPeopleFieldState.Malformed);
+        return JiraPublicPeopleObservationReader.Person(
+            identities.FirstOrDefault(), ExplicitString(value, "displayName"));
+    }
+
+    private static JiraRequesterObservation ReadPublicRequesters(JsonElement fields)
+    {
+        if (!fields.TryGetProperty("customfield_11000", out JsonElement value))
+            return new(JiraPeopleFieldState.Missing, []);
+        if (value.ValueKind == JsonValueKind.Null)
+            return new(JiraPeopleFieldState.Absent, []);
+        if (value.ValueKind != JsonValueKind.Array)
+            return new(JiraPeopleFieldState.Malformed, []);
+        if (value.GetArrayLength() == 0)
+            return new(JiraPeopleFieldState.Absent, []);
+        // Null inside a collection is malformed, not an absent requester set.
+        return new(JiraPeopleFieldState.Present, value.EnumerateArray()
+            .Select(user => user.ValueKind == JsonValueKind.Null
+                ? new JiraPersonObservation(JiraPeopleFieldState.Malformed)
+                : ReadPublicPerson(user)).ToArray());
+    }
+
     private static readonly Dictionary<string, string> CustomFieldMap = new()
     {
         ["customfield_11302"] = nameof(JiraIssueRecord.Specification),

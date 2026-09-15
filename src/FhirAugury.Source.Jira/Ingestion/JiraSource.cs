@@ -1,5 +1,6 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Caching;
+using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Cache;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
@@ -7,6 +8,9 @@ using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Polly.CircuitBreaker;
+using Polly.RateLimiting;
+using Polly.Timeout;
 using System.Text.Json;
 using System.Web;
 
@@ -93,12 +97,17 @@ public class JiraSource(
             logger.LogInformation("Fetching issues: startAt={StartAt}", startAt);
 
             string json;
+            bool trustedPeopleOrigin = false;
+            string requestSourceFingerprint = PublicPeopleSourceFingerprint;
+            bool authenticatedPeopleRequest = HasPeopleAuthentication();
             try
             {
                 HttpClient httpClient = httpClientFactory.CreateClient("jira");
                 HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                     httpClient, url, ct, options.RateLimiting.MaxRetries, "jira");
                 response.EnsureSuccessStatusCode();
+                trustedPeopleOrigin = authenticatedPeopleRequest
+                    && requestSourceFingerprint == PublicPeopleSourceFingerprint && IsExpectedPeopleOrigin(response, url);
                 json = await response.Content.ReadAsStringAsync(ct);
             }
             catch (Exception ex)
@@ -115,6 +124,9 @@ public class JiraSource(
             {
                 await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.ProjectJsonKey(project, cacheKey), cacheStream, ct);
             }
+            if (trustedPeopleOrigin)
+                await RecordPeopleCacheOriginAsync(JiraCacheLayout.ProjectJsonKey(project, cacheKey), json,
+                    JiraPeopleFormat.Json, requestSourceFingerprint, ct);
 
             using JsonDocument doc = JsonDocument.Parse(json);
             JsonElement root = doc.RootElement;
@@ -203,12 +215,17 @@ public class JiraSource(
                 project, winStart, winEnd, winDays);
 
             string xml;
+            bool trustedPeopleOrigin = false;
+            string requestSourceFingerprint = PublicPeopleSourceFingerprint;
+            bool authenticatedPeopleRequest = HasPeopleAuthentication();
             try
             {
                 HttpClient httpClient = httpClientFactory.CreateClient("jira-xml");
                 HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
                     httpClient, url, ct, options.RateLimiting.MaxRetries, "jira-xml");
                 response.EnsureSuccessStatusCode();
+                trustedPeopleOrigin = authenticatedPeopleRequest
+                    && requestSourceFingerprint == PublicPeopleSourceFingerprint && IsExpectedPeopleOrigin(response, url);
                 xml = await response.Content.ReadAsStringAsync(ct);
 
                 // Basic sanity check: the response should be XML
@@ -233,6 +250,9 @@ public class JiraSource(
             {
                 await cache.PutAsync(JiraCacheLayout.SourceName, JiraCacheLayout.ProjectXmlKey(project, cacheKey), cacheStream, ct);
             }
+            if (trustedPeopleOrigin)
+                await RecordPeopleCacheOriginAsync(JiraCacheLayout.ProjectXmlKey(project, cacheKey), xml,
+                    JiraPeopleFormat.Xml, requestSourceFingerprint, ct);
 
             // Parse and upsert
             try
@@ -320,10 +340,207 @@ public class JiraSource(
     }
 
     /// <summary>
-    /// Clears user ID mappings before a destructive database reset is
-    /// replayed. Cached IDs belong to the prior database generation.
+    /// Clears user ID mappings before a database reset is replayed or after
+    /// people maintenance commits. The caller holds the pipeline gate.
     /// </summary>
-    internal void ClearUserCache() => userMapper.ClearCache();
+    internal virtual void ClearUserCache() => userMapper.ClearCache();
+
+    internal string PublicPeopleSourceFingerprint => JiraPublicPeopleObservationReader.Digest(
+        $"jira:{JiraPublicPeopleObservationReader.CurrentVersion}:{options.BaseUrl.TrimEnd('/')}:{options.AuthMode.ToLowerInvariant()}");
+
+    /// <summary>
+    /// Read-only acquisition for maintenance. Never calls the cache loader,
+    /// ordinary download/upsert path, or upstream-refresh watermark writers.
+    /// </summary>
+    internal async Task<JiraPeopleEvidence> ReadPublicPeopleEvidenceAsync(
+        IReadOnlyList<string> keys, string mode, CancellationToken ct)
+    {
+        string fingerprint = PublicPeopleSourceFingerprint;
+        Dictionary<string, IReadOnlyList<JiraPeopleObservation>> observations = new(StringComparer.Ordinal);
+        Dictionary<string, string> failures = new(StringComparer.Ordinal);
+        if (mode == JiraPublicPeopleEvidenceModes.CacheOnly)
+        {
+            try
+            {
+                return JiraPublicPeopleObservationReader.Read(
+                    ReadPeopleCacheResponses(fingerprint, ct), keys, fingerprint, upstream: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning("Jira public people cache enumeration refused: {Code}; failure: {Failure}",
+                    JiraPublicPeopleCodes.UnknownCacheOrigin,
+                    ex is UnauthorizedAccessException ? "cache-access-denied" : "cache-io-failure");
+                return new(fingerprint, false, observations,
+                    keys.ToDictionary(key => key, _ => JiraPublicPeopleCodes.UnknownCacheOrigin, StringComparer.Ordinal));
+            }
+        }
+        if (mode != JiraPublicPeopleEvidenceModes.Upstream)
+            throw new ArgumentException("Invalid evidence mode.", nameof(mode));
+
+        if (!HasPeopleAuthentication()
+            || !Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out Uri? origin)
+            || origin.Scheme is not ("http" or "https")
+            || origin.UserInfo.Length != 0 || origin.Query.Length != 0 || origin.Fragment.Length != 0)
+        {
+            RefuseRemaining("unqualified-source");
+            return new(fingerprint, true, observations, failures);
+        }
+
+        bool json = IsApiTokenAuth();
+        string clientName = json ? "jira" : "jira-xml";
+        using HttpClient client = httpClientFactory.CreateClient(clientName);
+        foreach (string key in keys)
+        {
+            ct.ThrowIfCancellationRequested();
+            string url = json
+                ? $"{options.BaseUrl.TrimEnd('/')}/rest/api/2/issue/{Uri.EscapeDataString(key)}?fields=updated,reporter,assignee,customfield_11000"
+                : $"{options.BaseUrl.TrimEnd('/')}/sr/jira.issueviews:searchrequest-xml/temp/SearchRequest.xml?jqlQuery={HttpUtility.UrlEncode($"key = \"{key}\"")}&tempMax=1";
+            try
+            {
+                using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
+                    client, url, ct, options.RateLimiting.MaxRetries, clientName);
+                response.EnsureSuccessStatusCode();
+                if (!IsExpectedPeopleOrigin(response, url))
+                {
+                    RefuseRemaining("unexpected-upstream-origin");
+                    break;
+                }
+                string body = await response.Content.ReadAsStringAsync(ct);
+                JiraPeopleEvidence evidence = JiraPublicPeopleObservationReader.Read(
+                    [new(body, json ? JiraPeopleFormat.Json : JiraPeopleFormat.Xml, fingerprint)],
+                    [key], fingerprint, upstream: true);
+                foreach (KeyValuePair<string, IReadOnlyList<JiraPeopleObservation>> pair in evidence.Observations)
+                    observations.Add(pair.Key, pair.Value);
+                foreach (KeyValuePair<string, string> pair in evidence.Failures)
+                {
+                    failures[pair.Key] = pair.Value == JiraPublicPeopleCodes.MalformedValue
+                        ? JiraPublicPeopleCodes.UpstreamUnavailable : pair.Value;
+                    if (pair.Value == JiraPublicPeopleCodes.MalformedValue)
+                        logger.LogWarning("Jira public people acquisition refused: {Code}; failure: {Failure}",
+                            JiraPublicPeopleCodes.UpstreamUnavailable, "malformed-upstream-response");
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TimeoutException
+                or TimeoutRejectedException or BrokenCircuitException or RateLimiterRejectedException or IOException)
+            {
+                // Classify exhausted operational failures from HttpRetryHelper,
+                // not arbitrary exceptions or every type in the Polly namespace.
+                RefuseRemaining(ex switch
+                {
+                    HttpRequestException { StatusCode: { } status } when HttpRetryHelper.IsAuthFailure(status)
+                        => "upstream-authentication-failed",
+                    HttpRequestException => "upstream-http-failure",
+                    TaskCanceledException or TimeoutException or TimeoutRejectedException => "upstream-timeout",
+                    BrokenCircuitException => "upstream-circuit-open",
+                    RateLimiterRejectedException => "upstream-rate-limited",
+                    _ => "upstream-io-failure",
+                });
+                break;
+            }
+        }
+        return new(fingerprint, true, observations, failures);
+
+        void RefuseRemaining(string failure)
+        {
+            // Never log exception objects: even their inner exceptions can
+            // contain identities, URLs, cache paths or upstream bodies.
+            logger.LogWarning("Jira public people acquisition refused: {Code}; failure: {Failure}",
+                JiraPublicPeopleCodes.UpstreamUnavailable, failure);
+            foreach (string remaining in keys.Where(value => !observations.ContainsKey(value)))
+                failures[remaining] = JiraPublicPeopleCodes.UpstreamUnavailable;
+        }
+    }
+
+    private bool HasPeopleAuthentication() => options.AuthMode.ToLowerInvariant() switch
+    {
+        "cookie" => !string.IsNullOrWhiteSpace(options.Cookie),
+        "apitoken" or "basic" => !string.IsNullOrWhiteSpace(options.Email) && !string.IsNullOrWhiteSpace(options.ApiToken),
+        _ => false,
+    };
+
+    private static bool IsExpectedPeopleOrigin(HttpResponseMessage response, string url) =>
+        response.RequestMessage?.RequestUri is Uri actual
+        && Uri.TryCreate(url, UriKind.Absolute, out Uri? expected)
+        && actual.GetLeftPart(UriPartial.Path) == expected.GetLeftPart(UriPartial.Path);
+
+    private sealed record PeopleCacheOrigin(int Version, string SourceFingerprint, string KeyDigest, string BodyDigest, JiraPeopleFormat Format);
+
+    private static string PeopleOriginKey(string key) =>
+        $"{JiraCacheLayout.SupportPrefix}/public-people-origins/_meta_{JiraPublicPeopleObservationReader.Digest(key)}.json";
+
+    private async Task RecordPeopleCacheOriginAsync(
+        string key, string body, JiraPeopleFormat format, string sourceFingerprint, CancellationToken ct)
+    {
+        // This is an acquisition receipt, not a retroactive migration of cache
+        // filenames or user rows. Failure leaves that cache entry untrusted and
+        // must not change normal ingestion results.
+        try
+        {
+            PeopleCacheOrigin receipt = new(JiraPublicPeopleObservationReader.CurrentVersion,
+                sourceFingerprint, JiraPublicPeopleObservationReader.Digest(key),
+                JiraPublicPeopleObservationReader.Digest(body), format);
+            using MemoryStream stream = new(JsonSerializer.SerializeToUtf8Bytes(receipt));
+            await cache.PutAsync(JiraCacheLayout.SourceName, PeopleOriginKey(key), stream, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            logger.LogWarning("Jira cache acquisition receipt unavailable: {Code}; failure: {Failure}",
+                JiraPublicPeopleCodes.UnknownCacheOrigin, "cache-write-cancelled");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning("Jira cache acquisition receipt unavailable: {Code}; failure: {Failure}",
+                JiraPublicPeopleCodes.UnknownCacheOrigin,
+                ex is UnauthorizedAccessException ? "cache-access-denied" : "cache-io-failure");
+        }
+    }
+
+    private IEnumerable<JiraRawPeopleObservation> ReadPeopleCacheResponses(string fingerprint, CancellationToken ct)
+    {
+        foreach ((string format, string key) in MergeAndSortCacheEntries())
+        {
+            ct.ThrowIfCancellationRequested();
+            JiraRawPeopleObservation observation = new("", JiraPeopleFormat.Json, null);
+            try
+            {
+                if (cache.TryGet(JiraCacheLayout.SourceName, PeopleOriginKey(key), out Stream? receiptStream))
+                {
+                    PeopleCacheOrigin? receipt;
+                    using (receiptStream)
+                        receipt = JsonSerializer.Deserialize<PeopleCacheOrigin>(receiptStream);
+                    JiraPeopleFormat expected = format == JiraCacheLayout.XmlPrefix ? JiraPeopleFormat.Xml : JiraPeopleFormat.Json;
+                    if (receipt is not null && receipt.Version == JiraPublicPeopleObservationReader.CurrentVersion
+                        && receipt.SourceFingerprint == fingerprint && receipt.Format == expected
+                        && receipt.KeyDigest == JiraPublicPeopleObservationReader.Digest(key)
+                        && cache.TryGet(JiraCacheLayout.SourceName, key, out Stream? raw))
+                    {
+                        using (raw)
+                        using (StreamReader reader = new(raw))
+                        {
+                            string body = reader.ReadToEnd();
+                            if (receipt.BodyDigest == JiraPublicPeopleObservationReader.Digest(body))
+                                observation = new(body, expected, fingerprint);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+            {
+                logger.LogWarning("Jira public people cache read refused: {Code}; failure: {Failure}",
+                    JiraPublicPeopleCodes.UnknownCacheOrigin, ex switch
+                    {
+                        JsonException => "malformed-cache-receipt",
+                        UnauthorizedAccessException => "cache-access-denied",
+                        _ => "cache-io-failure",
+                    });
+            }
+            yield return observation;
+        }
+    }
 
     private static IEnumerable<JiraParsedItem> ParseCachedFile(
         Stream stream, string key, IReadOnlyDictionary<string, JiraProjectShape> shapeMap)

@@ -246,6 +246,7 @@ public static class OrchestratorProxyRouteMatrix
                 "items.comments", "items.links",
                 "projects.list", "projects.get", "projects.update",
                 "query.flexible", "query.labels", "query.statuses", "query.users", "query.inpersons",
+                "public-people.preview", "public-people.apply",
                 "specs.list", "specs.get", "specs.issue-numbers",
                 "work-groups.list", "work-groups.issues-by-code", "work-groups.issues",
                 "local-processing.tickets", "local-processing.random-ticket",

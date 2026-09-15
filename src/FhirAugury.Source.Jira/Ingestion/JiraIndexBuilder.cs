@@ -62,10 +62,19 @@ public class JiraIndexBuilder(ILogger<JiraIndexBuilder> logger)
         // Resolution exists only on jira_issues (FHIR-shape only).
         RebuildSimpleIndex(conn, "jira_index_resolutions", "Resolution", ["jira_issues"]);
         RebuildLabelsIndex(conn);
-        RebuildUsersIndex(conn);
-        RebuildInPersonsIndex(conn);
+        RebuildPeopleIndexes(conn);
 
         logger.LogInformation("Index tables rebuilt");
+    }
+
+    /// <summary>
+    /// Rebuilds only the two existing people lookups on the caller's connection
+    /// and transaction. Their historical name aggregation remains unchanged.
+    /// </summary>
+    public virtual void RebuildPeopleIndexes(SqliteConnection conn)
+    {
+        RebuildUsersIndex(conn);
+        RebuildInPersonsIndex(conn);
     }
 
     // ------------------------------------------------------------------

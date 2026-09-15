@@ -266,4 +266,29 @@ public class JiraIndexBuilderUserTests : IDisposable
         List<JiraIndexInPersonRecord> index = JiraIndexInPersonRecord.SelectList(conn);
         Assert.Equal(2, index.Count);
     }
+
+    [Fact]
+    public void RebuildPeopleIndexes_UsesCallerTransactionAndLeavesEveryOtherLookupUntouched()
+    {
+        using JiraPeopleTestFixture fixture = new();
+        JiraUserRecord user = fixture.AddUser("exact-account", "Old Name");
+        fixture.AddIssue("FHIR-1", reporter: user.Id, legacyReporter: user.Username);
+        fixture.AddIssue("PSS-2", "jira_pss", legacyReporter: user.Username);
+        fixture.AddRequester("PSS-2", user.Id);
+        fixture.RebuildLookups();
+        string before = fixture.Snapshot();
+        string protectedBefore = fixture.Snapshot(protectedOnly: true);
+        using SqliteConnection connection = fixture.Db.OpenConnection();
+        JiraPeopleTestFixture.Execute(connection, "BEGIN IMMEDIATE;");
+        JiraPeopleTestFixture.Execute(connection, "UPDATE jira_users SET DisplayName = 'New Name', HasExplicitDisplayName = 1");
+
+        fixture.Builder.RebuildPeopleIndexes(connection);
+
+        Assert.Equal("New Name", fixture.Scalar(connection, "SELECT Name FROM jira_index_users"));
+        Assert.Equal("2", fixture.Scalar(connection, "SELECT IssueCount FROM jira_index_users"));
+        Assert.Equal("New Name", fixture.Scalar(connection, "SELECT Name FROM jira_index_inpersons"));
+        Assert.Equal(protectedBefore, fixture.Snapshot(protectedOnly: true));
+        JiraPeopleTestFixture.Execute(connection, "ROLLBACK;");
+        Assert.Equal(before, fixture.Snapshot());
+    }
 }

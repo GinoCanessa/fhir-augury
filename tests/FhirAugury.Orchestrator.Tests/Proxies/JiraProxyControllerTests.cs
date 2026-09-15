@@ -194,6 +194,38 @@ public class JiraProxyControllerTests
         Assert.Equal(200, status);
     }
 
+    [Theory]
+    [InlineData("preview", 200)]
+    [InlineData("preview", 400)]
+    [InlineData("preview", 409)]
+    [InlineData("preview", 503)]
+    [InlineData("apply", 200)]
+    [InlineData("apply", 409)]
+    [InlineData("apply", 410)]
+    [InlineData("apply", 503)]
+    public async Task PublicPeople_ForwardsBodyAndPreservesSourceFailures(string operation, int upstreamStatus)
+    {
+        const string response = """{"code":"source-safe-result","contentRevision":14}""";
+        string request = operation == "preview"
+            ? """{"keys":["FHIR-1"],"evidenceMode":"cache-only"}"""
+            : """{"previewToken":"opaque-token","acknowledgeSharedUserImpact":true}""";
+        JiraProxyController controller = NewController(out ProxyTestSupport.CapturingHandler handler,
+            responseBody: response, statusCode: (HttpStatusCode)upstreamStatus);
+        ProxyTestSupport.SetRequest(controller, method: "POST", body: request);
+
+        IActionResult result = operation == "preview"
+            ? await controller.PreviewPublicPeople(default)
+            : await controller.ApplyPublicPeople(default);
+        (int status, string body, _, _) = await ProxyTestSupport.ExecuteAsync(controller, result);
+
+        Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
+        Assert.Equal($"/api/v1/public-people/{operation}", handler.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal(request, handler.Bodies[0]);
+        Assert.Equal(upstreamStatus, status);
+        Assert.Equal(response, body);
+    }
+
     [Fact]
     public async Task Ingest_WithJiraProject_ForwardsAsProjectQueryParam()
     {

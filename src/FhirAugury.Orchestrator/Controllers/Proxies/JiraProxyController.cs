@@ -175,6 +175,16 @@ public class JiraProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> InPersons(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "inpersons", Request, ct);
 
+    // ── Explicit public-people maintenance ────────────────────────────────
+
+    [HttpPost("public-people/preview")]
+    public Task<IActionResult> PreviewPublicPeople(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "public-people/preview", Request, ct);
+
+    [HttpPost("public-people/apply")]
+    public Task<IActionResult> ApplyPublicPeople(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "public-people/apply", Request, ct);
+
     // ── Specifications ───────────────────────────────────────────────────
 
     /// <summary>List the FHIR specifications tracked by Jira.</summary>

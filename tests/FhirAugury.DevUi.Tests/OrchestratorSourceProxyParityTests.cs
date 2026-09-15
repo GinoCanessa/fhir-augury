@@ -177,6 +177,21 @@ public class OrchestratorSourceProxyParityTests
     }
 
     [Theory]
+    [InlineData("preview")]
+    [InlineData("apply")]
+    public void Jira_public_people_maintenance_has_one_explicit_typed_proxy_disposition(string operation)
+    {
+        OrchestratorProxyRoute route = Assert.Single(OrchestratorProxyRouteMatrix.GetRoutes("jira"),
+            route => route.SourceDescriptor.Id == $"public-people.{operation}");
+        Assert.Equal(HttpMethod.Post, route.SourceDescriptor.Method);
+        Assert.Equal(OrchestratorProxyRouteDisposition.TypedSourceProxy, route.Disposition);
+        Assert.Equal($"api/v1/public-people/{operation}", route.SourceDescriptor.PathTemplate);
+        Assert.Equal($"api/v1/jira/public-people/{operation}", route.GatewayDescriptor.PathTemplate);
+        Assert.Equal(operation == "apply", route.GatewayDescriptor.Destructive);
+        Assert.Contains("preview", route.GatewayDescriptor.Description!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
     [MemberData(nameof(Sources))]
     public void Source_tab_descriptors_build_on_the_orchestrator_origin(
         string sourceName,

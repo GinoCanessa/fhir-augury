@@ -1,5 +1,6 @@
 using FhirAugury.Common.Database;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.Data.Sqlite;
@@ -236,6 +237,211 @@ public class JiraDatabase : SourceDatabase
                connection,
                Id: JiraSourceStateRecord.SingletonId)
            ?? throw new InvalidOperationException("The Jira source state row is missing.");
+
+    internal static readonly string[] PublicPeopleShapeTables =
+        ["jira_issues", "jira_pss", "jira_baldef", "jira_ballot"];
+
+    internal static JiraPeopleState ReadPublicPeopleState(SqliteConnection connection, CancellationToken ct)
+    {
+        JiraPeopleSourceBefore source;
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT ContentRevision, MutationInProgress, UpdatedAt FROM jira_source_state WHERE Id = @id";
+            command.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read()) throw new InvalidOperationException("The Jira source state row is missing.");
+            source = new(reader.GetInt64(0), reader.GetBoolean(1), reader.GetString(2));
+        }
+
+        List<JiraPeopleIssueBefore> issues = [];
+        foreach (string table in PublicPeopleShapeTables)
+        {
+            ct.ThrowIfCancellationRequested();
+            using SqliteCommand command = connection.CreateCommand();
+            string votes = table == "jira_issues" ? "VoteMover, VoteSeconder" : "NULL, NULL";
+            command.CommandText = $"""
+                SELECT Id, Key, UpdatedAt, ReporterUserId, AssigneeUserId, Reporter, Assignee, {votes}
+                FROM {table} ORDER BY Key COLLATE BINARY, Id
+                """;
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                issues.Add(new(table, reader.GetInt32(0), reader.GetString(1), reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt32(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8)));
+            }
+        }
+        List<JiraPeopleRequesterBefore> requesters = [];
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT Id, IssueKey, UserId FROM jira_issue_inpersons ORDER BY Id";
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                requesters.Add(new(reader.GetInt32(0), reader.GetString(1), reader.GetInt32(2)));
+            }
+        }
+        return new(source, issues, JiraUserRecord.SelectList(connection), requesters);
+    }
+
+    /// <summary>
+    /// The caller holds the pipeline gate. Revalidation, allowlisted people
+    /// writes, both lookups and the single generation increment share this
+    /// connection and writer transaction; no ingestion marker is ever cleared.
+    /// </summary>
+    internal JiraPublicPeopleApplyResponse ApplyPublicPeople(
+        JiraPeoplePlan preview, JiraIndexBuilder indexBuilder, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        using SqliteConnection connection = OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN IMMEDIATE;";
+        transaction.ExecuteNonQuery();
+        bool committed = false;
+        try
+        {
+            JiraPeopleState current = ReadPublicPeopleState(connection, ct);
+            string? refusal = current.Source.MutationInProgress ? JiraPublicPeopleCodes.SourceBusy
+                : current.Source.ContentRevision != preview.Source.ContentRevision ? JiraPublicPeopleCodes.StalePreview : null;
+            JiraPeoplePlan? verified = null;
+            if (refusal is null)
+            {
+                verified = JiraPeoplePlanner.Build(current, preview.Keys, preview.Evidence, ct);
+                refusal = verified.ImpactFingerprint != preview.ImpactFingerprint ? JiraPublicPeopleCodes.SharedImpactChanged
+                    : verified.Fingerprint != preview.Fingerprint ? JiraPublicPeopleCodes.StalePreview
+                    : verified.Response.Code != JiraPublicPeopleCodes.PreviewReady ? verified.Response.Code : null;
+            }
+            if (refusal is not null)
+                return Rollback(refusal);
+
+            JiraPeoplePlan plan = verified ?? throw new InvalidOperationException("People verification is required.");
+            Dictionary<string, int> userIds = current.Users.ToDictionary(user => user.Username, user => user.Id, StringComparer.Ordinal);
+            foreach (JiraPeopleUserChange change in plan.Users)
+            {
+                ct.ThrowIfCancellationRequested();
+                using SqliteCommand command = connection.CreateCommand();
+                command.Parameters.AddWithValue("@identity", change.Identity);
+                command.Parameters.AddWithValue("@name", change.DisplayName);
+                if (change.Before is JiraUserRecord before)
+                {
+                    command.CommandText = """
+                        UPDATE jira_users SET DisplayName = @name, HasExplicitDisplayName = 1
+                        WHERE Id = @id AND Username = @identity COLLATE BINARY
+                          AND DisplayName = @beforeName COLLATE BINARY
+                          AND HasAccountUsername = 1 AND HasExplicitDisplayName = @beforeExplicit
+                        """;
+                    command.Parameters.AddWithValue("@id", before.Id);
+                    command.Parameters.AddWithValue("@beforeName", before.DisplayName);
+                    command.Parameters.AddWithValue("@beforeExplicit", before.HasExplicitDisplayName);
+                }
+                else
+                {
+                    int id = JiraUserRecord.GetIndex();
+                    command.CommandText = """
+                        INSERT INTO jira_users (Id, Username, DisplayName, HasAccountUsername, HasExplicitDisplayName)
+                        SELECT @id, @identity, @name, 1, 1
+                        WHERE NOT EXISTS (SELECT 1 FROM jira_users WHERE Username = @identity COLLATE BINARY)
+                        """;
+                    command.Parameters.AddWithValue("@id", id);
+                    userIds.Add(change.Identity, id);
+                }
+                if (command.ExecuteNonQuery() != 1)
+                    return Rollback(JiraPublicPeopleCodes.WriteFailed);
+            }
+
+            foreach (JiraPeopleIssueChange change in plan.Issues)
+            {
+                ct.ThrowIfCancellationRequested();
+                JiraPeopleIssueBefore before = change.Before;
+                if (!PublicPeopleShapeTables.Contains(before.Table, StringComparer.Ordinal)
+                    || (change.ReporterIdentity is not null && before.ReporterUserId is not null)
+                    || (change.AssigneeIdentity is not null && before.AssigneeUserId is not null))
+                    throw new InvalidOperationException("Only missing people bindings may be populated.");
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = $"""
+                    UPDATE {before.Table} SET ReporterUserId = @reporter, AssigneeUserId = @assignee
+                    WHERE Id = @id AND Key = @key COLLATE BINARY AND UpdatedAt = @revision COLLATE BINARY
+                      AND ReporterUserId IS @beforeReporter AND AssigneeUserId IS @beforeAssignee
+                    """;
+                command.Parameters.AddWithValue("@reporter", (object?)(change.ReporterIdentity is null
+                    ? before.ReporterUserId : userIds[change.ReporterIdentity]) ?? DBNull.Value);
+                command.Parameters.AddWithValue("@assignee", (object?)(change.AssigneeIdentity is null
+                    ? before.AssigneeUserId : userIds[change.AssigneeIdentity]) ?? DBNull.Value);
+                command.Parameters.AddWithValue("@id", before.Id);
+                command.Parameters.AddWithValue("@key", before.Key);
+                command.Parameters.AddWithValue("@revision", before.UpdatedAt);
+                command.Parameters.AddWithValue("@beforeReporter", (object?)before.ReporterUserId ?? DBNull.Value);
+                command.Parameters.AddWithValue("@beforeAssignee", (object?)before.AssigneeUserId ?? DBNull.Value);
+                if (command.ExecuteNonQuery() != 1)
+                    return Rollback(JiraPublicPeopleCodes.WriteFailed);
+            }
+            foreach (JiraPeopleRequesterAddition addition in plan.Requesters)
+            {
+                ct.ThrowIfCancellationRequested();
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO jira_issue_inpersons (Id, IssueKey, UserId)
+                    SELECT @id, @key, @user
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM jira_issue_inpersons WHERE IssueKey = @key COLLATE BINARY AND UserId = @user)
+                    """;
+                command.Parameters.AddWithValue("@id", JiraIssueInPersonRecord.GetIndex());
+                command.Parameters.AddWithValue("@key", addition.Key);
+                command.Parameters.AddWithValue("@user", userIds[addition.Identity]);
+                if (command.ExecuteNonQuery() != 1)
+                    return Rollback(JiraPublicPeopleCodes.WriteFailed);
+            }
+
+            JiraPublicPeopleChanges changes = plan.Response.Changes;
+            if (changes.HasChanges)
+            {
+                indexBuilder.RebuildPeopleIndexes(connection);
+                ct.ThrowIfCancellationRequested();
+                using SqliteCommand update = connection.CreateCommand();
+                update.CommandText = """
+                    UPDATE jira_source_state
+                    SET ContentRevision = ContentRevision + 1, UpdatedAt = @updatedAt
+                    WHERE Id = @id AND ContentRevision = @revision
+                      AND MutationInProgress = 0 AND UpdatedAt = @beforeUpdatedAt COLLATE BINARY
+                    """;
+                update.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+                update.Parameters.AddWithValue("@revision", preview.Source.ContentRevision);
+                update.Parameters.AddWithValue("@beforeUpdatedAt", preview.Source.UpdatedAt);
+                update.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+                if (update.ExecuteNonQuery() != 1)
+                    return Rollback(JiraPublicPeopleCodes.WriteFailed);
+            }
+            ct.ThrowIfCancellationRequested();
+            transaction.CommandText = "COMMIT;";
+            transaction.ExecuteNonQuery();
+            committed = true;
+            // Do not observe request cancellation after the known commit.
+            return new(changes.HasChanges ? JiraPublicPeopleCodes.Applied : JiraPublicPeopleCodes.NoChange,
+                preview.Source.ContentRevision + (changes.HasChanges ? 1 : 0), changes);
+        }
+        catch
+        {
+            if (!committed)
+            {
+                transaction.CommandText = "ROLLBACK;";
+                transaction.ExecuteNonQuery();
+            }
+            throw;
+        }
+
+        JiraPublicPeopleApplyResponse Rollback(string code)
+        {
+            transaction.CommandText = "ROLLBACK;";
+            transaction.ExecuteNonQuery();
+            return new(code);
+        }
+    }
 
     /// <summary>
     /// Advances the source revision and marks the following writes unstable.

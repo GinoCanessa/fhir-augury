@@ -1,4 +1,5 @@
 using System.Xml;
+using System.Xml.Linq;
 using System.Xml.Serialization;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database.Records;
@@ -26,6 +27,82 @@ public record JiraInPersonRef(string? Username, string? DisplayName);
 /// </summary>
 public static class JiraXmlParser
 {
+    /// <summary>
+    /// Preserves missing/nil/empty/malformed fields before the ordinary XML
+    /// serializer and ingestion date/name defaults erase those distinctions.
+    /// </summary>
+    internal static IReadOnlyList<JiraPeopleObservation> ReadPublicPeopleObservations(string xml)
+    {
+        using StringReader text = new(xml);
+        using XmlReader reader = XmlReader.Create(text, new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+        });
+        XDocument document = XDocument.Load(reader);
+        XElement? channel = document.Root?.Name == "rss" ? document.Root.Element("channel") : null;
+        if (channel is null || document.Root!.Elements("channel").Count() != 1)
+            throw new InvalidDataException("Invalid Jira evidence envelope.");
+        return channel.Elements("item").Select(item => new JiraPeopleObservation(
+            ExplicitXmlText(item, "key"),
+            ExplicitXmlText(item, "updated"),
+            ReadPublicPerson(item, "reporter"),
+            ReadPublicPerson(item, "assignee"),
+            ReadPublicRequesters(item))).ToArray();
+    }
+
+    private static string? ExplicitXmlText(XElement parent, string name)
+    {
+        XElement[] values = parent.Elements(name).ToArray();
+        return values.Length == 1 && !values[0].HasElements && !IsNil(values[0])
+            ? values[0].Value : null;
+    }
+
+    private static bool IsNil(XElement value) =>
+        (string?)value.Attribute(XName.Get("nil", "http://www.w3.org/2001/XMLSchema-instance")) is "true" or "1";
+
+    private static JiraPersonObservation ReadPublicPerson(XElement item, string role)
+    {
+        XElement[] elements = item.Elements(role).ToArray();
+        if (elements.Length == 0) return new(JiraPeopleFieldState.Missing);
+        if (elements.Length != 1 || elements[0].HasElements)
+            return new(JiraPeopleFieldState.Malformed);
+        XElement value = elements[0];
+        string? identity = (string?)value.Attribute("username");
+        if (IsNil(value))
+            return string.IsNullOrEmpty(identity) && string.IsNullOrWhiteSpace(value.Value)
+                ? new(JiraPeopleFieldState.Absent) : new(JiraPeopleFieldState.Malformed);
+        if (identity == "-1" && role == "assignee")
+            return new(JiraPeopleFieldState.Absent);
+        if (string.IsNullOrEmpty(identity) && string.IsNullOrWhiteSpace(value.Value))
+            return new(JiraPeopleFieldState.Absent);
+        return JiraPublicPeopleObservationReader.Person(identity,
+            string.IsNullOrWhiteSpace(value.Value) ? null : value.Value);
+    }
+
+    private static JiraRequesterObservation ReadPublicRequesters(XElement item)
+    {
+        XElement[] fields = item.Elements("customfields").Elements("customfield")
+            .Where(field => (string?)field.Attribute("id") == "customfield_11000").ToArray();
+        if (fields.Length == 0) return new(JiraPeopleFieldState.Missing, []);
+        if (fields.Length != 1) return new(JiraPeopleFieldState.Malformed, []);
+        XElement[] containers = fields[0].Elements("customfieldvalues").ToArray();
+        if (containers.Length != 1) return new(JiraPeopleFieldState.Malformed, []);
+        XElement container = containers[0];
+        if (IsNil(container) && (container.HasElements || !string.IsNullOrWhiteSpace(container.Value)))
+            return new(JiraPeopleFieldState.Malformed, []);
+        if (!container.HasElements)
+            return string.IsNullOrWhiteSpace(container.Value)
+                ? new(JiraPeopleFieldState.Absent, []) : new(JiraPeopleFieldState.Malformed, []);
+        if (container.Elements().Any(value => value.Name != "customfieldvalue"))
+            return new(JiraPeopleFieldState.Malformed, []);
+        // Jira's XML multi-user picker contains usernames, not explicit names.
+        return new(JiraPeopleFieldState.Present, container.Elements().Select(value =>
+            value.HasElements || value.HasAttributes || string.IsNullOrWhiteSpace(value.Value)
+                ? new JiraPersonObservation(JiraPeopleFieldState.Malformed)
+                : JiraPublicPeopleObservationReader.Person(value.Value, null)).ToArray());
+    }
+
     private static readonly XmlSerializer Serializer = new(typeof(JiraRss));
 
     private static readonly Dictionary<string, string> CustomFieldKeyMap = new()

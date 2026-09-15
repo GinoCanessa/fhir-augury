@@ -151,6 +151,7 @@ builder.Services.AddSingleton(indexTracker);
 }
 
 builder.Services.AddSingleton<JiraIngestionPipeline>();
+builder.Services.AddSingleton<JiraPublicPeopleBackfillService>();
 builder.Services.AddSingleton<JiraIngestion.WorkGroupSupportFileAcquirer>();
 builder.Services.AddSingleton<FhirAugury.Common.Ingestion.IngestionWorkQueue>();
 

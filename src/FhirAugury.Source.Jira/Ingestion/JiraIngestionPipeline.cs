@@ -38,6 +38,28 @@ public class JiraIngestionPipeline(
     public bool IsRunning => _runLock.CurrentCount == 0;
     public string CurrentStatus => _currentStatus;
 
+    /// <summary>Uses the ingestion gate, without starting an ingestion mutation.</summary>
+    internal async Task<IDisposable?> TryAcquirePublicPeopleMaintenanceAsync(CancellationToken ct)
+    {
+        if (!await _runLock.WaitAsync(0, ct))
+            return null;
+        string previousStatus = _currentStatus;
+        _currentStatus = "public_people_maintenance";
+        return new PublicPeopleLease(this, previousStatus);
+    }
+
+    private sealed class PublicPeopleLease(JiraIngestionPipeline pipeline, string previousStatus) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            pipeline._currentStatus = previousStatus;
+            pipeline._runLock.Release();
+        }
+    }
+
     /// <summary>Runs a full ingestion from the Jira API.</summary>
     public async Task<IngestionResult> RunFullIngestionAsync(string? jqlOverride = null, string? project = null, CancellationToken ct = default)
     {

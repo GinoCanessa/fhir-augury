@@ -462,6 +462,33 @@ public class ItemsControllerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task GetItem_AfterPublicPeopleBackfillProjectsExactPublicPeopleWithoutReplacingLegacyMetadata()
+    {
+        using JiraPeopleTestFixture fixture = new();
+        JiraUserRecord reporter = fixture.AddUser("exact-private-reporter", "Migrated name");
+        fixture.AddIssue("FHIR-1", reporter: reporter.Id, legacyReporter: "Legacy reporter text");
+        fixture.SetEvidence("FHIR-1", reporter: JiraPeopleTestFixture.Person(reporter.Username, "Public Reporter"),
+            assignee: JiraPeopleTestFixture.Person("exact-private-assignee", "Public Assignee"),
+            requesters: """[{"name":"exact-private-requester","displayName":"Public Requester"}]""");
+        ItemResponse before = fixture.ReadItem("FHIR-1");
+        Assert.Null(before.People!.Reporter);
+
+        Assert.Equal("applied", (await fixture.Apply(await fixture.Preview())).Code);
+
+        ItemResponse after = fixture.ReadItem("FHIR-1");
+        Assert.Equal("Public Reporter", after.People!.Reporter);
+        Assert.Equal("Public Assignee", after.People.Assignee);
+        Assert.Equal(["Public Requester"], after.People.InPersonRequesters);
+        Assert.Equal(before.UpdatedAt, after.UpdatedAt);
+        Assert.Equal(before.Content, after.Content);
+        Assert.Equal(before.Metadata, after.Metadata);
+        Assert.Equal("Legacy reporter text", after.Metadata!["reporter"]);
+        Assert.Equal(1, after.Provenance!.ContentRevision);
+        Assert.True(after.Provenance.IsStable);
+        Assert.DoesNotContain("private", JsonSerializer.Serialize(after.People), StringComparison.OrdinalIgnoreCase);
+    }
+
     private void InsertIssue(JiraIssueRecord issue)
     {
         using SqliteConnection conn = _db.OpenConnection();
