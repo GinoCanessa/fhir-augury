@@ -3,6 +3,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 
@@ -22,6 +23,7 @@ public sealed class PreparedTicketPublicationMaintenanceController
         _service = service;
     }
 
+    [ActivatorUtilitiesConstructor]
     public PreparedTicketPublicationMaintenanceController(
         PreparedTicketPublicationRefreshService service,
         PreparedTicketPublicationReconciliationPlanner reconciliationPlanner)

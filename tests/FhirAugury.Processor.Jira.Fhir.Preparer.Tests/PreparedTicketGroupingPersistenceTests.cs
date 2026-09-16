@@ -582,6 +582,43 @@ public sealed class PreparedTicketGroupingPersistenceTests
             certification.OutputFingerprint);
     }
 
+    [Fact]
+    public void ReconciliationGroupingImpactFingerprint_IsOrderIndependentAndComplete()
+    {
+        string hashA = new('a', 64);
+        string hashB = new('b', 64);
+        PreparedTicketPublicationReconciliationGroupingImpact first = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-2", "FHIR-1"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+        PreparedTicketPublicationReconciliationGroupingImpact second = new(
+            "Orders\u001fFHIR\u001fComment",
+            ["FHIR-3"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([first, second]),
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([second, first]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint(
+                    [first with { Complete = false }]));
+    }
+
     private static PreparedTicketGroupingPayload SamplePayload() => new()
     {
         WorkGroupClean = WorkGroupClean,

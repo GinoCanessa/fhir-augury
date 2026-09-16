@@ -33,6 +33,19 @@ public sealed class PreparedTicketPublicationEndToEndTests
         new(2026, 9, 15, 1, 30, 0, TimeSpan.Zero);
 
     [Fact]
+    public void ReconciliationPublicationContract_HasDistinctProofPurpose()
+    {
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationContract.Purpose,
+            PreparedTicketPublicationContract
+                .PublicationReconciliationPurpose);
+        Assert.NotEqual(
+            PreparedTicketPublicationContract.PublicationRefreshPurpose,
+            PreparedTicketPublicationContract
+                .PublicationReconciliationPurpose);
+    }
+
+    [Fact]
     public async Task EnrichmentPublishesNewSiteWithoutChangingOriginalGraphOrArtifacts()
     {
         using Fixture fixture = new(richGraph: true);

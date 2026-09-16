@@ -24,6 +24,45 @@ public sealed record PreparedTicketPublicationGroupingPartition(
     string PartitionKey,
     string OutputFingerprint);
 
+public sealed record PreparedTicketPublicationUnaffectedFingerprint(
+    string RunId,
+    IReadOnlyList<string> ImpactedPartitionKeys,
+    string AuthoredRowsFingerprint,
+    string ReceiptCoordinatesFingerprint,
+    string GroupingRowsFingerprint,
+    string CombinedFingerprint,
+    DateTimeOffset CapturedAt);
+
+public sealed record PreparedTicketPublicationGroupingWorkItem(
+    string RunId,
+    string PartitionKey,
+    string WorkGroupClean,
+    string WorkGroupDisplay,
+    string Specification,
+    string Type,
+    IReadOnlyList<string> RevisedTicketKeys,
+    IReadOnlyList<string> TicketKeys,
+    string OverlayCorpusFingerprint);
+
+public sealed record PreparedTicketPublicationGroupingDelta(
+    string RunId,
+    string OverlayCorpusFingerprint,
+    IReadOnlyList<PreparedTicketPublicationReconciliationGroupingImpact>
+        Impacts,
+    PreparedTicketPublicationUnaffectedFingerprint Unaffected);
+
+public sealed record PreparedTicketPublicationCandidateSnapshot(
+    string RunId,
+    string TemporaryPath,
+    int SchemaVersion,
+    string Sha256,
+    long SizeBytes,
+    IReadOnlyDictionary<string, long> TableCounts,
+    string OverlayCorpusFingerprint,
+    string GroupingFingerprint,
+    string GroupingImpactFingerprint,
+    DateTimeOffset CapturedAt);
+
 /// <summary>
 /// Canonical publication-proof serialization shared by the Preparer and every
 /// consumer of its review snapshots.
@@ -33,6 +72,8 @@ public static class PreparedTicketPublicationContract
     public const int Version = 1;
     public const int CurrentVersion = Version;
     public const string PublicationRefreshPurpose = "publication-refresh";
+    public const string PublicationReconciliationPurpose =
+        "publication-reconciliation";
     public const string JiraSourceName = "jira";
 
     public static string ComputeCorpusFingerprint(
@@ -82,6 +123,101 @@ public static class PreparedTicketPublicationContract
         int contractVersion = CurrentVersion)
         => ComputeSha256(
             SerializeGroupingFingerprints(partitions, contractVersion));
+
+    public static string ComputeGroupingImpactFingerprint(
+        IEnumerable<PreparedTicketPublicationReconciliationGroupingImpact>
+            impacts,
+        int contractVersion = CurrentVersion)
+    {
+        EnsureSupportedVersion(contractVersion);
+        ArgumentNullException.ThrowIfNull(impacts);
+        PreparedTicketPublicationReconciliationGroupingImpact[] ordered =
+            impacts.OrderBy(impact => impact.PartitionKey, StringComparer.Ordinal)
+                .ToArray();
+        if (ordered.Any(impact =>
+                string.IsNullOrWhiteSpace(impact.PartitionKey) ||
+                !impact.Complete ||
+                string.IsNullOrWhiteSpace(impact.StagedCorpusFingerprint) ||
+                string.IsNullOrWhiteSpace(impact.StagedOutputFingerprint) ||
+                string.IsNullOrWhiteSpace(
+                    impact.StagedProtectedRowsFingerprint)) ||
+            ordered.Select(impact => impact.PartitionKey)
+                .Distinct(StringComparer.Ordinal).Count() != ordered.Length)
+        {
+            throw new ArgumentException(
+                "Grouping impacts must be complete and have unique partition coordinates.",
+                nameof(impacts));
+        }
+        foreach (PreparedTicketPublicationReconciliationGroupingImpact impact
+                 in ordered)
+        {
+            RequireSha256(
+                impact.BaselineCorpusFingerprint,
+                nameof(impact.BaselineCorpusFingerprint));
+            RequireSha256(
+                impact.BaselineOutputFingerprint,
+                nameof(impact.BaselineOutputFingerprint));
+            RequireSha256(
+                impact.BaselineProtectedRowsFingerprint,
+                nameof(impact.BaselineProtectedRowsFingerprint));
+            RequireSha256(
+                impact.StagedCorpusFingerprint,
+                nameof(impact.StagedCorpusFingerprint));
+            RequireSha256(
+                impact.StagedOutputFingerprint,
+                nameof(impact.StagedOutputFingerprint));
+            RequireSha256(
+                impact.StagedProtectedRowsFingerprint,
+                nameof(impact.StagedProtectedRowsFingerprint));
+            if (impact.RevisedTicketKeys
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+                impact.RevisedTicketKeys.Count)
+            {
+                throw new ArgumentException(
+                    "Grouping impacts cannot contain duplicate revised tickets.",
+                    nameof(impacts));
+            }
+        }
+        return ComputeSha256(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            contractVersion,
+            purpose = PublicationReconciliationPurpose,
+            impacts = ordered.Select(impact => new
+            {
+                impact.PartitionKey,
+                revisedTicketKeys = impact.RevisedTicketKeys
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(value => value, StringComparer.Ordinal),
+                impact.BaselineCorpusFingerprint,
+                impact.BaselineOutputFingerprint,
+                impact.BaselineProtectedRowsFingerprint,
+                impact.StagedCorpusFingerprint,
+                impact.StagedOutputFingerprint,
+                impact.StagedProtectedRowsFingerprint,
+            }),
+        }));
+    }
+
+    public static string ComputeReconciliationGroupingFingerprint(
+        IEnumerable<PreparedTicketPublicationGroupingPartition> unaffected,
+        IEnumerable<PreparedTicketPublicationReconciliationGroupingImpact>
+            impacts,
+        int contractVersion = CurrentVersion)
+    {
+        ArgumentNullException.ThrowIfNull(unaffected);
+        ArgumentNullException.ThrowIfNull(impacts);
+        PreparedTicketPublicationGroupingPartition[] replacements = impacts
+            .Select(impact => new PreparedTicketPublicationGroupingPartition(
+                impact.PartitionKey,
+                impact.StagedOutputFingerprint
+                ?? throw new ArgumentException(
+                    "A reconciliation grouping impact is incomplete.",
+                    nameof(impacts))))
+            .ToArray();
+        return ComputeGroupingFingerprint(
+            unaffected.Concat(replacements),
+            contractVersion);
+    }
 
     public static byte[] SerializeCorpus(
         IEnumerable<PreparedTicketPublicationCorpusItem> items,
